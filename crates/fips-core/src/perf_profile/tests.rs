@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 228);
+    assert_eq!(N_EVENTS, 234);
     assert!(
-        (Event::LinuxWgBatchAdmissionUnavailablePackets as usize) < N_EVENTS,
+        (Event::EndpointEventDequeueMixedLaneEvents as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -49,6 +49,30 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::EndpointEventBulkBacklogHigh as usize).name(),
         "endpoint_event_bulk_backlog_high"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueEvents as usize).name(),
+        "endpoint_event_dequeue_events"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueMessages as usize).name(),
+        "endpoint_event_dequeue_messages"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeuePriorityMessages as usize).name(),
+        "endpoint_event_dequeue_priority_messages"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueBulkMessages as usize).name(),
+        "endpoint_event_dequeue_bulk_messages"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueMultiMessageEvents as usize).name(),
+        "endpoint_event_dequeue_multi_message_events"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueMixedLaneEvents as usize).name(),
+        "endpoint_event_dequeue_mixed_lane_events"
     );
     assert_eq!(
         event_from_index(Event::RxLoopSlowMaintenanceTimeout as usize).name(),

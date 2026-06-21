@@ -96,7 +96,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 228;
+const N_EVENTS: usize = 234;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -711,6 +711,12 @@ pub enum Event {
     LinuxWgBatchFlowQueueFullPackets = 225,
     LinuxWgBatchWorkerQueueFullPackets = 226,
     LinuxWgBatchAdmissionUnavailablePackets = 227,
+    EndpointEventDequeueEvents = 228,
+    EndpointEventDequeueMessages = 229,
+    EndpointEventDequeuePriorityMessages = 230,
+    EndpointEventDequeueBulkMessages = 231,
+    EndpointEventDequeueMultiMessageEvents = 232,
+    EndpointEventDequeueMixedLaneEvents = 233,
 }
 
 impl Event {
@@ -1158,6 +1164,18 @@ impl Event {
             Event::LinuxWgBatchAdmissionUnavailablePackets => {
                 "linux_wg_batch_admission_unavailable_packets"
             }
+            Event::EndpointEventDequeueEvents => "endpoint_event_dequeue_events",
+            Event::EndpointEventDequeueMessages => "endpoint_event_dequeue_messages",
+            Event::EndpointEventDequeuePriorityMessages => {
+                "endpoint_event_dequeue_priority_messages"
+            }
+            Event::EndpointEventDequeueBulkMessages => "endpoint_event_dequeue_bulk_messages",
+            Event::EndpointEventDequeueMultiMessageEvents => {
+                "endpoint_event_dequeue_multi_message_events"
+            }
+            Event::EndpointEventDequeueMixedLaneEvents => {
+                "endpoint_event_dequeue_mixed_lane_events"
+            }
         }
     }
 }
@@ -1392,6 +1410,12 @@ fn event_from_index(idx: usize) -> Event {
         225 => Event::LinuxWgBatchFlowQueueFullPackets,
         226 => Event::LinuxWgBatchWorkerQueueFullPackets,
         227 => Event::LinuxWgBatchAdmissionUnavailablePackets,
+        228 => Event::EndpointEventDequeueEvents,
+        229 => Event::EndpointEventDequeueMessages,
+        230 => Event::EndpointEventDequeuePriorityMessages,
+        231 => Event::EndpointEventDequeueBulkMessages,
+        232 => Event::EndpointEventDequeueMultiMessageEvents,
+        233 => Event::EndpointEventDequeueMixedLaneEvents,
         _ => unreachable!(),
     }
 }
@@ -1959,6 +1983,33 @@ pub(crate) fn record_decrypt_worker_batch_target(worker_idx: usize, packets: usi
         _ => Event::DecryptWorkerBatchWorkerOther,
     };
     record_event_count_sample(worker_event, packets as u64);
+}
+
+/// Record the shape of endpoint events consumed by the embedded application.
+///
+/// `endpoint_bulk_event_wait` says plaintext was ready before the endpoint
+/// consumer saw it; these counters show whether the consumer is receiving large
+/// grouped bulk events, tiny fragmented events, or priority/bulk mixes.
+#[inline]
+pub(crate) fn record_endpoint_event_dequeue(total: usize, priority: usize, bulk: usize) {
+    if !enabled() || total == 0 {
+        return;
+    }
+    debug_assert_eq!(
+        total,
+        priority.saturating_add(bulk),
+        "endpoint event lane counts should cover every message"
+    );
+    record_event_count_sample(Event::EndpointEventDequeueEvents, 1);
+    record_event_count_sample(Event::EndpointEventDequeueMessages, total as u64);
+    record_event_count_sample(Event::EndpointEventDequeuePriorityMessages, priority as u64);
+    record_event_count_sample(Event::EndpointEventDequeueBulkMessages, bulk as u64);
+    if total > 1 {
+        record_event_count_sample(Event::EndpointEventDequeueMultiMessageEvents, 1);
+    }
+    if priority > 0 && bulk > 0 {
+        record_event_count_sample(Event::EndpointEventDequeueMixedLaneEvents, 1);
+    }
 }
 
 #[inline]

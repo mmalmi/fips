@@ -975,6 +975,11 @@ impl EndpointEventReceiver {
     fn note_dequeued(&self, event: &NodeEndpointEvent) {
         event.record_dequeue_wait();
         let counts = event.dequeue_counts();
+        crate::perf_profile::record_endpoint_event_dequeue(
+            counts.total,
+            counts.priority,
+            counts.bulk,
+        );
         release_endpoint_event_messages(&self.queued_messages, counts.total);
         release_endpoint_event_messages(&self.bulk_queued_messages, counts.bulk);
     }
