@@ -178,6 +178,137 @@ fn release_endpoint_event_messages_subtracts_exact_count() {
     assert_eq!(counter.load(Relaxed), 2);
 }
 
+#[cfg(unix)]
+fn endpoint_test_established_session(
+    local: &Identity,
+    peer: &Identity,
+) -> crate::node::session::SessionEntry {
+    let mut initiator =
+        crate::noise::HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+    let mut responder = crate::noise::HandshakeState::new_xk_responder(peer.keypair());
+    initiator.set_local_epoch([1u8; 8]);
+    responder.set_local_epoch([2u8; 8]);
+
+    let msg1 = initiator.write_xk_message_1().unwrap();
+    responder.read_xk_message_1(&msg1).unwrap();
+    let msg2 = responder.write_xk_message_2().unwrap();
+    initiator.read_xk_message_2(&msg2).unwrap();
+    let msg3 = initiator.write_xk_message_3().unwrap();
+    responder.read_xk_message_3(&msg3).unwrap();
+
+    crate::node::session::SessionEntry::new(
+        *peer.node_addr(),
+        peer.pubkey_full(),
+        crate::node::session::EndToEndState::Established(initiator.into_session().unwrap()),
+        1_000,
+        true,
+    )
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn session_direct_path_trust_changes_invalidate_endpoint_bulk_lease() {
+    let local = Identity::generate();
+    let peer = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = crate::transport::TransportId::new(0x51);
+
+    let mut node = Node::with_identity(local, Config::new()).expect("node");
+    let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+    let runtime = endpoint_io.bulk_send_runtime.clone();
+
+    let mut session = endpoint_test_established_session(&node.identity, &peer);
+    session.mark_established(1_000);
+    session.init_mmp(&node.config.node.session_mmp);
+    assert!(node.sessions.insert(peer_addr, session).is_none());
+
+    let active_peer = ActivePeer::with_session(
+        peer_identity,
+        LinkId::new(9),
+        1_000,
+        make_test_fmp_session(&node.identity, &peer, [0x03; 8], [0x04; 8]),
+        SessionIndex::new(0x1010),
+        SessionIndex::new(0x2020),
+        transport_id,
+        TransportAddr::from_string("127.0.0.1:9"),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x04; 8]),
+    );
+    node.peers
+        .insert_with_current_session_index(peer_addr, active_peer);
+
+    let (packet_tx, _packet_rx) = packet_channel(8);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        None,
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            mtu: Some(1234),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.expect("start UDP transport");
+    let send_target = crate::node::encrypt_worker::SelectedSendTarget::new(
+        udp.async_socket().expect("started UDP socket"),
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        None,
+        "127.0.0.1:9".parse().expect("socket addr"),
+    );
+    let workers = crate::node::encrypt_worker::EncryptWorkerPool::spawn(1);
+
+    let publish_lease = |node: &Node| {
+        let fsp = node
+            .sessions
+            .get(&peer_addr)
+            .and_then(|entry| entry.endpoint_bulk_fsp_lease())
+            .expect("established session should export FSP lease state");
+        let fmp = node
+            .peers
+            .endpoint_bulk_fmp_lease(&peer_addr)
+            .expect("active peer should export FMP lease state");
+        runtime.publish(crate::node::EndpointBulkSendLease::new(
+            *node.node_addr(),
+            peer_addr,
+            peer_addr,
+            1234,
+            9,
+            1,
+            false,
+            fsp,
+            fmp,
+            send_target.clone(),
+            workers.clone(),
+            std::time::Duration::from_secs(1),
+        ));
+    };
+
+    publish_lease(&node);
+    assert!(
+        runtime.lease(&peer_addr).is_some(),
+        "fixture should publish a reusable endpoint bulk lease"
+    );
+    assert!(node.mark_session_direct_path_degraded(peer_addr, Node::now_ms()));
+    assert!(
+        runtime.lease(&peer_addr).is_none(),
+        "degrading direct payload trust must force endpoint sends to re-resolve route"
+    );
+
+    publish_lease(&node);
+    assert!(
+        runtime.lease(&peer_addr).is_some(),
+        "fixture should be able to republish after degradation"
+    );
+    assert!(node.clear_session_direct_path_degraded(&peer_addr));
+    assert!(
+        runtime.lease(&peer_addr).is_none(),
+        "recovering direct payload trust must also refresh endpoint route leases"
+    );
+}
+
 #[test]
 fn endpoint_send_batch_coalesce_predicate_requires_same_peer_lane_and_cap() {
     let peer_a = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
