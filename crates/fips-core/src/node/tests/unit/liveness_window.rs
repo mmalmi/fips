@@ -87,7 +87,7 @@ fn traversal_path_liveness_keeps_mobile_safe_floor() {
             std::time::Duration::from_secs(30),
             std::time::Duration::from_secs(5),
         ),
-        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(30),
         "short-heartbeat traversal paths should not collapse to the 5s local-failure floor"
     );
     assert_eq!(
@@ -96,16 +96,16 @@ fn traversal_path_liveness_keeps_mobile_safe_floor() {
             std::time::Duration::from_secs(30),
             std::time::Duration::from_secs(5),
         ),
-        std::time::Duration::from_secs(20),
-        "default FIPS heartbeat keeps a two-heartbeat traversal liveness window"
+        std::time::Duration::from_secs(30),
+        "default FIPS heartbeat keeps a three-heartbeat traversal liveness window"
     );
     assert_eq!(
         crate::node::handlers::traversal_path_liveness_timeout(
             2,
-            std::time::Duration::from_secs(30),
-            std::time::Duration::from_secs(20),
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(40),
         ),
-        std::time::Duration::from_secs(20),
+        std::time::Duration::from_secs(40),
         "an explicitly higher fast floor should still be honored"
     );
 }
@@ -209,7 +209,7 @@ async fn quiet_recent_endpoint_path_refresh_keeps_direct_payload_without_demotin
     );
     assert!(
         node.retry_pending.contains_key(&peer_addr),
-        "one missed traversal heartbeat should queue direct-path refresh before the full 22s link-dead window"
+        "one missed traversal heartbeat should queue direct-path refresh before the full mobile-safe link-dead window"
     );
     assert!(
         !node.session_direct_path_is_degraded(&peer_addr, Node::now_ms()),
@@ -1316,7 +1316,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
             std::time::Duration::from_secs(node.config.node.fast_link_dead_timeout_secs),
         )
         .expect("recent endpoint path should get bounded liveness timeout");
-    assert_eq!(recent_path_timeout, std::time::Duration::from_secs(20));
+    assert_eq!(recent_path_timeout, std::time::Duration::from_secs(30));
 
     node.record_link_dead_path_failure(&peer_addr, 1_000).await;
 
@@ -1374,7 +1374,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
 }
 
 #[tokio::test]
-async fn proven_recent_endpoint_path_uses_bounded_dead_timeout() {
+async fn quiet_recent_endpoint_path_stays_alive_within_mobile_window() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
@@ -1417,7 +1417,7 @@ async fn proven_recent_endpoint_path_uses_bounded_dead_timeout() {
         100,
         64,
         false,
-        std::time::Instant::now() - std::time::Duration::from_secs(23),
+        std::time::Instant::now() - std::time::Duration::from_secs(29),
     );
     node.peers.insert(peer_addr, active);
 
@@ -1428,16 +1428,16 @@ async fn proven_recent_endpoint_path_uses_bounded_dead_timeout() {
         "link-dead should keep the authenticated peer identity"
     );
     assert!(
-        !node.get_peer(&peer_addr).expect("peer").is_healthy(),
-        "a proven traversal/recent path at 23s silence should use the bounded 20s liveness window, not the 30s normal dead timeout"
+        node.get_peer(&peer_addr).expect("peer").is_healthy(),
+        "a proven traversal/recent path at 29s silence should refresh but not flap before the mobile-safe liveness window"
     );
     assert!(
         node.retry_pending.contains_key(&peer_addr),
-        "bounded traversal liveness should schedule direct reprobe"
+        "quiet traversal liveness should schedule direct reprobe before link-dead"
     );
     assert!(
         node.get_peer(&peer_addr).expect("peer").can_send(),
-        "soft-stale direct paths remain sendable for probes"
+        "quiet direct paths remain sendable while the reprobe runs"
     );
     let configured_peer = node.configured_peer(&peer_addr).expect("configured peer");
     assert!(
