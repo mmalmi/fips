@@ -308,22 +308,44 @@ impl PendingTunPacketQueueAdmission {
 }
 
 /// Per-destination TUN packets waiting for session establishment.
+#[derive(Debug)]
+pub(crate) struct PendingTunPacket {
+    packet: Vec<u8>,
+    queued_at_ms: u64,
+}
+
+impl PendingTunPacket {
+    fn new(packet: Vec<u8>, queued_at_ms: u64) -> Self {
+        Self {
+            packet,
+            queued_at_ms,
+        }
+    }
+
+    fn is_stale(&self, now_ms: u64, max_age_ms: u64) -> bool {
+        now_ms.saturating_sub(self.queued_at_ms) > max_age_ms
+    }
+}
+
+/// Per-destination TUN packets waiting for session establishment.
 #[derive(Debug, Default)]
 pub(crate) struct PendingTunPacketQueue {
-    packets: VecDeque<Vec<u8>>,
+    packets: VecDeque<PendingTunPacket>,
 }
 
 impl PendingTunPacketQueue {
     pub(crate) fn push_bounded(
         &mut self,
         packet: Vec<u8>,
+        queued_at_ms: u64,
         capacity: usize,
     ) -> PendingTunPacketQueueAdmission {
         let dropped_oldest = self.packets.len() >= capacity;
         if dropped_oldest {
             self.packets.pop_front();
         }
-        self.packets.push_back(packet);
+        self.packets
+            .push_back(PendingTunPacket::new(packet, queued_at_ms));
         PendingTunPacketQueueAdmission { dropped_oldest }
     }
 
@@ -333,11 +355,31 @@ impl PendingTunPacketQueue {
 
     pub(crate) fn into_packets(self) -> VecDeque<Vec<u8>> {
         self.packets
+            .into_iter()
+            .map(|packet| packet.packet)
+            .collect()
+    }
+
+    pub(crate) fn into_fresh_packets(
+        self,
+        now_ms: u64,
+        max_age_ms: u64,
+    ) -> (VecDeque<Vec<u8>>, usize) {
+        let mut fresh = VecDeque::with_capacity(self.packets.len());
+        let mut stale = 0usize;
+        for packet in self.packets {
+            if packet.is_stale(now_ms, max_age_ms) {
+                stale = stale.saturating_add(1);
+            } else {
+                fresh.push_back(packet.packet);
+            }
+        }
+        (fresh, stale)
     }
 
     #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Vec<u8>> {
-        self.packets.iter()
+        self.packets.iter().map(|packet| &packet.packet)
     }
 }
 
@@ -403,11 +445,11 @@ impl PendingSessionTrafficQueues {
             };
         }
 
-        let admission = self
-            .tun_packets
-            .entry(dest_addr)
-            .or_default()
-            .push_bounded(packet, packets_per_dest);
+        let admission = self.tun_packets.entry(dest_addr).or_default().push_bounded(
+            packet,
+            crate::time::now_ms(),
+            packets_per_dest,
+        );
         self.pending_destinations.insert(dest_addr);
         PendingSessionTrafficAdmission {
             destination_dropped: false,

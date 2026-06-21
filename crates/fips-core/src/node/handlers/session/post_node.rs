@@ -70,12 +70,24 @@ mod pending_queue_tests {
     #[test]
     fn pending_tun_packet_queue_owns_drop_oldest_policy() {
         let mut queue = crate::node::PendingTunPacketQueue::default();
-        assert!(!queue.push_bounded(vec![1], 2).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2], 2).dropped_oldest());
-        assert!(queue.push_bounded(vec![3], 2).dropped_oldest());
+        assert!(!queue.push_bounded(vec![1], 1_000, 2).dropped_oldest());
+        assert!(!queue.push_bounded(vec![2], 1_001, 2).dropped_oldest());
+        assert!(queue.push_bounded(vec![3], 1_002, 2).dropped_oldest());
 
         let packets: Vec<Vec<u8>> = queue.iter().cloned().collect();
         assert_eq!(packets, vec![vec![2], vec![3]]);
+    }
+
+    #[test]
+    fn pending_tun_packet_queue_drops_stale_packets_on_fresh_drain() {
+        let mut queue = crate::node::PendingTunPacketQueue::default();
+        assert!(!queue.push_bounded(vec![1], 1_000, 8).dropped_oldest());
+        assert!(!queue.push_bounded(vec![2], 3_500, 8).dropped_oldest());
+
+        let (packets, stale) = queue.into_fresh_packets(4_000, 2_000);
+
+        assert_eq!(stale, 1);
+        assert_eq!(packets.into_iter().collect::<Vec<_>>(), vec![vec![2]]);
     }
 
     #[test]

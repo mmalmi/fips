@@ -1,4 +1,6 @@
 impl Node {
+    const PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS: u64 = 2_000;
+
     fn deliver_endpoint_data(&mut self, delivery: EndpointDataDelivery) {
         let src_addr = *delivery.source_peer.node_addr();
         if !self.endpoint_events.is_attached() {
@@ -381,7 +383,22 @@ impl Node {
         }
 
         if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
-            for packet in packets.into_packets() {
+            let (packets, stale_count) = packets.into_fresh_packets(
+                Self::now_ms(),
+                Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
+            );
+            if stale_count > 0 {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::PendingTunPacketDropped,
+                    stale_count as u64,
+                );
+                debug!(
+                    dest = %self.peer_display_name(dest_addr),
+                    dropped = stale_count,
+                    "Dropped stale queued TUN packets before session flush"
+                );
+            }
+            for packet in packets {
                 if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
                     break;
