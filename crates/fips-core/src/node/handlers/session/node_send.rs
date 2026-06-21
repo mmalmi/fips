@@ -340,6 +340,14 @@ impl Node {
 
                 let _ = response_tx.send(peers);
             }
+            NodeEndpointCommand::LocalAdvertSnapshot { response_tx } => {
+                let endpoints = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery.local_advert_endpoints().await
+                } else {
+                    Vec::new()
+                };
+                let _ = response_tx.send(endpoints);
+            }
             NodeEndpointCommand::RelaySnapshot { response_tx } => {
                 let relays = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery

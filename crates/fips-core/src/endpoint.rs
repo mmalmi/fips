@@ -843,6 +843,20 @@ impl FipsEndpoint {
             .map_err(|_| FipsEndpointError::Closed)
     }
 
+    /// Snapshot the endpoint addresses this node is currently advertising via
+    /// Nostr discovery.
+    pub async fn local_advertised_endpoints(
+        &self,
+    ) -> Result<Vec<crate::discovery::nostr::OverlayEndpointAdvert>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_priority_commands
+            .send(NodeEndpointCommand::LocalAdvertSnapshot { response_tx })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+
+        response_rx.await.map_err(|_| FipsEndpointError::Closed)
+    }
+
     /// Snapshot live Nostr relay states used by the embedded endpoint.
     pub async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();

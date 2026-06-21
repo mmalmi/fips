@@ -1055,6 +1055,10 @@ pub(crate) enum NodeEndpointCommand {
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },
+    LocalAdvertSnapshot {
+        response_tx:
+            tokio::sync::oneshot::Sender<Vec<crate::discovery::nostr::OverlayEndpointAdvert>>,
+    },
     RelaySnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointRelayStatus>>,
     },
@@ -1216,6 +1220,7 @@ impl NodeEndpointCommand {
             Self::Send { command, .. } | Self::SendOneway { command } => command.lane(),
             Self::SendBatchOneway { lane, .. } => *lane,
             Self::PeerSnapshot { .. }
+            | Self::LocalAdvertSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
             | Self::UpdatePeers { .. }
@@ -1233,6 +1238,7 @@ impl NodeEndpointCommand {
             }
             Self::Send { .. }
             | Self::PeerSnapshot { .. }
+            | Self::LocalAdvertSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
             | Self::UpdatePeers { .. }
@@ -1246,6 +1252,7 @@ impl NodeEndpointCommand {
             Self::Send { .. }
             | Self::SendOneway { .. }
             | Self::PeerSnapshot { .. }
+            | Self::LocalAdvertSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
             | Self::UpdatePeers { .. }
@@ -1259,6 +1266,7 @@ impl NodeEndpointCommand {
             Self::Send { .. }
             | Self::SendOneway { .. }
             | Self::PeerSnapshot { .. }
+            | Self::LocalAdvertSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
             | Self::UpdatePeers { .. }

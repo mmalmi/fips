@@ -256,6 +256,15 @@ impl NostrDiscovery {
         Ok(())
     }
 
+    pub async fn local_advert_endpoints(&self) -> Vec<OverlayEndpointAdvert> {
+        self.local_advert
+            .read()
+            .await
+            .as_ref()
+            .map(|advert| advert.endpoints.clone())
+            .unwrap_or_default()
+    }
+
     pub async fn advert_endpoints_for_peer(
         &self,
         peer_npub: &str,
