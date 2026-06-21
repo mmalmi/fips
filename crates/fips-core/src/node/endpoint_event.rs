@@ -774,7 +774,9 @@ impl EndpointEventSender {
 
 impl Drop for EndpointEventSender {
     fn drop(&mut self) {
-        self.ready.notify();
+        if self.priority.strong_count() == 1 && self.bulk.strong_count() == 1 {
+            self.ready.notify();
+        }
     }
 }
 
@@ -871,6 +873,11 @@ impl EndpointEventRuntime {
 }
 
 impl EndpointEventReceiver {
+    #[cfg(test)]
+    pub(crate) fn ready_sequence(&self) -> u64 {
+        self.ready.snapshot()
+    }
+
     pub(crate) async fn recv(&mut self) -> Option<NodeEndpointEvent> {
         loop {
             match self.try_recv() {

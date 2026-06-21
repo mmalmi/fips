@@ -536,6 +536,27 @@ fn endpoint_event_queue_closes_after_all_senders_drop() {
     );
 }
 
+#[test]
+fn endpoint_event_sender_drop_notifies_only_on_final_sender() {
+    let (event_tx, event_rx) = EndpointEventSender::channel(8);
+    let event_tx_clone = event_tx.clone();
+    let initial_sequence = event_rx.ready_sequence();
+
+    drop(event_tx_clone);
+    assert_eq!(
+        event_rx.ready_sequence(),
+        initial_sequence,
+        "dropping a non-final sender clone should not wake the endpoint receiver"
+    );
+
+    drop(event_tx);
+    assert_ne!(
+        event_rx.ready_sequence(),
+        initial_sequence,
+        "dropping the final sender should wake the endpoint receiver"
+    );
+}
+
 #[tokio::test]
 async fn endpoint_event_queue_async_recv_closes_when_senders_drop() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
