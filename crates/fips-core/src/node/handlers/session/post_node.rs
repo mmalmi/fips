@@ -159,9 +159,9 @@ mod pending_queue_tests {
     #[test]
     fn pending_tun_packet_queue_owns_drop_oldest_policy() {
         let mut queue = crate::node::PendingTunPacketQueue::default();
-        assert!(!queue.push_bounded(vec![1], 2).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2], 2).dropped_oldest());
-        assert!(queue.push_bounded(vec![3], 2).dropped_oldest());
+        assert!(!queue.push_bounded(vec![1], 1_000, 2).dropped_oldest());
+        assert!(!queue.push_bounded(vec![2], 1_001, 2).dropped_oldest());
+        assert!(queue.push_bounded(vec![3], 1_002, 2).dropped_oldest());
 
         let packets: Vec<Vec<u8>> = queue.iter().cloned().collect();
         assert_eq!(packets, vec![vec![2], vec![3]]);
@@ -175,17 +175,29 @@ mod pending_queue_tests {
         let discardable = vec![0xdd; 64];
         let bulk_tcp = ipv6_tcp_packet(0x18, 512);
 
-        assert!(!queue.push_bounded(first_ack.clone(), 2).dropped_packet());
-        assert!(!queue.push_bounded(second_ack.clone(), 2).dropped_packet());
-        let discardable_admission = queue.push_bounded(discardable, 2);
+        assert!(!queue.push_bounded(first_ack.clone(), 1_000, 2).dropped_packet());
+        assert!(!queue.push_bounded(second_ack.clone(), 1_001, 2).dropped_packet());
+        let discardable_admission = queue.push_bounded(discardable, 1_002, 2);
         assert!(discardable_admission.dropped_packet());
         assert!(!discardable_admission.dropped_oldest());
-        let bulk_admission = queue.push_bounded(bulk_tcp, 2);
+        let bulk_admission = queue.push_bounded(bulk_tcp, 1_003, 2);
         assert!(bulk_admission.dropped_packet());
         assert!(!bulk_admission.dropped_oldest());
 
         let packets: Vec<Vec<u8>> = queue.iter().cloned().collect();
         assert_eq!(packets, vec![first_ack, second_ack]);
+    }
+
+    #[test]
+    fn pending_tun_packet_queue_drops_stale_packets_on_fresh_drain() {
+        let mut queue = crate::node::PendingTunPacketQueue::default();
+        assert!(!queue.push_bounded(vec![1], 1_000, 8).dropped_oldest());
+        assert!(!queue.push_bounded(vec![2], 3_500, 8).dropped_oldest());
+
+        let (packets, stale) = queue.into_fresh_packets(4_000, 2_000);
+
+        assert_eq!(stale, 1);
+        assert_eq!(packets.into_iter().collect::<Vec<_>>(), vec![vec![2]]);
     }
 
     #[test]

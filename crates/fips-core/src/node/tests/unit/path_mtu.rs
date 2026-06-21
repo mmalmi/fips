@@ -175,9 +175,10 @@ async fn test_seed_path_mtu_tightens_looser_existing_value() {
     }
 }
 
-/// On retry, configured direct addresses keep priority but fresh overlay
-/// fallbacks still race inside the per-peer candidate budget. A stale static
-/// LAN/nvpn hint must not pin the peer to a path that cannot reply.
+/// On retry, ordinary configured direct addresses are hints: fresh overlay
+/// fallbacks can sort ahead and still race inside the per-peer candidate
+/// budget. A stale static LAN/nvpn hint must not pin the peer to a path that
+/// cannot reply.
 #[tokio::test]
 async fn test_retry_races_overlay_advert_alongside_static_udp_hint() {
     use crate::config::NostrDiscoveryPolicy;
@@ -252,6 +253,13 @@ async fn test_retry_races_overlay_advert_alongside_static_udp_hint() {
     };
     node.config.peers.push(peer_config.clone());
     refresh_configured_peer_cache_for_test(&mut node);
+
+    let candidates = node.peer_address_candidates(&peer_config).await;
+    assert_eq!(
+        candidates.first().map(|addr| addr.addr.as_str()),
+        Some(fresh_overlay_addr.as_str()),
+        "fresh overlay candidate should sort ahead of the ordinary static hint"
+    );
 
     node.initiate_peer_retry_connection(&peer_config)
         .await
@@ -373,7 +381,7 @@ async fn test_bootstrap_races_static_address_and_overlay_advert() {
 }
 
 #[tokio::test]
-async fn test_static_priority_preempts_fresh_overlay_when_budget_tight() {
+async fn test_fresh_overlay_preempts_default_static_hint_when_budget_tight() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
 
@@ -455,21 +463,22 @@ async fn test_static_priority_preempts_fresh_overlay_when_budget_tight() {
         .await
         .unwrap();
 
-    assert!(
-        node.find_link_by_addr(
-            transport_id,
-            &TransportAddr::from_string(&stale_static_addr)
-        )
-        .is_some(),
-        "explicit static priority should get the first candidate slot"
+    let overlay_link = node.find_link_by_addr(
+        transport_id,
+        &TransportAddr::from_string(&fresh_overlay_addr),
+    );
+    let static_link = node.find_link_by_addr(
+        transport_id,
+        &TransportAddr::from_string(&stale_static_addr),
     );
     assert!(
-        node.find_link_by_addr(
-            transport_id,
-            &TransportAddr::from_string(&fresh_overlay_addr)
-        )
-        .is_none(),
-        "fresh overlay hint should remain a candidate but not outrank explicit priority"
+        overlay_link.is_some(),
+        "fresh overlay hint should get the first candidate slot over an ordinary static hint; static_link={static_link:?}, connection_count={}",
+        node.connection_count()
+    );
+    assert!(
+        static_link.is_none(),
+        "ordinary static IP hints should not crowd out a fresh overlay candidate"
     );
     assert_eq!(node.connection_count(), 1);
 

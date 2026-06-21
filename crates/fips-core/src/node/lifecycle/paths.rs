@@ -127,11 +127,9 @@ impl Node {
         peer_config: &PeerConfig,
     ) -> Vec<PeerAddress> {
         // Merge every candidate from every source we have for this peer.
-        // Explicitly configured addresses keep first shot, then freshly
-        // fetched overlay adverts are appended as fallback candidates. This
-        // lets native peers try known LAN/nvpn/static UDP routes before
-        // slower WebRTC/Nostr-discovered paths, while still racing every
-        // concrete candidate that fits in the per-peer budget.
+        // Explicitly high-priority configured addresses keep first shot, while
+        // ordinary static hints share priority with freshly fetched overlay
+        // adverts so freshness can break ties after peers roam.
         let static_addresses = self.static_peer_addresses(peer_config);
         let overlay_addresses = self
             .nostr_peer_fallback_addresses(peer_config, &static_addresses)
@@ -152,11 +150,10 @@ impl Node {
     }
 
     pub(super) fn sort_peer_address_candidates(candidates: &mut [PeerAddress]) {
-        // Stable sort: explicit priority is the contract, and freshness only
-        // breaks ties inside one priority tier. Overlay-discovered endpoints
-        // are assigned lower priority than configured/static hints when both
-        // exist, so operator-provided LAN routes keep first shot without
-        // dropping fresh overlay candidates from the race.
+        // Stable sort: explicit priority is the contract, and freshness breaks
+        // ties inside one priority tier. Ordinary configured endpoints are
+        // hints, not authoritative paths, so fresh overlay/recent candidates can
+        // win when priorities match.
         candidates.sort_by(|a, b| {
             if a.priority != b.priority {
                 return a.priority.cmp(&b.priority);
