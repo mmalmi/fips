@@ -1061,7 +1061,6 @@ fn linux_wg_batch_now_ms() -> u64 {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct MacSendFlowKey {
     target: SendTargetKey,
-    endpoint_flow: Option<u64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1069,7 +1068,6 @@ impl MacSendFlowKey {
     fn from_job(job: &FmpSendJob) -> Self {
         Self {
             target: job.send_target_key(),
-            endpoint_flow: job.endpoint_flow_dispatch_key,
         }
     }
 }
@@ -1233,7 +1231,6 @@ struct MacSequencedSendFlow {
 struct MacSendFlowState {
     next_send_seq: u64,
     pending: BTreeMap<u64, MacSendItem>,
-    priority_ready: VecDeque<MacSendItem>,
     closed: bool,
 }
 
@@ -1249,7 +1246,6 @@ enum MacSendItem {
     Packet {
         packet: Vec<u8>,
         drop_on_backpressure: bool,
-        priority: bool,
     },
     Skip,
 }
@@ -1348,12 +1344,6 @@ impl MacSequencedSendFlow {
         }
         let mut wakes_sender = false;
         for (seq, item) in items {
-            if item.is_priority_packet() {
-                state.priority_ready.push_back(item);
-                state.pending.insert(seq, MacSendItem::Skip);
-                wakes_sender = true;
-                continue;
-            }
             while state.pending.len() >= PENDING_CAP && seq != state.next_send_seq && !wakes_sender
             {
                 state = self
@@ -1375,10 +1365,6 @@ impl MacSequencedSendFlow {
     #[cfg(test)]
     fn take_next_ready_for_test(&self) -> Option<MacSendItem> {
         let mut state = self.state.lock().expect("mac send flow state poisoned");
-        if let Some(item) = state.priority_ready.pop_front() {
-            return Some(item);
-        }
-
         let next = state.next_send_seq;
         if let Some(item) = state.pending.remove(&next) {
             state.next_send_seq = next.wrapping_add(1);
@@ -1394,7 +1380,6 @@ impl MacSequencedSendFlow {
             socket_fd = self.key.target.socket_fd,
             connected_fd = ?self.key.target.connected_fd,
             dest = %self.send_target.dest_addr(),
-            endpoint_flow = ?self.key.endpoint_flow,
             "macOS ordered UDP sender starting"
         );
         let (fd, connected) = self.send_target.fd_and_connected();
@@ -1406,9 +1391,6 @@ impl MacSequencedSendFlow {
                 let mut state = self.state.lock().expect("mac send flow state poisoned");
                 loop {
                     let next = state.next_send_seq;
-                    if let Some(item) = state.priority_ready.pop_front() {
-                        break item;
-                    }
                     if let Some(item) = state.pending.remove(&next) {
                         state.next_send_seq = next.wrapping_add(1);
                         self.space_cv.notify_one();
@@ -1444,7 +1426,6 @@ impl MacSequencedSendFlow {
                             socket_fd = self.key.target.socket_fd,
                             connected_fd = ?self.key.target.connected_fd,
                             dest = %self.send_target.dest_addr(),
-                            endpoint_flow = ?self.key.endpoint_flow,
                             error = %err,
                             "macOS ordered UDP send failed"
                         );
@@ -1453,13 +1434,6 @@ impl MacSequencedSendFlow {
                 MacSendItem::Skip => {}
             }
         }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl MacSendItem {
-    fn is_priority_packet(&self) -> bool {
-        matches!(self, Self::Packet { priority: true, .. })
     }
 }
 

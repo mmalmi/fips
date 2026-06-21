@@ -86,7 +86,6 @@ mod mac_queue_tests {
         let send_target = SelectedSendTarget::new(socket, None, dest_addr);
         let key = MacSendFlowKey {
             target: send_target.key(),
-            endpoint_flow: None,
         };
         Arc::new(MacSequencedSendFlow {
             key,
@@ -148,7 +147,6 @@ mod mac_queue_tests {
                 MacSendItem::Packet {
                     packet: vec![1],
                     drop_on_backpressure: true,
-                    priority: false,
                 },
             );
             push_mac_completion(&mut groups, Arc::clone(&flow_b), 3, MacSendItem::Skip);
@@ -159,7 +157,6 @@ mod mac_queue_tests {
                 MacSendItem::Packet {
                     packet: vec![2],
                     drop_on_backpressure: false,
-                    priority: false,
                 },
             );
 
@@ -196,7 +193,7 @@ mod mac_queue_tests {
     }
 
     #[test]
-    fn mac_ordered_sender_priority_bypasses_missing_bulk_sequence() {
+    fn mac_ordered_sender_priority_waits_for_missing_sequence() {
         with_test_socket(|socket, _cipher| {
             let flow = test_mac_send_flow(socket, "127.0.0.1:10035".parse().unwrap());
 
@@ -205,49 +202,41 @@ mod mac_queue_tests {
                 MacSendItem::Packet {
                     packet: vec![9],
                     drop_on_backpressure: false,
-                    priority: true,
                 },
             )]);
 
-            match flow.take_next_ready_for_test().expect("priority ready") {
-                MacSendItem::Packet {
-                    packet, priority, ..
-                } => {
-                    assert_eq!(packet, vec![9]);
-                    assert!(priority);
-                }
-                MacSendItem::Skip => panic!("priority packet should bypass missing bulk"),
-            }
-            assert!(flow.take_next_ready_for_test().is_none());
+            assert!(
+                flow.take_next_ready_for_test().is_none(),
+                "priority packet must not bypass an earlier reserved FMP counter"
+            );
 
             flow.complete_many(vec![(
                 0,
                 MacSendItem::Packet {
                     packet: vec![1],
                     drop_on_backpressure: true,
-                    priority: false,
                 },
             )]);
 
             match flow.take_next_ready_for_test().expect("bulk ready") {
-                MacSendItem::Packet {
-                    packet, priority, ..
-                } => {
+                MacSendItem::Packet { packet, .. } => {
                     assert_eq!(packet, vec![1]);
-                    assert!(!priority);
                 }
-                MacSendItem::Skip => panic!("bulk packet should drain before skip"),
+                MacSendItem::Skip => panic!("bulk packet should drain first"),
             }
-            assert!(matches!(
-                flow.take_next_ready_for_test(),
-                Some(MacSendItem::Skip)
-            ));
+
+            match flow.take_next_ready_for_test().expect("priority ready") {
+                MacSendItem::Packet { packet, .. } => {
+                    assert_eq!(packet, vec![9]);
+                }
+                MacSendItem::Skip => panic!("priority packet should drain after earlier counter"),
+            }
             assert!(flow.take_next_ready_for_test().is_none());
         });
     }
 
     #[test]
-    fn mac_ordered_sender_keys_sequences_by_endpoint_flow() {
+    fn mac_ordered_sender_sequences_by_send_target_not_endpoint_flow() {
         with_test_socket(|socket, cipher| {
             let flows = MacSequencedSendFlows::default();
             let addr: SocketAddr = "127.0.0.1:10036".parse().unwrap();
@@ -287,12 +276,12 @@ mod mac_queue_tests {
                 "one endpoint flow must keep one sequence"
             );
             assert!(
-                !Arc::ptr_eq(&flow_a_first, &flow_b),
-                "independent endpoint flows should not share a bulk sequence"
+                Arc::ptr_eq(&flow_a_first, &flow_b),
+                "endpoint-flow fanout must not split one encrypted peer counter sequence"
             );
             assert!(
-                !Arc::ptr_eq(&flow_a_first, &unkeyed),
-                "control/unkeyed traffic should not share a bulk endpoint sequence"
+                Arc::ptr_eq(&flow_a_first, &unkeyed),
+                "control and endpoint traffic for one send target share one counter sequence"
             );
         });
     }
