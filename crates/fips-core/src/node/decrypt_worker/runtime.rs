@@ -644,12 +644,11 @@ fn handle_bulk_item(
                     &mut completion_interleave_budget,
                 );
                 record_fsp_worker_bulk_input_tail_wait(item_started_at);
-                shard.push_job_action_output(
+                shard.handle_bulk_fsp_job_with_open_batcher(
                     idx,
-                    DecryptWorkerJobAction::FspJob(job),
+                    job,
                     plaintext_batch,
-                    None,
-                    Some(&mut fsp_open_batcher),
+                    &mut fsp_open_batcher,
                 );
             }
             flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut fsp_open_batcher);
