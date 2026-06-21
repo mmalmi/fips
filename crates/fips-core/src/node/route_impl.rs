@@ -60,7 +60,7 @@ impl Node {
         let stale_traversal_direct_route = self
             .peers
             .get(dest_node_addr)
-            .filter(|peer| !peer.is_healthy() && peer.can_send())
+            .filter(|peer| !direct_session_degraded && !peer.is_healthy() && peer.can_send())
             .and_then(|_| {
                 self.configured_peer(dest_node_addr)
                     .and_then(|peer_config| {
@@ -393,12 +393,25 @@ impl Node {
         dest: NodeAddr,
         now_ms: u64,
     ) -> bool {
-        self.session_direct_degradation
-            .mark_degraded(dest, now_ms, SESSION_DIRECT_DEGRADED_HOLD_MS)
+        let changed = self.session_direct_degradation.mark_degraded(
+            dest,
+            now_ms,
+            SESSION_DIRECT_DEGRADED_HOLD_MS,
+        );
+        #[cfg(unix)]
+        if changed && let Some(runtime) = &self.endpoint_bulk_send_runtime {
+            runtime.invalidate(&dest);
+        }
+        changed
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
-        self.session_direct_degradation.clear(dest)
+        let changed = self.session_direct_degradation.clear(dest);
+        #[cfg(unix)]
+        if changed && let Some(runtime) = &self.endpoint_bulk_send_runtime {
+            runtime.invalidate(dest);
+        }
+        changed
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded_after_promotion(

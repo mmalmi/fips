@@ -554,7 +554,10 @@ impl crate::node::SessionRegistry {
 
         Ok(ProcessedSessionReceiverReport {
             sample: mmp.metrics.last_forward_loss_sample(),
-            used_direct_next_hop: last_outbound_next_hop == Some(*src_addr),
+            // Missing route metadata must not make direct-path loss invisible;
+            // older/fast endpoint sends may only have the peer session sample.
+            used_direct_next_hop: last_outbound_next_hop
+                .map_or(true, |next_hop| next_hop == *src_addr),
             srtt_ms,
             route_quality_sample: session_receiver_report_can_drive_route_quality(
                 mmp.mode(),

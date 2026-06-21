@@ -1690,6 +1690,61 @@ async fn quiet_recent_endpoint_path_stays_alive_within_mobile_window() {
     );
 }
 
+#[test]
+fn degraded_recent_endpoint_path_without_fallback_queues_payload() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config);
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mark_stale();
+    node.peers.insert(peer_addr, active);
+    node.mark_session_direct_path_degraded(peer_addr, Node::now_ms());
+
+    let configured_peer = node.configured_peer(&peer_addr).expect("configured peer");
+    assert!(
+        node.active_peer_uses_recent_endpoint_path(&peer_addr, configured_peer),
+        "test fixture should still classify the stale path as a recent endpoint path"
+    );
+    assert!(
+        node.get_peer(&peer_addr).expect("peer").can_send(),
+        "degraded direct paths stay sendable for reprobes"
+    );
+    assert!(
+        node.find_next_hop(&peer_addr).is_none(),
+        "a degraded stale traversal path must wait for fallback discovery instead of blackholing payload"
+    );
+}
+
 #[tokio::test]
 async fn local_route_failure_does_not_collapse_recent_endpoint_liveness_window() {
     let local_identity = Identity::generate();

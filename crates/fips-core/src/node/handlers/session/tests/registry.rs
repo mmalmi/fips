@@ -168,6 +168,52 @@
     }
 
     #[test]
+    fn session_receiver_report_missing_route_metadata_still_flags_direct_quality() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut entry = established_entry(&local, &peer);
+        entry.mark_established(1_000);
+        entry.init_mmp(&crate::config::SessionMmpConfig::default());
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(sessions.insert(peer_addr, entry).is_none());
+
+        let now = std::time::Instant::now();
+        let baseline = sessions
+            .process_session_receiver_report(
+                &peer_addr,
+                &receiver_report(100, 100, 10_000, 50),
+                1_100,
+                now,
+            )
+            .expect("baseline report should process");
+
+        assert!(
+            baseline.used_direct_next_hop,
+            "missing route metadata must not hide direct-path samples"
+        );
+        assert!(baseline.route_quality_sample);
+
+        let lossy = sessions
+            .process_session_receiver_report(
+                &peer_addr,
+                &receiver_report(300, 260, 26_000, 100),
+                1_200,
+                now + std::time::Duration::from_secs(1),
+            )
+            .expect("lossy report should process");
+
+        assert!(lossy.used_direct_next_hop);
+        let (span, loss) = lossy.sample.expect("loss sample");
+        assert_eq!(span, 200);
+        assert!(
+            (loss - 0.20).abs() < 0.01,
+            "loss={loss}, expected roughly 20%"
+        );
+    }
+
+    #[test]
     fn session_registry_session_receiver_report_processing_reports_skip_reasons() {
         let local = Identity::generate();
         let peer = Identity::generate();
