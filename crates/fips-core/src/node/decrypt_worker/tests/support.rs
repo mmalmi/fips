@@ -392,65 +392,6 @@
     }
 
     #[test]
-    fn fsp_open_worker_selection_stripes_ticket_batches_across_non_owner_workers() {
-        let (pool, _control, _priority, _bulk, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(5, DECRYPT_WORKER_BULK_BATCH_MAX);
-        let source_addr = NodeAddr::from_bytes([0x4d; 16]);
-        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
-
-        let first = pool
-            .worker_idx_for_fsp_open_ticket_avoiding(
-                &source_addr,
-                FspReceiveTicket { sequence: 0 },
-                owner_idx,
-            )
-            .expect("five-worker pool should have opener workers");
-        let same_batch = pool
-            .worker_idx_for_fsp_open_ticket_avoiding(
-                &source_addr,
-                FspReceiveTicket {
-                    sequence: (DECRYPT_WORKER_BULK_BATCH_MAX - 1) as u64,
-                },
-                owner_idx,
-            )
-            .expect("same opener batch should select a worker");
-        let second_batch = pool
-            .worker_idx_for_fsp_open_ticket_avoiding(
-                &source_addr,
-                FspReceiveTicket {
-                    sequence: DECRYPT_WORKER_BULK_BATCH_MAX as u64,
-                },
-                owner_idx,
-            )
-            .expect("next opener batch should select a worker");
-        let third_batch = pool
-            .worker_idx_for_fsp_open_ticket_avoiding(
-                &source_addr,
-                FspReceiveTicket {
-                    sequence: (DECRYPT_WORKER_BULK_BATCH_MAX * 2) as u64,
-                },
-                owner_idx,
-            )
-            .expect("third opener batch should select a worker");
-
-        assert_ne!(first, owner_idx);
-        assert_eq!(
-            same_batch, first,
-            "tickets within one opener batch stay coalesced"
-        );
-        assert_ne!(
-            second_batch, first,
-            "next opener batch rotates away from the saturated opener"
-        );
-        assert_ne!(
-            third_batch, first,
-            "later opener batches continue using other non-owner workers"
-        );
-        assert_ne!(second_batch, owner_idx);
-        assert_ne!(third_batch, owner_idx);
-    }
-
-    #[test]
     fn fsp_open_job_batcher_reuses_pending_buffer_for_single_flush() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(2, DECRYPT_WORKER_BULK_BATCH_MAX);

@@ -511,6 +511,9 @@ impl DecryptWorkerShard {
         if owner_idx != idx || !self.pool.fsp_bulk_open_worker_enabled() {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
+        let Some(open_idx) = self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx) else {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        };
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
         let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
         else {
@@ -528,12 +531,6 @@ impl DecryptWorkerShard {
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 1,
             );
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
-        };
-        let Some(open_idx) = self
-            .pool
-            .worker_idx_for_fsp_open_ticket_avoiding(&source_addr, ticket, idx)
-        else {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
 
