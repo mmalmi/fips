@@ -435,6 +435,7 @@ fn wait_for_fmp_receive_order_window(
     control_rx: &Receiver<WorkerMsg>,
     priority_rx: &Receiver<WorkerMsg>,
     fmp_aead_completion_rx: &Receiver<FmpAeadCompletionBatch>,
+    fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     session_key: DecryptSessionKey,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     batch_stats: &mut DecryptWorkerBatchStats,
@@ -475,6 +476,15 @@ fn wait_for_fmp_receive_order_window(
             recv(fmp_aead_completion_rx) -> completion => match completion {
                 Ok(completion) => {
                     shard.handle_fmp_aead_completion_batch_msg(idx, completion, plaintext_batch);
+                }
+                Err(_) => {
+                    record_fmp_receive_order_window_wait(wait_started_at);
+                    return false;
+                }
+            },
+            recv(fsp_aead_completion_rx) -> completion => match completion {
+                Ok(completion) => {
+                    shard.handle_fsp_aead_completion_batch_msg(idx, completion, plaintext_batch);
                 }
                 Err(_) => {
                     record_fmp_receive_order_window_wait(wait_started_at);
@@ -724,6 +734,7 @@ fn handle_bulk_item(
                     control_rx,
                     priority_rx,
                     fmp_aead_completion_rx,
+                    fsp_aead_completion_rx,
                     job.session_key,
                     plaintext_batch,
                     batch_stats,

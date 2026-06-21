@@ -513,6 +513,7 @@
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (completion_tx, completion_rx) = bounded::<FmpAeadCompletionBatch>(1);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         completion_tx
             .try_send(FmpAeadCompletionBatch::one(FmpAeadCompletion {
@@ -535,6 +536,7 @@
             &control_rx,
             &priority_rx,
             &completion_rx,
+            &fsp_aead_completion_rx,
             session_key,
             &mut plaintext_batch,
             &mut batch_stats,
@@ -548,6 +550,92 @@
         assert!(
             !fallback_rx.priority.is_empty(),
             "AEAD failures drained while waiting must remain observable"
+        );
+    }
+
+    #[test]
+    fn fmp_aead_helper_window_wait_drains_fsp_completions_while_blocked() {
+        let session_key = test_session_key(1, 444);
+        let mut state = test_owned_session_state();
+        let receive_order_id = state.fmp_receive_order_id();
+        let receive_window = fmp_receive_window();
+        let tickets = (0..receive_window)
+            .map(|_| state.issue_fmp_receive_ticket().expect("test ticket"))
+            .collect::<Vec<_>>();
+
+        let mut shard = test_shard();
+        let (helper_tx, _helper_rx) = bounded::<FmpAeadHelperJob>(1);
+        shard.pool.fmp_aead_helpers = Some(Arc::new(FmpAeadHelperPool { tx: helper_tx }));
+        shard.register_session(0, session_key, state);
+
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (fmp_completion_tx, fmp_completion_rx) = bounded::<FmpAeadCompletionBatch>(1);
+        let (fsp_completion_tx, fsp_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
+        let fsp_completion_rx_probe = fsp_completion_rx.clone();
+        let source_addr = *test_source_peer().node_addr();
+        fsp_completion_tx
+            .try_send(dummy_fsp_aead_completion_batch(source_addr, 0))
+            .expect("FSP completion lane should have room");
+
+        let waiter = std::thread::spawn(move || {
+            let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+            let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+            let ok = wait_for_fmp_receive_order_window(
+                0,
+                &mut shard,
+                &control_rx,
+                &priority_rx,
+                &fmp_completion_rx,
+                &fsp_completion_rx,
+                session_key,
+                &mut plaintext_batch,
+                &mut batch_stats,
+            );
+            plaintext_batch.flush();
+            (ok, shard.fmp_receive_order_window_available(session_key))
+        });
+
+        let mut fsp_drained_before_fmp_unblock = false;
+        for _ in 0..50 {
+            if fsp_completion_rx_probe.is_empty() {
+                fsp_drained_before_fmp_unblock = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        fmp_completion_tx
+            .try_send(FmpAeadCompletionBatch::one(FmpAeadCompletion {
+                session_key,
+                receive_order_id,
+                ticket: tickets[0],
+                completed_at: None,
+                result: FmpAeadCompletionResult::AeadFailed(dummy_fmp_aead_failure(
+                    fallback_tx,
+                    46,
+                )),
+            }))
+            .expect("FMP completion lane should have room");
+
+        let (wait_ok, window_available) = waiter.join().expect("waiter thread should finish");
+        assert!(wait_ok, "FMP receive-order wait should complete");
+        assert!(
+            fsp_drained_before_fmp_unblock,
+            "FSP ordered completions must not wait for the FMP window to reopen"
+        );
+        assert!(
+            fsp_completion_rx_probe.is_empty(),
+            "FSP completion lane should stay drained after the FMP wait exits"
+        );
+        assert!(
+            window_available,
+            "oldest FMP completion must reopen the ordered receive window"
+        );
+        assert!(
+            !fallback_rx.priority.is_empty(),
+            "FMP failure drained at unblock must remain observable"
         );
     }
 
