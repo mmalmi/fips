@@ -135,6 +135,152 @@
     }
 
     #[test]
+    fn authenticated_fmp_receive_clears_direct_probe_retry_on_direct_path() {
+        use crate::PeerIdentity;
+        use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
+        use crate::node::decrypt_worker::DecryptFmpBookkeeping;
+        use crate::node::retry::RetryState;
+        use crate::peer::ActivePeer;
+        use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let peer_addr = *peer_identity.node_addr();
+        let peer_config = PeerConfig {
+            npub: peer.npub(),
+            alias: None,
+            addresses: vec![PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)],
+            connect_policy: ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        };
+        let transport_id = TransportId::new(0x56);
+        let transport_addr = TransportAddr::from_string("198.51.100.20:61062");
+
+        let mut config = crate::config::Config::new();
+        config.peers.push(peer_config.clone());
+        let mut node = Node::with_identity(local, config).expect("node");
+        node.config.node.heartbeat_interval_secs = 10;
+
+        let mut active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &peer),
+            SessionIndex::new(0x1011),
+            SessionIndex::new(0x2021),
+            transport_id,
+            transport_addr.clone(),
+            LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            None,
+        );
+        active_peer.touch(Node::now_ms().saturating_sub(11_000));
+        node.peers
+            .insert_with_current_session_index(peer_addr, active_peer);
+
+        let mut retry = RetryState::new(peer_config);
+        retry.reconnect = true;
+        node.retry_pending.insert(peer_addr, retry);
+
+        node.record_worker_authenticated_fmp_receive(
+            &DecryptFmpBookkeeping {
+                source_peer: peer_identity,
+                transport_id,
+                remote_addr: transport_addr,
+                packet_timestamp_ms: Node::now_ms(),
+                packet_len: 256,
+                fmp_counter: 11,
+                inner_timestamp_ms: 22,
+                fmp_flags: 0,
+            },
+            Some(&peer_addr),
+        );
+
+        assert!(
+            !node.retry_pending.contains_key(&peer_addr),
+            "fresh authenticated FMP return on the direct peer path should stop direct-probe churn"
+        );
+    }
+
+    #[test]
+    fn authenticated_fmp_receive_keeps_direct_probe_retry_for_forwarded_path() {
+        use crate::PeerIdentity;
+        use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
+        use crate::node::decrypt_worker::DecryptFmpBookkeeping;
+        use crate::node::retry::RetryState;
+        use crate::peer::ActivePeer;
+        use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let relay = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let peer_addr = *peer_identity.node_addr();
+        let relay_addr = *relay.node_addr();
+        let peer_config = PeerConfig {
+            npub: peer.npub(),
+            alias: None,
+            addresses: vec![PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)],
+            connect_policy: ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        };
+        let transport_id = TransportId::new(0x57);
+        let transport_addr = TransportAddr::from_string("198.51.100.20:61062");
+
+        let mut config = crate::config::Config::new();
+        config.peers.push(peer_config.clone());
+        let mut node = Node::with_identity(local, config).expect("node");
+        node.config.node.heartbeat_interval_secs = 10;
+
+        let mut active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &peer),
+            SessionIndex::new(0x1012),
+            SessionIndex::new(0x2022),
+            transport_id,
+            transport_addr.clone(),
+            LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            None,
+        );
+        active_peer.touch(Node::now_ms().saturating_sub(11_000));
+        node.peers
+            .insert_with_current_session_index(peer_addr, active_peer);
+
+        let mut retry = RetryState::new(peer_config);
+        retry.reconnect = true;
+        node.retry_pending.insert(peer_addr, retry);
+
+        node.record_worker_authenticated_fmp_receive(
+            &DecryptFmpBookkeeping {
+                source_peer: peer_identity,
+                transport_id,
+                remote_addr: transport_addr,
+                packet_timestamp_ms: Node::now_ms(),
+                packet_len: 256,
+                fmp_counter: 11,
+                inner_timestamp_ms: 22,
+                fmp_flags: 0,
+            },
+            Some(&relay_addr),
+        );
+
+        assert!(
+            node.retry_pending.contains_key(&peer_addr),
+            "forwarded authenticated FMP traffic must not prove the direct peer path is healthy"
+        );
+    }
+
+    #[test]
     fn fsp_receive_sync_requests_worker_refresh_only_on_epoch_promotion() {
         let local = Identity::generate();
         let peer = Identity::generate();
