@@ -18,7 +18,7 @@ use secp256k1::PublicKey;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +107,52 @@ impl LocalInterfaceNetwork {
                     == (u128::from_be_bytes(remote.octets()) & mask)
             }
             _ => false,
+        }
+    }
+}
+
+const UDP_TRANSPORT_RESOLUTION_CACHE_TTL: Duration = Duration::from_secs(2);
+
+#[derive(Default)]
+pub(in crate::node) struct UdpTransportResolutionCache {
+    entries: std::sync::Mutex<HashMap<SocketAddr, UdpTransportResolutionCacheEntry>>,
+}
+
+#[derive(Clone, Copy)]
+struct UdpTransportResolutionCacheEntry {
+    expires_at: Instant,
+    result: Option<(TransportId, SocketAddr)>,
+}
+
+impl UdpTransportResolutionCache {
+    fn get(&self, remote_addr: SocketAddr) -> Option<Option<(TransportId, SocketAddr)>> {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().ok()?;
+        match entries.get(&remote_addr).copied() {
+            Some(entry) if entry.expires_at > now => Some(entry.result),
+            Some(_) => {
+                entries.remove(&remote_addr);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn insert(&self, remote_addr: SocketAddr, result: Option<(TransportId, SocketAddr)>) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(
+                remote_addr,
+                UdpTransportResolutionCacheEntry {
+                    expires_at: Instant::now() + UDP_TRANSPORT_RESOLUTION_CACHE_TTL,
+                    result,
+                },
+            );
+        }
+    }
+
+    pub(in crate::node) fn clear(&self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.clear();
         }
     }
 }
