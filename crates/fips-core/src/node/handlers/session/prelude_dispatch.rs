@@ -578,9 +578,13 @@ impl SessionDispatchCommit {
     }
 
     fn finish_receive(&self, node: &mut Node) -> SessionDispatchFinish {
+        self.finish_receive_at(node, Node::now_ms())
+    }
+
+    fn finish_receive_at(&self, node: &mut Node, now_ms: u64) -> SessionDispatchFinish {
         // Only application data resets the idle timer and traffic counters —
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
-        self.record_receive(&mut node.sessions, Node::now_ms());
+        self.record_receive(&mut node.sessions, now_ms);
 
         SessionDispatchFinish {
             pending_flush_dest: node

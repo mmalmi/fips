@@ -828,6 +828,25 @@ impl Node {
         self.configured_peer_send_weights.peer_config(peer_addr)
     }
 
+    pub(in crate::node) fn configured_auto_connect_peer_config(
+        &self,
+        peer_addr: &NodeAddr,
+    ) -> Option<PeerConfig> {
+        if let Some(peer_config) = self.configured_peer(peer_addr)
+            && peer_config.is_auto_connect()
+        {
+            return Some(peer_config.clone());
+        }
+
+        self.config
+            .auto_connect_peers()
+            .find(|pc| {
+                self.configured_or_parsed_peer_identity(&pc.npub)
+                    .is_ok_and(|identity| identity.node_addr() == peer_addr)
+            })
+            .cloned()
+    }
+
     #[cfg(test)]
     pub(in crate::node) fn configured_peer_identity(
         &self,

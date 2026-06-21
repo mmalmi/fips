@@ -424,18 +424,25 @@ impl Node {
     }
 
     fn promoted_path_matches_configured_static_peer(&self, peer_node_addr: &NodeAddr) -> bool {
+        let matches_static_path = |peer_config: &PeerConfig| {
+            self.static_peer_addresses(peer_config)
+                .iter()
+                .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate))
+        };
+
+        if let Some(peer_config) = self.configured_peer(peer_node_addr)
+            && peer_config.is_auto_connect()
+        {
+            return matches_static_path(peer_config);
+        }
+
         self.config
             .auto_connect_peers()
-            .filter(|peer_config| {
-                PeerIdentity::from_npub(&peer_config.npub)
-                    .ok()
-                    .is_some_and(|identity| identity.node_addr() == peer_node_addr)
+            .find(|peer_config| {
+                self.configured_or_parsed_peer_identity(&peer_config.npub)
+                    .is_ok_and(|identity| identity.node_addr() == peer_node_addr)
             })
-            .any(|peer_config| {
-                self.static_peer_addresses(peer_config)
-                    .iter()
-                    .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate))
-            })
+            .is_some_and(matches_static_path)
     }
 
     pub(in crate::node) fn learn_reverse_route(
@@ -443,12 +450,20 @@ impl Node {
         destination: NodeAddr,
         next_hop: NodeAddr,
     ) {
+        self.learn_reverse_route_at(destination, next_hop, Self::now_ms());
+    }
+
+    pub(in crate::node) fn learn_reverse_route_at(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+        now_ms: u64,
+    ) {
         if self.config.node.routing.mode != RoutingMode::ReplyLearned
             || destination == *self.node_addr()
         {
             return;
         }
-        let now_ms = Self::now_ms();
         self.learned_routes.learn(
             destination,
             next_hop,

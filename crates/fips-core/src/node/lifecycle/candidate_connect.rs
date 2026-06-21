@@ -61,7 +61,7 @@ impl Node {
         let peer_identities: Vec<_> = self
             .config
             .auto_connect_peers()
-            .filter_map(|peer| PeerIdentity::from_npub(&peer.npub).ok())
+            .filter_map(|peer| self.configured_or_parsed_peer_identity(&peer.npub).ok())
             .collect();
 
         let mut warmed = 0;

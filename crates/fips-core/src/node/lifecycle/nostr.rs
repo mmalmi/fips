@@ -446,7 +446,7 @@ impl Node {
                 // connection` → `try_peer_addresses`) then refetches
                 // the advert and dials it — no behavioral change
                 // beyond schedule timing.
-                if let Ok(identity) = PeerIdentity::from_npub(&npub) {
+                if let Ok(identity) = self.configured_or_parsed_peer_identity(&npub) {
                     let configured_addr = *identity.node_addr();
                     if bootstrap.cooldown_until_peer(identity, now_ms).is_some() {
                         skipped_cooldown = skipped_cooldown.saturating_add(1);

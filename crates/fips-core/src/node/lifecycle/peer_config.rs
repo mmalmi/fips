@@ -22,12 +22,12 @@ impl Node {
             HashMap::with_capacity(new_peers.len());
         let mut new_order = Vec::with_capacity(new_peers.len());
         for peer in new_peers {
-            let identity = match PeerIdentity::from_npub(&peer.npub) {
+            let identity = match self.configured_or_parsed_peer_identity(&peer.npub) {
                 Ok(id) => id,
                 Err(e) => {
                     return Err(crate::node::NodeError::InvalidPeerNpub {
                         npub: peer.npub.clone(),
-                        reason: e.to_string(),
+                        reason: e,
                     });
                 }
             };
@@ -46,7 +46,7 @@ impl Node {
             .peers()
             .iter()
             .filter_map(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
+                self.configured_or_parsed_peer_identity(&pc.npub)
                     .ok()
                     .map(|id| (*id.node_addr(), pc.clone()))
             })
@@ -132,7 +132,7 @@ impl Node {
 
         for peer_config in added_configs {
             outcome.added += 1;
-            let Ok(identity) = PeerIdentity::from_npub(&peer_config.npub) else {
+            let Ok(identity) = self.configured_or_parsed_peer_identity(&peer_config.npub) else {
                 continue;
             };
             let name = peer_config
@@ -171,9 +171,7 @@ impl Node {
                     error = %e,
                     "Failed to initiate connection for newly added peer"
                 );
-                if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
-                    self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
-                }
+                self.schedule_retry_after_error(*identity.node_addr(), Self::now_ms(), &e);
                 if matches!(e, crate::node::NodeError::NoTransportForType(_))
                     && let Some(bootstrap) = self.nostr_discovery.clone()
                 {
@@ -185,7 +183,8 @@ impl Node {
         }
 
         for peer_config in auto_connect_refresh_configs {
-            let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) else {
+            let Ok(peer_identity) = self.configured_or_parsed_peer_identity(&peer_config.npub)
+            else {
                 continue;
             };
             let node_addr = *peer_identity.node_addr();
@@ -261,22 +260,14 @@ impl Node {
         let now_ms = Self::now_ms();
 
         for npub in npubs {
-            let identity =
-                PeerIdentity::from_npub(&npub).map_err(|e| NodeError::InvalidPeerNpub {
+            let identity = self
+                .configured_or_parsed_peer_identity(&npub)
+                .map_err(|e| NodeError::InvalidPeerNpub {
                     npub: npub.clone(),
-                    reason: e.to_string(),
+                    reason: e,
                 })?;
             let node_addr = *identity.node_addr();
-            let Some(peer_config) = self
-                .config
-                .auto_connect_peers()
-                .find(|pc| {
-                    PeerIdentity::from_npub(&pc.npub)
-                        .map(|id| *id.node_addr() == node_addr)
-                        .unwrap_or(false)
-                })
-                .cloned()
-            else {
+            let Some(peer_config) = self.configured_auto_connect_peer_config(&node_addr) else {
                 debug!(
                     peer = %identity.short_npub(),
                     "Skipping peer path refresh for peer not in auto-connect config"
@@ -325,7 +316,7 @@ impl Node {
             .peers()
             .iter()
             .filter_map(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
+                self.configured_or_parsed_peer_identity(&pc.npub)
                     .ok()
                     .map(|id| (id, pc.alias.clone()))
             })
@@ -354,7 +345,7 @@ impl Node {
         );
 
         for peer_config in peer_configs {
-            let peer_identity = match PeerIdentity::from_npub(&peer_config.npub) {
+            let peer_identity = match self.configured_or_parsed_peer_identity(&peer_config.npub) {
                 Ok(identity) => identity,
                 Err(_) => continue,
             };
@@ -382,9 +373,7 @@ impl Node {
                 // Schedule a retry so transient address-resolution failures
                 // (e.g. cached endpoints stale, NAT rebinds, all addresses
                 // currently unreachable) recover without a daemon restart.
-                if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
-                    self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
-                }
+                self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
                 // No-transport failures most often mean the cached overlay
                 // advert is pointing at a dead post-NAT-rebind address. The
                 // advert cache is read-only inside fetch_advert, so retries
@@ -503,10 +492,11 @@ impl Node {
         peer_config: &crate::config::PeerConfig,
         allow_same_path_refresh: bool,
     ) -> Result<bool, NodeError> {
-        let peer_identity =
-            PeerIdentity::from_npub(&peer_config.npub).map_err(|e| NodeError::InvalidPeerNpub {
+        let peer_identity = self
+            .configured_or_parsed_peer_identity(&peer_config.npub)
+            .map_err(|e| NodeError::InvalidPeerNpub {
                 npub: peer_config.npub.clone(),
-                reason: e.to_string(),
+                reason: e,
             })?;
         let peer_node_addr = *peer_identity.node_addr();
 
@@ -532,11 +522,11 @@ impl Node {
         &mut self,
         peer_config: &crate::config::PeerConfig,
     ) -> Result<(), NodeError> {
-        // Parse the peer's npub to get their identity
-        let peer_identity =
-            PeerIdentity::from_npub(&peer_config.npub).map_err(|e| NodeError::InvalidPeerNpub {
+        let peer_identity = self
+            .configured_or_parsed_peer_identity(&peer_config.npub)
+            .map_err(|e| NodeError::InvalidPeerNpub {
                 npub: peer_config.npub.clone(),
-                reason: e.to_string(),
+                reason: e,
             })?;
 
         let peer_node_addr = *peer_identity.node_addr();

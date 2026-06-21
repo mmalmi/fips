@@ -5,7 +5,6 @@
 //! (not PeerConnection) because each retry creates a fresh connection.
 
 use super::{Node, NodeError};
-use crate::PeerIdentity;
 use crate::config::PeerConfig;
 use crate::identity::NodeAddr;
 use std::collections::HashMap;
@@ -332,16 +331,7 @@ impl Node {
             .retry_pending
             .get(&node_addr)
             .map(|state| state.peer_config.clone())
-            .or_else(|| {
-                self.config
-                    .auto_connect_peers()
-                    .find(|pc| {
-                        PeerIdentity::from_npub(&pc.npub)
-                            .map(|id| *id.node_addr() == node_addr)
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-            });
+            .or_else(|| self.configured_auto_connect_peer_config(&node_addr));
 
         if self.peers.contains_key(&node_addr) {
             let Some(pc) = peer_config.as_ref() else {
@@ -401,16 +391,7 @@ impl Node {
     /// exponential backoff accumulates across repeated link-dead events instead
     /// of resetting to the base interval on every peer removal.
     pub(super) fn schedule_reconnect(&mut self, node_addr: NodeAddr, now_ms: u64) {
-        // Find peer in auto-connect config
-        let peer_config = self
-            .config
-            .auto_connect_peers()
-            .find(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
-                    .map(|id| *id.node_addr() == node_addr)
-                    .unwrap_or(false)
-            })
-            .cloned();
+        let peer_config = self.configured_auto_connect_peer_config(&node_addr);
 
         let Some(pc) = peer_config else {
             return; // Not an auto-connect peer, no reconnect
@@ -513,16 +494,7 @@ impl Node {
             .retry_pending
             .get(&node_addr)
             .map(|state| state.peer_config.clone())
-            .or_else(|| {
-                self.config
-                    .auto_connect_peers()
-                    .find(|pc| {
-                        PeerIdentity::from_npub(&pc.npub)
-                            .map(|id| *id.node_addr() == node_addr)
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-            });
+            .or_else(|| self.configured_auto_connect_peer_config(&node_addr));
 
         let Some(peer_config) = peer_config else {
             return;
@@ -599,15 +571,12 @@ impl Node {
         now_ms: u64,
     ) {
         let peer = self
-            .config
-            .auto_connect_peers()
-            .filter_map(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
+            .configured_auto_connect_peer_config(node_addr)
+            .and_then(|pc| {
+                self.configured_or_parsed_peer_identity(&pc.npub)
                     .ok()
                     .map(|identity| (pc, identity))
-            })
-            .find(|(_, identity)| identity.node_addr() == node_addr)
-            .map(|(pc, identity)| (pc.clone(), identity));
+            });
         let Some((peer_config, peer_identity)) = peer else {
             return;
         };
