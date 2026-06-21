@@ -848,48 +848,36 @@ impl DecryptWorkerShard {
                 );
                 return;
             }
-            if state.can_complete_ordered_fsp_open_ready_batch(&completions) {
-                let drain = state.complete_ordered_fsp_open_ready_batch(completions, |output| {
+            for completion in completions {
+                let FspAeadCompletion {
+                    source_addr: _,
+                    receive_order_id: _,
+                    ticket,
+                    source: _,
+                    result,
+                    completed_at: _,
+                } = completion;
+                let drain = match state.complete_ordered_fsp_open(ticket, result, |output| {
                     if let Some(output) =
                         Self::output_for_fsp_ready_completion(&direct_delivery_sink, output)
                     {
                         outputs.push(output);
                     }
-                });
+                }) {
+                    Ok(drain) => drain,
+                    Err(error) => {
+                        record_fsp_aead_completion_order_error(&error);
+                        debug!(
+                            worker = idx,
+                            ?error,
+                            %source_addr,
+                            "dropping invalid ordered FSP AEAD completion"
+                        );
+                        continue;
+                    }
+                };
                 debug_assert_eq!(drain.ready, drain.accounted_ready());
                 total_drain.add(drain);
-            } else {
-                for completion in completions {
-                    let FspAeadCompletion {
-                        source_addr: _,
-                        receive_order_id: _,
-                        ticket,
-                        source: _,
-                        result,
-                        completed_at: _,
-                    } = completion;
-                    let drain = match state.complete_ordered_fsp_open(ticket, result, |output| {
-                        if let Some(output) =
-                            Self::output_for_fsp_ready_completion(&direct_delivery_sink, output)
-                        {
-                            outputs.push(output);
-                        }
-                    }) {
-                        Ok(drain) => drain,
-                        Err(error) => {
-                            record_fsp_aead_completion_order_error(&error);
-                            debug!(
-                                worker = idx,
-                                ?error,
-                                %source_addr,
-                                "dropping invalid ordered FSP AEAD completion"
-                            );
-                            continue;
-                        }
-                    };
-                    debug_assert_eq!(drain.ready, drain.accounted_ready());
-                    total_drain.add(drain);
-                }
             }
             next_ready = state.fsp_receive_order_next_ready();
         }

@@ -17,11 +17,6 @@
             ticket: FspReceiveTicket,
             completion: FspOrderedCompletion,
         ) -> Result<FspOrderedDrainWithOutputs, OrderedCompletionError>;
-
-        fn complete_ordered_fsp_open_ready_batch_for_test(
-            &mut self,
-            completions: Vec<FspAeadCompletion>,
-        ) -> FspOrderedDrainWithOutputs;
     }
 
     impl OwnedFspSessionStateTestExt for OwnedFspSessionState {
@@ -34,16 +29,6 @@
             let drain =
                 self.complete_ordered_fsp_open(ticket, completion, |output| outputs.push(output))?;
             Ok(FspOrderedDrainWithOutputs { drain, outputs })
-        }
-
-        fn complete_ordered_fsp_open_ready_batch_for_test(
-            &mut self,
-            completions: Vec<FspAeadCompletion>,
-        ) -> FspOrderedDrainWithOutputs {
-            let mut outputs = Vec::new();
-            let drain = self
-                .complete_ordered_fsp_open_ready_batch(completions, |output| outputs.push(output));
-            FspOrderedDrainWithOutputs { drain, outputs }
         }
     }
 
@@ -989,122 +974,6 @@
                 panic!("recoverable AEAD miss must not authenticate an FSP frame")
             }
         }
-    }
-
-    #[test]
-    fn fsp_ready_completion_batch_fast_path_advances_contiguous_window() {
-        let local = crate::Identity::generate();
-        let source = crate::Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
-        let source_addr = *source.node_addr();
-        let (_fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
-        let snapshot = crate::node::session::FspRecvSessionSnapshot {
-            source_peer,
-            current_k_bit: false,
-            current: crate::node::session::FspRecvEpochSnapshot {
-                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
-                replay: fsp_receiver.recv_replay_snapshot_owned(),
-            },
-            pending: None,
-            previous: None,
-        };
-        let mut state = OwnedFspSessionState::from(snapshot);
-        let receive_order_id = state.fsp_receive_order_id();
-        let tickets: Vec<_> = (0..3)
-            .map(|expected| {
-                let ticket = state
-                    .issue_fsp_receive_ticket()
-                    .expect("receive window should admit test tickets");
-                assert_eq!(ticket.sequence, expected);
-                ticket
-            })
-            .collect();
-        let completions: Vec<_> = tickets
-            .into_iter()
-            .map(|ticket| FspAeadCompletion {
-                source_addr,
-                receive_order_id,
-                ticket,
-                source: FspAeadCompletionSource::WorkerOpen,
-                result: FspOrderedCompletion::Dropped {
-                    source: FspAeadCompletionSource::WorkerOpen,
-                },
-                completed_at: None,
-            })
-            .collect();
-
-        assert!(
-            state.can_complete_ordered_fsp_open_ready_batch(&completions),
-            "contiguous ready tickets with no pending gap should take the batch fast path"
-        );
-        let drain = state.complete_ordered_fsp_open_ready_batch_for_test(completions);
-
-        assert_eq!(state.fsp_receive_order_next_ready(), 3);
-        assert_eq!(drain.ready, 3);
-        assert_eq!(drain.accepted, 0);
-        assert_eq!(drain.aead_failures, 0);
-        assert_eq!(drain.epoch_mismatches, 0);
-        assert_eq!(drain.replay_drops, 0);
-        assert_eq!(drain.dropped, 3);
-        assert!(drain.outputs.is_empty());
-    }
-
-    #[test]
-    fn fsp_ready_completion_batch_fast_path_declines_pending_gap() {
-        let local = crate::Identity::generate();
-        let source = crate::Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
-        let source_addr = *source.node_addr();
-        let (_fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
-        let snapshot = crate::node::session::FspRecvSessionSnapshot {
-            source_peer,
-            current_k_bit: false,
-            current: crate::node::session::FspRecvEpochSnapshot {
-                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
-                replay: fsp_receiver.recv_replay_snapshot_owned(),
-            },
-            pending: None,
-            previous: None,
-        };
-        let mut state = OwnedFspSessionState::from(snapshot);
-        let receive_order_id = state.fsp_receive_order_id();
-        let first = state
-            .issue_fsp_receive_ticket()
-            .expect("first ticket should fit");
-        let second = state
-            .issue_fsp_receive_ticket()
-            .expect("second ticket should fit");
-        let pending_drain = state
-            .complete_ordered_fsp_open_for_test(
-                second,
-                FspOrderedCompletion::Dropped {
-                    source: FspAeadCompletionSource::WorkerOpen,
-                },
-            )
-            .expect("out-of-order completion should buffer");
-        assert_eq!(pending_drain.ready, 0);
-
-        let completions = vec![FspAeadCompletion {
-            source_addr,
-            receive_order_id,
-            ticket: first,
-            source: FspAeadCompletionSource::WorkerOpen,
-            result: FspOrderedCompletion::Dropped {
-                source: FspAeadCompletionSource::WorkerOpen,
-            },
-            completed_at: None,
-        }];
-        assert!(
-            !state.can_complete_ordered_fsp_open_ready_batch(&completions),
-            "pending gaps must fall back to the checked ordered-buffer path"
-        );
-        let completion = completions.into_iter().next().expect("completion exists");
-        let drain = state
-            .complete_ordered_fsp_open_for_test(completion.ticket, completion.result)
-            .expect("oldest completion should drain itself and the buffered gap");
-        assert_eq!(state.fsp_receive_order_next_ready(), 2);
-        assert_eq!(drain.ready, 2);
-        assert_eq!(drain.dropped, 2);
     }
 
     #[test]
