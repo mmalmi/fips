@@ -54,7 +54,7 @@ fn fallback_drain_plan_stays_bounded_under_return_pressure() {
 fn authenticated_bulk_yields_to_transport_pressure() {
     assert!(authenticated_bulk_preempts_packet_rx(0, 0));
     assert!(
-        authenticated_bulk_preempts_packet_rx(0, PACKET_DRAIN_BUDGET - 1),
+        authenticated_bulk_preempts_packet_rx(0, super::budget::FALLBACK_INTERLEAVE_EVERY - 1),
         "small transport bulk backlog should not strand authenticated delivery until the next packet turn"
     );
     assert!(
@@ -62,8 +62,8 @@ fn authenticated_bulk_yields_to_transport_pressure() {
         "bulk endpoint delivery should not preempt a ready control-sized transport packet"
     );
     assert!(
-        !authenticated_bulk_preempts_packet_rx(0, PACKET_DRAIN_BUDGET),
-        "a full packet-drain turn of transport bulk should cut ahead; packet drains interleave authenticated delivery"
+        !authenticated_bulk_preempts_packet_rx(0, super::budget::FALLBACK_INTERLEAVE_EVERY),
+        "a full interleave interval of transport bulk should cut ahead; packet drains interleave authenticated delivery"
     );
 }
 

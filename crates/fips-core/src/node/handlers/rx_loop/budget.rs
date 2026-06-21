@@ -77,12 +77,12 @@ pub(super) fn fallback_drain_plan() -> FallbackDrainPlan {
 }
 
 /// Let authenticated bulk finish short bursts, but hand the owner back to
-/// raw receive once transport bulk has accumulated a full packet-drain turn.
+/// raw receive once transport bulk has accumulated an interleave interval.
 pub(super) fn authenticated_bulk_preempts_packet_rx(
     transport_priority_packets: usize,
     transport_bulk_packets: usize,
 ) -> bool {
-    transport_priority_packets == 0 && transport_bulk_packets < PACKET_DRAIN_BUDGET
+    transport_priority_packets == 0 && transport_bulk_packets < FALLBACK_INTERLEAVE_EVERY
 }
 
 pub(super) fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
