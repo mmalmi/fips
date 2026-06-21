@@ -129,7 +129,6 @@ fn record_fsp_ordered_drain(drain: &FspOrderedDrain) {
 
 enum FspOpenWorkerPrepareError {
     Ineligible(FspDecryptJob),
-    OwnerCompletionBacklog(FspDecryptJob),
 }
 
 struct DecryptWorkerShard {
@@ -356,10 +355,6 @@ impl DecryptWorkerShard {
                             return;
                         }
                         Err(FspOpenWorkerPrepareError::Ineligible(job)) => job,
-                        Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job)) => {
-                            drop_fsp_owner_handoff_job(job);
-                            return;
-                        }
                     }
                 } else {
                     match self.try_start_fsp_bulk_open_worker(idx, job, plaintext_batch) {
@@ -551,7 +546,7 @@ impl DecryptWorkerShard {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::DecryptFspOpenWorkerCompletionBacklogFallback,
             );
-            return Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job));
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
         let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
@@ -599,10 +594,6 @@ impl DecryptWorkerShard {
         ) {
             Ok(prepared) => prepared,
             Err(FspOpenWorkerPrepareError::Ineligible(job)) => return Err(job),
-            Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job)) => {
-                drop_fsp_owner_handoff_job(job);
-                return Ok(());
-            }
         };
         record_fsp_path_worker_open_bulk();
         match self
