@@ -158,27 +158,16 @@ impl DecryptWorkerPool {
             .unwrap_or_else(|| self.worker_idx_for(session_key))
     }
 
-    fn fsp_open_worker_available_avoiding(&self, avoid_idx: usize) -> bool {
-        self.senders.len() > 1 && avoid_idx < self.senders.len()
-    }
-
     fn worker_idx_for_fsp_open_avoiding(
         &self,
         source_addr: &NodeAddr,
         avoid_idx: usize,
-        ticket_sequence: u64,
     ) -> Option<usize> {
-        if !self.fsp_open_worker_available_avoiding(avoid_idx) {
+        let worker_count = self.senders.len();
+        if worker_count <= 1 || avoid_idx >= worker_count {
             return None;
         }
-        let worker_count = self.senders.len();
-        let opener_count = worker_count - 1;
-        // Keep one dispatch batch coalesced, then rotate later ordered chunks
-        // across sibling openers while the source owner remains the sequencer.
-        let batch_chunk = (ticket_sequence / DECRYPT_WORKER_BULK_BATCH_MAX as u64) as usize;
-        let mut idx = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize)
-            .wrapping_add(batch_chunk)
-            % opener_count;
+        let mut idx = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 1);
         if idx >= avoid_idx {
             idx += 1;
         }
@@ -233,6 +222,10 @@ impl DecryptWorkerPool {
 
     fn dispatch_bulk_job(&self, idx: usize, job: DecryptJob) {
         self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Job(job));
+    }
+
+    fn fsp_bulk_open_worker_enabled(&self) -> bool {
+        self.senders.len() > 1
     }
 
     fn send_fsp_aead_completion_batch(

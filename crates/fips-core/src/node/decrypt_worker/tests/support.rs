@@ -258,7 +258,7 @@
         let source_addr = NodeAddr::from_bytes([0x42; 16]);
         let owner_idx = 0;
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("two-worker pool should have a sibling opener");
         assert_ne!(open_idx, owner_idx);
 
@@ -319,46 +319,13 @@
     }
 
     #[test]
-    fn fsp_open_worker_selection_rotates_by_ticket_batch_chunk() {
-        let (pool, _control, _priority, _bulk, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(3, 4);
-        let source_addr = NodeAddr::from_bytes([0x41; 16]);
-        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
-        let first_open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
-            .expect("three-worker pool should have a sibling opener");
-        assert_ne!(first_open_idx, owner_idx);
-
-        for sequence in 1..DECRYPT_WORKER_BULK_BATCH_MAX as u64 {
-            assert_eq!(
-                pool.worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, sequence),
-                Some(first_open_idx),
-                "one opener batch chunk should stay coalesced"
-            );
-        }
-
-        let second_open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(
-                &source_addr,
-                owner_idx,
-                DECRYPT_WORKER_BULK_BATCH_MAX as u64,
-            )
-            .expect("three-worker pool should have a second sibling opener");
-        assert_ne!(second_open_idx, owner_idx);
-        assert_ne!(
-            second_open_idx, first_open_idx,
-            "the next ticket chunk should rotate to another opener"
-        );
-    }
-
-    #[test]
     fn fsp_open_worker_batch_dispatch_groups_jobs_and_returns_ordered_completion_batch() {
         let (pool, control_receivers, priority_receivers, bulk_receivers, fsp_completion_receivers) =
             test_worker_pool_with_fsp_completion_receivers(2, 4);
         let source_addr = NodeAddr::from_bytes([0x43; 16]);
         let owner_idx = 0;
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("two-worker pool should have a sibling opener");
         assert_ne!(open_idx, owner_idx);
 
@@ -431,7 +398,7 @@
         let source_addr = NodeAddr::from_bytes([0x42; 16]);
         let owner_idx = 0;
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("two-worker pool should have a sibling opener");
         let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
         let mut header_packet = header_bytes.to_vec();
@@ -480,7 +447,7 @@
         let source_addr = NodeAddr::from_bytes([0x4b; 16]);
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("three-worker pool should have a sibling opener");
         let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
         let mut header_packet = header_bytes.to_vec();
@@ -583,7 +550,7 @@
         state.fsp_receive_order_id = shared.receive_order_id;
         state.attach_shared_crypto_session(Arc::clone(&shared));
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("three-worker pool should have a sibling opener");
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
@@ -644,128 +611,6 @@
     }
 
     #[test]
-    fn fsp_owner_bulk_batch_rotates_opener_after_ticket_chunk() {
-        let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
-        let source_peer = test_source_peer();
-        let source_addr = *source_peer.node_addr();
-        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
-        let first_open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
-            .expect("three-worker pool should have a sibling opener");
-        let second_open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(
-                &source_addr,
-                owner_idx,
-                DECRYPT_WORKER_BULK_BATCH_MAX as u64,
-            )
-            .expect("three-worker pool should have a second sibling opener");
-        assert_ne!(first_open_idx, owner_idx);
-        assert_ne!(second_open_idx, owner_idx);
-        assert_ne!(second_open_idx, first_open_idx);
-
-        let cipher = test_chacha_key([0x5d; 32]);
-        let shared = Arc::new(FspSharedCryptoSession::new(
-            owner_idx,
-            12,
-            false,
-            Arc::new(cipher.clone()),
-        ));
-        pool.fsp_aead_sessions
-            .write()
-            .unwrap()
-            .insert(source_addr, Arc::clone(&shared));
-
-        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
-            source_peer,
-            current_k_bit: false,
-            current: crate::node::session::FspRecvEpochSnapshot {
-                cipher,
-                replay: ReplayWindow::new(),
-            },
-            pending: None,
-            previous: None,
-        });
-        state.fsp_receive_order_id = shared.receive_order_id;
-        state.attach_shared_crypto_session(Arc::clone(&shared));
-
-        let mut shard = DecryptWorkerShard::new(pool.clone());
-        shard.register_fsp_session(owner_idx, source_addr, state);
-        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
-        drop(control_tx);
-        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        drop(priority_tx);
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
-        let item = DecryptWorkerBulkItem::FspBatch(
-            (0..=DECRYPT_WORKER_BULK_BATCH_MAX)
-                .map(|_| dummy_bulk_fsp_open_job(source_addr))
-                .collect(),
-        );
-        batch_stats.add_bulk_item(&item);
-
-        let processed = handle_bulk_item(
-            owner_idx,
-            &mut shard,
-            &control_rx,
-            &priority_rx,
-            &fsp_aead_completion_rx,
-            item,
-            &mut plaintext_batch,
-            &mut batch_stats,
-        );
-
-        assert_eq!(processed, DECRYPT_WORKER_BULK_BATCH_MAX + 1);
-        match bulk_receivers[first_open_idx]
-            .try_recv()
-            .expect("first ticket chunk should dispatch one opener batch")
-        {
-            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
-                assert_eq!(jobs.len(), DECRYPT_WORKER_BULK_BATCH_MAX);
-                assert!(
-                    jobs.iter()
-                        .all(|job| job.completion_owner_idx == Some(owner_idx))
-                );
-            }
-            DecryptWorkerBulkItem::FspAeadOpen(_) => {
-                panic!("first ticket chunk should stay coalesced")
-            }
-            DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::Batch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
-        }
-        match bulk_receivers[second_open_idx]
-            .try_recv()
-            .expect("next ticket chunk should dispatch to another opener")
-        {
-            DecryptWorkerBulkItem::FspAeadOpen(job) => {
-                assert_eq!(job.completion_owner_idx, Some(owner_idx));
-            }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => assert_eq!(jobs.len(), 1),
-            DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::Batch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener work"),
-        }
-        for (idx, rx) in bulk_receivers.iter().enumerate() {
-            if idx != first_open_idx && idx != second_open_idx {
-                assert!(rx.is_empty(), "worker {idx} should not receive opener work");
-            }
-        }
-        let published_shared = shard
-            .pool
-            .fsp_aead_session(&source_addr)
-            .expect("registered FSP session should publish shared receive progress");
-        assert_eq!(
-            published_shared.next_ticket.load(Ordering::Relaxed),
-            (DECRYPT_WORKER_BULK_BATCH_MAX + 1) as u64,
-            "owner batch should issue one receive-order ticket per opener job"
-        );
-    }
-
-    #[test]
     fn fsp_local_open_worker_uses_ticket_window_when_completions_wait() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
@@ -803,7 +648,7 @@
         state.fsp_receive_order_id = shared.receive_order_id;
         state.attach_shared_crypto_session(Arc::clone(&shared));
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("three-worker pool should have a sibling opener");
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
