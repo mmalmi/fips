@@ -621,7 +621,7 @@
     }
 
     #[test]
-    fn fsp_local_open_worker_yields_when_owner_completion_backlogged() {
+    fn fsp_local_open_worker_sheds_bulk_when_owner_completion_backlogged() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
         let source_peer = test_source_peer();
@@ -683,7 +683,7 @@
         );
         assert!(
             bulk_receivers.iter().all(|rx| rx.is_empty()),
-            "backlogged same-owner bulk should stay local, not enqueue alternate worker work"
+            "backlogged same-owner bulk should not enqueue alternate worker work"
         );
         let published_shared = shard
             .pool
@@ -692,8 +692,8 @@
         assert_eq!(published_shared.receive_order_id, shared.receive_order_id);
         assert_eq!(
             published_shared.next_ticket.load(Ordering::Relaxed),
-            1,
-            "owner-local ordered path should issue the shared receive ticket"
+            0,
+            "backlogged owner completion lane should shed bulk before issuing a receive ticket"
         );
     }
 
