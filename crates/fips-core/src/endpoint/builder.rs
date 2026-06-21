@@ -11,7 +11,7 @@ pub struct FipsEndpointBuilder {
     packet_channel_capacity: usize,
 }
 
-const DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 4096;
+const DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 8192;
 const MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 65_536;
 
 impl Default for FipsEndpointBuilder {
@@ -103,6 +103,7 @@ impl FipsEndpointBuilder {
             config.dns.enabled = false;
             config.node.system_files_enabled = false;
         }
+        config.node.buffers.packet_channel = self.packet_channel_capacity;
         if let Some(scope) = self.discovery_scope.as_deref() {
             config.node.discovery.lan.scope = Some(scope.to_string());
             config.node.discovery.local.enabled = true;
@@ -214,5 +215,13 @@ mod tests {
             ),
             MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY
         );
+    }
+
+    #[test]
+    fn endpoint_packet_channel_capacity_applies_to_transport_node_buffer() {
+        let config = FipsEndpointBuilder::default()
+            .packet_channel_capacity(16_384)
+            .prepared_config();
+        assert_eq!(config.node.buffers.packet_channel, 16_384);
     }
 }
