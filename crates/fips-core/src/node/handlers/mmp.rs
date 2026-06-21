@@ -958,6 +958,39 @@ impl Node {
             }
         }
 
+        let unreturned_direct_payload_peers: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(node_addr, peer)| {
+                if !peer.is_healthy() || !peer.can_send() {
+                    return None;
+                }
+                if heartbeat_plan
+                    .dead_peers
+                    .iter()
+                    .chain(heartbeat_plan.deferred_dead_peers.iter())
+                    .any(|dead_peer| dead_peer.node_addr == *node_addr)
+                {
+                    return None;
+                }
+                self.session_direct_path_exclusive_trust_expired(node_addr, now_ms)
+                    .then_some(*node_addr)
+            })
+            .collect();
+
+        for node_addr in unreturned_direct_payload_peers {
+            let selected_next_hop = self.find_next_hop(&node_addr).map(|peer| *peer.node_addr());
+            if selected_next_hop.is_some_and(|next_hop| next_hop != node_addr) {
+                continue;
+            }
+
+            debug!(
+                peer = %self.peer_display_name(&node_addr),
+                "Warming fallback lookup for direct path with fresh control but unreturned endpoint data"
+            );
+            self.maybe_initiate_lookup(&node_addr).await;
+        }
+
         for dead_peer in &heartbeat_plan.dead_peers {
             warn!(
                 peer = %self.peer_display_name(&dead_peer.node_addr),
