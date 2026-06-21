@@ -463,48 +463,6 @@ fn packet_rx_priority_ready_includes_pending_batch_tail() {
     assert_eq!(rx.priority_ready_packets(), 0);
 }
 
-#[test]
-fn packet_rx_ready_includes_pending_bulk_batch_tail() {
-    let (tx, mut rx) = packet_channel(10);
-    let addr = TransportAddr::from_string("test");
-
-    tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr,
-            vec![0xcc; PRIORITY_PACKET_MAX_LEN + 3],
-        ),
-    ])
-    .expect("bulk batch send should succeed");
-
-    assert_eq!(rx.ready_packets(), 3);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0xaa);
-    assert_eq!(
-        tx.bulk_queued_packets(),
-        0,
-        "sender-side bulk hint should clear once PacketRx owns the batch"
-    );
-    assert_eq!(
-        rx.ready_packets(),
-        2,
-        "rx-loop scheduling must still see the bulk batch tail"
-    );
-    assert_eq!(rx.try_recv().unwrap().data[0], 0xbb);
-    assert_eq!(rx.ready_packets(), 1);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0xcc);
-    assert_eq!(rx.ready_packets(), 0);
-}
-
 #[tokio::test]
 async fn packet_channel_priority_overtakes_pending_bulk_batch_tail() {
     let (tx, mut rx) = packet_channel(10);

@@ -51,11 +51,11 @@ fn fallback_drain_plan_stays_bounded_under_return_pressure() {
 }
 
 #[test]
-fn authenticated_bulk_yields_to_any_ready_transport_packet() {
+fn authenticated_bulk_yields_to_ready_transport_priority() {
     assert!(authenticated_bulk_preempts_packet_rx(0));
     assert!(
         !authenticated_bulk_preempts_packet_rx(1),
-        "authenticated bulk output should not preempt ready transport receive"
+        "bulk endpoint delivery should not preempt a ready control-sized transport packet"
     );
 }
 

@@ -243,13 +243,8 @@ impl Node {
                         );
                     }
                 }
-                // Authenticated bulk output has reserved progress inside
-                // packet drains; let any ready transport packet take the next
-                // top-level turn so the bounded transport bulk lane does not
-                // overflow while rx_loop is busy applying already-decrypted
-                // output.
                 Some(event) = decrypt_fallback_rx.authenticated_bulk.recv(),
-                    if authenticated_bulk_preempts_packet_rx(packet_rx.ready_packets()) =>
+                    if authenticated_bulk_preempts_packet_rx(packet_rx.priority_ready_packets()) =>
                 {
                     let fallback_drained = self.drain_decrypt_fallback(
                         &mut decrypt_fallback_rx,
