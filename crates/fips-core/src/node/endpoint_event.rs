@@ -684,11 +684,10 @@ impl EndpointEventSender {
             );
         }
 
-        let previous = self.queued_messages.fetch_add(count, Relaxed);
-        let queued = previous.saturating_add(count);
+        self.queued_messages.fetch_add(count, Relaxed);
         match self.bulk.try_send(event) {
             Ok(()) => {
-                self.note_send_success(previous, queued);
+                self.note_bulk_send_success();
                 Ok(())
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
@@ -747,6 +746,14 @@ impl EndpointEventSender {
         {
             crate::perf_profile::record_event(crate::perf_profile::Event::EndpointEventBacklogHigh);
         }
+        self.ready.notify();
+    }
+
+    fn note_bulk_send_success(&self) {
+        // Bulk endpoint pressure has its own high-water/drop telemetry. Keep
+        // the aggregate backlog-high event reserved for priority/general
+        // pressure so saturated bulk output does not look like control
+        // starvation in strict gates.
         self.ready.notify();
     }
 
