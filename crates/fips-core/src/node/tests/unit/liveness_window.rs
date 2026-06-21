@@ -517,7 +517,7 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
 
     let mut config = Config::new();
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
-    config.peers.push(peer_config);
+    config.peers.push(peer_config.clone());
     let link_session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
     let endpoint_session = make_test_fmp_session(&local_identity, &peer_identity, [3; 8], [4; 8]);
     let mut node = Node::with_identity(local_identity, config).expect("node");
@@ -567,6 +567,11 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(peer_addr, session);
 
+    let mut retry = super::super::retry::RetryState::new(peer_config);
+    retry.reconnect = true;
+    retry.retry_after_ms = now_ms;
+    node.retry_pending.insert(peer_addr, retry);
+
     node.check_link_heartbeats().await;
 
     assert!(
@@ -576,6 +581,12 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
     assert!(
         node.pending_lookups.contains_key(&peer_addr),
         "active endpoint sends without authenticated endpoint return should warm fallback even when control is fresh"
+    );
+    let fallback = node.find_next_hop(&peer_addr).expect("fallback route");
+    assert_eq!(
+        fallback.node_addr(),
+        &transit_addr,
+        "direct-probe fallback warming should seed a learned fallback route before the next payload burst"
     );
 }
 

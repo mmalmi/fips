@@ -988,7 +988,12 @@ impl Node {
                 peer = %self.peer_display_name(&node_addr),
                 "Warming fallback lookup for direct path with fresh control but unreturned endpoint data"
             );
-            self.maybe_initiate_lookup(&node_addr).await;
+            if self.retry_pending.contains_key(&node_addr) {
+                self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
+                    .await;
+            } else {
+                self.maybe_initiate_lookup(&node_addr).await;
+            }
         }
 
         for dead_peer in &heartbeat_plan.dead_peers {
