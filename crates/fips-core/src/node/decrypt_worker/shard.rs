@@ -616,8 +616,6 @@ impl DecryptWorkerShard {
         record_fsp_open_pool_bulk_drop(jobs.len());
         let mut current_owner_idx = None;
         let mut current_local = false;
-        let mut current_source_addr = None;
-        let mut current_receive_order_id = None;
         let mut current_batch: Option<FspAeadCompletionBatch> = None;
         let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
 
@@ -630,10 +628,10 @@ impl DecryptWorkerShard {
             job.mark_returned_completion();
             let same_batch = current_batch
                 .as_ref()
-                .is_some_and(|batch| batch.len() < completion_batch_max)
+                .is_some_and(|batch| {
+                    batch.can_push(source_addr, receive_order_id, completion_batch_max)
+                })
                 && current_local == local_completion
-                && current_source_addr == Some(source_addr)
-                && current_receive_order_id == Some(receive_order_id)
                 && (local_completion || current_owner_idx == completion_owner_idx);
 
             if !same_batch {
@@ -646,8 +644,6 @@ impl DecryptWorkerShard {
                 );
                 current_local = local_completion;
                 current_owner_idx = completion_owner_idx.filter(|_| !local_completion);
-                current_source_addr = Some(source_addr);
-                current_receive_order_id = Some(receive_order_id);
                 current_batch = Some(FspAeadCompletionBatch::one(job.into_dropped_completion()));
                 continue;
             }
@@ -775,26 +771,30 @@ impl DecryptWorkerShard {
         completions: FspAeadCompletionBatch,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        let Some((source_addr, receive_order_id)) = completions.common_source_order() else {
-            completions.for_each(|completion| {
-                self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
-            });
-            return;
-        };
-        let completions = completions.into_vec();
-        if completions.len() <= 1 {
-            for completion in completions {
+        match completions {
+            FspAeadCompletionBatch::One(completion) => {
                 self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
             }
-            return;
+            FspAeadCompletionBatch::Many {
+                source_addr,
+                receive_order_id,
+                completions,
+            } => {
+                if completions.len() <= 1 {
+                    for completion in completions {
+                        self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+                    }
+                    return;
+                }
+                self.handle_fsp_aead_completion_same_source_batch(
+                    idx,
+                    source_addr,
+                    receive_order_id,
+                    completions,
+                    plaintext_batch,
+                );
+            }
         }
-        self.handle_fsp_aead_completion_same_source_batch(
-            idx,
-            source_addr,
-            receive_order_id,
-            completions,
-            plaintext_batch,
-        );
     }
 
     fn handle_fsp_aead_completion_same_source_batch(

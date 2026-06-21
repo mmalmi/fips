@@ -437,8 +437,6 @@ fn complete_fsp_aead_open_jobs(
 ) {
     let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
     let mut current_owner_idx = None;
-    let mut current_source_addr = None;
-    let mut current_receive_order_id = None;
     let mut current_batch: Option<FspAeadCompletionBatch> = None;
 
     for mut job in jobs {
@@ -448,11 +446,11 @@ fn complete_fsp_aead_open_jobs(
         let source_addr = job.source_addr;
         let receive_order_id = job.receive_order_id;
         let same_batch = current_owner_idx == Some(owner_idx)
-            && current_source_addr == Some(source_addr)
-            && current_receive_order_id == Some(receive_order_id)
             && current_batch
                 .as_ref()
-                .is_some_and(|batch| batch.len() < completion_batch_max);
+                .is_some_and(|batch| {
+                    batch.can_push(source_addr, receive_order_id, completion_batch_max)
+                });
 
         if !same_batch {
             if let (Some(owner_idx), Some(batch)) =
@@ -461,8 +459,6 @@ fn complete_fsp_aead_open_jobs(
                 send_fsp_aead_open_completion_batch(idx, pool, owner_idx, batch);
             }
             current_owner_idx = Some(owner_idx);
-            current_source_addr = Some(source_addr);
-            current_receive_order_id = Some(receive_order_id);
             current_batch = Some(FspAeadCompletionBatch::one(job.into_completion()));
             continue;
         }

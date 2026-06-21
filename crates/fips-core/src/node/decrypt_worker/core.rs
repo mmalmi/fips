@@ -1029,7 +1029,11 @@ struct FspAeadCompletion {
 #[allow(clippy::large_enum_variant)]
 enum FspAeadCompletionBatch {
     One(FspAeadCompletion),
-    Many(Vec<FspAeadCompletion>),
+    Many {
+        source_addr: NodeAddr,
+        receive_order_id: u64,
+        completions: Vec<FspAeadCompletion>,
+    },
 }
 
 impl FspAeadCompletionBatch {
@@ -1037,68 +1041,56 @@ impl FspAeadCompletionBatch {
         Self::One(completion)
     }
 
-    fn common_source_order(&self) -> Option<(NodeAddr, u64)> {
-        let first = match self {
-            Self::One(completion) => completion,
-            Self::Many(completions) => completions.first()?,
-        };
-        let source_addr = first.source_addr;
-        let receive_order_id = first.receive_order_id;
-        let all_same = match self {
-            Self::One(_) => true,
-            Self::Many(completions) => completions.iter().all(|completion| {
-                completion.source_addr == source_addr
-                    && completion.receive_order_id == receive_order_id
-            }),
-        };
-        all_same.then_some((source_addr, receive_order_id))
+    fn source_order(&self) -> (NodeAddr, u64) {
+        match self {
+            Self::One(completion) => (completion.source_addr, completion.receive_order_id),
+            Self::Many {
+                source_addr,
+                receive_order_id,
+                ..
+            } => (*source_addr, *receive_order_id),
+        }
+    }
+
+    fn can_push(&self, source_addr: NodeAddr, receive_order_id: u64, max_len: usize) -> bool {
+        self.len() < max_len && self.source_order() == (source_addr, receive_order_id)
     }
 
     fn push(&mut self, completion: FspAeadCompletion) {
+        let (source_addr, receive_order_id) = self.source_order();
+        debug_assert_eq!(completion.source_addr, source_addr);
+        debug_assert_eq!(completion.receive_order_id, receive_order_id);
         match self {
             Self::One(_) => {
                 let Self::One(existing) = std::mem::replace(
                     self,
-                    Self::Many(Vec::with_capacity(
-                        DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
-                    )),
+                    Self::Many {
+                        source_addr,
+                        receive_order_id,
+                        completions: Vec::with_capacity(
+                            DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
+                        ),
+                    },
                 ) else {
                     unreachable!("replaced One with Many")
                 };
-                let Self::Many(completions) = self else {
+                let Self::Many { completions, .. } = self else {
                     unreachable!("batch was replaced with Many")
                 };
                 completions.push(existing);
                 completions.push(completion);
             }
-            Self::Many(completions) => completions.push(completion),
+            Self::Many { completions, .. } => completions.push(completion),
         }
     }
 
     fn len(&self) -> usize {
         match self {
             Self::One(_) => 1,
-            Self::Many(completions) => completions.len(),
+            Self::Many { completions, .. } => completions.len(),
         }
     }
 
-    fn into_vec(self) -> Vec<FspAeadCompletion> {
-        match self {
-            Self::One(completion) => vec![completion],
-            Self::Many(completions) => completions,
-        }
-    }
-
-    fn for_each(self, mut on_completion: impl FnMut(FspAeadCompletion)) {
-        match self {
-            Self::One(completion) => on_completion(completion),
-            Self::Many(completions) => {
-                for completion in completions {
-                    on_completion(completion);
-                }
-            }
-        }
-    }
 }
 
 impl FspAeadOpenJob {
