@@ -448,6 +448,10 @@ impl OwnedFspSessionState {
         self.fsp_shared_crypto = Some(shared);
     }
 
+    fn shared_crypto_session_ref(&self) -> Option<&Arc<FspSharedCryptoSession>> {
+        self.fsp_shared_crypto.as_ref()
+    }
+
     fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
         let progress = previous.receive_progress();
         self.fsp_receive_order_id = previous.fsp_receive_order_id;
