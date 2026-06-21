@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.74] - 2026-06-21
+
 ### Fixed
 
 - Dropped established Nostr traversal handoffs from non-configured peers before
@@ -18,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored the 30s/three-heartbeat traversal/recent-endpoint liveness floor so
   short-heartbeat products do not demote mobile/NAT paths at the 5s
   local-route-failure floor.
+- Kept macOS FMP sends in reserved counter order across priority and bulk
+  traffic, preventing priority sends from leapfrogging encrypted peer streams.
+- Kept degraded stale direct paths and cached endpoint bulk leases from carrying
+  endpoint payload after direct-path trust changes.
+- Treated missing session route metadata as direct-path quality evidence so
+  receiver-report loss can still demote bad direct paths.
+- Bumped `fips-endpoint` to 0.3.49 so app-facing consumers pick up the
+  `fips-core` 0.3.74 direct-path reliability fixes.
 
 ## [0.3.73] - 2026-06-20
 
