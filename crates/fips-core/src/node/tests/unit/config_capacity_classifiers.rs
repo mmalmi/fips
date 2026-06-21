@@ -151,15 +151,38 @@ fn overlay_adverts_share_priority_with_stamped_restart_hints() {
 }
 
 #[test]
-fn overlay_adverts_stay_below_operator_static_hints() {
+fn overlay_adverts_stay_below_high_priority_operator_static_hints() {
     let operator_static = crate::config::PeerAddress::with_priority("udp", "192.0.2.10:51820", 10);
     let restart_hint = crate::config::PeerAddress::with_priority("udp", "203.0.113.10:51820", 100)
         .with_seen_at_ms(1_700_000_000_000);
 
     assert_eq!(
         Node::overlay_fallback_priority(&[operator_static, restart_hint]),
-        101,
-        "operator-provided static paths should remain preferred over overlay adverts"
+        11,
+        "explicitly high-priority operator paths should remain preferred over overlay adverts"
+    );
+}
+
+#[test]
+fn overlay_adverts_share_priority_with_default_static_hints() {
+    let default_static = crate::config::PeerAddress::new("udp", "198.51.100.20:51820");
+
+    assert_eq!(
+        Node::overlay_fallback_priority(&[default_static]),
+        100,
+        "ordinary static address hints must not outrank fresh overlay adverts"
+    );
+}
+
+#[test]
+fn overlay_adverts_outrank_lower_priority_static_hints() {
+    let lower_priority_static =
+        crate::config::PeerAddress::with_priority("udp", "192.0.2.10:51820", 200);
+
+    assert_eq!(
+        Node::overlay_fallback_priority(&[lower_priority_static]),
+        100,
+        "lower-priority static address hints should remain fallback candidates"
     );
 }
 

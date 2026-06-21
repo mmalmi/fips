@@ -79,21 +79,25 @@ impl Node {
     }
 
     pub(in crate::node) fn overlay_fallback_priority(existing: &[PeerAddress]) -> u8 {
-        let has_operator_static = existing.iter().any(|addr| addr.seen_at_ms.is_none());
-        if has_operator_static {
-            return existing
-                .iter()
-                .map(|addr| addr.priority)
-                .max()
-                .unwrap_or(100)
-                .saturating_add(1);
-        }
+        const DEFAULT_ADDRESS_PRIORITY: u8 = 100;
 
-        existing
+        let best_existing = existing
             .iter()
             .map(|addr| addr.priority)
             .min()
-            .unwrap_or(100)
+            .unwrap_or(DEFAULT_ADDRESS_PRIORITY);
+
+        if let Some(best_static) = existing
+            .iter()
+            .filter(|addr| addr.seen_at_ms.is_none())
+            .map(|addr| addr.priority)
+            .min()
+            .filter(|priority| *priority < DEFAULT_ADDRESS_PRIORITY)
+        {
+            return best_static.saturating_add(1);
+        }
+
+        best_existing.min(DEFAULT_ADDRESS_PRIORITY)
     }
 
     pub(in crate::node) async fn request_nostr_bootstrap(&self, peer_config: &PeerConfig) -> bool {
@@ -180,6 +184,7 @@ impl Node {
         let mut local_route_error = None;
         let peer_node_addr = *peer_identity.node_addr();
         let mut concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
+        let mut started_candidate_this_pass = false;
 
         for addr in addresses {
             if addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat") {
@@ -271,6 +276,7 @@ impl Node {
             }
 
             if concrete_budget == 0
+                && !started_candidate_this_pass
                 && self.reclaim_lower_priority_inflight_candidate_for_peer(&peer_node_addr, addr)
             {
                 concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
@@ -291,6 +297,7 @@ impl Node {
             {
                 Ok(()) => {
                     attempted = true;
+                    started_candidate_this_pass = true;
                     concrete_budget = concrete_budget.saturating_sub(1);
                 }
                 Err(e @ NodeError::AccessDenied(_)) => return Err(e),
