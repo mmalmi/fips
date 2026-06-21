@@ -21,6 +21,17 @@ mod pending_queue_tests {
         NodeAddr::from_bytes(bytes)
     }
 
+    fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
+        let tcp_len = 20 + tcp_payload_len;
+        let mut packet = vec![0u8; 40 + tcp_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
+        packet[6] = 6;
+        packet[40 + 12] = 5 << 4;
+        packet[40 + 13] = flags;
+        packet
+    }
+
     #[test]
     fn pending_session_queues_drop_oldest_per_destination() {
         let mut node = make_node();
@@ -68,6 +79,84 @@ mod pending_queue_tests {
     }
 
     #[test]
+    fn pending_endpoint_data_queue_preserves_priority_under_pressure() {
+        let mut queue = crate::node::PendingEndpointDataQueue::default();
+        let first_ack = ipv6_tcp_packet(0x10, 0);
+        let second_ack = ipv6_tcp_packet(0x10, 0);
+        let discardable = vec![0xdd; 64];
+        let bulk_tcp = ipv6_tcp_packet(0x18, 512);
+
+        assert!(
+            !queue
+                .push_bounded(
+                    crate::node::EndpointDataPayload::new(first_ack.clone()),
+                    2
+                )
+                .dropped_payload()
+        );
+        assert!(
+            !queue
+                .push_bounded(
+                    crate::node::EndpointDataPayload::new(second_ack.clone()),
+                    2
+                )
+                .dropped_payload()
+        );
+
+        let discardable_admission =
+            queue.push_bounded(crate::node::EndpointDataPayload::new(discardable), 2);
+        assert!(discardable_admission.dropped_payload());
+        assert!(!discardable_admission.dropped_oldest());
+        let bulk_admission =
+            queue.push_bounded(crate::node::EndpointDataPayload::new(bulk_tcp), 2);
+        assert!(bulk_admission.dropped_payload());
+        assert!(!bulk_admission.dropped_oldest());
+
+        let payloads: Vec<Vec<u8>> = queue
+            .iter()
+            .map(|payload| payload.as_slice().to_vec())
+            .collect();
+        assert_eq!(payloads, vec![first_ack, second_ack]);
+    }
+
+    #[test]
+    fn pending_endpoint_data_queue_drops_discardable_before_bulk_or_priority() {
+        let mut queue = crate::node::PendingEndpointDataQueue::default();
+        let ack = ipv6_tcp_packet(0x10, 0);
+        let discardable = vec![0xdd; 64];
+        let bulk_tcp = ipv6_tcp_packet(0x18, 512);
+        let second_ack = ipv6_tcp_packet(0x10, 0);
+
+        assert!(
+            !queue
+                .push_bounded(crate::node::EndpointDataPayload::new(ack.clone()), 2)
+                .dropped_payload()
+        );
+        assert!(
+            !queue
+                .push_bounded(crate::node::EndpointDataPayload::new(discardable), 2)
+                .dropped_payload()
+        );
+        assert!(
+            queue
+                .push_bounded(crate::node::EndpointDataPayload::new(bulk_tcp.clone()), 2)
+                .dropped_oldest()
+        );
+        assert!(
+            queue
+                .push_bounded(crate::node::EndpointDataPayload::new(second_ack.clone()), 2)
+                .dropped_oldest()
+        );
+
+        let payloads: Vec<Vec<u8>> = queue
+            .iter()
+            .map(|payload| payload.as_slice().to_vec())
+            .collect();
+        assert_eq!(payloads, vec![ack, second_ack]);
+        assert!(!payloads.iter().any(|payload| payload == &bulk_tcp));
+    }
+
+    #[test]
     fn pending_tun_packet_queue_owns_drop_oldest_policy() {
         let mut queue = crate::node::PendingTunPacketQueue::default();
         assert!(!queue.push_bounded(vec![1], 2).dropped_oldest());
@@ -76,6 +165,27 @@ mod pending_queue_tests {
 
         let packets: Vec<Vec<u8>> = queue.iter().cloned().collect();
         assert_eq!(packets, vec![vec![2], vec![3]]);
+    }
+
+    #[test]
+    fn pending_tun_packet_queue_preserves_priority_under_pressure() {
+        let mut queue = crate::node::PendingTunPacketQueue::default();
+        let first_ack = ipv6_tcp_packet(0x10, 0);
+        let second_ack = ipv6_tcp_packet(0x10, 0);
+        let discardable = vec![0xdd; 64];
+        let bulk_tcp = ipv6_tcp_packet(0x18, 512);
+
+        assert!(!queue.push_bounded(first_ack.clone(), 2).dropped_packet());
+        assert!(!queue.push_bounded(second_ack.clone(), 2).dropped_packet());
+        let discardable_admission = queue.push_bounded(discardable, 2);
+        assert!(discardable_admission.dropped_packet());
+        assert!(!discardable_admission.dropped_oldest());
+        let bulk_admission = queue.push_bounded(bulk_tcp, 2);
+        assert!(bulk_admission.dropped_packet());
+        assert!(!bulk_admission.dropped_oldest());
+
+        let packets: Vec<Vec<u8>> = queue.iter().cloned().collect();
+        assert_eq!(packets, vec![first_ack, second_ack]);
     }
 
     #[test]

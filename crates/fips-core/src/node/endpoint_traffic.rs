@@ -207,6 +207,10 @@ impl EndpointDataPayload {
     pub(crate) fn len(&self) -> usize {
         self.bytes.len()
     }
+
+    fn pending_pressure_rank(&self) -> u8 {
+        endpoint_payload_pending_pressure_rank(self.traffic_class)
+    }
 }
 
 impl From<Vec<u8>> for EndpointDataPayload {
@@ -252,12 +256,18 @@ impl EndpointDataSend {
 /// Admission result for a bounded pending endpoint-data queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingEndpointDataQueueAdmission {
-    dropped_oldest: bool,
+    dropped_queued: bool,
+    dropped_incoming: bool,
 }
 
 impl PendingEndpointDataQueueAdmission {
+    #[cfg(test)]
     pub(crate) fn dropped_oldest(&self) -> bool {
-        self.dropped_oldest
+        self.dropped_queued
+    }
+
+    pub(crate) fn dropped_payload(&self) -> bool {
+        self.dropped_queued || self.dropped_incoming
     }
 }
 
@@ -273,12 +283,36 @@ impl PendingEndpointDataQueue {
         payload: EndpointDataPayload,
         capacity: usize,
     ) -> PendingEndpointDataQueueAdmission {
-        let dropped_oldest = self.payloads.len() >= capacity;
-        if dropped_oldest {
-            self.payloads.pop_front();
+        let capacity = capacity.max(1);
+        if self.payloads.len() < capacity {
+            self.payloads.push_back(payload);
+            return PendingEndpointDataQueueAdmission {
+                dropped_queued: false,
+                dropped_incoming: false,
+            };
         }
+
+        let incoming_rank = payload.pending_pressure_rank();
+        let Some((drop_index, queued_rank)) = self.pending_pressure_drop_candidate() else {
+            self.payloads.push_back(payload);
+            return PendingEndpointDataQueueAdmission {
+                dropped_queued: false,
+                dropped_incoming: false,
+            };
+        };
+        if incoming_rank > queued_rank {
+            return PendingEndpointDataQueueAdmission {
+                dropped_queued: false,
+                dropped_incoming: true,
+            };
+        }
+
+        let _ = self.payloads.remove(drop_index);
         self.payloads.push_back(payload);
-        PendingEndpointDataQueueAdmission { dropped_oldest }
+        PendingEndpointDataQueueAdmission {
+            dropped_queued: true,
+            dropped_incoming: false,
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -293,17 +327,32 @@ impl PendingEndpointDataQueue {
     pub(crate) fn iter(&self) -> impl Iterator<Item = &EndpointDataPayload> {
         self.payloads.iter()
     }
+
+    fn pending_pressure_drop_candidate(&self) -> Option<(usize, u8)> {
+        pending_pressure_drop_candidate(
+            self.payloads
+                .iter()
+                .enumerate()
+                .map(|(index, payload)| (index, payload.pending_pressure_rank())),
+        )
+    }
 }
 
 /// Admission result for a bounded pending TUN packet queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingTunPacketQueueAdmission {
-    dropped_oldest: bool,
+    dropped_queued: bool,
+    dropped_incoming: bool,
 }
 
 impl PendingTunPacketQueueAdmission {
+    #[cfg(test)]
     pub(crate) fn dropped_oldest(&self) -> bool {
-        self.dropped_oldest
+        self.dropped_queued
+    }
+
+    pub(crate) fn dropped_packet(&self) -> bool {
+        self.dropped_queued || self.dropped_incoming
     }
 }
 
@@ -319,12 +368,37 @@ impl PendingTunPacketQueue {
         packet: Vec<u8>,
         capacity: usize,
     ) -> PendingTunPacketQueueAdmission {
-        let dropped_oldest = self.packets.len() >= capacity;
-        if dropped_oldest {
-            self.packets.pop_front();
+        let capacity = capacity.max(1);
+        if self.packets.len() < capacity {
+            self.packets.push_back(packet);
+            return PendingTunPacketQueueAdmission {
+                dropped_queued: false,
+                dropped_incoming: false,
+            };
         }
+
+        let incoming_rank =
+            endpoint_payload_pending_pressure_rank(classify_endpoint_payload(&packet));
+        let Some((drop_index, queued_rank)) = self.pending_pressure_drop_candidate() else {
+            self.packets.push_back(packet);
+            return PendingTunPacketQueueAdmission {
+                dropped_queued: false,
+                dropped_incoming: false,
+            };
+        };
+        if incoming_rank > queued_rank {
+            return PendingTunPacketQueueAdmission {
+                dropped_queued: false,
+                dropped_incoming: true,
+            };
+        }
+
+        let _ = self.packets.remove(drop_index);
         self.packets.push_back(packet);
-        PendingTunPacketQueueAdmission { dropped_oldest }
+        PendingTunPacketQueueAdmission {
+            dropped_queued: true,
+            dropped_incoming: false,
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -338,6 +412,15 @@ impl PendingTunPacketQueue {
     #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Vec<u8>> {
         self.packets.iter()
+    }
+
+    fn pending_pressure_drop_candidate(&self) -> Option<(usize, u8)> {
+        pending_pressure_drop_candidate(self.packets.iter().enumerate().map(|(index, packet)| {
+            (
+                index,
+                endpoint_payload_pending_pressure_rank(classify_endpoint_payload(packet)),
+            )
+        }))
     }
 }
 
@@ -411,7 +494,7 @@ impl PendingSessionTrafficQueues {
         self.pending_destinations.insert(dest_addr);
         PendingSessionTrafficAdmission {
             destination_dropped: false,
-            dropped_oldest: admission.dropped_oldest(),
+            dropped_oldest: admission.dropped_packet(),
         }
     }
 
@@ -439,7 +522,7 @@ impl PendingSessionTrafficQueues {
         self.pending_destinations.insert(dest_addr);
         PendingSessionTrafficAdmission {
             destination_dropped: false,
-            dropped_oldest: admission.dropped_oldest(),
+            dropped_oldest: admission.dropped_payload(),
         }
     }
 
@@ -495,6 +578,29 @@ impl PendingSessionTrafficQueues {
     pub(crate) fn tun_packet_count(&self) -> usize {
         self.tun_packets.values().map(|q| q.len()).sum()
     }
+}
+
+fn endpoint_payload_pending_pressure_rank(traffic_class: EndpointPayloadClass) -> u8 {
+    if traffic_class.drop_on_backpressure() {
+        2
+    } else if traffic_class.lane() == EndpointPayloadLane::Bulk {
+        1
+    } else {
+        0
+    }
+}
+
+fn pending_pressure_drop_candidate(
+    ranks: impl Iterator<Item = (usize, u8)>,
+) -> Option<(usize, u8)> {
+    let mut candidate = None;
+    for (index, rank) in ranks {
+        match candidate {
+            Some((_candidate_index, candidate_rank)) if candidate_rank >= rank => {}
+            _ => candidate = Some((index, rank)),
+        }
+    }
+    candidate
 }
 
 fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) -> bool {
