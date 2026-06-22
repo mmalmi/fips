@@ -227,28 +227,37 @@
             std::time::Duration::from_secs(1),
         ));
 
-        let payload = EndpointDataPayload::new(vec![0xee; 96]);
+        let payloads = [
+            EndpointDataPayload::new(vec![0xee; 96]),
+            EndpointDataPayload::new(vec![0xdd; 128]),
+        ];
         assert!(
-            runtime.try_send_bulk_batch_to_peer(dest_identity, std::slice::from_ref(&payload)),
+            runtime.try_send_bulk_batch_to_peer(dest_identity, &payloads),
             "published lease should dispatch the bulk batch"
         );
         let feedback = feedback_rx
             .try_recv()
             .expect("endpoint mover must enqueue feedback before worker dispatch");
-        assert_eq!(feedback.records.len(), 1);
-        assert_eq!(feedback.records[0].dest_addr, dest_addr);
-        assert_eq!(feedback.records[0].next_hop_addr, next_hop_addr);
-        let crate::node::EndpointBulkSendSessionBookkeeping::Fsp { path_mtu, .. } =
-            feedback.records[0].session_bookkeeping;
-        {
+        assert_eq!(feedback.records.len(), payloads.len());
+        for record in &feedback.records {
+            assert_eq!(record.dest_addr, dest_addr);
+            assert_eq!(record.next_hop_addr, next_hop_addr);
+            let crate::node::EndpointBulkSendSessionBookkeeping::Fsp { path_mtu, .. } =
+                record.session_bookkeeping;
             assert_eq!(path_mtu, 1234);
         }
 
         node.apply_endpoint_bulk_send_feedback(feedback);
         let session = node.sessions.get(&dest_addr).expect("session exists");
         let (packets_sent, _, bytes_sent, _) = session.traffic_counters();
-        assert_eq!(packets_sent, 1);
-        assert_eq!(bytes_sent, payload.len() as u64);
+        assert_eq!(packets_sent, payloads.len() as u64);
+        assert_eq!(
+            bytes_sent,
+            payloads
+                .iter()
+                .map(|payload| payload.len() as u64)
+                .sum::<u64>()
+        );
         assert_eq!(session.last_outbound_next_hop(), Some(next_hop_addr));
         assert_eq!(
             session
@@ -259,8 +268,11 @@
             1234
         );
         let peer = node.peers.get(&next_hop_addr).expect("peer exists");
-        assert_eq!(peer.link_stats().packets_sent, 1);
-        assert_eq!(node.stats().forwarding.originated_packets, 1);
+        assert_eq!(peer.link_stats().packets_sent, payloads.len() as u64);
+        assert_eq!(
+            node.stats().forwarding.originated_packets,
+            payloads.len() as u64
+        );
     }
 
     #[cfg(unix)]

@@ -238,18 +238,27 @@ impl crate::node::EndpointBulkSendRuntime {
         let queued_at = crate::perf_profile::stamp();
         let mut records = Vec::with_capacity(payloads.len());
         let mut jobs = Vec::with_capacity(payloads.len());
+        let inner_flags = FspInnerFlags {
+            spin_bit: lease.fsp.spin_bit,
+        }
+        .to_byte();
+        let fsp_flags = if lease.fsp.current_k_bit {
+            FSP_FLAG_K
+        } else {
+            0
+        };
+        let route_plan = PipelinedEndpointRoutePlan::new(
+            lease.source_addr,
+            lease.next_hop_addr,
+            lease.path_mtu,
+            lease.default_ttl,
+            lease.scheduling_weight,
+            lease.direct_path_blocks_direct_payload,
+        );
 
         for payload in payloads {
             let now_ms = crate::time::now_ms();
             let timestamp = now_ms.wrapping_sub(lease.fsp.session_start_ms) as u32;
-            let inner_flags = FspInnerFlags {
-                spin_bit: lease.fsp.spin_bit,
-            }
-            .to_byte();
-            let mut fsp_flags = 0;
-            if lease.fsp.current_k_bit {
-                fsp_flags |= FSP_FLAG_K;
-            }
 
             let send = PipelinedEndpointSend {
                 dest_addr: &lease.dest_addr,
@@ -266,14 +275,6 @@ impl crate::node::EndpointBulkSendRuntime {
                 my_coords: None,
                 dest_coords: None,
             };
-            let route_plan = PipelinedEndpointRoutePlan::new(
-                lease.source_addr,
-                lease.next_hop_addr,
-                lease.path_mtu,
-                lease.default_ttl,
-                lease.scheduling_weight,
-                lease.direct_path_blocks_direct_payload,
-            );
             let Ok(send_plan) = route_plan.build_send_plan(&send) else {
                 record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
                 return false;
