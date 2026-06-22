@@ -688,6 +688,99 @@ fn endpoint_event_sender_drop_notifies_only_on_final_sender() {
     );
 }
 
+#[test]
+fn endpoint_event_send_notifies_only_empty_to_nonempty() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let initial_sequence = event_rx.ready_sequence();
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1].into(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("first bulk event should enqueue");
+    let first_sequence = event_rx.ready_sequence();
+    assert_ne!(
+        first_sequence, initial_sequence,
+        "empty-to-nonempty enqueue should wake a blocking receiver"
+    );
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1].into(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("second bulk event should enqueue behind existing backlog");
+    assert_eq!(
+        event_rx.ready_sequence(),
+        first_sequence,
+        "already-backlogged bulk enqueue should not take the ready condvar"
+    );
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: b"priority".to_vec().into(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("priority event should enqueue behind existing backlog");
+    assert_eq!(
+        event_rx.ready_sequence(),
+        first_sequence,
+        "priority enqueue behind visible backlog should not need a second wake"
+    );
+
+    for _ in 0..3 {
+        event_rx.try_recv().expect("queued event should drain");
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: b"next".to_vec().into(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("next empty-to-nonempty priority event should enqueue");
+    assert_ne!(
+        event_rx.ready_sequence(),
+        first_sequence,
+        "new empty-to-nonempty enqueue should wake again"
+    );
+}
+
+#[test]
+fn endpoint_event_send_notifies_when_blocking_receiver_may_sleep() {
+    let (event_tx, event_rx) = EndpointEventSender::channel(8);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1].into(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("first bulk event should enqueue");
+    let first_sequence = event_rx.ready_sequence();
+
+    event_rx.set_receiver_waiting_for_test(true);
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1].into(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("second bulk event should enqueue behind accounted backlog");
+    assert_ne!(
+        event_rx.ready_sequence(),
+        first_sequence,
+        "send behind accounted backlog must wake a receiver that may be sleeping"
+    );
+}
+
 #[tokio::test]
 async fn endpoint_event_queue_async_recv_closes_when_senders_drop() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);

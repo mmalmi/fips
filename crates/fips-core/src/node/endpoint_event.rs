@@ -441,6 +441,7 @@ pub(crate) struct EndpointEventReceiver {
 struct EndpointEventReady {
     sequence: StdMutex<u64>,
     changed: Condvar,
+    receiver_waiting: AtomicBool,
 }
 
 impl EndpointEventReady {
@@ -453,6 +454,14 @@ impl EndpointEventReady {
 
     fn snapshot(&self) -> u64 {
         self.sequence.lock().map(|sequence| *sequence).unwrap_or(0)
+    }
+
+    fn set_receiver_waiting(&self, waiting: bool) {
+        self.receiver_waiting.store(waiting, Relaxed);
+    }
+
+    fn receiver_waiting(&self) -> bool {
+        self.receiver_waiting.load(Relaxed)
     }
 
     fn wait_for_change(&self, observed: &mut u64) {
@@ -684,10 +693,10 @@ impl EndpointEventSender {
             );
         }
 
-        self.queued_messages.fetch_add(count, Relaxed);
+        let previous = self.queued_messages.fetch_add(count, Relaxed);
         match self.bulk.try_send(event) {
             Ok(()) => {
-                self.note_bulk_send_success();
+                self.note_bulk_send_success(previous);
                 Ok(())
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
@@ -746,15 +755,19 @@ impl EndpointEventSender {
         {
             crate::perf_profile::record_event(crate::perf_profile::Event::EndpointEventBacklogHigh);
         }
-        self.ready.notify();
+        if previous == 0 || self.ready.receiver_waiting() {
+            self.ready.notify();
+        }
     }
 
-    fn note_bulk_send_success(&self) {
+    fn note_bulk_send_success(&self, previous: usize) {
         // Bulk endpoint pressure has its own high-water/drop telemetry. Keep
         // the aggregate backlog-high event reserved for priority/general
         // pressure so saturated bulk output does not look like control
         // starvation in strict gates.
-        self.ready.notify();
+        if previous == 0 || self.ready.receiver_waiting() {
+            self.ready.notify();
+        }
     }
 
     fn note_send_rejected(&self, count: usize) {
@@ -885,6 +898,11 @@ impl EndpointEventReceiver {
         self.ready.snapshot()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_receiver_waiting_for_test(&self, waiting: bool) {
+        self.ready.set_receiver_waiting(waiting);
+    }
+
     pub(crate) async fn recv(&mut self) -> Option<NodeEndpointEvent> {
         loop {
             match self.try_recv() {
@@ -920,9 +938,16 @@ impl EndpointEventReceiver {
     pub(crate) fn blocking_recv(&mut self) -> Option<NodeEndpointEvent> {
         let mut observed = self.ready.snapshot();
         loop {
+            self.ready.set_receiver_waiting(true);
             match self.try_recv() {
-                Ok(event) => return Some(event),
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return None,
+                Ok(event) => {
+                    self.ready.set_receiver_waiting(false);
+                    return Some(event);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.ready.set_receiver_waiting(false);
+                    return None;
+                }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                     self.ready.wait_for_change(&mut observed);
                 }

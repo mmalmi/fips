@@ -140,7 +140,7 @@ use crate::{
 use rand::Rng;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex as StdMutex};
 use std::thread::JoinHandle;
 use thiserror::Error;
