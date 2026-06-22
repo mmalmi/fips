@@ -499,24 +499,10 @@ mod mac_queue_tests {
     }
 
     #[test]
-    fn macos_ordered_sender_defaults_on_but_can_opt_out() {
-        assert!(parse_macos_ordered_sender_enabled(None));
-        assert!(parse_macos_ordered_sender_enabled(Some("1")));
-        assert!(parse_macos_ordered_sender_enabled(Some("true")));
-        assert!(parse_macos_ordered_sender_enabled(Some("unexpected")));
-        assert!(!parse_macos_ordered_sender_enabled(Some("0")));
-        assert!(!parse_macos_ordered_sender_enabled(Some("false")));
-        assert!(!parse_macos_ordered_sender_enabled(Some("OFF")));
-    }
-
-    #[test]
-    fn macos_worker_stride_defaults_to_short_runs() {
-        assert_eq!(macos_worker_stride_from_raw(None), 1);
-        assert_eq!(macos_worker_stride_from_raw(Some("")), 1);
-        assert_eq!(macos_worker_stride_from_raw(Some("1")), 1);
-        assert_eq!(macos_worker_stride_from_raw(Some("8")), 8);
-        assert_eq!(macos_worker_stride_from_raw(Some("0")), 1);
-        assert_eq!(macos_worker_stride_from_raw(Some("999")), 64);
+    fn macos_sender_defaults_are_fixed() {
+        assert_eq!(MACOS_WORKER_STRIDE, 1);
+        assert_eq!(macos_worker_batch_size(), 8);
+        assert_eq!(MAC_SEND_FLOW_IDLE_MS, 120_000);
     }
 
     #[test]

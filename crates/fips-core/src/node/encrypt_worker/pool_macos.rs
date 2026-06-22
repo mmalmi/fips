@@ -206,17 +206,6 @@ impl EncryptWorkerPool {
 
     #[cfg(target_os = "macos")]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
-        if !macos_ordered_sender_enabled() {
-            use std::hash::{Hash, Hasher};
-
-            let queued = QueuedFmpSendJob::direct(job);
-            let key = queued.target_key;
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            key.hash(&mut h);
-            let idx = (h.finish() as usize) % self.senders.len();
-            return (idx, queued);
-        }
-
         // Darwin has no sendmmsg/UDP_GSO equivalent in the standard UDP
         // path, and high-rate Wi-Fi sends regularly block in ENOBUFS. Keep
         // nonce assignment in rx_loop, spread FMP AEAD over the worker pool,
@@ -227,7 +216,7 @@ impl EncryptWorkerPool {
         let ticket = self
             .next_worker
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            / macos_worker_stride();
+            / MACOS_WORKER_STRIDE;
         let idx = ticket % self.senders.len();
         (idx, QueuedFmpSendJob::macos_sequenced(job, flow))
     }
@@ -1003,7 +992,7 @@ impl MacSequencedSendFlows {
             return;
         }
 
-        let idle_ms = mac_send_flow_idle_ms();
+        let idle_ms = MAC_SEND_FLOW_IDLE_MS;
         flows.retain(|_, flow| {
             if flow.is_idle(now_ms, idle_ms) {
                 flow.close();
@@ -1016,78 +1005,23 @@ impl MacSequencedSendFlows {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_ordered_sender_enabled() -> bool {
-    // Ordered mode gives Darwin the same broad shape as Linux's WG-batch
-    // sender: FMP/FSP AEAD can run across the worker pool, while one flow
-    // thread preserves UDP order for the kernel send target. Keep the env as
-    // an opt-out for NIC/Wi-Fi A/Bs.
-    static VALUE: OnceLock<bool> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        parse_macos_ordered_sender_enabled(
-            std::env::var("FIPS_MACOS_ORDERED_SENDER")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
+const MACOS_WORKER_STRIDE: usize = 1;
 
 #[cfg(target_os = "macos")]
-fn parse_macos_ordered_sender_enabled(raw: Option<&str>) -> bool {
-    raw.map(|raw| {
-        !matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        )
-    })
-    .unwrap_or(true)
-}
+const MACOS_WORKER_BATCH_SIZE: usize = 8;
 
 #[cfg(target_os = "macos")]
-fn macos_worker_stride() -> usize {
-    // One-packet round-robin maximizes FMP AEAD parallelism but wakes an idle
-    // worker for nearly every packet on Darwin. Short strides let a hot worker
-    // drain a local queue batch before the next worker is signalled, while still
-    // spreading sustained single-peer traffic across the full pool.
-    static VALUE: OnceLock<usize> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        macos_worker_stride_from_raw(std::env::var("FIPS_MACOS_WORKER_STRIDE").ok().as_deref())
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn macos_worker_stride_from_raw(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(1)
-        .clamp(1, 64)
-}
+const MAC_SEND_FLOW_IDLE_MS: u64 = 120_000;
 
 #[cfg(target_os = "macos")]
 fn macos_worker_batch_size() -> usize {
-    // The direct Darwin sender has no sendmmsg/GSO equivalent, so worker-drain
-    // batching turns into tight send/sendto bursts. MacBook <-> mini Wi-Fi
-    // tests showed even modest bursts can trigger TCP retransmit collapse.
-    // Keep ordering but hand packets to the kernel one at a time by default;
-    // the env knob remains for lab NIC/LAN A/Bs.
-    static VALUE: OnceLock<usize> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var("FIPS_MACOS_WORKER_BATCH")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(1)
-            .clamp(1, 64)
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn mac_send_flow_idle_ms() -> u64 {
-    static VALUE: OnceLock<u64> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var("FIPS_MACOS_SEND_FLOW_IDLE_MS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .unwrap_or(120_000)
-            .max(10_000)
-    })
+    // The direct Darwin sender has no sendmmsg/GSO equivalent, so a large
+    // worker-drain batch becomes a tight burst of send/sendto calls. MacBook
+    // Wi-Fi -> Ethernet tests showed the previous default of 32 could trigger
+    // TCP collapse and long queue waits even when Darwin did not report
+    // ENOBUFS. A smaller fixed default keeps the kernel/radio pacer in the
+    // loop without waking the worker for every datagram.
+    MACOS_WORKER_BATCH_SIZE
 }
 
 #[cfg(target_os = "macos")]
