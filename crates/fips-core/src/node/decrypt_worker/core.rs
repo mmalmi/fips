@@ -1125,7 +1125,69 @@ impl FspAeadCompletionBatch {
             Self::Many { completions, .. } => completions.len(),
         }
     }
+}
 
+struct FspAeadCompletionBatchFlush {
+    local_completion: bool,
+    owner_idx: Option<usize>,
+    batch: FspAeadCompletionBatch,
+}
+
+struct FspAeadCompletionBatchBuilder {
+    current_local: bool,
+    current_owner_idx: Option<usize>,
+    current_batch: Option<FspAeadCompletionBatch>,
+    max_len: usize,
+}
+
+impl FspAeadCompletionBatchBuilder {
+    fn new() -> Self {
+        Self {
+            current_local: false,
+            current_owner_idx: None,
+            current_batch: None,
+            max_len: DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
+        }
+    }
+
+    fn push(
+        &mut self,
+        local_completion: bool,
+        owner_idx: Option<usize>,
+        completion: FspAeadCompletion,
+    ) -> Option<FspAeadCompletionBatchFlush> {
+        let owner_idx = owner_idx.filter(|_| !local_completion);
+        let source_addr = completion.source_addr;
+        let receive_order_id = completion.receive_order_id;
+        let same_batch = self
+            .current_batch
+            .as_ref()
+            .is_some_and(|batch| batch.can_push(source_addr, receive_order_id, self.max_len))
+            && self.current_local == local_completion
+            && self.current_owner_idx == owner_idx;
+
+        if same_batch {
+            let Some(batch) = self.current_batch.as_mut() else {
+                unreachable!("same_batch requires an active completion batch")
+            };
+            batch.push(completion);
+            return None;
+        }
+
+        let flush = self.flush();
+        self.current_local = local_completion;
+        self.current_owner_idx = owner_idx;
+        self.current_batch = Some(FspAeadCompletionBatch::one(completion));
+        flush
+    }
+
+    fn flush(&mut self) -> Option<FspAeadCompletionBatchFlush> {
+        Some(FspAeadCompletionBatchFlush {
+            local_completion: self.current_local,
+            owner_idx: self.current_owner_idx.take(),
+            batch: self.current_batch.take()?,
+        })
+    }
 }
 
 impl FspAeadOpenJob {

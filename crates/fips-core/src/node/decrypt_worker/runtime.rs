@@ -455,6 +455,20 @@ fn send_fsp_aead_open_completion_batch(
     false
 }
 
+fn send_fsp_aead_open_completion_flush(
+    idx: usize,
+    pool: &DecryptWorkerPool,
+    flush: FspAeadCompletionBatchFlush,
+) {
+    debug_assert!(
+        !flush.local_completion,
+        "opener worker completions always return to an owner shard"
+    );
+    if let Some(owner_idx) = flush.owner_idx {
+        send_fsp_aead_open_completion_batch(idx, pool, owner_idx, flush.batch);
+    }
+}
+
 fn complete_fsp_aead_open_job(idx: usize, pool: &DecryptWorkerPool, mut job: FspAeadOpenJob) {
     let Some(owner_idx) = job.completion_owner_idx.take() else {
         return;
@@ -472,42 +486,19 @@ fn complete_fsp_aead_open_jobs(
     pool: &DecryptWorkerPool,
     jobs: Vec<FspAeadOpenJob>,
 ) {
-    let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
-    let mut current_owner_idx = None;
-    let mut current_batch: Option<FspAeadCompletionBatch> = None;
+    let mut batcher = FspAeadCompletionBatchBuilder::new();
 
     for mut job in jobs {
         let Some(owner_idx) = job.completion_owner_idx.take() else {
             continue;
         };
-        let source_addr = job.source_addr;
-        let receive_order_id = job.receive_order_id;
-        let same_batch = current_owner_idx == Some(owner_idx)
-            && current_batch
-                .as_ref()
-                .is_some_and(|batch| {
-                    batch.can_push(source_addr, receive_order_id, completion_batch_max)
-                });
-
-        if !same_batch {
-            if let (Some(owner_idx), Some(batch)) =
-                (current_owner_idx.take(), current_batch.take())
-            {
-                send_fsp_aead_open_completion_batch(idx, pool, owner_idx, batch);
-            }
-            current_owner_idx = Some(owner_idx);
-            current_batch = Some(FspAeadCompletionBatch::one(job.into_completion()));
-            continue;
+        if let Some(flush) = batcher.push(false, Some(owner_idx), job.into_completion()) {
+            send_fsp_aead_open_completion_flush(idx, pool, flush);
         }
-
-        let Some(batch) = current_batch.as_mut() else {
-            unreachable!("same_batch requires an active completion batch")
-        };
-        batch.push(job.into_completion());
     }
 
-    if let (Some(owner_idx), Some(batch)) = (current_owner_idx, current_batch) {
-        send_fsp_aead_open_completion_batch(idx, pool, owner_idx, batch);
+    if let Some(flush) = batcher.flush() {
+        send_fsp_aead_open_completion_flush(idx, pool, flush);
     }
 }
 

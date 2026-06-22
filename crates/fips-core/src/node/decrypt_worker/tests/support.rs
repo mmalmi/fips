@@ -895,7 +895,11 @@
 
         let mut shard = DecryptWorkerShard::new(pool);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        shard.drop_returned_fsp_aead_open_job(current_idx, open_job, &mut plaintext_batch);
+        shard.drop_returned_fsp_aead_open_jobs(
+            current_idx,
+            std::iter::once(open_job),
+            &mut plaintext_batch,
+        );
 
         let completion = fsp_completion_receivers[owner_idx]
             .try_recv()
@@ -1112,6 +1116,70 @@
             }) => {}
             _ => panic!("returned opener job should be dropped by the owner"),
         }
+    }
+
+    #[test]
+    fn returned_local_fsp_open_job_advances_ordered_owner_locally() {
+        let (pool, _control, _priority, _bulk, fsp_completion_receivers) =
+            test_worker_pool_with_fsp_completion_receivers(2, 4);
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let mut state =
+            OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+                source_peer,
+                current_k_bit: false,
+                current: crate::node::session::FspRecvEpochSnapshot {
+                    cipher: test_chacha_key([0x5b; 32]),
+                    replay: ReplayWindow::new(),
+                },
+                pending: None,
+                previous: None,
+            });
+        let shared = Arc::new(
+            state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
+        let ticket = shared
+            .try_issue_ticket()
+            .expect("shared receive window should admit first ticket");
+
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let mut header_packet = header_bytes.to_vec();
+        header_packet.extend_from_slice(&[0u8; 16]);
+        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
+        let job = test_fsp_aead_open_job_with_meta(
+            source_addr,
+            receive_order_id,
+            crypto_generation,
+            ticket.sequence,
+            Arc::new(test_chacha_key([0x5c; 32])),
+            header,
+            None,
+        );
+
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.fsp_sessions.insert(source_addr, state);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        shard.drop_returned_fsp_aead_open_jobs(
+            0,
+            std::iter::once(job),
+            &mut plaintext_batch,
+        );
+
+        let state = shard
+            .fsp_sessions
+            .get(&source_addr)
+            .expect("local owner state should remain registered");
+        assert_eq!(state.fsp_receive_order_next_ready(), ticket.sequence + 1);
+        assert_eq!(shared.progress().next_ready, ticket.sequence + 1);
+        assert!(
+            fsp_completion_receivers.iter().all(Receiver::is_empty),
+            "local returned opener completions should not bounce to another worker"
+        );
     }
 
     #[test]
@@ -1534,13 +1602,33 @@
         header: FspEncryptedHeader,
         completion_owner_idx: Option<usize>,
     ) -> FspAeadOpenJob {
+        test_fsp_aead_open_job_with_meta(
+            source_addr,
+            7,
+            0,
+            ticket_sequence,
+            cipher,
+            header,
+            completion_owner_idx,
+        )
+    }
+
+    fn test_fsp_aead_open_job_with_meta(
+        source_addr: NodeAddr,
+        receive_order_id: u64,
+        crypto_generation: u64,
+        ticket_sequence: u64,
+        cipher: Arc<LessSafeKey>,
+        header: FspEncryptedHeader,
+        completion_owner_idx: Option<usize>,
+    ) -> FspAeadOpenJob {
         let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
         job.source_addr = source_addr;
         job.fsp_payload_len = 0;
         FspAeadOpenJob {
             source_addr,
-            receive_order_id: 7,
-            crypto_generation: 0,
+            receive_order_id,
+            crypto_generation,
             ticket: FspReceiveTicket {
                 sequence: ticket_sequence,
             },

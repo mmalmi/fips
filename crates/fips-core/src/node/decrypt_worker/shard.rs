@@ -677,107 +677,63 @@ impl DecryptWorkerShard {
         {
             Ok(()) => Ok(()),
             Err(open_job) => {
-                self.drop_returned_fsp_aead_open_job(idx, open_job, plaintext_batch);
+                self.drop_returned_fsp_aead_open_jobs(
+                    idx,
+                    std::iter::once(open_job),
+                    plaintext_batch,
+                );
                 Ok(())
             }
         }
     }
 
-    fn drop_returned_fsp_aead_open_job(
+    fn drop_returned_fsp_aead_open_jobs<I>(
         &mut self,
         idx: usize,
-        mut open_job: FspAeadOpenJob,
+        jobs: I,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
-        record_fsp_open_pool_bulk_drop(1);
-        let completion_owner_idx = open_job.completion_owner_idx.take();
-        open_job.mark_returned_completion();
-        let completion = open_job.into_dropped_completion();
-        if completion_owner_idx == Some(idx) || completion_owner_idx.is_none() {
-            self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
-            return;
-        }
-        if let Some(owner_idx) = completion_owner_idx {
-            send_fsp_aead_open_completion_batch(
-                idx,
-                &self.pool,
-                owner_idx,
-                FspAeadCompletionBatch::one(completion),
-            );
-        }
-    }
-
-    fn drop_returned_fsp_aead_open_jobs(
-        &mut self,
-        idx: usize,
-        jobs: Vec<FspAeadOpenJob>,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
-        record_fsp_open_pool_bulk_drop(jobs.len());
-        let mut current_owner_idx = None;
-        let mut current_local = false;
-        let mut current_batch: Option<FspAeadCompletionBatch> = None;
-        let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
-
+    ) where
+        I: IntoIterator<Item = FspAeadOpenJob>,
+    {
+        let mut returned_count = 0usize;
+        let mut batcher = FspAeadCompletionBatchBuilder::new();
         for mut job in jobs {
+            returned_count = returned_count.saturating_add(1);
             let completion_owner_idx = job.completion_owner_idx.take();
             let local_completion =
                 completion_owner_idx == Some(idx) || completion_owner_idx.is_none();
-            let source_addr = job.source_addr;
-            let receive_order_id = job.receive_order_id;
             job.mark_returned_completion();
-            let same_batch = current_batch
-                .as_ref()
-                .is_some_and(|batch| {
-                    batch.can_push(source_addr, receive_order_id, completion_batch_max)
-                })
-                && current_local == local_completion
-                && (local_completion || current_owner_idx == completion_owner_idx);
-
-            if !same_batch {
+            if let Some(flush) = batcher.push(
+                local_completion,
+                completion_owner_idx,
+                job.into_dropped_completion(),
+            ) {
                 self.flush_dropped_fsp_aead_open_completion_batch(
                     idx,
-                    current_local,
-                    current_owner_idx.take(),
-                    current_batch.take(),
+                    flush,
                     plaintext_batch,
                 );
-                current_local = local_completion;
-                current_owner_idx = completion_owner_idx.filter(|_| !local_completion);
-                current_batch = Some(FspAeadCompletionBatch::one(job.into_dropped_completion()));
-                continue;
             }
-
-            let Some(batch) = current_batch.as_mut() else {
-                unreachable!("same_batch requires an active completion batch")
-            };
-            batch.push(job.into_dropped_completion());
         }
 
-        self.flush_dropped_fsp_aead_open_completion_batch(
-            idx,
-            current_local,
-            current_owner_idx,
-            current_batch,
-            plaintext_batch,
-        );
+        record_fsp_open_pool_bulk_drop(returned_count);
+        if let Some(flush) = batcher.flush() {
+            self.flush_dropped_fsp_aead_open_completion_batch(idx, flush, plaintext_batch);
+        }
     }
 
     fn flush_dropped_fsp_aead_open_completion_batch(
         &mut self,
         idx: usize,
-        local_completion: bool,
-        completion_owner_idx: Option<usize>,
-        batch: Option<FspAeadCompletionBatch>,
+        flush: FspAeadCompletionBatchFlush,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        let Some(batch) = batch else { return };
-        if local_completion {
-            self.handle_fsp_aead_completion_batch_msg(idx, batch, plaintext_batch);
+        if flush.local_completion {
+            self.handle_fsp_aead_completion_batch_msg(idx, flush.batch, plaintext_batch);
             return;
         }
-        if let Some(owner_idx) = completion_owner_idx {
-            send_fsp_aead_open_completion_batch(idx, &self.pool, owner_idx, batch);
+        if let Some(owner_idx) = flush.owner_idx {
+            send_fsp_aead_open_completion_batch(idx, &self.pool, owner_idx, flush.batch);
         }
     }
 
