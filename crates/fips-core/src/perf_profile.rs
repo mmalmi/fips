@@ -96,7 +96,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 246;
+const N_EVENTS: usize = 250;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -729,6 +729,10 @@ pub enum Event {
     DecryptFspOpenWorkerLocalIneligibleKbitMismatch = 243,
     DecryptFspOpenWorkerLocalIneligibleWindowFull = 244,
     FspAeadCompletionStaleEpochWorkerOpen = 245,
+    DecryptWorkerBulkQueueDepthGe64 = 246,
+    DecryptWorkerBulkQueueDepthGe256 = 247,
+    DecryptWorkerBulkQueueDepthGe1024 = 248,
+    DecryptWorkerBulkQueueDepthGe4096 = 249,
 }
 
 impl Event {
@@ -1217,6 +1221,10 @@ impl Event {
             Event::FspAeadCompletionStaleEpochWorkerOpen => {
                 "fsp_aead_completion_stale_epoch_worker_open"
             }
+            Event::DecryptWorkerBulkQueueDepthGe64 => "decrypt_worker_bulk_queue_depth_ge64",
+            Event::DecryptWorkerBulkQueueDepthGe256 => "decrypt_worker_bulk_queue_depth_ge256",
+            Event::DecryptWorkerBulkQueueDepthGe1024 => "decrypt_worker_bulk_queue_depth_ge1024",
+            Event::DecryptWorkerBulkQueueDepthGe4096 => "decrypt_worker_bulk_queue_depth_ge4096",
         }
     }
 }
@@ -1469,6 +1477,10 @@ fn event_from_index(idx: usize) -> Event {
         243 => Event::DecryptFspOpenWorkerLocalIneligibleKbitMismatch,
         244 => Event::DecryptFspOpenWorkerLocalIneligibleWindowFull,
         245 => Event::FspAeadCompletionStaleEpochWorkerOpen,
+        246 => Event::DecryptWorkerBulkQueueDepthGe64,
+        247 => Event::DecryptWorkerBulkQueueDepthGe256,
+        248 => Event::DecryptWorkerBulkQueueDepthGe1024,
+        249 => Event::DecryptWorkerBulkQueueDepthGe4096,
         _ => unreachable!(),
     }
 }
@@ -1999,6 +2011,19 @@ pub(crate) fn record_decrypt_worker_bulk_queue_depth(
     if ge90 {
         record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe90, packets);
     }
+    let (ge64, ge256, ge1024, ge4096) = bulk_queue_depth_absolute_flags(depth);
+    if ge64 {
+        record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe64, packets);
+    }
+    if ge256 {
+        record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe256, packets);
+    }
+    if ge1024 {
+        record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe1024, packets);
+    }
+    if ge4096 {
+        record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe4096, packets);
+    }
 }
 
 #[inline]
@@ -2013,6 +2038,11 @@ fn bulk_queue_depth_threshold_flags(depth: usize, capacity: usize) -> (bool, boo
         depth.saturating_mul(4) >= capacity.saturating_mul(3),
         depth.saturating_mul(10) >= capacity.saturating_mul(9),
     )
+}
+
+#[inline]
+fn bulk_queue_depth_absolute_flags(depth: usize) -> (bool, bool, bool, bool) {
+    (depth >= 64, depth >= 256, depth >= 1024, depth >= 4096)
 }
 
 #[inline]
