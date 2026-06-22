@@ -455,6 +455,18 @@ fn send_fsp_aead_open_completion_batch(
     false
 }
 
+fn complete_fsp_aead_open_job(idx: usize, pool: &DecryptWorkerPool, mut job: FspAeadOpenJob) {
+    let Some(owner_idx) = job.completion_owner_idx.take() else {
+        return;
+    };
+    send_fsp_aead_open_completion_batch(
+        idx,
+        pool,
+        owner_idx,
+        FspAeadCompletionBatch::one(job.into_completion()),
+    );
+}
+
 fn complete_fsp_aead_open_jobs(
     idx: usize,
     pool: &DecryptWorkerPool,
@@ -541,7 +553,7 @@ fn handle_bulk_item(
         }
         DecryptWorkerBulkItem::FspAeadOpen(job) => {
             let item_service_started_at = crate::perf_profile::stamp();
-            complete_fsp_aead_open_jobs(idx, &shard.pool, vec![job]);
+            complete_fsp_aead_open_job(idx, &shard.pool, job);
             record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
             1
         }

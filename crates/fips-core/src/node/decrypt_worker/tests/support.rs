@@ -759,6 +759,51 @@
     }
 
     #[test]
+    fn single_fsp_open_job_completion_sends_one_owner_completion() {
+        let (pool, _control, _priority, _bulk, fsp_completion_receivers) =
+            test_worker_pool_with_fsp_completion_receivers(3, 4);
+        let source_addr = NodeAddr::from_bytes([0x4a; 16]);
+        let owner_idx = 0;
+        let current_idx = 1;
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let mut header_packet = header_bytes.to_vec();
+        header_packet.extend_from_slice(&[0u8; 16]);
+        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
+        let open_job = test_fsp_aead_open_job(
+            source_addr,
+            0,
+            Arc::new(test_chacha_key([0x62; 32])),
+            header,
+            Some(owner_idx),
+        );
+
+        complete_fsp_aead_open_job(current_idx, &pool, open_job);
+
+        let completion = fsp_completion_receivers[owner_idx]
+            .try_recv()
+            .expect("single opener completion should return to the owner");
+        assert_eq!(completion.len(), 1);
+        match completion {
+            FspAeadCompletionBatch::One(FspAeadCompletion {
+                source: FspAeadCompletionSource::WorkerOpen,
+                result:
+                    FspOrderedCompletion::AeadFailed {
+                        source: FspAeadCompletionSource::WorkerOpen,
+                        fallback_to_rx_loop: false,
+                        count_failure: true,
+                        ..
+                    },
+                ..
+            }) => {}
+            _ => panic!("single opener job should send one ordered worker-open completion"),
+        }
+        assert!(
+            fsp_completion_receivers[current_idx].try_recv().is_err(),
+            "wrong shard must not receive the ordered completion"
+        );
+    }
+
+    #[test]
     fn returned_owner_mismatch_fsp_open_jobs_send_one_dropped_completion_batch_to_owner() {
         let (pool, _control, _priority, _bulk, fsp_completion_receivers) =
             test_worker_pool_with_fsp_completion_receivers(3, 4);
