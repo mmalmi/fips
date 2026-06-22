@@ -1067,9 +1067,7 @@ impl DecryptWorkerShard {
             self.push_current_epoch_fsp_job_outputs(idx, job, plaintext_batch);
             return;
         }
-        for output in self.handle_fsp_job_outputs(job) {
-            plaintext_batch.push_output(output);
-        }
+        self.push_epoch_churn_fsp_job_outputs(job, plaintext_batch);
     }
 
     fn push_current_epoch_fsp_job_outputs(
@@ -1267,7 +1265,11 @@ impl DecryptWorkerShard {
         );
     }
 
-    fn handle_fsp_job_outputs(&mut self, job: FspDecryptJob) -> Vec<DecryptWorkerOutput> {
+    fn push_epoch_churn_fsp_job_outputs(
+        &mut self,
+        job: FspDecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
         let FspDecryptJob {
             fallback_tx,
             fallback,
@@ -1284,31 +1286,34 @@ impl DecryptWorkerShard {
         } = job;
 
         let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
-            return vec![DecryptWorkerOutput {
+            plaintext_batch.push_output(DecryptWorkerOutput {
                 fallback_tx,
                 event: DecryptWorkerEvent::Plaintext(fallback),
                 direct_delivery: None,
-            }];
+            });
+            return;
         };
         let payload_end = fsp_payload_offset.saturating_add(fsp_payload_len);
         let header = {
             let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-                return vec![self.output_for_malformed_fsp_drop(
+                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
                     fallback_tx,
                     fallback,
                     lane,
                     inner_timestamp_ms,
                     previous_hop_peer,
-                )];
+                ));
+                return;
             };
             let Some(header) = FspEncryptedHeader::parse(payload) else {
-                return vec![self.output_for_malformed_fsp_drop(
+                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
                     fallback_tx,
                     fallback,
                     lane,
                     inner_timestamp_ms,
                     previous_hop_peer,
-                )];
+                ));
+                return;
             };
             header
         };
@@ -1324,13 +1329,14 @@ impl DecryptWorkerShard {
         };
 
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-            return vec![self.output_for_malformed_fsp_drop(
+            plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
                 fallback_tx,
                 fallback,
                 lane,
                 inner_timestamp_ms,
                 previous_hop_peer,
-            )];
+            ));
+            return;
         };
         let ciphertext = &payload[FSP_HEADER_SIZE..];
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
@@ -1345,7 +1351,7 @@ impl DecryptWorkerShard {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
                 );
-                return Vec::new();
+                return;
             }
             Err(FspOpenError::Aead) => {
                 let job = FspDecryptJob {
@@ -1362,13 +1368,14 @@ impl DecryptWorkerShard {
                     fsp_payload_len,
                     trace_enqueued_at: None,
                 };
-                return vec![Self::output_for_fsp_aead_failure(job, &header, true)];
+                plaintext_batch.push_output(Self::output_for_fsp_aead_failure(job, &header, true));
+                return;
             }
         };
         let Some((timestamp, msg_type, inner_flags_byte, _body)) =
             fsp_strip_inner_header(&plaintext)
         else {
-            return Vec::new();
+            return;
         };
         let spin_bit = inner_flags_byte & 0x01 != 0;
         let plaintext_len = plaintext.len();
@@ -1406,11 +1413,12 @@ impl DecryptWorkerShard {
                         sync,
                         lane,
                     );
-                    return vec![DecryptWorkerOutput {
+                    plaintext_batch.push_output(DecryptWorkerOutput {
                         fallback_tx,
                         event,
                         direct_delivery,
-                    }];
+                    });
+                    return;
                 }
                 Err(message) => {
                     DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
@@ -1426,11 +1434,11 @@ impl DecryptWorkerShard {
                 }
             };
 
-        vec![DecryptWorkerOutput {
+        plaintext_batch.push_output(DecryptWorkerOutput {
             fallback_tx,
             event,
             direct_delivery: None,
-        }]
+        });
     }
 
     fn handle_job_action(
