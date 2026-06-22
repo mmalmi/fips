@@ -404,7 +404,6 @@
             ),
             DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected an eight-packet bulk batch"),
-            DecryptWorkerBulkItem::FmpAeadOpen(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected an eight-packet bulk batch")
@@ -593,7 +592,6 @@
         );
 
         let mut shard = test_shard();
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
@@ -601,7 +599,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -677,7 +674,6 @@
 
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
@@ -685,7 +681,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -717,7 +712,6 @@
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (_bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let session_key = test_session_key(1, 79);
         let mut shard = test_shard();
@@ -729,7 +723,6 @@
                 &mut shard,
                 &control_rx,
                 &priority_rx,
-                &fmp_aead_completion_rx,
                 &fsp_aead_completion_rx,
                 &bulk_rx,
                 &bulk_queued_packets,
@@ -751,7 +744,6 @@
                 &mut shard,
                 &control_rx,
                 &priority_rx,
-                &fmp_aead_completion_rx,
                 &fsp_aead_completion_rx,
                 &bulk_rx,
                 &bulk_queued_packets,
@@ -769,7 +761,6 @@
                 &mut shard,
                 &control_rx,
                 &priority_rx,
-                &fmp_aead_completion_rx,
                 &fsp_aead_completion_rx,
                 &bulk_rx,
                 &bulk_queued_packets,
@@ -800,12 +791,10 @@
             .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
             .expect("priority packet should enqueue");
 
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         match recv_worker_item_biased(
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
         ) {
@@ -824,9 +813,6 @@
             }
             DecryptWorkerQueueItem::FspAeadCompletion(_) => {
                 panic!("blocking receive must not select FSP AEAD completion while control is ready")
-            }
-            DecryptWorkerQueueItem::FmpAeadCompletion(_) => {
-                panic!("blocking receive must not select FMP AEAD completion while control is ready")
             }
             DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
@@ -890,7 +876,6 @@
         }
 
         let mut shard = test_shard();
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
@@ -898,7 +883,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -996,7 +980,6 @@
                 .expect("completion lane should have room");
         }
 
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let mut shard = test_shard();
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
@@ -1004,7 +987,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -1058,14 +1040,12 @@
             ))
             .expect("completion lane should have room");
 
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let mut shard = test_shard();
         drain_worker_queues(
             0,
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -1112,7 +1092,6 @@
                 .expect("completion lane should have room");
         }
 
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let processed = handle_bulk_item(
@@ -1120,7 +1099,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::Batch(vec![
                 dummy_bulk_decrypt_job(session_key),
@@ -1151,7 +1129,6 @@
             ))
             .expect("completion lane should have room");
 
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 2);
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
@@ -1173,7 +1150,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::FspBatch(vec![bulk_job]),
             &mut plaintext_batch,
@@ -1221,7 +1197,6 @@
                 .expect("completion lane should have room");
         }
 
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let processed = handle_bulk_item(
@@ -1229,7 +1204,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::FspBatch(vec![
                 dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),

@@ -166,8 +166,6 @@
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
-        let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
-            bounded::<FmpAeadCompletionBatch>(1);
         let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
             bounded::<FspAeadCompletionBatch>(1);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
@@ -178,7 +176,6 @@
                         control: control_tx,
                         priority: priority_tx,
                         bulk: bulk_tx,
-                        fmp_aead_completion: fmp_aead_completion_tx,
                         fsp_aead_completion: fsp_aead_completion_tx,
                         bulk_queued_packets,
                         bulk_packet_cap: 1,
@@ -187,7 +184,6 @@
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_rx,
@@ -213,8 +209,6 @@
             let (control_tx, control_rx) = bounded::<WorkerMsg>(cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
-            let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
-                bounded::<FmpAeadCompletionBatch>(cap);
             let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
@@ -222,7 +216,6 @@
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                fmp_aead_completion: fmp_aead_completion_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
@@ -236,7 +229,6 @@
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_receivers,
@@ -264,8 +256,6 @@
             let (control_tx, control_rx) = bounded::<WorkerMsg>(cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
-            let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
-                bounded::<FmpAeadCompletionBatch>(cap);
             let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
@@ -273,7 +263,6 @@
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                fmp_aead_completion: fmp_aead_completion_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
@@ -288,7 +277,6 @@
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_receivers,
@@ -315,11 +303,6 @@
         completion_rx
     }
 
-    fn test_fmp_aead_completion_lane(cap: usize) -> Receiver<FmpAeadCompletionBatch> {
-        let (_completion_tx, completion_rx) = bounded::<FmpAeadCompletionBatch>(cap);
-        completion_rx
-    }
-
     fn queue_bulk_item_for_test(
         tx: &Sender<DecryptWorkerBulkItem>,
         queued_packets: &AtomicUsize,
@@ -332,57 +315,6 @@
     fn test_shard() -> DecryptWorkerShard {
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         DecryptWorkerShard::new(pool)
-    }
-
-    #[test]
-    fn fmp_bulk_dispatch_uses_sibling_opener_after_session_registration() {
-        let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
-            test_worker_pool(3, DECRYPT_WORKER_BULK_BATCH_MAX);
-        let session_key = test_session_key(1, 118);
-        let source_peer = test_source_peer();
-        let owner_idx = pool.worker_idx_for_new_fmp_session(session_key, &source_peer);
-        let state = test_owned_session_state_for(source_peer);
-        let shared = Arc::new(state.shared_crypto_session(owner_idx));
-        let open_idx = pool
-            .worker_idx_for_fmp_open_avoiding(session_key, owner_idx)
-            .expect("three-worker pool should have a sibling FMP opener");
-        assert_ne!(open_idx, owner_idx);
-
-        pool.fmp_session_owners
-            .write()
-            .unwrap()
-            .insert(session_key, owner_idx);
-        pool.publish_fmp_aead_session(session_key, Some(Arc::clone(&shared)));
-        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
-
-        assert_eq!(
-            bulk_receivers[owner_idx].len(),
-            0,
-            "registered bulk FMP work should bypass the owner input queue"
-        );
-        match bulk_receivers[open_idx]
-            .try_recv()
-            .expect("bulk FMP packet should dispatch to sibling opener")
-        {
-            DecryptWorkerBulkItem::FmpAeadOpen(job) => {
-                assert_eq!(job.session_key, session_key);
-                assert_eq!(job.receive_order_id, shared.receive_order_id);
-                assert_eq!(job.crypto_generation, shared.crypto_generation);
-                assert_eq!(job.ticket.sequence, 0);
-                assert_eq!(job.completion_owner_idx, Some(owner_idx));
-            }
-            DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::FspAeadOpen(_)
-            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::Batch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected FMP opener job"),
-        }
-        assert_eq!(
-            shared.next_ticket.load(Ordering::Relaxed),
-            1,
-            "FMP opener dispatch should issue exactly one ordered receive ticket"
-        );
     }
 
     #[test]
@@ -426,7 +358,6 @@
         drop(control_tx);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
-        let opener_fmp_completion_rx = test_fmp_aead_completion_lane(1);
         let opener_fsp_completion_rx = test_fsp_aead_completion_lane(1);
         let mut shard = DecryptWorkerShard::new(pool.clone());
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
@@ -440,7 +371,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &opener_fmp_completion_rx,
             &opener_fsp_completion_rx,
             item,
             &mut plaintext_batch,
@@ -495,8 +425,7 @@
         match &item {
             DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => assert_eq!(jobs.len(), 2),
             DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected opener batch"),
-            DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::Job(_)
+            DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
@@ -506,7 +435,6 @@
         drop(control_tx);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
-        let opener_fmp_completion_rx = test_fmp_aead_completion_lane(1);
         let opener_fsp_completion_rx = test_fsp_aead_completion_lane(1);
         let mut shard = DecryptWorkerShard::new(pool.clone());
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
@@ -516,7 +444,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &opener_fmp_completion_rx,
             &opener_fsp_completion_rx,
             item,
             &mut plaintext_batch,
@@ -572,8 +499,7 @@
                 assert_eq!(job.completion_owner_idx, Some(owner_idx));
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => panic!("expected a single opener job"),
-            DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::Job(_)
+            DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a single opener job"),
@@ -620,7 +546,6 @@
         );
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         fsp_completion_tx
             .try_send(dummy_fsp_aead_completion_batch(source_addr, 99))
@@ -631,7 +556,6 @@
         drain_aead_completions_for_bulk_item(
             0,
             &mut shard,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &mut plaintext_batch,
             &mut completion_interleave_budget,
@@ -653,8 +577,7 @@
             DecryptWorkerBulkItem::FspAeadOpen(_) => {
                 panic!("pending opener jobs should remain coalesced")
             }
-            DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::Job(_)
+            DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
@@ -703,7 +626,6 @@
         drop(control_tx);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
@@ -718,7 +640,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             item,
             &mut plaintext_batch,
@@ -740,8 +661,7 @@
             DecryptWorkerBulkItem::FspAeadOpen(_) => {
                 panic!("owner FSP batch should not fragment into a single opener job")
             }
-            DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::Job(_)
+            DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
@@ -822,8 +742,7 @@
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("single pre-owner FSP job should dispatch one opener job")
             }
-            DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::Job(_)
+            DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener job"),
@@ -894,8 +813,7 @@
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("single immediate FSP job should dispatch one opener job")
             }
-            DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::Job(_)
+            DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener job"),
