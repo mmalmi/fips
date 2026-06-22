@@ -76,7 +76,10 @@ impl Node {
         //
         // Worker count defaults to the number of CPUs, overridable
         // via `FIPS_ENCRYPT_WORKERS=N` / `FIPS_DECRYPT_WORKERS=N`
-        // for debug / benchmarking. Hash-by-destination means a
+        // for debug / benchmarking. Decrypt count `0` is not a runtime
+        // mode: the inline-decrypt topology was a diagnostic A/B and is
+        // now retired in favor of one canonical receive/decrypt path.
+        // Hash-by-destination means a
         // single TCP flow pins to one worker (preserves wire
         // ordering); additional workers light up under multi-flow
         // / multi-peer load. See `node::encrypt_worker` /
@@ -102,33 +105,29 @@ impl Node {
                     "Spawned FMP-encrypt worker pool"
                 );
 
-                // `FIPS_DECRYPT_WORKERS=0` disables the pool entirely and
-                // falls through to the in-line rx_loop decrypt path (the
-                // "test-mode" branch in `handle_encrypted_frame`, which is
-                // in fact a fully functional synchronous decrypt). Useful
-                // as an A/B against the worker pipeline when chasing
-                // scheduling/queueing regressions on the native macOS
-                // path. Any non-zero value (env or default) spawns the
-                // pool as before.
-                let decrypt_worker_count: usize = std::env::var("FIPS_DECRYPT_WORKERS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(cpu_default);
-                if decrypt_worker_count == 0 {
-                    info!("FIPS_DECRYPT_WORKERS=0 → in-line decrypt in rx_loop (no worker pool)");
-                } else {
-                    let direct_delivery_sink = self.decrypt_direct_session_delivery_sink();
-                    self.decrypt_workers = Some(
-                        crate::node::decrypt_worker::DecryptWorkerPool::spawn_with_direct_delivery_sink(
-                            decrypt_worker_count,
-                            direct_delivery_sink,
-                        ),
-                    );
-                    info!(
+                let decrypt_worker_count_raw = std::env::var("FIPS_DECRYPT_WORKERS").ok();
+                let decrypt_worker_count = decrypt_worker_count_raw
+                    .as_deref()
+                    .and_then(parse_positive_worker_count)
+                    .unwrap_or(cpu_default)
+                    .max(1);
+                if decrypt_worker_count_raw.as_deref() == Some("0") {
+                    warn!(
                         workers = decrypt_worker_count,
-                        "Spawned FMP+FSP-decrypt worker pool"
+                        "FIPS_DECRYPT_WORKERS=0 is retired; spawning decrypt worker pool"
                     );
                 }
+                let direct_delivery_sink = self.decrypt_direct_session_delivery_sink();
+                self.decrypt_workers = Some(
+                    crate::node::decrypt_worker::DecryptWorkerPool::spawn_with_direct_delivery_sink(
+                        decrypt_worker_count,
+                        direct_delivery_sink,
+                    ),
+                );
+                info!(
+                    workers = decrypt_worker_count,
+                    "Spawned FMP+FSP-decrypt worker pool"
+                );
                 node_start_debug_log("Node::start worker pools complete");
             } else {
                 node_start_debug_log("Node::start worker pools disabled");
@@ -625,5 +624,22 @@ impl Node {
                 false
             }
         }
+    }
+}
+
+fn parse_positive_worker_count(raw: &str) -> Option<usize> {
+    raw.parse::<usize>().ok().filter(|count| *count > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_positive_worker_count;
+
+    #[test]
+    fn decrypt_worker_count_override_rejects_zero() {
+        assert_eq!(parse_positive_worker_count("0"), None);
+        assert_eq!(parse_positive_worker_count("1"), Some(1));
+        assert_eq!(parse_positive_worker_count("8"), Some(8));
+        assert_eq!(parse_positive_worker_count("bad"), None);
     }
 }
