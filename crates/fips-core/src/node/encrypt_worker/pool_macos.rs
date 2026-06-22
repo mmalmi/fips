@@ -210,7 +210,7 @@ impl EncryptWorkerPool {
             use std::hash::{Hash, Hasher};
 
             let queued = QueuedFmpSendJob::direct(job);
-            let key = queued.target_key();
+            let key = queued.target_key;
             let mut h = std::collections::hash_map::DefaultHasher::new();
             key.hash(&mut h);
             let idx = (h.finish() as usize) % self.senders.len();
