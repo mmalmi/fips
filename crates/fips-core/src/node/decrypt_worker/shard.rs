@@ -1629,7 +1629,7 @@ impl DecryptWorkerShard {
 
         if let Some(meta) = fsp_meta {
             let fsp_job = FspDecryptJob {
-                fallback_tx: fallback_tx.clone(),
+                fallback_tx,
                 fallback,
                 lane: DecryptWorkerLane::Bulk,
                 local_node_addr,
