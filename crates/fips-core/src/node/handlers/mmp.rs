@@ -791,6 +791,7 @@ impl Node {
             .and_then(|mmp| mmp.receiver.last_recv_time())
             .unwrap_or(peer.session_start());
         let mut quiet_for = now.duration_since(reference_time);
+        quiet_for = quiet_for.min(Duration::from_millis(peer.idle_time(now_ms)));
 
         if let Some(session_age_ms) = self
             .sessions

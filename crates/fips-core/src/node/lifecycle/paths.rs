@@ -390,11 +390,13 @@ impl Node {
             .saturating_mul(1000)
             .max(1000);
         let now = std::time::Instant::now();
-        let mut inbound_quiet_ms = peer
-            .mmp()
-            .and_then(|mmp| mmp.receiver.last_recv_time())
-            .map(|last_recv| now.duration_since(last_recv).as_millis() as u64)
-            .unwrap_or_else(|| now_ms.saturating_sub(peer.authenticated_at()));
+        let mut inbound_quiet_ms = peer.idle_time(now_ms);
+        inbound_quiet_ms = inbound_quiet_ms.min(
+            peer.mmp()
+                .and_then(|mmp| mmp.receiver.last_recv_time())
+                .map(|last_recv| now.duration_since(last_recv).as_millis() as u64)
+                .unwrap_or_else(|| now_ms.saturating_sub(peer.authenticated_at())),
+        );
         if let Some(session_age_ms) = self
             .sessions
             .iter()
