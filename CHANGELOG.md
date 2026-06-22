@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.76] - 2026-06-22
+
+### Fixed
+
+- Required fresh receive-side endpoint liveness before reporting app-facing
+  peers as connected, preventing stale historical counters from keeping moved
+  or dead NAT paths online in nvpn status.
+- Bumped `fips-endpoint` to 0.3.51 so embedded endpoint consumers pick up the
+  `fips-core` 0.3.76 peer-status freshness fix.
+
 ## [0.3.75] - 2026-06-21
 
 ### Fixed
