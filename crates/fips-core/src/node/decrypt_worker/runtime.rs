@@ -561,6 +561,8 @@ fn handle_bulk_item(
             }
             let mut fsp_batcher = FspDecryptJobBatcher::new();
             let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+            let mut completion_interleave_budget =
+                DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
             for job in jobs {
                 while let Ok(msg) = control_rx.try_recv() {
                     fsp_batcher.flush(&shard.pool);
@@ -588,8 +590,6 @@ fn handle_bulk_item(
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
-                let mut completion_interleave_budget =
-                    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
                 if drain_aead_completions_for_bulk_item(
                     idx,
                     shard,
@@ -626,6 +626,8 @@ fn handle_bulk_item(
             record_fsp_worker_bulk_input_head_wait_batch(&jobs);
             let count = jobs.len();
             let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+            let mut completion_interleave_budget =
+                DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
             for job in jobs {
                 while let Ok(msg) = control_rx.try_recv() {
                     flush_fsp_open_batcher(
@@ -651,8 +653,6 @@ fn handle_bulk_item(
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
-                let mut completion_interleave_budget =
-                    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
                 if drain_aead_completions_for_bulk_item(
                     idx,
                     shard,
