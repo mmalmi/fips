@@ -509,6 +509,88 @@ fn show_peers_reports_fallback_active_with_direct_probe_pending() {
 }
 
 #[tokio::test]
+async fn endpoint_peer_snapshot_does_not_treat_stale_historical_rx_as_connected() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey_full(peer_identity.pubkey_full());
+    let peer_addr = *peer.node_addr();
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, Config::new()).expect("node");
+    node.config.node.heartbeat_interval_secs = 2;
+
+    let mut stats = crate::transport::LinkStats::new();
+    stats.record_recv(128, 1);
+    let active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        1,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.24:51820"),
+        stats,
+        true,
+        &node.config.node.mmp,
+        Some([2; 8]),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    node.handle_endpoint_data_command(crate::node::NodeEndpointCommand::PeerSnapshot {
+        response_tx,
+    })
+    .await;
+    let peers = response_rx.await.expect("peer snapshot response");
+    let peer = peers.first().expect("one peer");
+    assert_eq!(
+        peer.connected, false,
+        "stale historical receive counters must not keep status/GUI online"
+    );
+}
+
+#[tokio::test]
+async fn endpoint_peer_snapshot_treats_fresh_rx_as_connected() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey_full(peer_identity.pubkey_full());
+    let peer_addr = *peer.node_addr();
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, Config::new()).expect("node");
+    node.config.node.heartbeat_interval_secs = 2;
+
+    let mut stats = crate::transport::LinkStats::new();
+    stats.record_recv(128, Node::now_ms());
+    let active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        Node::now_ms(),
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.24:51820"),
+        stats,
+        true,
+        &node.config.node.mmp,
+        Some([2; 8]),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    node.handle_endpoint_data_command(crate::node::NodeEndpointCommand::PeerSnapshot {
+        response_tx,
+    })
+    .await;
+    let peers = response_rx.await.expect("peer snapshot response");
+    let peer = peers.first().expect("one peer");
+    assert_eq!(
+        peer.connected, true,
+        "fresh receive evidence should keep status/GUI online"
+    );
+}
+
+#[tokio::test]
 async fn process_pending_retries_allows_active_direct_refresh_at_peer_capacity() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
