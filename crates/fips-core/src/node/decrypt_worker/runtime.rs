@@ -523,6 +523,73 @@ fn flush_fsp_open_batcher(
     }
 }
 
+struct BulkTurnBatchers<'a> {
+    fsp_batcher: Option<&'a mut FspDecryptJobBatcher>,
+    fsp_open_batcher: Option<&'a mut FspAeadOpenJobBatcher>,
+}
+
+impl<'a> BulkTurnBatchers<'a> {
+    fn new(
+        fsp_batcher: Option<&'a mut FspDecryptJobBatcher>,
+        fsp_open_batcher: Option<&'a mut FspAeadOpenJobBatcher>,
+    ) -> Self {
+        Self {
+            fsp_batcher,
+            fsp_open_batcher,
+        }
+    }
+
+    fn flush_pending(
+        &mut self,
+        idx: usize,
+        shard: &mut DecryptWorkerShard,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        if let Some(fsp_batcher) = self.fsp_batcher.as_deref_mut() {
+            fsp_batcher.flush(&shard.pool);
+        }
+        if let Some(fsp_open_batcher) = self.fsp_open_batcher.as_deref_mut() {
+            flush_fsp_open_batcher(idx, shard, plaintext_batch, fsp_open_batcher);
+        }
+        plaintext_batch.flush();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drain_reserved_work_before_bulk_packet(
+    idx: usize,
+    shard: &mut DecryptWorkerShard,
+    control_rx: &Receiver<WorkerMsg>,
+    priority_rx: &Receiver<WorkerMsg>,
+    fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
+    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    batch_stats: &mut DecryptWorkerBatchStats,
+    mut batchers: BulkTurnBatchers<'_>,
+) {
+    while let Ok(msg) = control_rx.try_recv() {
+        batchers.flush_pending(idx, shard, plaintext_batch);
+        crate::perf_profile::record_decrypt_worker_drain_control();
+        batch_stats.add_msg(&msg);
+        shard.handle_msg(idx, msg);
+    }
+    while let Ok(msg) = priority_rx.try_recv() {
+        batchers.flush_pending(idx, shard, plaintext_batch);
+        crate::perf_profile::record_decrypt_worker_drain_priority();
+        batch_stats.add_msg(&msg);
+        shard.handle_msg(idx, msg);
+    }
+    let mut completion_interleave_budget = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+    if drain_aead_completions_for_bulk_item(
+        idx,
+        shard,
+        fsp_aead_completion_rx,
+        plaintext_batch,
+        &mut completion_interleave_budget,
+    ) {
+        plaintext_batch.flush();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_bulk_item(
     idx: usize,
@@ -574,43 +641,16 @@ fn handle_bulk_item(
             let mut fsp_batcher = FspDecryptJobBatcher::new();
             let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
             for job in jobs {
-                while let Ok(msg) = control_rx.try_recv() {
-                    fsp_batcher.flush(&shard.pool);
-                    flush_fsp_open_batcher(
-                        idx,
-                        shard,
-                        plaintext_batch,
-                        &mut fsp_open_batcher,
-                    );
-                    plaintext_batch.flush();
-                    crate::perf_profile::record_decrypt_worker_drain_control();
-                    batch_stats.add_msg(&msg);
-                    shard.handle_msg(idx, msg);
-                }
-                while let Ok(msg) = priority_rx.try_recv() {
-                    fsp_batcher.flush(&shard.pool);
-                    flush_fsp_open_batcher(
-                        idx,
-                        shard,
-                        plaintext_batch,
-                        &mut fsp_open_batcher,
-                    );
-                    plaintext_batch.flush();
-                    crate::perf_profile::record_decrypt_worker_drain_priority();
-                    batch_stats.add_msg(&msg);
-                    shard.handle_msg(idx, msg);
-                }
-                let mut completion_interleave_budget =
-                    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
-                if drain_aead_completions_for_bulk_item(
+                drain_reserved_work_before_bulk_packet(
                     idx,
                     shard,
+                    control_rx,
+                    priority_rx,
                     fsp_aead_completion_rx,
                     plaintext_batch,
-                    &mut completion_interleave_budget,
-                ) {
-                    plaintext_batch.flush();
-                }
+                    batch_stats,
+                    BulkTurnBatchers::new(Some(&mut fsp_batcher), Some(&mut fsp_open_batcher)),
+                );
                 record_decrypt_worker_bulk_input_tail_wait(item_started_at);
                 match shard.handle_job_action(idx, job) {
                     Ok(actions) => {
@@ -639,41 +679,16 @@ fn handle_bulk_item(
             let count = jobs.len();
             let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
             for job in jobs {
-                while let Ok(msg) = control_rx.try_recv() {
-                    flush_fsp_open_batcher(
-                        idx,
-                        shard,
-                        plaintext_batch,
-                        &mut fsp_open_batcher,
-                    );
-                    plaintext_batch.flush();
-                    crate::perf_profile::record_decrypt_worker_drain_control();
-                    batch_stats.add_msg(&msg);
-                    shard.handle_msg(idx, msg);
-                }
-                while let Ok(msg) = priority_rx.try_recv() {
-                    flush_fsp_open_batcher(
-                        idx,
-                        shard,
-                        plaintext_batch,
-                        &mut fsp_open_batcher,
-                    );
-                    plaintext_batch.flush();
-                    crate::perf_profile::record_decrypt_worker_drain_priority();
-                    batch_stats.add_msg(&msg);
-                    shard.handle_msg(idx, msg);
-                }
-                let mut completion_interleave_budget =
-                    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
-                if drain_aead_completions_for_bulk_item(
+                drain_reserved_work_before_bulk_packet(
                     idx,
                     shard,
+                    control_rx,
+                    priority_rx,
                     fsp_aead_completion_rx,
                     plaintext_batch,
-                    &mut completion_interleave_budget,
-                ) {
-                    plaintext_batch.flush();
-                }
+                    batch_stats,
+                    BulkTurnBatchers::new(None, Some(&mut fsp_open_batcher)),
+                );
                 record_fsp_worker_bulk_input_tail_wait(item_started_at);
                 shard.handle_bulk_fsp_job_with_open_batcher(
                     idx,
