@@ -512,8 +512,7 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     }];
-    node.configured_peer_send_weights =
-        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
+    node.configured_peer_cache = crate::node::ConfiguredPeerCache::from_config(&node.config);
 
     let old_link_id = LinkId::new(10);
     let old_our_index = SessionIndex::new(11);

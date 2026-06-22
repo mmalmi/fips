@@ -151,7 +151,7 @@ impl Node {
         &self,
         peer_config: &PeerConfig,
     ) -> bool {
-        self.configured_peer_send_weights
+        self.configured_peer_cache
             .peer_addr_for_npub(&peer_config.npub)
             .is_some()
     }
@@ -371,7 +371,7 @@ impl Node {
     ) {
         let now_ms = Self::now_ms();
         let peer_configs = self
-            .configured_peer_send_weights
+            .configured_peer_cache
             .auto_connect_peer_configs()
             .map(|(node_addr, peer_config)| (*node_addr, peer_config.clone()))
             .collect::<Vec<_>>();

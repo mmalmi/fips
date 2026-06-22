@@ -171,14 +171,14 @@ async fn update_peers_refreshes_configured_peer_binary_index() {
         "configured identity should be cached beside the peer config"
     );
     assert_eq!(
-        node.configured_peer_send_weights
+        node.configured_peer_cache
             .identity_for_npub(&second_peer.npub)
             .map(|identity| identity.node_addr()),
         Some(&second_addr),
         "npub lookup should resolve through the refreshed side index"
     );
     assert!(
-        node.configured_peer_send_weights
+        node.configured_peer_cache
             .identity_for_npub(&first_peer.npub)
             .is_none(),
         "removed npub must leave the configured-peer side index"

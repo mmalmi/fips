@@ -28,7 +28,7 @@ fn peer_lifecycle_registry_owns_connected_udp_activation_plan() {
         "udp",
         "127.0.0.1:1",
     ));
-    let configured_peers = ConfiguredPeerSendWeights::from_config(&config);
+    let configured_peers = ConfiguredPeerCache::from_config(&config);
 
     let mut registry = PeerLifecycleRegistry::default();
     registry.insert_with_current_session_index(

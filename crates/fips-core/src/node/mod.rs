@@ -448,9 +448,9 @@ pub struct Node {
     /// Human-readable names for configured peers (alias or short npub).
     /// Populated at startup from peer config.
     peer_aliases: HashMap<NodeAddr, String>,
-    /// Scheduler weight for explicitly configured peers. Built when config
-    /// changes so the packet hot path only does a NodeAddr hash lookup.
-    configured_peer_send_weights: ConfiguredPeerSendWeights,
+    /// Parsed configured-peer roster. Built when config changes so hot paths
+    /// can look up policy, identity, and send weights by binary `NodeAddr`.
+    configured_peer_cache: ConfiguredPeerCache,
 
     /// Reloadable peer ACL state from standard allow/deny files.
     peer_acl: acl::PeerAclReloader,

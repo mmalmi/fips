@@ -826,7 +826,7 @@ impl Node {
     }
 
     pub(crate) fn configured_peer(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
-        self.configured_peer_send_weights.peer_config(peer_addr)
+        self.configured_peer_cache.peer_config(peer_addr)
     }
 
     pub(in crate::node) fn configured_auto_connect_peer_config(
@@ -843,14 +843,14 @@ impl Node {
         &self,
         peer_addr: &NodeAddr,
     ) -> Option<&PeerIdentity> {
-        self.configured_peer_send_weights.identity(peer_addr)
+        self.configured_peer_cache.identity(peer_addr)
     }
 
     pub(in crate::node) fn configured_or_parsed_peer_identity(
         &self,
         npub: &str,
     ) -> Result<PeerIdentity, String> {
-        if let Some(identity) = self.configured_peer_send_weights.identity_for_npub(npub) {
+        if let Some(identity) = self.configured_peer_cache.identity_for_npub(npub) {
             return Ok(*identity);
         }
         PeerIdentity::from_npub(npub).map_err(|error| error.to_string())
@@ -860,9 +860,7 @@ impl Node {
         &self,
         npub: &str,
     ) -> Option<PeerIdentity> {
-        self.configured_peer_send_weights
-            .identity_for_npub(npub)
-            .copied()
+        self.configured_peer_cache.identity_for_npub(npub).copied()
     }
 
     pub(in crate::node) fn active_peer_uses_configured_static_udp_path(

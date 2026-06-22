@@ -1,6 +1,6 @@
 //! Node lifecycle management: start, stop, and peer connection initiation.
 
-use super::{ConfiguredPeerSendWeights, Node, NodeError, NodeState};
+use super::{ConfiguredPeerCache, Node, NodeError, NodeState};
 use crate::config::{ConnectPolicy, NostrDiscoveryPolicy, PeerAddress, PeerConfig};
 use crate::discovery::nostr::{
     ADVERT_IDENTIFIER, ADVERT_VERSION, BootstrapEvent, MeshTraversalSignal, NostrDiscovery,

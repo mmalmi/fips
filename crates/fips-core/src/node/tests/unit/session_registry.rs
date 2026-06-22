@@ -407,7 +407,7 @@ fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
 }
 
 #[test]
-fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
+fn configured_peer_cache_own_identity_parse_and_default_policy() {
     let configured = Identity::generate();
     let configured_npub = configured.npub();
     let configured_addr = *PeerIdentity::from_npub(&configured_npub)
@@ -437,49 +437,49 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "127.0.0.1:2",
     ));
 
-    let weights = ConfiguredPeerSendWeights::from_config(&config);
+    let cache = ConfiguredPeerCache::from_config(&config);
 
     assert_eq!(
-        weights.weight_for(&configured_addr),
+        cache.weight_for(&configured_addr),
         encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
         "configured peers reserve the explicit send-scheduling lane"
     );
     assert_eq!(
-        weights.weight_for(&unknown_addr),
+        cache.weight_for(&unknown_addr),
         encrypt_worker::DEFAULT_SEND_WEIGHT,
         "unconfigured peers must stay on the default send-scheduling lane"
     );
     assert_eq!(
-        weights.len(),
+        cache.len(),
         2,
         "invalid peer identities must not create phantom scheduling policy"
     );
     assert_eq!(
-        weights.peer_addr_for_npub(&configured_npub),
+        cache.peer_addr_for_npub(&configured_npub),
         Some(configured_addr),
         "configured peer npubs are parsed once into a reverse address lookup"
     );
     assert_eq!(
-        weights
+        cache
             .identity(&configured_addr)
             .map(|identity| identity.node_addr()),
         Some(&configured_addr),
         "configured peer identities are cached beside their node address"
     );
     assert_eq!(
-        weights
+        cache
             .identity_for_npub(&configured_npub)
             .map(|identity| identity.node_addr()),
         Some(&configured_addr),
         "configured npubs should resolve to parsed identities without reparsing"
     );
     assert_eq!(
-        weights.peer_addr_for_npub(&on_demand_npub),
+        cache.peer_addr_for_npub(&on_demand_npub),
         Some(on_demand_addr),
         "non-auto configured peers should still be addressable by npub"
     );
     assert_eq!(
-        weights
+        cache
             .peer_config(&configured_addr)
             .expect("configured peer metadata")
             .addresses[0]
@@ -487,7 +487,7 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "127.0.0.1:1",
         "configured peer metadata is parsed once into the runtime lookup cache"
     );
-    let auto_connect_addrs = weights
+    let auto_connect_addrs = cache
         .auto_connect_peer_configs()
         .map(|(addr, _)| *addr)
         .collect::<Vec<_>>();
@@ -497,7 +497,7 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "runtime auto-connect iteration must preserve Config::auto_connect_peers semantics"
     );
     assert!(
-        weights.peer_config(&unknown_addr).is_none(),
+        cache.peer_config(&unknown_addr).is_none(),
         "unconfigured peers must not have cached peer metadata"
     );
 }

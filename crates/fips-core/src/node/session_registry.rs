@@ -284,18 +284,21 @@ impl DecryptSessionRegistrations {
     }
 }
 
-/// Send-scheduling policy derived from the configured peer roster.
+/// Parsed view of the configured peer roster.
+///
+/// Built when config changes so hot-path policy checks use binary `NodeAddr` /
+/// `PeerIdentity` keys instead of scanning peer config and reparsing npubs.
 #[derive(Debug, Default)]
-pub(in crate::node) struct ConfiguredPeerSendWeights {
-    entries: HashMap<NodeAddr, u8>,
+pub(in crate::node) struct ConfiguredPeerCache {
+    send_weights: HashMap<NodeAddr, u8>,
     peer_configs: HashMap<NodeAddr, PeerConfig>,
     identities: HashMap<NodeAddr, PeerIdentity>,
     peer_addrs_by_npub: HashMap<String, NodeAddr>,
 }
 
-impl ConfiguredPeerSendWeights {
+impl ConfiguredPeerCache {
     pub(in crate::node) fn from_config(config: &Config) -> Self {
-        let mut entries = HashMap::with_capacity(config.peers().len());
+        let mut send_weights = HashMap::with_capacity(config.peers().len());
         let mut peer_configs = HashMap::with_capacity(config.peers().len());
         let mut identities = HashMap::with_capacity(config.peers().len());
         let mut peer_addrs_by_npub = HashMap::with_capacity(config.peers().len());
@@ -304,13 +307,13 @@ impl ConfiguredPeerSendWeights {
                 continue;
             };
             let node_addr = *identity.node_addr();
-            entries.insert(node_addr, encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT);
+            send_weights.insert(node_addr, encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT);
             identities.insert(node_addr, identity);
             peer_addrs_by_npub.insert(peer.npub.clone(), node_addr);
             peer_configs.insert(node_addr, peer.clone());
         }
         Self {
-            entries,
+            send_weights,
             peer_configs,
             identities,
             peer_addrs_by_npub,
@@ -318,7 +321,7 @@ impl ConfiguredPeerSendWeights {
     }
 
     pub(in crate::node) fn weight_for(&self, peer_addr: &NodeAddr) -> u8 {
-        self.entries
+        self.send_weights
             .get(peer_addr)
             .copied()
             .unwrap_or(encrypt_worker::DEFAULT_SEND_WEIGHT)

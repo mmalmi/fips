@@ -87,7 +87,7 @@ impl Node {
             // without holding the &mut on self.peers across awaits.
             let plan = self
                 .peers
-                .connected_udp_activation_plan(&self.configured_peer_send_weights);
+                .connected_udp_activation_plan(&self.configured_peer_cache);
             let candidates = plan.candidates;
             let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
             let fd_reserve = connected_udp_fd_reserve(self.config.node.connected_udp.fd_reserve);
