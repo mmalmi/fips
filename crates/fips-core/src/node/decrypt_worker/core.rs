@@ -288,7 +288,7 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
                 replay: epoch.replay,
             }),
             fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
-            fsp_receive_order: FspReceiveOrder::new(),
+            fsp_receive_order: new_fsp_receive_order(),
             fsp_shared_crypto: None,
         }
     }
@@ -356,7 +356,7 @@ impl FspSharedCryptoSession {
                 (in_flight < fsp_receive_window() as u64).then(|| current.saturating_add(1))
             })
             .ok()
-            .map(|sequence| FspReceiveTicket { sequence })
+            .map(|sequence| OrderedReceiveTicket { sequence })
     }
 
     #[cfg(test)]
@@ -664,9 +664,11 @@ impl OwnedFspSessionState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FspReceiveTicket {
+struct OrderedReceiveTicket {
     sequence: u64,
 }
+
+type FspReceiveTicket = OrderedReceiveTicket;
 
 #[derive(Debug)]
 enum OrderedCompletionError {
@@ -693,7 +695,7 @@ impl<T> OrderedCompletionBuffer<T> {
 
     fn complete(
         &mut self,
-        ticket: FspReceiveTicket,
+        ticket: OrderedReceiveTicket,
         completion: T,
         mut on_ready: impl FnMut(T),
     ) -> Result<usize, OrderedCompletionError> {
@@ -746,20 +748,20 @@ impl<T> OrderedCompletionBuffer<T> {
     }
 }
 
-struct FspReceiveOrder {
+struct OrderedReceiveWindow<T> {
     next_ticket: u64,
-    completions: OrderedCompletionBuffer<FspOrderedCompletion>,
+    completions: OrderedCompletionBuffer<T>,
 }
 
-impl FspReceiveOrder {
-    fn new() -> Self {
+impl<T> OrderedReceiveWindow<T> {
+    fn new(pending_limit: usize) -> Self {
         Self {
             next_ticket: 0,
-            completions: OrderedCompletionBuffer::new(fsp_receive_window()),
+            completions: OrderedCompletionBuffer::new(pending_limit),
         }
     }
 
-    fn issue(&mut self) -> Option<FspReceiveTicket> {
+    fn issue(&mut self) -> Option<OrderedReceiveTicket> {
         if self
             .next_ticket
             .saturating_sub(self.completions.next_ready())
@@ -767,7 +769,7 @@ impl FspReceiveOrder {
         {
             return None;
         }
-        let ticket = FspReceiveTicket {
+        let ticket = OrderedReceiveTicket {
             sequence: self.next_ticket,
         };
         self.next_ticket = self.next_ticket.saturating_add(1);
@@ -784,12 +786,18 @@ impl FspReceiveOrder {
 
     fn complete(
         &mut self,
-        ticket: FspReceiveTicket,
-        completion: FspOrderedCompletion,
-        on_ready: impl FnMut(FspOrderedCompletion),
+        ticket: OrderedReceiveTicket,
+        completion: T,
+        on_ready: impl FnMut(T),
     ) -> Result<usize, OrderedCompletionError> {
         self.completions.complete(ticket, completion, on_ready)
     }
+}
+
+type FspReceiveOrder = OrderedReceiveWindow<FspOrderedCompletion>;
+
+fn new_fsp_receive_order() -> FspReceiveOrder {
+    OrderedReceiveWindow::new(fsp_receive_window())
 }
 
 struct FspOpenedJob {

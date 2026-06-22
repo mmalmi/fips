@@ -51,6 +51,72 @@
     }
 
     #[test]
+    fn ordered_receive_window_buffers_until_oldest_completion_is_ready() {
+        let mut window = OrderedReceiveWindow::new(4);
+        let first = window.issue().expect("first ticket");
+        let second = window.issue().expect("second ticket");
+        let third = window.issue().expect("third ticket");
+        assert_eq!(first.sequence, 0);
+        assert_eq!(second.sequence, 1);
+        assert_eq!(third.sequence, 2);
+
+        let mut ready = Vec::new();
+        assert_eq!(
+            window
+                .complete(second, "second", |completion| ready.push(completion))
+                .expect("second completion should buffer"),
+            0
+        );
+        assert!(ready.is_empty());
+
+        assert_eq!(
+            window
+                .complete(third, "third", |completion| ready.push(completion))
+                .expect("third completion should buffer behind first"),
+            0
+        );
+        assert!(ready.is_empty());
+
+        assert_eq!(
+            window
+                .complete(first, "first", |completion| ready.push(completion))
+                .expect("first completion should drain all ready completions"),
+            3
+        );
+        assert_eq!(ready, vec!["first", "second", "third"]);
+        assert_eq!(window.completions.next_ready(), 3);
+    }
+
+    #[test]
+    fn ordered_receive_window_bounds_inflight_tickets() {
+        let mut window = OrderedReceiveWindow::<&'static str>::new(2);
+        let first = window.issue().expect("first ticket");
+        let second = window.issue().expect("second ticket");
+        assert!(
+            window.issue().is_none(),
+            "full receive window must not admit unbounded work"
+        );
+
+        assert!(matches!(
+            window.complete(second, "second", |_| {}),
+            Ok(0)
+        ));
+        assert!(
+            window.issue().is_none(),
+            "out-of-order completion must not free the oldest receive slot"
+        );
+
+        assert!(matches!(
+            window.complete(first, "first", |_| {}),
+            Ok(2)
+        ));
+        let third = window
+            .issue()
+            .expect("ready progress should reopen one receive slot");
+        assert_eq!(third.sequence, 2);
+    }
+
+    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
