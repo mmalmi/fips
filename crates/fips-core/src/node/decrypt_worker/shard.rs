@@ -114,12 +114,12 @@ fn record_fsp_owner_handoff_drop(lane: DecryptWorkerLane, count: usize) {
 }
 
 #[inline]
-fn record_fsp_open_pool_bulk_drop(count: usize) {
+fn record_fsp_open_worker_returned_drop(count: usize) {
     if count == 0 {
         return;
     }
     crate::perf_profile::record_event_count(
-        crate::perf_profile::Event::DecryptFspOpenPoolQueueFullFallback,
+        crate::perf_profile::Event::DecryptFspOpenWorkerReturnedDropped,
         count as u64,
     );
     crate::perf_profile::record_event_count(
@@ -718,7 +718,7 @@ impl DecryptWorkerShard {
             }
         }
 
-        record_fsp_open_pool_bulk_drop(returned_count);
+        record_fsp_open_worker_returned_drop(returned_count);
         if let Some(flush) = batcher.flush() {
             self.flush_dropped_fsp_aead_open_completion_batch(idx, flush, plaintext_batch);
         }

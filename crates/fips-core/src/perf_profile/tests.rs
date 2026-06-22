@@ -572,8 +572,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "connected_udp_direct_decrypt_bulk_shed"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspOpenPoolQueueFullFallback as usize).name(),
-        "decrypt_fsp_open_pool_queue_full_fallback"
+        event_from_index(Event::DecryptFspOpenWorkerReturnedDropped as usize).name(),
+        "decrypt_fsp_open_worker_returned_dropped"
     );
     assert_eq!(
         event_from_index(Event::ConnectedUdpKernelDropped as usize).name(),
@@ -844,8 +844,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_fsp_open_worker_completion_backlog_fallback"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspOpenPoolQueueFullFallback as usize).name(),
-        "decrypt_fsp_open_pool_queue_full_fallback"
+        event_from_index(Event::DecryptFspOpenWorkerReturnedDropped as usize).name(),
+        "decrypt_fsp_open_worker_returned_dropped"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReturnedHelper as usize).name(),
@@ -1246,8 +1246,8 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptFmpPreownerCompletionBacklogFallback as usize].load(Relaxed);
     let fsp_open_worker_completion_backlog_fallback_before =
         EVENTS[Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize].load(Relaxed);
-    let fsp_open_pool_queue_full_fallback_before =
-        EVENTS[Event::DecryptFspOpenPoolQueueFullFallback as usize].load(Relaxed);
+    let fsp_open_worker_returned_dropped_before =
+        EVENTS[Event::DecryptFspOpenWorkerReturnedDropped as usize].load(Relaxed);
     let fsp_path_worker_open_striped_before =
         EVENTS[Event::DecryptFspPathWorkerOpenStriped as usize].load(Relaxed);
     let dispatch_flow_keyed_before =
@@ -1309,7 +1309,7 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptFmpHelperCompletionBacklogFallback, 111);
     record_event_count_sample(Event::DecryptFmpPreownerCompletionBacklogFallback, 112);
     record_event_count_sample(Event::DecryptFspOpenWorkerCompletionBacklogFallback, 116);
-    record_event_count_sample(Event::DecryptFspOpenPoolQueueFullFallback, 117);
+    record_event_count_sample(Event::DecryptFspOpenWorkerReturnedDropped, 117);
     record_event_count_sample(Event::DecryptFspPathWorkerOpenStriped, 118);
     record_event_count_sample(Event::FmpWorkerDispatchFlowKeyed, 113);
     record_event_count_sample(Event::FmpWorkerDispatchTargetOnly, 127);
@@ -1518,8 +1518,8 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         116
     );
     assert_eq!(
-        EVENTS[Event::DecryptFspOpenPoolQueueFullFallback as usize].load(Relaxed)
-            - fsp_open_pool_queue_full_fallback_before,
+        EVENTS[Event::DecryptFspOpenWorkerReturnedDropped as usize].load(Relaxed)
+            - fsp_open_worker_returned_dropped_before,
         117
     );
     assert_eq!(

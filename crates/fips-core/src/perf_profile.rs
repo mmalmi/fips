@@ -630,7 +630,7 @@ pub enum Event {
     FspAeadCompletionReplayDroppedTooOldLagGe16xWindow = 154,
     FspAeadCompletionReplayDroppedTooOldLagGe64xWindow = 155,
     ConnectedUdpDirectDecryptBulkShed = 156,
-    DecryptFspOpenPoolQueueFullFallback = 157,
+    DecryptFspOpenWorkerReturnedDropped = 157,
     /// Legacy pipeline name for transport UDP kernel receive drops sampled
     /// once per node tick from SO_RXQ_OVFL-backed transport counters.
     ConnectedUdpKernelDropped = 158,
@@ -819,7 +819,7 @@ impl Event {
                 | Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow
                 | Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow
                 | Event::ConnectedUdpDirectDecryptBulkShed
-                | Event::DecryptFspOpenPoolQueueFullFallback
+                | Event::DecryptFspOpenWorkerReturnedDropped
                 | Event::ConnectedUdpKernelDropped
                 | Event::ConnectedUdpPeerKernelDropped
                 | Event::DecryptAuthenticatedBacklogHigh
@@ -1067,8 +1067,8 @@ impl Event {
                 "fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
             }
             Event::ConnectedUdpDirectDecryptBulkShed => "connected_udp_direct_decrypt_bulk_shed",
-            Event::DecryptFspOpenPoolQueueFullFallback => {
-                "decrypt_fsp_open_pool_queue_full_fallback"
+            Event::DecryptFspOpenWorkerReturnedDropped => {
+                "decrypt_fsp_open_worker_returned_dropped"
             }
             Event::ConnectedUdpKernelDropped => "connected_udp_kernel_dropped",
             Event::ConnectedUdpPeerKernelDropped => "connected_udp_peer_kernel_dropped",
@@ -1432,7 +1432,7 @@ fn event_from_index(idx: usize) -> Event {
         154 => Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow,
         155 => Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow,
         156 => Event::ConnectedUdpDirectDecryptBulkShed,
-        157 => Event::DecryptFspOpenPoolQueueFullFallback,
+        157 => Event::DecryptFspOpenWorkerReturnedDropped,
         158 => Event::ConnectedUdpKernelDropped,
         159 => Event::ConnectedUdpPeerKernelDropped,
         160 => Event::DecryptFspPathWorkerOpenStriped,
