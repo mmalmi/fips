@@ -12,7 +12,6 @@ pub struct FipsEndpointBuilder {
 }
 
 const DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 8192;
-const MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 65_536;
 
 impl Default for FipsEndpointBuilder {
     fn default() -> Self {
@@ -22,24 +21,9 @@ impl Default for FipsEndpointBuilder {
             discovery_scope: None,
             local_ethernet_interfaces: Vec::new(),
             disable_system_networking: true,
-            packet_channel_capacity: default_endpoint_packet_channel_capacity(),
+            packet_channel_capacity: DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
         }
     }
-}
-
-fn default_endpoint_packet_channel_capacity() -> usize {
-    parse_endpoint_packet_channel_capacity(
-        std::env::var("FIPS_ENDPOINT_PACKET_CHANNEL_CAP")
-            .ok()
-            .as_deref(),
-        DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
-    )
-}
-
-fn parse_endpoint_packet_channel_capacity(raw: Option<&str>, default: usize) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(default)
-        .clamp(1, MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY)
 }
 
 impl FipsEndpointBuilder {
@@ -175,53 +159,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_packet_channel_capacity_env_keeps_safe_bounds() {
+    fn endpoint_packet_channel_capacity_default_is_fixed() {
+        let config = FipsEndpointBuilder::default().prepared_config();
         assert_eq!(
-            parse_endpoint_packet_channel_capacity(None, DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY),
+            config.node.buffers.packet_channel,
             DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some(""),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some("not-a-number"),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some("0"),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            1
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some("8192"),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            8192
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some("999999"),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY
         );
     }
 
     #[test]
-    fn endpoint_packet_channel_capacity_applies_to_transport_node_buffer() {
+    fn explicit_endpoint_packet_channel_capacity_applies_to_transport_node_buffer() {
         let config = FipsEndpointBuilder::default()
             .packet_channel_capacity(16_384)
             .prepared_config();
         assert_eq!(config.node.buffers.packet_channel, 16_384);
+    }
+
+    #[test]
+    fn explicit_endpoint_packet_channel_capacity_keeps_minimum() {
+        let config = FipsEndpointBuilder::default()
+            .packet_channel_capacity(0)
+            .prepared_config();
+        assert_eq!(config.node.buffers.packet_channel, 1);
     }
 }
