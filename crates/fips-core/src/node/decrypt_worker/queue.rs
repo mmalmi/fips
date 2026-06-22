@@ -31,6 +31,8 @@ enum WorkerMsg {
 enum DecryptWorkerBulkItem {
     Job(DecryptJob),
     FspJob(FspDecryptJob),
+    FmpAeadOpen(FmpAeadOpenJob),
+    FmpAeadOpenBatch(Vec<FmpAeadOpenJob>),
     FspAeadOpen(FspAeadOpenJob),
     FspAeadOpenBatch(Vec<FspAeadOpenJob>),
     Batch(Vec<DecryptJob>),
@@ -40,7 +42,8 @@ enum DecryptWorkerBulkItem {
 impl DecryptWorkerBulkItem {
     fn packet_count(&self) -> usize {
         match self {
-            Self::Job(_) | Self::FspJob(_) | Self::FspAeadOpen(_) => 1,
+            Self::Job(_) | Self::FspJob(_) | Self::FmpAeadOpen(_) | Self::FspAeadOpen(_) => 1,
+            Self::FmpAeadOpenBatch(jobs) => jobs.len(),
             Self::FspAeadOpenBatch(jobs) => jobs.len(),
             Self::Batch(jobs) => jobs.len(),
             Self::FspBatch(jobs) => jobs.len(),
@@ -55,7 +58,19 @@ impl DecryptWorkerBulkItem {
             return (None, Some(self));
         }
         match self {
-            Self::Job(_) | Self::FspJob(_) | Self::FspAeadOpen(_) => (Some(self), None),
+            Self::Job(_) | Self::FspJob(_) | Self::FmpAeadOpen(_) | Self::FspAeadOpen(_) => {
+                (Some(self), None)
+            }
+            Self::FmpAeadOpenBatch(mut jobs) => {
+                if packet_count >= jobs.len() {
+                    return (Some(Self::FmpAeadOpenBatch(jobs)), None);
+                }
+                let overflow = jobs.split_off(packet_count);
+                (
+                    Some(decrypt_worker_bulk_item_from_fmp_aead_open_jobs(jobs)),
+                    Some(decrypt_worker_bulk_item_from_fmp_aead_open_jobs(overflow)),
+                )
+            }
             Self::FspAeadOpenBatch(mut jobs) => {
                 if packet_count >= jobs.len() {
                     return (Some(Self::FspAeadOpenBatch(jobs)), None);
@@ -87,6 +102,16 @@ impl DecryptWorkerBulkItem {
                 )
             }
         }
+    }
+}
+
+fn decrypt_worker_bulk_item_from_fmp_aead_open_jobs(
+    mut jobs: Vec<FmpAeadOpenJob>,
+) -> DecryptWorkerBulkItem {
+    if jobs.len() == 1 {
+        DecryptWorkerBulkItem::FmpAeadOpen(jobs.pop().expect("checked single FMP AEAD open job"))
+    } else {
+        DecryptWorkerBulkItem::FmpAeadOpenBatch(jobs)
     }
 }
 
@@ -123,6 +148,8 @@ fn fsp_jobs_from_decrypt_worker_bulk_item(item: DecryptWorkerBulkItem) -> Vec<Fs
         DecryptWorkerBulkItem::FspJob(job) => vec![job],
         DecryptWorkerBulkItem::FspBatch(jobs) => jobs,
         DecryptWorkerBulkItem::Job(_)
+        | DecryptWorkerBulkItem::FmpAeadOpen(_)
+        | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
         | DecryptWorkerBulkItem::FspAeadOpen(_)
         | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
         | DecryptWorkerBulkItem::Batch(_) => {
@@ -138,10 +165,29 @@ fn fsp_aead_open_jobs_from_decrypt_worker_bulk_item(
         DecryptWorkerBulkItem::FspAeadOpen(job) => vec![job],
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => jobs,
         DecryptWorkerBulkItem::Job(_)
+        | DecryptWorkerBulkItem::FmpAeadOpen(_)
+        | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
         | DecryptWorkerBulkItem::FspJob(_)
         | DecryptWorkerBulkItem::Batch(_)
         | DecryptWorkerBulkItem::FspBatch(_) => {
             unreachable!("FSP AEAD opener dispatch only sends opener jobs")
+        }
+    }
+}
+
+fn fmp_aead_open_jobs_from_decrypt_worker_bulk_item(
+    item: DecryptWorkerBulkItem,
+) -> Vec<FmpAeadOpenJob> {
+    match item {
+        DecryptWorkerBulkItem::FmpAeadOpen(job) => vec![job],
+        DecryptWorkerBulkItem::FmpAeadOpenBatch(jobs) => jobs,
+        DecryptWorkerBulkItem::Job(_)
+        | DecryptWorkerBulkItem::FspJob(_)
+        | DecryptWorkerBulkItem::FspAeadOpen(_)
+        | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+        | DecryptWorkerBulkItem::Batch(_)
+        | DecryptWorkerBulkItem::FspBatch(_) => {
+            unreachable!("FMP AEAD opener dispatch only sends opener jobs")
         }
     }
 }
@@ -211,6 +257,12 @@ impl DecryptWorkerBatchStats {
         match item {
             DecryptWorkerBulkItem::Job(job) => self.add_lane(job.lane(), 1),
             DecryptWorkerBulkItem::FspJob(job) => self.add_lane(job.lane(), 1),
+            DecryptWorkerBulkItem::FmpAeadOpen(_) => {
+                self.add_lane(DecryptWorkerLane::Bulk, 1);
+            }
+            DecryptWorkerBulkItem::FmpAeadOpenBatch(jobs) => {
+                self.add_lane(DecryptWorkerLane::Bulk, jobs.len());
+            }
             DecryptWorkerBulkItem::FspAeadOpen(_) => {
                 self.add_lane(DecryptWorkerLane::Bulk, 1);
             }
@@ -435,6 +487,77 @@ impl FspDecryptJobBatcher {
             );
             drop_fsp_owner_handoff_jobs(jobs);
         }
+    }
+}
+
+struct FmpAeadOpenJobBatcher {
+    open_idx: Option<usize>,
+    owner_idx: Option<usize>,
+    jobs: Vec<FmpAeadOpenJob>,
+}
+
+impl FmpAeadOpenJobBatcher {
+    fn new() -> Self {
+        Self {
+            open_idx: None,
+            owner_idx: None,
+            jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+        }
+    }
+
+    fn push(
+        &mut self,
+        workers: &DecryptWorkerPool,
+        open_idx: usize,
+        owner_idx: usize,
+        job: FmpAeadOpenJob,
+    ) -> Vec<FmpAeadOpenJob> {
+        let mut returned = Vec::new();
+        let batch_max = workers.fmp_open_batch_packet_max_for(open_idx);
+        if self.open_idx != Some(open_idx)
+            || self.owner_idx != Some(owner_idx)
+            || self.jobs.len() >= batch_max
+        {
+            returned.extend(self.flush(workers));
+        }
+        self.open_idx = Some(open_idx);
+        self.owner_idx = Some(owner_idx);
+        self.jobs.push(job);
+
+        if self.jobs.len() >= batch_max {
+            returned.extend(self.flush(workers));
+        }
+        returned
+    }
+
+    fn flush(&mut self, workers: &DecryptWorkerPool) -> Vec<FmpAeadOpenJob> {
+        let Some(open_idx) = self.open_idx.take() else {
+            return Vec::new();
+        };
+        let Some(owner_idx) = self.owner_idx.take() else {
+            return Vec::new();
+        };
+        if self.jobs.is_empty() {
+            return Vec::new();
+        }
+
+        if self.jobs.len() == 1 {
+            let job = self.jobs.pop().expect("checked single opener job");
+            return workers
+                .dispatch_fmp_aead_open_worker_job(open_idx, owner_idx, job)
+                .err()
+                .into_iter()
+                .collect();
+        }
+
+        let jobs = std::mem::replace(
+            &mut self.jobs,
+            Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+        );
+        workers
+            .dispatch_fmp_aead_open_worker_job_batch_or_return(open_idx, owner_idx, jobs)
+            .err()
+            .unwrap_or_default()
     }
 }
 
