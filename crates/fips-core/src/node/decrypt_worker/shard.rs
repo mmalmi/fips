@@ -31,6 +31,52 @@ fn record_fsp_path_worker_open_bulk() {
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathWorkerOpenBulk);
 }
 
+#[derive(Clone, Copy)]
+enum FspOpenWorkerIneligibleReason {
+    NotBulk,
+    NoSharedSession,
+    NotOwner,
+    NoSiblingWorker,
+    Malformed,
+    KbitMismatch,
+    WindowFull,
+}
+
+impl FspOpenWorkerIneligibleReason {
+    fn local_fallback_event(self) -> crate::perf_profile::Event {
+        match self {
+            Self::NotBulk => {
+                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNotBulk
+            }
+            Self::NoSharedSession => {
+                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNoShared
+            }
+            Self::NotOwner => {
+                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNotOwner
+            }
+            Self::NoSiblingWorker => {
+                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNoSibling
+            }
+            Self::Malformed => {
+                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleMalformed
+            }
+            Self::KbitMismatch => {
+                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleKbitMismatch
+            }
+            Self::WindowFull => {
+                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleWindowFull
+            }
+        }
+    }
+}
+
+fn record_fsp_open_worker_local_ineligible(reason: FspOpenWorkerIneligibleReason) {
+    if !crate::perf_profile::enabled() {
+        return;
+    }
+    crate::perf_profile::record_event(reason.local_fallback_event());
+}
+
 fn drop_fsp_owner_handoff_job(job: FspDecryptJob) {
     record_fsp_owner_handoff_drop(job.lane(), 1);
 }
@@ -127,8 +173,19 @@ fn record_fsp_ordered_drain(drain: &FspOrderedDrain) {
     drain.replay_drop_sources.record();
 }
 
-enum FspOpenWorkerPrepareError {
-    Ineligible(FspDecryptJob),
+struct FspOpenWorkerPrepareError {
+    job: FspDecryptJob,
+    reason: FspOpenWorkerIneligibleReason,
+}
+
+impl FspOpenWorkerPrepareError {
+    fn ineligible(job: FspDecryptJob, reason: FspOpenWorkerIneligibleReason) -> Self {
+        Self { job, reason }
+    }
+
+    fn into_job(self) -> FspDecryptJob {
+        self.job
+    }
 }
 
 struct DecryptWorkerShard {
@@ -355,12 +412,22 @@ impl DecryptWorkerShard {
                             }
                             return;
                         }
-                        Err(FspOpenWorkerPrepareError::Ineligible(job)) => job,
+                        Err(error) => {
+                            if owner_idx == idx {
+                                record_fsp_open_worker_local_ineligible(error.reason);
+                            }
+                            error.into_job()
+                        }
                     }
                 } else {
                     match self.try_start_fsp_bulk_open_worker(idx, job, plaintext_batch) {
                         Ok(()) => return,
-                        Err(job) => job,
+                        Err(error) => {
+                            if owner_idx == idx {
+                                record_fsp_open_worker_local_ineligible(error.reason);
+                            }
+                            error.into_job()
+                        }
                     }
                 };
                 if owner_idx == idx {
@@ -501,38 +568,68 @@ impl DecryptWorkerShard {
         job: FspDecryptJob,
     ) -> Result<(usize, usize, FspAeadOpenJob), FspOpenWorkerPrepareError> {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::NotBulk,
+            ));
         }
 
         let source_addr = job.source_addr;
         let Some(shared) = self.pool.fsp_aead_session(&source_addr) else {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::NoSharedSession,
+            ));
         };
         let owner_idx = shared.owner_idx;
-        if owner_idx != idx || !self.pool.fsp_bulk_open_worker_enabled() {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        if owner_idx != idx {
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::NotOwner,
+            ));
+        }
+        if !self.pool.fsp_bulk_open_worker_enabled() {
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::NoSiblingWorker,
+            ));
         }
         let Some(open_idx) = self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx) else {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::NoSiblingWorker,
+            ));
         };
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
         let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
         else {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::Malformed,
+            ));
         };
         let Some(header) = FspEncryptedHeader::parse(payload) else {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::Malformed,
+            ));
         };
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
         if received_k_bit != shared.current_k_bit {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::KbitMismatch,
+            ));
         }
         let Some(ticket) = shared.try_issue_ticket() else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 1,
             );
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::WindowFull,
+            ));
         };
 
         let open_job = FspAeadOpenJob {
@@ -555,12 +652,12 @@ impl DecryptWorkerShard {
         idx: usize,
         job: FspDecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) -> Result<(), FspDecryptJob> {
+    ) -> Result<(), FspOpenWorkerPrepareError> {
         let (open_idx, owner_idx, open_job) = match self.try_prepare_fsp_bulk_open_worker_job(
             idx, job,
         ) {
             Ok(prepared) => prepared,
-            Err(FspOpenWorkerPrepareError::Ineligible(job)) => return Err(job),
+            Err(error) => return Err(error),
         };
         record_fsp_path_worker_open_bulk();
         match self
@@ -838,8 +935,24 @@ impl DecryptWorkerShard {
         let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
         record_fsp_owner_match(owner_idx == idx);
         if owner_idx == idx {
-            record_fsp_path_local(job.lane());
             let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+            if matches!(job.lane(), DecryptWorkerLane::Bulk) {
+                match self.try_start_fsp_bulk_open_worker(idx, job, &mut plaintext_batch) {
+                    Ok(()) => {
+                        plaintext_batch.flush();
+                        return;
+                    }
+                    Err(error) => {
+                        record_fsp_open_worker_local_ineligible(error.reason);
+                        let job = error.into_job();
+                        record_fsp_path_local(job.lane());
+                        self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
+                        plaintext_batch.flush();
+                        return;
+                    }
+                }
+            }
+            record_fsp_path_local(job.lane());
             self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
             plaintext_batch.flush();
             return;

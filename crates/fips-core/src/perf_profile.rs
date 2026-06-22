@@ -96,7 +96,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 238;
+const N_EVENTS: usize = 245;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -721,6 +721,13 @@ pub enum Event {
     DecryptWorkerBulkQueueDepthGe50 = 235,
     DecryptWorkerBulkQueueDepthGe75 = 236,
     DecryptWorkerBulkQueueDepthGe90 = 237,
+    DecryptFspOpenWorkerLocalIneligibleNotBulk = 238,
+    DecryptFspOpenWorkerLocalIneligibleNoShared = 239,
+    DecryptFspOpenWorkerLocalIneligibleNotOwner = 240,
+    DecryptFspOpenWorkerLocalIneligibleNoSibling = 241,
+    DecryptFspOpenWorkerLocalIneligibleMalformed = 242,
+    DecryptFspOpenWorkerLocalIneligibleKbitMismatch = 243,
+    DecryptFspOpenWorkerLocalIneligibleWindowFull = 244,
 }
 
 impl Event {
@@ -1184,6 +1191,27 @@ impl Event {
             Event::DecryptWorkerBulkQueueDepthGe50 => "decrypt_worker_bulk_queue_depth_ge50",
             Event::DecryptWorkerBulkQueueDepthGe75 => "decrypt_worker_bulk_queue_depth_ge75",
             Event::DecryptWorkerBulkQueueDepthGe90 => "decrypt_worker_bulk_queue_depth_ge90",
+            Event::DecryptFspOpenWorkerLocalIneligibleNotBulk => {
+                "decrypt_fsp_open_worker_local_ineligible_not_bulk"
+            }
+            Event::DecryptFspOpenWorkerLocalIneligibleNoShared => {
+                "decrypt_fsp_open_worker_local_ineligible_no_shared"
+            }
+            Event::DecryptFspOpenWorkerLocalIneligibleNotOwner => {
+                "decrypt_fsp_open_worker_local_ineligible_not_owner"
+            }
+            Event::DecryptFspOpenWorkerLocalIneligibleNoSibling => {
+                "decrypt_fsp_open_worker_local_ineligible_no_sibling"
+            }
+            Event::DecryptFspOpenWorkerLocalIneligibleMalformed => {
+                "decrypt_fsp_open_worker_local_ineligible_malformed"
+            }
+            Event::DecryptFspOpenWorkerLocalIneligibleKbitMismatch => {
+                "decrypt_fsp_open_worker_local_ineligible_kbit_mismatch"
+            }
+            Event::DecryptFspOpenWorkerLocalIneligibleWindowFull => {
+                "decrypt_fsp_open_worker_local_ineligible_window_full"
+            }
         }
     }
 }
@@ -1428,6 +1456,13 @@ fn event_from_index(idx: usize) -> Event {
         235 => Event::DecryptWorkerBulkQueueDepthGe50,
         236 => Event::DecryptWorkerBulkQueueDepthGe75,
         237 => Event::DecryptWorkerBulkQueueDepthGe90,
+        238 => Event::DecryptFspOpenWorkerLocalIneligibleNotBulk,
+        239 => Event::DecryptFspOpenWorkerLocalIneligibleNoShared,
+        240 => Event::DecryptFspOpenWorkerLocalIneligibleNotOwner,
+        241 => Event::DecryptFspOpenWorkerLocalIneligibleNoSibling,
+        242 => Event::DecryptFspOpenWorkerLocalIneligibleMalformed,
+        243 => Event::DecryptFspOpenWorkerLocalIneligibleKbitMismatch,
+        244 => Event::DecryptFspOpenWorkerLocalIneligibleWindowFull,
         _ => unreachable!(),
     }
 }

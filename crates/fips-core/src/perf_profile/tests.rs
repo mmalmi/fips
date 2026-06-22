@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 238);
+    assert_eq!(N_EVENTS, 245);
     assert!(
-        (Event::DecryptWorkerBulkQueueDepthGe90 as usize) < N_EVENTS,
+        (Event::DecryptFspOpenWorkerLocalIneligibleWindowFull as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -89,6 +89,18 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptWorkerBulkQueueDepthGe90 as usize).name(),
         "decrypt_worker_bulk_queue_depth_ge90"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOpenWorkerLocalIneligibleNoShared as usize).name(),
+        "decrypt_fsp_open_worker_local_ineligible_no_shared"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOpenWorkerLocalIneligibleKbitMismatch as usize).name(),
+        "decrypt_fsp_open_worker_local_ineligible_kbit_mismatch"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOpenWorkerLocalIneligibleWindowFull as usize).name(),
+        "decrypt_fsp_open_worker_local_ineligible_window_full"
     );
     assert_eq!(
         event_from_index(Event::RxLoopSlowMaintenanceTimeout as usize).name(),
@@ -891,6 +903,10 @@ fn event_counter_mode_keeps_failures_without_batch_shape_counters() {
     assert!(!Event::PacketBatchPoolReuse.recorded_by_event_counter_mode());
     assert!(!Event::LinuxWgBatchAdmissionPackets.recorded_by_event_counter_mode());
     assert!(!Event::DecryptWorkerBulkQueueDepthGe90.recorded_by_event_counter_mode());
+    assert!(!Event::DecryptFspOpenWorkerLocalIneligibleNoShared.recorded_by_event_counter_mode());
+    assert!(
+        !Event::DecryptFspOpenWorkerLocalIneligibleKbitMismatch.recorded_by_event_counter_mode()
+    );
 }
 
 #[test]
