@@ -174,7 +174,8 @@ impl Node {
                 if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
                     self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
                 }
-                if matches!(e, crate::node::NodeError::NoTransportForType(_))
+                if (matches!(e, crate::node::NodeError::NoTransportForType(_))
+                    || e.is_local_route_unavailable())
                     && let Some(bootstrap) = self.nostr_discovery.clone()
                 {
                     bootstrap
@@ -385,12 +386,14 @@ impl Node {
                 if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
                     self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
                 }
-                // No-transport failures most often mean the cached overlay
-                // advert is pointing at a dead post-NAT-rebind address. The
-                // advert cache is read-only inside fetch_advert, so retries
-                // would loop on the same dead address until expiry. Force a
-                // re-fetch so the next retry tick picks up fresh endpoints.
-                if matches!(e, crate::node::NodeError::NoTransportForType(_))
+                // No-transport and local-route failures most often mean the
+                // cached overlay advert is pointing at a dead post-NAT-rebind
+                // address. The advert cache is read-only inside fetch_advert,
+                // so retries would loop on the same dead address until expiry.
+                // Force a re-fetch so the next retry tick picks up fresh
+                // endpoints.
+                if (matches!(e, crate::node::NodeError::NoTransportForType(_))
+                    || e.is_local_route_unavailable())
                     && let Some(bootstrap) = self.nostr_discovery.clone()
                 {
                     bootstrap
