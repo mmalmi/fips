@@ -236,6 +236,59 @@ mod mac_queue_tests {
     }
 
     #[test]
+    fn mac_ordered_sender_batch_drains_contiguous_ready_items() {
+        with_test_socket(|socket, _cipher| {
+            let flow = test_mac_send_flow(socket, "127.0.0.1:10036".parse().unwrap());
+            let mut ready = Vec::new();
+
+            flow.complete_many(vec![
+                (
+                    0,
+                    MacSendItem::Packet {
+                        packet: vec![1],
+                        drop_on_backpressure: true,
+                    },
+                ),
+                (1, MacSendItem::Skip),
+                (
+                    3,
+                    MacSendItem::Packet {
+                        packet: vec![3],
+                        drop_on_backpressure: false,
+                    },
+                ),
+            ]);
+
+            assert!(flow.take_ready_batch(&mut ready));
+            assert_eq!(ready.len(), 2);
+            match &ready[0] {
+                MacSendItem::Packet { packet, .. } => assert_eq!(packet, &[1]),
+                MacSendItem::Skip => panic!("first contiguous item should be a packet"),
+            }
+            assert!(matches!(ready[1], MacSendItem::Skip));
+
+            flow.complete_many(vec![(
+                2,
+                MacSendItem::Packet {
+                    packet: vec![2],
+                    drop_on_backpressure: true,
+                },
+            )]);
+
+            assert!(flow.take_ready_batch(&mut ready));
+            assert_eq!(ready.len(), 2);
+            match &ready[0] {
+                MacSendItem::Packet { packet, .. } => assert_eq!(packet, &[2]),
+                MacSendItem::Skip => panic!("gap filler should drain first"),
+            }
+            match &ready[1] {
+                MacSendItem::Packet { packet, .. } => assert_eq!(packet, &[3]),
+                MacSendItem::Skip => panic!("packet after closed gap should drain second"),
+            }
+        });
+    }
+
+    #[test]
     fn mac_ordered_sender_sequences_by_send_target_not_endpoint_flow() {
         with_test_socket(|socket, cipher| {
             let flows = MacSequencedSendFlows::default();
@@ -419,6 +472,16 @@ mod mac_queue_tests {
         assert!(!parse_macos_ordered_sender_enabled(Some("0")));
         assert!(!parse_macos_ordered_sender_enabled(Some("false")));
         assert!(!parse_macos_ordered_sender_enabled(Some("OFF")));
+    }
+
+    #[test]
+    fn macos_worker_stride_defaults_to_short_runs() {
+        assert_eq!(macos_worker_stride_from_raw(None), 4);
+        assert_eq!(macos_worker_stride_from_raw(Some("")), 4);
+        assert_eq!(macos_worker_stride_from_raw(Some("1")), 1);
+        assert_eq!(macos_worker_stride_from_raw(Some("8")), 8);
+        assert_eq!(macos_worker_stride_from_raw(Some("0")), 1);
+        assert_eq!(macos_worker_stride_from_raw(Some("999")), 64);
     }
 
     #[test]

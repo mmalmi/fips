@@ -1168,12 +1168,15 @@ fn macos_worker_stride() -> usize {
     // spreading sustained single-peer traffic across the full pool.
     static VALUE: OnceLock<usize> = OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("FIPS_MACOS_WORKER_STRIDE")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(1)
-            .clamp(1, 64)
+        macos_worker_stride_from_raw(std::env::var("FIPS_MACOS_WORKER_STRIDE").ok().as_deref())
     })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_worker_stride_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(4)
+        .clamp(1, 64)
 }
 
 #[cfg(target_os = "macos")]
@@ -1375,6 +1378,37 @@ impl MacSequencedSendFlow {
         None
     }
 
+    fn take_ready_batch(&self, batch: &mut Vec<MacSendItem>) -> bool {
+        const MAX_READY_BATCH: usize = 8;
+        batch.clear();
+
+        let mut state = self.state.lock().expect("mac send flow state poisoned");
+        loop {
+            let next = state.next_send_seq;
+            if let Some(item) = state.pending.remove(&next) {
+                state.next_send_seq = next.wrapping_add(1);
+                batch.push(item);
+                while batch.len() < MAX_READY_BATCH {
+                    let next = state.next_send_seq;
+                    let Some(item) = state.pending.remove(&next) else {
+                        break;
+                    };
+                    state.next_send_seq = next.wrapping_add(1);
+                    batch.push(item);
+                }
+                self.space_cv.notify_all();
+                return true;
+            }
+            if state.closed {
+                return false;
+            }
+            state = self
+                .ready_cv
+                .wait(state)
+                .expect("mac send flow state poisoned");
+        }
+    }
+
     fn run(self: Arc<Self>) {
         trace!(
             socket_fd = self.key.target.socket_fd,
@@ -1385,53 +1419,38 @@ impl MacSequencedSendFlow {
         let (fd, connected) = self.send_target.fd_and_connected();
         let mut backpressure = SendBackpressurePacer::default();
         let mut rate_pacer = MacSendRatePacer::default();
+        let mut ready_batch = Vec::with_capacity(8);
 
-        loop {
-            let item = {
-                let mut state = self.state.lock().expect("mac send flow state poisoned");
-                loop {
-                    let next = state.next_send_seq;
-                    if let Some(item) = state.pending.remove(&next) {
-                        state.next_send_seq = next.wrapping_add(1);
-                        self.space_cv.notify_one();
-                        break item;
-                    }
-                    if state.closed {
-                        return;
-                    }
-                    state = self
-                        .ready_cv
-                        .wait(state)
-                        .expect("mac send flow state poisoned");
-                }
-            };
-
-            match item {
-                MacSendItem::Packet {
-                    packet,
-                    drop_on_backpressure,
-                    ..
-                } => {
-                    let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-                    rate_pacer.pace(packet.len());
-                    if let Err(err) = send_one_with_backpressure(
-                        fd,
-                        connected,
-                        &self.send_target.dest_addr(),
-                        &packet,
-                        &mut backpressure,
+        while self.take_ready_batch(&mut ready_batch) {
+            for item in ready_batch.drain(..) {
+                match item {
+                    MacSendItem::Packet {
+                        packet,
                         drop_on_backpressure,
-                    ) {
-                        debug!(
-                            socket_fd = self.key.target.socket_fd,
-                            connected_fd = ?self.key.target.connected_fd,
-                            dest = %self.send_target.dest_addr(),
-                            error = %err,
-                            "macOS ordered UDP send failed"
-                        );
+                        ..
+                    } => {
+                        let _t =
+                            crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+                        rate_pacer.pace(packet.len());
+                        if let Err(err) = send_one_with_backpressure(
+                            fd,
+                            connected,
+                            &self.send_target.dest_addr(),
+                            &packet,
+                            &mut backpressure,
+                            drop_on_backpressure,
+                        ) {
+                            debug!(
+                                socket_fd = self.key.target.socket_fd,
+                                connected_fd = ?self.key.target.connected_fd,
+                                dest = %self.send_target.dest_addr(),
+                                error = %err,
+                                "macOS ordered UDP send failed"
+                            );
+                        }
                     }
+                    MacSendItem::Skip => {}
                 }
-                MacSendItem::Skip => {}
             }
         }
     }
