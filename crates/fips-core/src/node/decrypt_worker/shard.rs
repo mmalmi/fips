@@ -1060,7 +1060,7 @@ impl DecryptWorkerShard {
         let fmp = DecryptFmpBookkeeping {
             source_peer: fallback.source_peer,
             transport_id: fallback.transport_id,
-            remote_addr: fallback.remote_addr.clone(),
+            remote_addr: fallback.remote_addr,
             packet_timestamp_ms: fallback.timestamp_ms,
             packet_len: fallback.packet_len,
             fmp_counter: fallback.fmp_counter,
@@ -1393,17 +1393,6 @@ impl DecryptWorkerShard {
             };
             header
         };
-        let fmp = DecryptFmpBookkeeping {
-            source_peer: fallback.source_peer,
-            transport_id: fallback.transport_id,
-            remote_addr: fallback.remote_addr.clone(),
-            packet_timestamp_ms: fallback.timestamp_ms,
-            packet_len: fallback.packet_len,
-            fmp_counter: fallback.fmp_counter,
-            inner_timestamp_ms,
-            fmp_flags: fallback.fmp_flags,
-        };
-
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
             plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
                 fallback_tx,
@@ -1452,6 +1441,16 @@ impl DecryptWorkerShard {
             fsp_strip_inner_header(&plaintext)
         else {
             return;
+        };
+        let fmp = DecryptFmpBookkeeping {
+            source_peer: fallback.source_peer,
+            transport_id: fallback.transport_id,
+            remote_addr: fallback.remote_addr,
+            packet_timestamp_ms: fallback.timestamp_ms,
+            packet_len: fallback.packet_len,
+            fmp_counter: fallback.fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags: fallback.fmp_flags,
         };
         let spin_bit = inner_flags_byte & 0x01 != 0;
         let plaintext_len = plaintext.len();
