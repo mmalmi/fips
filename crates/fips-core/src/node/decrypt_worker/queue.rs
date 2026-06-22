@@ -294,6 +294,7 @@ struct FspDecryptJobMeta {
 
 pub(crate) struct DecryptJobBatcher {
     worker_idx: Option<usize>,
+    session_key: Option<DecryptSessionKey>,
     jobs: Vec<DecryptJob>,
 }
 
@@ -301,6 +302,7 @@ impl DecryptJobBatcher {
     pub(crate) fn new() -> Self {
         Self {
             worker_idx: None,
+            session_key: None,
             jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
     }
@@ -318,11 +320,16 @@ impl DecryptJobBatcher {
         }
 
         let worker_idx = job.worker_idx();
+        let session_key = job.session_key();
         let batch_max = workers.bulk_batch_packet_max_for(worker_idx);
-        if self.worker_idx != Some(worker_idx) || self.jobs.len() >= batch_max {
+        if self.worker_idx != Some(worker_idx)
+            || self.session_key != Some(session_key)
+            || self.jobs.len() >= batch_max
+        {
             self.flush(workers);
         }
         self.worker_idx = Some(worker_idx);
+        self.session_key = Some(session_key);
         self.jobs.push(job);
 
         if self.jobs.len() >= batch_max {
@@ -332,8 +339,10 @@ impl DecryptJobBatcher {
 
     pub(crate) fn flush(&mut self, workers: &DecryptWorkerPool) {
         let Some(worker_idx) = self.worker_idx.take() else {
+            self.session_key = None;
             return;
         };
+        self.session_key = None;
         if self.jobs.is_empty() {
             return;
         }

@@ -1448,6 +1448,10 @@ impl DecryptJob {
         self.worker_idx
     }
 
+    fn session_key(&self) -> DecryptSessionKey {
+        self.session_key
+    }
+
     fn is_bulk_lane(&self) -> bool {
         matches!(self.lane(), DecryptWorkerLane::Bulk)
     }

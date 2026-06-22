@@ -779,6 +779,37 @@
     }
 
     #[test]
+    fn decrypt_job_batcher_flushes_bulk_when_session_changes() {
+        let (pool, _control_rx, _priority_rx, bulk_rx) =
+            test_worker_pool(1, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let mut batcher = DecryptJobBatcher::new();
+
+        batcher.push(&pool, dummy_bulk_decrypt_job(test_session_key(1, 101)));
+        batcher.push(&pool, dummy_bulk_decrypt_job(test_session_key(2, 101)));
+        batcher.flush(&pool);
+
+        assert_eq!(
+            bulk_rx[0].len(),
+            2,
+            "same-worker packets for different sessions should keep separate owner turns"
+        );
+        assert!(
+            matches!(
+                bulk_rx[0].try_recv().expect("first session-local bulk item"),
+                DecryptWorkerBulkItem::Job(_)
+            ),
+            "a session change should flush the pending singleton before batching resumes"
+        );
+        assert!(
+            matches!(
+                bulk_rx[0].try_recv().expect("second session-local bulk item"),
+                DecryptWorkerBulkItem::Job(_)
+            ),
+            "the new session singleton should flush separately at the end"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_bulk_batch_emits_one_plaintext_fallback_batch() {
         let session_key = test_session_key(1, 106);
         let source_peer = test_source_peer();
