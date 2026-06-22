@@ -256,6 +256,9 @@ impl Node {
                 packet_size,
                 mtu,
             },
+            other if other.is_local_route_unavailable() => {
+                NodeError::LocalRouteUnavailable(other.to_string())
+            }
             other => NodeError::SendFailed {
                 node_addr: *node_addr,
                 reason: format!("transport send: {}", other),

@@ -390,7 +390,14 @@ impl Node {
             .heartbeat_interval_secs
             .saturating_mul(1000)
             .max(1000);
-        let mut idle_ms = peer.idle_time(now_ms);
+        let now = std::time::Instant::now();
+        let mut inbound_quiet_ms = peer.idle_time(now_ms);
+        inbound_quiet_ms = inbound_quiet_ms.min(
+            peer.mmp()
+                .and_then(|mmp| mmp.receiver.last_recv_time())
+                .map(|last_recv| now.duration_since(last_recv).as_millis() as u64)
+                .unwrap_or_else(|| now_ms.saturating_sub(peer.authenticated_at())),
+        );
         if let Some(session_age_ms) = self
             .sessions
             .iter()
@@ -401,9 +408,9 @@ impl Node {
             .filter_map(|(_, entry)| entry.last_authenticated_inbound_data_age_ms(now_ms))
             .min()
         {
-            idle_ms = idle_ms.min(session_age_ms);
+            inbound_quiet_ms = inbound_quiet_ms.min(session_age_ms);
         }
-        idle_ms > stale_after_ms
+        inbound_quiet_ms > stale_after_ms
     }
 
     pub(in crate::node) fn active_peer_current_udp_candidate(

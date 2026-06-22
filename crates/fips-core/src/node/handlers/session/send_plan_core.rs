@@ -54,7 +54,6 @@ impl SessionDatagramRuntimeRoute {
         }
     }
 
-    #[cfg(test)]
     fn dest_addr(&self) -> NodeAddr {
         self.dest_addr
     }

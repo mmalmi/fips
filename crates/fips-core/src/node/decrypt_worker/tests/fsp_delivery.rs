@@ -679,20 +679,10 @@
             FspAeadFailureSources::default()
         );
         assert_eq!(drain.rx_loop_fallbacks, 0);
-        assert_eq!(drain.outputs.len(), 1);
-        match &drain.outputs[0] {
-            FspReadyCompletion::AeadFailed {
-                header: reported,
-                fallback_to_rx_loop,
-                ..
-            } => {
-                assert_eq!(reported.counter, 7);
-                assert!(!*fallback_to_rx_loop);
-            }
-            FspReadyCompletion::Opened { .. } => {
-                panic!("old-K failed worker-open completion must not authenticate an FSP frame")
-            }
-        }
+        assert!(
+            drain.outputs.is_empty(),
+            "stale worker-open completion must not emit authenticated output"
+        );
     }
 
     #[test]

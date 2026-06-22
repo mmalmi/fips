@@ -642,11 +642,13 @@ impl OwnedFspSessionState {
                     fallback_to_rx_loop,
                     count_failure,
                 } => {
+                    let mut emit_failure = true;
                     if count_failure {
                         let stale_worker_open_epoch = source.is_worker_open()
                             && header.flags & FSP_FLAG_K != u8::from(current_k_bit) * FSP_FLAG_K;
                         if stale_worker_open_epoch {
                             drain.stale_epoch_worker_open_failures += 1;
+                            emit_failure = false;
                         } else {
                             drain.aead_failures += 1;
                             drain.aead_failure_sources.add(source);
@@ -654,11 +656,13 @@ impl OwnedFspSessionState {
                     } else if fallback_to_rx_loop {
                         drain.rx_loop_fallbacks += 1;
                     }
-                    on_output(FspReadyCompletion::AeadFailed {
-                        job,
-                        header,
-                        fallback_to_rx_loop,
-                    });
+                    if emit_failure {
+                        on_output(FspReadyCompletion::AeadFailed {
+                            job,
+                            header,
+                            fallback_to_rx_loop,
+                        });
+                    }
                 }
                 FspOrderedCompletion::EpochMismatch {
                     job,

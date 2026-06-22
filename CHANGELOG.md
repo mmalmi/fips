@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.77] - 2026-06-22
+
+### Fixed
+
+- Based direct-path stale detection on authenticated receive-side evidence, so
+  outbound FMP heartbeats or probes cannot keep a silent direct UDP path trusted
+  while fallback routing is still available.
+- Kept authenticated inbound FMP receive evidence in the direct-refresh window,
+  preserving healthy direct paths without allowing send-only activity to refresh
+  liveness.
+- Recovered direct endpoint payload routing after local route-unavailable send
+  failures by degrading the direct path and scheduling a short retry instead of
+  continuing to blackhole payload on the stale direct route.
+- Refreshed cached overlay adverts after local route failures, so direct-path
+  retries can pick up post-rebind endpoints instead of looping on a dead cached
+  address.
+- Bumped `fips-endpoint` to 0.3.52 so app-facing consumers pick up the
+  `fips-core` 0.3.77 receive-liveness fix.
+
 ## [0.3.76] - 2026-06-22
 
 ### Fixed
@@ -14,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Required fresh receive-side endpoint liveness before reporting app-facing
   peers as connected, preventing stale historical counters from keeping moved
   or dead NAT paths online in nvpn status.
+- Classified stale FSP worker-open completions by receive-crypto generation, so
+  rekey/session churn no longer appears as hard AEAD failure noise.
 - Bumped `fips-endpoint` to 0.3.51 so embedded endpoint consumers pick up the
   `fips-core` 0.3.76 peer-status freshness fix.
 
