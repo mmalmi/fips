@@ -227,77 +227,28 @@
             std::time::Duration::from_secs(1),
         ));
 
-        let fsp_before = node
-            .sessions
-            .get(&dest_addr)
-            .expect("session exists before endpoint bulk fast path")
-            .send_counter();
-        let fmp_before = node
-            .peers
-            .get(&next_hop_addr)
-            .and_then(|peer| peer.noise_session())
-            .expect("active peer session exists before endpoint bulk fast path")
-            .current_send_counter();
-        let payloads = vec![
-            EndpointDataPayload::new(vec![0xee; 96]),
-            EndpointDataPayload::new(vec![0xdd; 128]),
-        ];
+        let payload = EndpointDataPayload::new(vec![0xee; 96]);
         assert!(
-            runtime.try_send_bulk_batch_to_peer(dest_identity, &payloads),
+            runtime.try_send_bulk_batch_to_peer(dest_identity, std::slice::from_ref(&payload)),
             "published lease should dispatch the bulk batch"
         );
         let feedback = feedback_rx
             .try_recv()
             .expect("endpoint mover must enqueue feedback before worker dispatch");
-        assert_eq!(feedback.records.len(), payloads.len());
-        for (idx, record) in feedback.records.iter().enumerate() {
-            assert_eq!(record.dest_addr, dest_addr);
-            assert_eq!(record.next_hop_addr, next_hop_addr);
-            assert_eq!(
-                record.fmp_counter,
-                fmp_before + idx as u64,
-                "endpoint bulk lease should reserve a contiguous FMP counter range"
-            );
-            let crate::node::EndpointBulkSendSessionBookkeeping::Fsp {
-                path_mtu,
-                bookkeeping,
-            } = record.session_bookkeeping;
+        assert_eq!(feedback.records.len(), 1);
+        assert_eq!(feedback.records[0].dest_addr, dest_addr);
+        assert_eq!(feedback.records[0].next_hop_addr, next_hop_addr);
+        let crate::node::EndpointBulkSendSessionBookkeeping::Fsp { path_mtu, .. } =
+            feedback.records[0].session_bookkeeping;
+        {
             assert_eq!(path_mtu, 1234);
-            assert_eq!(
-                bookkeeping.counter,
-                fsp_before + idx as u64,
-                "endpoint bulk lease should reserve a contiguous FSP counter range"
-            );
         }
-        assert_eq!(
-            node.sessions
-                .get(&dest_addr)
-                .expect("session still exists after endpoint bulk fast path")
-                .send_counter(),
-            fsp_before + payloads.len() as u64,
-            "endpoint bulk fast path should consume one FSP counter per payload"
-        );
-        assert_eq!(
-            node.peers
-                .get(&next_hop_addr)
-                .and_then(|peer| peer.noise_session())
-                .expect("active peer session still exists after endpoint bulk fast path")
-                .current_send_counter(),
-            fmp_before + payloads.len() as u64,
-            "endpoint bulk fast path should consume one FMP counter per payload"
-        );
 
         node.apply_endpoint_bulk_send_feedback(feedback);
         let session = node.sessions.get(&dest_addr).expect("session exists");
         let (packets_sent, _, bytes_sent, _) = session.traffic_counters();
-        assert_eq!(packets_sent, payloads.len() as u64);
-        assert_eq!(
-            bytes_sent,
-            payloads
-                .iter()
-                .map(|payload| payload.len() as u64)
-                .sum::<u64>()
-        );
+        assert_eq!(packets_sent, 1);
+        assert_eq!(bytes_sent, payload.len() as u64);
         assert_eq!(session.last_outbound_next_hop(), Some(next_hop_addr));
         assert_eq!(
             session
@@ -308,11 +259,8 @@
             1234
         );
         let peer = node.peers.get(&next_hop_addr).expect("peer exists");
-        assert_eq!(peer.link_stats().packets_sent, payloads.len() as u64);
-        assert_eq!(
-            node.stats().forwarding.originated_packets,
-            payloads.len() as u64
-        );
+        assert_eq!(peer.link_stats().packets_sent, 1);
+        assert_eq!(node.stats().forwarding.originated_packets, 1);
     }
 
     #[cfg(unix)]

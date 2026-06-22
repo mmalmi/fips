@@ -236,28 +236,21 @@ impl crate::node::EndpointBulkSendRuntime {
 
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
         let queued_at = crate::perf_profile::stamp();
-        let now_ms = crate::time::now_ms();
-        let timestamp = now_ms.wrapping_sub(lease.fsp.session_start_ms) as u32;
-        let inner_flags = FspInnerFlags {
-            spin_bit: lease.fsp.spin_bit,
-        }
-        .to_byte();
-        let mut fsp_flags = 0;
-        if lease.fsp.current_k_bit {
-            fsp_flags |= FSP_FLAG_K;
-        }
-        let route_plan = PipelinedEndpointRoutePlan::new(
-            lease.source_addr,
-            lease.next_hop_addr,
-            lease.path_mtu,
-            lease.default_ttl,
-            lease.scheduling_weight,
-            lease.direct_path_blocks_direct_payload,
-        );
-        let fmp_timestamp_ms = lease.fmp.session_start.elapsed().as_millis() as u32;
-        let mut send_plans = Vec::with_capacity(payloads.len());
+        let mut records = Vec::with_capacity(payloads.len());
+        let mut jobs = Vec::with_capacity(payloads.len());
 
         for payload in payloads {
+            let now_ms = crate::time::now_ms();
+            let timestamp = now_ms.wrapping_sub(lease.fsp.session_start_ms) as u32;
+            let inner_flags = FspInnerFlags {
+                spin_bit: lease.fsp.spin_bit,
+            }
+            .to_byte();
+            let mut fsp_flags = 0;
+            if lease.fsp.current_k_bit {
+                fsp_flags |= FSP_FLAG_K;
+            }
+
             let send = PipelinedEndpointSend {
                 dest_addr: &lease.dest_addr,
                 payload,
@@ -273,28 +266,24 @@ impl crate::node::EndpointBulkSendRuntime {
                 my_coords: None,
                 dest_coords: None,
             };
+            let route_plan = PipelinedEndpointRoutePlan::new(
+                lease.source_addr,
+                lease.next_hop_addr,
+                lease.path_mtu,
+                lease.default_ttl,
+                lease.scheduling_weight,
+                lease.direct_path_blocks_direct_payload,
+            );
             let Ok(send_plan) = route_plan.build_send_plan(&send) else {
                 record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
                 return false;
             };
-            send_plans.push(send_plan);
-        }
 
-        let Ok(fmp_counters) = lease.fmp.counter_authority.reserve_range(send_plans.len()) else {
-            record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
-            return false;
-        };
-        let Ok(fsp_counters) = lease.fsp.counter_authority.reserve_range(send_plans.len()) else {
-            record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
-            return false;
-        };
-        let mut records = Vec::with_capacity(payloads.len());
-        let mut jobs = Vec::with_capacity(payloads.len());
-
-        for ((send_plan, fmp_counter), fsp_counter) in
-            send_plans.into_iter().zip(fmp_counters).zip(fsp_counters)
-        {
             let fsp_input = send_plan.fsp_reservation_input();
+            let Ok(fsp_counter) = lease.fsp.counter_authority.reserve() else {
+                record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
+                return false;
+            };
             let fsp_reservation = crate::node::session::FspSendReservation {
                 counter: fsp_counter,
                 header: build_fsp_header(fsp_counter, fsp_input.flags, fsp_input.payload_len),
@@ -302,6 +291,11 @@ impl crate::node::EndpointBulkSendRuntime {
             };
 
             let fmp_payload_len = send_plan.fmp_payload_len();
+            let Ok(fmp_counter) = lease.fmp.counter_authority.reserve() else {
+                record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
+                return false;
+            };
+            let fmp_timestamp_ms = lease.fmp.session_start.elapsed().as_millis() as u32;
             let fmp_reservation = crate::node::PreparedFmpWorkerReservation {
                 counter: fmp_counter,
                 header: crate::node::wire::build_established_header(
