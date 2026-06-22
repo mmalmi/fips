@@ -296,40 +296,6 @@ fn run_linux_wg_batch_worker(idx: usize, rx: Receiver<LinuxWgEncryptBatch>, max_
 
 #[cfg(target_os = "linux")]
 const DEFAULT_LINUX_DEFERRED_SENDER_CAP: usize = 8;
-#[cfg(target_os = "linux")]
-fn parse_linux_deferred_sender_enabled(raw: Option<&str>) -> bool {
-    !matches!(
-        raw.map(str::trim),
-        Some("0" | "false" | "FALSE" | "False" | "no" | "NO" | "No" | "off" | "OFF" | "Off")
-    )
-}
-
-#[cfg(target_os = "linux")]
-fn linux_deferred_sender_enabled() -> bool {
-    static VALUE: OnceLock<bool> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        parse_linux_deferred_sender_enabled(std::env::var("FIPS_LINUX_DEFER_UDP_SEND").ok().as_deref())
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn parse_linux_deferred_sender_cap(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_LINUX_DEFERRED_SENDER_CAP)
-        .clamp(1, 1024)
-}
-
-#[cfg(target_os = "linux")]
-fn linux_deferred_sender_cap() -> usize {
-    static VALUE: OnceLock<usize> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        parse_linux_deferred_sender_cap(
-            std::env::var("FIPS_LINUX_DEFERRED_SENDER_CAP")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
 
 #[cfg(target_os = "linux")]
 struct LinuxDeferredSender {
@@ -415,12 +381,8 @@ fn linux_deferred_sender() -> Option<&'static LinuxDeferredSender> {
     static VALUE: OnceLock<Option<LinuxDeferredSender>> = OnceLock::new();
     VALUE
         .get_or_init(|| {
-            if !linux_deferred_sender_enabled() {
-                return None;
-            }
-            let cap = linux_deferred_sender_cap();
-            let (priority_tx, priority_rx) = bounded(cap);
-            let (bulk_tx, bulk_rx) = bounded(cap);
+            let (priority_tx, priority_rx) = bounded(DEFAULT_LINUX_DEFERRED_SENDER_CAP);
+            let (bulk_tx, bulk_rx) = bounded(DEFAULT_LINUX_DEFERRED_SENDER_CAP);
             match std::thread::Builder::new()
                 .name("fips-linux-udp-sender".to_string())
                 .spawn(move || run_linux_deferred_sender(priority_rx, bulk_rx))

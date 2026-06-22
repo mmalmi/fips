@@ -321,26 +321,10 @@ mod tests {
     }
 
     #[test]
-    fn linux_deferred_sender_env_defaults_on_and_is_bounded() {
-        assert!(parse_linux_deferred_sender_enabled(None));
-        assert!(!parse_linux_deferred_sender_enabled(Some("0")));
-        assert!(!parse_linux_deferred_sender_enabled(Some("false")));
-        assert!(!parse_linux_deferred_sender_enabled(Some("OFF")));
-        assert!(parse_linux_deferred_sender_enabled(Some("1")));
-        assert!(parse_linux_deferred_sender_enabled(Some("true")));
-        assert!(parse_linux_deferred_sender_enabled(Some("YES")));
-        assert!(parse_linux_deferred_sender_enabled(Some("unexpected")));
-
+    fn linux_deferred_sender_uses_fixed_bounded_shape() {
         assert_eq!(
-            parse_linux_deferred_sender_cap(None),
-            DEFAULT_LINUX_DEFERRED_SENDER_CAP
-        );
-        assert_eq!(parse_linux_deferred_sender_cap(Some("0")), 1);
-        assert_eq!(parse_linux_deferred_sender_cap(Some("17")), 17);
-        assert_eq!(parse_linux_deferred_sender_cap(Some("999999")), 1024);
-        assert_eq!(
-            parse_linux_deferred_sender_cap(Some("nope")),
-            DEFAULT_LINUX_DEFERRED_SENDER_CAP
+            DEFAULT_LINUX_DEFERRED_SENDER_CAP, 8,
+            "Linux deferred UDP send stays default-on with the accepted bounded sender cap"
         );
     }
 
