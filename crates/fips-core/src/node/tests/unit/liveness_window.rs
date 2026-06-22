@@ -1746,6 +1746,70 @@ fn degraded_recent_endpoint_path_without_fallback_queues_payload() {
 }
 
 #[tokio::test]
+async fn local_route_payload_failure_degrades_direct_and_warms_retry() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers.push(peer_config);
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mark_stale();
+    node.peers.insert(peer_addr, active);
+
+    assert_eq!(
+        node.find_next_hop(&peer_addr).map(|peer| *peer.node_addr()),
+        Some(peer_addr),
+        "soft-stale traversal paths remain last-resort routes until a hard send failure arrives"
+    );
+
+    node.recover_direct_payload_send_failure(
+        peer_addr,
+        peer_addr,
+        &crate::node::NodeError::LocalRouteUnavailable(
+            "send failed: Network is unreachable (os error 51)".to_string(),
+        ),
+    );
+
+    assert!(
+        node.retry_pending.contains_key(&peer_addr),
+        "local route failures should schedule a short direct-path retry"
+    );
+    assert!(
+        node.find_next_hop(&peer_addr).is_none(),
+        "after a local route payload failure, stale direct must stop blackholing payload while fallback warms"
+    );
+}
+
+#[tokio::test]
 async fn local_route_failure_does_not_collapse_recent_endpoint_liveness_window() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();

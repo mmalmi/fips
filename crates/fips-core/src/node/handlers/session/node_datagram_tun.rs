@@ -113,11 +113,28 @@ impl Node {
             .send_encrypted_link_message(&runtime_route.next_hop_addr(), &encoded)
             .await
         {
+            let dest_addr = runtime_route.dest_addr();
+            let next_hop_addr = runtime_route.next_hop_addr();
             runtime_route.record_failure(self);
+            self.recover_direct_payload_send_failure(dest_addr, next_hop_addr, &err);
             return Err(err);
         }
         runtime_route.record_success(self, encoded.len());
         Ok(())
+    }
+
+    pub(in crate::node) fn recover_direct_payload_send_failure(
+        &mut self,
+        dest_addr: NodeAddr,
+        next_hop_addr: NodeAddr,
+        err: &NodeError,
+    ) {
+        if next_hop_addr != dest_addr || !err.is_local_route_unavailable() {
+            return;
+        }
+        let now_ms = Self::now_ms();
+        self.mark_session_direct_path_degraded(dest_addr, now_ms);
+        self.schedule_local_route_retry(dest_addr, now_ms);
     }
 
     fn resolve_session_datagram_runtime_route(
