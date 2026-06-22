@@ -10,8 +10,8 @@
 //! Dispatch is **deterministic by registered owner**: before a session is
 //! registered the rx_loop falls back to the session-key hash; once
 //! `RegisterSession` is queued, per-packet jobs and unregisters use that
-//! explicit owner. An opt-in source-affine owner mode can co-locate direct FMP
-//! and local FSP ownership for experiments without splitting replay ownership.
+//! explicit owner. FMP and local FSP receive ownership are source-affine by
+//! default so path drift does not split replay ownership.
 //!
 //! Worker messages travel through two bounded per-worker lanes:
 //!

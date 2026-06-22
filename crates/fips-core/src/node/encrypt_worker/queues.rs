@@ -139,7 +139,7 @@ impl QueuedFmpSendJob {
         self.complete_sequenced_skip();
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg(any(test, not(target_os = "macos")))]
     fn target_key(&self) -> SendTargetKey {
         self.target_key
     }
