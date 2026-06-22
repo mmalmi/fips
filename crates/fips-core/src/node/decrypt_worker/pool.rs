@@ -15,7 +15,7 @@ struct DecryptWorkerSender {
     control: Sender<WorkerMsg>,
     priority: Sender<WorkerMsg>,
     bulk: Sender<DecryptWorkerBulkItem>,
-    fsp_aead_completion: Sender<FspAeadCompletionBatch>,
+    aead_completion: Sender<DecryptAeadCompletionBatch>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_cap: usize,
 }
@@ -69,15 +69,14 @@ impl DecryptWorkerPool {
             let (control_tx, control_rx) = bounded::<WorkerMsg>(control_channel_cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_channel_cap);
-            let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
-                bounded::<FspAeadCompletionBatch>(
-                    fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
-                );
+            let (aead_completion_tx, aead_completion_rx) = bounded::<DecryptAeadCompletionBatch>(
+                aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
+            );
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             receivers.push((
                 control_rx,
                 priority_rx,
-                fsp_aead_completion_rx,
+                aead_completion_rx,
                 bulk_rx,
                 Arc::clone(&bulk_queued_packets),
             ));
@@ -85,7 +84,7 @@ impl DecryptWorkerPool {
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                fsp_aead_completion: fsp_aead_completion_tx,
+                aead_completion: aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: bulk_channel_cap,
             });
@@ -98,13 +97,13 @@ impl DecryptWorkerPool {
         };
         for (
             i,
-            (
-                control_rx,
-                priority_rx,
-                fsp_aead_completion_rx,
-                bulk_rx,
-                worker_bulk_queued_packets,
-            ),
+                (
+                    control_rx,
+                    priority_rx,
+                    aead_completion_rx,
+                    bulk_rx,
+                    worker_bulk_queued_packets,
+                ),
         ) in receivers.into_iter().enumerate()
         {
             let worker_pool = pool.clone();
@@ -116,7 +115,7 @@ impl DecryptWorkerPool {
                         worker_pool,
                         control_rx,
                         priority_rx,
-                        fsp_aead_completion_rx,
+                        aead_completion_rx,
                         bulk_rx,
                         worker_bulk_queued_packets,
                     )
@@ -168,6 +167,25 @@ impl DecryptWorkerPool {
             return None;
         }
         let mut idx = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 1);
+        if idx >= avoid_idx {
+            idx += 1;
+        }
+        Some(idx)
+    }
+
+    fn worker_idx_for_fmp_open_avoiding(
+        &self,
+        session_key: DecryptSessionKey,
+        avoid_idx: usize,
+    ) -> Option<usize> {
+        let worker_count = self.senders.len();
+        if worker_count <= 1 || avoid_idx >= worker_count {
+            return None;
+        }
+        let mut idx =
+            (mix_decrypt_session_hash(decrypt_session_fast_hash(session_key) ^ 0x67ab_9d1d_5f33_e219)
+                as usize)
+                % (worker_count - 1);
         if idx >= avoid_idx {
             idx += 1;
         }
@@ -228,14 +246,34 @@ impl DecryptWorkerPool {
         self.senders.len() > 1
     }
 
+    fn fmp_bulk_open_worker_enabled(&self) -> bool {
+        self.senders.len() > 1
+    }
+
+    fn send_fmp_aead_completion_batch(
+        &self,
+        owner_idx: usize,
+        batch: FmpAeadCompletionBatch,
+    ) -> bool {
+        self.senders.get(owner_idx).is_some_and(|sender| {
+            sender
+                .aead_completion
+                .send(DecryptAeadCompletionBatch::Fmp(batch))
+                .is_ok()
+        })
+    }
+
     fn send_fsp_aead_completion_batch(
         &self,
         owner_idx: usize,
         batch: FspAeadCompletionBatch,
     ) -> bool {
-        self.senders
-            .get(owner_idx)
-            .is_some_and(|sender| sender.fsp_aead_completion.send(batch).is_ok())
+        self.senders.get(owner_idx).is_some_and(|sender| {
+            sender
+                .aead_completion
+                .send(DecryptAeadCompletionBatch::Fsp(batch))
+                .is_ok()
+        })
     }
 
     fn fsp_aead_session(&self, source_addr: &NodeAddr) -> Option<Arc<FspSharedCryptoSession>> {
@@ -255,6 +293,60 @@ impl DecryptWorkerPool {
                 sessions.insert(source_addr, shared);
             } else {
                 sessions.remove(&source_addr);
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn dispatch_fmp_aead_open_worker_job(
+        &self,
+        open_idx: usize,
+        owner_idx: usize,
+        mut job: FmpAeadOpenJob,
+    ) -> Result<(), FmpAeadOpenJob> {
+        let Some(open_sender) = self.senders.get(open_idx) else {
+            return Err(job);
+        };
+        if self.senders.get(owner_idx).is_none() {
+            return Err(job);
+        }
+        job.completion_owner_idx = Some(owner_idx);
+        job.open_queued_at = crate::perf_profile::stamp();
+        if !try_reserve_bulk_packets(
+            &open_sender.bulk_queued_packets,
+            open_sender.bulk_packet_cap,
+            1,
+        ) {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFmpOpenPoolQueueFullDropped,
+            );
+            record_decrypt_worker_bulk_drop_count(open_idx, 1);
+            return Err(job);
+        }
+
+        match open_sender
+            .bulk
+            .try_send(DecryptWorkerBulkItem::FmpAeadOpen(job))
+        {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(DecryptWorkerBulkItem::FmpAeadOpen(job))) => {
+                release_bulk_packets(&open_sender.bulk_queued_packets, 1);
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFmpOpenPoolQueueFullDropped,
+                );
+                record_decrypt_worker_bulk_drop_count(open_idx, 1);
+                Err(job)
+            }
+            Err(TrySendError::Disconnected(DecryptWorkerBulkItem::FmpAeadOpen(job))) => {
+                release_bulk_packets(&open_sender.bulk_queued_packets, 1);
+                debug!(
+                    worker = open_idx,
+                    "DecryptWorker opener thread gone; dropping FMP open job"
+                );
+                Err(job)
+            }
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                unreachable!("FMP AEAD opener dispatch only sends FmpAeadOpen jobs")
             }
         }
     }

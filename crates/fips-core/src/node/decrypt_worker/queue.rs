@@ -31,6 +31,7 @@ enum WorkerMsg {
 enum DecryptWorkerBulkItem {
     Job(DecryptJob),
     FspJob(FspDecryptJob),
+    FmpAeadOpen(FmpAeadOpenJob),
     FspAeadOpen(FspAeadOpenJob),
     FspAeadOpenBatch(Vec<FspAeadOpenJob>),
     Batch(Vec<DecryptJob>),
@@ -40,7 +41,7 @@ enum DecryptWorkerBulkItem {
 impl DecryptWorkerBulkItem {
     fn packet_count(&self) -> usize {
         match self {
-            Self::Job(_) | Self::FspJob(_) | Self::FspAeadOpen(_) => 1,
+            Self::Job(_) | Self::FspJob(_) | Self::FmpAeadOpen(_) | Self::FspAeadOpen(_) => 1,
             Self::FspAeadOpenBatch(jobs) => jobs.len(),
             Self::Batch(jobs) => jobs.len(),
             Self::FspBatch(jobs) => jobs.len(),
@@ -55,7 +56,9 @@ impl DecryptWorkerBulkItem {
             return (None, Some(self));
         }
         match self {
-            Self::Job(_) | Self::FspJob(_) | Self::FspAeadOpen(_) => (Some(self), None),
+            Self::Job(_) | Self::FspJob(_) | Self::FmpAeadOpen(_) | Self::FspAeadOpen(_) => {
+                (Some(self), None)
+            }
             Self::FspAeadOpenBatch(mut jobs) => {
                 if packet_count >= jobs.len() {
                     return (Some(Self::FspAeadOpenBatch(jobs)), None);
@@ -123,6 +126,7 @@ fn fsp_jobs_from_decrypt_worker_bulk_item(item: DecryptWorkerBulkItem) -> Vec<Fs
         DecryptWorkerBulkItem::FspJob(job) => vec![job],
         DecryptWorkerBulkItem::FspBatch(jobs) => jobs,
         DecryptWorkerBulkItem::Job(_)
+        | DecryptWorkerBulkItem::FmpAeadOpen(_)
         | DecryptWorkerBulkItem::FspAeadOpen(_)
         | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
         | DecryptWorkerBulkItem::Batch(_) => {
@@ -139,6 +143,7 @@ fn fsp_aead_open_jobs_from_decrypt_worker_bulk_item(
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => jobs,
         DecryptWorkerBulkItem::Job(_)
         | DecryptWorkerBulkItem::FspJob(_)
+        | DecryptWorkerBulkItem::FmpAeadOpen(_)
         | DecryptWorkerBulkItem::Batch(_)
         | DecryptWorkerBulkItem::FspBatch(_) => {
             unreachable!("FSP AEAD opener dispatch only sends opener jobs")
@@ -212,6 +217,9 @@ impl DecryptWorkerBatchStats {
             DecryptWorkerBulkItem::Job(job) => self.add_lane(job.lane(), 1),
             DecryptWorkerBulkItem::FspJob(job) => self.add_lane(job.lane(), 1),
             DecryptWorkerBulkItem::FspAeadOpen(_) => {
+                self.add_lane(DecryptWorkerLane::Bulk, 1);
+            }
+            DecryptWorkerBulkItem::FmpAeadOpen(_) => {
                 self.add_lane(DecryptWorkerLane::Bulk, 1);
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {

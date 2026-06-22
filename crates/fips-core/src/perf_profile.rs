@@ -73,8 +73,8 @@
 //!   * `DECRYPT_WORKER_BULK_INPUT_HEAD_WAIT` — bulk decrypt-worker enqueue → batch item service start
 //!   * `DECRYPT_WORKER_BULK_INPUT_TAIL_WAIT` — decrypt-worker batch item service start → individual job handling
 //!   * `DECRYPT_WORKER_BULK_ITEM_SERVICE` — decrypt-worker bulk item service time
-//!   * `FMP_AEAD_HELPER_*` / `FMP_RECEIVE_ORDER_WINDOW_WAIT` — retired FMP helper slots kept for
-//!     stable trace decoding; the live FMP receive path opens on the session owner.
+//!   * `FMP_AEAD_HELPER_*` / `FMP_RECEIVE_ORDER_WINDOW_WAIT` — FMP bulk worker-open queue,
+//!     completion, and ordered owner wait timing.
 //!   * `DECRYPT_WORKER_OUTPUT_FLUSH` — worker output batch flush into rx_loop/endpoint lanes
 //!   * `FSP_AEAD_WORKER_OPEN_QUEUE_WAIT` — FSP opener-worker bulk queue residence
 //!   * `FSP_AEAD_WORKER_OPEN_COMPLETION_WAIT` — FSP opener-worker completion residence
@@ -96,7 +96,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 234;
+const N_EVENTS: usize = 242;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -563,7 +563,7 @@ pub enum Event {
     FmpWorkerDispatchWorker6 = 88,
     FmpWorkerDispatchWorker7 = 89,
     FmpWorkerDispatchWorkerOther = 90,
-    // Retired FMP AEAD helper completion slots kept for stable trace decoding.
+    // FMP bulk worker-open ordered completion accounting.
     FmpAeadCompletionReady = 91,
     FmpAeadCompletionAccepted = 92,
     FmpAeadCompletionAeadFailed = 93,
@@ -717,6 +717,14 @@ pub enum Event {
     EndpointEventDequeueBulkMessages = 231,
     EndpointEventDequeueMultiMessageEvents = 232,
     EndpointEventDequeueMixedLaneEvents = 233,
+    FmpAeadCompletionStaleSession = 234,
+    FmpAeadCompletionStaleOrder = 235,
+    FmpAeadCompletionStaleTicket = 236,
+    FmpAeadCompletionDuplicateTicket = 237,
+    FmpAeadCompletionWindowExceeded = 238,
+    DecryptFmpOpenWorkerWindowDropped = 239,
+    DecryptFmpOpenPoolQueueFullDropped = 240,
+    FmpAeadCompletionDropped = 241,
 }
 
 impl Event {
@@ -815,6 +823,14 @@ impl Event {
                 | Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow
                 | Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow
                 | Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow
+                | Event::FmpAeadCompletionStaleSession
+                | Event::FmpAeadCompletionStaleOrder
+                | Event::FmpAeadCompletionStaleTicket
+                | Event::FmpAeadCompletionDuplicateTicket
+                | Event::FmpAeadCompletionWindowExceeded
+                | Event::DecryptFmpOpenWorkerWindowDropped
+                | Event::DecryptFmpOpenPoolQueueFullDropped
+                | Event::FmpAeadCompletionDropped
                 | Event::DecryptFspMalformedDropped
                 | Event::FspAeadCompletionAeadFailedLocal
                 | Event::FspAeadCompletionAeadFailedHelper
@@ -1176,6 +1192,14 @@ impl Event {
             Event::EndpointEventDequeueMixedLaneEvents => {
                 "endpoint_event_dequeue_mixed_lane_events"
             }
+            Event::FmpAeadCompletionStaleSession => "fmp_aead_completion_stale_session",
+            Event::FmpAeadCompletionStaleOrder => "fmp_aead_completion_stale_order",
+            Event::FmpAeadCompletionStaleTicket => "fmp_aead_completion_stale_ticket",
+            Event::FmpAeadCompletionDuplicateTicket => "fmp_aead_completion_duplicate_ticket",
+            Event::FmpAeadCompletionWindowExceeded => "fmp_aead_completion_window_exceeded",
+            Event::DecryptFmpOpenWorkerWindowDropped => "decrypt_fmp_open_worker_window_dropped",
+            Event::DecryptFmpOpenPoolQueueFullDropped => "decrypt_fmp_open_pool_queue_full_dropped",
+            Event::FmpAeadCompletionDropped => "fmp_aead_completion_dropped",
         }
     }
 }
@@ -1416,6 +1440,14 @@ fn event_from_index(idx: usize) -> Event {
         231 => Event::EndpointEventDequeueBulkMessages,
         232 => Event::EndpointEventDequeueMultiMessageEvents,
         233 => Event::EndpointEventDequeueMixedLaneEvents,
+        234 => Event::FmpAeadCompletionStaleSession,
+        235 => Event::FmpAeadCompletionStaleOrder,
+        236 => Event::FmpAeadCompletionStaleTicket,
+        237 => Event::FmpAeadCompletionDuplicateTicket,
+        238 => Event::FmpAeadCompletionWindowExceeded,
+        239 => Event::DecryptFmpOpenWorkerWindowDropped,
+        240 => Event::DecryptFmpOpenPoolQueueFullDropped,
+        241 => Event::FmpAeadCompletionDropped,
         _ => unreachable!(),
     }
 }
@@ -2032,6 +2064,11 @@ pub(crate) fn record_decrypt_worker_select_fsp_completion(packets: usize) {
 }
 
 #[inline]
+pub(crate) fn record_decrypt_worker_select_fmp_completion(packets: usize) {
+    record_event_count(Event::DecryptWorkerSelectFmpCompletion, packets as u64);
+}
+
+#[inline]
 pub(crate) fn record_decrypt_worker_select_bulk(packets: usize) {
     record_event_count(Event::DecryptWorkerSelectBulkPackets, packets as u64);
 }
@@ -2112,6 +2149,35 @@ pub(crate) fn record_fsp_aead_completion_drain(
     }
     if ready > 1 {
         record_event_count(Event::FspAeadCompletionReadyMulti, 1);
+    }
+}
+
+#[inline]
+pub(crate) fn record_fmp_aead_completion_drain(
+    ready: usize,
+    accepted: usize,
+    aead_failures: usize,
+    replay_drops: usize,
+    dropped: usize,
+) {
+    if ready == 0 {
+        return;
+    }
+    record_event_count(Event::FmpAeadCompletionReady, ready as u64);
+    if accepted > 0 {
+        record_event_count(Event::FmpAeadCompletionAccepted, accepted as u64);
+    }
+    if aead_failures > 0 {
+        record_event_count(Event::FmpAeadCompletionAeadFailed, aead_failures as u64);
+    }
+    if replay_drops > 0 {
+        record_event_count(Event::FmpAeadCompletionReplayDropped, replay_drops as u64);
+    }
+    if dropped > 0 {
+        record_event_count(Event::FmpAeadCompletionDropped, dropped as u64);
+    }
+    if ready > 1 {
+        record_event_count(Event::FmpAeadCompletionReadyMulti, 1);
     }
 }
 
@@ -2205,6 +2271,21 @@ pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
 }
 
 #[inline]
+pub(crate) fn record_fmp_aead_completion_replay_drop_reason(
+    reason: crate::noise::ReplayRejection,
+    counter_lag: u64,
+) {
+    let event = match reason {
+        crate::noise::ReplayRejection::Duplicate => Event::FmpAeadCompletionReplayDroppedDuplicate,
+        crate::noise::ReplayRejection::TooOld => Event::FmpAeadCompletionReplayDroppedTooOld,
+    };
+    record_event(event);
+    if reason == crate::noise::ReplayRejection::TooOld {
+        record_fmp_aead_completion_too_old_lag_buckets(counter_lag);
+    }
+}
+
+#[inline]
 pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
@@ -2233,6 +2314,23 @@ fn record_fsp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
     }
     if counter_lag >= window.saturating_mul(64) {
         record_event(Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow);
+    }
+}
+
+#[inline]
+fn record_fmp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
+    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
+    if counter_lag >= window.saturating_mul(2) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow);
+    }
+    if counter_lag >= window.saturating_mul(4) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow);
+    }
+    if counter_lag >= window.saturating_mul(16) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow);
+    }
+    if counter_lag >= window.saturating_mul(64) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow);
     }
 }
 

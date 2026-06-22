@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 234);
+    assert_eq!(N_EVENTS, 242);
     assert!(
-        (Event::EndpointEventDequeueMixedLaneEvents as usize) < N_EVENTS,
+        (Event::FmpAeadCompletionDropped as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -73,6 +73,38 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::EndpointEventDequeueMixedLaneEvents as usize).name(),
         "endpoint_event_dequeue_mixed_lane_events"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionStaleSession as usize).name(),
+        "fmp_aead_completion_stale_session"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionStaleOrder as usize).name(),
+        "fmp_aead_completion_stale_order"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionStaleTicket as usize).name(),
+        "fmp_aead_completion_stale_ticket"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionDuplicateTicket as usize).name(),
+        "fmp_aead_completion_duplicate_ticket"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionWindowExceeded as usize).name(),
+        "fmp_aead_completion_window_exceeded"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpOpenWorkerWindowDropped as usize).name(),
+        "decrypt_fmp_open_worker_window_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpOpenPoolQueueFullDropped as usize).name(),
+        "decrypt_fmp_open_pool_queue_full_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionDropped as usize).name(),
+        "fmp_aead_completion_dropped"
     );
     assert_eq!(
         event_from_index(Event::RxLoopSlowMaintenanceTimeout as usize).name(),
