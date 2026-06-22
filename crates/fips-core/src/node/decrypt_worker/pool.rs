@@ -266,11 +266,7 @@ impl DecryptWorkerPool {
         owner_idx: usize,
         job: FspAeadOpenJob,
     ) -> Result<(), FspAeadOpenJob> {
-        self.dispatch_fsp_aead_open_worker_job_batch_or_return(open_idx, owner_idx, vec![job])
-            .map_err(|mut jobs| {
-                jobs.pop()
-                    .expect("single opener dispatch should return one job")
-            })
+        self.dispatch_fsp_aead_open_decrypt_worker_job(open_idx, owner_idx, job)
     }
 
     #[allow(clippy::result_large_err)]
@@ -331,6 +327,13 @@ impl DecryptWorkerPool {
         debug_assert!(!jobs.is_empty());
         debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
 
+        if jobs.len() == 1 {
+            let job = jobs.pop().expect("checked non-empty opener batch");
+            return self
+                .dispatch_fsp_aead_open_decrypt_worker_job(open_idx, owner_idx, job)
+                .map_err(|job| vec![job]);
+        }
+
         let Some(open_sender) = self.senders.get(open_idx) else {
             return Err(jobs);
         };
@@ -341,13 +344,6 @@ impl DecryptWorkerPool {
         for job in &mut jobs {
             job.completion_owner_idx = Some(owner_idx);
             job.open_queued_at = queued_at;
-        }
-
-        if jobs.len() == 1 {
-            let job = jobs.pop().expect("checked non-empty opener batch");
-            return self
-                .dispatch_fsp_aead_open_decrypt_worker_job(open_idx, owner_idx, job)
-                .map_err(|job| vec![job]);
         }
 
         let packet_count = jobs.len();
