@@ -36,8 +36,8 @@
 //! delivery.
 //!
 //! This is the FIPS equivalent of WireGuard-go's packet mover shape: packets
-//! are grouped by the peer/session owner, FMP/FSP bulk AEAD opening may happen
-//! on opener workers, and every worker-open completion returns through its
+//! are grouped by the peer/session owner, FSP bulk AEAD opening may happen on
+//! opener workers, and every FSP completion returns through the source-peer
 //! ordered owner before replay acceptance or TUN/endpoint delivery. Returned
 //! open-worker completions are observable pressure events, not alternate replay
 //! owners.
