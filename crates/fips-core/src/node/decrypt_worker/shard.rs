@@ -1209,6 +1209,7 @@ impl DecryptWorkerShard {
         let local_open_preserves_ciphertext = matches!(lane, DecryptWorkerLane::Bulk);
         let restore_ciphertext =
             matches!(lane, DecryptWorkerLane::Priority).then(|| ciphertext.to_vec());
+        let mut scratch_ciphertext = Vec::new();
         let (ticket, open_result, receive_order_id) = {
             let state = self
                 .fsp_sessions
@@ -1230,10 +1231,10 @@ impl DecryptWorkerShard {
                 let _t_fsp =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
                 if local_open_preserves_ciphertext {
-                    let scratch_ciphertext = self.fsp_open_scratch.ciphertext_from(ciphertext);
+                    scratch_ciphertext.extend_from_slice(ciphertext);
                     state.open_current_established_frame_in_place_deferred_replay(
                         &header,
-                        scratch_ciphertext,
+                        &mut scratch_ciphertext,
                     )
                 } else {
                     state.open_current_established_frame_in_place_deferred_replay(
@@ -1273,7 +1274,7 @@ impl DecryptWorkerShard {
         let completion = match open_result {
             Some(Ok(plaintext_len)) => {
                 if local_open_preserves_ciphertext {
-                    let plaintext = &self.fsp_open_scratch.ciphertext[..plaintext_len];
+                    let plaintext = &scratch_ciphertext[..plaintext_len];
                     let restore =
                         &mut job.fallback.packet_data[ciphertext_offset..ciphertext_offset + plaintext_len];
                     restore.copy_from_slice(plaintext);
