@@ -39,8 +39,6 @@
         {
             DecryptWorkerBulkItem::FspJob(job) => assert_eq!(job.lane(), DecryptWorkerLane::Bulk),
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
@@ -84,8 +82,6 @@
             }
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected a multi-job FSP batch"),
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_) => {
@@ -130,8 +126,6 @@
                 assert_eq!(job.source_addr, source_addr);
             }
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
@@ -179,8 +173,6 @@
                     assert_eq!(job.lane(), DecryptWorkerLane::Bulk);
                 }
                 DecryptWorkerBulkItem::Job(_)
-                | DecryptWorkerBulkItem::FmpAeadOpen(_)
-                | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
                 | DecryptWorkerBulkItem::FspAeadOpen(_)
                 | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
                 | DecryptWorkerBulkItem::Batch(_)
@@ -235,8 +227,6 @@
                 assert_eq!(job.lane(), DecryptWorkerLane::Bulk);
             }
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
@@ -257,8 +247,6 @@
                 panic!("two available slots should stay grouped as one FSP batch")
             }
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_) => {
@@ -299,8 +287,6 @@
                 assert_eq!(job.session_key, session_key);
             }
             DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
@@ -315,8 +301,6 @@
                 panic!("two available slots should stay grouped as one decrypt batch")
             }
             DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => {
@@ -716,8 +700,6 @@
                 assert_eq!(decrypt_job_lane(&job), DecryptWorkerLane::Priority);
             }
             DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::FmpAeadOpen(_)
-            | DecryptWorkerBulkItem::FmpAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
@@ -788,10 +770,6 @@
             }
             DecryptWorkerBulkItem::Job(_) => panic!("expected a multi-job bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected a multi-job bulk batch"),
-            DecryptWorkerBulkItem::FmpAeadOpen(_) => panic!("expected a multi-job bulk batch"),
-            DecryptWorkerBulkItem::FmpAeadOpenBatch(_) => {
-                panic!("expected a multi-job bulk batch")
-            }
             DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected a multi-job bulk batch"),
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected a multi-job bulk batch")

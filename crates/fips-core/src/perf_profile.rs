@@ -95,8 +95,8 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 77;
-const N_EVENTS: usize = 268;
+const N_STAGES: usize = 74;
+const N_EVENTS: usize = 262;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -301,16 +301,6 @@ pub enum Stage {
     /// Bulk-sized connected UDP ring residence, split from the aggregate ring
     /// wait so bulk burst absorption cannot hide priority behavior.
     ConnectedUdpDrainBulkRingWait = 73,
-    /// Worker-open FMP AEAD job residence before the opener worker starts
-    /// opening it. This is the bulk-FMP counterpart to FSP worker-open queue wait.
-    FmpAeadWorkerOpenQueueWait = 74,
-    /// Worker-open FMP AEAD completion residence before the owner worker
-    /// handles it.
-    FmpAeadWorkerOpenCompletionWait = 75,
-    /// Owner-worker service time for an FMP AEAD open completion, including
-    /// ordered drain, replay commit, FMP plaintext classification, and output
-    /// batching.
-    FmpAeadCompletionService = 76,
 }
 
 impl Stage {
@@ -394,9 +384,6 @@ impl Stage {
             Stage::ConnectedUdpDrainRingWait => "connected_udp_drain_ring_wait",
             Stage::ConnectedUdpDrainPriorityRingWait => "connected_udp_drain_priority_ring_wait",
             Stage::ConnectedUdpDrainBulkRingWait => "connected_udp_drain_bulk_ring_wait",
-            Stage::FmpAeadWorkerOpenQueueWait => "fmp_aead_worker_open_queue_wait",
-            Stage::FmpAeadWorkerOpenCompletionWait => "fmp_aead_worker_open_completion_wait",
-            Stage::FmpAeadCompletionService => "fmp_aead_completion_service",
         }
     }
 }
@@ -477,9 +464,6 @@ fn stage_from_index(idx: usize) -> Stage {
         71 => Stage::ConnectedUdpDrainRingWait,
         72 => Stage::ConnectedUdpDrainPriorityRingWait,
         73 => Stage::ConnectedUdpDrainBulkRingWait,
-        74 => Stage::FmpAeadWorkerOpenQueueWait,
-        75 => Stage::FmpAeadWorkerOpenCompletionWait,
-        76 => Stage::FmpAeadCompletionService,
         _ => unreachable!(),
     }
 }
@@ -761,12 +745,6 @@ pub enum Event {
     DecryptWorkerFspOpenQueueDepthGe256 = 259,
     DecryptWorkerFspOpenQueueDepthGe1024 = 260,
     DecryptWorkerFspOpenQueueDepthGe4096 = 261,
-    FmpAeadCompletionStaleSession = 262,
-    FmpAeadCompletionStaleOrder = 263,
-    FmpAeadCompletionStaleTicket = 264,
-    FmpAeadCompletionDuplicateTicket = 265,
-    FmpAeadCompletionWindowExceeded = 266,
-    FmpAeadCompletionDropped = 267,
 }
 
 impl Event {
@@ -1291,12 +1269,6 @@ impl Event {
             Event::DecryptWorkerFspOpenQueueDepthGe4096 => {
                 "decrypt_worker_fsp_open_queue_depth_ge4096"
             }
-            Event::FmpAeadCompletionStaleSession => "fmp_aead_completion_stale_session",
-            Event::FmpAeadCompletionStaleOrder => "fmp_aead_completion_stale_order",
-            Event::FmpAeadCompletionStaleTicket => "fmp_aead_completion_stale_ticket",
-            Event::FmpAeadCompletionDuplicateTicket => "fmp_aead_completion_duplicate_ticket",
-            Event::FmpAeadCompletionWindowExceeded => "fmp_aead_completion_window_exceeded",
-            Event::FmpAeadCompletionDropped => "fmp_aead_completion_dropped",
         }
     }
 }
@@ -1565,12 +1537,6 @@ fn event_from_index(idx: usize) -> Event {
         259 => Event::DecryptWorkerFspOpenQueueDepthGe256,
         260 => Event::DecryptWorkerFspOpenQueueDepthGe1024,
         261 => Event::DecryptWorkerFspOpenQueueDepthGe4096,
-        262 => Event::FmpAeadCompletionStaleSession,
-        263 => Event::FmpAeadCompletionStaleOrder,
-        264 => Event::FmpAeadCompletionStaleTicket,
-        265 => Event::FmpAeadCompletionDuplicateTicket,
-        266 => Event::FmpAeadCompletionWindowExceeded,
-        267 => Event::FmpAeadCompletionDropped,
         _ => unreachable!(),
     }
 }
@@ -2488,21 +2454,6 @@ pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
 }
 
 #[inline]
-pub(crate) fn record_fmp_aead_completion_replay_drop_reason(
-    reason: crate::noise::ReplayRejection,
-    counter_lag: u64,
-) {
-    let event = match reason {
-        crate::noise::ReplayRejection::Duplicate => Event::FmpAeadCompletionReplayDroppedDuplicate,
-        crate::noise::ReplayRejection::TooOld => Event::FmpAeadCompletionReplayDroppedTooOld,
-    };
-    record_event(event);
-    if reason == crate::noise::ReplayRejection::TooOld {
-        record_fmp_aead_completion_too_old_lag_buckets(counter_lag);
-    }
-}
-
-#[inline]
 pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
@@ -2514,23 +2465,6 @@ pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     record_event(event);
     if reason == crate::noise::ReplayRejection::TooOld {
         record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag);
-    }
-}
-
-#[inline]
-fn record_fmp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
-    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
-    if counter_lag >= window.saturating_mul(2) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow);
-    }
-    if counter_lag >= window.saturating_mul(4) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow);
-    }
-    if counter_lag >= window.saturating_mul(16) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow);
-    }
-    if counter_lag >= window.saturating_mul(64) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow);
     }
 }
 

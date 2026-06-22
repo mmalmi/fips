@@ -34,9 +34,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 268);
+    assert_eq!(N_EVENTS, 262);
     assert!(
-        (Event::FmpAeadCompletionDropped as usize) < N_EVENTS,
+        (Event::DecryptWorkerFspOpenQueueDepthGe4096 as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -130,30 +130,6 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptWorkerFspOpenQueueDepthGe4096 as usize).name(),
         "decrypt_worker_fsp_open_queue_depth_ge4096"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionStaleSession as usize).name(),
-        "fmp_aead_completion_stale_session"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionStaleOrder as usize).name(),
-        "fmp_aead_completion_stale_order"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionStaleTicket as usize).name(),
-        "fmp_aead_completion_stale_ticket"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionDuplicateTicket as usize).name(),
-        "fmp_aead_completion_duplicate_ticket"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionWindowExceeded as usize).name(),
-        "fmp_aead_completion_window_exceeded"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionDropped as usize).name(),
-        "fmp_aead_completion_dropped"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOpenWorkerLocalIneligibleNoShared as usize).name(),
@@ -1026,7 +1002,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 77);
+    assert_eq!(N_STAGES, 74);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -1202,18 +1178,6 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::ConnectedUdpDrainBulkRingWait as usize).name(),
         "connected_udp_drain_bulk_ring_wait"
-    );
-    assert_eq!(
-        stage_from_index(Stage::FmpAeadWorkerOpenQueueWait as usize).name(),
-        "fmp_aead_worker_open_queue_wait"
-    );
-    assert_eq!(
-        stage_from_index(Stage::FmpAeadWorkerOpenCompletionWait as usize).name(),
-        "fmp_aead_worker_open_completion_wait"
-    );
-    assert_eq!(
-        stage_from_index(Stage::FmpAeadCompletionService as usize).name(),
-        "fmp_aead_completion_service"
     );
 }
 

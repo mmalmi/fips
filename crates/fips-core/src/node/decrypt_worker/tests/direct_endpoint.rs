@@ -404,12 +404,6 @@
             ),
             DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected an eight-packet bulk batch"),
-            DecryptWorkerBulkItem::FmpAeadOpen(_) => {
-                panic!("expected an eight-packet bulk batch")
-            }
-            DecryptWorkerBulkItem::FmpAeadOpenBatch(_) => {
-                panic!("expected an eight-packet bulk batch")
-            }
             DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected an eight-packet bulk batch")
@@ -817,8 +811,8 @@
             DecryptWorkerQueueItem::Bulk(_) => {
                 panic!("blocking receive must not select bulk while control is ready")
             }
-            DecryptWorkerQueueItem::AeadCompletion(_) => {
-                panic!("blocking receive must not select AEAD completion while control is ready")
+            DecryptWorkerQueueItem::FspAeadCompletion(_) => {
+                panic!("blocking receive must not select FSP AEAD completion while control is ready")
             }
             DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
@@ -975,14 +969,14 @@
 
         let completion_count = DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET + 3;
         let (fsp_completion_tx, fsp_aead_completion_rx) =
-            bounded::<AeadCompletionBatch>(completion_count);
+            bounded::<FspAeadCompletionBatch>(completion_count);
         let source_addr = *test_source_peer().node_addr();
         for sequence in 0..completion_count {
             fsp_completion_tx
-                .try_send(wrap_fsp_completion(dummy_fsp_aead_completion_batch(
+                .try_send(dummy_fsp_aead_completion_batch(
                     source_addr,
                     sequence as u64,
-                )))
+                ))
                 .expect("completion lane should have room");
         }
 
@@ -1038,12 +1032,12 @@
             DecryptWorkerBulkItem::FspJob(bulk_job),
         );
 
-        let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<AeadCompletionBatch>(1);
+        let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         fsp_completion_tx
-            .try_send(wrap_fsp_completion(dummy_fsp_aead_completion_batch(
+            .try_send(dummy_fsp_aead_completion_batch(
                 *test_source_peer().node_addr(),
                 0,
-            )))
+            ))
             .expect("completion lane should have room");
 
         let mut shard = test_shard();
@@ -1087,14 +1081,14 @@
         let completion_count =
             (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 3;
         let (fsp_completion_tx, fsp_aead_completion_rx) =
-            bounded::<AeadCompletionBatch>(completion_count);
+            bounded::<FspAeadCompletionBatch>(completion_count);
         let source_addr = *test_source_peer().node_addr();
         for sequence in 0..completion_count {
             fsp_completion_tx
-                .try_send(wrap_fsp_completion(dummy_fsp_aead_completion_batch(
+                .try_send(dummy_fsp_aead_completion_batch(
                     source_addr,
                     sequence as u64,
-                )))
+                ))
                 .expect("completion lane should have room");
         }
 
@@ -1127,12 +1121,12 @@
         let mut shard = test_shard();
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<AeadCompletionBatch>(1);
+        let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         fsp_completion_tx
-            .try_send(wrap_fsp_completion(dummy_fsp_aead_completion_batch(
+            .try_send(dummy_fsp_aead_completion_batch(
                 *test_source_peer().node_addr(),
                 0,
-            )))
+            ))
             .expect("completion lane should have room");
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 2);
@@ -1192,14 +1186,14 @@
         let completion_count =
             (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 5;
         let (fsp_completion_tx, fsp_aead_completion_rx) =
-            bounded::<AeadCompletionBatch>(completion_count);
+            bounded::<FspAeadCompletionBatch>(completion_count);
         let source_addr = *test_source_peer().node_addr();
         for sequence in 0..completion_count {
             fsp_completion_tx
-                .try_send(wrap_fsp_completion(dummy_fsp_aead_completion_batch(
+                .try_send(dummy_fsp_aead_completion_batch(
                     source_addr,
                     sequence as u64,
-                )))
+                ))
                 .expect("completion lane should have room");
         }
 

@@ -160,14 +160,6 @@ fn record_fsp_aead_completion_wait(
     }
 }
 
-fn record_fmp_aead_completion_wait(completed_at: Option<crate::perf_profile::TraceStamp>) {
-    crate::perf_profile::record_since_count(
-        crate::perf_profile::Stage::FmpAeadWorkerOpenCompletionWait,
-        completed_at,
-        1,
-    );
-}
-
 fn record_fsp_ordered_drain(drain: &FspOrderedDrain) {
     debug_assert_eq!(drain.ready, drain.accounted_ready());
     crate::perf_profile::record_fsp_aead_completion_drain(
@@ -182,18 +174,9 @@ fn record_fsp_ordered_drain(drain: &FspOrderedDrain) {
     drain.replay_drop_sources.record();
 }
 
-fn record_fmp_ordered_drain(drain: &FmpOrderedDrain) {
-    debug_assert_eq!(drain.ready, drain.accounted_ready());
-    drain.record();
-}
-
 struct FspOpenWorkerPrepareError {
     job: FspDecryptJob,
     reason: FspOpenWorkerIneligibleReason,
-}
-
-struct FmpOpenWorkerPrepareError {
-    job: DecryptJob,
 }
 
 impl FspOpenWorkerPrepareError {
@@ -254,7 +237,6 @@ impl DecryptWorkerShard {
         }
     }
 
-    #[cfg(test)]
     fn handle_bulk_job_msg(
         &mut self,
         idx: usize,
@@ -318,16 +300,13 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         session_key: DecryptSessionKey,
-        mut state: OwnedSessionState,
+        state: OwnedSessionState,
     ) {
         trace!(
             worker = idx,
             ?session_key,
             "DecryptWorker: register session"
         );
-        if let Some(previous) = self.sessions.remove(&session_key) {
-            state.preserve_receive_order_from(previous);
-        }
         self.sessions.insert(session_key, state);
     }
 
@@ -784,44 +763,6 @@ impl DecryptWorkerShard {
         );
     }
 
-    fn drop_returned_fmp_aead_open_jobs(
-        &mut self,
-        idx: usize,
-        jobs: Vec<FmpAeadOpenJob>,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
-        let mut current_batch: Option<FmpAeadCompletionBatch> = None;
-        let completion_batch_max = DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX;
-
-        for job in jobs {
-            crate::perf_profile::record_event(crate::perf_profile::Event::FmpAeadCompletionDropped);
-            let session_key = job.session_key;
-            let receive_order_id = job.receive_order_id;
-            let same_batch = current_batch
-                .as_ref()
-                .is_some_and(|batch| {
-                    batch.can_push(session_key, receive_order_id, completion_batch_max)
-                });
-
-            if !same_batch {
-                if let Some(batch) = current_batch.take() {
-                    self.handle_fmp_aead_completion_batch_msg(idx, batch, plaintext_batch);
-                }
-                current_batch = Some(FmpAeadCompletionBatch::one(job.into_dropped_completion()));
-                continue;
-            }
-
-            let Some(batch) = current_batch.as_mut() else {
-                unreachable!("same_batch requires an active batch")
-            };
-            batch.push(job.into_dropped_completion());
-        }
-
-        if let Some(batch) = current_batch {
-            self.handle_fmp_aead_completion_batch_msg(idx, batch, plaintext_batch);
-        }
-    }
-
     fn flush_dropped_fsp_aead_open_completion_batch(
         &mut self,
         idx: usize,
@@ -981,163 +922,6 @@ impl DecryptWorkerShard {
                     completions,
                     completion_count,
                     "dropping invalid ordered FSP AEAD completion",
-                    plaintext_batch,
-                );
-            }
-        }
-    }
-
-    fn record_fmp_aead_completion_order_error(error: &OrderedCompletionError) {
-        let event = match error {
-            OrderedCompletionError::Stale => {
-                crate::perf_profile::Event::FmpAeadCompletionStaleTicket
-            }
-            OrderedCompletionError::Duplicate => {
-                crate::perf_profile::Event::FmpAeadCompletionDuplicateTicket
-            }
-            OrderedCompletionError::WindowExceeded => {
-                crate::perf_profile::Event::FmpAeadCompletionWindowExceeded
-            }
-        };
-        crate::perf_profile::record_event(event);
-    }
-
-    fn complete_fmp_aead_completions_for_session<I>(
-        &mut self,
-        idx: usize,
-        session_key: DecryptSessionKey,
-        receive_order_id: u64,
-        completions: I,
-        completion_count: usize,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) where
-        I: IntoIterator<Item = FmpAeadCompletion>,
-    {
-        if completion_count == 0 {
-            return;
-        }
-
-        let mut completions = completions.into_iter();
-        let Some(state) = self.sessions.get(&session_key) else {
-            for completion in completions {
-                record_fmp_aead_completion_wait(completion.completed_at);
-            }
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::FmpAeadCompletionStaleSession,
-                completion_count as u64,
-            );
-            return;
-        };
-        if state.fmp_receive_order_id() != receive_order_id {
-            for completion in completions {
-                record_fmp_aead_completion_wait(completion.completed_at);
-            }
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::FmpAeadCompletionStaleOrder,
-                completion_count as u64,
-            );
-            return;
-        }
-
-        let mut total_drain = FmpOrderedDrain::default();
-        let mut ready_actions = Vec::new();
-        {
-            let state = self
-                .sessions
-                .get_mut(&session_key)
-                .expect("FMP session was checked before handling completions");
-            for completion in completions.by_ref() {
-                record_fmp_aead_completion_wait(completion.completed_at);
-                let FmpAeadCompletion {
-                    session_key: completion_session_key,
-                    receive_order_id: completion_receive_order_id,
-                    ticket,
-                    result,
-                    completed_at: _,
-                } = completion;
-                debug_assert_eq!(completion_session_key, session_key);
-                debug_assert_eq!(completion_receive_order_id, receive_order_id);
-                let drain = match state.complete_ordered_fmp_open(
-                    ticket,
-                    result,
-                    |ready| match ready {
-                        FmpReadyCompletion::Output(output) => {
-                            ready_actions.push(DecryptWorkerJobAction::Output(output));
-                        }
-                        FmpReadyCompletion::Opened(opened) => {
-                            if let Some(action) = Self::handle_opened_fmp_job(opened) {
-                                ready_actions.push(action);
-                            }
-                        }
-                    },
-                ) {
-                    Ok(drain) => drain,
-                    Err(error) => {
-                        Self::record_fmp_aead_completion_order_error(&error);
-                        debug!(
-                            worker = idx,
-                            ?error,
-                            ?session_key,
-                            "dropping invalid ordered FMP AEAD completion"
-                        );
-                        continue;
-                    }
-                };
-                debug_assert_eq!(drain.ready, drain.accounted_ready());
-                total_drain.add(drain);
-            }
-        }
-
-        record_fmp_ordered_drain(&total_drain);
-        let mut fsp_batcher = FspDecryptJobBatcher::new();
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
-        for action in ready_actions {
-            self.push_job_action_output(
-                idx,
-                Some(action),
-                plaintext_batch,
-                Some(&mut fsp_batcher),
-                Some(&mut fsp_open_batcher),
-            );
-        }
-        fsp_batcher.flush(&self.pool);
-        flush_fsp_open_batcher(idx, self, plaintext_batch, &mut fsp_open_batcher);
-    }
-
-    fn handle_fmp_aead_completion_batch_msg(
-        &mut self,
-        idx: usize,
-        completions: FmpAeadCompletionBatch,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
-        let _t_service = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::FmpAeadCompletionService,
-        );
-        match completions {
-            FmpAeadCompletionBatch::One(completion) => {
-                let session_key = completion.session_key;
-                let receive_order_id = completion.receive_order_id;
-                self.complete_fmp_aead_completions_for_session(
-                    idx,
-                    session_key,
-                    receive_order_id,
-                    std::iter::once(completion),
-                    1,
-                    plaintext_batch,
-                );
-            }
-            FmpAeadCompletionBatch::Many {
-                session_key,
-                receive_order_id,
-                completions,
-            } => {
-                let completion_count = completions.len();
-                self.complete_fmp_aead_completions_for_session(
-                    idx,
-                    session_key,
-                    receive_order_id,
-                    completions,
-                    completion_count,
                     plaintext_batch,
                 );
             }
@@ -1777,80 +1561,11 @@ impl DecryptWorkerShard {
         });
     }
 
-    fn try_prepare_fmp_bulk_open_worker_job(
+    fn handle_job_action(
         &mut self,
-        idx: usize,
+        _idx: usize,
         job: DecryptJob,
-    ) -> Result<Option<(usize, FmpAeadOpenJob)>, FmpOpenWorkerPrepareError> {
-        if !job.is_bulk_lane() || !self.pool.fmp_bulk_open_worker_enabled() {
-            return Err(FmpOpenWorkerPrepareError { job });
-        }
-        let session_key = job.session_key();
-        let Some(state) = self.sessions.get_mut(&session_key) else {
-            return Ok(None);
-        };
-        let replay_precheck = match state.precheck_fmp_replay(job.fmp_counter) {
-            Ok(precheck) => precheck,
-            Err(FmpOpenError::Replay) => return Ok(None),
-            #[cfg(test)]
-            Err(FmpOpenError::Aead { .. }) => {
-                unreachable!("FMP replay precheck cannot run AEAD")
-            }
-        };
-        let Some(ticket) = state.issue_fmp_receive_ticket() else {
-            record_decrypt_worker_bulk_drop_count(idx, 1);
-            return Ok(None);
-        };
-        let Some(open_idx) = self
-            .pool
-            .worker_idx_for_fmp_open_avoiding(session_key, ticket, idx)
-        else {
-            return Err(FmpOpenWorkerPrepareError { job });
-        };
-        let open_job = FmpAeadOpenJob {
-            session_key,
-            receive_order_id: state.fmp_receive_order_id(),
-            ticket,
-            cipher: Arc::clone(&state.fmp_cipher),
-            job,
-            precheck: replay_precheck,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        };
-        Ok(Some((open_idx, open_job)))
-    }
-
-    fn handle_job_action_with_fmp_open_batcher(
-        &mut self,
-        idx: usize,
-        mut job: DecryptJob,
-        mut fmp_open_batcher: Option<&mut FmpAeadOpenJobBatcher>,
-        mut plaintext_batch: Option<&mut DecryptPlaintextFallbackBatch>,
     ) -> Result<Option<DecryptWorkerJobAction>, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(batcher) = fmp_open_batcher.as_deref_mut() {
-            match self.try_prepare_fmp_bulk_open_worker_job(idx, job) {
-                Ok(Some((open_idx, open_job))) => {
-                    let returned = batcher.push(&self.pool, open_idx, idx, open_job);
-                    if !returned.is_empty() {
-                        if let Some(plaintext_batch) = plaintext_batch.as_deref_mut() {
-                            self.drop_returned_fmp_aead_open_jobs(idx, returned, plaintext_batch);
-                        } else {
-                            self.drop_returned_fmp_aead_open_jobs(
-                                idx,
-                                returned,
-                                &mut DecryptPlaintextFallbackBatch::new(),
-                            );
-                        }
-                    }
-                    return Ok(None);
-                }
-                Ok(None) => return Ok(None),
-                Err(error) => {
-                    job = error.job;
-                }
-            }
-        }
-
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
@@ -1950,14 +1665,6 @@ impl DecryptWorkerShard {
             fallback_tx,
         };
         Ok(Self::handle_opened_fmp_job(opened))
-    }
-
-    fn handle_job_action(
-        &mut self,
-        idx: usize,
-        job: DecryptJob,
-    ) -> Result<Option<DecryptWorkerJobAction>, Box<dyn std::error::Error + Send + Sync>> {
-        self.handle_job_action_with_fmp_open_batcher(idx, job, None, None)
     }
 
     fn handle_opened_fmp_job(job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {
