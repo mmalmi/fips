@@ -17,6 +17,10 @@
             ticket: FspReceiveTicket,
             completion: FspOrderedCompletion,
         ) -> Result<FspOrderedDrainWithOutputs, OrderedCompletionError>;
+        fn complete_ordered_fsp_open_batch_for_test(
+            &mut self,
+            completions: Vec<FspAeadCompletion>,
+        ) -> (FspOrderedDrainWithOutputs, Vec<OrderedCompletionError>);
     }
 
     impl OwnedFspSessionStateTestExt for OwnedFspSessionState {
@@ -29,6 +33,16 @@
             let drain =
                 self.complete_ordered_fsp_open(ticket, completion, |output| outputs.push(output))?;
             Ok(FspOrderedDrainWithOutputs { drain, outputs })
+        }
+
+        fn complete_ordered_fsp_open_batch_for_test(
+            &mut self,
+            completions: Vec<FspAeadCompletion>,
+        ) -> (FspOrderedDrainWithOutputs, Vec<OrderedCompletionError>) {
+            let mut outputs = Vec::new();
+            let (drain, errors) =
+                self.complete_ordered_fsp_open_batch(completions, |output| outputs.push(output));
+            (FspOrderedDrainWithOutputs { drain, outputs }, errors)
         }
     }
 
@@ -1415,6 +1429,103 @@
             .expect("owner state should remain registered");
         assert_eq!(state.fsp_receive_order_next_ready(), 3);
         assert_eq!(shared.progress().next_ready, 3);
+    }
+
+    #[test]
+    fn fsp_owner_contiguous_completion_batch_drains_ready_window() {
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x58; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+        let receive_order_id = state.fsp_receive_order_id();
+        let tickets = [
+            state.issue_fsp_receive_ticket().expect("ticket 0"),
+            state.issue_fsp_receive_ticket().expect("ticket 1"),
+            state.issue_fsp_receive_ticket().expect("ticket 2"),
+        ];
+        let completions: Vec<_> = tickets
+            .iter()
+            .copied()
+            .map(|ticket| FspAeadCompletion {
+                source_addr,
+                receive_order_id,
+                ticket,
+                source: FspAeadCompletionSource::WorkerOpen,
+                result: FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::WorkerOpen,
+                },
+                completed_at: None,
+            })
+            .collect();
+        assert!(
+            state
+                .fsp_receive_order
+                .can_complete_contiguous_ready_batch(&completions),
+            "ordered opener batches should take the contiguous ready path"
+        );
+
+        let (drain, errors) = state.complete_ordered_fsp_open_batch_for_test(completions);
+        assert!(errors.is_empty());
+        assert_eq!(drain.ready, 3);
+        assert_eq!(drain.dropped, 3);
+        assert_eq!(drain.accounted_ready(), 3);
+        assert_eq!(state.fsp_receive_order_next_ready(), 3);
+    }
+
+    #[test]
+    fn fsp_owner_noncontiguous_completion_batch_keeps_ordered_fallback() {
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x59; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+        let receive_order_id = state.fsp_receive_order_id();
+        let tickets = [
+            state.issue_fsp_receive_ticket().expect("ticket 0"),
+            state.issue_fsp_receive_ticket().expect("ticket 1"),
+            state.issue_fsp_receive_ticket().expect("ticket 2"),
+        ];
+        let completions: Vec<_> = [tickets[1], tickets[0], tickets[2]]
+            .into_iter()
+            .map(|ticket| FspAeadCompletion {
+                source_addr,
+                receive_order_id,
+                ticket,
+                source: FspAeadCompletionSource::WorkerOpen,
+                result: FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::WorkerOpen,
+                },
+                completed_at: None,
+            })
+            .collect();
+        assert!(
+            !state
+                .fsp_receive_order
+                .can_complete_contiguous_ready_batch(&completions),
+            "out-of-order completions must keep using the buffered sequencer"
+        );
+
+        let (drain, errors) = state.complete_ordered_fsp_open_batch_for_test(completions);
+        assert!(errors.is_empty());
+        assert_eq!(drain.ready, 3);
+        assert_eq!(drain.dropped, 3);
+        assert_eq!(drain.accounted_ready(), 3);
+        assert_eq!(state.fsp_receive_order_next_ready(), 3);
     }
 
     #[test]
