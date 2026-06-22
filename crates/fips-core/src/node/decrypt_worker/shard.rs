@@ -35,7 +35,6 @@ fn record_fsp_path_worker_open_bulk() {
 enum FspOpenWorkerIneligibleReason {
     NotBulk,
     NoSharedSession,
-    NotOwner,
     NoSiblingWorker,
     Malformed,
     KbitMismatch,
@@ -50,9 +49,6 @@ impl FspOpenWorkerIneligibleReason {
             }
             Self::NoSharedSession => {
                 crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNoShared
-            }
-            Self::NotOwner => {
-                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNotOwner
             }
             Self::NoSiblingWorker => {
                 crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNoSibling
@@ -585,19 +581,20 @@ impl DecryptWorkerShard {
             ));
         };
         let owner_idx = shared.owner_idx;
-        if owner_idx != idx {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::NotOwner,
-            ));
-        }
         if !self.pool.fsp_bulk_open_worker_enabled() {
             return Err(FspOpenWorkerPrepareError::ineligible(
                 job,
                 FspOpenWorkerIneligibleReason::NoSiblingWorker,
             ));
         }
-        let Some(open_idx) = self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx) else {
+
+        let open_idx = if owner_idx == idx {
+            self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx)
+        } else {
+            self.pool
+                .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
+        };
+        let Some(open_idx) = open_idx else {
             return Err(FspOpenWorkerPrepareError::ineligible(
                 job,
                 FspOpenWorkerIneligibleReason::NoSiblingWorker,

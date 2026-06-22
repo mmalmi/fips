@@ -222,6 +222,34 @@ impl DecryptWorkerPool {
         Some(idx)
     }
 
+    fn worker_idx_for_fsp_open_avoiding_pair(
+        &self,
+        source_addr: &NodeAddr,
+        first_avoid_idx: usize,
+        second_avoid_idx: usize,
+    ) -> Option<usize> {
+        if first_avoid_idx == second_avoid_idx {
+            return self.worker_idx_for_fsp_open_avoiding(source_addr, first_avoid_idx);
+        }
+        let worker_count = self.senders.len();
+        if worker_count <= 2 || first_avoid_idx >= worker_count || second_avoid_idx >= worker_count
+        {
+            return None;
+        }
+
+        let mut pick = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 2);
+        for idx in 0..worker_count {
+            if idx == first_avoid_idx || idx == second_avoid_idx {
+                continue;
+            }
+            if pick == 0 {
+                return Some(idx);
+            }
+            pick -= 1;
+        }
+        None
+    }
+
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
         self.senders[idx]
             .bulk_packet_cap
