@@ -194,6 +194,7 @@ struct DecryptWorkerShard {
     // Lives entirely on this OS thread — never observed by any other thread.
     sessions: HashMap<DecryptSessionKey, OwnedSessionState>,
     fsp_sessions: HashMap<NodeAddr, OwnedFspSessionState>,
+    fsp_open_scratch: FspAeadOpenScratch,
 }
 
 impl DecryptWorkerShard {
@@ -202,6 +203,7 @@ impl DecryptWorkerShard {
             pool,
             sessions: HashMap::new(),
             fsp_sessions: HashMap::new(),
+            fsp_open_scratch: FspAeadOpenScratch::default(),
         }
     }
 
