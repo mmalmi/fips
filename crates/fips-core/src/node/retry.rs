@@ -587,8 +587,7 @@ impl Node {
         let peer = self
             .configured_auto_connect_peer_config(node_addr)
             .and_then(|pc| {
-                self.configured_or_parsed_peer_identity(&pc.npub)
-                    .ok()
+                self.configured_peer_identity_for_npub(&pc.npub)
                     .map(|identity| (pc, identity))
             });
         let Some((peer_config, peer_identity)) = peer else {

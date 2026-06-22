@@ -832,18 +832,8 @@ impl Node {
         &self,
         peer_addr: &NodeAddr,
     ) -> Option<PeerConfig> {
-        if let Some(peer_config) = self.configured_peer(peer_addr)
-            && peer_config.is_auto_connect()
-        {
-            return Some(peer_config.clone());
-        }
-
-        self.config
-            .auto_connect_peers()
-            .find(|pc| {
-                self.configured_or_parsed_peer_identity(&pc.npub)
-                    .is_ok_and(|identity| identity.node_addr() == peer_addr)
-            })
+        self.configured_peer(peer_addr)
+            .filter(|peer_config| peer_config.is_auto_connect())
             .cloned()
     }
 
@@ -863,6 +853,15 @@ impl Node {
             return Ok(*identity);
         }
         PeerIdentity::from_npub(npub).map_err(|error| error.to_string())
+    }
+
+    pub(in crate::node) fn configured_peer_identity_for_npub(
+        &self,
+        npub: &str,
+    ) -> Option<PeerIdentity> {
+        self.configured_peer_send_weights
+            .identity_for_npub(npub)
+            .copied()
     }
 
     pub(in crate::node) fn active_peer_uses_configured_static_udp_path(

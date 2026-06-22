@@ -486,6 +486,7 @@ async fn refresh_peer_paths_redials_active_peer_on_same_known_candidate() {
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
     node.config.peers = vec![peer.clone()];
+    refresh_configured_peer_cache_for_test(&mut node);
 
     let refreshed = node.refresh_peer_paths(vec![peer.npub]).await.unwrap();
 

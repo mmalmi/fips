@@ -132,7 +132,7 @@ impl Node {
 
         for peer_config in added_configs {
             outcome.added += 1;
-            let Ok(identity) = self.configured_or_parsed_peer_identity(&peer_config.npub) else {
+            let Some(identity) = self.configured_peer_identity_for_npub(&peer_config.npub) else {
                 continue;
             };
             let name = peer_config
@@ -183,7 +183,7 @@ impl Node {
         }
 
         for peer_config in auto_connect_refresh_configs {
-            let Ok(peer_identity) = self.configured_or_parsed_peer_identity(&peer_config.npub)
+            let Some(peer_identity) = self.configured_peer_identity_for_npub(&peer_config.npub)
             else {
                 continue;
             };
@@ -267,7 +267,15 @@ impl Node {
                     reason: e,
                 })?;
             let node_addr = *identity.node_addr();
-            let Some(peer_config) = self.configured_auto_connect_peer_config(&node_addr) else {
+            let peer_config = self
+                .configured_auto_connect_peer_config(&node_addr)
+                .or_else(|| {
+                    self.config
+                        .auto_connect_peers()
+                        .find(|peer_config| peer_config.npub == npub)
+                        .cloned()
+                });
+            let Some(peer_config) = peer_config else {
                 debug!(
                     peer = %identity.short_npub(),
                     "Skipping peer path refresh for peer not in auto-connect config"
@@ -316,9 +324,8 @@ impl Node {
             .peers()
             .iter()
             .filter_map(|pc| {
-                self.configured_or_parsed_peer_identity(&pc.npub)
-                    .ok()
-                    .map(|id| (id, pc.alias.clone()))
+                self.configured_peer_identity_for_npub(&pc.npub)
+                    .map(|identity| (identity, pc.alias.clone()))
             })
             .collect();
 
@@ -345,9 +352,9 @@ impl Node {
         );
 
         for peer_config in peer_configs {
-            let peer_identity = match self.configured_or_parsed_peer_identity(&peer_config.npub) {
-                Ok(identity) => identity,
-                Err(_) => continue,
+            let Some(peer_identity) = self.configured_peer_identity_for_npub(&peer_config.npub)
+            else {
+                continue;
             };
             match self
                 .try_auto_connect_graph_session(&peer_config, peer_identity)

@@ -443,18 +443,8 @@ impl Node {
                 .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate))
         };
 
-        if let Some(peer_config) = self.configured_peer(peer_node_addr)
-            && peer_config.is_auto_connect()
-        {
-            return matches_static_path(peer_config);
-        }
-
-        self.config
-            .auto_connect_peers()
-            .find(|peer_config| {
-                self.configured_or_parsed_peer_identity(&peer_config.npub)
-                    .is_ok_and(|identity| identity.node_addr() == peer_node_addr)
-            })
+        self.configured_peer(peer_node_addr)
+            .filter(|peer_config| peer_config.is_auto_connect())
             .is_some_and(matches_static_path)
     }
 
