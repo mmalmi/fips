@@ -716,6 +716,7 @@ impl Node {
         self.transport_socket_drops.remove(&transport_id);
         self.transport_namespace_drops.remove(&transport_id);
         self.transports.remove(&transport_id);
+        self.udp_transport_resolution_cache.clear();
     }
 
     /// Iterate over all links.

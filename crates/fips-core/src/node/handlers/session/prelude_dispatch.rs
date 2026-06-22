@@ -592,6 +592,15 @@ impl SessionDispatchCommit {
                 peer.touch(now_ms);
             }
 
+            if completion.direct_path
+                && node.clear_session_direct_path_degraded(&completion.source_addr)
+            {
+                debug!(
+                    src = %node.peer_display_name(&completion.source_addr),
+                    "Authenticated direct endpoint data restored direct payload routing"
+                );
+            }
+
             let retry_peer = if completion.direct_path {
                 completion.source_addr
             } else {

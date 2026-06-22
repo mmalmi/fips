@@ -1,4 +1,8 @@
 use super::*;
+use crate::node::lifecycle::{
+    LocalInterfaceNetwork, udp_remote_addr_locally_plausible_with_evidence,
+};
+use std::net::{IpAddr, SocketAddr};
 
 #[test]
 fn test_node_creation() {
@@ -234,6 +238,142 @@ async fn test_transport_discovery_skips_incompatible_udp_address_family() {
     assert!(
         candidate.is_none(),
         "transport discovery must not feed IPv6 candidates to an IPv4 UDP socket"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[test]
+fn test_private_udp_hint_requires_matching_local_scope() {
+    let hotspot_local: SocketAddr = "10.7.0.2:51820".parse().unwrap();
+    let stale_lan_remote: SocketAddr = "192.168.44.57:51820".parse().unwrap();
+    let hotspot_network = LocalInterfaceNetwork {
+        ip: "10.7.0.2".parse::<IpAddr>().unwrap(),
+        mask: "255.255.255.0".parse::<IpAddr>().unwrap(),
+    };
+    let hotspot_probe = Some("10.7.0.2".parse::<IpAddr>().unwrap());
+
+    assert!(
+        !udp_remote_addr_locally_plausible_with_evidence(
+            hotspot_local,
+            stale_lan_remote,
+            &[hotspot_network],
+            hotspot_probe,
+        ),
+        "a private LAN endpoint hint from another subnet must not be treated as reachable"
+    );
+
+    let same_lan_network = LocalInterfaceNetwork {
+        ip: "192.168.44.55".parse::<IpAddr>().unwrap(),
+        mask: "255.255.255.0".parse::<IpAddr>().unwrap(),
+    };
+    assert!(
+        udp_remote_addr_locally_plausible_with_evidence(
+            hotspot_local,
+            stale_lan_remote,
+            &[same_lan_network],
+            None,
+        ),
+        "the same private endpoint remains usable when a local interface is on that subnet"
+    );
+
+    let public_remote: SocketAddr = "198.51.100.7:51820".parse().unwrap();
+    assert!(
+        udp_remote_addr_locally_plausible_with_evidence(hotspot_local, public_remote, &[], None),
+        "public UDP endpoint candidates do not need local subnet evidence"
+    );
+}
+
+#[tokio::test]
+async fn test_active_peer_match_rejects_unresolvable_numeric_udp_candidate() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let link_id = LinkId::new(10);
+    let (mut connection, peer_identity) =
+        make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let peer_node_addr = *peer_identity.node_addr();
+    let unreachable_addr = TransportAddr::from_string("[fd00::1]:51820");
+    connection.set_source_addr(unreachable_addr);
+    node.peers.insert_connection(link_id, connection);
+    node.promote_connection(link_id, peer_identity, 1_100)
+        .unwrap();
+
+    let candidate = crate::config::PeerAddress::with_priority("udp", "[fd00::1]:51820", 1);
+    assert!(
+        !node.active_peer_matches_candidate(&peer_node_addr, &candidate),
+        "parsed UDP candidates that cannot resolve to a compatible transport must not fall back to string matching"
+    );
+    assert!(
+        node.active_peer_current_udp_candidate(&peer_node_addr)
+            .is_none(),
+        "an unresolvable current UDP tuple must not be reinserted as a fresh retry candidate"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn test_udp_transport_resolution_cache_clears_after_transport_change() {
+    let mut node = make_node();
+    let remote_addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+    assert!(
+        node.find_udp_transport_for_remote_addr(remote_addr)
+            .is_none(),
+        "missing UDP transport should cache a negative result"
+    );
+
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(42);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("primary".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    assert!(
+        node.find_udp_transport_for_remote_addr(remote_addr)
+            .is_none(),
+        "cache should retain the short-lived negative result until invalidated"
+    );
+
+    node.udp_transport_resolution_cache.clear();
+    assert_eq!(
+        node.find_udp_transport_for_remote_addr(remote_addr)
+            .map(|(id, _)| id),
+        Some(transport_id),
+        "transport changes must invalidate cached UDP resolution"
     );
 
     for transport in node.transports.values_mut() {

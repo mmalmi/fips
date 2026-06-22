@@ -58,6 +58,11 @@ fn populate_all_coord_caches(nodes: &mut [TestNode]) {
     }
 }
 
+fn refresh_configured_peer_cache_for_test(node: &mut Node) {
+    node.configured_peer_send_weights =
+        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
+}
+
 // ============================================================================
 // Unit tests: SessionEntry data structure
 // ============================================================================

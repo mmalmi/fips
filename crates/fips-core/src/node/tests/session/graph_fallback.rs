@@ -19,6 +19,7 @@ async fn test_link_dead_fallback_warms_session_over_existing_graph() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     });
+    refresh_configured_peer_cache_for_test(&mut nodes[0].node);
 
     assert!(
         nodes[0].node.find_next_hop(&dest_addr).is_some(),

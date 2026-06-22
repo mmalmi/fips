@@ -290,11 +290,16 @@ impl Node {
     /// service. A wildcard IPv4 socket cannot send to an IPv6 link-local
     /// target, and vice versa, so callers must choose by socket family rather
     /// than by transport type alone.
-    pub(super) fn find_udp_transport_for_remote_addr(
+    pub(in crate::node) fn find_udp_transport_for_remote_addr(
         &self,
         remote_addr: SocketAddr,
     ) -> Option<(TransportId, SocketAddr)> {
-        self.transports
+        if let Some(result) = self.udp_transport_resolution_cache.get(remote_addr) {
+            return result;
+        }
+
+        let result = self
+            .transports
             .iter()
             .filter(|(id, handle)| {
                 handle.transport_type().name == "udp"
@@ -303,10 +308,14 @@ impl Node {
             })
             .filter_map(|(id, handle)| {
                 let local_addr = handle.local_addr()?;
-                socket_addr_families_compatible(local_addr, remote_addr)
-                    .then_some((*id, local_addr))
+                (socket_addr_families_compatible(local_addr, remote_addr)
+                    && udp_remote_addr_locally_plausible(local_addr, remote_addr))
+                .then_some((*id, local_addr))
             })
-            .min_by_key(|(id, _)| id.as_u32())
+            .min_by_key(|(id, _)| id.as_u32());
+        self.udp_transport_resolution_cache
+            .insert(remote_addr, result);
+        result
     }
 
     pub(in crate::node) fn transport_discovery_candidate(

@@ -276,6 +276,7 @@ fn test_promote_clears_direct_degradation_hold_for_configured_static_path() {
         "udp",
         "127.0.0.1:5000",
     )];
+    refresh_configured_peer_cache_for_test(&mut node);
     node.mark_session_direct_path_degraded(node_addr, now_ms);
     node.add_connection(conn).unwrap();
     node.promote_connection(link_id, identity, now_ms).unwrap();

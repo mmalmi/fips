@@ -53,6 +53,10 @@ pub struct MmpMetrics {
     last_forward_counter_span: u64,
     /// Loss rate in the most recent ReceiverReport delta.
     last_forward_loss_rate: Option<f64>,
+    /// Accumulated low-rate forward loss evidence since the last actionable
+    /// route-quality sample was emitted.
+    forward_loss_window_span: u64,
+    forward_loss_window_lost: u64,
 
     // --- State for reverse delivery ratio delta computation ---
     /// Previous reverse-side cumulative packets received (our receiver state).
@@ -79,6 +83,8 @@ impl MmpMetrics {
         self.has_prev_rr = false;
         self.last_forward_counter_span = 0;
         self.last_forward_loss_rate = None;
+        self.forward_loss_window_span = 0;
+        self.forward_loss_window_lost = 0;
         self.delivery_ratio_forward = 1.0;
         self.prev_reverse_packets = 0;
         self.prev_reverse_highest = 0;
@@ -108,6 +114,8 @@ impl MmpMetrics {
             has_prev_rr: false,
             last_forward_counter_span: 0,
             last_forward_loss_rate: None,
+            forward_loss_window_span: 0,
+            forward_loss_window_lost: 0,
             prev_reverse_packets: 0,
             prev_reverse_highest: 0,
             has_prev_reverse: false,
@@ -207,6 +215,11 @@ impl MmpMetrics {
                 let loss_rate = 1.0 - self.delivery_ratio_forward;
                 self.last_forward_counter_span = counter_span;
                 self.last_forward_loss_rate = Some(loss_rate);
+                self.forward_loss_window_span =
+                    self.forward_loss_window_span.saturating_add(counter_span);
+                self.forward_loss_window_lost = self
+                    .forward_loss_window_lost
+                    .saturating_add(counter_span.saturating_sub(packets_delta));
                 self.loss_trend.update(loss_rate);
                 self.etx = compute_etx(self.delivery_ratio_forward, self.delivery_ratio_reverse);
                 self.etx_trend.update(self.etx);
@@ -309,6 +322,33 @@ impl MmpMetrics {
     pub fn last_forward_loss_sample(&self) -> Option<(u64, f64)> {
         self.last_forward_loss_rate
             .map(|loss| (self.last_forward_counter_span, loss))
+    }
+
+    /// Return route-quality loss evidence once enough packets have been
+    /// observed. High-rate reports are emitted as-is; low-rate reports, such as
+    /// interactive pings, accumulate until they have the same weight.
+    pub fn take_forward_loss_evidence(&mut self, min_span: u64) -> Option<(u64, f64)> {
+        if min_span == 0 {
+            return self.last_forward_loss_sample();
+        }
+
+        if self.last_forward_counter_span >= min_span
+            && let Some(loss) = self.last_forward_loss_rate
+        {
+            self.forward_loss_window_span = 0;
+            self.forward_loss_window_lost = 0;
+            return Some((self.last_forward_counter_span, loss));
+        }
+
+        if self.forward_loss_window_span >= min_span {
+            let span = self.forward_loss_window_span;
+            let loss = (self.forward_loss_window_lost as f64 / span as f64).clamp(0.0, 1.0);
+            self.forward_loss_window_span = 0;
+            self.forward_loss_window_lost = 0;
+            return Some((span, loss));
+        }
+
+        None
     }
 
     /// Smoothed ETX (long-term EWMA), or `None` if not yet initialized.

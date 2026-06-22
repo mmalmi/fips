@@ -206,6 +206,17 @@ impl EncryptWorkerPool {
 
     #[cfg(target_os = "macos")]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
+        if !macos_ordered_sender_enabled() {
+            use std::hash::{Hash, Hasher};
+
+            let queued = QueuedFmpSendJob::direct(job);
+            let key = queued.target_key();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut h);
+            let idx = (h.finish() as usize) % self.senders.len();
+            return (idx, queued);
+        }
+
         // Darwin has no sendmmsg/UDP_GSO equivalent in the standard UDP
         // path, and high-rate Wi-Fi sends regularly block in ENOBUFS. Keep
         // nonce assignment in rx_loop, spread FMP AEAD over the worker pool,
@@ -216,7 +227,7 @@ impl EncryptWorkerPool {
         let ticket = self
             .next_worker
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            / MACOS_WORKER_STRIDE;
+            / macos_worker_stride();
         let idx = ticket % self.senders.len();
         (idx, QueuedFmpSendJob::macos_sequenced(job, flow))
     }
@@ -992,7 +1003,7 @@ impl MacSequencedSendFlows {
             return;
         }
 
-        let idle_ms = MAC_SEND_FLOW_IDLE_MS;
+        let idle_ms = mac_send_flow_idle_ms();
         flows.retain(|_, flow| {
             if flow.is_idle(now_ms, idle_ms) {
                 flow.close();
@@ -1005,23 +1016,78 @@ impl MacSequencedSendFlows {
 }
 
 #[cfg(target_os = "macos")]
-const MACOS_WORKER_STRIDE: usize = 1;
+fn macos_ordered_sender_enabled() -> bool {
+    // Ordered mode gives Darwin the same broad shape as Linux's WG-batch
+    // sender: FMP/FSP AEAD can run across the worker pool, while one flow
+    // thread preserves UDP order for the kernel send target. Keep the env as
+    // an opt-out for NIC/Wi-Fi A/Bs.
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_macos_ordered_sender_enabled(
+            std::env::var("FIPS_MACOS_ORDERED_SENDER")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
 
 #[cfg(target_os = "macos")]
-const MACOS_WORKER_BATCH_SIZE: usize = 8;
+fn parse_macos_ordered_sender_enabled(raw: Option<&str>) -> bool {
+    raw.map(|raw| {
+        !matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+    .unwrap_or(true)
+}
 
 #[cfg(target_os = "macos")]
-const MAC_SEND_FLOW_IDLE_MS: u64 = 120_000;
+fn macos_worker_stride() -> usize {
+    // One-packet round-robin maximizes FMP AEAD parallelism but wakes an idle
+    // worker for nearly every packet on Darwin. Short strides let a hot worker
+    // drain a local queue batch before the next worker is signalled, while still
+    // spreading sustained single-peer traffic across the full pool.
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        macos_worker_stride_from_raw(std::env::var("FIPS_MACOS_WORKER_STRIDE").ok().as_deref())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_worker_stride_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 64)
+}
 
 #[cfg(target_os = "macos")]
 fn macos_worker_batch_size() -> usize {
-    // The direct Darwin sender has no sendmmsg/GSO equivalent, so a large
-    // worker-drain batch becomes a tight burst of send/sendto calls. MacBook
-    // Wi-Fi -> Ethernet tests showed the previous default of 32 could trigger
-    // TCP collapse and long queue waits even when Darwin did not report
-    // ENOBUFS. A smaller fixed default keeps the kernel/radio pacer in the
-    // loop without waking the worker for every datagram.
-    MACOS_WORKER_BATCH_SIZE
+    // The direct Darwin sender has no sendmmsg/GSO equivalent, so worker-drain
+    // batching turns into tight send/sendto bursts. MacBook <-> mini Wi-Fi
+    // tests showed even modest bursts can trigger TCP retransmit collapse.
+    // Keep ordering but hand packets to the kernel one at a time by default;
+    // the env knob remains for lab NIC/LAN A/Bs.
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_MACOS_WORKER_BATCH")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(1)
+            .clamp(1, 64)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn mac_send_flow_idle_ms() -> u64 {
+    static VALUE: OnceLock<u64> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_MACOS_SEND_FLOW_IDLE_MS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(120_000)
+            .max(10_000)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1228,6 +1294,37 @@ impl MacSequencedSendFlow {
         None
     }
 
+    fn take_ready_batch(&self, batch: &mut Vec<MacSendItem>) -> bool {
+        const MAX_READY_BATCH: usize = 8;
+        batch.clear();
+
+        let mut state = self.state.lock().expect("mac send flow state poisoned");
+        loop {
+            let next = state.next_send_seq;
+            if let Some(item) = state.pending.remove(&next) {
+                state.next_send_seq = next.wrapping_add(1);
+                batch.push(item);
+                while batch.len() < MAX_READY_BATCH {
+                    let next = state.next_send_seq;
+                    let Some(item) = state.pending.remove(&next) else {
+                        break;
+                    };
+                    state.next_send_seq = next.wrapping_add(1);
+                    batch.push(item);
+                }
+                self.space_cv.notify_all();
+                return true;
+            }
+            if state.closed {
+                return false;
+            }
+            state = self
+                .ready_cv
+                .wait(state)
+                .expect("mac send flow state poisoned");
+        }
+    }
+
     fn run(self: Arc<Self>) {
         trace!(
             socket_fd = self.key.target.socket_fd,
@@ -1238,53 +1335,38 @@ impl MacSequencedSendFlow {
         let (fd, connected) = self.send_target.fd_and_connected();
         let mut backpressure = SendBackpressurePacer::default();
         let mut rate_pacer = MacSendRatePacer::default();
+        let mut ready_batch = Vec::with_capacity(8);
 
-        loop {
-            let item = {
-                let mut state = self.state.lock().expect("mac send flow state poisoned");
-                loop {
-                    let next = state.next_send_seq;
-                    if let Some(item) = state.pending.remove(&next) {
-                        state.next_send_seq = next.wrapping_add(1);
-                        self.space_cv.notify_one();
-                        break item;
-                    }
-                    if state.closed {
-                        return;
-                    }
-                    state = self
-                        .ready_cv
-                        .wait(state)
-                        .expect("mac send flow state poisoned");
-                }
-            };
-
-            match item {
-                MacSendItem::Packet {
-                    packet,
-                    drop_on_backpressure,
-                    ..
-                } => {
-                    let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-                    rate_pacer.pace(packet.len());
-                    if let Err(err) = send_one_with_backpressure(
-                        fd,
-                        connected,
-                        &self.send_target.dest_addr(),
-                        &packet,
-                        &mut backpressure,
+        while self.take_ready_batch(&mut ready_batch) {
+            for item in ready_batch.drain(..) {
+                match item {
+                    MacSendItem::Packet {
+                        packet,
                         drop_on_backpressure,
-                    ) {
-                        debug!(
-                            socket_fd = self.key.target.socket_fd,
-                            connected_fd = ?self.key.target.connected_fd,
-                            dest = %self.send_target.dest_addr(),
-                            error = %err,
-                            "macOS ordered UDP send failed"
-                        );
+                        ..
+                    } => {
+                        let _t =
+                            crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+                        rate_pacer.pace(packet.len());
+                        if let Err(err) = send_one_with_backpressure(
+                            fd,
+                            connected,
+                            &self.send_target.dest_addr(),
+                            &packet,
+                            &mut backpressure,
+                            drop_on_backpressure,
+                        ) {
+                            debug!(
+                                socket_fd = self.key.target.socket_fd,
+                                connected_fd = ?self.key.target.connected_fd,
+                                dest = %self.send_target.dest_addr(),
+                                error = %err,
+                                "macOS ordered UDP send failed"
+                            );
+                        }
                     }
+                    MacSendItem::Skip => {}
                 }
-                MacSendItem::Skip => {}
             }
         }
     }

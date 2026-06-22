@@ -530,6 +530,9 @@ impl crate::node::SessionRegistry {
 
         mmp.metrics
             .process_receiver_report(rr, our_timestamp_ms, now);
+        let loss_sample = mmp
+            .metrics
+            .take_forward_loss_evidence(SESSION_DIRECT_DEGRADED_MIN_SAMPLE);
 
         let srtt_ms = mmp.metrics.srtt_ms();
         if let Some(srtt_ms) = srtt_ms {
@@ -553,7 +556,7 @@ impl crate::node::SessionRegistry {
             .update_reverse_delivery(our_recv_packets, peer_highest);
 
         Ok(ProcessedSessionReceiverReport {
-            sample: mmp.metrics.last_forward_loss_sample(),
+            sample: loss_sample,
             // Missing route metadata must not make direct-path loss invisible;
             // older/fast endpoint sends may only have the peer session sample.
             used_direct_next_hop: last_outbound_next_hop

@@ -70,11 +70,23 @@ impl Node {
                     })
             });
 
+        let healthy_direct_peer = self
+            .peers
+            .get(dest_node_addr)
+            .filter(|peer| peer.is_healthy() && peer.can_send())
+            .map(|_| *dest_node_addr);
         let healthy_direct_route = self
             .peers
             .get(dest_node_addr)
             .filter(|peer| peer.is_healthy() && !direct_session_degraded)
             .map(|_| *dest_node_addr);
+        let direct_session_has_recent_data_return =
+            self.session_direct_path_has_recent_data_return(dest_node_addr, now_ms);
+        if let Some(direct_addr) = healthy_direct_route
+            && direct_session_has_recent_data_return
+        {
+            return self.peers.get(&direct_addr);
+        }
         if let Some(direct_addr) = healthy_direct_route
             && !direct_session_untrusted
             && self
@@ -120,12 +132,6 @@ impl Node {
             None
         };
 
-        // 3. Optional reply-learned routing. These entries are not peer
-        // claims; they are local observations of which peer carried traffic
-        // or a verified lookup response back from the destination. Most
-        // packets use weighted multipath over learned routes, but periodic
-        // fallback exploration lets coord/bloom/tree routes discover better
-        // candidates.
         let explore_fallback = sendable_learned_peers.as_ref().is_some_and(|sendable| {
             self.learned_routes.should_explore_fallback(
                 dest_node_addr,
@@ -134,6 +140,37 @@ impl Node {
                 |addr| sendable.contains(addr),
             )
         });
+        if explore_fallback && let Some(direct_addr) = healthy_direct_peer {
+            return self.peers.get(&direct_addr);
+        }
+
+        if let Some(next_hop_addr) = sendable_learned_peers.as_ref().and_then(|sendable| {
+            let session = self.sessions.get(dest_node_addr)?;
+            let next_hop_addr = session.last_outbound_next_hop()?;
+            if next_hop_addr == *dest_node_addr
+                || !session.is_established()
+                || !session.has_recent_outbound_activity(
+                    now_ms,
+                    self.session_direct_path_exclusive_trust_timeout_ms(),
+                )
+                || !sendable.contains(&next_hop_addr)
+                || !fallback_beats_direct(self, next_hop_addr)
+            {
+                return None;
+            }
+            Some(next_hop_addr)
+        }) {
+            self.learned_routes
+                .record_selected(dest_node_addr, &next_hop_addr, now_ms);
+            return self.peers.get(&next_hop_addr);
+        }
+
+        // 3. Optional reply-learned routing. These entries are not peer
+        // claims; they are local observations of which peer carried traffic
+        // or a verified lookup response back from the destination. Most
+        // packets use weighted multipath over learned routes, but periodic
+        // fallback exploration lets coord/bloom/tree routes discover better
+        // candidates.
         if let Some(sendable) = &sendable_learned_peers
             && !explore_fallback
         {
@@ -347,12 +384,21 @@ impl Node {
         self.session_direct_degradation.is_degraded(dest, now_ms)
     }
 
+    pub(in crate::node) fn session_direct_path_degradation_active(
+        &self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.session_direct_degradation.is_degraded_at(dest, now_ms)
+    }
+
     pub(in crate::node) fn session_direct_path_blocks_direct_payload(
         &mut self,
         dest: &NodeAddr,
         now_ms: u64,
     ) -> bool {
         self.session_direct_path_is_degraded(dest, now_ms)
+            || self.session_direct_discovered_endpoint_trust_expired(dest, now_ms)
     }
 
     pub(in crate::node) fn session_direct_path_exclusive_trust_timeout_ms(&self) -> u64 {
@@ -386,6 +432,29 @@ impl Node {
             now_ms,
             self.session_direct_path_exclusive_trust_timeout_ms(),
         )
+    }
+
+    pub(in crate::node) fn session_direct_path_has_recent_data_return(
+        &self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.sessions
+            .get(dest)
+            .and_then(|session| session.last_authenticated_inbound_data_age_ms(now_ms))
+            .is_some_and(|age_ms| age_ms <= self.session_direct_path_exclusive_trust_timeout_ms())
+    }
+
+    fn session_direct_discovered_endpoint_trust_expired(
+        &self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.session_direct_path_exclusive_trust_expired(dest, now_ms)
+            && self.configured_peer(dest).is_some_and(|peer_config| {
+                peer_config.is_auto_connect()
+                    && self.active_peer_uses_traversal_path(dest, peer_config)
+            })
     }
 
     pub(in crate::node) fn mark_session_direct_path_degraded(

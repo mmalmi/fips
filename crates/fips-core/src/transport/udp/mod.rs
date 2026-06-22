@@ -647,6 +647,27 @@ async fn udp_receive_loop(
 ) {
     debug!(transport_id = %transport_id, "UDP receive loop starting");
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn cached_transport_addr(
+        cache: &mut Vec<(SocketAddr, TransportAddr)>,
+        remote_addr: SocketAddr,
+    ) -> TransportAddr {
+        if let Some((_, addr)) = cache
+            .iter()
+            .find(|(socket_addr, _)| *socket_addr == remote_addr)
+        {
+            return addr.clone();
+        }
+
+        const UDP_ADDR_CACHE_CAP: usize = 16;
+        let addr = TransportAddr::from_socket_addr(remote_addr);
+        if cache.len() >= UDP_ADDR_CACHE_CAP {
+            cache.remove(0);
+        }
+        cache.push((remote_addr, addr.clone()));
+        addr
+    }
+
     #[cfg(target_os = "linux")]
     {
         const BATCH: usize = UDP_RECV_BATCH_SIZE;
@@ -669,6 +690,7 @@ async fn udp_receive_loop(
             .map(|_| packet_tx.recv_buffer(buf_size))
             .collect();
         let mut addrs: [Option<std::net::SocketAddr>; BATCH] = std::array::from_fn(|_| None);
+        let mut addr_cache: Vec<(SocketAddr, TransportAddr)> = Vec::new();
 
         loop {
             let recv_result = {
@@ -708,7 +730,7 @@ async fn udp_receive_loop(
                         // — single pointer swap, no copy.
                         let data =
                             std::mem::replace(&mut backing[i], packet_tx.recv_buffer(buf_size));
-                        let addr = TransportAddr::from_socket_addr(remote_addr);
+                        let addr = cached_transport_addr(&mut addr_cache, remote_addr);
                         let packet = ReceivedPacket::with_trace_timestamp(
                             transport_id,
                             addr,
@@ -747,7 +769,65 @@ async fn udp_receive_loop(
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let buf_size = mtu as usize + 100;
+        let mut buf = packet_tx.recv_buffer(buf_size);
+        let mut addr_cache: Vec<(SocketAddr, TransportAddr)> = Vec::new();
+
+        loop {
+            match socket.recv_from(&mut buf).await {
+                Ok((len, remote_addr, kernel_drops)) => {
+                    stats.record_recv(len);
+                    stats.set_kernel_drops(kernel_drops as u64);
+
+                    if is_punch_packet(&buf[..len]) {
+                        trace!(
+                            transport_id = %transport_id,
+                            remote_addr = %remote_addr,
+                            bytes = len,
+                            "Dropping stray punch probe/ack on UDP transport"
+                        );
+                        continue;
+                    }
+
+                    buf.truncate(len);
+                    let data = std::mem::replace(&mut buf, packet_tx.recv_buffer(buf_size));
+                    let addr = cached_transport_addr(&mut addr_cache, remote_addr);
+                    let packet =
+                        ReceivedPacket::new(transport_id, addr, packet_tx.packet_buffer(data));
+
+                    trace!(
+                        transport_id = %transport_id,
+                        remote_addr = %remote_addr,
+                        bytes = len,
+                        "UDP packet received"
+                    );
+
+                    if packet_tx.send(packet).is_err() {
+                        debug!(
+                            transport_id = %transport_id,
+                            "Packet channel closed, stopping receive loop"
+                        );
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if buf.len() != buf_size {
+                        buf.resize(buf_size, 0);
+                    }
+                    stats.record_recv_error();
+                    warn!(
+                        transport_id = %transport_id,
+                        error = %e,
+                        "UDP receive error"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let mut buf = vec![0u8; mtu as usize + 100];
 

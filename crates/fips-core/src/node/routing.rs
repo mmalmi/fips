@@ -158,6 +158,24 @@ impl LearnedRouteTable {
         Some(next_hop)
     }
 
+    pub(crate) fn record_selected(
+        &mut self,
+        destination: &NodeAddr,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        let Some(routes) = self.routes.get_mut(destination) else {
+            return false;
+        };
+        routes.retain(|route| route.expires_at_ms > now_ms);
+
+        let Some(route) = routes.iter_mut().find(|route| &route.next_hop == next_hop) else {
+            return false;
+        };
+        route.selected = route.selected.saturating_add(1);
+        true
+    }
+
     pub(crate) fn should_explore_fallback<F>(
         &mut self,
         destination: &NodeAddr,

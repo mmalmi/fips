@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.76] - 2026-06-22
+
+### Fixed
+
+- Required fresh receive-side endpoint liveness before reporting app-facing
+  peers as connected, preventing stale historical counters from keeping moved
+  or dead NAT paths online in nvpn status.
+- Bumped `fips-endpoint` to 0.3.51 so embedded endpoint consumers pick up the
+  `fips-core` 0.3.76 peer-status freshness fix.
+
+## [0.3.75] - 2026-06-21
+
+### Fixed
+
+- Probed healthy direct endpoint paths even while fallback affinity is active,
+  so recovered LAN paths can reclaim endpoint payload traffic instead of
+  staying pinned to stale fallback routing.
+- Preferred recent authenticated direct payload evidence over stale learned
+  fallback cost, preventing reverse transfers from staying slow after the
+  direct path has already recovered.
+- Bumped `fips-endpoint` to 0.3.50 so app-facing consumers pick up the
+  `fips-core` 0.3.75 path-freshness fixes.
+
+## [0.3.74] - 2026-06-21
+
 ### Fixed
 
 - Dropped established Nostr traversal handoffs from non-configured peers before
@@ -18,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored the 30s/three-heartbeat traversal/recent-endpoint liveness floor so
   short-heartbeat products do not demote mobile/NAT paths at the 5s
   local-route-failure floor.
+- Kept macOS FMP sends in reserved counter order across priority and bulk
+  traffic, preventing priority sends from leapfrogging encrypted peer streams.
+- Kept degraded stale direct paths and cached endpoint bulk leases from carrying
+  endpoint payload after direct-path trust changes.
+- Treated missing session route metadata as direct-path quality evidence so
+  receiver-report loss can still demote bad direct paths.
+- Bumped `fips-endpoint` to 0.3.49 so app-facing consumers pick up the
+  `fips-core` 0.3.74 direct-path reliability fixes.
 
 ## [0.3.73] - 2026-06-20
 

@@ -257,8 +257,8 @@ fn stale_udp_nostr_peer_without_static_addresses_keeps_direct_retry() {
     );
 }
 
-#[test]
-fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() {
+#[tokio::test]
+async fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
         npub: peer_identity.npub(),
@@ -279,12 +279,16 @@ fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() {
     let live_udp_transport_id = TransportId::new(1);
     let old_traversal_transport_id = TransportId::new(99);
     let (packet_tx, _packet_rx) = packet_channel(64);
-    let udp = UdpTransport::new(
+    let mut udp = UdpTransport::new(
         live_udp_transport_id,
         Some("main".to_string()),
-        crate::config::UdpConfig::default(),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
         packet_tx,
     );
+    udp.start_async().await.unwrap();
     node.transports
         .insert(live_udp_transport_id, TransportHandle::Udp(udp));
 
@@ -292,7 +296,7 @@ fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() {
     let mut active = ActivePeer::new(peer, LinkId::new(7), now_ms);
     active.set_current_addr(
         old_traversal_transport_id,
-        &TransportAddr::from_string("203.0.113.24:51820"),
+        &TransportAddr::from_string("127.0.0.1:51820"),
     );
     active.mark_stale();
     node.peers.insert(peer_addr, active);
@@ -301,7 +305,7 @@ fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() {
         .active_peer_current_udp_candidate(&peer_addr)
         .expect("stale UDP path should remain directly re-probeable");
     assert_eq!(candidate.transport, "udp");
-    assert_eq!(candidate.addr, "203.0.113.24:51820");
+    assert_eq!(candidate.addr, "127.0.0.1:51820");
     assert_eq!(
         candidate.priority,
         u8::MAX,
@@ -311,6 +315,10 @@ fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() {
         candidate.seen_at_ms, None,
         "stale current endpoints must not be restamped as fresh"
     );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
 }
 
 #[test]
@@ -354,6 +362,55 @@ fn fresh_udp_nostr_peer_without_static_addresses_skips_direct_retry() {
     assert!(
         !node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
         "a fresh concrete UDP peer should not churn background traversal attempts"
+    );
+}
+
+#[test]
+fn degraded_static_udp_peer_keeps_direct_retry_even_when_sendable() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "192.0.2.24:51820",
+            100,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig::default(),
+        packet_tx,
+    );
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let now_ms = Node::now_ms();
+    let mut active = ActivePeer::new(peer, LinkId::new(7), now_ms);
+    active.set_current_addr(
+        transport_id,
+        &TransportAddr::from_string("192.0.2.24:51820"),
+    );
+    node.peers.insert(peer_addr, active);
+    node.mark_session_direct_path_degraded(peer_addr, now_ms);
+
+    assert!(
+        node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
+        "a degraded direct payload path must keep probing even if the stale static UDP tuple remains sendable"
     );
 }
 
@@ -448,6 +505,88 @@ fn show_peers_reports_fallback_active_with_direct_probe_pending() {
     assert_eq!(
         peer_json["nostr_traversal"]["direct_probe_after_ms"],
         42_000
+    );
+}
+
+#[tokio::test]
+async fn endpoint_peer_snapshot_does_not_treat_stale_historical_rx_as_connected() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey_full(peer_identity.pubkey_full());
+    let peer_addr = *peer.node_addr();
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, Config::new()).expect("node");
+    node.config.node.heartbeat_interval_secs = 2;
+
+    let mut stats = crate::transport::LinkStats::new();
+    stats.record_recv(128, 1);
+    let active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        1,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.24:51820"),
+        stats,
+        true,
+        &node.config.node.mmp,
+        Some([2; 8]),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    node.handle_endpoint_data_command(crate::node::NodeEndpointCommand::PeerSnapshot {
+        response_tx,
+    })
+    .await;
+    let peers = response_rx.await.expect("peer snapshot response");
+    let peer = peers.first().expect("one peer");
+    assert_eq!(
+        peer.connected, false,
+        "stale historical receive counters must not keep status/GUI online"
+    );
+}
+
+#[tokio::test]
+async fn endpoint_peer_snapshot_treats_fresh_rx_as_connected() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey_full(peer_identity.pubkey_full());
+    let peer_addr = *peer.node_addr();
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, Config::new()).expect("node");
+    node.config.node.heartbeat_interval_secs = 2;
+
+    let mut stats = crate::transport::LinkStats::new();
+    stats.record_recv(128, Node::now_ms());
+    let active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        Node::now_ms(),
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.24:51820"),
+        stats,
+        true,
+        &node.config.node.mmp,
+        Some([2; 8]),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    node.handle_endpoint_data_command(crate::node::NodeEndpointCommand::PeerSnapshot {
+        response_tx,
+    })
+    .await;
+    let peers = response_rx.await.expect("peer snapshot response");
+    let peer = peers.first().expect("one peer");
+    assert_eq!(
+        peer.connected, true,
+        "fresh receive evidence should keep status/GUI online"
     );
 }
 

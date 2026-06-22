@@ -45,6 +45,7 @@ impl Node {
                         "Node::start transport start ok id={} type={}",
                         transport_id, transport_type
                     ));
+                    self.udp_transport_resolution_cache.clear();
                     self.transports.insert(transport_id, handle);
                 }
                 Err(e) => {
@@ -512,6 +513,7 @@ impl Node {
         let transport_ids: Vec<_> = self.transports.keys().cloned().collect();
         for transport_id in transport_ids {
             if let Some(mut handle) = self.transports.remove(&transport_id) {
+                self.udp_transport_resolution_cache.clear();
                 let transport_type = handle.transport_type().name;
                 match handle.stop().await {
                     Ok(()) => {
