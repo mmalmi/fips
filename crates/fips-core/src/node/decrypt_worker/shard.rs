@@ -172,7 +172,7 @@ impl DecryptWorkerShard {
 
     fn handle_job_msg(&mut self, idx: usize, job: DecryptJob) {
         match self.handle_job_action(idx, job) {
-            Ok(actions) => self.handle_job_actions_immediate(idx, actions),
+            Ok(action) => self.handle_job_action_immediate(idx, action),
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
             }
@@ -186,8 +186,8 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         match self.handle_job_action(idx, job) {
-            Ok(actions) => {
-                self.push_job_actions_output(idx, actions, plaintext_batch, None, None);
+            Ok(action) => {
+                self.push_job_action_output(idx, action, plaintext_batch, None, None);
             }
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
@@ -230,7 +230,7 @@ impl DecryptWorkerShard {
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
         self.push_job_action_output(
             idx,
-            DecryptWorkerJobAction::FspJob(job),
+            Some(DecryptWorkerJobAction::FspJob(job)),
             plaintext_batch,
             None,
             Some(fsp_open_batcher),
@@ -303,55 +303,38 @@ impl DecryptWorkerShard {
         &mut self,
         job: DecryptJob,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let actions = self.handle_job_action(0, job)?;
-        self.handle_job_actions_immediate(0, actions);
+        let action = self.handle_job_action(0, job)?;
+        self.handle_job_action_immediate(0, action);
         Ok(())
     }
 
-    fn handle_job_actions_immediate(&mut self, idx: usize, actions: DecryptWorkerJobActions) {
-        actions.for_each(|action| self.handle_job_action_immediate(idx, action));
-    }
-
-    fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
+    fn handle_job_action_immediate(
+        &mut self,
+        idx: usize,
+        action: Option<DecryptWorkerJobAction>,
+    ) {
         match action {
-            DecryptWorkerJobAction::Output(output) => {
+            None => {}
+            Some(DecryptWorkerJobAction::Output(output)) => {
                 let _ = output.send();
             }
-            DecryptWorkerJobAction::FspJob(job) => {
+            Some(DecryptWorkerJobAction::FspJob(job)) => {
                 self.dispatch_or_handle_fsp_job_immediate(idx, job);
             }
         }
     }
 
-    fn push_job_actions_output(
-        &mut self,
-        idx: usize,
-        actions: DecryptWorkerJobActions,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-        fsp_batcher: Option<&mut FspDecryptJobBatcher>,
-        fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
-    ) {
-        let mut fsp_batcher = fsp_batcher;
-        let mut fsp_open_batcher = fsp_open_batcher;
-        actions.for_each(|action| {
-            self.push_job_action_output(
-                idx,
-                action,
-                plaintext_batch,
-                fsp_batcher.as_deref_mut(),
-                fsp_open_batcher.as_deref_mut(),
-            );
-        });
-    }
-
     fn push_job_action_output(
         &mut self,
         idx: usize,
-        action: DecryptWorkerJobAction,
+        action: Option<DecryptWorkerJobAction>,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
         fsp_batcher: Option<&mut FspDecryptJobBatcher>,
         fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
     ) {
+        let Some(action) = action else {
+            return;
+        };
         match action {
             DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
             DecryptWorkerJobAction::FspJob(job) => {
@@ -1445,7 +1428,7 @@ impl DecryptWorkerShard {
         &mut self,
         _idx: usize,
         job: DecryptJob,
-    ) -> Result<DecryptWorkerJobActions, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<DecryptWorkerJobAction>, Box<dyn std::error::Error + Send + Sync>> {
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
@@ -1478,7 +1461,7 @@ impl DecryptWorkerShard {
                 None => {
                     let _ = fallback_tx; // explicitly ignore — drop path
                     let _ = packet_data;
-                    return Ok(DecryptWorkerJobActions::None);
+                    return Ok(None);
                 }
             };
             let source_peer = state.source_peer;
@@ -1489,7 +1472,7 @@ impl DecryptWorkerShard {
             // that accepts the counter into the replay window.
             let replay_precheck = match state.precheck_fmp_replay(fmp_counter) {
                 Ok(precheck) => precheck,
-                Err(FmpOpenError::Replay) => return Ok(DecryptWorkerJobActions::None),
+                Err(FmpOpenError::Replay) => return Ok(None),
                 #[cfg(test)]
                 Err(FmpOpenError::Aead { .. }) => {
                     unreachable!("FMP replay precheck cannot run AEAD")
@@ -1505,7 +1488,7 @@ impl DecryptWorkerShard {
             ) {
                 Ok(outcome) => outcome,
                 Err(()) => {
-                    return Ok(DecryptWorkerJobActions::one(DecryptWorkerJobAction::Output(
+                    return Ok(Some(DecryptWorkerJobAction::Output(
                         DecryptWorkerOutput {
                             fallback_tx,
                             event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
@@ -1525,7 +1508,7 @@ impl DecryptWorkerShard {
             )
             .is_err()
             {
-                return Ok(DecryptWorkerJobActions::None);
+                return Ok(None);
             };
             (source_peer, outcome.plaintext_len)
         };
@@ -1544,9 +1527,7 @@ impl DecryptWorkerShard {
             fmp_plaintext_len,
             fallback_tx,
         };
-        Ok(Self::handle_opened_fmp_job(opened)
-            .map(DecryptWorkerJobActions::one)
-            .unwrap_or(DecryptWorkerJobActions::None))
+        Ok(Self::handle_opened_fmp_job(opened))
     }
 
     fn handle_opened_fmp_job(job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {

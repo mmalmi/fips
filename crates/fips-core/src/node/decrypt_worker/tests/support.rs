@@ -657,7 +657,9 @@
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
-            DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(source_addr)),
+            Some(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
+                source_addr,
+            ))),
             &mut plaintext_batch,
             None,
             Some(&mut fsp_open_batcher),

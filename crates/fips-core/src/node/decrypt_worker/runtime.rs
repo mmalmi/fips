@@ -654,7 +654,7 @@ fn handle_bulk_item(
                 record_decrypt_worker_bulk_input_tail_wait(item_started_at);
                 match shard.handle_job_action(idx, job) {
                     Ok(actions) => {
-                        shard.push_job_actions_output(
+                        shard.push_job_action_output(
                             idx,
                             actions,
                             plaintext_batch,
@@ -714,25 +714,6 @@ struct DecryptWorkerOutput {
 enum DecryptWorkerJobAction {
     Output(DecryptWorkerOutput),
     FspJob(FspDecryptJob),
-}
-
-#[allow(clippy::large_enum_variant)]
-enum DecryptWorkerJobActions {
-    None,
-    One(DecryptWorkerJobAction),
-}
-
-impl DecryptWorkerJobActions {
-    fn one(action: DecryptWorkerJobAction) -> Self {
-        Self::One(action)
-    }
-
-    fn for_each(self, mut on_action: impl FnMut(DecryptWorkerJobAction)) {
-        match self {
-            Self::None => {}
-            Self::One(action) => on_action(action),
-        }
-    }
 }
 
 impl DecryptWorkerOutput {
