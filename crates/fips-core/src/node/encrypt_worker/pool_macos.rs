@@ -1175,25 +1175,23 @@ fn macos_worker_stride() -> usize {
 #[cfg(target_os = "macos")]
 fn macos_worker_stride_from_raw(raw: Option<&str>) -> usize {
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(4)
+        .unwrap_or(1)
         .clamp(1, 64)
 }
 
 #[cfg(target_os = "macos")]
 fn macos_worker_batch_size() -> usize {
-    // The direct Darwin sender has no sendmmsg/GSO equivalent, so a large
-    // worker-drain batch becomes a tight burst of send/sendto calls. MacBook
-    // Wi-Fi -> Ethernet tests showed the previous default of 32 could trigger
-    // TCP collapse and long queue waits even when Darwin did not report
-    // ENOBUFS. A smaller default keeps the kernel/radio pacer in the loop
-    // without waking the worker for every datagram; keep this runtime-tunable
-    // for LAN/NIC-specific A/B tests.
+    // The direct Darwin sender has no sendmmsg/GSO equivalent, so worker-drain
+    // batching turns into tight send/sendto bursts. MacBook <-> mini Wi-Fi
+    // tests showed even modest bursts can trigger TCP retransmit collapse.
+    // Keep ordering but hand packets to the kernel one at a time by default;
+    // the env knob remains for lab NIC/LAN A/Bs.
     static VALUE: OnceLock<usize> = OnceLock::new();
     *VALUE.get_or_init(|| {
         std::env::var("FIPS_MACOS_WORKER_BATCH")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(8)
+            .unwrap_or(1)
             .clamp(1, 64)
     })
 }

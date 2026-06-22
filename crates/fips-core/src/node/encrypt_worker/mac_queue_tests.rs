@@ -476,8 +476,8 @@ mod mac_queue_tests {
 
     #[test]
     fn macos_worker_stride_defaults_to_short_runs() {
-        assert_eq!(macos_worker_stride_from_raw(None), 4);
-        assert_eq!(macos_worker_stride_from_raw(Some("")), 4);
+        assert_eq!(macos_worker_stride_from_raw(None), 1);
+        assert_eq!(macos_worker_stride_from_raw(Some("")), 1);
         assert_eq!(macos_worker_stride_from_raw(Some("1")), 1);
         assert_eq!(macos_worker_stride_from_raw(Some("8")), 8);
         assert_eq!(macos_worker_stride_from_raw(Some("0")), 1);
