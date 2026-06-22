@@ -167,6 +167,7 @@ fn record_fsp_ordered_drain(drain: &FspOrderedDrain) {
         drain.accepted,
         drain.aead_failures,
         drain.epoch_mismatches,
+        drain.stale_epoch_worker_open_failures,
         drain.replay_drops,
     );
     drain.aead_failure_sources.record();

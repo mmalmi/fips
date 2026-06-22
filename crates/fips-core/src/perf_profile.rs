@@ -96,7 +96,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 245;
+const N_EVENTS: usize = 246;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -728,6 +728,7 @@ pub enum Event {
     DecryptFspOpenWorkerLocalIneligibleMalformed = 242,
     DecryptFspOpenWorkerLocalIneligibleKbitMismatch = 243,
     DecryptFspOpenWorkerLocalIneligibleWindowFull = 244,
+    FspAeadCompletionStaleEpochWorkerOpen = 245,
 }
 
 impl Event {
@@ -835,6 +836,7 @@ impl Event {
                 | Event::FspAeadCompletionEpochMismatch
                 | Event::FspAeadCompletionAeadFailedLocalOpen
                 | Event::FspAeadCompletionAeadFailedAcceptKbitMismatch
+                | Event::FspAeadCompletionStaleEpochWorkerOpen
                 | Event::LinuxWgBatchFlowQueueFullPackets
                 | Event::LinuxWgBatchWorkerQueueFullPackets
                 | Event::LinuxWgBatchAdmissionUnavailablePackets
@@ -1212,6 +1214,9 @@ impl Event {
             Event::DecryptFspOpenWorkerLocalIneligibleWindowFull => {
                 "decrypt_fsp_open_worker_local_ineligible_window_full"
             }
+            Event::FspAeadCompletionStaleEpochWorkerOpen => {
+                "fsp_aead_completion_stale_epoch_worker_open"
+            }
         }
     }
 }
@@ -1463,6 +1468,7 @@ fn event_from_index(idx: usize) -> Event {
         242 => Event::DecryptFspOpenWorkerLocalIneligibleMalformed,
         243 => Event::DecryptFspOpenWorkerLocalIneligibleKbitMismatch,
         244 => Event::DecryptFspOpenWorkerLocalIneligibleWindowFull,
+        245 => Event::FspAeadCompletionStaleEpochWorkerOpen,
         _ => unreachable!(),
     }
 }
@@ -2175,6 +2181,7 @@ pub(crate) fn record_fsp_aead_completion_drain(
     accepted: usize,
     aead_failures: usize,
     epoch_mismatches: usize,
+    stale_epoch_worker_open_failures: usize,
     replay_drops: usize,
 ) {
     if ready == 0 {
@@ -2191,6 +2198,12 @@ pub(crate) fn record_fsp_aead_completion_drain(
         record_event_count(
             Event::FspAeadCompletionEpochMismatch,
             epoch_mismatches as u64,
+        );
+    }
+    if stale_epoch_worker_open_failures > 0 {
+        record_event_count(
+            Event::FspAeadCompletionStaleEpochWorkerOpen,
+            stale_epoch_worker_open_failures as u64,
         );
     }
     if replay_drops > 0 {

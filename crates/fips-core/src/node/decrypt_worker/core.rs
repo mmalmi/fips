@@ -629,8 +629,14 @@ impl OwnedFspSessionState {
                     count_failure,
                 } => {
                     if count_failure {
-                        drain.aead_failures += 1;
-                        drain.aead_failure_sources.add(source);
+                        let stale_worker_open_epoch = source.is_worker_open()
+                            && header.flags & FSP_FLAG_K != u8::from(current_k_bit) * FSP_FLAG_K;
+                        if stale_worker_open_epoch {
+                            drain.stale_epoch_worker_open_failures += 1;
+                        } else {
+                            drain.aead_failures += 1;
+                            drain.aead_failure_sources.add(source);
+                        }
                     } else if fallback_to_rx_loop {
                         drain.rx_loop_fallbacks += 1;
                     }
@@ -847,6 +853,7 @@ struct FspOrderedDrain {
     accepted: usize,
     aead_failures: usize,
     epoch_mismatches: usize,
+    stale_epoch_worker_open_failures: usize,
     replay_drops: usize,
     dropped: usize,
     rx_loop_fallbacks: usize,
@@ -860,6 +867,7 @@ impl FspOrderedDrain {
         self.accepted += other.accepted;
         self.aead_failures += other.aead_failures;
         self.epoch_mismatches += other.epoch_mismatches;
+        self.stale_epoch_worker_open_failures += other.stale_epoch_worker_open_failures;
         self.replay_drops += other.replay_drops;
         self.dropped += other.dropped;
         self.rx_loop_fallbacks += other.rx_loop_fallbacks;
@@ -873,6 +881,7 @@ impl FspOrderedDrain {
         self.accepted
             + self.aead_failures
             + self.epoch_mismatches
+            + self.stale_epoch_worker_open_failures
             + self.replay_drops
             + self.dropped
             + self.rx_loop_fallbacks

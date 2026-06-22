@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 245);
+    assert_eq!(N_EVENTS, 246);
     assert!(
-        (Event::DecryptFspOpenWorkerLocalIneligibleWindowFull as usize) < N_EVENTS,
+        (Event::FspAeadCompletionStaleEpochWorkerOpen as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -479,6 +479,10 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_aead_failed_accept_kbit_mismatch"
     );
     assert_eq!(
+        event_from_index(Event::FspAeadCompletionStaleEpochWorkerOpen as usize).name(),
+        "fsp_aead_completion_stale_epoch_worker_open"
+    );
+    assert_eq!(
         event_from_index(Event::FspAeadCompletionReplayDropped as usize).name(),
         "fsp_aead_completion_replay_dropped"
     );
@@ -895,6 +899,7 @@ fn event_counter_mode_keeps_failures_without_batch_shape_counters() {
     assert!(Event::RxLoopSlowMaintenanceSkipped.recorded_by_event_counter_mode());
     assert!(Event::FspAeadCompletionAeadFailed.recorded_by_event_counter_mode());
     assert!(Event::FspAeadCompletionEpochMismatch.recorded_by_event_counter_mode());
+    assert!(Event::FspAeadCompletionStaleEpochWorkerOpen.recorded_by_event_counter_mode());
     assert!(Event::UdpKernelDropped.recorded_by_event_counter_mode());
 
     assert!(!Event::FmpWorkerBatchPackets.recorded_by_event_counter_mode());
