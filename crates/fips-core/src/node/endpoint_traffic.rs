@@ -170,21 +170,26 @@ pub(crate) fn endpoint_command_lane_for_payload(payload: &[u8]) -> EndpointComma
 pub(crate) struct EndpointDataPayload {
     bytes: Vec<u8>,
     traffic_class: EndpointPayloadClass,
+    flow_dispatch_key: Option<EndpointFlowDispatchKey>,
 }
 
 impl EndpointDataPayload {
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
         let traffic_class = classify_endpoint_payload(&bytes);
+        let flow_dispatch_key = endpoint_flow_dispatch_key(&bytes);
         Self {
             bytes,
             traffic_class,
+            flow_dispatch_key,
         }
     }
 
     pub(crate) fn from_classified(bytes: Vec<u8>, traffic_class: EndpointPayloadClass) -> Self {
+        let flow_dispatch_key = endpoint_flow_dispatch_key(&bytes);
         Self {
             bytes,
             traffic_class,
+            flow_dispatch_key,
         }
     }
 
@@ -198,6 +203,10 @@ impl EndpointDataPayload {
 
     pub(crate) fn drop_on_backpressure(&self) -> bool {
         self.traffic_class.drop_on_backpressure()
+    }
+
+    pub(in crate::node) fn flow_dispatch_key(&self) -> Option<EndpointFlowDispatchKey> {
+        self.flow_dispatch_key
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {

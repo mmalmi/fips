@@ -22,8 +22,6 @@ use crate::node::{
     NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
-#[cfg(unix)]
-use crate::node::endpoint_flow_dispatch_key;
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,
     XK_HANDSHAKE_MSG3_SIZE,

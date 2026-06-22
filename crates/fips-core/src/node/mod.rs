@@ -78,12 +78,10 @@ pub(crate) use endpoint_traffic::{
 #[cfg(test)]
 pub(crate) use endpoint_traffic::{PendingEndpointDataQueue, PendingTunPacketQueue};
 #[cfg(unix)]
-pub(in crate::node) use endpoint_traffic::{
-    classify_fmp_plaintext_traffic, endpoint_flow_dispatch_key,
-};
+pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
 #[cfg(test)]
 pub(in crate::node) use endpoint_traffic::{
-    endpoint_command_lane_for_payload, endpoint_payload_is_tcp,
+    endpoint_command_lane_for_payload, endpoint_flow_dispatch_key, endpoint_payload_is_tcp,
     fmp_plaintext_is_bulk_session_datagram,
 };
 pub(in crate::node) use identity_cache::IdentityCache;

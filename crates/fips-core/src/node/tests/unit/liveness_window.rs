@@ -1494,6 +1494,23 @@ fn endpoint_flow_dispatch_key_tracks_inner_ip_transport_flow() {
     );
     assert!(endpoint_flow_dispatch_key(&ipv4_tcp_flow(1000, 443, 512)).is_some());
     assert!(endpoint_flow_dispatch_key(&[0, 1, 2, 3]).is_none());
+
+    assert_eq!(
+        crate::node::EndpointDataPayload::new(flow_a.clone())
+            .flow_dispatch_key()
+            .map(|key| key.get()),
+        endpoint_flow_dispatch_key(&flow_a).map(|key| key.get()),
+        "endpoint payloads should cache the worker dispatch key selected at ingress"
+    );
+
+    let classified = classify_endpoint_payload(&flow_b);
+    assert_eq!(
+        crate::node::EndpointDataPayload::from_classified(flow_b.clone(), classified)
+            .flow_dispatch_key()
+            .map(|key| key.get()),
+        endpoint_flow_dispatch_key(&flow_b).map(|key| key.get()),
+        "pre-classified endpoint payloads should still carry the same worker dispatch key"
+    );
 }
 
 #[tokio::test]

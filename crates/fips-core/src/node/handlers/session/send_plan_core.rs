@@ -209,7 +209,7 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
             send_target,
             self.bulk_endpoint_data,
             self.drop_on_backpressure,
-            endpoint_flow_dispatch_key(self.payload.as_slice()).map(|key| key.get()),
+            self.payload.flow_dispatch_key().map(|key| key.get()),
             self.scheduling_weight,
             queued_at,
         )
