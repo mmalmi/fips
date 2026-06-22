@@ -379,6 +379,10 @@ impl FspDecryptJobBatcher {
         self.jobs.as_ptr()
     }
 
+    fn is_empty(&self) -> bool {
+        self.worker_idx.is_none() && self.jobs.is_empty()
+    }
+
     fn push(&mut self, workers: &DecryptWorkerPool, job: FspDecryptJob) {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             self.flush(workers);
@@ -456,6 +460,10 @@ impl FspAeadOpenJobBatcher {
     #[cfg(test)]
     fn pending_buffer_ptr(&self) -> *const FspAeadOpenJob {
         self.jobs.as_ptr()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.open_idx.is_none() && self.owner_idx.is_none() && self.jobs.is_empty()
     }
 
     fn push(
