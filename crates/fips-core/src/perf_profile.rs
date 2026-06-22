@@ -2366,20 +2366,9 @@ pub(crate) fn record_fsp_aead_completion_drain(
 
 #[inline]
 pub(crate) fn record_fsp_aead_completion_source_replay_drops(
-    helper: usize,
-    helper_returned: usize,
     worker_open: usize,
     worker_open_returned: usize,
 ) {
-    if helper > 0 {
-        record_event_count(Event::FspAeadCompletionReplayDroppedHelper, helper as u64);
-    }
-    if helper_returned > 0 {
-        record_event_count(
-            Event::FspAeadCompletionReplayDroppedHelperReturned,
-            helper_returned as u64,
-        );
-    }
     if worker_open > 0 {
         record_event_count(
             Event::FspAeadCompletionReplayDroppedWorkerOpen,
@@ -2397,22 +2386,11 @@ pub(crate) fn record_fsp_aead_completion_source_replay_drops(
 #[inline]
 pub(crate) fn record_fsp_aead_completion_source_aead_failures(
     local: usize,
-    helper: usize,
-    helper_returned: usize,
     worker_open: usize,
     worker_open_returned: usize,
 ) {
     if local > 0 {
         record_event_count(Event::FspAeadCompletionAeadFailedLocal, local as u64);
-    }
-    if helper > 0 {
-        record_event_count(Event::FspAeadCompletionAeadFailedHelper, helper as u64);
-    }
-    if helper_returned > 0 {
-        record_event_count(
-            Event::FspAeadCompletionAeadFailedHelperReturned,
-            helper_returned as u64,
-        );
     }
     if worker_open > 0 {
         record_event_count(

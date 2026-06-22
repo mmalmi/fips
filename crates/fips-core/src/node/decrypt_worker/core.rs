@@ -934,8 +934,6 @@ impl FspAeadFailureSources {
     fn record(self) {
         crate::perf_profile::record_fsp_aead_completion_source_aead_failures(
             self.local,
-            0,
-            0,
             self.worker_open,
             self.worker_open_returned,
         );
@@ -964,8 +962,6 @@ impl FspReplayDropSources {
 
     fn record(self) {
         crate::perf_profile::record_fsp_aead_completion_source_replay_drops(
-            0,
-            0,
             self.worker_open,
             self.worker_open_returned,
         );
