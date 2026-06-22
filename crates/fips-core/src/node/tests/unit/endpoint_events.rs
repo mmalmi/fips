@@ -781,6 +781,31 @@ fn endpoint_event_send_notifies_when_blocking_receiver_may_sleep() {
     );
 }
 
+#[test]
+fn endpoint_event_blocking_recv_clears_wait_marker_after_fast_drain() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: b"ready".to_vec().into(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("queued event should enqueue");
+    let event = event_rx
+        .blocking_recv()
+        .expect("blocking recv should drain already queued event");
+    match event {
+        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, b"ready"),
+        event => panic!("expected single endpoint data event, got {event:?}"),
+    }
+    assert!(
+        !event_rx.receiver_waiting_for_test(),
+        "fast drain path must not leave senders taking receiver-waiting wakeups"
+    );
+}
+
 #[tokio::test]
 async fn endpoint_event_queue_async_recv_closes_when_senders_drop() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);

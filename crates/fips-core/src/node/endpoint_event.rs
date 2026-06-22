@@ -903,6 +903,11 @@ impl EndpointEventReceiver {
         self.ready.set_receiver_waiting(waiting);
     }
 
+    #[cfg(test)]
+    pub(crate) fn receiver_waiting_for_test(&self) -> bool {
+        self.ready.receiver_waiting()
+    }
+
     pub(crate) async fn recv(&mut self) -> Option<NodeEndpointEvent> {
         loop {
             match self.try_recv() {
@@ -938,6 +943,18 @@ impl EndpointEventReceiver {
     pub(crate) fn blocking_recv(&mut self) -> Option<NodeEndpointEvent> {
         let mut observed = self.ready.snapshot();
         loop {
+            match self.try_recv() {
+                Ok(event) => {
+                    self.ready.set_receiver_waiting(false);
+                    return Some(event);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.ready.set_receiver_waiting(false);
+                    return None;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            }
+
             self.ready.set_receiver_waiting(true);
             match self.try_recv() {
                 Ok(event) => {
@@ -948,10 +965,10 @@ impl EndpointEventReceiver {
                     self.ready.set_receiver_waiting(false);
                     return None;
                 }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                    self.ready.wait_for_change(&mut observed);
-                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
             }
+            self.ready.wait_for_change(&mut observed);
+            self.ready.set_receiver_waiting(false);
         }
     }
 
