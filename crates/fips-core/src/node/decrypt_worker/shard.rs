@@ -615,6 +615,15 @@ impl DecryptWorkerShard {
                 FspOpenWorkerIneligibleReason::Malformed,
             ));
         };
+        let ciphertext_len = payload.len().saturating_sub(FSP_HEADER_SIZE);
+        let expected_ciphertext_len =
+            usize::from(header.payload_len).saturating_add(crate::noise::TAG_SIZE);
+        if ciphertext_len != expected_ciphertext_len {
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::Malformed,
+            ));
+        }
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
         if received_k_bit != shared.current_k_bit {
             return Err(FspOpenWorkerPrepareError::ineligible(
@@ -636,6 +645,7 @@ impl DecryptWorkerShard {
         let open_job = FspAeadOpenJob {
             source_addr,
             receive_order_id: shared.receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket,
             cipher: Arc::clone(&shared.cipher),
             job,
@@ -821,13 +831,21 @@ impl DecryptWorkerShard {
                 let FspAeadCompletion {
                     source_addr: completion_source_addr,
                     receive_order_id: completion_receive_order_id,
+                    crypto_generation,
                     ticket,
-                    source: _,
+                    source,
                     result,
                     completed_at: _,
                 } = completion;
                 debug_assert_eq!(completion_source_addr, source_addr);
                 debug_assert_eq!(completion_receive_order_id, receive_order_id);
+                let result = if source.is_worker_open()
+                    && crypto_generation != state.fsp_crypto_generation()
+                {
+                    FspOrderedCompletion::StaleWorkerOpen { source }
+                } else {
+                    result
+                };
                 let drain = match state.complete_ordered_fsp_open(ticket, result, |completion| {
                     if let Some(output) =
                         Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
@@ -1351,6 +1369,11 @@ impl DecryptWorkerShard {
             std::iter::once(FspAeadCompletion {
                 source_addr,
                 receive_order_id,
+                crypto_generation: self
+                    .fsp_sessions
+                    .get(&source_addr)
+                    .map(OwnedFspSessionState::fsp_crypto_generation)
+                    .unwrap_or_default(),
                 ticket,
                 source: FspAeadCompletionSource::Local,
                 result: completion,

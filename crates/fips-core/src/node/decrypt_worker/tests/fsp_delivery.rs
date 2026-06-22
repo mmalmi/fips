@@ -474,6 +474,7 @@
         let completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket: shared.issue_ticket(),
             cipher: Arc::clone(&shared.cipher),
             job: make_job(fsp_payload.clone()),
@@ -507,6 +508,7 @@
         let duplicate = FspAeadOpenJob {
             source_addr,
             receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket: shared.issue_ticket(),
             cipher: Arc::clone(&shared.cipher),
             job: make_job(fsp_payload),
@@ -694,6 +696,125 @@
     }
 
     #[test]
+    fn fsp_session_refresh_classifies_same_k_old_worker_open_aead_as_stale_completion() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let snapshot = |key_byte: u8| crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([key_byte; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        };
+
+        let mut state = OwnedFspSessionState::from(snapshot(0x51));
+        let old_shared = Arc::new(
+            state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        state.attach_shared_crypto_session(Arc::clone(&old_shared));
+        let receive_order_id = state.fsp_receive_order_id();
+        let ticket = old_shared.issue_ticket();
+
+        let mut refreshed = OwnedFspSessionState::from(snapshot(0x52));
+        refreshed.preserve_receive_order_from(state);
+        assert_eq!(refreshed.fsp_receive_order_id(), receive_order_id);
+        assert_ne!(refreshed.fsp_crypto_generation(), old_shared.crypto_generation);
+        let new_shared = Arc::new(
+            refreshed
+                .shared_crypto_session(0)
+                .expect("refreshed single-current FSP session should expose shared crypto"),
+        );
+        refreshed.attach_shared_crypto_session(Arc::clone(&new_shared));
+
+        let mut frame = crate::node::session_wire::build_fsp_header(7, 0, 1).to_vec();
+        frame.extend_from_slice(&[0u8; 16]);
+        let frame_len = frame.len();
+        let header = FspEncryptedHeader::parse(&frame).expect("test FSP header");
+        assert!(
+            refreshed.current_epoch_matches(&header),
+            "same-K refresh should not be classified by K-bit mismatch alone"
+        );
+        let mut packet_data = frame;
+        packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0);
+        let packet_len = packet_data.len();
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let job = FspDecryptJob {
+            fallback_tx,
+            lane: decrypt_worker_packet_lane(packet_len),
+            fallback: DecryptFallback::new(
+                previous_hop_peer,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                1_000,
+                packet_len,
+                10,
+                0,
+                packet_data,
+                0,
+                frame_len,
+            ),
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len: frame_len,
+            trace_enqueued_at: None,
+        };
+
+        let pool = DecryptWorkerPool::spawn(1);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.fsp_sessions.insert(source_addr, refreshed);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        shard.handle_fsp_aead_completion_batch_msg(
+            0,
+            FspAeadCompletionBatch::one(FspAeadCompletion {
+                source_addr,
+                receive_order_id,
+                crypto_generation: old_shared.crypto_generation,
+                ticket,
+                source: FspAeadCompletionSource::WorkerOpen,
+                result: FspOrderedCompletion::AeadFailed {
+                    job,
+                    header,
+                    source: FspAeadCompletionSource::WorkerOpen,
+                    fallback_to_rx_loop: false,
+                    count_failure: true,
+                },
+                completed_at: None,
+            }),
+            &mut plaintext_batch,
+        );
+
+        let state = shard
+            .fsp_sessions
+            .get(&source_addr)
+            .expect("refreshed FSP session should stay registered");
+        assert_eq!(state.fsp_receive_order_next_ready(), ticket.sequence + 1);
+        assert_eq!(new_shared.progress().next_ready, ticket.sequence + 1);
+        assert_eq!(new_shared.issue_ticket().sequence, ticket.sequence + 1);
+        assert!(fallback_rx.priority.try_recv().is_err());
+        assert!(fallback_rx.bulk.try_recv().is_err());
+        assert!(fallback_rx.authenticated_bulk.try_recv().is_err());
+        assert!(plaintext_batch.fallbacks.is_empty());
+        assert!(plaintext_batch.authenticated_sessions.is_empty());
+        assert!(plaintext_batch.direct_commits.is_empty());
+        assert!(plaintext_batch.direct_data.is_empty());
+        assert!(plaintext_batch.endpoint_commits.is_empty());
+    }
+
+    #[test]
     fn fsp_ordered_completion_buffers_out_of_order_worker_open_results() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
@@ -775,6 +896,7 @@
         let first_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket: shared.issue_ticket(),
             cipher: Arc::clone(&shared.cipher),
             job: make_job(first_payload, first_payload_len),
@@ -791,6 +913,7 @@
         let second_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket: shared.issue_ticket(),
             cipher: Arc::clone(&shared.cipher),
             job: make_job(second_payload, second_payload_len),
@@ -923,6 +1046,7 @@
         let first_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket: shared.issue_ticket(),
             cipher: Arc::clone(&shared.cipher),
             job: make_job(first_payload, first_payload_len),
@@ -937,11 +1061,13 @@
         *second_payload
             .last_mut()
             .expect("test FSP frame has ciphertext") ^= 0x55;
+        let second_payload_after_corruption = second_payload.clone();
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
         let second_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket: shared.issue_ticket(),
             cipher: Arc::clone(&shared.cipher),
             job: make_job(second_payload, second_payload_len),
@@ -967,20 +1093,29 @@
             .expect("first completion should release the queued AEAD failure");
         assert_eq!(first_drain.ready, 2);
         assert_eq!(first_drain.accepted, 1);
-        assert_eq!(first_drain.aead_failures, 1);
+        assert_eq!(first_drain.aead_failures, 0);
+        assert_eq!(first_drain.rx_loop_fallbacks, 1);
         assert_eq!(
             first_drain.aead_failure_sources,
-            FspAeadFailureSources {
-                worker_open: 1,
-                ..FspAeadFailureSources::default()
-            }
+            FspAeadFailureSources::default()
         );
         assert_eq!(first_drain.outputs.len(), 2);
         match (&first_drain.outputs[0], &first_drain.outputs[1]) {
             (
                 FspReadyCompletion::Opened { opened, .. },
-                FspReadyCompletion::AeadFailed { .. },
-            ) => assert_eq!(opened.plaintext_len, first_plaintext_len),
+                FspReadyCompletion::AeadFailed {
+                    job,
+                    fallback_to_rx_loop,
+                    ..
+                },
+            ) => {
+                assert_eq!(opened.plaintext_len, first_plaintext_len);
+                assert!(*fallback_to_rx_loop);
+                assert_eq!(
+                    &job.fallback.packet_data[..second_payload_len],
+                    second_payload_after_corruption.as_slice()
+                );
+            }
             _ => panic!("first packet should open, second packet should fail AEAD"),
         }
         assert!(
@@ -1287,6 +1422,7 @@
         let local_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket: local_ticket,
             cipher: Arc::clone(&shared.cipher),
             job: make_job(local_payload, local_payload_len),
@@ -1308,6 +1444,7 @@
         let open_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket: open_ticket,
             cipher: Arc::clone(&shared.cipher),
             job: make_job(open_payload, open_payload_len),
@@ -1347,6 +1484,7 @@
         let shared = FspSharedCryptoSession::new(
             0,
             7,
+            0,
             false,
             Arc::new(test_chacha_key([0x55; 32])),
         );
@@ -1472,6 +1610,7 @@
             FspAeadCompletionBatch::one(FspAeadCompletion {
                 source_addr,
                 receive_order_id,
+                crypto_generation: shared.crypto_generation,
                 ticket: tickets[0],
                 source: FspAeadCompletionSource::WorkerOpen,
                 result: FspOrderedCompletion::Dropped {
@@ -1497,6 +1636,7 @@
                     FspAeadCompletion {
                         source_addr,
                         receive_order_id,
+                        crypto_generation: shared.crypto_generation,
                         ticket: tickets[1],
                         source: FspAeadCompletionSource::WorkerOpen,
                         result: FspOrderedCompletion::Dropped {
@@ -1507,6 +1647,7 @@
                     FspAeadCompletion {
                         source_addr,
                         receive_order_id,
+                        crypto_generation: shared.crypto_generation,
                         ticket: tickets[2],
                         source: FspAeadCompletionSource::WorkerOpen,
                         result: FspOrderedCompletion::Dropped {

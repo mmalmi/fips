@@ -595,6 +595,7 @@
         let shared = Arc::new(FspSharedCryptoSession::new(
             owner_idx,
             11,
+            0,
             false,
             Arc::new(cipher.clone()),
         ));
@@ -687,6 +688,7 @@
         let shared = Arc::new(FspSharedCryptoSession::new(
             owner_idx,
             12,
+            0,
             false,
             Arc::new(cipher.clone()),
         ));
@@ -746,6 +748,59 @@
     }
 
     #[test]
+    fn fsp_open_worker_rejects_payload_length_mismatch_before_ticket_issue() {
+        let (pool, _control_receivers, _priority_receivers, _bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
+        let cipher = test_chacha_key([0x5f; 32]);
+        let shared = Arc::new(FspSharedCryptoSession::new(
+            owner_idx,
+            13,
+            0,
+            false,
+            Arc::new(cipher.clone()),
+        ));
+        pool.fsp_aead_sessions
+            .write()
+            .unwrap()
+            .insert(source_addr, Arc::clone(&shared));
+
+        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher,
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+        state.fsp_receive_order_id = shared.receive_order_id;
+        state.attach_shared_crypto_session(Arc::clone(&shared));
+
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.register_fsp_session(owner_idx, source_addr, state);
+        let mut job = dummy_bulk_fsp_open_job(source_addr);
+        job.fallback.packet_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+
+        let error = match shard.try_prepare_fsp_bulk_open_worker_job(owner_idx, job) {
+            Ok(_) => panic!("length-inconsistent FSP frame must not enter opener path"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error.reason,
+            FspOpenWorkerIneligibleReason::Malformed
+        ));
+        assert_eq!(
+            shared.next_ticket.load(Ordering::Relaxed),
+            0,
+            "malformed opener candidates must not consume ordered receive tickets"
+        );
+    }
+
+    #[test]
     fn fsp_local_open_worker_uses_ticket_window_when_completions_wait() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
@@ -756,6 +811,7 @@
         let shared = Arc::new(FspSharedCryptoSession::new(
             owner_idx,
             9,
+            0,
             false,
             Arc::new(cipher.clone()),
         ));
@@ -1174,6 +1230,7 @@
         FspAeadCompletionBatch::one(FspAeadCompletion {
             source_addr,
             receive_order_id: 7,
+            crypto_generation: 0,
             ticket: FspReceiveTicket { sequence },
             source: FspAeadCompletionSource::WorkerOpen,
             result: FspOrderedCompletion::AeadFailed {
@@ -1458,7 +1515,7 @@
     }
 
     fn dummy_bulk_fsp_open_job(source_addr: NodeAddr) -> FspDecryptJob {
-        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 0);
         let mut packet_data = header_bytes.to_vec();
         let fsp_payload_len = packet_data.len() + 16;
         packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0);
@@ -1483,6 +1540,7 @@
         FspAeadOpenJob {
             source_addr,
             receive_order_id: 7,
+            crypto_generation: 0,
             ticket: FspReceiveTicket {
                 sequence: ticket_sequence,
             },
