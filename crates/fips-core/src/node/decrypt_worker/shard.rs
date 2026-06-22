@@ -156,6 +156,14 @@ fn record_fsp_aead_completion_wait(
     }
 }
 
+fn record_fmp_aead_completion_wait(completed_at: Option<crate::perf_profile::TraceStamp>) {
+    crate::perf_profile::record_since_count(
+        crate::perf_profile::Stage::FmpAeadHelperCompletionWait,
+        completed_at,
+        1,
+    );
+}
+
 fn record_fsp_ordered_drain(drain: &FspOrderedDrain) {
     debug_assert_eq!(drain.ready, drain.accounted_ready());
     crate::perf_profile::record_fsp_aead_completion_drain(
@@ -298,13 +306,21 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         session_key: DecryptSessionKey,
-        state: OwnedSessionState,
+        mut state: OwnedSessionState,
     ) {
         trace!(
             worker = idx,
             ?session_key,
             "DecryptWorker: register session"
         );
+        let shared = self
+            .pool
+            .fmp_bulk_open_worker_enabled()
+            .then(|| Arc::new(state.shared_crypto_session(idx)));
+        if let Some(shared) = &shared {
+            state.attach_shared_crypto_session(Arc::clone(shared));
+        }
+        self.pool.publish_fmp_aead_session(session_key, shared);
         self.sessions.insert(session_key, state);
     }
 
@@ -315,6 +331,7 @@ impl DecryptWorkerShard {
             "DecryptWorker: unregister session"
         );
         self.sessions.remove(&session_key);
+        self.pool.publish_fmp_aead_session(session_key, None);
     }
 
     fn register_fsp_session(
@@ -733,6 +750,73 @@ impl DecryptWorkerShard {
         }
         if let Some(owner_idx) = flush.owner_idx {
             send_fsp_aead_open_completion_batch(idx, &self.pool, owner_idx, flush.batch);
+        }
+    }
+
+    fn handle_fmp_aead_completion_batch_msg(
+        &mut self,
+        idx: usize,
+        completions: FmpAeadCompletionBatch,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let _t_service =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpAeadHelperCompletionService);
+        match completions {
+            FmpAeadCompletionBatch::One(completion) => {
+                self.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
+            }
+        }
+    }
+
+    fn handle_fmp_aead_completion_msg(
+        &mut self,
+        idx: usize,
+        completion: FmpAeadCompletion,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        record_fmp_aead_completion_wait(completion.completed_at);
+        let FmpAeadCompletion {
+            session_key,
+            receive_order_id,
+            crypto_generation,
+            ticket,
+            result,
+            completed_at: _,
+        } = completion;
+        let Some(state) = self.sessions.get(&session_key) else {
+            return;
+        };
+        if state.fmp_receive_order_id() != receive_order_id {
+            return;
+        }
+
+        let result = if crypto_generation != state.fmp_crypto_generation() {
+            FmpOrderedCompletion::StaleWorkerOpen
+        } else {
+            result
+        };
+        let mut actions = Vec::new();
+        let drain = {
+            let state = self
+                .sessions
+                .get_mut(&session_key)
+                .expect("FMP session was checked before handling completion");
+            match state.complete_ordered_fmp_open(ticket, result, |action| actions.push(action)) {
+                Ok(drain) => drain,
+                Err(error) => {
+                    debug!(
+                        worker = idx,
+                        ?error,
+                        ?session_key,
+                        "dropping invalid ordered FMP AEAD completion"
+                    );
+                    return;
+                }
+            }
+        };
+        drain.record();
+        for action in actions {
+            self.push_job_action_output(idx, action, plaintext_batch, None, None);
         }
     }
 

@@ -2432,6 +2432,21 @@ pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
 }
 
 #[inline]
+pub(crate) fn record_fmp_aead_completion_replay_drop_reason(
+    reason: crate::noise::ReplayRejection,
+    counter_lag: u64,
+) {
+    let event = match reason {
+        crate::noise::ReplayRejection::Duplicate => Event::FmpAeadCompletionReplayDroppedDuplicate,
+        crate::noise::ReplayRejection::TooOld => Event::FmpAeadCompletionReplayDroppedTooOld,
+    };
+    record_event(event);
+    if reason == crate::noise::ReplayRejection::TooOld {
+        record_fmp_aead_completion_too_old_lag_buckets(counter_lag);
+    }
+}
+
+#[inline]
 pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
@@ -2443,6 +2458,23 @@ pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     record_event(event);
     if reason == crate::noise::ReplayRejection::TooOld {
         record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag);
+    }
+}
+
+#[inline]
+fn record_fmp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
+    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
+    if counter_lag >= window.saturating_mul(2) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow);
+    }
+    if counter_lag >= window.saturating_mul(4) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow);
+    }
+    if counter_lag >= window.saturating_mul(16) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow);
+    }
+    if counter_lag >= window.saturating_mul(64) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow);
     }
 }
 
