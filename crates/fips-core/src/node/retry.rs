@@ -800,7 +800,8 @@ impl Node {
                             error = %e,
                             "Direct-path retry initiation failed while fallback peer remains active"
                         );
-                        if matches!(e, NodeError::NoTransportForType(_))
+                        if (matches!(e, NodeError::NoTransportForType(_))
+                            || e.is_local_route_unavailable())
                             && let Some(bootstrap) = self.nostr_discovery.clone()
                         {
                             bootstrap
