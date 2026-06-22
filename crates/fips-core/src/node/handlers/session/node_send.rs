@@ -256,10 +256,11 @@ impl Node {
                                 (value.round() as u64, mmp.metrics.srtt_age_ms(snapshot_now))
                             })
                         });
+                        let connected = peer.can_send() && stats.packets_recv > 0;
                         NodeEndpointPeer {
                             npub,
                             node_addr: *peer.node_addr(),
-                            connected: true,
+                            connected,
                             transport_addr: peer.current_addr().map(|addr| addr.to_string()),
                             transport_type,
                             link_id: link_id.as_u64(),
