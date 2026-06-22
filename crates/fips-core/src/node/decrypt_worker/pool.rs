@@ -34,6 +34,17 @@ fn record_decrypt_fsp_bulk_queue_full_fallback_count(count: usize) {
     );
 }
 
+fn record_decrypt_worker_bulk_queue_depth(sender: &DecryptWorkerSender, packets: usize) {
+    if !crate::perf_profile::enabled() || packets == 0 {
+        return;
+    }
+    crate::perf_profile::record_decrypt_worker_bulk_queue_depth(
+        sender.bulk_queued_packets.load(Ordering::Relaxed),
+        sender.bulk_packet_cap,
+        packets,
+    );
+}
+
 fn record_decrypt_worker_control_drop(worker: usize, kind: &'static str) {
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerControlDropped);
@@ -297,7 +308,10 @@ impl DecryptWorkerPool {
             .bulk
             .try_send(DecryptWorkerBulkItem::FspAeadOpen(job))
         {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                record_decrypt_worker_bulk_queue_depth(open_sender, 1);
+                Ok(())
+            }
             Err(TrySendError::Full(DecryptWorkerBulkItem::FspAeadOpen(job))) => {
                 release_bulk_packets(&open_sender.bulk_queued_packets, 1);
                 record_decrypt_fsp_bulk_queue_full_fallback_count(1);
@@ -365,13 +379,16 @@ impl DecryptWorkerPool {
         let reserved_item = decrypt_worker_bulk_item_from_fsp_aead_open_jobs(jobs);
 
         match open_sender.bulk.try_send(reserved_item) {
-            Ok(()) => match overflow {
-                Some(overflow) => {
-                    record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
-                    Err(overflow)
+            Ok(()) => {
+                record_decrypt_worker_bulk_queue_depth(open_sender, reserved_packets);
+                match overflow {
+                    Some(overflow) => {
+                        record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
+                        Err(overflow)
+                    }
+                    None => Ok(()),
                 }
-                None => Ok(()),
-            },
+            }
             Err(TrySendError::Full(item)) => {
                 release_bulk_packets(&open_sender.bulk_queued_packets, reserved_packets);
                 let mut returned = fsp_aead_open_jobs_from_decrypt_worker_bulk_item(item);
@@ -466,7 +483,10 @@ impl DecryptWorkerPool {
         }
 
         match sender.bulk.try_send(DecryptWorkerBulkItem::FspJob(job)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                record_decrypt_worker_bulk_queue_depth(sender, 1);
+                Ok(())
+            }
             Err(TrySendError::Full(DecryptWorkerBulkItem::FspJob(job))) => {
                 release_bulk_packets(&sender.bulk_queued_packets, 1);
                 record_decrypt_fsp_bulk_queue_full_fallback_count(1);
@@ -530,13 +550,16 @@ impl DecryptWorkerPool {
         let reserved_item = decrypt_worker_bulk_item_from_fsp_jobs(jobs);
 
         match sender.bulk.try_send(reserved_item) {
-            Ok(()) => match overflow {
-                Some(overflow) => {
-                    record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
-                    Err(overflow)
+            Ok(()) => {
+                record_decrypt_worker_bulk_queue_depth(sender, reserved_packets);
+                match overflow {
+                    Some(overflow) => {
+                        record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
+                        Err(overflow)
+                    }
+                    None => Ok(()),
                 }
-                None => Ok(()),
-            },
+            }
             Err(TrySendError::Full(item)) => {
                 release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
                 let mut returned = fsp_jobs_from_decrypt_worker_bulk_item(item);
@@ -607,6 +630,7 @@ impl DecryptWorkerPool {
 
         match sender.bulk.try_send(reserved_item) {
             Ok(()) => {
+                record_decrypt_worker_bulk_queue_depth(sender, reserved_packets);
                 if let Some(overflow_item) = overflow_item {
                     record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
                     Err(overflow_item)

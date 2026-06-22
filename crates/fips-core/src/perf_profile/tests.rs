@@ -2,8 +2,8 @@
 use super::udp_send_batch_tail_bucket_flags;
 use super::{
     EVENTS, Event, HIST_BUCKETS, N_EVENTS, N_STAGES, Stage, TraceStamp, bucket_upper_ns,
-    event_from_index, fmt_rate_per_sec, percentile_ns, record_event_count_sample,
-    record_wait_threshold, stage_from_index,
+    bulk_queue_depth_threshold_flags, event_from_index, fmt_rate_per_sec, percentile_ns,
+    record_event_count_sample, record_wait_threshold, stage_from_index,
 };
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 234);
+    assert_eq!(N_EVENTS, 238);
     assert!(
-        (Event::EndpointEventDequeueMixedLaneEvents as usize) < N_EVENTS,
+        (Event::DecryptWorkerBulkQueueDepthGe90 as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -73,6 +73,22 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::EndpointEventDequeueMixedLaneEvents as usize).name(),
         "endpoint_event_dequeue_mixed_lane_events"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkQueueDepthGe25 as usize).name(),
+        "decrypt_worker_bulk_queue_depth_ge25"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkQueueDepthGe50 as usize).name(),
+        "decrypt_worker_bulk_queue_depth_ge50"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkQueueDepthGe75 as usize).name(),
+        "decrypt_worker_bulk_queue_depth_ge75"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkQueueDepthGe90 as usize).name(),
+        "decrypt_worker_bulk_queue_depth_ge90"
     );
     assert_eq!(
         event_from_index(Event::RxLoopSlowMaintenanceTimeout as usize).name(),
@@ -829,6 +845,38 @@ fn event_table_exposes_liveness_and_send_path_events() {
 }
 
 #[test]
+fn bulk_queue_depth_thresholds_are_cumulative() {
+    assert_eq!(
+        bulk_queue_depth_threshold_flags(0, 100),
+        (false, false, false, false)
+    );
+    assert_eq!(
+        bulk_queue_depth_threshold_flags(25, 100),
+        (true, false, false, false)
+    );
+    assert_eq!(
+        bulk_queue_depth_threshold_flags(50, 100),
+        (true, true, false, false)
+    );
+    assert_eq!(
+        bulk_queue_depth_threshold_flags(75, 100),
+        (true, true, true, false)
+    );
+    assert_eq!(
+        bulk_queue_depth_threshold_flags(90, 100),
+        (true, true, true, true)
+    );
+    assert_eq!(
+        bulk_queue_depth_threshold_flags(150, 100),
+        (true, true, true, true)
+    );
+    assert_eq!(
+        bulk_queue_depth_threshold_flags(10, 0),
+        (false, false, false, false)
+    );
+}
+
+#[test]
 fn event_counter_mode_keeps_failures_without_batch_shape_counters() {
     assert!(Event::TransportBulkDropped.recorded_by_event_counter_mode());
     assert!(Event::TransportChannelBacklogHigh.recorded_by_event_counter_mode());
@@ -842,6 +890,7 @@ fn event_counter_mode_keeps_failures_without_batch_shape_counters() {
     assert!(!Event::DecryptWorkerBatchPackets.recorded_by_event_counter_mode());
     assert!(!Event::PacketBatchPoolReuse.recorded_by_event_counter_mode());
     assert!(!Event::LinuxWgBatchAdmissionPackets.recorded_by_event_counter_mode());
+    assert!(!Event::DecryptWorkerBulkQueueDepthGe90.recorded_by_event_counter_mode());
 }
 
 #[test]

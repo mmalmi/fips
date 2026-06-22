@@ -96,7 +96,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 234;
+const N_EVENTS: usize = 238;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -717,6 +717,10 @@ pub enum Event {
     EndpointEventDequeueBulkMessages = 231,
     EndpointEventDequeueMultiMessageEvents = 232,
     EndpointEventDequeueMixedLaneEvents = 233,
+    DecryptWorkerBulkQueueDepthGe25 = 234,
+    DecryptWorkerBulkQueueDepthGe50 = 235,
+    DecryptWorkerBulkQueueDepthGe75 = 236,
+    DecryptWorkerBulkQueueDepthGe90 = 237,
 }
 
 impl Event {
@@ -1176,6 +1180,10 @@ impl Event {
             Event::EndpointEventDequeueMixedLaneEvents => {
                 "endpoint_event_dequeue_mixed_lane_events"
             }
+            Event::DecryptWorkerBulkQueueDepthGe25 => "decrypt_worker_bulk_queue_depth_ge25",
+            Event::DecryptWorkerBulkQueueDepthGe50 => "decrypt_worker_bulk_queue_depth_ge50",
+            Event::DecryptWorkerBulkQueueDepthGe75 => "decrypt_worker_bulk_queue_depth_ge75",
+            Event::DecryptWorkerBulkQueueDepthGe90 => "decrypt_worker_bulk_queue_depth_ge90",
         }
     }
 }
@@ -1416,6 +1424,10 @@ fn event_from_index(idx: usize) -> Event {
         231 => Event::EndpointEventDequeueBulkMessages,
         232 => Event::EndpointEventDequeueMultiMessageEvents,
         233 => Event::EndpointEventDequeueMixedLaneEvents,
+        234 => Event::DecryptWorkerBulkQueueDepthGe25,
+        235 => Event::DecryptWorkerBulkQueueDepthGe50,
+        236 => Event::DecryptWorkerBulkQueueDepthGe75,
+        237 => Event::DecryptWorkerBulkQueueDepthGe90,
         _ => unreachable!(),
     }
 }
@@ -1921,6 +1933,45 @@ pub(crate) fn record_decrypt_worker_bulk_input_wait(start: Option<TraceStamp>, c
         count,
         1_000_000,
     );
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_bulk_queue_depth(
+    depth: usize,
+    capacity: usize,
+    packets: usize,
+) {
+    if !enabled() || capacity == 0 || packets == 0 {
+        return;
+    }
+    let (ge25, ge50, ge75, ge90) = bulk_queue_depth_threshold_flags(depth, capacity);
+    let packets = packets as u64;
+    if ge25 {
+        record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe25, packets);
+    }
+    if ge50 {
+        record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe50, packets);
+    }
+    if ge75 {
+        record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe75, packets);
+    }
+    if ge90 {
+        record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe90, packets);
+    }
+}
+
+#[inline]
+fn bulk_queue_depth_threshold_flags(depth: usize, capacity: usize) -> (bool, bool, bool, bool) {
+    if capacity == 0 {
+        return (false, false, false, false);
+    }
+    let depth = depth.min(capacity);
+    (
+        depth.saturating_mul(4) >= capacity,
+        depth.saturating_mul(2) >= capacity,
+        depth.saturating_mul(4) >= capacity.saturating_mul(3),
+        depth.saturating_mul(10) >= capacity.saturating_mul(9),
+    )
 }
 
 #[inline]
