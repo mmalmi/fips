@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Required fresh receive-side endpoint liveness before reporting app-facing
   peers as connected, preventing stale historical counters from keeping moved
   or dead NAT paths online in nvpn status.
+- Classified stale FSP worker-open completions by receive-crypto generation, so
+  rekey/session churn no longer appears as hard AEAD failure noise.
 - Bumped `fips-endpoint` to 0.3.51 so embedded endpoint consumers pick up the
   `fips-core` 0.3.76 peer-status freshness fix.
 

@@ -97,7 +97,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 220;
+const N_EVENTS: usize = 221;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -704,6 +704,7 @@ pub enum Event {
     DecryptWorkerBatchWorker6 = 217,
     DecryptWorkerBatchWorker7 = 218,
     DecryptWorkerBatchWorkerOther = 219,
+    FspAeadCompletionStaleEpochWorkerOpen = 220,
 }
 
 impl Event {
@@ -1025,6 +1026,9 @@ impl Event {
             Event::DecryptWorkerBatchWorker6 => "decrypt_worker_batch_worker6",
             Event::DecryptWorkerBatchWorker7 => "decrypt_worker_batch_worker7",
             Event::DecryptWorkerBatchWorkerOther => "decrypt_worker_batch_worker_other",
+            Event::FspAeadCompletionStaleEpochWorkerOpen => {
+                "fsp_aead_completion_stale_epoch_worker_open"
+            }
         }
     }
 }
@@ -1251,6 +1255,7 @@ fn event_from_index(idx: usize) -> Event {
         217 => Event::DecryptWorkerBatchWorker6,
         218 => Event::DecryptWorkerBatchWorker7,
         219 => Event::DecryptWorkerBatchWorkerOther,
+        220 => Event::FspAeadCompletionStaleEpochWorkerOpen,
         _ => unreachable!(),
     }
 }
@@ -1858,6 +1863,7 @@ pub(crate) fn record_fsp_aead_completion_drain(
     accepted: usize,
     aead_failures: usize,
     epoch_mismatches: usize,
+    stale_epoch_worker_open_failures: usize,
     replay_drops: usize,
 ) {
     if !enabled() || ready == 0 {
@@ -1874,6 +1880,12 @@ pub(crate) fn record_fsp_aead_completion_drain(
         record_event_count_sample(
             Event::FspAeadCompletionEpochMismatch,
             epoch_mismatches as u64,
+        );
+    }
+    if stale_epoch_worker_open_failures > 0 {
+        record_event_count_sample(
+            Event::FspAeadCompletionStaleEpochWorkerOpen,
+            stale_epoch_worker_open_failures as u64,
         );
     }
     if replay_drops > 0 {

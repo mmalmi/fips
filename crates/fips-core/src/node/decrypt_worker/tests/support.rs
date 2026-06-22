@@ -620,6 +620,7 @@
             Arc::new(FspSharedCryptoSession::new(
                 owner_idx,
                 7,
+                0,
                 false,
                 Arc::new(test_chacha_key([0x56; 32])),
             )),
@@ -686,6 +687,7 @@
             Arc::new(FspSharedCryptoSession::new(
                 owner_idx,
                 7,
+                0,
                 false,
                 Arc::new(test_chacha_key([0x5a; 32])),
             )),
@@ -834,6 +836,7 @@
             Arc::new(FspSharedCryptoSession::new(
                 owner_idx,
                 7,
+                0,
                 false,
                 Arc::new(test_chacha_key([0x57; 32])),
             )),
@@ -883,6 +886,7 @@
         let shared = Arc::new(FspSharedCryptoSession::new(
             owner_idx,
             9,
+            0,
             false,
             Arc::new(cipher.clone()),
         ));
@@ -1272,6 +1276,7 @@
         FspAeadCompletionBatch::one(FspAeadCompletion {
             source_addr,
             receive_order_id: 7,
+            crypto_generation: 0,
             ticket: FspReceiveTicket { sequence },
             source: FspAeadCompletionSource::WorkerOpen,
             result: FspOrderedCompletion::AeadFailed {
@@ -1599,6 +1604,7 @@
         FspAeadOpenJob {
             source_addr,
             receive_order_id: 7,
+            crypto_generation: 0,
             ticket: FspReceiveTicket {
                 sequence: ticket_sequence,
             },

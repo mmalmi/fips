@@ -584,6 +584,7 @@ impl DecryptWorkerShard {
         let open_job = FspAeadOpenJob {
             source_addr,
             receive_order_id: shared.receive_order_id,
+            crypto_generation: shared.crypto_generation,
             ticket,
             cipher: Arc::clone(&shared.cipher),
             job,
@@ -748,8 +749,9 @@ impl DecryptWorkerShard {
         let FspAeadCompletion {
             source_addr,
             receive_order_id,
+            crypto_generation,
             ticket,
-            source: _,
+            source,
             result,
             completed_at: _,
         } = completion;
@@ -767,6 +769,13 @@ impl DecryptWorkerShard {
             );
             return;
         }
+        let result = if source.is_worker_open()
+            && crypto_generation != state.fsp_crypto_generation()
+        {
+            FspOrderedCompletion::StaleWorkerOpen { source }
+        } else {
+            result
+        };
         let drain = match state.complete_ordered_fsp_open(ticket, result) {
             Ok(drain) => drain,
             Err(error) => {
@@ -786,6 +795,7 @@ impl DecryptWorkerShard {
             drain.accepted
                 + drain.aead_failures
                 + drain.epoch_mismatches
+                + drain.stale_epoch_worker_open_failures
                 + drain.replay_drops
                 + drain.dropped
         );
@@ -794,6 +804,7 @@ impl DecryptWorkerShard {
             drain.accepted,
             drain.aead_failures,
             drain.epoch_mismatches,
+            drain.stale_epoch_worker_open_failures,
             drain.replay_drops,
         );
         drain.aead_failure_sources.record();
@@ -853,6 +864,7 @@ impl DecryptWorkerShard {
         let mut accepted = 0usize;
         let mut aead_failures = 0usize;
         let mut epoch_mismatches = 0usize;
+        let mut stale_epoch_worker_open_failures = 0usize;
         let mut replay_drops = 0usize;
         let mut dropped = 0usize;
         let mut aead_failure_sources = FspAeadFailureSources::default();
@@ -878,11 +890,19 @@ impl DecryptWorkerShard {
                 let FspAeadCompletion {
                     source_addr: _,
                     receive_order_id: _,
+                    crypto_generation,
                     ticket,
-                    source: _,
+                    source,
                     result,
                     completed_at: _,
                 } = completion;
+                let result = if source.is_worker_open()
+                    && crypto_generation != state.fsp_crypto_generation()
+                {
+                    FspOrderedCompletion::StaleWorkerOpen { source }
+                } else {
+                    result
+                };
                 let drain = match state.complete_ordered_fsp_open(ticket, result) {
                     Ok(drain) => drain,
                     Err(error) => {
@@ -901,6 +921,7 @@ impl DecryptWorkerShard {
                     drain.accepted
                         + drain.aead_failures
                         + drain.epoch_mismatches
+                        + drain.stale_epoch_worker_open_failures
                         + drain.replay_drops
                         + drain.dropped
                 );
@@ -908,6 +929,7 @@ impl DecryptWorkerShard {
                 accepted += drain.accepted;
                 aead_failures += drain.aead_failures;
                 epoch_mismatches += drain.epoch_mismatches;
+                stale_epoch_worker_open_failures += drain.stale_epoch_worker_open_failures;
                 replay_drops += drain.replay_drops;
                 dropped += drain.dropped;
                 aead_failure_sources.add_sources(drain.aead_failure_sources);
@@ -919,13 +941,19 @@ impl DecryptWorkerShard {
 
         debug_assert_eq!(
             ready,
-            accepted + aead_failures + epoch_mismatches + replay_drops + dropped
+            accepted
+                + aead_failures
+                + epoch_mismatches
+                + stale_epoch_worker_open_failures
+                + replay_drops
+                + dropped
         );
         crate::perf_profile::record_fsp_aead_completion_drain(
             ready,
             accepted,
             aead_failures,
             epoch_mismatches,
+            stale_epoch_worker_open_failures,
             replay_drops,
         );
         aead_failure_sources.record();
@@ -1316,6 +1344,7 @@ impl DecryptWorkerShard {
                 drain.accepted
                     + drain.aead_failures
                     + drain.epoch_mismatches
+                    + drain.stale_epoch_worker_open_failures
                     + drain.replay_drops
                     + drain.dropped
             );
@@ -1324,6 +1353,7 @@ impl DecryptWorkerShard {
                 drain.accepted,
                 drain.aead_failures,
                 drain.epoch_mismatches,
+                drain.stale_epoch_worker_open_failures,
                 drain.replay_drops,
             );
             drain.aead_failure_sources.record();

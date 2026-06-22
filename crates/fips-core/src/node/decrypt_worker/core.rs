@@ -78,6 +78,7 @@ const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
 const DEFAULT_DECRYPT_FMP_AEAD_HELPERS: usize = 0;
 static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_FSP_CRYPTO_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -418,6 +419,7 @@ pub(crate) struct OwnedFspSessionState {
     current: OwnedFspEpochState,
     pending: Option<OwnedFspEpochState>,
     previous: Option<OwnedFspEpochState>,
+    fsp_crypto_generation: u64,
     fsp_receive_order_id: u64,
     fsp_receive_order: FspReceiveOrder,
     fsp_shared_crypto: Option<Arc<FspSharedCryptoSession>>,
@@ -456,6 +458,7 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
                 cipher: Arc::new(epoch.cipher),
                 replay: epoch.replay,
             }),
+            fsp_crypto_generation: NEXT_FSP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order: FspReceiveOrder::new(),
             fsp_shared_crypto: None,
@@ -465,6 +468,7 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
 
 struct FspSharedCryptoSession {
     owner_idx: usize,
+    crypto_generation: u64,
     receive_order_id: u64,
     current_k_bit: bool,
     cipher: Arc<LessSafeKey>,
@@ -477,12 +481,14 @@ impl FspSharedCryptoSession {
     fn new(
         owner_idx: usize,
         receive_order_id: u64,
+        crypto_generation: u64,
         current_k_bit: bool,
         cipher: Arc<LessSafeKey>,
     ) -> Self {
         Self::new_with_progress(
             owner_idx,
             receive_order_id,
+            crypto_generation,
             current_k_bit,
             cipher,
             FspReceiveProgress {
@@ -495,12 +501,14 @@ impl FspSharedCryptoSession {
     fn new_with_progress(
         owner_idx: usize,
         receive_order_id: u64,
+        crypto_generation: u64,
         current_k_bit: bool,
         cipher: Arc<LessSafeKey>,
         progress: FspReceiveProgress,
     ) -> Self {
         Self {
             owner_idx,
+            crypto_generation,
             receive_order_id,
             current_k_bit,
             cipher,
@@ -606,6 +614,7 @@ impl OwnedFspSessionState {
             FspSharedCryptoSession::new_with_progress(
                 owner_idx,
                 self.fsp_receive_order_id,
+                self.fsp_crypto_generation,
                 self.current_k_bit,
                 Arc::clone(&self.current.cipher),
                 self.receive_progress(),
@@ -614,6 +623,7 @@ impl OwnedFspSessionState {
     }
 
     fn attach_shared_crypto_session(&mut self, shared: Arc<FspSharedCryptoSession>) {
+        self.fsp_crypto_generation = shared.crypto_generation;
         self.fsp_shared_crypto = Some(shared);
     }
 
@@ -628,6 +638,10 @@ impl OwnedFspSessionState {
 
     fn fsp_receive_order_id(&self) -> u64 {
         self.fsp_receive_order_id
+    }
+
+    fn fsp_crypto_generation(&self) -> u64 {
+        self.fsp_crypto_generation
     }
 
     fn fsp_receive_order_next_ready(&self) -> u64 {
@@ -786,11 +800,17 @@ impl OwnedFspSessionState {
                     header,
                     source,
                 } => {
-                    drain.aead_failures += 1;
-                    drain.aead_failure_sources.add(source);
-                    drain
-                        .outputs
-                        .push(FspReadyCompletion::AeadFailed { job, header });
+                    let stale_worker_open_epoch = source.is_worker_open()
+                        && (header.flags & FSP_FLAG_K != 0) != self.current_k_bit;
+                    if stale_worker_open_epoch {
+                        drain.stale_epoch_worker_open_failures += 1;
+                    } else {
+                        drain.aead_failures += 1;
+                        drain.aead_failure_sources.add(source);
+                        drain
+                            .outputs
+                            .push(FspReadyCompletion::AeadFailed { job, header });
+                    }
                 }
                 FspOrderedCompletion::EpochMismatch {
                     job,
@@ -806,6 +826,10 @@ impl OwnedFspSessionState {
                 FspOrderedCompletion::Dropped { source } => {
                     let _ = source;
                     drain.dropped += 1;
+                }
+                FspOrderedCompletion::StaleWorkerOpen { source } => {
+                    debug_assert!(source.is_worker_open());
+                    drain.stale_epoch_worker_open_failures += 1;
                 }
             }
         }
@@ -1034,6 +1058,9 @@ enum FspOrderedCompletion {
     Dropped {
         source: FspAeadCompletionSource,
     },
+    StaleWorkerOpen {
+        source: FspAeadCompletionSource,
+    },
 }
 
 enum FspReadyCompletion {
@@ -1054,6 +1081,7 @@ struct FspOrderedDrain {
     accepted: usize,
     aead_failures: usize,
     epoch_mismatches: usize,
+    stale_epoch_worker_open_failures: usize,
     replay_drops: usize,
     dropped: usize,
     aead_failure_sources: FspAeadFailureSources,
@@ -1355,6 +1383,7 @@ impl FmpAeadHelperJob {
 struct FspAeadOpenJob {
     source_addr: NodeAddr,
     receive_order_id: u64,
+    crypto_generation: u64,
     ticket: FspReceiveTicket,
     cipher: Arc<LessSafeKey>,
     job: FspDecryptJob,
@@ -1388,6 +1417,7 @@ impl FspAeadCompletionSource {
 struct FspAeadCompletion {
     source_addr: NodeAddr,
     receive_order_id: u64,
+    crypto_generation: u64,
     ticket: FspReceiveTicket,
     source: FspAeadCompletionSource,
     result: FspOrderedCompletion,
@@ -1535,6 +1565,7 @@ impl FspAeadOpenJob {
         FspAeadCompletion {
             source_addr: self.source_addr,
             receive_order_id: self.receive_order_id,
+            crypto_generation: self.crypto_generation,
             ticket: self.ticket,
             source,
             result,
@@ -1555,6 +1586,7 @@ impl FspAeadOpenJob {
         FspAeadCompletion {
             source_addr: self.source_addr,
             receive_order_id: self.receive_order_id,
+            crypto_generation: self.crypto_generation,
             ticket: self.ticket,
             source,
             result: FspOrderedCompletion::Dropped { source },
