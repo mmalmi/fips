@@ -34,9 +34,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 250);
+    assert_eq!(N_EVENTS, 262);
     assert!(
-        (Event::DecryptWorkerBulkQueueDepthGe4096 as usize) < N_EVENTS,
+        (Event::DecryptWorkerFspOpenQueueDepthGe4096 as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -106,6 +106,30 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptWorkerBulkQueueDepthGe4096 as usize).name(),
         "decrypt_worker_bulk_queue_depth_ge4096"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerFmpBulkQueueDepthGe64 as usize).name(),
+        "decrypt_worker_fmp_bulk_queue_depth_ge64"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerFmpBulkQueueDepthGe4096 as usize).name(),
+        "decrypt_worker_fmp_bulk_queue_depth_ge4096"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerFspOwnerQueueDepthGe64 as usize).name(),
+        "decrypt_worker_fsp_owner_queue_depth_ge64"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerFspOwnerQueueDepthGe4096 as usize).name(),
+        "decrypt_worker_fsp_owner_queue_depth_ge4096"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerFspOpenQueueDepthGe64 as usize).name(),
+        "decrypt_worker_fsp_open_queue_depth_ge64"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerFspOpenQueueDepthGe4096 as usize).name(),
+        "decrypt_worker_fsp_open_queue_depth_ge4096"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOpenWorkerLocalIneligibleNoShared as usize).name(),
@@ -955,6 +979,9 @@ fn event_counter_mode_keeps_failures_without_batch_shape_counters() {
     assert!(!Event::DecryptWorkerBulkQueueDepthGe90.recorded_by_event_counter_mode());
     assert!(!Event::DecryptWorkerBulkQueueDepthGe64.recorded_by_event_counter_mode());
     assert!(!Event::DecryptWorkerBulkQueueDepthGe4096.recorded_by_event_counter_mode());
+    assert!(!Event::DecryptWorkerFmpBulkQueueDepthGe64.recorded_by_event_counter_mode());
+    assert!(!Event::DecryptWorkerFspOwnerQueueDepthGe64.recorded_by_event_counter_mode());
+    assert!(!Event::DecryptWorkerFspOpenQueueDepthGe64.recorded_by_event_counter_mode());
     assert!(!Event::DecryptFspOpenWorkerLocalIneligibleNoShared.recorded_by_event_counter_mode());
     assert!(
         !Event::DecryptFspOpenWorkerLocalIneligibleKbitMismatch.recorded_by_event_counter_mode()

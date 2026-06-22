@@ -20,6 +20,13 @@ struct DecryptWorkerSender {
     bulk_packet_cap: usize,
 }
 
+#[derive(Clone, Copy)]
+enum DecryptWorkerBulkQueueRole {
+    FmpBulk,
+    FspOwner,
+    FspOpen,
+}
+
 fn record_decrypt_fsp_bulk_queue_full_fallback_count(count: usize) {
     if count == 0 {
         return;
@@ -34,15 +41,45 @@ fn record_decrypt_fsp_bulk_queue_full_fallback_count(count: usize) {
     );
 }
 
-fn record_decrypt_worker_bulk_queue_depth(sender: &DecryptWorkerSender, packets: usize) {
+fn record_decrypt_worker_bulk_queue_depth(
+    sender: &DecryptWorkerSender,
+    packets: usize,
+    role: DecryptWorkerBulkQueueRole,
+) {
     if !crate::perf_profile::enabled() || packets == 0 {
         return;
     }
+    let depth = sender.bulk_queued_packets.load(Ordering::Relaxed);
     crate::perf_profile::record_decrypt_worker_bulk_queue_depth(
-        sender.bulk_queued_packets.load(Ordering::Relaxed),
+        depth,
         sender.bulk_packet_cap,
         packets,
     );
+    match role {
+        DecryptWorkerBulkQueueRole::FmpBulk => {
+            crate::perf_profile::record_decrypt_worker_fmp_bulk_queue_depth(depth, packets);
+        }
+        DecryptWorkerBulkQueueRole::FspOwner => {
+            crate::perf_profile::record_decrypt_worker_fsp_owner_queue_depth(depth, packets);
+        }
+        DecryptWorkerBulkQueueRole::FspOpen => {
+            crate::perf_profile::record_decrypt_worker_fsp_open_queue_depth(depth, packets);
+        }
+    }
+}
+
+fn decrypt_worker_bulk_queue_role(item: &DecryptWorkerBulkItem) -> DecryptWorkerBulkQueueRole {
+    match item {
+        DecryptWorkerBulkItem::Job(_) | DecryptWorkerBulkItem::Batch(_) => {
+            DecryptWorkerBulkQueueRole::FmpBulk
+        }
+        DecryptWorkerBulkItem::FspJob(_) | DecryptWorkerBulkItem::FspBatch(_) => {
+            DecryptWorkerBulkQueueRole::FspOwner
+        }
+        DecryptWorkerBulkItem::FspAeadOpen(_) | DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
+            DecryptWorkerBulkQueueRole::FspOpen
+        }
+    }
 }
 
 fn record_decrypt_worker_control_drop(worker: usize, kind: &'static str) {
@@ -309,7 +346,11 @@ impl DecryptWorkerPool {
             .try_send(DecryptWorkerBulkItem::FspAeadOpen(job))
         {
             Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(open_sender, 1);
+                record_decrypt_worker_bulk_queue_depth(
+                    open_sender,
+                    1,
+                    DecryptWorkerBulkQueueRole::FspOpen,
+                );
                 Ok(())
             }
             Err(TrySendError::Full(DecryptWorkerBulkItem::FspAeadOpen(job))) => {
@@ -380,7 +421,11 @@ impl DecryptWorkerPool {
 
         match open_sender.bulk.try_send(reserved_item) {
             Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(open_sender, reserved_packets);
+                record_decrypt_worker_bulk_queue_depth(
+                    open_sender,
+                    reserved_packets,
+                    DecryptWorkerBulkQueueRole::FspOpen,
+                );
                 match overflow {
                     Some(overflow) => {
                         record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
@@ -484,7 +529,11 @@ impl DecryptWorkerPool {
 
         match sender.bulk.try_send(DecryptWorkerBulkItem::FspJob(job)) {
             Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(sender, 1);
+                record_decrypt_worker_bulk_queue_depth(
+                    sender,
+                    1,
+                    DecryptWorkerBulkQueueRole::FspOwner,
+                );
                 Ok(())
             }
             Err(TrySendError::Full(DecryptWorkerBulkItem::FspJob(job))) => {
@@ -551,7 +600,11 @@ impl DecryptWorkerPool {
 
         match sender.bulk.try_send(reserved_item) {
             Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(sender, reserved_packets);
+                record_decrypt_worker_bulk_queue_depth(
+                    sender,
+                    reserved_packets,
+                    DecryptWorkerBulkQueueRole::FspOwner,
+                );
                 match overflow {
                     Some(overflow) => {
                         record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
@@ -627,10 +680,14 @@ impl DecryptWorkerPool {
 
         let (reserved_item, overflow_item) = item.split_at_packet_count(reserved_packets);
         let reserved_item = reserved_item.expect("positive reservation must produce a bulk item");
+        let role = crate::perf_profile::enabled()
+            .then(|| decrypt_worker_bulk_queue_role(&reserved_item));
 
         match sender.bulk.try_send(reserved_item) {
             Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(sender, reserved_packets);
+                if let Some(role) = role {
+                    record_decrypt_worker_bulk_queue_depth(sender, reserved_packets, role);
+                }
                 if let Some(overflow_item) = overflow_item {
                     record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
                     Err(overflow_item)

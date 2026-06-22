@@ -96,7 +96,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 250;
+const N_EVENTS: usize = 262;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -733,6 +733,18 @@ pub enum Event {
     DecryptWorkerBulkQueueDepthGe256 = 247,
     DecryptWorkerBulkQueueDepthGe1024 = 248,
     DecryptWorkerBulkQueueDepthGe4096 = 249,
+    DecryptWorkerFmpBulkQueueDepthGe64 = 250,
+    DecryptWorkerFmpBulkQueueDepthGe256 = 251,
+    DecryptWorkerFmpBulkQueueDepthGe1024 = 252,
+    DecryptWorkerFmpBulkQueueDepthGe4096 = 253,
+    DecryptWorkerFspOwnerQueueDepthGe64 = 254,
+    DecryptWorkerFspOwnerQueueDepthGe256 = 255,
+    DecryptWorkerFspOwnerQueueDepthGe1024 = 256,
+    DecryptWorkerFspOwnerQueueDepthGe4096 = 257,
+    DecryptWorkerFspOpenQueueDepthGe64 = 258,
+    DecryptWorkerFspOpenQueueDepthGe256 = 259,
+    DecryptWorkerFspOpenQueueDepthGe1024 = 260,
+    DecryptWorkerFspOpenQueueDepthGe4096 = 261,
 }
 
 impl Event {
@@ -1225,6 +1237,38 @@ impl Event {
             Event::DecryptWorkerBulkQueueDepthGe256 => "decrypt_worker_bulk_queue_depth_ge256",
             Event::DecryptWorkerBulkQueueDepthGe1024 => "decrypt_worker_bulk_queue_depth_ge1024",
             Event::DecryptWorkerBulkQueueDepthGe4096 => "decrypt_worker_bulk_queue_depth_ge4096",
+            Event::DecryptWorkerFmpBulkQueueDepthGe64 => "decrypt_worker_fmp_bulk_queue_depth_ge64",
+            Event::DecryptWorkerFmpBulkQueueDepthGe256 => {
+                "decrypt_worker_fmp_bulk_queue_depth_ge256"
+            }
+            Event::DecryptWorkerFmpBulkQueueDepthGe1024 => {
+                "decrypt_worker_fmp_bulk_queue_depth_ge1024"
+            }
+            Event::DecryptWorkerFmpBulkQueueDepthGe4096 => {
+                "decrypt_worker_fmp_bulk_queue_depth_ge4096"
+            }
+            Event::DecryptWorkerFspOwnerQueueDepthGe64 => {
+                "decrypt_worker_fsp_owner_queue_depth_ge64"
+            }
+            Event::DecryptWorkerFspOwnerQueueDepthGe256 => {
+                "decrypt_worker_fsp_owner_queue_depth_ge256"
+            }
+            Event::DecryptWorkerFspOwnerQueueDepthGe1024 => {
+                "decrypt_worker_fsp_owner_queue_depth_ge1024"
+            }
+            Event::DecryptWorkerFspOwnerQueueDepthGe4096 => {
+                "decrypt_worker_fsp_owner_queue_depth_ge4096"
+            }
+            Event::DecryptWorkerFspOpenQueueDepthGe64 => "decrypt_worker_fsp_open_queue_depth_ge64",
+            Event::DecryptWorkerFspOpenQueueDepthGe256 => {
+                "decrypt_worker_fsp_open_queue_depth_ge256"
+            }
+            Event::DecryptWorkerFspOpenQueueDepthGe1024 => {
+                "decrypt_worker_fsp_open_queue_depth_ge1024"
+            }
+            Event::DecryptWorkerFspOpenQueueDepthGe4096 => {
+                "decrypt_worker_fsp_open_queue_depth_ge4096"
+            }
         }
     }
 }
@@ -1481,6 +1525,18 @@ fn event_from_index(idx: usize) -> Event {
         247 => Event::DecryptWorkerBulkQueueDepthGe256,
         248 => Event::DecryptWorkerBulkQueueDepthGe1024,
         249 => Event::DecryptWorkerBulkQueueDepthGe4096,
+        250 => Event::DecryptWorkerFmpBulkQueueDepthGe64,
+        251 => Event::DecryptWorkerFmpBulkQueueDepthGe256,
+        252 => Event::DecryptWorkerFmpBulkQueueDepthGe1024,
+        253 => Event::DecryptWorkerFmpBulkQueueDepthGe4096,
+        254 => Event::DecryptWorkerFspOwnerQueueDepthGe64,
+        255 => Event::DecryptWorkerFspOwnerQueueDepthGe256,
+        256 => Event::DecryptWorkerFspOwnerQueueDepthGe1024,
+        257 => Event::DecryptWorkerFspOwnerQueueDepthGe4096,
+        258 => Event::DecryptWorkerFspOpenQueueDepthGe64,
+        259 => Event::DecryptWorkerFspOpenQueueDepthGe256,
+        260 => Event::DecryptWorkerFspOpenQueueDepthGe1024,
+        261 => Event::DecryptWorkerFspOpenQueueDepthGe4096,
         _ => unreachable!(),
     }
 }
@@ -2023,6 +2079,70 @@ pub(crate) fn record_decrypt_worker_bulk_queue_depth(
     }
     if ge4096 {
         record_event_count_sample(Event::DecryptWorkerBulkQueueDepthGe4096, packets);
+    }
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_fmp_bulk_queue_depth(depth: usize, packets: usize) {
+    record_decrypt_worker_bulk_queue_depth_role(
+        depth,
+        packets,
+        Event::DecryptWorkerFmpBulkQueueDepthGe64,
+        Event::DecryptWorkerFmpBulkQueueDepthGe256,
+        Event::DecryptWorkerFmpBulkQueueDepthGe1024,
+        Event::DecryptWorkerFmpBulkQueueDepthGe4096,
+    );
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_fsp_owner_queue_depth(depth: usize, packets: usize) {
+    record_decrypt_worker_bulk_queue_depth_role(
+        depth,
+        packets,
+        Event::DecryptWorkerFspOwnerQueueDepthGe64,
+        Event::DecryptWorkerFspOwnerQueueDepthGe256,
+        Event::DecryptWorkerFspOwnerQueueDepthGe1024,
+        Event::DecryptWorkerFspOwnerQueueDepthGe4096,
+    );
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_fsp_open_queue_depth(depth: usize, packets: usize) {
+    record_decrypt_worker_bulk_queue_depth_role(
+        depth,
+        packets,
+        Event::DecryptWorkerFspOpenQueueDepthGe64,
+        Event::DecryptWorkerFspOpenQueueDepthGe256,
+        Event::DecryptWorkerFspOpenQueueDepthGe1024,
+        Event::DecryptWorkerFspOpenQueueDepthGe4096,
+    );
+}
+
+#[inline]
+fn record_decrypt_worker_bulk_queue_depth_role(
+    depth: usize,
+    packets: usize,
+    ge64_event: Event,
+    ge256_event: Event,
+    ge1024_event: Event,
+    ge4096_event: Event,
+) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    let packets = packets as u64;
+    let (ge64, ge256, ge1024, ge4096) = bulk_queue_depth_absolute_flags(depth);
+    if ge64 {
+        record_event_count_sample(ge64_event, packets);
+    }
+    if ge256 {
+        record_event_count_sample(ge256_event, packets);
+    }
+    if ge1024 {
+        record_event_count_sample(ge1024_event, packets);
+    }
+    if ge4096 {
+        record_event_count_sample(ge4096_event, packets);
     }
 }
 
