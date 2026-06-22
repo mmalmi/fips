@@ -556,12 +556,11 @@ impl<'a> BulkTurnBatchers<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn drain_reserved_work_before_bulk_packet(
+fn drain_control_priority_before_bulk_packet(
     idx: usize,
     shard: &mut DecryptWorkerShard,
     control_rx: &Receiver<WorkerMsg>,
     priority_rx: &Receiver<WorkerMsg>,
-    fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     batch_stats: &mut DecryptWorkerBatchStats,
     mut batchers: BulkTurnBatchers<'_>,
@@ -578,6 +577,28 @@ fn drain_reserved_work_before_bulk_packet(
         batch_stats.add_msg(&msg);
         shard.handle_msg(idx, msg);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drain_reserved_work_before_bulk_item(
+    idx: usize,
+    shard: &mut DecryptWorkerShard,
+    control_rx: &Receiver<WorkerMsg>,
+    priority_rx: &Receiver<WorkerMsg>,
+    fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
+    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    batch_stats: &mut DecryptWorkerBatchStats,
+    batchers: BulkTurnBatchers<'_>,
+) {
+    drain_control_priority_before_bulk_packet(
+        idx,
+        shard,
+        control_rx,
+        priority_rx,
+        plaintext_batch,
+        batch_stats,
+        batchers,
+    );
     let mut completion_interleave_budget = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
     if drain_aead_completions_for_bulk_item(
         idx,
@@ -640,13 +661,22 @@ fn handle_bulk_item(
             }
             let mut fsp_batcher = FspDecryptJobBatcher::new();
             let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+            drain_reserved_work_before_bulk_item(
+                idx,
+                shard,
+                control_rx,
+                priority_rx,
+                fsp_aead_completion_rx,
+                plaintext_batch,
+                batch_stats,
+                BulkTurnBatchers::new(Some(&mut fsp_batcher), Some(&mut fsp_open_batcher)),
+            );
             for job in jobs {
-                drain_reserved_work_before_bulk_packet(
+                drain_control_priority_before_bulk_packet(
                     idx,
                     shard,
                     control_rx,
                     priority_rx,
-                    fsp_aead_completion_rx,
                     plaintext_batch,
                     batch_stats,
                     BulkTurnBatchers::new(Some(&mut fsp_batcher), Some(&mut fsp_open_batcher)),
@@ -678,13 +708,22 @@ fn handle_bulk_item(
             record_fsp_worker_bulk_input_head_wait_batch(&jobs);
             let count = jobs.len();
             let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+            drain_reserved_work_before_bulk_item(
+                idx,
+                shard,
+                control_rx,
+                priority_rx,
+                fsp_aead_completion_rx,
+                plaintext_batch,
+                batch_stats,
+                BulkTurnBatchers::new(None, Some(&mut fsp_open_batcher)),
+            );
             for job in jobs {
-                drain_reserved_work_before_bulk_packet(
+                drain_control_priority_before_bulk_packet(
                     idx,
                     shard,
                     control_rx,
                     priority_rx,
-                    fsp_aead_completion_rx,
                     plaintext_batch,
                     batch_stats,
                     BulkTurnBatchers::new(None, Some(&mut fsp_open_batcher)),

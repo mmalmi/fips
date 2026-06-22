@@ -859,7 +859,7 @@
         assert_eq!(
             DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET,
             DECRYPT_WORKER_BULK_BATCH_MAX,
-            "completion interleave should be bounded to one bulk item width"
+            "completion interleave should reserve one bounded slice at each bulk item boundary"
         );
 
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
@@ -1072,14 +1072,12 @@
     }
 
     #[test]
-    fn decrypt_worker_bulk_packet_steps_bound_aead_completion_interleave() {
+    fn decrypt_worker_bulk_item_boundary_bounds_aead_completion_interleave() {
         let session_key = test_session_key(1, 83);
         let mut shard = test_shard();
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let bulk_packets = 2;
-        let completion_count =
-            (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 3;
+        let completion_count = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET + 3;
         let (fsp_completion_tx, fsp_aead_completion_rx) =
             bounded::<FspAeadCompletionBatch>(completion_count);
         let source_addr = *test_source_peer().node_addr();
@@ -1112,7 +1110,7 @@
         assert_eq!(
             fsp_aead_completion_rx.len(),
             3,
-            "a saturated completion lane should drain one bounded slice per bulk packet"
+            "a saturated completion lane should drain one bounded slice per bulk item"
         );
     }
 
@@ -1178,13 +1176,11 @@
     }
 
     #[test]
-    fn decrypt_worker_fsp_bulk_packet_steps_bound_aead_completion_interleave() {
+    fn decrypt_worker_fsp_bulk_item_boundary_bounds_aead_completion_interleave() {
         let mut shard = test_shard();
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let bulk_packets = 2;
-        let completion_count =
-            (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 5;
+        let completion_count = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET + 5;
         let (fsp_completion_tx, fsp_aead_completion_rx) =
             bounded::<FspAeadCompletionBatch>(completion_count);
         let source_addr = *test_source_peer().node_addr();
@@ -1217,6 +1213,6 @@
         assert_eq!(
             fsp_aead_completion_rx.len(),
             5,
-            "FSP owner bulk service should drain one bounded completion slice per bulk packet"
+            "FSP owner bulk service should drain one bounded completion slice per bulk item"
         );
     }
