@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recovered direct endpoint payload routing after local route-unavailable send
   failures by degrading the direct path and scheduling a short retry instead of
   continuing to blackhole payload on the stale direct route.
+- Refreshed cached overlay adverts after local route failures, so direct-path
+  retries can pick up post-rebind endpoints instead of looping on a dead cached
+  address.
 - Bumped `fips-endpoint` to 0.3.52 so app-facing consumers pick up the
   `fips-core` 0.3.77 receive-liveness fix.
 
