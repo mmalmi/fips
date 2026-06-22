@@ -1241,6 +1241,7 @@ impl OwnedSessionState {
         nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
         let buf = &mut packet_data[fmp_ciphertext_offset..];
+        let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
         let plaintext_len = cipher
             .open_in_place(nonce, Aad::from(fmp_header), buf)
             .map_err(|_| ())?
