@@ -264,44 +264,13 @@ fn parse_worker_channel_cap(raw: Option<&str>, default: usize) -> usize {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn worker_batch_size() -> usize {
-    static VALUE: OnceLock<usize> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        let raw = std::env::var("FIPS_WORKER_BATCH").ok();
-        parse_worker_batch_size(raw.as_deref(), DEFAULT_WORKER_BATCH_SIZE)
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
 fn worker_fast_lane_cap(total_cap: usize, per_flow_cap: usize) -> usize {
-    worker_fast_lane_cap_for_batch(total_cap, per_flow_cap, worker_batch_size())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn worker_fast_lane_cap_for_batch(
-    total_cap: usize,
-    per_flow_cap: usize,
-    batch_size: usize,
-) -> usize {
-    batch_size
-        // Larger experimental drain batches should not also widen the hidden
-        // admission bypass before fair per-flow backpressure can engage.
-        .min(DEFAULT_WORKER_BATCH_SIZE)
+    DEFAULT_WORKER_BATCH_SIZE
+        // The fast lane is a single fixed drain turn before fair per-flow
+        // backpressure engages, not another hidden queue window.
         .min(per_flow_cap.max(1))
         .min(total_cap.max(1))
         .max(1)
-}
-
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-fn parse_worker_batch_size(raw: Option<&str>, default: usize) -> usize {
-    let max_batch = default.max(1);
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(default)
-        // Linux UDP submission can carry wider GSO batches, but no-direct
-        // clean/stressed runs repeatedly showed wider worker turns amplify
-        // TCP retransmits. Keep explicit env tuning inside the proven default
-        // turn until the sender shape changes.
-        .clamp(1, max_batch)
 }
 
 #[cfg(not(target_os = "macos"))]

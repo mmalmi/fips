@@ -260,7 +260,7 @@ enum SealPacketError {
 fn run_worker(idx: usize, mut rx: FairWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
 
-    let mut shard = EncryptWorkerShard::new(idx, worker_batch_size());
+    let mut shard = EncryptWorkerShard::new(idx, DEFAULT_WORKER_BATCH_SIZE);
 
     while shard.drain_and_flush_once(|batch, max| rx.recv_batch(batch, max), flush_batch_sync) {}
     trace!(worker = idx, "FMP encrypt worker thread exiting");
