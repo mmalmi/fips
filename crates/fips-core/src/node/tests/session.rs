@@ -59,7 +59,7 @@ fn populate_all_coord_caches(nodes: &mut [TestNode]) {
 }
 
 fn refresh_configured_peer_cache_for_test(node: &mut Node) {
-    node.configured_peer_cache = crate::node::ConfiguredPeerCache::from_config(&node.config);
+    node.refresh_configured_peer_cache();
 }
 
 // ============================================================================

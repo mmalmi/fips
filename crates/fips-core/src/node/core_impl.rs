@@ -338,6 +338,10 @@ impl Node {
         self.configured_peer_cache.weight_for(peer_addr)
     }
 
+    pub(in crate::node) fn refresh_configured_peer_cache(&mut self) {
+        self.configured_peer_cache = ConfiguredPeerCache::from_config(&self.config);
+    }
+
     #[cfg(unix)]
     pub(in crate::node) fn resolve_peer_runtime_route_decision(
         &mut self,

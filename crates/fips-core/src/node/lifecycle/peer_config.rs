@@ -128,7 +128,7 @@ impl Node {
             .iter()
             .filter_map(|addr| new_by_addr.get(addr).cloned())
             .collect();
-        self.configured_peer_cache = ConfiguredPeerCache::from_config(&self.config);
+        self.refresh_configured_peer_cache();
 
         for peer_config in added_configs {
             outcome.added += 1;
