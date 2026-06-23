@@ -204,7 +204,7 @@ fn default_send_backpressure_drop_after() -> u32 {
     // budget avoids head-of-line stalls that can last seconds when Wi-Fi
     // egress is saturated, while still preserving short transient bursts.
     // Control frames pass `drop_on_backpressure = false` and keep retrying.
-    256
+    16
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -265,6 +265,12 @@ mod send_backpressure_tests {
             send_backpressure_decision(false, true),
             SendBackpressureDecision::Retry
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_default_bulk_drop_budget_stays_short() {
+        assert_eq!(default_send_backpressure_drop_after(), 16);
     }
 
     #[test]
