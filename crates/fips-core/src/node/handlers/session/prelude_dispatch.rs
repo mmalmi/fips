@@ -16,11 +16,11 @@ use crate::node::session_wire::{
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
-    EncryptedSessionPayload, EndpointCommandLane, EndpointDataDelivery, EndpointDataPayload,
-    EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput,
-    LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
-    NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    AuthenticatedFmpReceiveRecord, EncryptedSessionPayload, EndpointCommandLane,
+    EndpointDataDelivery, EndpointDataPayload, EndpointDataSend, EndpointSendBatchCommand,
+    EndpointSendCommand, FspSendBookkeepingInput, LocalSessionPayload, Node, NodeEndpointCommand,
+    NodeEndpointPeer, NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
+    SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,

@@ -535,6 +535,13 @@ impl LinkStats {
         self.last_recv_ms = timestamp_ms;
     }
 
+    /// Record multiple received packets.
+    pub fn record_recv_batch(&mut self, packets: usize, bytes: usize, last_timestamp_ms: u64) {
+        self.packets_recv += packets as u64;
+        self.bytes_recv += bytes as u64;
+        self.last_recv_ms = last_timestamp_ms;
+    }
+
     /// Get the RTT estimate, if available.
     pub fn rtt_estimate(&self) -> Option<Duration> {
         self.rtt_estimate

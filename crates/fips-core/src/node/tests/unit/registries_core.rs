@@ -837,3 +837,119 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
     assert_eq!(mmp.receiver.cumulative_bytes_recv(), 128);
     assert_eq!(mmp.receiver.highest_counter(), 7);
 }
+
+#[test]
+fn peer_lifecycle_registry_batches_authenticated_fmp_receive_bookkeeping() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let old_transport_id = TransportId::new(1);
+    let new_transport_id = TransportId::new(2);
+    let link_id = LinkId::new(10);
+    let old_addr = TransportAddr::from_string("authenticated-batch-old-path");
+    let new_addr = TransportAddr::from_string("authenticated-batch-new-path");
+    let ignored_addr = TransportAddr::from_string("authenticated-batch-ignored-path");
+    let current_our_index = SessionIndex::new(10);
+    let current_their_index = SessionIndex::new(20);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let mut active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        old_transport_id,
+        link_id,
+        old_addr,
+        current_our_index,
+        current_their_index,
+    );
+    active_peer.increment_decrypt_failures();
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let now = std::time::Instant::now();
+    let update = registry
+        .record_authenticated_fmp_receive_batch(
+            &peer_addr,
+            new_transport_id,
+            &new_addr,
+            [
+                AuthenticatedFmpReceiveRecord {
+                    packet_timestamp_ms: 2_000,
+                    packet_len: 128,
+                    fmp_counter: 7,
+                    inner_timestamp_ms: 1_234,
+                    ce_flag: true,
+                    sp_flag: false,
+                },
+                AuthenticatedFmpReceiveRecord {
+                    packet_timestamp_ms: 2_001,
+                    packet_len: 192,
+                    fmp_counter: 8,
+                    inner_timestamp_ms: 1_235,
+                    ce_flag: false,
+                    sp_flag: false,
+                },
+            ],
+            now,
+            true,
+        )
+        .expect("authenticated receive batch bookkeeping should find active peer");
+
+    assert!(update.address_changed);
+    assert!(update.path_bookkeeping_recorded);
+    assert!(update.mmp_recorded);
+
+    let peer = registry
+        .get(&peer_addr)
+        .expect("authenticated receive batch must keep active peer storage");
+    assert_eq!(peer.consecutive_decrypt_failures(), 0);
+    assert_eq!(peer.transport_id(), Some(new_transport_id));
+    assert_eq!(peer.current_addr(), Some(&new_addr));
+    assert_eq!(peer.last_seen(), 2_001);
+    assert_eq!(peer.link_stats().packets_recv, 2);
+    assert_eq!(peer.link_stats().bytes_recv, 320);
+    assert_eq!(peer.link_stats().last_recv_ms, 2_001);
+    let mmp = peer.mmp().expect("active FMP peer should have MMP state");
+    assert_eq!(mmp.receiver.cumulative_packets_recv(), 2);
+    assert_eq!(mmp.receiver.cumulative_bytes_recv(), 320);
+    assert_eq!(mmp.receiver.highest_counter(), 8);
+    assert_eq!(mmp.receiver.ecn_ce_count(), 1);
+
+    registry
+        .get_mut(&peer_addr)
+        .expect("peer should still exist")
+        .increment_decrypt_failures();
+    let skipped = registry
+        .record_authenticated_fmp_receive_batch(
+            &peer_addr,
+            new_transport_id,
+            &ignored_addr,
+            [AuthenticatedFmpReceiveRecord {
+                packet_timestamp_ms: 3_000,
+                packet_len: 64,
+                fmp_counter: 9,
+                inner_timestamp_ms: 1_999,
+                ce_flag: false,
+                sp_flag: true,
+            }],
+            now,
+            false,
+        )
+        .expect("disallowed receive batch should still reset decrypt failures");
+
+    assert!(!skipped.address_changed);
+    assert!(!skipped.path_bookkeeping_recorded);
+    assert!(!skipped.mmp_recorded);
+    let peer = registry
+        .get(&peer_addr)
+        .expect("skipped receive batch must keep active peer storage");
+    assert_eq!(peer.consecutive_decrypt_failures(), 0);
+    assert_eq!(peer.current_addr(), Some(&new_addr));
+    assert_eq!(peer.link_stats().packets_recv, 2);
+    assert_eq!(peer.link_stats().bytes_recv, 320);
+    let mmp = peer.mmp().expect("active FMP peer should keep MMP state");
+    assert_eq!(mmp.receiver.cumulative_packets_recv(), 2);
+    assert_eq!(mmp.receiver.highest_counter(), 8);
+}
