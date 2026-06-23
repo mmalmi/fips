@@ -172,7 +172,7 @@ impl RxLoopMaintenanceState {
         _drained: RxLoopDataDrainStats,
         data_pressure: bool,
     ) -> bool {
-        data_pressure && self.slow_maintenance_timed_out_under_data
+        data_pressure
     }
 
     pub(super) fn plan_maintenance(
