@@ -72,12 +72,8 @@ fn decrypt_worker_bulk_queue_role(item: &DecryptWorkerBulkItem) -> DecryptWorker
         DecryptWorkerBulkItem::Job(_) | DecryptWorkerBulkItem::Batch(_) => {
             DecryptWorkerBulkQueueRole::FmpBulk
         }
-        DecryptWorkerBulkItem::FspJob(_) | DecryptWorkerBulkItem::FspBatch(_) => {
-            DecryptWorkerBulkQueueRole::FspOwner
-        }
-        DecryptWorkerBulkItem::FspAeadOpen(_) | DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
-            DecryptWorkerBulkQueueRole::FspOpen
-        }
+        DecryptWorkerBulkItem::FspBatch(_) => DecryptWorkerBulkQueueRole::FspOwner,
+        DecryptWorkerBulkItem::FspAeadOpenBatch(_) => DecryptWorkerBulkQueueRole::FspOpen,
     }
 }
 
@@ -277,67 +273,69 @@ impl DecryptWorkerPool {
             .is_some_and(|sender| sender.fsp_aead_completion.send(batch).is_ok())
     }
 
-    #[allow(clippy::result_large_err)]
-    fn dispatch_fsp_aead_open_worker_job(
+    fn dispatch_fsp_bulk_jobs_or_return<T>(
         &self,
-        open_idx: usize,
-        owner_idx: usize,
-        job: FspAeadOpenJob,
-    ) -> Result<(), FspAeadOpenJob> {
-        self.dispatch_fsp_aead_open_decrypt_worker_job(open_idx, owner_idx, job)
-    }
+        idx: usize,
+        mut jobs: Vec<T>,
+        role: DecryptWorkerBulkQueueRole,
+        item_from_jobs: fn(Vec<T>) -> DecryptWorkerBulkItem,
+        jobs_from_item: fn(DecryptWorkerBulkItem) -> Vec<T>,
+    ) -> Result<(), Vec<T>> {
+        debug_assert!(!jobs.is_empty());
+        debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
 
-    #[allow(clippy::result_large_err)]
-    fn dispatch_fsp_aead_open_decrypt_worker_job(
-        &self,
-        open_idx: usize,
-        owner_idx: usize,
-        mut job: FspAeadOpenJob,
-    ) -> Result<(), FspAeadOpenJob> {
-        let Some(open_sender) = self.senders.get(open_idx) else {
-            return Err(job);
+        let Some(sender) = self.senders.get(idx) else {
+            return Err(jobs);
         };
-        if self.senders.get(owner_idx).is_none() {
-            return Err(job);
-        }
-        job.completion_owner_idx = Some(owner_idx);
-        job.open_queued_at = crate::perf_profile::stamp();
-        if !try_reserve_bulk_packets(
-            &open_sender.bulk_queued_packets,
-            open_sender.bulk_packet_cap,
-            1,
-        ) {
-            record_decrypt_fsp_bulk_queue_full_fallback_count(1);
-            return Err(job);
+        let packet_count = jobs.len();
+        let reserved_packets = try_reserve_bulk_packets_partial(
+            &sender.bulk_queued_packets,
+            sender.bulk_packet_cap,
+            packet_count,
+        );
+        if reserved_packets == 0 {
+            record_decrypt_fsp_bulk_queue_full_fallback_count(packet_count);
+            return Err(jobs);
         }
 
-        match open_sender
-            .bulk
-            .try_send(DecryptWorkerBulkItem::FspAeadOpen(job))
-        {
+        let overflow = if reserved_packets < packet_count {
+            Some(jobs.split_off(reserved_packets))
+        } else {
+            None
+        };
+        let reserved_item = item_from_jobs(jobs);
+
+        match sender.bulk.try_send(reserved_item) {
             Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(
-                    open_sender,
-                    1,
-                    DecryptWorkerBulkQueueRole::FspOpen,
-                );
-                Ok(())
+                record_decrypt_worker_bulk_queue_depth(sender, reserved_packets, role);
+                match overflow {
+                    Some(overflow) => {
+                        record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
+                        Err(overflow)
+                    }
+                    None => Ok(()),
+                }
             }
-            Err(TrySendError::Full(DecryptWorkerBulkItem::FspAeadOpen(job))) => {
-                release_bulk_packets(&open_sender.bulk_queued_packets, 1);
-                record_decrypt_fsp_bulk_queue_full_fallback_count(1);
-                Err(job)
+            Err(TrySendError::Full(item)) => {
+                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+                let mut returned = jobs_from_item(item);
+                if let Some(overflow) = overflow {
+                    returned.extend(overflow);
+                }
+                record_decrypt_fsp_bulk_queue_full_fallback_count(returned.len());
+                Err(returned)
             }
-            Err(TrySendError::Disconnected(DecryptWorkerBulkItem::FspAeadOpen(job))) => {
-                release_bulk_packets(&open_sender.bulk_queued_packets, 1);
+            Err(TrySendError::Disconnected(item)) => {
+                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+                let mut returned = jobs_from_item(item);
+                if let Some(overflow) = overflow {
+                    returned.extend(overflow);
+                }
                 debug!(
-                    worker = open_idx,
-                    "DecryptWorker opener thread gone; completing FSP open inline"
+                    worker = idx,
+                    "DecryptWorker FSP bulk thread gone; returning worker-owned jobs"
                 );
-                Err(job)
-            }
-            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-                unreachable!("FSP AEAD opener dispatch only sends FspAeadOpen jobs")
+                Err(returned)
             }
         }
     }
@@ -352,16 +350,6 @@ impl DecryptWorkerPool {
         debug_assert!(!jobs.is_empty());
         debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
 
-        if jobs.len() == 1 {
-            let job = jobs.pop().expect("checked non-empty opener batch");
-            return self
-                .dispatch_fsp_aead_open_decrypt_worker_job(open_idx, owner_idx, job)
-                .map_err(|job| vec![job]);
-        }
-
-        let Some(open_sender) = self.senders.get(open_idx) else {
-            return Err(jobs);
-        };
         if self.senders.get(owner_idx).is_none() {
             return Err(jobs);
         };
@@ -371,61 +359,13 @@ impl DecryptWorkerPool {
             job.open_queued_at = queued_at;
         }
 
-        let packet_count = jobs.len();
-        let reserved_packets = try_reserve_bulk_packets_partial(
-            &open_sender.bulk_queued_packets,
-            open_sender.bulk_packet_cap,
-            packet_count,
-        );
-        if reserved_packets == 0 {
-            record_decrypt_fsp_bulk_queue_full_fallback_count(packet_count);
-            return Err(jobs);
-        }
-
-        let overflow = if reserved_packets < packet_count {
-            Some(jobs.split_off(reserved_packets))
-        } else {
-            None
-        };
-        let reserved_item = decrypt_worker_bulk_item_from_fsp_aead_open_jobs(jobs);
-
-        match open_sender.bulk.try_send(reserved_item) {
-            Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(
-                    open_sender,
-                    reserved_packets,
-                    DecryptWorkerBulkQueueRole::FspOpen,
-                );
-                match overflow {
-                    Some(overflow) => {
-                        record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
-                        Err(overflow)
-                    }
-                    None => Ok(()),
-                }
-            }
-            Err(TrySendError::Full(item)) => {
-                release_bulk_packets(&open_sender.bulk_queued_packets, reserved_packets);
-                let mut returned = fsp_aead_open_jobs_from_decrypt_worker_bulk_item(item);
-                if let Some(overflow) = overflow {
-                    returned.extend(overflow);
-                }
-                record_decrypt_fsp_bulk_queue_full_fallback_count(returned.len());
-                Err(returned)
-            }
-            Err(TrySendError::Disconnected(item)) => {
-                release_bulk_packets(&open_sender.bulk_queued_packets, reserved_packets);
-                let mut returned = fsp_aead_open_jobs_from_decrypt_worker_bulk_item(item);
-                if let Some(overflow) = overflow {
-                    returned.extend(overflow);
-                }
-                debug!(
-                    worker = open_idx,
-                    "DecryptWorker opener thread gone; completing FSP open batch inline"
-                );
-                Err(returned)
-            }
-        }
+        self.dispatch_fsp_bulk_jobs_or_return(
+            open_idx,
+            jobs,
+            DecryptWorkerBulkQueueRole::FspOpen,
+            decrypt_worker_bulk_item_from_fsp_aead_open_jobs,
+            fsp_aead_open_jobs_from_decrypt_worker_bulk_item,
+        )
     }
 
     #[allow(clippy::result_large_err)]
@@ -480,49 +420,11 @@ impl DecryptWorkerPool {
         idx: usize,
         job: FspDecryptJob,
     ) -> Result<(), FspDecryptJob> {
-        self.dispatch_bulk_fsp_job_with_stamp_or_return(idx, job, crate::perf_profile::stamp())
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn dispatch_bulk_fsp_job_with_stamp_or_return(
-        &self,
-        idx: usize,
-        mut job: FspDecryptJob,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-    ) -> Result<(), FspDecryptJob> {
-        job.set_trace_enqueued_at(queued_at);
-        let sender = &self.senders[idx];
-        if !try_reserve_bulk_packets(&sender.bulk_queued_packets, sender.bulk_packet_cap, 1) {
-            record_decrypt_fsp_bulk_queue_full_fallback_count(1);
-            return Err(job);
-        }
-
-        match sender.bulk.try_send(DecryptWorkerBulkItem::FspJob(job)) {
-            Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(
-                    sender,
-                    1,
-                    DecryptWorkerBulkQueueRole::FspOwner,
-                );
-                Ok(())
-            }
-            Err(TrySendError::Full(DecryptWorkerBulkItem::FspJob(job))) => {
-                release_bulk_packets(&sender.bulk_queued_packets, 1);
-                record_decrypt_fsp_bulk_queue_full_fallback_count(1);
-                Err(job)
-            }
-            Err(TrySendError::Disconnected(DecryptWorkerBulkItem::FspJob(job))) => {
-                release_bulk_packets(&sender.bulk_queued_packets, 1);
-                debug!(
-                    worker = idx,
-                    "DecryptWorker thread gone; falling FSP bulk job back to rx_loop"
-                );
-                Err(job)
-            }
-            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-                unreachable!("bulk FSP dispatch only sends FSP jobs")
-            }
-        }
+        self.dispatch_bulk_fsp_job_batch_or_return(idx, vec![job])
+            .map_err(|mut jobs| {
+                debug_assert_eq!(jobs.len(), 1);
+                jobs.pop().expect("single FSP job dispatch returned empty batch")
+            })
     }
 
     fn dispatch_bulk_fsp_job_batch_or_return(
@@ -542,69 +444,13 @@ impl DecryptWorkerPool {
             job.set_trace_enqueued_at(queued_at);
         }
 
-        if jobs.len() == 1 {
-            let job = jobs.pop().expect("checked non-empty FSP batch");
-            return self
-                .dispatch_bulk_fsp_job_with_stamp_or_return(idx, job, queued_at)
-                .map_err(|job| vec![job]);
-        }
-
-        let packet_count = jobs.len();
-        let sender = &self.senders[idx];
-        let reserved_packets = try_reserve_bulk_packets_partial(
-            &sender.bulk_queued_packets,
-            sender.bulk_packet_cap,
-            packet_count,
-        );
-        if reserved_packets == 0 {
-            record_decrypt_fsp_bulk_queue_full_fallback_count(packet_count);
-            return Err(jobs);
-        }
-
-        let overflow = if reserved_packets < packet_count {
-            Some(jobs.split_off(reserved_packets))
-        } else {
-            None
-        };
-        let reserved_item = decrypt_worker_bulk_item_from_fsp_jobs(jobs);
-
-        match sender.bulk.try_send(reserved_item) {
-            Ok(()) => {
-                record_decrypt_worker_bulk_queue_depth(
-                    sender,
-                    reserved_packets,
-                    DecryptWorkerBulkQueueRole::FspOwner,
-                );
-                match overflow {
-                    Some(overflow) => {
-                        record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
-                        Err(overflow)
-                    }
-                    None => Ok(()),
-                }
-            }
-            Err(TrySendError::Full(item)) => {
-                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
-                let mut returned = fsp_jobs_from_decrypt_worker_bulk_item(item);
-                if let Some(overflow) = overflow {
-                    returned.extend(overflow);
-                }
-                record_decrypt_fsp_bulk_queue_full_fallback_count(returned.len());
-                Err(returned)
-            }
-            Err(TrySendError::Disconnected(item)) => {
-                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
-                let mut returned = fsp_jobs_from_decrypt_worker_bulk_item(item);
-                if let Some(overflow) = overflow {
-                    returned.extend(overflow);
-                }
-                debug!(
-                    worker = idx,
-                    "DecryptWorker thread gone; falling FSP bulk job batch back to rx_loop"
-                );
-                Err(returned)
-            }
-        }
+        self.dispatch_fsp_bulk_jobs_or_return(
+            idx,
+            jobs,
+            DecryptWorkerBulkQueueRole::FspOwner,
+            decrypt_worker_bulk_item_from_fsp_jobs,
+            fsp_jobs_from_decrypt_worker_bulk_item,
+        )
     }
 
     fn dispatch_bulk_job_batch(&self, idx: usize, mut jobs: Vec<DecryptJob>) {

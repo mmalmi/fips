@@ -394,8 +394,6 @@
                 "batch width should stop at the worker packet capacity"
             ),
             DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
-            DecryptWorkerBulkItem::FspJob(_) => panic!("expected an eight-packet bulk batch"),
-            DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected an eight-packet bulk batch")
             }
@@ -1063,7 +1061,7 @@
         queue_bulk_item_for_test(
             &bulk_tx,
             &bulk_queued_packets,
-            DecryptWorkerBulkItem::FspJob(bulk_job),
+            DecryptWorkerBulkItem::FspBatch(vec![bulk_job]),
         );
 
         let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);

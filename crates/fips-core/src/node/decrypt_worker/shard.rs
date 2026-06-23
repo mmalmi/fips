@@ -808,15 +808,11 @@ impl DecryptWorkerShard {
         record_fsp_path_worker_open_bulk();
         match self
             .pool
-            .dispatch_fsp_aead_open_worker_job(open_idx, owner_idx, open_job)
+            .dispatch_fsp_aead_open_worker_job_batch_or_return(open_idx, owner_idx, vec![open_job])
         {
             Ok(()) => Ok(()),
-            Err(open_job) => {
-                self.drop_returned_fsp_aead_open_jobs(
-                    idx,
-                    std::iter::once(open_job),
-                    plaintext_batch,
-                );
+            Err(open_jobs) => {
+                self.drop_returned_fsp_aead_open_jobs(idx, open_jobs, plaintext_batch);
                 Ok(())
             }
         }

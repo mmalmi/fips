@@ -35,6 +35,7 @@ fn try_reserve_bulk_packets_with_previous(
         .ok()
 }
 
+#[cfg(test)]
 fn try_reserve_bulk_packets(counter: &AtomicUsize, capacity: usize, count: usize) -> bool {
     try_reserve_bulk_packets_with_previous(counter, capacity, count).is_some()
 }
@@ -508,24 +509,7 @@ fn send_fsp_aead_open_completion_flush(
 #[cfg(test)]
 fn complete_fsp_aead_open_job(idx: usize, pool: &DecryptWorkerPool, job: FspAeadOpenJob) {
     let mut scratch = FspAeadOpenScratch::default();
-    complete_fsp_aead_open_job_to_owner(idx, pool, job, &mut scratch);
-}
-
-fn complete_fsp_aead_open_job_to_owner(
-    idx: usize,
-    pool: &DecryptWorkerPool,
-    mut job: FspAeadOpenJob,
-    scratch: &mut FspAeadOpenScratch,
-) {
-    let Some(owner_idx) = job.completion_owner_idx.take() else {
-        return;
-    };
-    send_fsp_aead_open_completion_batch(
-        idx,
-        pool,
-        owner_idx,
-        FspAeadCompletionBatch::one(job.into_completion_with_scratch(scratch)),
-    );
+    complete_fsp_aead_open_jobs(idx, pool, vec![job], &mut scratch);
 }
 
 fn complete_fsp_aead_open_jobs(
@@ -697,27 +681,6 @@ fn handle_bulk_item_with_buffers(
             record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, 1);
             record_decrypt_worker_bulk_input_tail_wait(item_started_at);
             shard.handle_bulk_job_msg(idx, job, plaintext_batch);
-            record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
-            1
-        }
-        DecryptWorkerBulkItem::FspJob(job) => {
-            let item_started_at = crate::perf_profile::stamp();
-            record_fsp_worker_bulk_input_head_wait(&job);
-            record_fsp_worker_bulk_input_tail_wait(item_started_at);
-            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
-            shard.handle_bulk_fsp_job_with_open_batcher(
-                idx,
-                job,
-                plaintext_batch,
-                &mut *fsp_open_batcher,
-            );
-            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
-            debug_assert!(bulk_batchers.is_empty());
-            1
-        }
-        DecryptWorkerBulkItem::FspAeadOpen(job) => {
-            let item_service_started_at = crate::perf_profile::stamp();
-            complete_fsp_aead_open_job_to_owner(idx, &shard.pool, job, &mut shard.fsp_open_scratch);
             record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
             1
         }
