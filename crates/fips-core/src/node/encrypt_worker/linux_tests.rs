@@ -252,6 +252,28 @@ mod tests {
     }
 
     #[test]
+    fn linux_wg_bulk_batch_dispatch_accepts_single_target_run() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let pool = EncryptWorkerPool::spawn(1);
+            let cipher = test_cipher();
+            let (target, _key) = test_send_target().await;
+            let min_packets = LINUX_WG_BATCH_MIN_PACKETS;
+            let jobs: Vec<_> = (0..min_packets)
+                .map(|counter| linux_wg_test_job(target.clone(), &cipher, counter as u64, true))
+                .collect();
+
+            assert!(
+                pool.dispatch_linux_wg_bulk_batch_unmeasured(jobs).is_ok(),
+                "single target run should stay on the WG batch lane"
+            );
+        });
+    }
+
+    #[test]
     fn linux_wg_bulk_batch_dispatch_keeps_enough_target_runs_on_wg_lane() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
