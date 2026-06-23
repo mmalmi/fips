@@ -46,9 +46,7 @@ use tracing::{debug, trace, warn};
 
 const CONNECTED_UDP_RECV_BUF_SIZE: usize = 1600; // covers any practical FIPS MTU.
 pub(crate) const CONNECTED_UDP_PRIORITY_MAX_LEN: usize = 512;
-const DEFAULT_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS: usize = 32 * 1024;
-const MIN_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS: usize = 1024;
-const MAX_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS: usize = 256 * 1024;
+const CONNECTED_UDP_DRAIN_BULK_RING_PACKETS: usize = 32 * 1024;
 const CONNECTED_UDP_DISPATCH_BATCH_LIMIT: usize = super::UDP_RECV_BATCH_SIZE;
 
 pub(crate) trait ConnectedUdpPacketFastPath: Send + Sync {
@@ -140,9 +138,8 @@ impl PeerRecvDrain {
         let (pipe_rx, pipe_tx) = make_pipe()?;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let bulk_ring_packets = connected_udp_drain_bulk_ring_packets();
         let (priority_tx, priority_rx) = unbounded();
-        let (bulk_tx, bulk_rx) = bounded(bulk_ring_packets);
+        let (bulk_tx, bulk_rx) = bounded(CONNECTED_UDP_DRAIN_BULK_RING_PACKETS);
 
         let dispatch_stop = stop.clone();
         let dispatch_packet_tx = packet_tx.clone();
@@ -599,22 +596,6 @@ fn record_connected_udp_drain_ring_wait(
     crate::perf_profile::record_since_count(lane_stage, enqueued_at, 1);
 }
 
-fn connected_udp_drain_bulk_ring_packets() -> usize {
-    std::env::var("FIPS_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS")
-        .ok()
-        .and_then(|value| parse_connected_udp_drain_bulk_ring_packets(&value))
-        .unwrap_or(DEFAULT_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS)
-}
-
-fn parse_connected_udp_drain_bulk_ring_packets(raw: &str) -> Option<usize> {
-    raw.trim().parse::<usize>().ok().map(|value| {
-        value.clamp(
-            MIN_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS,
-            MAX_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS,
-        )
-    })
-}
-
 fn take_socket_error(fd: RawFd) -> io::Result<Option<io::Error>> {
     let mut value: libc::c_int = 0;
     let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
@@ -980,27 +961,6 @@ mod tests {
         }
 
         fn flush(&mut self) {}
-    }
-
-    #[test]
-    fn connected_udp_drain_bulk_ring_parser_is_bounded() {
-        assert_eq!(parse_connected_udp_drain_bulk_ring_packets(""), None);
-        assert_eq!(
-            parse_connected_udp_drain_bulk_ring_packets("not-a-number"),
-            None
-        );
-        assert_eq!(
-            parse_connected_udp_drain_bulk_ring_packets("1"),
-            Some(MIN_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS)
-        );
-        assert_eq!(
-            parse_connected_udp_drain_bulk_ring_packets("32768"),
-            Some(32 * 1024)
-        );
-        assert_eq!(
-            parse_connected_udp_drain_bulk_ring_packets("999999999"),
-            Some(MAX_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS)
-        );
     }
 
     /// End-to-end: open a ConnectedPeerSocket, spawn a drain thread
