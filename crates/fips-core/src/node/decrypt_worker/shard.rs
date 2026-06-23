@@ -1187,7 +1187,7 @@ impl DecryptWorkerShard {
             ));
             return;
         };
-        let restore_ciphertext = ciphertext.to_vec();
+        self.fsp_open_scratch.preserve_ciphertext_from(ciphertext);
         let (ticket, open_result, receive_order_id, crypto_generation) = {
             let state = self
                 .fsp_sessions
@@ -1215,7 +1215,7 @@ impl DecryptWorkerShard {
         };
         let fallback_to_rx_loop = if matches!(open_result, Some(Err(FspOpenError::Aead))) {
             let restore = &mut fallback.packet_data[ciphertext_offset..payload_end];
-            restore.copy_from_slice(&restore_ciphertext);
+            restore.copy_from_slice(self.fsp_open_scratch.preserved_ciphertext());
             true
         } else {
             false

@@ -1039,10 +1039,18 @@ struct FspAeadOpenScratch {
 }
 
 impl FspAeadOpenScratch {
-    fn ciphertext_from(&mut self, source: &[u8]) -> &mut [u8] {
+    fn preserve_ciphertext_from(&mut self, source: &[u8]) {
         self.ciphertext.clear();
         self.ciphertext.extend_from_slice(source);
+    }
+
+    fn ciphertext_from(&mut self, source: &[u8]) -> &mut [u8] {
+        self.preserve_ciphertext_from(source);
         self.ciphertext.as_mut_slice()
+    }
+
+    fn preserved_ciphertext(&self) -> &[u8] {
+        &self.ciphertext
     }
 }
 
