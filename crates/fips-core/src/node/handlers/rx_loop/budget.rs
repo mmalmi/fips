@@ -30,8 +30,10 @@ pub(super) const ENDPOINT_COMMAND_COALESCE_MAX_PACKETS: usize = 256;
 /// without adding a second packet-drain path inside those handlers.
 pub(super) const NON_PACKET_DRAIN_BUDGET: usize = 16;
 /// Raw receive burst cap. This amortizes select/scheduler hops across a hot
-/// transport queue; fallback/side interleaves reserve progress before the cap.
-pub(super) const PACKET_DRAIN_BUDGET: usize = 512;
+/// transport queue; fallback/side interleaves reserve progress throughout the
+/// turn, so widening the canonical turn reduces channel residence without
+/// adding a second receive path.
+pub(super) const PACKET_DRAIN_BUDGET: usize = 1024;
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 pub(super) const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
