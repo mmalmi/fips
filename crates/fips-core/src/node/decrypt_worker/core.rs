@@ -5,8 +5,8 @@ use crate::node::handlers::session::AuthenticatedSessionMessage;
 use crate::node::handlers::session::mark_ipv6_ecn_ce;
 use crate::node::session::{EpochSlot, FspReceiveSync, FspRecvSessionSnapshot};
 use crate::node::session_wire::{
-    FSP_FLAG_K, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM,
-    FspCommonPrefix, FspEncryptedHeader, fsp_strip_inner_header,
+    FSP_FLAG_K, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FspCommonPrefix, FspEncryptedHeader,
+    fsp_strip_inner_header,
 };
 use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,

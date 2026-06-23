@@ -1,4 +1,5 @@
     use super::*;
+    use crate::node::session_wire::{FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM};
     use crate::noise::ReplayWindow;
     use crossbeam_channel::bounded;
     use ring::aead::{LessSafeKey, UnboundKey};
