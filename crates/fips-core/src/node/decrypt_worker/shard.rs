@@ -754,7 +754,7 @@ impl DecryptWorkerShard {
         }
 
         let mut completions = completions.into_iter();
-        let Some(state) = self.fsp_sessions.get(&source_addr) else {
+        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
             for completion in completions {
                 record_fsp_aead_completion_wait(completion.source, completion.completed_at);
             }
@@ -777,56 +777,48 @@ impl DecryptWorkerShard {
 
         let mut total_drain = FspOrderedDrain::default();
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
-        {
-            let state = self
-                .fsp_sessions
-                .get_mut(&source_addr)
-                .expect("FSP session was checked before handling completions");
-            for completion in completions.by_ref() {
-                record_fsp_aead_completion_wait(completion.source, completion.completed_at);
-                let FspAeadCompletion {
-                    source_addr: completion_source_addr,
-                    receive_order_id: completion_receive_order_id,
-                    crypto_generation,
-                    ticket,
-                    source,
-                    result,
-                    completed_at: _,
-                } = completion;
-                debug_assert_eq!(completion_source_addr, source_addr);
-                debug_assert_eq!(completion_receive_order_id, receive_order_id);
-                let result = if source.is_worker_open()
-                    && crypto_generation != state.fsp_crypto_generation()
+        for completion in completions.by_ref() {
+            record_fsp_aead_completion_wait(completion.source, completion.completed_at);
+            let FspAeadCompletion {
+                source_addr: completion_source_addr,
+                receive_order_id: completion_receive_order_id,
+                crypto_generation,
+                ticket,
+                source,
+                result,
+                completed_at: _,
+            } = completion;
+            debug_assert_eq!(completion_source_addr, source_addr);
+            debug_assert_eq!(completion_receive_order_id, receive_order_id);
+            let result = if source.is_worker_open() && crypto_generation != state.fsp_crypto_generation() {
+                FspOrderedCompletion::StaleWorkerOpen { source }
+            } else {
+                result
+            };
+            let drain = match state.complete_ordered_fsp_open(ticket, result, |completion| {
+                if let Some(output) =
+                    Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
                 {
-                    FspOrderedCompletion::StaleWorkerOpen { source }
-                } else {
-                    result
-                };
-                let drain = match state.complete_ordered_fsp_open(ticket, result, |completion| {
-                    if let Some(output) =
-                        Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
-                    {
-                        plaintext_batch.push_output(output);
-                    }
-                }) {
-                    Ok(drain) => drain,
-                    Err(error) => {
-                        record_fsp_aead_completion_order_error(&error);
-                        debug!(
-                            worker = idx,
-                            ?error,
-                            %source_addr,
-                            "{}",
-                            invalid_order_message
-                        );
-                        continue;
-                    }
-                };
-                debug_assert_eq!(drain.ready, drain.accounted_ready());
-                total_drain.add(drain);
-            }
-            state.mark_shared_crypto_ready_progress();
+                    plaintext_batch.push_output(output);
+                }
+            }) {
+                Ok(drain) => drain,
+                Err(error) => {
+                    record_fsp_aead_completion_order_error(&error);
+                    debug!(
+                        worker = idx,
+                        ?error,
+                        %source_addr,
+                        "{}",
+                        invalid_order_message
+                    );
+                    continue;
+                }
+            };
+            debug_assert_eq!(drain.ready, drain.accounted_ready());
+            total_drain.add(drain);
         }
+        state.mark_shared_crypto_ready_progress();
         record_fsp_ordered_drain(&total_drain);
     }
 
@@ -1199,7 +1191,7 @@ impl DecryptWorkerShard {
         let restore_ciphertext =
             matches!(lane, DecryptWorkerLane::Priority).then(|| ciphertext.to_vec());
         let mut scratch_ciphertext = Vec::new();
-        let (ticket, open_result, receive_order_id) = {
+        let (ticket, open_result, receive_order_id, crypto_generation) = {
             let state = self
                 .fsp_sessions
                 .get_mut(&source_addr)
@@ -1216,6 +1208,7 @@ impl DecryptWorkerShard {
                 return;
             };
             let receive_order_id = state.fsp_receive_order_id();
+            let crypto_generation = state.fsp_crypto_generation();
             let open_result = state.current_epoch_matches(&header).then(|| {
                 let _t_fsp =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
@@ -1231,7 +1224,7 @@ impl DecryptWorkerShard {
                     )
                 }
             });
-            (ticket, open_result, receive_order_id)
+            (ticket, open_result, receive_order_id, crypto_generation)
         };
         let fallback_to_rx_loop = if matches!(open_result, Some(Err(FspOpenError::Aead))) {
             if local_open_preserves_ciphertext {
@@ -1312,11 +1305,7 @@ impl DecryptWorkerShard {
             std::iter::once(FspAeadCompletion {
                 source_addr,
                 receive_order_id,
-                crypto_generation: self
-                    .fsp_sessions
-                    .get(&source_addr)
-                    .map(OwnedFspSessionState::fsp_crypto_generation)
-                    .unwrap_or_default(),
+                crypto_generation,
                 ticket,
                 source: FspAeadCompletionSource::Local,
                 result: completion,
