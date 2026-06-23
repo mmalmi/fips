@@ -8,7 +8,6 @@ pub(crate) struct DecryptWorkerPool {
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
     fallback_tx: DecryptWorkerFallbackSender,
     fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
-    fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
 
 #[derive(Clone)]
@@ -150,7 +149,6 @@ impl DecryptWorkerPool {
             direct_delivery_sink,
             fallback_tx,
             fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-            fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
         for (
             i,
@@ -230,34 +228,6 @@ impl DecryptWorkerPool {
         Some(idx)
     }
 
-    fn worker_idx_for_fsp_open_avoiding_pair(
-        &self,
-        source_addr: &NodeAddr,
-        first_avoid_idx: usize,
-        second_avoid_idx: usize,
-    ) -> Option<usize> {
-        if first_avoid_idx == second_avoid_idx {
-            return self.worker_idx_for_fsp_open_avoiding(source_addr, first_avoid_idx);
-        }
-        let worker_count = self.senders.len();
-        if worker_count <= 2 || first_avoid_idx >= worker_count || second_avoid_idx >= worker_count
-        {
-            return None;
-        }
-
-        let mut pick = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 2);
-        for idx in 0..worker_count {
-            if idx == first_avoid_idx || idx == second_avoid_idx {
-                continue;
-            }
-            if pick == 0 {
-                return Some(idx);
-            }
-            pick -= 1;
-        }
-        None
-    }
-
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
         self.senders[idx]
             .bulk_packet_cap
@@ -320,27 +290,6 @@ impl DecryptWorkerPool {
         self.senders
             .get(owner_idx)
             .is_some_and(|sender| sender.fsp_aead_completion.send(batch).is_ok())
-    }
-
-    fn fsp_aead_session(&self, source_addr: &NodeAddr) -> Option<Arc<FspSharedCryptoSession>> {
-        self.fsp_aead_sessions
-            .read()
-            .ok()
-            .and_then(|sessions| sessions.get(source_addr).cloned())
-    }
-
-    fn publish_fsp_aead_session(
-        &self,
-        source_addr: NodeAddr,
-        shared: Option<Arc<FspSharedCryptoSession>>,
-    ) {
-        if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
-            if let Some(shared) = shared {
-                sessions.insert(source_addr, shared);
-            } else {
-                sessions.remove(&source_addr);
-            }
-        }
     }
 
     #[allow(clippy::result_large_err)]
@@ -848,9 +797,9 @@ impl DecryptWorkerPool {
         }
     }
 
-    /// Drop the shared FSP opener state only after the owner worker accepts the
-    /// bounded unregister control message. A full control lane means the worker
-    /// still owns that receive state, so callers must treat `false` as pressure.
+    /// Drop FSP receive state only after the owner worker accepts the bounded
+    /// unregister control message. A full control lane means the worker still
+    /// owns that receive state, so callers must treat `false` as pressure.
     #[must_use = "unregistration may have failed under queue pressure"]
     pub fn unregister_fsp_session(&self, source_addr: NodeAddr) -> bool {
         if self.senders.is_empty() {
@@ -861,20 +810,12 @@ impl DecryptWorkerPool {
             .control
             .try_send(WorkerMsg::UnregisterFspSession { source_addr })
         {
-            Ok(()) => {
-                if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
-                    sessions.remove(&source_addr);
-                }
-                true
-            }
+            Ok(()) => true,
             Err(TrySendError::Full(_)) => {
                 record_decrypt_worker_control_drop(idx, "unregister-fsp");
                 false
             }
             Err(TrySendError::Disconnected(_)) => {
-                if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
-                    sessions.remove(&source_addr);
-                }
                 debug!(
                     worker = idx,
                     "DecryptWorker thread gone; ignoring FSP unregister"

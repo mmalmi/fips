@@ -253,13 +253,6 @@ pub(crate) struct OwnedFspSessionState {
     fsp_crypto_generation: u64,
     fsp_receive_order_id: u64,
     fsp_receive_order: FspReceiveOrder,
-    fsp_shared_crypto: Option<Arc<FspSharedCryptoSession>>,
-}
-
-#[derive(Clone, Copy)]
-struct FspReceiveProgress {
-    next_ticket: u64,
-    next_ready: u64,
 }
 
 struct FspOpenSuccess {
@@ -292,95 +285,6 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
             fsp_crypto_generation: NEXT_FSP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order: new_fsp_receive_order(),
-            fsp_shared_crypto: None,
-        }
-    }
-}
-
-struct FspSharedCryptoSession {
-    owner_idx: usize,
-    crypto_generation: u64,
-    receive_order_id: u64,
-    current_k_bit: bool,
-    cipher: Arc<LessSafeKey>,
-    next_ticket: AtomicU64,
-    next_ready: AtomicU64,
-}
-
-impl FspSharedCryptoSession {
-    #[cfg(test)]
-    fn new(
-        owner_idx: usize,
-        receive_order_id: u64,
-        crypto_generation: u64,
-        current_k_bit: bool,
-        cipher: Arc<LessSafeKey>,
-    ) -> Self {
-        Self::new_with_progress(
-            owner_idx,
-            receive_order_id,
-            crypto_generation,
-            current_k_bit,
-            cipher,
-            FspReceiveProgress {
-                next_ticket: 0,
-                next_ready: 0,
-            },
-        )
-    }
-
-    fn new_with_progress(
-        owner_idx: usize,
-        receive_order_id: u64,
-        crypto_generation: u64,
-        current_k_bit: bool,
-        cipher: Arc<LessSafeKey>,
-        progress: FspReceiveProgress,
-    ) -> Self {
-        Self {
-            owner_idx,
-            crypto_generation,
-            receive_order_id,
-            current_k_bit,
-            cipher,
-            next_ticket: AtomicU64::new(progress.next_ticket),
-            next_ready: AtomicU64::new(progress.next_ready),
-        }
-    }
-
-    #[cfg(test)]
-    fn can_issue_ticket(&self) -> bool {
-        self.next_ticket
-            .load(Ordering::Relaxed)
-            .saturating_sub(self.next_ready.load(Ordering::Relaxed))
-            < fsp_receive_window() as u64
-    }
-
-    fn try_issue_ticket(&self) -> Option<FspReceiveTicket> {
-        self
-            .next_ticket
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                let in_flight = current.saturating_sub(self.next_ready.load(Ordering::Relaxed));
-                (in_flight < fsp_receive_window() as u64).then(|| current.saturating_add(1))
-            })
-            .ok()
-            .map(|sequence| OrderedReceiveTicket { sequence })
-    }
-
-    #[cfg(test)]
-    fn issue_ticket(&self) -> FspReceiveTicket {
-        self.try_issue_ticket()
-            .expect("FSP receive-order test ticket window is full")
-    }
-
-    fn mark_next_ready(&self, next_ready: u64) {
-        self.next_ready.store(next_ready, Ordering::Relaxed);
-    }
-
-    fn progress(&self) -> FspReceiveProgress {
-        FspReceiveProgress {
-            next_ticket: self.next_ticket.load(Ordering::Relaxed),
-            next_ready: self.next_ready.load(Ordering::Relaxed),
         }
     }
 }
@@ -430,41 +334,11 @@ impl OwnedFspSessionState {
         self.pending.is_none() && self.previous.is_none()
     }
 
-    fn receive_progress(&self) -> FspReceiveProgress {
-        self.fsp_shared_crypto
-            .as_ref()
-            .map(|shared| shared.progress())
-            .unwrap_or_else(|| FspReceiveProgress {
-                next_ticket: self.fsp_receive_order.next_ticket(),
-                next_ready: self.fsp_receive_order_next_ready(),
-            })
-    }
-
-    fn shared_crypto_session(&self, owner_idx: usize) -> Option<FspSharedCryptoSession> {
-        self.has_single_current_epoch().then(|| {
-            FspSharedCryptoSession::new_with_progress(
-                owner_idx,
-                self.fsp_receive_order_id,
-                self.fsp_crypto_generation,
-                self.current_k_bit,
-                Arc::clone(&self.current.cipher),
-                self.receive_progress(),
-            )
-        })
-    }
-
-    fn attach_shared_crypto_session(&mut self, shared: Arc<FspSharedCryptoSession>) {
-        self.fsp_crypto_generation = shared.crypto_generation;
-        self.fsp_shared_crypto = Some(shared);
-    }
-
     fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
-        let progress = previous.receive_progress();
+        let next_ticket = previous.fsp_receive_order.next_ticket();
         self.fsp_receive_order_id = previous.fsp_receive_order_id;
         self.fsp_receive_order = previous.fsp_receive_order;
-        self.fsp_receive_order
-            .advance_next_ticket_to(progress.next_ticket);
-        self.fsp_shared_crypto = None;
+        self.fsp_receive_order.advance_next_ticket_to(next_ticket);
     }
 
     fn fsp_receive_order_id(&self) -> u64 {
@@ -475,16 +349,9 @@ impl OwnedFspSessionState {
         self.fsp_crypto_generation
     }
 
+    #[cfg(test)]
     fn fsp_receive_order_next_ready(&self) -> u64 {
         self.fsp_receive_order.completions.next_ready()
-    }
-
-    fn mark_shared_crypto_ready_progress(&self) {
-        if let Some(shared) = self.fsp_shared_crypto.as_ref()
-            && shared.receive_order_id == self.fsp_receive_order_id
-        {
-            shared.mark_next_ready(self.fsp_receive_order_next_ready());
-        }
     }
 
     fn current_epoch_matches(&self, header: &FspEncryptedHeader) -> bool {
@@ -492,9 +359,6 @@ impl OwnedFspSessionState {
     }
 
     fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
-        if let Some(shared) = &self.fsp_shared_crypto {
-            return shared.try_issue_ticket();
-        }
         self.fsp_receive_order.issue()
     }
 

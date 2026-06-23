@@ -561,20 +561,9 @@
     }
 
     #[test]
-    fn decrypt_worker_fsp_unregister_full_keeps_shared_session_for_retry() {
+    fn decrypt_worker_fsp_unregister_full_reports_pressure_without_priority() {
         let (pool, control_rx, priority_rx, _bulk_rx) = one_slot_worker_pool();
         let source_addr = *test_source_peer().node_addr();
-        let shared = Arc::new(FspSharedCryptoSession::new(
-            0,
-            7,
-            11,
-            false,
-            Arc::new(test_chacha_key([0x6a; 32])),
-        ));
-        pool.fsp_aead_sessions
-            .write()
-            .expect("test FSP session map")
-            .insert(source_addr, Arc::clone(&shared));
         assert!(
             control_rx.try_recv().is_err(),
             "test control lane should start empty"
@@ -609,13 +598,6 @@
             "failed FSP unregister must not overflow the bounded control lane"
         );
         assert!(priority_rx.is_empty(), "priority lane should remain available");
-        let retained = pool
-            .fsp_aead_session(&source_addr)
-            .expect("shared FSP opener state must remain published for retry");
-        assert!(
-            Arc::ptr_eq(&retained, &shared),
-            "failed FSP unregister must not half-remove shared worker state"
-        );
     }
 
     #[test]

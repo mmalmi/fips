@@ -186,7 +186,6 @@
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fallback_tx,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_rx,
             priority_rx,
@@ -233,7 +232,6 @@
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fallback_tx,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_receivers,
             priority_receivers,
@@ -283,7 +281,6 @@
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fallback_tx,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_receivers,
             priority_receivers,
@@ -598,19 +595,7 @@
         let source_addr = *source_peer.node_addr();
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
         let cipher = test_chacha_key([0x5c; 32]);
-        let shared = Arc::new(FspSharedCryptoSession::new(
-            owner_idx,
-            11,
-            0,
-            false,
-            Arc::new(cipher.clone()),
-        ));
-        pool.fsp_aead_sessions
-            .write()
-            .unwrap()
-            .insert(source_addr, Arc::clone(&shared));
-
-        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+        let state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
             source_peer,
             current_k_bit: false,
             current: crate::node::session::FspRecvEpochSnapshot {
@@ -620,8 +605,8 @@
             pending: None,
             previous: None,
         });
-        state.fsp_receive_order_id = shared.receive_order_id;
-        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
         let open_idx = pool
             .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("three-worker pool should have a sibling opener");
@@ -663,6 +648,15 @@
                     jobs.iter()
                         .all(|job| job.completion_owner_idx == Some(owner_idx))
                 );
+                assert_eq!(
+                    jobs.iter().map(|job| job.ticket.sequence).collect::<Vec<_>>(),
+                    vec![0, 1]
+                );
+                assert!(
+                    jobs.iter()
+                        .all(|job| job.receive_order_id == receive_order_id
+                            && job.crypto_generation == crypto_generation)
+                );
             }
             DecryptWorkerBulkItem::FspAeadOpen(_) => {
                 panic!("owner FSP batch should not fragment into a single opener job")
@@ -672,40 +666,24 @@
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
         }
-        let published_shared = shard
-            .pool
-            .fsp_aead_session(&source_addr)
-            .expect("registered FSP session should publish shared receive progress");
         assert_eq!(
-            published_shared.next_ticket.load(Ordering::Relaxed),
-            2,
-            "owner batch should issue one receive-order ticket per opener job"
+            shard
+                .fsp_sessions
+                .get(&source_addr)
+                .expect("owner state should stay registered")
+                .fsp_receive_order
+                .next_ticket(),
+            2
         );
     }
 
     #[test]
-    fn fsp_preowner_bulk_dispatches_opener_without_owner_handoff() {
+    fn fsp_preowner_bulk_hands_off_to_owner_before_opening() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(4, DECRYPT_WORKER_BULK_BATCH_MAX);
         let source_addr = NodeAddr::from_bytes([0x62; 16]);
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
         let current_idx = (owner_idx + 1) % 4;
-        let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding_pair(&source_addr, current_idx, owner_idx)
-            .expect("four-worker pool should have a third opener worker");
-        assert_ne!(open_idx, owner_idx);
-        assert_ne!(open_idx, current_idx);
-        let shared = Arc::new(FspSharedCryptoSession::new(
-            owner_idx,
-            14,
-            0,
-            false,
-            Arc::new(test_chacha_key([0x62; 32])),
-        ));
-        pool.fsp_aead_sessions
-            .write()
-            .unwrap()
-            .insert(source_addr, Arc::clone(&shared));
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
@@ -721,43 +699,33 @@
         );
         assert!(
             fsp_open_batcher.flush(&shard.pool).is_empty(),
-            "pre-owner opener dispatch should not return under normal pressure"
+            "pre-owner handoff must not leave opener work batched locally"
         );
 
-        assert_eq!(
-            bulk_receivers[owner_idx].len(),
-            0,
-            "pre-owner opener dispatch should bypass FSP owner bulk handoff"
-        );
+        match bulk_receivers[owner_idx]
+            .try_recv()
+            .expect("pre-owner FSP packet should hand off to the owner")
+        {
+            DecryptWorkerBulkItem::FspJob(job) => assert_eq!(job.source_addr, source_addr),
+            DecryptWorkerBulkItem::FspBatch(_)
+            | DecryptWorkerBulkItem::FspAeadOpen(_)
+            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::Job(_)
+            | DecryptWorkerBulkItem::Batch(_) => panic!("expected owner FSP job handoff"),
+        }
         assert_eq!(
             bulk_receivers[current_idx].len(),
             0,
             "pre-owner opener dispatch should not loop back to the current worker"
         );
-        match bulk_receivers[open_idx]
-            .try_recv()
-            .expect("pre-owner FSP packet should dispatch to the opener worker")
-        {
-            DecryptWorkerBulkItem::FspAeadOpen(job) => {
-                assert_eq!(job.source_addr, source_addr);
-                assert_eq!(job.receive_order_id, shared.receive_order_id);
-                assert_eq!(job.crypto_generation, shared.crypto_generation);
-                assert_eq!(job.ticket.sequence, 0);
-                assert_eq!(job.completion_owner_idx, Some(owner_idx));
+        for (idx, receiver) in bulk_receivers.iter().enumerate() {
+            if idx != owner_idx {
+                assert!(
+                    receiver.is_empty(),
+                    "pre-owner FSP packet must not enqueue opener work on worker {idx}"
+                );
             }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
-                panic!("single pre-owner FSP job should dispatch one opener job")
-            }
-            DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::Batch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener job"),
         }
-        assert_eq!(
-            shared.next_ticket.load(Ordering::Relaxed),
-            1,
-            "pre-owner opener dispatch should issue exactly one shared receive ticket"
-        );
         assert!(plaintext_batch.fallbacks.is_empty());
         assert!(plaintext_batch.authenticated_sessions.is_empty());
         assert!(plaintext_batch.direct_commits.is_empty());
@@ -773,19 +741,7 @@
         let source_addr = *source_peer.node_addr();
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
         let cipher = test_chacha_key([0x5e; 32]);
-        let shared = Arc::new(FspSharedCryptoSession::new(
-            owner_idx,
-            12,
-            0,
-            false,
-            Arc::new(cipher.clone()),
-        ));
-        pool.fsp_aead_sessions
-            .write()
-            .unwrap()
-            .insert(source_addr, Arc::clone(&shared));
-
-        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+        let state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
             source_peer,
             current_k_bit: false,
             current: crate::node::session::FspRecvEpochSnapshot {
@@ -795,8 +751,8 @@
             pending: None,
             previous: None,
         });
-        state.fsp_receive_order_id = shared.receive_order_id;
-        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
         let open_idx = pool
             .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("three-worker pool should have a sibling opener");
@@ -815,6 +771,9 @@
             DecryptWorkerBulkItem::FspAeadOpen(job) => {
                 assert_eq!(job.source_addr, source_addr);
                 assert_eq!(job.completion_owner_idx, Some(owner_idx));
+                assert_eq!(job.receive_order_id, receive_order_id);
+                assert_eq!(job.crypto_generation, crypto_generation);
+                assert_eq!(job.ticket.sequence, 0);
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("single immediate FSP job should dispatch one opener job")
@@ -824,14 +783,14 @@
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener job"),
         }
-        let published_shared = shard
-            .pool
-            .fsp_aead_session(&source_addr)
-            .expect("registered FSP session should publish shared receive progress");
         assert_eq!(
-            published_shared.next_ticket.load(Ordering::Relaxed),
-            1,
-            "immediate opener path should issue one shared receive ticket"
+            shard
+                .fsp_sessions
+                .get(&source_addr)
+                .expect("owner state should stay registered")
+                .fsp_receive_order
+                .next_ticket(),
+            1
         );
     }
 
@@ -843,19 +802,7 @@
         let source_addr = *source_peer.node_addr();
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
         let cipher = test_chacha_key([0x5f; 32]);
-        let shared = Arc::new(FspSharedCryptoSession::new(
-            owner_idx,
-            13,
-            0,
-            false,
-            Arc::new(cipher.clone()),
-        ));
-        pool.fsp_aead_sessions
-            .write()
-            .unwrap()
-            .insert(source_addr, Arc::clone(&shared));
-
-        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+        let state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
             source_peer,
             current_k_bit: false,
             current: crate::node::session::FspRecvEpochSnapshot {
@@ -865,8 +812,6 @@
             pending: None,
             previous: None,
         });
-        state.fsp_receive_order_id = shared.receive_order_id;
-        state.attach_shared_crypto_session(Arc::clone(&shared));
 
         let mut shard = DecryptWorkerShard::new(pool);
         shard.register_fsp_session(owner_idx, source_addr, state);
@@ -882,7 +827,12 @@
             FspOpenWorkerIneligibleReason::Malformed
         ));
         assert_eq!(
-            shared.next_ticket.load(Ordering::Relaxed),
+            shard
+                .fsp_sessions
+                .get(&source_addr)
+                .expect("owner state should stay registered")
+                .fsp_receive_order
+                .next_ticket(),
             0,
             "malformed opener candidates must not consume ordered receive tickets"
         );
@@ -896,17 +846,6 @@
         let source_addr = *source_peer.node_addr();
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
         let cipher = test_chacha_key([0x58; 32]);
-        let shared = Arc::new(FspSharedCryptoSession::new(
-            owner_idx,
-            9,
-            0,
-            false,
-            Arc::new(cipher.clone()),
-        ));
-        pool.fsp_aead_sessions
-            .write()
-            .unwrap()
-            .insert(source_addr, Arc::clone(&shared));
         for sequence in 0..DECRYPT_WORKER_BULK_BATCH_MAX {
             pool.senders[owner_idx]
                 .fsp_aead_completion
@@ -914,7 +853,7 @@
                 .expect("test completion lane should have room");
         }
 
-        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+        let state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
             source_peer,
             current_k_bit: false,
             current: crate::node::session::FspRecvEpochSnapshot {
@@ -924,8 +863,6 @@
             pending: None,
             previous: None,
         });
-        state.fsp_receive_order_id = shared.receive_order_id;
-        state.attach_shared_crypto_session(Arc::clone(&shared));
         let open_idx = pool
             .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("three-worker pool should have a sibling opener");
@@ -949,15 +886,15 @@
             1,
             "waiting owner completions should not create a local-open fallback path"
         );
-        let published_shared = shard
-            .pool
-            .fsp_aead_session(&source_addr)
-            .expect("registered FSP session should publish shared receive progress");
-        assert_eq!(published_shared.receive_order_id, shared.receive_order_id);
         assert_eq!(
-            published_shared.next_ticket.load(Ordering::Relaxed),
+            shard
+                .fsp_sessions
+                .get(&source_addr)
+                .expect("owner state should stay registered")
+                .fsp_receive_order
+                .next_ticket(),
             1,
-            "opener path should issue the shared receive ticket"
+            "opener path should issue the owner receive ticket"
         );
     }
 
@@ -1212,28 +1149,21 @@
             test_worker_pool_with_fsp_completion_receivers(2, 4);
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
-        let mut state =
-            OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
-                source_peer,
-                current_k_bit: false,
-                current: crate::node::session::FspRecvEpochSnapshot {
-                    cipher: test_chacha_key([0x5b; 32]),
-                    replay: ReplayWindow::new(),
-                },
-                pending: None,
-                previous: None,
-            });
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
-        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x5b; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
         let receive_order_id = state.fsp_receive_order_id();
         let crypto_generation = state.fsp_crypto_generation();
-        let ticket = shared
-            .try_issue_ticket()
-            .expect("shared receive window should admit first ticket");
+        let ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("owner receive window should admit first ticket");
 
         let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
         let mut header_packet = header_bytes.to_vec();
@@ -1263,7 +1193,6 @@
             .get(&source_addr)
             .expect("local owner state should remain registered");
         assert_eq!(state.fsp_receive_order_next_ready(), ticket.sequence + 1);
-        assert_eq!(shared.progress().next_ready, ticket.sequence + 1);
         assert!(
             fsp_completion_receivers.iter().all(Receiver::is_empty),
             "local returned opener completions should not bounce to another worker"
@@ -1271,7 +1200,7 @@
     }
 
     #[test]
-    fn fsp_local_open_worker_registration_publishes_shared_crypto_without_helpers() {
+    fn fsp_registration_installs_owner_receive_state_without_shared_crypto() {
         let (pool, control_receivers, priority_receivers, _bulk_receivers) =
             test_worker_pool(3, 4);
 
@@ -1291,10 +1220,6 @@
         };
 
         assert!(pool.register_fsp_session(source_addr, snapshot));
-        assert!(
-            pool.fsp_aead_session(&source_addr).is_none(),
-            "shared crypto is published by the owner after it installs state"
-        );
         let mut shard = DecryptWorkerShard::new(shard_pool);
         match control_receivers[owner_idx]
             .recv_timeout(Duration::from_millis(100))
@@ -1313,12 +1238,12 @@
             priority_receivers.iter().all(Receiver::is_empty),
             "FSP registration should not consume packet priority lanes"
         );
-
-        let shared = pool
-            .fsp_aead_session(&source_addr)
-            .expect("local FSP open worker needs shared crypto without helper pool");
-        assert_eq!(shared.owner_idx, owner_idx);
-        assert_eq!(shared.current_k_bit, false);
+        let state = shard
+            .fsp_sessions
+            .get(&source_addr)
+            .expect("FSP registration should install owner-local receive state");
+        assert_eq!(state.current_k_bit, false);
+        assert_eq!(state.fsp_receive_order.next_ticket(), 0);
     }
 
     fn test_source_peer() -> PeerIdentity {

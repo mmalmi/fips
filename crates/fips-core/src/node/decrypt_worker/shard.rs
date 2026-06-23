@@ -34,7 +34,8 @@ fn record_fsp_path_worker_open_bulk() {
 #[derive(Clone, Copy)]
 enum FspOpenWorkerIneligibleReason {
     NotBulk,
-    NoSharedSession,
+    NotOwner,
+    NoOwnerState,
     NoSiblingWorker,
     Malformed,
     KbitMismatch,
@@ -47,7 +48,10 @@ impl FspOpenWorkerIneligibleReason {
             Self::NotBulk => {
                 crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNotBulk
             }
-            Self::NoSharedSession => {
+            Self::NotOwner => {
+                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNotOwner
+            }
+            Self::NoOwnerState => {
                 crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNoShared
             }
             Self::NoSiblingWorker => {
@@ -332,16 +336,6 @@ impl DecryptWorkerShard {
         if let Some(previous) = self.fsp_sessions.remove(&source_addr) {
             state.preserve_receive_order_from(previous);
         }
-        let shared = self
-            .pool
-            .fsp_bulk_open_worker_enabled()
-            .then(|| state.shared_crypto_session(idx))
-            .flatten()
-            .map(Arc::new);
-        if let Some(shared) = &shared {
-            state.attach_shared_crypto_session(Arc::clone(shared));
-        }
-        self.pool.publish_fsp_aead_session(source_addr, shared);
         self.fsp_sessions.insert(source_addr, state);
     }
 
@@ -352,7 +346,6 @@ impl DecryptWorkerShard {
             "DecryptWorker: unregister FSP session"
         );
         self.fsp_sessions.remove(&source_addr);
-        self.pool.publish_fsp_aead_session(source_addr, None);
     }
 
     #[cfg(test)]
@@ -575,26 +568,33 @@ impl DecryptWorkerShard {
         }
 
         let source_addr = job.source_addr;
-        let Some(shared) = self.pool.fsp_aead_session(&source_addr) else {
+        let owner_idx = self.pool.worker_idx_for_fsp(&source_addr);
+        if owner_idx != idx {
             return Err(FspOpenWorkerPrepareError::ineligible(
                 job,
-                FspOpenWorkerIneligibleReason::NoSharedSession,
+                FspOpenWorkerIneligibleReason::NotOwner,
             ));
-        };
-        let owner_idx = shared.owner_idx;
+        }
         if !self.pool.fsp_bulk_open_worker_enabled() {
             return Err(FspOpenWorkerPrepareError::ineligible(
                 job,
                 FspOpenWorkerIneligibleReason::NoSiblingWorker,
             ));
         }
-
-        let open_idx = if owner_idx == idx {
-            self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx)
-        } else {
-            self.pool
-                .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
+        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::NoOwnerState,
+            ));
         };
+        if !state.has_single_current_epoch() {
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                job,
+                FspOpenWorkerIneligibleReason::NoOwnerState,
+            ));
+        }
+
+        let open_idx = self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx);
         let Some(open_idx) = open_idx else {
             return Err(FspOpenWorkerPrepareError::ineligible(
                 job,
@@ -625,13 +625,13 @@ impl DecryptWorkerShard {
             ));
         }
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
-        if received_k_bit != shared.current_k_bit {
+        if received_k_bit != state.current_k_bit {
             return Err(FspOpenWorkerPrepareError::ineligible(
                 job,
                 FspOpenWorkerIneligibleReason::KbitMismatch,
             ));
         }
-        let Some(ticket) = shared.try_issue_ticket() else {
+        let Some(ticket) = state.issue_fsp_receive_ticket() else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 1,
@@ -644,10 +644,10 @@ impl DecryptWorkerShard {
 
         let open_job = FspAeadOpenJob {
             source_addr,
-            receive_order_id: shared.receive_order_id,
-            crypto_generation: shared.crypto_generation,
+            receive_order_id: state.fsp_receive_order_id(),
+            crypto_generation: state.fsp_crypto_generation(),
             ticket,
-            cipher: Arc::clone(&shared.cipher),
+            cipher: Arc::clone(&state.current.cipher),
             job,
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -833,7 +833,6 @@ impl DecryptWorkerShard {
             debug_assert_eq!(drain.ready, drain.accounted_ready());
             total_drain.add(drain);
         }
-        state.mark_shared_crypto_ready_progress();
         record_fsp_ordered_drain(&total_drain);
     }
 

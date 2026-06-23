@@ -437,10 +437,9 @@
             previous: None,
         };
         let mut state = OwnedFspSessionState::from(snapshot);
-        let shared = state
-            .shared_crypto_session(0)
-            .expect("single-current FSP session should expose shared crypto");
         let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
+        let cipher = Arc::clone(&state.current.cipher);
 
         let make_job = |packet_data: Vec<u8>| {
             let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
@@ -473,9 +472,11 @@
         let completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            crypto_generation: shared.crypto_generation,
-            ticket: shared.issue_ticket(),
-            cipher: Arc::clone(&shared.cipher),
+            crypto_generation,
+            ticket: state
+                .issue_fsp_receive_ticket()
+                .expect("owner receive window should admit first worker-open ticket"),
+            cipher: Arc::clone(&cipher),
             job: make_job(fsp_payload.clone()),
             header: header.clone(),
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -507,9 +508,11 @@
         let duplicate = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            crypto_generation: shared.crypto_generation,
-            ticket: shared.issue_ticket(),
-            cipher: Arc::clone(&shared.cipher),
+            crypto_generation,
+            ticket: state
+                .issue_fsp_receive_ticket()
+                .expect("owner receive window should admit duplicate worker-open ticket"),
+            cipher,
             job: make_job(fsp_payload),
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -552,14 +555,10 @@
         };
 
         let mut state = OwnedFspSessionState::from(snapshot());
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
-        state.attach_shared_crypto_session(Arc::clone(&shared));
         let receive_order_id = state.fsp_receive_order_id();
-        let ticket = shared.issue_ticket();
+        let ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("owner receive window should admit pre-refresh worker-open ticket");
 
         let mut refreshed = OwnedFspSessionState::from(snapshot());
         refreshed.preserve_receive_order_from(state);
@@ -578,11 +577,13 @@
         assert_eq!(drain.dropped, 1);
         assert_eq!(refreshed.fsp_receive_order_next_ready(), ticket.sequence + 1);
 
-        let next_shared = refreshed
-            .shared_crypto_session(0)
-            .expect("refreshed single-current FSP session should expose shared crypto");
-        assert_eq!(next_shared.receive_order_id, receive_order_id);
-        assert_eq!(next_shared.issue_ticket().sequence, ticket.sequence + 1);
+        assert_eq!(
+            refreshed
+                .issue_fsp_receive_ticket()
+                .expect("refreshed owner should keep ticket progress")
+                .sequence,
+            ticket.sequence + 1
+        );
     }
 
     #[test]
@@ -605,13 +606,9 @@
         };
 
         let mut state = OwnedFspSessionState::from(snapshot(false));
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
-        state.attach_shared_crypto_session(Arc::clone(&shared));
-        let ticket = shared.issue_ticket();
+        let ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("owner receive window should admit stale-K worker-open ticket");
 
         let mut frame = crate::node::session_wire::build_fsp_header(7, 0, 1).to_vec();
         frame.extend_from_slice(&[0u8; 16]);
@@ -703,25 +700,16 @@
         };
 
         let mut state = OwnedFspSessionState::from(snapshot(0x51));
-        let old_shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
-        state.attach_shared_crypto_session(Arc::clone(&old_shared));
         let receive_order_id = state.fsp_receive_order_id();
-        let ticket = old_shared.issue_ticket();
+        let old_crypto_generation = state.fsp_crypto_generation();
+        let ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("owner receive window should admit old-generation worker-open ticket");
 
         let mut refreshed = OwnedFspSessionState::from(snapshot(0x52));
         refreshed.preserve_receive_order_from(state);
         assert_eq!(refreshed.fsp_receive_order_id(), receive_order_id);
-        assert_ne!(refreshed.fsp_crypto_generation(), old_shared.crypto_generation);
-        let new_shared = Arc::new(
-            refreshed
-                .shared_crypto_session(0)
-                .expect("refreshed single-current FSP session should expose shared crypto"),
-        );
-        refreshed.attach_shared_crypto_session(Arc::clone(&new_shared));
+        assert_ne!(refreshed.fsp_crypto_generation(), old_crypto_generation);
 
         let mut frame = crate::node::session_wire::build_fsp_header(7, 0, 1).to_vec();
         frame.extend_from_slice(&[0u8; 16]);
@@ -771,7 +759,7 @@
             FspAeadCompletionBatch::one(FspAeadCompletion {
                 source_addr,
                 receive_order_id,
-                crypto_generation: old_shared.crypto_generation,
+                crypto_generation: old_crypto_generation,
                 ticket,
                 source: FspAeadCompletionSource::WorkerOpen,
                 result: FspOrderedCompletion::AeadFailed {
@@ -791,8 +779,7 @@
             .get(&source_addr)
             .expect("refreshed FSP session should stay registered");
         assert_eq!(state.fsp_receive_order_next_ready(), ticket.sequence + 1);
-        assert_eq!(new_shared.progress().next_ready, ticket.sequence + 1);
-        assert_eq!(new_shared.issue_ticket().sequence, ticket.sequence + 1);
+        assert_eq!(state.fsp_receive_order.next_ticket(), ticket.sequence + 1);
         assert!(fallback_rx.priority.try_recv().is_err());
         assert!(fallback_rx.bulk.try_recv().is_err());
         assert!(fallback_rx.authenticated_bulk.try_recv().is_err());
@@ -823,10 +810,9 @@
             previous: None,
         };
         let mut state = OwnedFspSessionState::from(snapshot);
-        let shared = state
-            .shared_crypto_session(0)
-            .expect("single-current FSP session should expose shared crypto");
         let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
+        let cipher = Arc::clone(&state.current.cipher);
 
         let mut make_payload = |body: &'static [u8]| {
             let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
@@ -884,9 +870,11 @@
         let first_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            crypto_generation: shared.crypto_generation,
-            ticket: shared.issue_ticket(),
-            cipher: Arc::clone(&shared.cipher),
+            crypto_generation,
+            ticket: state
+                .issue_fsp_receive_ticket()
+                .expect("owner receive window should admit first worker-open ticket"),
+            cipher: Arc::clone(&cipher),
             job: make_job(first_payload, first_payload_len),
             header: first_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -901,9 +889,11 @@
         let second_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            crypto_generation: shared.crypto_generation,
-            ticket: shared.issue_ticket(),
-            cipher: Arc::clone(&shared.cipher),
+            crypto_generation,
+            ticket: state
+                .issue_fsp_receive_ticket()
+                .expect("owner receive window should admit second worker-open ticket"),
+            cipher,
             job: make_job(second_payload, second_payload_len),
             header: second_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -972,10 +962,9 @@
             previous: None,
         };
         let mut state = OwnedFspSessionState::from(snapshot);
-        let shared = state
-            .shared_crypto_session(0)
-            .expect("single-current FSP session should expose shared crypto");
         let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
+        let cipher = Arc::clone(&state.current.cipher);
 
         let mut make_payload = |body: &'static [u8]| {
             let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
@@ -1033,9 +1022,11 @@
         let first_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            crypto_generation: shared.crypto_generation,
-            ticket: shared.issue_ticket(),
-            cipher: Arc::clone(&shared.cipher),
+            crypto_generation,
+            ticket: state
+                .issue_fsp_receive_ticket()
+                .expect("owner receive window should admit first worker-open ticket"),
+            cipher: Arc::clone(&cipher),
             job: make_job(first_payload, first_payload_len),
             header: first_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -1054,9 +1045,11 @@
         let second_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            crypto_generation: shared.crypto_generation,
-            ticket: shared.issue_ticket(),
-            cipher: Arc::clone(&shared.cipher),
+            crypto_generation,
+            ticket: state
+                .issue_fsp_receive_ticket()
+                .expect("owner receive window should admit second worker-open ticket"),
+            cipher,
             job: make_job(second_payload, second_payload_len),
             header: second_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -1404,13 +1397,9 @@
             previous: None,
         };
         let mut state = OwnedFspSessionState::from(snapshot);
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
-        state.attach_shared_crypto_session(Arc::clone(&shared));
         let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
+        let cipher = Arc::clone(&state.current.cipher);
 
         let mut make_payload = |body: &'static [u8]| {
             let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
@@ -1465,8 +1454,8 @@
         let (open_payload, open_plaintext_len) = make_payload(b"worker-open first");
         let open_payload_len = open_payload.len();
         let open_header = FspEncryptedHeader::parse(&open_payload).expect("worker-open header");
-        let open_ticket = shared
-            .try_issue_ticket()
+        let open_ticket = state
+            .issue_fsp_receive_ticket()
             .expect("worker-open should reserve the first FSP ticket");
         assert_eq!(open_ticket.sequence, 0);
 
@@ -1475,15 +1464,15 @@
         let local_header = FspEncryptedHeader::parse(&local_payload).expect("local header");
         let local_ticket = state
             .issue_fsp_receive_ticket()
-            .expect("local owner open should reserve from the same shared ticket source");
+            .expect("local owner open should reserve from the same owner ticket source");
         assert_eq!(local_ticket.sequence, 1);
 
         let local_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            crypto_generation: shared.crypto_generation,
+            crypto_generation,
             ticket: local_ticket,
-            cipher: Arc::clone(&shared.cipher),
+            cipher: Arc::clone(&cipher),
             job: make_job(local_payload, local_payload_len),
             header: local_header,
             completion_source: FspAeadCompletionSource::Local,
@@ -1503,9 +1492,9 @@
         let open_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            crypto_generation: shared.crypto_generation,
+            crypto_generation,
             ticket: open_ticket,
-            cipher: Arc::clone(&shared.cipher),
+            cipher,
             job: make_job(open_payload, open_payload_len),
             header: open_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -1540,96 +1529,45 @@
 
     #[test]
     fn fsp_aead_open_receive_window_tracks_owner_ready_progress() {
-        let shared = FspSharedCryptoSession::new(
-            0,
-            7,
-            0,
-            false,
-            Arc::new(test_chacha_key([0x55; 32])),
-        );
-        let receive_window = fsp_receive_window();
-
-        for expected in 0..receive_window as u64 {
-            let ticket = shared
-                .try_issue_ticket()
-                .expect("window should admit initial worker-open tickets");
-            assert_eq!(ticket.sequence, expected);
-        }
-        assert!(
-            !shared.can_issue_ticket(),
-            "full ordered-completion window must stop worker-open admission"
-        );
-        assert!(
-            shared.try_issue_ticket().is_none(),
-            "full ordered-completion window must not allocate unbounded tickets"
-        );
-
-        shared.mark_next_ready(1);
-        assert!(
-            shared.can_issue_ticket(),
-            "owner completion progress should reopen worker-open admission"
-        );
-        let ticket = shared
-            .try_issue_ticket()
-            .expect("one completed ticket should free one worker-open slot");
-        assert_eq!(ticket.sequence, receive_window as u64);
-    }
-
-    #[test]
-    fn fsp_owner_completion_marks_attached_shared_ready_progress() {
         let source_peer = test_source_peer();
-        let cipher = test_chacha_key([0x56; 32]);
         let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
             source_peer,
             current_k_bit: false,
             current: crate::node::session::FspRecvEpochSnapshot {
-                cipher,
+                cipher: test_chacha_key([0x55; 32]),
                 replay: ReplayWindow::new(),
             },
             pending: None,
             previous: None,
         });
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
-        state.attach_shared_crypto_session(Arc::clone(&shared));
-
         let receive_window = fsp_receive_window();
-        let first_ticket = shared
-            .try_issue_ticket()
-            .expect("shared worker-open window should admit the first ticket");
-        for expected in 1..receive_window as u64 {
-            let ticket = shared
-                .try_issue_ticket()
-                .expect("shared worker-open window should admit initial tickets");
+        let mut first_ticket = None;
+
+        for expected in 0..receive_window as u64 {
+            let ticket = state
+                .issue_fsp_receive_ticket()
+                .expect("window should admit initial worker-open tickets");
             assert_eq!(ticket.sequence, expected);
+            first_ticket.get_or_insert(ticket);
         }
         assert!(
-            shared.try_issue_ticket().is_none(),
-            "full shared window should block further worker-open tickets"
+            state.issue_fsp_receive_ticket().is_none(),
+            "full ordered-completion window must not allocate unbounded tickets"
         );
 
         let drain = state
             .complete_ordered_fsp_open_for_test(
-                first_ticket,
+                first_ticket.expect("first ticket should exist"),
                 FspOrderedCompletion::Dropped {
                     source: FspAeadCompletionSource::WorkerOpen,
                 },
             )
             .expect("oldest completion should fit the receive-order window");
         assert_eq!(drain.ready, 1);
-        assert!(
-            shared.try_issue_ticket().is_none(),
-            "ordered-owner progress should not reach shared open admission until it is marked"
-        );
-
-        state.mark_shared_crypto_ready_progress();
-        let reopened = shared
-            .try_issue_ticket()
-            .expect("owner progress should reopen shared worker-open admission");
-        assert_eq!(reopened.sequence, receive_window as u64);
+        let ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("one completed ticket should free one worker-open slot");
+        assert_eq!(ticket.sequence, receive_window as u64);
     }
 
     #[test]
@@ -1646,17 +1584,12 @@
             pending: None,
             previous: None,
         });
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
-        state.attach_shared_crypto_session(Arc::clone(&shared));
         let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
         let tickets = [
-            shared.try_issue_ticket().expect("ticket 0"),
-            shared.try_issue_ticket().expect("ticket 1"),
-            shared.try_issue_ticket().expect("ticket 2"),
+            state.issue_fsp_receive_ticket().expect("ticket 0"),
+            state.issue_fsp_receive_ticket().expect("ticket 1"),
+            state.issue_fsp_receive_ticket().expect("ticket 2"),
         ];
 
         let pool = DecryptWorkerPool::spawn(1);
@@ -1670,7 +1603,7 @@
             FspAeadCompletionBatch::one(FspAeadCompletion {
                 source_addr,
                 receive_order_id,
-                crypto_generation: shared.crypto_generation,
+                crypto_generation,
                 ticket: tickets[0],
                 source: FspAeadCompletionSource::WorkerOpen,
                 result: FspOrderedCompletion::Dropped {
@@ -1685,7 +1618,6 @@
             .get(&source_addr)
             .expect("owner state should remain registered");
         assert_eq!(state.fsp_receive_order_next_ready(), 1);
-        assert_eq!(shared.progress().next_ready, 1);
 
         shard.handle_fsp_aead_completion_batch_msg(
             0,
@@ -1696,7 +1628,7 @@
                     FspAeadCompletion {
                         source_addr,
                         receive_order_id,
-                        crypto_generation: shared.crypto_generation,
+                        crypto_generation,
                         ticket: tickets[1],
                         source: FspAeadCompletionSource::WorkerOpen,
                         result: FspOrderedCompletion::Dropped {
@@ -1707,7 +1639,7 @@
                     FspAeadCompletion {
                         source_addr,
                         receive_order_id,
-                        crypto_generation: shared.crypto_generation,
+                        crypto_generation,
                         ticket: tickets[2],
                         source: FspAeadCompletionSource::WorkerOpen,
                         result: FspOrderedCompletion::Dropped {
@@ -1724,7 +1656,6 @@
             .get(&source_addr)
             .expect("owner state should remain registered");
         assert_eq!(state.fsp_receive_order_next_ready(), 3);
-        assert_eq!(shared.progress().next_ready, 3);
     }
 
     #[test]
@@ -1742,14 +1673,9 @@
             pending: None,
             previous: None,
         });
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
-        state.attach_shared_crypto_session(Arc::clone(&shared));
         let receive_order_id = state.fsp_receive_order_id();
-        let ticket = shared.try_issue_ticket().expect("ticket 0");
+        let crypto_generation = state.fsp_crypto_generation();
+        let ticket = state.issue_fsp_receive_ticket().expect("ticket 0");
 
         let pool = DecryptWorkerPool::spawn(1);
         let mut shard = DecryptWorkerShard::new(pool);
@@ -1766,7 +1692,7 @@
                     FspAeadCompletion {
                         source_addr: other_addr,
                         receive_order_id,
-                        crypto_generation: shared.crypto_generation,
+                        crypto_generation,
                         ticket,
                         source: FspAeadCompletionSource::WorkerOpen,
                         result: FspOrderedCompletion::Dropped {
@@ -1777,7 +1703,7 @@
                     FspAeadCompletion {
                         source_addr,
                         receive_order_id: receive_order_id + 1,
-                        crypto_generation: shared.crypto_generation,
+                        crypto_generation,
                         ticket,
                         source: FspAeadCompletionSource::WorkerOpen,
                         result: FspOrderedCompletion::Dropped {
@@ -1788,7 +1714,7 @@
                     FspAeadCompletion {
                         source_addr,
                         receive_order_id,
-                        crypto_generation: shared.crypto_generation,
+                        crypto_generation,
                         ticket,
                         source: FspAeadCompletionSource::WorkerOpen,
                         result: FspOrderedCompletion::Dropped {
@@ -1810,7 +1736,6 @@
             1,
             "mismatched completions must not consume the owner ticket"
         );
-        assert_eq!(shared.progress().next_ready, 1);
         assert!(plaintext_batch.fallbacks.is_empty());
         assert!(plaintext_batch.authenticated_sessions.is_empty());
         assert!(plaintext_batch.direct_commits.is_empty());
