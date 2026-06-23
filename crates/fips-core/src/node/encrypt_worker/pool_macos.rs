@@ -357,7 +357,7 @@ impl EncryptWorkerPool {
         let mut run_target = None;
         for job in jobs {
             let target_key = job.send_target_key();
-            if selected_targets.contains_key(&target_key) {
+            if selected_targets.contains(target_key) {
                 if run_target.is_some_and(|current| current != target_key) {
                     self.dispatch_pending_linux_wg_bulk_run(&mut run, &mut dispatched_wg_run);
                 }
@@ -415,7 +415,7 @@ impl EncryptWorkerPool {
 
         for job in jobs {
             let target_key = job.send_target_key();
-            if selected_targets.contains_key(&target_key) {
+            if selected_targets.contains(target_key) {
                 if run_target.is_some_and(|current| current != target_key) {
                     all_enqueued &= self.dispatch_pending_linux_wg_bulk_run_blocking(
                         &mut run,
@@ -656,25 +656,69 @@ impl EncryptWorkerPool {
 }
 
 #[cfg(target_os = "linux")]
+enum LinuxWgSelectedTargets {
+    Single(SendTargetKey),
+    Multiple(HashMap<SendTargetKey, usize>),
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxWgSelectedTargets {
+    fn contains(&self, target: SendTargetKey) -> bool {
+        match self {
+            Self::Single(selected) => *selected == target,
+            Self::Multiple(selected) => selected.contains_key(&target),
+        }
+    }
+
+    #[cfg(test)]
+    fn get(&self, target: &SendTargetKey) -> Option<&usize> {
+        match self {
+            Self::Single(_) => None,
+            Self::Multiple(selected) => selected.get(target),
+        }
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, target: &SendTargetKey) -> bool {
+        self.contains(*target)
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn linux_wg_bulk_batch_selected_targets(
     jobs: &[FmpSendJob],
     min_packets: usize,
-) -> Option<HashMap<SendTargetKey, usize>> {
+) -> Option<LinuxWgSelectedTargets> {
     if jobs.len() < min_packets {
         return None;
     }
 
-    let mut targets = HashMap::new();
-    for job in jobs {
+    let first = jobs.first()?;
+    if !first.bulk_endpoint_data {
+        return None;
+    }
+    let first_target = first.send_target_key();
+    let mut all_same_target = true;
+    for job in &jobs[1..] {
         if !job.bulk_endpoint_data {
             return None;
         }
+        if job.send_target_key() != first_target {
+            all_same_target = false;
+        }
+    }
+    if all_same_target {
+        return Some(LinuxWgSelectedTargets::Single(first_target));
+    }
+
+    let mut targets = HashMap::new();
+    for job in jobs {
         let count = targets.entry(job.send_target_key()).or_insert(0usize);
         *count = count.saturating_add(1);
     }
 
     targets.retain(|_, count| *count >= min_packets);
-    (!targets.is_empty()).then_some(targets)
+    (!targets.is_empty()).then_some(LinuxWgSelectedTargets::Multiple(targets))
 }
 
 #[cfg(all(test, not(target_os = "macos")))]
