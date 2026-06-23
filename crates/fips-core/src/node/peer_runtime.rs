@@ -86,16 +86,6 @@ pub(in crate::node) struct AuthenticatedFmpPlaintext<'a> {
     plaintext: &'a [u8],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::node) struct AuthenticatedFmpReceiveRecord {
-    pub(in crate::node) packet_timestamp_ms: u64,
-    pub(in crate::node) packet_len: usize,
-    pub(in crate::node) fmp_counter: u64,
-    pub(in crate::node) inner_timestamp_ms: u32,
-    pub(in crate::node) ce_flag: bool,
-    pub(in crate::node) sp_flag: bool,
-}
-
 pub(in crate::node) struct PeerRuntimeReceive<'a> {
     source_peer: PeerIdentity,
     transport_id: TransportId,

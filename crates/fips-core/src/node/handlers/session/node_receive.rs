@@ -526,8 +526,6 @@ impl Node {
     ) -> bool {
         first.source_addr == next.source_addr
             && first.previous_hop_peer.node_addr() == next.previous_hop_peer.node_addr()
-            && first.fmp.transport_id == next.fmp.transport_id
-            && first.fmp.remote_addr == next.fmp.remote_addr
     }
 
     fn commit_direct_session_data_from_worker(
@@ -598,7 +596,13 @@ impl Node {
         let source_addr = first.source_addr;
         let previous_hop_peer = first.previous_hop_peer;
         let previous_hop_addr = *previous_hop_peer.node_addr();
-        self.record_worker_authenticated_fmp_receive_commit_run_at(commits, clock);
+        for commit in commits {
+            self.record_worker_authenticated_fmp_receive_at(
+                &commit.fmp,
+                Some(commit.previous_hop_peer.node_addr()),
+                clock,
+            );
+        }
 
         let mut refresh_worker_session = false;
         let mut received_packets = 0usize;
@@ -676,47 +680,6 @@ impl Node {
                 .has_traffic_for(&source_addr)
                 .then_some(source_addr),
         })
-    }
-
-    fn record_worker_authenticated_fmp_receive_commit_run_at(
-        &mut self,
-        commits: &[DecryptDirectSessionCommit],
-        clock: WorkerReceiveClock,
-    ) {
-        let Some(first) = commits.first() else {
-            return;
-        };
-        let source_addr = first.fmp.source_peer.node_addr();
-        let previous_hop = first.previous_hop_peer.node_addr();
-        let arrived_from_source = previous_hop == source_addr;
-        let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
-            source_addr,
-            first.fmp.transport_id,
-            &first.fmp.remote_addr,
-            first.fmp.packet_timestamp_ms,
-        ) && arrived_from_source;
-        let bookkeeping = self.peers.record_authenticated_fmp_receive_batch(
-            source_addr,
-            first.fmp.transport_id,
-            &first.fmp.remote_addr,
-            commits.iter().map(|commit| AuthenticatedFmpReceiveRecord {
-                packet_timestamp_ms: commit.fmp.packet_timestamp_ms,
-                packet_len: commit.fmp.packet_len,
-                fmp_counter: commit.fmp.fmp_counter,
-                inner_timestamp_ms: commit.fmp.inner_timestamp_ms,
-                ce_flag: commit.fmp.fmp_flags & FLAG_CE != 0,
-                sp_flag: commit.fmp.fmp_flags & FLAG_SP != 0,
-            }),
-            clock.now,
-            path_bookkeeping_allowed,
-        );
-        if bookkeeping.is_some_and(|update| update.path_bookkeeping_recorded) {
-            self.clear_retry_unless_direct_refresh_needed(source_addr);
-        }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if bookkeeping.is_some_and(|update| update.address_changed) {
-            self.clear_connected_udp_for_peer(source_addr);
-        }
     }
 
     pub(in crate::node) async fn process_fsp_decrypt_failure_from_worker(
