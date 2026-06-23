@@ -328,7 +328,15 @@ impl Node {
                         Some(event),
                         fallback_plan.trailing_budget,
                     ).await;
-                    if fallback_drained > 0 {
+                    let side_drained = self.drain_rx_loop_side_queues(
+                        &mut control_query_rx,
+                        &mut endpoint_bulk_feedback_rx,
+                        &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                    ).await;
+                    if fallback_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
