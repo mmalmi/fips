@@ -26,6 +26,12 @@ enum DecryptWorkerBulkQueueRole {
     FspOpen,
 }
 
+struct BulkQueueSendError {
+    item: DecryptWorkerBulkItem,
+    overflow: Option<DecryptWorkerBulkItem>,
+    disconnected: bool,
+}
+
 fn record_decrypt_fsp_bulk_queue_full_fallback_count(count: usize) {
     if count == 0 {
         return;
@@ -72,6 +78,48 @@ fn decrypt_worker_bulk_queue_role(item: &DecryptWorkerBulkItem) -> DecryptWorker
         DecryptWorkerBulkItem::Batch(_) => DecryptWorkerBulkQueueRole::FmpBulk,
         DecryptWorkerBulkItem::FspBatch(_) => DecryptWorkerBulkQueueRole::FspOwner,
         DecryptWorkerBulkItem::FspAeadOpenBatch(_) => DecryptWorkerBulkQueueRole::FspOpen,
+    }
+}
+
+fn try_send_bulk_item_prefix(
+    sender: &DecryptWorkerSender,
+    item: DecryptWorkerBulkItem,
+) -> Result<(usize, Option<DecryptWorkerBulkItem>), BulkQueueSendError> {
+    let packet_count = item.packet_count();
+    let reserved_packets = try_reserve_bulk_packets_partial(
+        &sender.bulk_queued_packets,
+        sender.bulk_packet_cap,
+        packet_count,
+    );
+    if reserved_packets == 0 {
+        return Err(BulkQueueSendError {
+            item,
+            overflow: None,
+            disconnected: false,
+        });
+    }
+
+    let (reserved_item, overflow) = item.split_at_packet_count(reserved_packets);
+    let reserved_item = reserved_item.expect("positive reservation must produce a bulk item");
+
+    match sender.bulk.try_send(reserved_item) {
+        Ok(()) => Ok((reserved_packets, overflow)),
+        Err(TrySendError::Full(item)) => {
+            release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+            Err(BulkQueueSendError {
+                item,
+                overflow,
+                disconnected: false,
+            })
+        }
+        Err(TrySendError::Disconnected(item)) => {
+            release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+            Err(BulkQueueSendError {
+                item,
+                overflow,
+                disconnected: true,
+            })
+        }
     }
 }
 
@@ -274,7 +322,7 @@ impl DecryptWorkerPool {
     fn dispatch_fsp_bulk_jobs_or_return<T>(
         &self,
         idx: usize,
-        mut jobs: Vec<T>,
+        jobs: Vec<T>,
         role: DecryptWorkerBulkQueueRole,
         item_from_jobs: fn(Vec<T>) -> DecryptWorkerBulkItem,
         jobs_from_item: fn(DecryptWorkerBulkItem) -> Vec<T>,
@@ -285,54 +333,32 @@ impl DecryptWorkerPool {
         let Some(sender) = self.senders.get(idx) else {
             return Err(jobs);
         };
-        let packet_count = jobs.len();
-        let reserved_packets = try_reserve_bulk_packets_partial(
-            &sender.bulk_queued_packets,
-            sender.bulk_packet_cap,
-            packet_count,
-        );
-        if reserved_packets == 0 {
-            record_decrypt_fsp_bulk_queue_full_fallback_count(packet_count);
-            return Err(jobs);
-        }
-
-        let overflow = if reserved_packets < packet_count {
-            Some(jobs.split_off(reserved_packets))
-        } else {
-            None
-        };
-        let reserved_item = item_from_jobs(jobs);
-
-        match sender.bulk.try_send(reserved_item) {
-            Ok(()) => {
+        match try_send_bulk_item_prefix(sender, item_from_jobs(jobs)) {
+            Ok((reserved_packets, overflow)) => {
                 record_decrypt_worker_bulk_queue_depth(sender, reserved_packets, role);
                 match overflow {
-                    Some(overflow) => {
-                        record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
-                        Err(overflow)
+                    Some(item) => {
+                        let jobs = jobs_from_item(item);
+                        record_decrypt_fsp_bulk_queue_full_fallback_count(jobs.len());
+                        Err(jobs)
                     }
                     None => Ok(()),
                 }
             }
-            Err(TrySendError::Full(item)) => {
-                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
-                let mut returned = jobs_from_item(item);
-                if let Some(overflow) = overflow {
-                    returned.extend(overflow);
+            Err(err) => {
+                let disconnected = err.disconnected;
+                let mut returned = jobs_from_item(err.item);
+                if let Some(overflow) = err.overflow {
+                    returned.extend(jobs_from_item(overflow));
                 }
-                record_decrypt_fsp_bulk_queue_full_fallback_count(returned.len());
-                Err(returned)
-            }
-            Err(TrySendError::Disconnected(item)) => {
-                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
-                let mut returned = jobs_from_item(item);
-                if let Some(overflow) = overflow {
-                    returned.extend(overflow);
+                if disconnected {
+                    debug!(
+                        worker = idx,
+                        "DecryptWorker FSP bulk thread gone; returning worker-owned jobs"
+                    );
+                } else {
+                    record_decrypt_fsp_bulk_queue_full_fallback_count(returned.len());
                 }
-                debug!(
-                    worker = idx,
-                    "DecryptWorker FSP bulk thread gone; returning worker-owned jobs"
-                );
                 Err(returned)
             }
         }
@@ -465,59 +491,38 @@ impl DecryptWorkerPool {
     }
 
     fn dispatch_bulk_item(&self, idx: usize, item: DecryptWorkerBulkItem) {
-        let _ = self.dispatch_bulk_item_or_return(idx, item);
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn dispatch_bulk_item_or_return(
-        &self,
-        idx: usize,
-        item: DecryptWorkerBulkItem,
-    ) -> Result<(), DecryptWorkerBulkItem> {
-        let packet_count = item.packet_count();
         let sender = &self.senders[idx];
-        let reserved_packets = try_reserve_bulk_packets_partial(
-            &sender.bulk_queued_packets,
-            sender.bulk_packet_cap,
-            packet_count,
-        );
-        if reserved_packets == 0 {
-            record_decrypt_worker_bulk_drop_count(idx, packet_count);
-            return Err(item);
-        }
-
-        let (reserved_item, overflow_item) = item.split_at_packet_count(reserved_packets);
-        let reserved_item = reserved_item.expect("positive reservation must produce a bulk item");
-        let role = crate::perf_profile::enabled()
-            .then(|| decrypt_worker_bulk_queue_role(&reserved_item));
-
-        match sender.bulk.try_send(reserved_item) {
-            Ok(()) => {
+        let role =
+            crate::perf_profile::enabled().then(|| decrypt_worker_bulk_queue_role(&item));
+        match try_send_bulk_item_prefix(sender, item) {
+            Ok((reserved_packets, overflow_item)) => {
                 if let Some(role) = role {
                     record_decrypt_worker_bulk_queue_depth(sender, reserved_packets, role);
                 }
                 if let Some(overflow_item) = overflow_item {
                     record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
-                    Err(overflow_item)
+                }
+            }
+            Err(err) => {
+                let BulkQueueSendError {
+                    item,
+                    overflow,
+                    disconnected,
+                } = err;
+                if disconnected {
+                    debug!(worker = idx, "DecryptWorker thread gone; dropping bulk job");
+                    if let Some(overflow_item) = &overflow {
+                        record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
+                    }
                 } else {
-                    Ok(())
+                    record_decrypt_worker_bulk_drop_count(
+                        idx,
+                        item.packet_count()
+                            + overflow
+                                .as_ref()
+                                .map_or(0, DecryptWorkerBulkItem::packet_count),
+                    );
                 }
-            }
-            Err(TrySendError::Full(item)) => {
-                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
-                record_decrypt_worker_bulk_drop_count(idx, reserved_packets);
-                if let Some(overflow_item) = overflow_item {
-                    record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
-                }
-                Err(item)
-            }
-            Err(TrySendError::Disconnected(item)) => {
-                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
-                debug!(worker = idx, "DecryptWorker thread gone; dropping bulk job");
-                if let Some(overflow_item) = overflow_item {
-                    record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
-                }
-                Err(item)
             }
         }
     }
