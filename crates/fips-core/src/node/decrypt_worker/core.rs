@@ -170,10 +170,6 @@ fn fsp_receive_window() -> usize {
     *VALUE.get_or_init(|| fsp_receive_window_from_bulk_cap(bulk_channel_cap()))
 }
 
-fn fsp_open_protected_ticket_window() -> u64 {
-    fsp_receive_window() as u64
-}
-
 fn fsp_aead_completion_channel_cap_from_bulk_cap(bulk_cap: usize) -> usize {
     // The channel stores completion batches, but pressure safety has to hold
     // when completions arrive singly. Match the ordered ticket window so a
@@ -257,7 +253,6 @@ pub(crate) struct OwnedFspSessionState {
     fsp_crypto_generation: u64,
     fsp_receive_order_id: u64,
     fsp_receive_order: FspReceiveOrder,
-    worker_open_protect_until_sequence: u64,
 }
 
 struct FspOpenSuccess {
@@ -290,7 +285,6 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
             fsp_crypto_generation: NEXT_FSP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order: new_fsp_receive_order(),
-            worker_open_protect_until_sequence: fsp_open_protected_ticket_window(),
         }
     }
 }
@@ -342,21 +336,9 @@ impl OwnedFspSessionState {
 
     fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
         let next_ticket = previous.fsp_receive_order.next_ticket();
-        let protect_transition = self.current_k_bit != previous.current_k_bit
-            || self.pending.is_some()
-            || self.previous.is_some()
-            || previous.pending.is_some()
-            || previous.previous.is_some();
         self.fsp_receive_order_id = previous.fsp_receive_order_id;
         self.fsp_receive_order = previous.fsp_receive_order;
         self.fsp_receive_order.advance_next_ticket_to(next_ticket);
-        self.worker_open_protect_until_sequence = if protect_transition {
-            previous
-                .worker_open_protect_until_sequence
-                .max(next_ticket.saturating_add(fsp_open_protected_ticket_window()))
-        } else {
-            previous.worker_open_protect_until_sequence
-        };
     }
 
     fn fsp_receive_order_id(&self) -> u64 {
@@ -382,10 +364,6 @@ impl OwnedFspSessionState {
 
     fn issue_fsp_receive_ticket_batch(&mut self, count: usize) -> Option<u64> {
         self.fsp_receive_order.issue_batch(count)
-    }
-
-    fn should_protect_worker_open_aead_failure(&self, ticket: FspReceiveTicket) -> bool {
-        ticket.sequence < self.worker_open_protect_until_sequence
     }
 
     fn open_established_frame(
@@ -949,11 +927,6 @@ impl FspAeadOpenScratch {
         self.ciphertext.extend_from_slice(source);
     }
 
-    fn ciphertext_from(&mut self, source: &[u8]) -> &mut [u8] {
-        self.preserve_ciphertext_from(source);
-        self.ciphertext.as_mut_slice()
-    }
-
     fn preserved_ciphertext(&self) -> &[u8] {
         &self.ciphertext
     }
@@ -1163,24 +1136,13 @@ impl FspAeadOpenJob {
                 let mut nonce_bytes = [0u8; 12];
                 nonce_bytes[4..12].copy_from_slice(&self.header.counter.to_le_bytes());
                 let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-                let open_result = if self.fallback_to_rx_loop_on_aead_failure {
-                    let scratch_ciphertext = scratch.ciphertext_from(ciphertext);
-                    self.cipher
-                        .open_in_place(
-                            nonce,
-                            Aad::from(&self.header.header_bytes),
-                            scratch_ciphertext,
-                        )
-                        .map(|plaintext| {
-                            let plaintext_len = plaintext.len();
-                            ciphertext[..plaintext_len].copy_from_slice(plaintext);
-                            plaintext_len
-                        })
-                } else {
-                    self.cipher
-                        .open_in_place(nonce, Aad::from(&self.header.header_bytes), ciphertext)
-                        .map(|plaintext| plaintext.len())
-                };
+                if self.fallback_to_rx_loop_on_aead_failure {
+                    scratch.preserve_ciphertext_from(ciphertext);
+                }
+                let open_result = self
+                    .cipher
+                    .open_in_place(nonce, Aad::from(&self.header.header_bytes), ciphertext)
+                    .map(|plaintext| plaintext.len());
                 match open_result {
                     Ok(plaintext_len) => {
                         FspOrderedCompletion::Opened {
@@ -1192,13 +1154,18 @@ impl FspAeadOpenJob {
                             source,
                         }
                     }
-                    Err(_) => FspOrderedCompletion::AeadFailed {
-                        job: self.job,
-                        header: self.header,
-                        source,
-                        fallback_to_rx_loop: self.fallback_to_rx_loop_on_aead_failure,
-                        count_failure: !self.fallback_to_rx_loop_on_aead_failure,
-                    },
+                    Err(_) => {
+                        if self.fallback_to_rx_loop_on_aead_failure {
+                            ciphertext.copy_from_slice(scratch.preserved_ciphertext());
+                        }
+                        FspOrderedCompletion::AeadFailed {
+                            job: self.job,
+                            header: self.header,
+                            source,
+                            fallback_to_rx_loop: self.fallback_to_rx_loop_on_aead_failure,
+                            count_failure: !self.fallback_to_rx_loop_on_aead_failure,
+                        }
+                    }
                 }
             }
             None => FspOrderedCompletion::AeadFailed {

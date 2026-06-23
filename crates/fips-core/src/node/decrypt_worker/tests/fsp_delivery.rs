@@ -589,66 +589,6 @@
     }
 
     #[test]
-    fn stable_fsp_session_refresh_does_not_extend_worker_open_aead_protection() {
-        let source = crate::Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
-        let snapshot = || crate::node::session::FspRecvSessionSnapshot {
-            source_peer,
-            current_k_bit: false,
-            current: crate::node::session::FspRecvEpochSnapshot {
-                cipher: test_chacha_key([0x51; 32]),
-                replay: ReplayWindow::new(),
-            },
-            pending: None,
-            previous: None,
-        };
-
-        let mut state = OwnedFspSessionState::from(snapshot());
-        state.worker_open_protect_until_sequence = 0;
-
-        let mut refreshed = OwnedFspSessionState::from(snapshot());
-        refreshed.preserve_receive_order_from(state);
-
-        let ticket = refreshed
-            .issue_fsp_receive_ticket()
-            .expect("stable refreshed owner should issue a worker-open ticket");
-        assert!(
-            !refreshed.should_protect_worker_open_aead_failure(ticket),
-            "stable single-epoch refreshes must not keep re-arming worker-open scratch fallback"
-        );
-    }
-
-    #[test]
-    fn epoch_transition_fsp_session_refresh_extends_worker_open_aead_protection() {
-        let source = crate::Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
-        let snapshot = |current_k_bit: bool| crate::node::session::FspRecvSessionSnapshot {
-            source_peer,
-            current_k_bit,
-            current: crate::node::session::FspRecvEpochSnapshot {
-                cipher: test_chacha_key(if current_k_bit { [0x52; 32] } else { [0x51; 32] }),
-                replay: ReplayWindow::new(),
-            },
-            pending: None,
-            previous: None,
-        };
-
-        let mut state = OwnedFspSessionState::from(snapshot(false));
-        state.worker_open_protect_until_sequence = 0;
-
-        let mut refreshed = OwnedFspSessionState::from(snapshot(true));
-        refreshed.preserve_receive_order_from(state);
-
-        let ticket = refreshed
-            .issue_fsp_receive_ticket()
-            .expect("epoch-transition refreshed owner should issue a worker-open ticket");
-        assert!(
-            refreshed.should_protect_worker_open_aead_failure(ticket),
-            "epoch transitions still need ciphertext-preserving fallback for fresh tickets"
-        );
-    }
-
-    #[test]
     fn fsp_session_refresh_classifies_old_worker_open_aead_as_stale_completion() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();

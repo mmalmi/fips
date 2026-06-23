@@ -716,6 +716,10 @@
                         .all(|job| job.receive_order_id == receive_order_id
                             && job.crypto_generation == crypto_generation)
                 );
+                assert!(
+                    jobs.iter()
+                        .all(|job| job.fallback_to_rx_loop_on_aead_failure)
+                );
             }
             DecryptWorkerBulkItem::FspAeadOpen(_) => {
                 panic!("owner FSP batch should not fragment into a single opener job")
@@ -833,6 +837,7 @@
                 assert_eq!(job.receive_order_id, receive_order_id);
                 assert_eq!(job.crypto_generation, crypto_generation);
                 assert_eq!(job.ticket.sequence, 0);
+                assert!(job.fallback_to_rx_loop_on_aead_failure);
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("single immediate FSP job should dispatch one opener job")
