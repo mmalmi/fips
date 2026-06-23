@@ -208,10 +208,6 @@ impl QueuedFmpSendJob {
 /// of pushing back to TUN promptly. Local clean-underlay A/Bs showed 256 keeps
 /// the same ~3 Gbps class while cutting hot FMP bulk queue residence in half.
 const DEFAULT_WORKER_CHANNEL_CAP: usize = 256;
-// Keep the control/ACK-shaped reserve independent from synthetic bulk-pressure
-// tests that deliberately shrink `FIPS_WORKER_CHANNEL_CAP`.
-#[cfg(not(target_os = "macos"))]
-const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 #[cfg(target_os = "macos")]
 const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
 #[cfg(not(target_os = "macos"))]
@@ -245,15 +241,6 @@ fn worker_channel_cap() -> usize {
     *VALUE.get_or_init(|| {
         let raw = std::env::var("FIPS_WORKER_CHANNEL_CAP").ok();
         parse_worker_channel_cap(raw.as_deref(), DEFAULT_WORKER_CHANNEL_CAP)
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-fn worker_priority_channel_cap() -> usize {
-    static VALUE: OnceLock<usize> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        let raw = std::env::var("FIPS_ENCRYPT_WORKER_PRIORITY_CHANNEL_CAP").ok();
-        parse_worker_channel_cap(raw.as_deref(), DEFAULT_WORKER_PRIORITY_CHANNEL_CAP)
     })
 }
 
@@ -583,14 +570,12 @@ impl MacWorkerReceiver {
 
 #[cfg(not(target_os = "macos"))]
 struct FairWorkerSender {
-    priority_tx: Sender<QueuedFmpSendJob>,
     bulk_tx: Sender<QueuedFmpSendJob>,
     admission: Arc<FairAdmission>,
 }
 
 #[cfg(not(target_os = "macos"))]
 struct FairWorkerReceiver {
-    priority_rx: Receiver<QueuedFmpSendJob>,
     bulk_rx: Receiver<QueuedFmpSendJob>,
     admission: Arc<FairAdmission>,
     release_buffer: Vec<FairAdmissionReservation>,
@@ -674,27 +659,10 @@ struct FairWorkerPushError;
 fn fair_worker_channel(
     total_cap: usize,
     per_flow_cap: usize,
-    quantum_bytes: usize,
-) -> (FairWorkerSender, FairWorkerReceiver) {
-    fair_worker_channel_with_priority_cap(
-        total_cap,
-        per_flow_cap,
-        worker_priority_channel_cap(),
-        quantum_bytes,
-    )
-}
-
-#[cfg(not(target_os = "macos"))]
-fn fair_worker_channel_with_priority_cap(
-    total_cap: usize,
-    per_flow_cap: usize,
-    priority_cap: usize,
     _quantum_bytes: usize,
 ) -> (FairWorkerSender, FairWorkerReceiver) {
     let total_cap = total_cap.max(1);
     let per_flow_cap = per_flow_cap.max(1);
-    let priority_cap = priority_cap.max(1);
-    let (priority_tx, priority_rx) = bounded(priority_cap);
     let (bulk_tx, bulk_rx) = bounded(total_cap);
     let admission = Arc::new(FairAdmission {
         state: Mutex::new(FairAdmissionState::default()),
@@ -709,12 +677,10 @@ fn fair_worker_channel_with_priority_cap(
     });
     (
         FairWorkerSender {
-            priority_tx,
             bulk_tx,
             admission: Arc::clone(&admission),
         },
         FairWorkerReceiver {
-            priority_rx,
             bulk_rx,
             admission,
             release_buffer: Vec::new(),
@@ -725,16 +691,10 @@ fn fair_worker_channel_with_priority_cap(
 #[cfg(not(target_os = "macos"))]
 impl FairWorkerSender {
     fn try_push(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerTryPushError> {
-        if job.queue_lane() == EncryptWorkerLane::Priority {
-            return match self.priority_tx.try_send(job) {
-                Ok(()) => Ok(()),
-                Err(TrySendError::Full(job)) => Err(FairWorkerTryPushError::Full(Box::new(job))),
-                Err(TrySendError::Disconnected(job)) => {
-                    job.discard_without_send();
-                    Err(FairWorkerTryPushError::Closed)
-                }
-            };
-        }
+        debug_assert!(
+            job.queue_lane() == EncryptWorkerLane::Bulk,
+            "non-macOS priority FMP sends bypass worker queues"
+        );
 
         let job = if self.admission.is_idle() && self.bulk_tx.len() < self.admission.fast_lane_cap {
             match self.bulk_tx.try_send(job) {
@@ -781,13 +741,10 @@ impl FairWorkerSender {
     }
 
     fn push_blocking(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerPushError> {
-        if job.queue_lane() == EncryptWorkerLane::Priority {
-            if let Err(SendError(job)) = self.priority_tx.send(job) {
-                job.discard_without_send();
-                return Err(FairWorkerPushError);
-            }
-            return Ok(());
-        }
+        debug_assert!(
+            job.queue_lane() == EncryptWorkerLane::Bulk,
+            "non-macOS priority FMP sends bypass worker queues"
+        );
         let key = job.dispatch_key();
         let weight = job.scheduling_weight();
         let reservation = match self.admission.reserve_blocking(key, weight) {
@@ -951,16 +908,12 @@ impl FairWorkerReceiver {
     ) -> Option<FmpWorkerBatchStats> {
         debug_assert!(batch.is_empty());
         debug_assert!(self.release_buffer.is_empty());
-        let Some(first) = self.recv_next_blocking() else {
+        let Some(first) = self.bulk_rx.recv().ok() else {
             return None;
         };
         let mut stats = FmpWorkerBatchStats::default();
         self.push_received(batch, first, &mut stats);
         while batch.len() < max {
-            if let Ok(job) = self.priority_rx.try_recv() {
-                self.push_received(batch, job, &mut stats);
-                continue;
-            }
             match self.bulk_rx.try_recv() {
                 Ok(job) => self.push_received(batch, job, &mut stats),
                 Err(_) => break,
@@ -968,24 +921,6 @@ impl FairWorkerReceiver {
         }
         self.release_batch_reservations();
         Some(stats)
-    }
-
-    fn recv_next_blocking(&mut self) -> Option<QueuedFmpSendJob> {
-        if let Ok(job) = self.priority_rx.try_recv() {
-            return Some(job);
-        }
-        self.recv_next_biased_blocking()
-    }
-
-    fn recv_next_biased_blocking(&mut self) -> Option<QueuedFmpSendJob> {
-        crossbeam_channel::select_biased! {
-            recv(self.priority_rx) -> msg => msg.ok().or_else(|| self.recv_bulk_blocking()),
-            recv(self.bulk_rx) -> msg => msg.ok().or_else(|| self.priority_rx.recv().ok()),
-        }
-    }
-
-    fn recv_bulk_blocking(&mut self) -> Option<QueuedFmpSendJob> {
-        self.bulk_rx.recv().ok()
     }
 
     fn push_received(

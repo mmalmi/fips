@@ -300,12 +300,6 @@ mod unix_tests {
             parse_worker_channel_cap(Some("999999"), DEFAULT_WORKER_CHANNEL_CAP),
             32768
         );
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(
-            parse_worker_channel_cap(None, DEFAULT_WORKER_PRIORITY_CHANNEL_CAP),
-            1024,
-            "control reserve must remain independent from bulk queue tuning"
-        );
     }
 
     #[test]

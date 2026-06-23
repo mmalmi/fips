@@ -266,6 +266,46 @@ fn run_worker(idx: usize, mut rx: FairWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread exiting");
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
+fn send_inline_priority_job(
+    mut job: FmpSendJob,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    debug_assert!(
+        !job.bulk_endpoint_data,
+        "bulk FMP sends must stay on the bounded worker path"
+    );
+    job.queued_at = None;
+    let target_key = job.send_target_key();
+    let sealed =
+        SealedSendPacket::from_job_with_target_key(job, target_key).map_err(|err| {
+            std::io::Error::other(format!("inline FMP priority seal failed: {err:?}"))
+        })?;
+    let (send_target, target_key, lane, wire_packet, drop_on_backpressure) = sealed.into_parts();
+    let mut groups = Vec::with_capacity(1);
+    push_selected_send_batch_with_lane_and_capacity(
+        &mut groups,
+        send_target,
+        target_key,
+        lane,
+        wire_packet,
+        drop_on_backpressure,
+        1,
+    );
+    record_selected_send_groups(&groups);
+
+    let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+    #[cfg(target_os = "linux")]
+    flush_linux_send_groups_sync(groups)?;
+    #[cfg(all(unix, not(target_os = "linux")))]
+    for group in groups {
+        let send_attempt = DirectSendBatchAttempt::from_batch(group);
+        if let Err(err) = flush_direct_send_attempt(send_attempt) {
+            return Err(format!("sendto failed: {err}").into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn run_linux_wg_batch_worker(idx: usize, rx: Receiver<LinuxWgEncryptBatch>, max_batch: usize) {
     trace!(worker = idx, "FMP Linux WG-batch encrypt worker starting");
@@ -295,31 +335,13 @@ const DEFAULT_LINUX_DEFERRED_SENDER_CAP: usize = 8;
 
 #[cfg(target_os = "linux")]
 struct LinuxDeferredSender {
-    priority_tx: Sender<Vec<SelectedSendBatch>>,
     bulk_tx: Sender<Vec<SelectedSendBatch>>,
 }
 
 #[cfg(target_os = "linux")]
 impl LinuxDeferredSender {
     fn send(&self, groups: Vec<SelectedSendBatch>) -> Result<(), LinuxDeferredSendError> {
-        let (priority_groups, bulk_groups) = split_linux_deferred_send_groups(groups);
-        let mut returned_groups = Vec::new();
-
-        if let Err(err) = try_send_linux_deferred_groups(&self.priority_tx, priority_groups) {
-            let closed = err.is_closed();
-            returned_groups.extend(err.into_groups());
-            returned_groups.extend(bulk_groups);
-            return if closed {
-                Err(LinuxDeferredSendError::Closed(returned_groups))
-            } else {
-                Err(LinuxDeferredSendError::Full(returned_groups))
-            };
-        }
-        if let Err(err) = try_send_linux_deferred_groups(&self.bulk_tx, bulk_groups) {
-            return Err(err);
-        }
-
-        Ok(())
+        try_send_linux_deferred_groups(&self.bulk_tx, groups)
     }
 }
 
@@ -358,35 +380,16 @@ fn try_send_linux_deferred_groups(
 }
 
 #[cfg(target_os = "linux")]
-fn split_linux_deferred_send_groups(
-    groups: Vec<SelectedSendBatch>,
-) -> (Vec<SelectedSendBatch>, Vec<SelectedSendBatch>) {
-    let mut priority_groups = Vec::new();
-    let mut bulk_groups = Vec::new();
-    for group in groups {
-        match group.lane() {
-            SelectedSendLane::Priority => priority_groups.push(group),
-            SelectedSendLane::Bulk => bulk_groups.push(group),
-        }
-    }
-    (priority_groups, bulk_groups)
-}
-
-#[cfg(target_os = "linux")]
 fn linux_deferred_sender() -> Option<&'static LinuxDeferredSender> {
     static VALUE: OnceLock<Option<LinuxDeferredSender>> = OnceLock::new();
     VALUE
         .get_or_init(|| {
-            let (priority_tx, priority_rx) = bounded(DEFAULT_LINUX_DEFERRED_SENDER_CAP);
             let (bulk_tx, bulk_rx) = bounded(DEFAULT_LINUX_DEFERRED_SENDER_CAP);
             match std::thread::Builder::new()
                 .name("fips-linux-udp-sender".to_string())
-                .spawn(move || run_linux_deferred_sender(priority_rx, bulk_rx))
+                .spawn(move || run_linux_deferred_sender(bulk_rx))
             {
-                Ok(_) => Some(LinuxDeferredSender {
-                    priority_tx,
-                    bulk_tx,
-                }),
+                Ok(_) => Some(LinuxDeferredSender { bulk_tx }),
                 Err(err) => {
                     warn!(
                         error = %err,
@@ -400,25 +403,9 @@ fn linux_deferred_sender() -> Option<&'static LinuxDeferredSender> {
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux_deferred_sender(
-    priority_rx: Receiver<Vec<SelectedSendBatch>>,
-    bulk_rx: Receiver<Vec<SelectedSendBatch>>,
-) {
-    loop {
-        while let Ok(groups) = priority_rx.try_recv() {
-            flush_linux_deferred_send_groups(groups);
-        }
-
-        crossbeam_channel::select_biased! {
-            recv(priority_rx) -> msg => match msg {
-                Ok(groups) => flush_linux_deferred_send_groups(groups),
-                Err(_) => break,
-            },
-            recv(bulk_rx) -> msg => match msg {
-                Ok(groups) => flush_linux_deferred_send_groups(groups),
-                Err(_) => break,
-            },
-        }
+fn run_linux_deferred_sender(bulk_rx: Receiver<Vec<SelectedSendBatch>>) {
+    for groups in bulk_rx {
+        flush_linux_deferred_send_groups(groups);
     }
 }
 

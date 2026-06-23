@@ -185,6 +185,14 @@ impl EncryptWorkerPool {
     }
 
     fn dispatch_unmeasured(&self, job: FmpSendJob) {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if !job.bulk_endpoint_data {
+            if let Err(err) = send_inline_priority_job(job) {
+                debug!(error = %err, "inline FMP priority send failed");
+            }
+            return;
+        }
+
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");
             return;

@@ -322,6 +322,7 @@ impl SelectedSendBatch {
         self.target_key
     }
 
+    #[cfg(test)]
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn lane(&self) -> SelectedSendLane {
         self.lane
@@ -362,19 +363,6 @@ impl SelectedSendBatch {
 
     fn packet_count(&self) -> usize {
         self.wire_packets.len()
-    }
-
-    #[cfg(all(test, target_os = "linux"))]
-    fn bulk_wire_bytes(&self) -> Option<usize> {
-        if self.lane != SelectedSendLane::Bulk {
-            return None;
-        }
-        Some(
-            self.wire_packets
-                .iter()
-                .map(Vec::len)
-                .fold(0usize, usize::saturating_add),
-        )
     }
 
     #[cfg(target_os = "linux")]

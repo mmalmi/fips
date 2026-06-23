@@ -331,6 +331,56 @@
     }
 
     #[test]
+    fn non_bulk_dispatch_bypasses_full_fair_worker_queue() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = fair_worker_channel(1, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+
+            tx.try_push(queued_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                128,
+                true,
+                false,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("initial bulk job should fill the worker lane");
+
+            let pool = encrypt_worker_pool_for_test(vec![tx]);
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let thread_done = Arc::clone(&done);
+            let job = queued_job_classified(
+                socket,
+                &cipher,
+                addr,
+                64,
+                false,
+                false,
+                DEFAULT_SEND_WEIGHT,
+            )
+            .job;
+            let handle = std::thread::spawn(move || {
+                pool.dispatch(job);
+                thread_done.store(true, std::sync::atomic::Ordering::Release);
+            });
+
+            for _ in 0..20 {
+                if done.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+
+            assert!(
+                done.load(std::sync::atomic::Ordering::Acquire),
+                "non-bulk dispatch must not wait for bulk worker capacity"
+            );
+            handle.join().expect("dispatch thread should finish");
+        });
+    }
+
+    #[test]
     fn committed_bulk_dispatch_waits_for_worker_capacity() {
         with_test_socket(|socket, cipher| {
             let (tx, mut rx) = fair_worker_channel(1, 1, WORKER_FAIR_QUANTUM_BYTES);
