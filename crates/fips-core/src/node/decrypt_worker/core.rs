@@ -342,12 +342,21 @@ impl OwnedFspSessionState {
 
     fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
         let next_ticket = previous.fsp_receive_order.next_ticket();
+        let protect_transition = self.current_k_bit != previous.current_k_bit
+            || self.pending.is_some()
+            || self.previous.is_some()
+            || previous.pending.is_some()
+            || previous.previous.is_some();
         self.fsp_receive_order_id = previous.fsp_receive_order_id;
         self.fsp_receive_order = previous.fsp_receive_order;
         self.fsp_receive_order.advance_next_ticket_to(next_ticket);
-        self.worker_open_protect_until_sequence = previous
-            .worker_open_protect_until_sequence
-            .max(next_ticket.saturating_add(fsp_open_protected_ticket_window()));
+        self.worker_open_protect_until_sequence = if protect_transition {
+            previous
+                .worker_open_protect_until_sequence
+                .max(next_ticket.saturating_add(fsp_open_protected_ticket_window()))
+        } else {
+            previous.worker_open_protect_until_sequence
+        };
     }
 
     fn fsp_receive_order_id(&self) -> u64 {
