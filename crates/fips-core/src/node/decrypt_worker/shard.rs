@@ -760,16 +760,18 @@ impl DecryptWorkerShard {
         }
 
         let current_k_bit = state.current_k_bit;
+        let mut headers = Vec::with_capacity(jobs.len());
         for job in &jobs {
-            if Self::current_fsp_bulk_open_header(job, current_k_bit).is_err() {
-                return Err(jobs);
+            match Self::current_fsp_bulk_open_header(job, current_k_bit) {
+                Ok(header) => headers.push(header),
+                Err(_) => return Err(jobs),
             }
         }
 
-        let Some(first_sequence) = state.issue_fsp_receive_ticket_batch(jobs.len()) else {
+        let Some(first_sequence) = state.issue_fsp_receive_ticket_batch(headers.len()) else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
-                jobs.len() as u64,
+                headers.len() as u64,
             );
             return Err(jobs);
         };
@@ -778,26 +780,21 @@ impl DecryptWorkerShard {
         let cipher = Arc::clone(&state.current.cipher);
         let open_jobs = jobs
             .into_iter()
+            .zip(headers)
             .enumerate()
-            .map(|(offset, job)| {
-                let header = match Self::current_fsp_bulk_open_header(&job, current_k_bit) {
-                    Ok(header) => header,
-                    Err(_) => unreachable!("validated FSP opener batch header changed"),
-                };
-                FspAeadOpenJob {
-                    source_addr,
-                    receive_order_id,
-                    crypto_generation,
-                    ticket: FspReceiveTicket {
-                        sequence: first_sequence.saturating_add(offset as u64),
-                    },
-                    cipher: Arc::clone(&cipher),
-                    job,
-                    header,
-                    completion_source: FspAeadCompletionSource::WorkerOpen,
-                    completion_owner_idx: None,
-                    open_queued_at: None,
-                }
+            .map(|(offset, (job, header))| FspAeadOpenJob {
+                source_addr,
+                receive_order_id,
+                crypto_generation,
+                ticket: FspReceiveTicket {
+                    sequence: first_sequence.saturating_add(offset as u64),
+                },
+                cipher: Arc::clone(&cipher),
+                job,
+                header,
+                completion_source: FspAeadCompletionSource::WorkerOpen,
+                completion_owner_idx: None,
+                open_queued_at: None,
             })
             .collect();
 
