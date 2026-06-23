@@ -513,25 +513,35 @@ impl DecryptWorkerShard {
         job: &FspDecryptJob,
         current_k_bit: bool,
     ) -> Result<FspEncryptedHeader, FspOpenWorkerIneligibleReason> {
-        let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
-        let payload = job
-            .fallback
-            .packet_data
-            .get(job.fsp_payload_offset..payload_end)
-            .ok_or(FspOpenWorkerIneligibleReason::Malformed)?;
-        let header =
-            FspEncryptedHeader::parse(payload).ok_or(FspOpenWorkerIneligibleReason::Malformed)?;
-        let ciphertext_len = payload.len().saturating_sub(FSP_HEADER_SIZE);
-        let expected_ciphertext_len =
-            usize::from(header.payload_len).saturating_add(crate::noise::TAG_SIZE);
-        if ciphertext_len != expected_ciphertext_len {
-            return Err(FspOpenWorkerIneligibleReason::Malformed);
-        }
+        let (header, _, _) = Self::parse_fsp_encrypted_payload(
+            &job.fallback.packet_data,
+            job.fsp_payload_offset,
+            job.fsp_payload_len,
+        )
+        .ok_or(FspOpenWorkerIneligibleReason::Malformed)?;
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
         if received_k_bit != current_k_bit {
             return Err(FspOpenWorkerIneligibleReason::KbitMismatch);
         }
         Ok(header)
+    }
+
+    fn parse_fsp_encrypted_payload(
+        packet_data: &[u8],
+        fsp_payload_offset: usize,
+        fsp_payload_len: usize,
+    ) -> Option<(FspEncryptedHeader, usize, usize)> {
+        let payload_end = fsp_payload_offset.checked_add(fsp_payload_len)?;
+        let payload = packet_data.get(fsp_payload_offset..payload_end)?;
+        let header = FspEncryptedHeader::parse(payload)?;
+        let ciphertext_len = payload.len().checked_sub(FSP_HEADER_SIZE)?;
+        let expected_ciphertext_len =
+            usize::from(header.payload_len).checked_add(crate::noise::TAG_SIZE)?;
+        if ciphertext_len != expected_ciphertext_len {
+            return None;
+        }
+        let ciphertext_offset = fsp_payload_offset.checked_add(FSP_HEADER_SIZE)?;
+        Some((header, ciphertext_offset, payload_end))
     }
 
     #[allow(clippy::result_large_err)]
@@ -1247,31 +1257,11 @@ impl DecryptWorkerShard {
         };
         debug_assert!(state.has_single_current_epoch());
 
-        let payload_end = fsp_payload_offset.saturating_add(fsp_payload_len);
-        let header = {
-            let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                    fallback,
-                    lane,
-                    inner_timestamp_ms,
-                    previous_hop_peer,
-                ));
-                return;
-            };
-            let Some(header) = FspEncryptedHeader::parse(payload) else {
-                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                    fallback,
-                    lane,
-                    inner_timestamp_ms,
-                    previous_hop_peer,
-                ));
-                return;
-            };
-            header
-        };
-
-        let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
-        let Some(ciphertext) = fallback.packet_data.get_mut(ciphertext_offset..payload_end) else {
+        let Some((header, ciphertext_offset, payload_end)) = Self::parse_fsp_encrypted_payload(
+            &fallback.packet_data,
+            fsp_payload_offset,
+            fsp_payload_len,
+        ) else {
             plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
                 fallback,
                 lane,
@@ -1280,6 +1270,7 @@ impl DecryptWorkerShard {
             ));
             return;
         };
+        let ciphertext = &mut fallback.packet_data[ciphertext_offset..payload_end];
         self.fsp_open_scratch.preserve_ciphertext_from(ciphertext);
         let (ticket, open_result, receive_order_id, crypto_generation) = {
             let state = self
@@ -1402,29 +1393,11 @@ impl DecryptWorkerShard {
             });
             return;
         };
-        let payload_end = fsp_payload_offset.saturating_add(fsp_payload_len);
-        let header = {
-            let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                    fallback,
-                    lane,
-                    inner_timestamp_ms,
-                    previous_hop_peer,
-                ));
-                return;
-            };
-            let Some(header) = FspEncryptedHeader::parse(payload) else {
-                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                    fallback,
-                    lane,
-                    inner_timestamp_ms,
-                    previous_hop_peer,
-                ));
-                return;
-            };
-            header
-        };
-        let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
+        let Some((header, ciphertext_offset, payload_end)) = Self::parse_fsp_encrypted_payload(
+            &fallback.packet_data,
+            fsp_payload_offset,
+            fsp_payload_len,
+        ) else {
             plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
                 fallback,
                 lane,
@@ -1433,7 +1406,7 @@ impl DecryptWorkerShard {
             ));
             return;
         };
-        let ciphertext = &payload[FSP_HEADER_SIZE..];
+        let ciphertext = &fallback.packet_data[ciphertext_offset..payload_end];
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
         let open_result = {
             let _t_fsp =

@@ -1274,7 +1274,7 @@
         shard.pool.fallback_tx = fallback_tx.clone();
         shard.register_fsp_session(0, source_addr, OwnedFspSessionState::from(snapshot));
 
-        let mut fsp_payload = crate::node::session_wire::build_fsp_header(1, 0, 1).to_vec();
+        let mut fsp_payload = crate::node::session_wire::build_fsp_header(1, 0, 0).to_vec();
         fsp_payload.extend_from_slice(&[0u8; crate::noise::TAG_SIZE]);
         let frame_len = fsp_payload.len();
         let mut packet_data = fsp_payload;

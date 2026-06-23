@@ -51,6 +51,21 @@
     }
 
     #[test]
+    fn fsp_encrypted_payload_parser_rejects_payload_length_mismatch() {
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 0);
+        let mut packet = header_bytes.to_vec();
+        packet.extend_from_slice(&[0u8; crate::noise::TAG_SIZE]);
+
+        assert!(DecryptWorkerShard::parse_fsp_encrypted_payload(&packet, 0, packet.len()).is_some());
+
+        packet[2..4].copy_from_slice(&1u16.to_le_bytes());
+        assert!(
+            DecryptWorkerShard::parse_fsp_encrypted_payload(&packet, 0, packet.len()).is_none(),
+            "length-inconsistent FSP payloads must be malformed before ticket/open handling"
+        );
+    }
+
+    #[test]
     fn ordered_receive_window_buffers_until_oldest_completion_is_ready() {
         let mut window = OrderedReceiveWindow::new(4);
         let first = window.issue().expect("first ticket");
