@@ -792,17 +792,14 @@ fn handle_bulk_item_with_buffers(
                 batch_stats,
                 BulkTurnBatchers::new(None, Some(&mut *fsp_open_batcher)),
             );
-            for job in jobs {
-                if trace_enabled {
-                    record_fsp_worker_bulk_input_tail_wait(item_started_at);
-                }
-                shard.handle_bulk_fsp_job_with_open_batcher(
-                    idx,
-                    job,
-                    plaintext_batch,
-                    &mut *fsp_open_batcher,
-                );
-            }
+            shard.handle_bulk_fsp_job_batch_with_open_batcher(
+                idx,
+                jobs,
+                item_started_at,
+                trace_enabled,
+                plaintext_batch,
+                &mut *fsp_open_batcher,
+            );
             flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
             debug_assert!(bulk_batchers.is_empty());
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);

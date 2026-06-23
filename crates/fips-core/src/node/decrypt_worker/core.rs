@@ -362,6 +362,10 @@ impl OwnedFspSessionState {
         self.fsp_receive_order.issue()
     }
 
+    fn issue_fsp_receive_ticket_batch(&mut self, count: usize) -> Option<u64> {
+        self.fsp_receive_order.issue_batch(count)
+    }
+
     fn open_established_frame(
         &mut self,
         header: &FspEncryptedHeader,
@@ -666,6 +670,20 @@ impl<T> OrderedReceiveWindow<T> {
         };
         self.next_ticket = self.next_ticket.saturating_add(1);
         Some(ticket)
+    }
+
+    fn issue_batch(&mut self, count: usize) -> Option<u64> {
+        if count == 0 {
+            return Some(self.next_ticket);
+        }
+        let count = count as u64;
+        let in_flight = self.next_ticket.saturating_sub(self.completions.next_ready());
+        if in_flight.saturating_add(count) > self.completions.pending_limit() as u64 {
+            return None;
+        }
+        let first = self.next_ticket;
+        self.next_ticket = self.next_ticket.saturating_add(count);
+        Some(first)
     }
 
     fn next_ticket(&self) -> u64 {

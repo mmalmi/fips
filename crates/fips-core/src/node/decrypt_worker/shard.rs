@@ -8,6 +8,18 @@ fn record_fsp_owner_match(owner_matches_current_worker: bool) {
 }
 
 #[inline]
+fn record_fsp_owner_match_count(owner_matches_current_worker: bool, count: usize) {
+    crate::perf_profile::record_event_count(
+        if owner_matches_current_worker {
+            crate::perf_profile::Event::DecryptFspOwnerSame
+        } else {
+            crate::perf_profile::Event::DecryptFspOwnerMismatch
+        },
+        count as u64,
+    );
+}
+
+#[inline]
 fn record_fsp_path_local(lane: DecryptWorkerLane) {
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathLocal);
     crate::perf_profile::record_event(match lane {
@@ -29,6 +41,18 @@ fn record_fsp_path_handoff(lane: DecryptWorkerLane) {
 fn record_fsp_path_worker_open_bulk() {
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathWorkerOpen);
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathWorkerOpenBulk);
+}
+
+#[inline]
+fn record_fsp_path_worker_open_bulk_count(count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptFspPathWorkerOpen,
+        count as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptFspPathWorkerOpenBulk,
+        count as u64,
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -297,6 +321,52 @@ impl DecryptWorkerShard {
             Some(fsp_open_batcher),
         );
         trace!(worker = idx, "processed batched bulk FSP decrypt worker job");
+    }
+
+    fn handle_bulk_fsp_job_batch_with_open_batcher(
+        &mut self,
+        idx: usize,
+        jobs: Vec<FspDecryptJob>,
+        item_started_at: Option<crate::perf_profile::TraceStamp>,
+        trace_enabled: bool,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        fsp_open_batcher: &mut FspAeadOpenJobBatcher,
+    ) {
+        let count = jobs.len();
+        match self.try_prepare_fsp_bulk_open_worker_job_batch(idx, jobs) {
+            Ok((open_idx, owner_idx, open_jobs)) => {
+                if trace_enabled {
+                    for _ in 0..count {
+                        record_fsp_worker_bulk_input_tail_wait(item_started_at);
+                    }
+                }
+                record_fsp_owner_match_count(true, count);
+                record_fsp_path_worker_open_bulk_count(count);
+                let returned =
+                    fsp_open_batcher.push_batch(&self.pool, open_idx, owner_idx, open_jobs);
+                if !returned.is_empty() {
+                    self.drop_returned_fsp_aead_open_jobs(idx, returned, plaintext_batch);
+                }
+                trace!(
+                    worker = idx,
+                    packets = count,
+                    "processed batched bulk FSP decrypt worker jobs"
+                );
+            }
+            Err(jobs) => {
+                for job in jobs {
+                    if trace_enabled {
+                        record_fsp_worker_bulk_input_tail_wait(item_started_at);
+                    }
+                    self.handle_bulk_fsp_job_with_open_batcher(
+                        idx,
+                        job,
+                        plaintext_batch,
+                        fsp_open_batcher,
+                    );
+                }
+            }
+        }
     }
 
     fn register_session(
@@ -655,6 +725,94 @@ impl DecryptWorkerShard {
             open_queued_at: None,
         };
         Ok((open_idx, owner_idx, open_job))
+    }
+
+    fn try_prepare_fsp_bulk_open_worker_job_batch(
+        &mut self,
+        idx: usize,
+        jobs: Vec<FspDecryptJob>,
+    ) -> Result<(usize, usize, Vec<FspAeadOpenJob>), Vec<FspDecryptJob>> {
+        if jobs.len() < 2 {
+            return Err(jobs);
+        }
+        let source_addr = jobs[0].source_addr;
+        if !jobs
+            .iter()
+            .all(|job| job.source_addr == source_addr && matches!(job.lane(), DecryptWorkerLane::Bulk))
+        {
+            return Err(jobs);
+        }
+
+        let owner_idx = self.pool.worker_idx_for_fsp(&source_addr);
+        if owner_idx != idx || !self.pool.fsp_bulk_open_worker_enabled() {
+            return Err(jobs);
+        }
+        let open_idx = match self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx) {
+            Some(open_idx) => open_idx,
+            None => return Err(jobs),
+        };
+
+        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+            return Err(jobs);
+        };
+        if !state.has_single_current_epoch() {
+            return Err(jobs);
+        }
+
+        let mut headers = Vec::with_capacity(jobs.len());
+        for job in &jobs {
+            let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
+            let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
+            else {
+                return Err(jobs);
+            };
+            let Some(header) = FspEncryptedHeader::parse(payload) else {
+                return Err(jobs);
+            };
+            let ciphertext_len = payload.len().saturating_sub(FSP_HEADER_SIZE);
+            let expected_ciphertext_len =
+                usize::from(header.payload_len).saturating_add(crate::noise::TAG_SIZE);
+            if ciphertext_len != expected_ciphertext_len {
+                return Err(jobs);
+            }
+            let received_k_bit = header.flags & FSP_FLAG_K != 0;
+            if received_k_bit != state.current_k_bit {
+                return Err(jobs);
+            }
+            headers.push(header);
+        }
+
+        let Some(first_sequence) = state.issue_fsp_receive_ticket_batch(headers.len()) else {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
+                headers.len() as u64,
+            );
+            return Err(jobs);
+        };
+        let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
+        let cipher = Arc::clone(&state.current.cipher);
+        let open_jobs = jobs
+            .into_iter()
+            .zip(headers)
+            .enumerate()
+            .map(|(offset, (job, header))| FspAeadOpenJob {
+                source_addr,
+                receive_order_id,
+                crypto_generation,
+                ticket: FspReceiveTicket {
+                    sequence: first_sequence.saturating_add(offset as u64),
+                },
+                cipher: Arc::clone(&cipher),
+                job,
+                header,
+                completion_source: FspAeadCompletionSource::WorkerOpen,
+                completion_owner_idx: None,
+                open_queued_at: None,
+            })
+            .collect();
+
+        Ok((open_idx, owner_idx, open_jobs))
     }
 
     #[allow(clippy::result_large_err)]
