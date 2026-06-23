@@ -509,15 +509,21 @@ impl FspAeadOpenJobBatcher {
         {
             returned.extend(self.flush(workers));
         }
-        self.open_idx = Some(open_idx);
-        self.owner_idx = Some(owner_idx);
 
         if self.jobs.is_empty() && jobs.len() >= batch_max {
-            self.jobs = jobs;
-            returned.extend(self.flush(workers));
+            returned.extend(
+                workers
+                    .dispatch_fsp_aead_open_worker_job_batch_or_return(
+                        open_idx, owner_idx, jobs,
+                    )
+                    .err()
+                    .unwrap_or_default(),
+            );
             return returned;
         }
 
+        self.open_idx = Some(open_idx);
+        self.owner_idx = Some(owner_idx);
         self.jobs.extend(jobs);
         if self.jobs.len() >= batch_max {
             returned.extend(self.flush(workers));

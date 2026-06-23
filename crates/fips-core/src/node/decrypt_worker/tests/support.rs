@@ -510,6 +510,65 @@
     }
 
     #[test]
+    fn fsp_open_job_batcher_direct_full_batch_preserves_pending_buffer() {
+        let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(2, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_addr = NodeAddr::from_bytes([0x43; 16]);
+        let owner_idx = 0;
+        let open_idx = pool
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .expect("two-worker pool should have a sibling opener");
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let mut header_packet = header_bytes.to_vec();
+        header_packet.extend_from_slice(&[0u8; 16]);
+        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
+        let cipher = Arc::new(test_chacha_key([0x53; 32]));
+        let jobs = (0..DECRYPT_WORKER_BULK_BATCH_MAX)
+            .map(|sequence| {
+                test_fsp_aead_open_job(
+                    source_addr,
+                    sequence as u64,
+                    Arc::clone(&cipher),
+                    header.clone(),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut batcher = FspAeadOpenJobBatcher::new();
+        let pending_buffer = batcher.pending_buffer_ptr();
+
+        let returned = batcher.push_batch(&pool, open_idx, owner_idx, jobs);
+
+        assert!(returned.is_empty(), "full opener batch should queue");
+        assert!(
+            batcher.is_empty(),
+            "full opener batch should dispatch without staying pending"
+        );
+        assert_eq!(
+            batcher.pending_buffer_ptr(),
+            pending_buffer,
+            "direct full-batch dispatch should not replace the reusable pending buffer"
+        );
+        match bulk_receivers[open_idx]
+            .try_recv()
+            .expect("full opener batch")
+        {
+            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
+                assert_eq!(jobs.len(), DECRYPT_WORKER_BULK_BATCH_MAX);
+                assert!(
+                    jobs.iter()
+                        .all(|job| job.completion_owner_idx == Some(owner_idx))
+                );
+            }
+            DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected a full opener batch"),
+            DecryptWorkerBulkItem::Job(_)
+            | DecryptWorkerBulkItem::FspJob(_)
+            | DecryptWorkerBulkItem::Batch(_)
+            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a full opener batch"),
+        }
+    }
+
+    #[test]
     fn aead_completion_interleave_keeps_pending_fsp_open_batch_together() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(3, 8);
@@ -835,6 +894,51 @@
                 .next_ticket(),
             0,
             "malformed opener candidates must not consume ordered receive tickets"
+        );
+    }
+
+    #[test]
+    fn fsp_open_worker_batch_rejects_payload_length_mismatch_before_ticket_issue() {
+        let (pool, _control_receivers, _priority_receivers, _bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
+        let cipher = test_chacha_key([0x60; 32]);
+        let state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher,
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.register_fsp_session(owner_idx, source_addr, state);
+        let mut malformed = dummy_bulk_fsp_open_job(source_addr);
+        malformed.fallback.packet_data[2..4].copy_from_slice(&1u16.to_le_bytes());
+
+        assert!(
+            shard
+                .try_prepare_fsp_bulk_open_worker_job_batch(
+                    owner_idx,
+                    vec![dummy_bulk_fsp_open_job(source_addr), malformed],
+                )
+                .is_err(),
+            "length-inconsistent FSP batch must not enter opener path"
+        );
+        assert_eq!(
+            shard
+                .fsp_sessions
+                .get(&source_addr)
+                .expect("owner state should stay registered")
+                .fsp_receive_order
+                .next_ticket(),
+            0,
+            "malformed opener batches must not consume ordered receive tickets"
         );
     }
 

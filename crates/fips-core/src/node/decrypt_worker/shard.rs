@@ -530,6 +530,31 @@ impl DecryptWorkerShard {
         )
     }
 
+    fn current_fsp_bulk_open_header(
+        job: &FspDecryptJob,
+        current_k_bit: bool,
+    ) -> Result<FspEncryptedHeader, FspOpenWorkerIneligibleReason> {
+        let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
+        let payload = job
+            .fallback
+            .packet_data
+            .get(job.fsp_payload_offset..payload_end)
+            .ok_or(FspOpenWorkerIneligibleReason::Malformed)?;
+        let header =
+            FspEncryptedHeader::parse(payload).ok_or(FspOpenWorkerIneligibleReason::Malformed)?;
+        let ciphertext_len = payload.len().saturating_sub(FSP_HEADER_SIZE);
+        let expected_ciphertext_len =
+            usize::from(header.payload_len).saturating_add(crate::noise::TAG_SIZE);
+        if ciphertext_len != expected_ciphertext_len {
+            return Err(FspOpenWorkerIneligibleReason::Malformed);
+        }
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        if received_k_bit != current_k_bit {
+            return Err(FspOpenWorkerIneligibleReason::KbitMismatch);
+        }
+        Ok(header)
+    }
+
     #[allow(clippy::result_large_err)]
     fn direct_session_delivery_from_message(
         source_addr: NodeAddr,
@@ -671,36 +696,11 @@ impl DecryptWorkerShard {
                 FspOpenWorkerIneligibleReason::NoSiblingWorker,
             ));
         };
-        let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
-        let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
-        else {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::Malformed,
-            ));
+        let current_k_bit = state.current_k_bit;
+        let header = match Self::current_fsp_bulk_open_header(&job, current_k_bit) {
+            Ok(header) => header,
+            Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(job, reason)),
         };
-        let Some(header) = FspEncryptedHeader::parse(payload) else {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::Malformed,
-            ));
-        };
-        let ciphertext_len = payload.len().saturating_sub(FSP_HEADER_SIZE);
-        let expected_ciphertext_len =
-            usize::from(header.payload_len).saturating_add(crate::noise::TAG_SIZE);
-        if ciphertext_len != expected_ciphertext_len {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::Malformed,
-            ));
-        }
-        let received_k_bit = header.flags & FSP_FLAG_K != 0;
-        if received_k_bit != state.current_k_bit {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::KbitMismatch,
-            ));
-        }
         let Some(ticket) = state.issue_fsp_receive_ticket() else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
@@ -759,33 +759,17 @@ impl DecryptWorkerShard {
             return Err(jobs);
         }
 
-        let mut headers = Vec::with_capacity(jobs.len());
+        let current_k_bit = state.current_k_bit;
         for job in &jobs {
-            let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
-            let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
-            else {
-                return Err(jobs);
-            };
-            let Some(header) = FspEncryptedHeader::parse(payload) else {
-                return Err(jobs);
-            };
-            let ciphertext_len = payload.len().saturating_sub(FSP_HEADER_SIZE);
-            let expected_ciphertext_len =
-                usize::from(header.payload_len).saturating_add(crate::noise::TAG_SIZE);
-            if ciphertext_len != expected_ciphertext_len {
+            if Self::current_fsp_bulk_open_header(job, current_k_bit).is_err() {
                 return Err(jobs);
             }
-            let received_k_bit = header.flags & FSP_FLAG_K != 0;
-            if received_k_bit != state.current_k_bit {
-                return Err(jobs);
-            }
-            headers.push(header);
         }
 
-        let Some(first_sequence) = state.issue_fsp_receive_ticket_batch(headers.len()) else {
+        let Some(first_sequence) = state.issue_fsp_receive_ticket_batch(jobs.len()) else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
-                headers.len() as u64,
+                jobs.len() as u64,
             );
             return Err(jobs);
         };
@@ -794,21 +778,26 @@ impl DecryptWorkerShard {
         let cipher = Arc::clone(&state.current.cipher);
         let open_jobs = jobs
             .into_iter()
-            .zip(headers)
             .enumerate()
-            .map(|(offset, (job, header))| FspAeadOpenJob {
-                source_addr,
-                receive_order_id,
-                crypto_generation,
-                ticket: FspReceiveTicket {
-                    sequence: first_sequence.saturating_add(offset as u64),
-                },
-                cipher: Arc::clone(&cipher),
-                job,
-                header,
-                completion_source: FspAeadCompletionSource::WorkerOpen,
-                completion_owner_idx: None,
-                open_queued_at: None,
+            .map(|(offset, job)| {
+                let header = match Self::current_fsp_bulk_open_header(&job, current_k_bit) {
+                    Ok(header) => header,
+                    Err(_) => unreachable!("validated FSP opener batch header changed"),
+                };
+                FspAeadOpenJob {
+                    source_addr,
+                    receive_order_id,
+                    crypto_generation,
+                    ticket: FspReceiveTicket {
+                        sequence: first_sequence.saturating_add(offset as u64),
+                    },
+                    cipher: Arc::clone(&cipher),
+                    job,
+                    header,
+                    completion_source: FspAeadCompletionSource::WorkerOpen,
+                    completion_owner_idx: None,
+                    open_queued_at: None,
+                }
             })
             .collect();
 
