@@ -926,6 +926,11 @@ impl FspAeadOpenScratch {
         self.ciphertext.extend_from_slice(source);
     }
 
+    fn ciphertext_from(&mut self, source: &[u8]) -> &mut [u8] {
+        self.preserve_ciphertext_from(source);
+        self.ciphertext.as_mut_slice()
+    }
+
     fn preserved_ciphertext(&self) -> &[u8] {
         &self.ciphertext
     }
@@ -1136,13 +1141,24 @@ impl FspAeadOpenJob {
                 nonce_bytes[4..12].copy_from_slice(&self.header.counter.to_le_bytes());
                 let nonce = Nonce::assume_unique_for_key(nonce_bytes);
                 let preserve_ciphertext_for_fallback = source.is_worker_open();
-                if preserve_ciphertext_for_fallback {
-                    scratch.preserve_ciphertext_from(ciphertext);
-                }
-                let open_result = self
-                    .cipher
-                    .open_in_place(nonce, Aad::from(&self.header.header_bytes), ciphertext)
-                    .map(|plaintext| plaintext.len());
+                let open_result = if preserve_ciphertext_for_fallback {
+                    let scratch_ciphertext = scratch.ciphertext_from(ciphertext);
+                    self.cipher
+                        .open_in_place(
+                            nonce,
+                            Aad::from(&self.header.header_bytes),
+                            scratch_ciphertext,
+                        )
+                        .map(|plaintext| {
+                            let plaintext_len = plaintext.len();
+                            ciphertext[..plaintext_len].copy_from_slice(plaintext);
+                            plaintext_len
+                        })
+                } else {
+                    self.cipher
+                        .open_in_place(nonce, Aad::from(&self.header.header_bytes), ciphertext)
+                        .map(|plaintext| plaintext.len())
+                };
                 match open_result {
                     Ok(plaintext_len) => {
                         FspOrderedCompletion::Opened {
@@ -1154,18 +1170,13 @@ impl FspAeadOpenJob {
                             source,
                         }
                     }
-                    Err(_) => {
-                        if preserve_ciphertext_for_fallback {
-                            ciphertext.copy_from_slice(scratch.preserved_ciphertext());
-                        }
-                        FspOrderedCompletion::AeadFailed {
-                            job: self.job,
-                            header: self.header,
-                            source,
-                            fallback_to_rx_loop: preserve_ciphertext_for_fallback,
-                            count_failure: !preserve_ciphertext_for_fallback,
-                        }
-                    }
+                    Err(_) => FspOrderedCompletion::AeadFailed {
+                        job: self.job,
+                        header: self.header,
+                        source,
+                        fallback_to_rx_loop: preserve_ciphertext_for_fallback,
+                        count_failure: !preserve_ciphertext_for_fallback,
+                    },
                 }
             }
             None => FspOrderedCompletion::AeadFailed {
