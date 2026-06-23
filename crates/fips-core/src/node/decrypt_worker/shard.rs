@@ -1473,8 +1473,7 @@ impl DecryptWorkerShard {
             let _ = job;
             return;
         };
-        let mut completions = Vec::new();
-        Self::collect_job_actions_with_state(idx, session_key, state, job, &mut completions, actions);
+        Self::collect_job_actions_with_state(idx, session_key, state, job, actions);
     }
 
     fn collect_bulk_job_actions(
@@ -1499,16 +1498,8 @@ impl DecryptWorkerShard {
         let Some(state) = self.sessions.get_mut(&session_key) else {
             return;
         };
-        let mut completions = Vec::with_capacity(jobs.len());
         for job in jobs {
-            Self::collect_job_actions_with_state(
-                idx,
-                session_key,
-                state,
-                job,
-                &mut completions,
-                actions,
-            );
+            Self::collect_job_actions_with_state(idx, session_key, state, job, actions);
         }
     }
 
@@ -1517,10 +1508,8 @@ impl DecryptWorkerShard {
         session_key: DecryptSessionKey,
         state: &mut OwnedSessionState,
         job: DecryptJob,
-        completions: &mut Vec<FmpReadyCompletion>,
         actions: &mut Vec<DecryptWorkerJobAction>,
     ) {
-        completions.clear();
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
@@ -1597,7 +1586,9 @@ impl DecryptWorkerShard {
             },
         };
         if let Err(error) = state.complete_ordered_fmp_open(ticket, completion, |completion| {
-            completions.push(completion);
+            if let Some(action) = Self::action_for_fmp_ready_completion(completion) {
+                actions.push(action);
+            }
         }) {
             debug!(
                 worker = idx,
@@ -1605,14 +1596,7 @@ impl DecryptWorkerShard {
                 ?error,
                 "dropping FMP completion rejected by receive order"
             );
-            return;
         };
-
-        actions.extend(
-            completions
-                .drain(..)
-                .filter_map(Self::action_for_fmp_ready_completion),
-        );
     }
 
     fn action_for_fmp_ready_completion(
