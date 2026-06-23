@@ -683,7 +683,7 @@ fn handle_bulk_item_with_buffers(
                     action,
                     plaintext_batch,
                     Some(&mut *fsp_batcher),
-                    Some(&mut *fsp_open_batcher),
+                    &mut *fsp_open_batcher,
                 );
             }
             fsp_batcher.flush(&shard.pool);

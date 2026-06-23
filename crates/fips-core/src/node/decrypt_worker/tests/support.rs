@@ -727,7 +727,7 @@
             )),
             &mut plaintext_batch,
             None,
-            Some(&mut fsp_open_batcher),
+            &mut fsp_open_batcher,
         );
         assert!(
             fsp_open_batcher.flush(&shard.pool).is_empty(),
@@ -795,6 +795,7 @@
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
@@ -802,8 +803,9 @@
             )),
             &mut plaintext_batch,
             None,
-            None,
+            &mut fsp_open_batcher,
         );
+        assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         plaintext_batch.flush();
 
         match bulk_receivers[open_idx]
@@ -1039,7 +1041,7 @@
             )),
             &mut plaintext_batch,
             None,
-            Some(&mut fsp_open_batcher),
+            &mut fsp_open_batcher,
         );
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         assert_eq!(
@@ -1102,7 +1104,7 @@
             )),
             &mut plaintext_batch,
             None,
-            Some(&mut fsp_open_batcher),
+            &mut fsp_open_batcher,
         );
 
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
@@ -1673,6 +1675,7 @@
         };
         let mut shard = DecryptWorkerShard::new(pool);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(fallback_tx);
+        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         let packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
 
         shard.push_job_action_output(
@@ -1683,7 +1686,7 @@
             }),
             &mut plaintext_batch,
             None,
-            None,
+            &mut fsp_open_batcher,
         );
         shard.push_job_action_output(
             0,
@@ -1693,8 +1696,9 @@
             }),
             &mut plaintext_batch,
             None,
-            None,
+            &mut fsp_open_batcher,
         );
+        assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         plaintext_batch.flush();
 
         let event = fallback_rx.bulk.try_recv().expect("batched plaintext output");
