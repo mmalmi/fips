@@ -351,21 +351,13 @@ impl EncryptWorkerPool {
             return Err(jobs);
         };
 
-        let selected_targets = match selected_targets {
-            LinuxWgSelectedTargets::Single(_target_key) => {
-                self.dispatch_linux_wg_bulk_run_unmeasured(jobs);
-                return Ok(());
-            }
-            LinuxWgSelectedTargets::Multiple(selected_targets) => selected_targets,
-        };
-
         let mut dispatched_wg_run = false;
         let mut fallback_jobs = Vec::new();
         let mut run = Vec::new();
         let mut run_target = None;
         for job in jobs {
             let target_key = job.send_target_key();
-            if selected_targets.contains_key(&target_key) {
+            if selected_targets.contains(target_key) {
                 if run_target.is_some_and(|current| current != target_key) {
                     self.dispatch_pending_linux_wg_bulk_run(&mut run, &mut dispatched_wg_run);
                 }
@@ -415,14 +407,6 @@ impl EncryptWorkerPool {
             return Err(jobs);
         };
 
-        let selected_targets = match selected_targets {
-            LinuxWgSelectedTargets::Single(_target_key) => {
-                let all_enqueued = self.dispatch_linux_wg_bulk_run_blocking_unmeasured(jobs);
-                return Ok(all_enqueued);
-            }
-            LinuxWgSelectedTargets::Multiple(selected_targets) => selected_targets,
-        };
-
         let mut dispatched_wg_run = false;
         let mut fallback_jobs = Vec::new();
         let mut run = Vec::new();
@@ -431,7 +415,7 @@ impl EncryptWorkerPool {
 
         for job in jobs {
             let target_key = job.send_target_key();
-            if selected_targets.contains_key(&target_key) {
+            if selected_targets.contains(target_key) {
                 if run_target.is_some_and(|current| current != target_key) {
                     all_enqueued &= self.dispatch_pending_linux_wg_bulk_run_blocking(
                         &mut run,
@@ -679,7 +663,6 @@ enum LinuxWgSelectedTargets {
 
 #[cfg(target_os = "linux")]
 impl LinuxWgSelectedTargets {
-    #[cfg(test)]
     fn contains(&self, target: SendTargetKey) -> bool {
         match self {
             Self::Single(selected) => *selected == target,
