@@ -360,7 +360,7 @@ impl FspDecryptJobBatcher {
         self.worker_idx.is_none() && self.jobs.is_empty()
     }
 
-    fn push(&mut self, workers: &DecryptWorkerPool, job: FspDecryptJob) {
+    fn push_to(&mut self, workers: &DecryptWorkerPool, worker_idx: usize, job: FspDecryptJob) {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             self.flush(workers);
             if let Err(job) = workers.dispatch_fsp_job_or_return(job) {
@@ -372,8 +372,6 @@ impl FspDecryptJobBatcher {
             return;
         }
 
-        let source_addr = job.source_addr;
-        let worker_idx = workers.worker_idx_for_fsp(&source_addr);
         let batch_max = workers.bulk_batch_packet_max_for(worker_idx);
         if self.worker_idx != Some(worker_idx) || self.jobs.len() >= batch_max {
             self.flush(workers);

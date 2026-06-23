@@ -436,7 +436,7 @@ impl DecryptWorkerShard {
             DecryptWorkerJobAction::FspJob(job) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
                 record_fsp_owner_match(owner_idx == idx);
-                let job = match self.try_prepare_fsp_bulk_open_worker_job(idx, job) {
+                let job = match self.try_prepare_fsp_bulk_open_worker_job(idx, owner_idx, job) {
                     Ok((open_idx, owner_idx, open_job)) => {
                         record_fsp_path_worker_open_bulk();
                         let returned =
@@ -468,7 +468,7 @@ impl DecryptWorkerShard {
                 }
                 record_fsp_path_handoff(job.lane());
                 if let Some(fsp_batcher) = fsp_batcher.as_deref_mut() {
-                    fsp_batcher.push(&self.pool, job);
+                    fsp_batcher.push_to(&self.pool, owner_idx, job);
                     return;
                 }
                 match self.pool.dispatch_fsp_job_or_return(job) {
@@ -504,9 +504,9 @@ impl DecryptWorkerShard {
     fn try_fsp_bulk_open_worker_target(
         &mut self,
         idx: usize,
+        owner_idx: usize,
         source_addr: &NodeAddr,
     ) -> Result<FspBulkOpenWorkerTarget<'_>, FspOpenWorkerIneligibleReason> {
-        let owner_idx = self.pool.worker_idx_for_fsp(source_addr);
         if owner_idx != idx {
             return Err(FspOpenWorkerIneligibleReason::NotOwner);
         }
@@ -645,6 +645,7 @@ impl DecryptWorkerShard {
     fn try_prepare_fsp_bulk_open_worker_job(
         &mut self,
         idx: usize,
+        owner_idx: usize,
         job: FspDecryptJob,
     ) -> Result<(usize, usize, FspAeadOpenJob), FspOpenWorkerPrepareError> {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
@@ -655,7 +656,7 @@ impl DecryptWorkerShard {
         }
 
         let source_addr = job.source_addr;
-        let target = match self.try_fsp_bulk_open_worker_target(idx, &source_addr) {
+        let target = match self.try_fsp_bulk_open_worker_target(idx, owner_idx, &source_addr) {
             Ok(target) => target,
             Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(job, reason)),
         };
@@ -705,7 +706,8 @@ impl DecryptWorkerShard {
             return Err(jobs);
         }
 
-        let target = match self.try_fsp_bulk_open_worker_target(idx, &source_addr) {
+        let owner_idx = self.pool.worker_idx_for_fsp(&source_addr);
+        let target = match self.try_fsp_bulk_open_worker_target(idx, owner_idx, &source_addr) {
             Ok(target) => target,
             Err(_) => return Err(jobs),
         };

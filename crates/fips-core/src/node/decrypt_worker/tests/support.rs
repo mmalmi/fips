@@ -936,7 +936,7 @@
         let mut job = dummy_bulk_fsp_open_job(source_addr);
         job.fallback.packet_data[2..4].copy_from_slice(&1u16.to_le_bytes());
 
-        let error = match shard.try_prepare_fsp_bulk_open_worker_job(owner_idx, job) {
+        let error = match shard.try_prepare_fsp_bulk_open_worker_job(owner_idx, owner_idx, job) {
             Ok(_) => panic!("length-inconsistent FSP frame must not enter opener path"),
             Err(error) => error,
         };

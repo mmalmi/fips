@@ -62,7 +62,7 @@
         for _ in 0..3 {
             let mut job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
             job.source_addr = source_addr;
-            batcher.push(&pool, job);
+            batcher.push_to(&pool, owner, job);
         }
         batcher.flush(&pool);
 
@@ -108,7 +108,7 @@
         let mut job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         job.source_addr = source_addr;
 
-        batcher.push(&pool, job);
+        batcher.push_to(&pool, owner, job);
         batcher.flush(&pool);
 
         match bulk_receivers[owner]
@@ -347,8 +347,9 @@
         let source_peer = test_source_peer();
         let (_fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         let mut batcher = FspDecryptJobBatcher::new();
-        batcher.push(
+        batcher.push_to(
             &pool,
+            pool.worker_idx_for_fsp(source_peer.node_addr()),
             FspDecryptJob {
                 lane: DecryptWorkerLane::Bulk,
                 fallback: DecryptFallback::new(
