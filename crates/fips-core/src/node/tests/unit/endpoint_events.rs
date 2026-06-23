@@ -178,6 +178,13 @@ fn release_endpoint_event_messages_subtracts_exact_count() {
     assert_eq!(counter.load(Relaxed), 2);
 }
 
+#[test]
+fn endpoint_data_command_capacity_uses_fixed_floor() {
+    assert_eq!(endpoint_data_command_capacity(0), 32_768);
+    assert_eq!(endpoint_data_command_capacity(8), 32_768);
+    assert_eq!(endpoint_data_command_capacity(65_536), 65_536);
+}
+
 #[cfg(unix)]
 fn endpoint_test_established_session(
     local: &Identity,

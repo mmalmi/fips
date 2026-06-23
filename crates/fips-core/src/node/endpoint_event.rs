@@ -26,8 +26,7 @@ pub(crate) struct EndpointDataIo {
     /// stall on semaphore acquisition. macOS pacing happens at the UDP
     /// egress thread where the real Wi-Fi/interface bottleneck is visible;
     /// constraining this app queue instead caused the inner TCP flow to
-    /// collapse under iperf. `FIPS_ENDPOINT_DATA_QUEUE_CAP` overrides the
-    /// default for benches.
+    /// collapse under iperf.
     pub(crate) command_tx: tokio::sync::mpsc::Sender<NodeEndpointCommand>,
     /// Receive endpoint data delivered by FIPS sessions.
     ///
@@ -1047,13 +1046,6 @@ pub(in crate::node) fn release_endpoint_event_messages(counter: &AtomicUsize, co
 }
 
 pub(crate) fn endpoint_data_command_capacity(requested: usize) -> usize {
-    if let Ok(raw) = std::env::var("FIPS_ENDPOINT_DATA_QUEUE_CAP")
-        && let Ok(value) = raw.trim().parse::<usize>()
-        && value > 0
-    {
-        return value;
-    }
-
     requested.max(1).max(32_768)
 }
 
