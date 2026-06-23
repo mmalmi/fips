@@ -464,11 +464,54 @@ mod mac_queue_tests {
     }
 
     #[test]
-    fn macos_ordered_sender_defaults_on_but_can_opt_out() {
-        assert!(parse_macos_ordered_sender_enabled(None));
+    fn mac_direct_dispatch_separates_priority_from_bulk_for_same_target() {
+        with_test_socket(|socket, cipher| {
+            let mut senders = Vec::new();
+            for _ in 0..8 {
+                let (tx, _rx) = mac_worker_channel(8);
+                senders.push(tx);
+            }
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(senders.into_boxed_slice()),
+                macos_senders: Arc::new(MacSequencedSendFlows::default()),
+                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            };
+            let addr: SocketAddr = "127.0.0.1:10016".parse().unwrap();
+
+            let (bulk_idx, bulk) = pool.prepare_dispatch(
+                fmp_send_job_classified(socket.clone(), &cipher, addr, true, true, None),
+            );
+            assert_eq!(bulk.queue_lane(), EncryptWorkerLane::Bulk);
+
+            for _ in 0..8 {
+                let (idx, queued) = pool.prepare_dispatch(
+                    fmp_send_job_classified(socket.clone(), &cipher, addr, true, true, None),
+                );
+                assert_eq!(queued.queue_lane(), EncryptWorkerLane::Bulk);
+                assert_eq!(
+                    idx, bulk_idx,
+                    "bulk packets for one send target must keep FIFO on one worker"
+                );
+            }
+
+            let (priority_idx, priority) =
+                pool.prepare_dispatch(fmp_send_job_classified(socket, &cipher, addr, false, false, None));
+            assert_eq!(priority.queue_lane(), EncryptWorkerLane::Priority);
+            assert_ne!(
+                priority_idx, bulk_idx,
+                "priority packets should not sit behind a same-target bulk worker stall on macOS"
+            );
+        });
+    }
+
+    #[test]
+    fn macos_ordered_sender_defaults_off_but_can_opt_in() {
+        assert!(!parse_macos_ordered_sender_enabled(None));
         assert!(parse_macos_ordered_sender_enabled(Some("1")));
         assert!(parse_macos_ordered_sender_enabled(Some("true")));
-        assert!(parse_macos_ordered_sender_enabled(Some("unexpected")));
+        assert!(parse_macos_ordered_sender_enabled(Some("yes")));
+        assert!(parse_macos_ordered_sender_enabled(Some("ON")));
+        assert!(!parse_macos_ordered_sender_enabled(Some("unexpected")));
         assert!(!parse_macos_ordered_sender_enabled(Some("0")));
         assert!(!parse_macos_ordered_sender_enabled(Some("false")));
         assert!(!parse_macos_ordered_sender_enabled(Some("OFF")));

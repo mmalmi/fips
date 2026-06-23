@@ -137,7 +137,7 @@ pub fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadClass {
                 } else {
                     EndpointPayloadLane::Bulk
                 },
-                drop_on_backpressure: false,
+                drop_on_backpressure: !latency_sensitive,
             }
         }
         _ => EndpointPayloadClass {

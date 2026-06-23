@@ -1351,7 +1351,7 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
     let bulk_tcp_data_packet = ipv6_tcp_packet(0x18, 512);
     let bulk_tcp_data = classify_endpoint_payload(&bulk_tcp_data_packet);
     assert_eq!(bulk_tcp_data.lane(), EndpointPayloadLane::Bulk);
-    assert!(!bulk_tcp_data.drop_on_backpressure());
+    assert!(bulk_tcp_data.drop_on_backpressure());
     assert_eq!(
         endpoint_command_lane_for_payload(&bulk_tcp_data_packet),
         EndpointCommandLane::Bulk

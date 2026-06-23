@@ -76,16 +76,15 @@ impl SendBackpressurePacer {
         sleep_after: u32,
         drop_after: u32,
     ) -> SendBackpressureAction {
-        if would_block {
-            self.record_success();
-            return SendBackpressureAction::Yield;
-        }
-
         self.consecutive_full = self.consecutive_full.saturating_add(1);
         self.full_since_sleep = self.full_since_sleep.saturating_add(1);
         if drop_after > 0 && self.consecutive_full >= drop_after {
             self.record_success();
             return SendBackpressureAction::DropBulk;
+        }
+
+        if would_block {
+            return SendBackpressureAction::Yield;
         }
 
         if sleep_after > 0 && self.full_since_sleep >= sleep_after {
@@ -218,13 +217,16 @@ mod send_backpressure_tests {
     use super::*;
 
     #[test]
-    fn send_backpressure_pacer_wouldblock_yields_and_resets() {
-        let mut pacer = SendBackpressurePacer {
-            consecutive_full: 7,
-            full_since_sleep: 3,
-        };
+    fn send_backpressure_pacer_wouldblock_counts_toward_drop_budget() {
+        let mut pacer = SendBackpressurePacer::default();
 
-        assert_eq!(pacer.next_action(true, 1, 1), SendBackpressureAction::Yield);
+        assert_eq!(pacer.next_action(true, 1, 2), SendBackpressureAction::Yield);
+        assert_eq!(pacer.consecutive_full, 1);
+        assert_eq!(pacer.full_since_sleep, 1);
+        assert_eq!(
+            pacer.next_action(true, 1, 2),
+            SendBackpressureAction::DropBulk
+        );
         assert_eq!(pacer.consecutive_full, 0);
         assert_eq!(pacer.full_since_sleep, 0);
     }

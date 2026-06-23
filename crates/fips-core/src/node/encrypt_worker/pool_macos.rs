@@ -214,7 +214,13 @@ impl EncryptWorkerPool {
             let key = queued.target_key();
             let mut h = std::collections::hash_map::DefaultHasher::new();
             key.hash(&mut h);
-            let idx = (h.finish() as usize) % self.senders.len();
+            let base_idx = (h.finish() as usize) % self.senders.len();
+            let idx = match queued.queue_lane() {
+                EncryptWorkerLane::Priority if self.senders.len() > 1 => {
+                    (base_idx + 1) % self.senders.len()
+                }
+                _ => base_idx,
+            };
             return (idx, queued);
         }
 
@@ -1137,8 +1143,10 @@ impl MacSequencedSendFlows {
 fn macos_ordered_sender_enabled() -> bool {
     // Ordered mode gives Darwin the same broad shape as Linux's WG-batch
     // sender: FMP/FSP AEAD can run across the worker pool, while one flow
-    // thread preserves UDP order for the kernel send target. Keep the env as
-    // an opt-out for NIC/Wi-Fi A/Bs.
+    // thread preserves UDP order for the kernel send target. Keep it as an
+    // explicit lab knob: same-target FIFO also lets latency-sensitive packets
+    // sit behind already-reserved bulk, which is hostile to interactive LAN
+    // traffic under screenshare/TCP load.
     static VALUE: OnceLock<bool> = OnceLock::new();
     *VALUE.get_or_init(|| {
         parse_macos_ordered_sender_enabled(
@@ -1152,12 +1160,12 @@ fn macos_ordered_sender_enabled() -> bool {
 #[cfg(target_os = "macos")]
 fn parse_macos_ordered_sender_enabled(raw: Option<&str>) -> bool {
     raw.map(|raw| {
-        !matches!(
+        matches!(
             raw.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
+            "1" | "true" | "yes" | "on"
         )
     })
-    .unwrap_or(true)
+    .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
