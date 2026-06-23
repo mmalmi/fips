@@ -418,6 +418,9 @@ fn record_fsp_worker_bulk_input_head_wait(job: &FspDecryptJob) {
 
 #[inline]
 fn record_fsp_worker_bulk_input_head_wait_batch(jobs: &[FspDecryptJob]) {
+    if !crate::perf_profile::enabled() {
+        return;
+    }
     for job in jobs {
         record_fsp_worker_bulk_input_head_wait(job);
     }
@@ -731,6 +734,7 @@ fn handle_bulk_item_with_buffers(
             let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();
             let item_started_at = crate::perf_profile::stamp();
+            let trace_enabled = crate::perf_profile::enabled();
             if let Some(job) = jobs.first() {
                 record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, count);
             }
@@ -747,7 +751,9 @@ fn handle_bulk_item_with_buffers(
                 BulkTurnBatchers::new(Some(&mut *fsp_batcher), Some(&mut *fsp_open_batcher)),
             );
             for job in jobs {
-                record_decrypt_worker_bulk_input_tail_wait(item_started_at);
+                if trace_enabled {
+                    record_decrypt_worker_bulk_input_tail_wait(item_started_at);
+                }
                 match shard.handle_job_action(idx, job) {
                     Ok(actions) => {
                         shard.push_job_action_output(
@@ -774,6 +780,7 @@ fn handle_bulk_item_with_buffers(
             let item_started_at = crate::perf_profile::stamp();
             record_fsp_worker_bulk_input_head_wait_batch(&jobs);
             let count = jobs.len();
+            let trace_enabled = crate::perf_profile::enabled();
             let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
             drain_reserved_work_before_bulk_item(
                 idx,
@@ -786,7 +793,9 @@ fn handle_bulk_item_with_buffers(
                 BulkTurnBatchers::new(None, Some(&mut *fsp_open_batcher)),
             );
             for job in jobs {
-                record_fsp_worker_bulk_input_tail_wait(item_started_at);
+                if trace_enabled {
+                    record_fsp_worker_bulk_input_tail_wait(item_started_at);
+                }
                 shard.handle_bulk_fsp_job_with_open_batcher(
                     idx,
                     job,
