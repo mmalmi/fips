@@ -208,13 +208,10 @@ impl EncryptWorkerPool {
     #[cfg(target_os = "macos")]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
         if !macos_ordered_sender_enabled() {
-            use std::hash::{Hash, Hasher};
-
             let queued = QueuedFmpSendJob::direct(job);
-            let key = queued.target_key();
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            key.hash(&mut h);
-            let base_idx = (h.finish() as usize) % self.senders.len();
+            let key =
+                SendDispatchKey::new(queued.target_key(), queued.job.endpoint_flow_dispatch_key);
+            let base_idx = (send_dispatch_fast_hash(&key) as usize) % self.senders.len();
             let idx = match queued.queue_lane() {
                 EncryptWorkerLane::Priority if self.senders.len() > 1 => {
                     (base_idx + 1) % self.senders.len()

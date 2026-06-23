@@ -494,6 +494,29 @@ mod mac_queue_tests {
                 );
             }
 
+            let (flow_a_idx, flow_a) = pool.prepare_dispatch(fmp_send_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                true,
+                true,
+                Some(0x1111),
+            ));
+            let (flow_b_idx, flow_b) = pool.prepare_dispatch(fmp_send_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                true,
+                true,
+                Some(0x2222),
+            ));
+            assert_eq!(flow_a.queue_lane(), EncryptWorkerLane::Bulk);
+            assert_eq!(flow_b.queue_lane(), EncryptWorkerLane::Bulk);
+            assert_ne!(
+                flow_a_idx, flow_b_idx,
+                "independent endpoint flows for one send target should spread across macOS workers"
+            );
+
             let (priority_idx, priority) =
                 pool.prepare_dispatch(fmp_send_job_classified(socket, &cipher, addr, false, false, None));
             assert_eq!(priority.queue_lane(), EncryptWorkerLane::Priority);

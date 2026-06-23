@@ -300,14 +300,12 @@ fn parse_worker_batch_size(raw: Option<&str>, default: usize) -> usize {
         .clamp(1, max_batch)
 }
 
-#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct SendDispatchKey {
     target: SendTargetKey,
     endpoint_flow: Option<u64>,
 }
 
-#[cfg(not(target_os = "macos"))]
 impl SendDispatchKey {
     fn new(target: SendTargetKey, endpoint_flow: Option<u64>) -> Self {
         Self {
@@ -324,17 +322,14 @@ type FairFlowMap = HashMap<
     std::hash::BuildHasherDefault<SendTargetFastHasher>,
 >;
 
-#[cfg(not(target_os = "macos"))]
 struct SendTargetFastHasher(u64);
 
-#[cfg(not(target_os = "macos"))]
 impl Default for SendTargetFastHasher {
     fn default() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 impl std::hash::Hasher for SendTargetFastHasher {
     fn finish(&self) -> u64 {
         self.0
@@ -373,7 +368,6 @@ impl std::hash::Hasher for SendTargetFastHasher {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn send_target_fast_hash(target: &SendTargetKey) -> u64 {
     use std::hash::{Hash, Hasher};
 
@@ -382,7 +376,6 @@ fn send_target_fast_hash(target: &SendTargetKey) -> u64 {
     hasher.finish()
 }
 
-#[cfg(not(target_os = "macos"))]
 fn send_dispatch_fast_hash(target: &SendDispatchKey) -> u64 {
     if target.endpoint_flow.is_none() {
         return send_target_fast_hash(&target.target);
@@ -399,7 +392,6 @@ fn send_dispatch_fast_hash(target: &SendDispatchKey) -> u64 {
     )
 }
 
-#[cfg(not(target_os = "macos"))]
 fn send_dispatch_avalanche(mut hash: u64) -> u64 {
     hash ^= hash >> 33;
     hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
