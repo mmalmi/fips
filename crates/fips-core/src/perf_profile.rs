@@ -217,12 +217,10 @@ pub enum Stage {
     /// individual FSP job begins service. This is batch-tail residence inside
     /// one worker turn.
     DecryptFspWorkerBulkInputTailWait = 44,
-    /// Retired FSP AEAD helper job residence. Kept as a stable historical slot;
-    /// current FSP worker-open opens use `FspAeadWorkerOpenQueueWait`.
-    FspAeadHelperQueueWait = 45,
-    /// Retired FSP AEAD helper completion residence. Kept as a stable historical
-    /// slot; current FSP worker-open completions use `FspAeadWorkerOpenCompletionWait`.
-    FspAeadHelperCompletionWait = 46,
+    /// Retired compatibility slot kept for stable trace decoding.
+    ReservedRetiredStage45 = 45,
+    /// Retired compatibility slot kept for stable trace decoding.
+    ReservedRetiredStage46 = 46,
     /// Worker-side inner FSP seal for pipelined endpoint sends.
     FmpWorkerFspSeal = 47,
     /// Worker-side outer FMP seal for pipelined endpoint sends.
@@ -352,8 +350,8 @@ impl Stage {
             Stage::DecryptFspWorkerService => "decrypt_fsp_worker_service",
             Stage::DecryptFspWorkerBulkInputHeadWait => "decrypt_fsp_worker_bulk_input_head_wait",
             Stage::DecryptFspWorkerBulkInputTailWait => "decrypt_fsp_worker_bulk_input_tail_wait",
-            Stage::FspAeadHelperQueueWait => "fsp_aead_helper_queue_wait",
-            Stage::FspAeadHelperCompletionWait => "fsp_aead_helper_completion_wait",
+            Stage::ReservedRetiredStage45 => "reserved_retired_stage_45",
+            Stage::ReservedRetiredStage46 => "reserved_retired_stage_46",
             Stage::FmpWorkerFspSeal => "fmp_worker_fsp_seal",
             Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
             Stage::FmpWorkerDispatch => "fmp_worker_dispatch",
@@ -432,8 +430,8 @@ fn stage_from_index(idx: usize) -> Stage {
         42 => Stage::DecryptFspWorkerService,
         43 => Stage::DecryptFspWorkerBulkInputHeadWait,
         44 => Stage::DecryptFspWorkerBulkInputTailWait,
-        45 => Stage::FspAeadHelperQueueWait,
-        46 => Stage::FspAeadHelperCompletionWait,
+        45 => Stage::ReservedRetiredStage45,
+        46 => Stage::ReservedRetiredStage46,
         47 => Stage::FmpWorkerFspSeal,
         48 => Stage::FmpWorkerFmpSeal,
         49 => Stage::FmpWorkerDispatch,
@@ -543,7 +541,7 @@ pub enum Event {
     DecryptFspOwnerMismatch = 71,
     DecryptFspPathLocal = 72,
     DecryptFspPathHandoff = 73,
-    DecryptFspPathHelper = 74,
+    ReservedRetiredEvent74 = 74,
     DecryptFspPathFallback = 75,
     ReservedRetiredEvent76 = 76,
     ReservedRetiredEvent77 = 77,
@@ -611,13 +609,13 @@ pub enum Event {
     DecryptWorkerControlDropped = 138,
     DecryptWorkerSelectControl = 139,
     DecryptWorkerDrainControl = 140,
-    DecryptFspHelperCompletionBacklogFallback = 141,
-    DecryptFspHelperQueueFullFallback = 142,
+    ReservedRetiredEvent141 = 141,
+    ReservedRetiredEvent142 = 142,
     ReservedRetiredEvent143 = 143,
     DecryptFmpPreownerCompletionBacklogFallback = 144,
     DecryptFspOpenWorkerCompletionBacklogFallback = 145,
-    FspAeadCompletionReplayDroppedHelper = 146,
-    FspAeadCompletionReplayDroppedHelperReturned = 147,
+    ReservedRetiredEvent146 = 146,
+    ReservedRetiredEvent147 = 147,
     FspAeadCompletionReplayDroppedWorkerOpen = 148,
     FspAeadCompletionReplayDroppedWorkerOpenReturned = 149,
     FspAeadCompletionReplayDroppedDuplicate = 150,
@@ -666,9 +664,9 @@ pub enum Event {
     DecryptFspPathLocalBulk = 183,
     DecryptFspPathHandoffPriority = 184,
     DecryptFspPathHandoffBulk = 185,
-    DecryptFspPathHelperBulk = 186,
+    ReservedRetiredEvent186 = 186,
     DecryptFspPathWorkerOpenBulk = 187,
-    FspAeadCompletionReturnedHelper = 188,
+    ReservedRetiredEvent188 = 188,
     FspAeadCompletionReturnedWorkerOpen = 189,
     DecryptFspOwnerHandoffDropped = 190,
     FmpAeadCompletionReplayDroppedPrechecked = 191,
@@ -681,8 +679,8 @@ pub enum Event {
     FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow = 198,
     DecryptFspMalformedDropped = 199,
     FspAeadCompletionAeadFailedLocal = 200,
-    FspAeadCompletionAeadFailedHelper = 201,
-    FspAeadCompletionAeadFailedHelperReturned = 202,
+    ReservedRetiredEvent201 = 201,
+    ReservedRetiredEvent202 = 202,
     FspAeadCompletionAeadFailedWorkerOpen = 203,
     FspAeadCompletionAeadFailedWorkerOpenReturned = 204,
     FspAeadCompletionEpochMismatch = 205,
@@ -799,12 +797,8 @@ impl Event {
                 | Event::FspAeadCompletionWindowExceeded
                 | Event::DecryptFspOpenWorkerWindowFallback
                 | Event::DecryptWorkerControlDropped
-                | Event::DecryptFspHelperCompletionBacklogFallback
-                | Event::DecryptFspHelperQueueFullFallback
                 | Event::DecryptFmpPreownerCompletionBacklogFallback
                 | Event::DecryptFspOpenWorkerCompletionBacklogFallback
-                | Event::FspAeadCompletionReplayDroppedHelper
-                | Event::FspAeadCompletionReplayDroppedHelperReturned
                 | Event::FspAeadCompletionReplayDroppedWorkerOpen
                 | Event::FspAeadCompletionReplayDroppedWorkerOpenReturned
                 | Event::FspAeadCompletionReplayDroppedDuplicate
@@ -840,8 +834,6 @@ impl Event {
                 | Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow
                 | Event::DecryptFspMalformedDropped
                 | Event::FspAeadCompletionAeadFailedLocal
-                | Event::FspAeadCompletionAeadFailedHelper
-                | Event::FspAeadCompletionAeadFailedHelperReturned
                 | Event::FspAeadCompletionAeadFailedWorkerOpen
                 | Event::FspAeadCompletionAeadFailedWorkerOpenReturned
                 | Event::FspAeadCompletionEpochMismatch
@@ -936,7 +928,7 @@ impl Event {
             Event::DecryptFspOwnerMismatch => "decrypt_fsp_owner_mismatch",
             Event::DecryptFspPathLocal => "decrypt_fsp_path_local",
             Event::DecryptFspPathHandoff => "decrypt_fsp_path_handoff",
-            Event::DecryptFspPathHelper => "decrypt_fsp_path_helper",
+            Event::ReservedRetiredEvent74 => "reserved_retired_event_74",
             Event::DecryptFspPathFallback => "decrypt_fsp_path_fallback",
             Event::ReservedRetiredEvent76 => "reserved_retired_event_76",
             Event::ReservedRetiredEvent77 => "reserved_retired_event_77",
@@ -1018,10 +1010,8 @@ impl Event {
             Event::DecryptWorkerControlDropped => "decrypt_worker_control_dropped",
             Event::DecryptWorkerSelectControl => "decrypt_worker_select_control",
             Event::DecryptWorkerDrainControl => "decrypt_worker_drain_control",
-            Event::DecryptFspHelperCompletionBacklogFallback => {
-                "decrypt_fsp_helper_completion_backlog_fallback"
-            }
-            Event::DecryptFspHelperQueueFullFallback => "decrypt_fsp_helper_queue_full_fallback",
+            Event::ReservedRetiredEvent141 => "reserved_retired_event_141",
+            Event::ReservedRetiredEvent142 => "reserved_retired_event_142",
             Event::ReservedRetiredEvent143 => "reserved_retired_event_143",
             Event::DecryptFmpPreownerCompletionBacklogFallback => {
                 "decrypt_fmp_preowner_completion_backlog_fallback"
@@ -1029,12 +1019,8 @@ impl Event {
             Event::DecryptFspOpenWorkerCompletionBacklogFallback => {
                 "decrypt_fsp_open_worker_completion_backlog_fallback"
             }
-            Event::FspAeadCompletionReplayDroppedHelper => {
-                "fsp_aead_completion_replay_dropped_helper"
-            }
-            Event::FspAeadCompletionReplayDroppedHelperReturned => {
-                "fsp_aead_completion_replay_dropped_helper_returned"
-            }
+            Event::ReservedRetiredEvent146 => "reserved_retired_event_146",
+            Event::ReservedRetiredEvent147 => "reserved_retired_event_147",
             Event::FspAeadCompletionReplayDroppedWorkerOpen => {
                 "fsp_aead_completion_replay_dropped_worker_open"
             }
@@ -1102,9 +1088,9 @@ impl Event {
             Event::DecryptFspPathLocalBulk => "decrypt_fsp_path_local_bulk",
             Event::DecryptFspPathHandoffPriority => "decrypt_fsp_path_handoff_priority",
             Event::DecryptFspPathHandoffBulk => "decrypt_fsp_path_handoff_bulk",
-            Event::DecryptFspPathHelperBulk => "decrypt_fsp_path_helper_bulk",
+            Event::ReservedRetiredEvent186 => "reserved_retired_event_186",
             Event::DecryptFspPathWorkerOpenBulk => "decrypt_fsp_path_worker_open_bulk",
-            Event::FspAeadCompletionReturnedHelper => "fsp_aead_completion_returned_helper",
+            Event::ReservedRetiredEvent188 => "reserved_retired_event_188",
             Event::FspAeadCompletionReturnedWorkerOpen => {
                 "fsp_aead_completion_returned_worker_open"
             }
@@ -1135,10 +1121,8 @@ impl Event {
             }
             Event::DecryptFspMalformedDropped => "decrypt_fsp_malformed_dropped",
             Event::FspAeadCompletionAeadFailedLocal => "fsp_aead_completion_aead_failed_local",
-            Event::FspAeadCompletionAeadFailedHelper => "fsp_aead_completion_aead_failed_helper",
-            Event::FspAeadCompletionAeadFailedHelperReturned => {
-                "fsp_aead_completion_aead_failed_helper_returned"
-            }
+            Event::ReservedRetiredEvent201 => "reserved_retired_event_201",
+            Event::ReservedRetiredEvent202 => "reserved_retired_event_202",
             Event::FspAeadCompletionAeadFailedWorkerOpen => {
                 "fsp_aead_completion_aead_failed_worker_open"
             }
@@ -1342,7 +1326,7 @@ fn event_from_index(idx: usize) -> Event {
         71 => Event::DecryptFspOwnerMismatch,
         72 => Event::DecryptFspPathLocal,
         73 => Event::DecryptFspPathHandoff,
-        74 => Event::DecryptFspPathHelper,
+        74 => Event::ReservedRetiredEvent74,
         75 => Event::DecryptFspPathFallback,
         76 => Event::ReservedRetiredEvent76,
         77 => Event::ReservedRetiredEvent77,
@@ -1409,13 +1393,13 @@ fn event_from_index(idx: usize) -> Event {
         138 => Event::DecryptWorkerControlDropped,
         139 => Event::DecryptWorkerSelectControl,
         140 => Event::DecryptWorkerDrainControl,
-        141 => Event::DecryptFspHelperCompletionBacklogFallback,
-        142 => Event::DecryptFspHelperQueueFullFallback,
+        141 => Event::ReservedRetiredEvent141,
+        142 => Event::ReservedRetiredEvent142,
         143 => Event::ReservedRetiredEvent143,
         144 => Event::DecryptFmpPreownerCompletionBacklogFallback,
         145 => Event::DecryptFspOpenWorkerCompletionBacklogFallback,
-        146 => Event::FspAeadCompletionReplayDroppedHelper,
-        147 => Event::FspAeadCompletionReplayDroppedHelperReturned,
+        146 => Event::ReservedRetiredEvent146,
+        147 => Event::ReservedRetiredEvent147,
         148 => Event::FspAeadCompletionReplayDroppedWorkerOpen,
         149 => Event::FspAeadCompletionReplayDroppedWorkerOpenReturned,
         150 => Event::FspAeadCompletionReplayDroppedDuplicate,
@@ -1454,9 +1438,9 @@ fn event_from_index(idx: usize) -> Event {
         183 => Event::DecryptFspPathLocalBulk,
         184 => Event::DecryptFspPathHandoffPriority,
         185 => Event::DecryptFspPathHandoffBulk,
-        186 => Event::DecryptFspPathHelperBulk,
+        186 => Event::ReservedRetiredEvent186,
         187 => Event::DecryptFspPathWorkerOpenBulk,
-        188 => Event::FspAeadCompletionReturnedHelper,
+        188 => Event::ReservedRetiredEvent188,
         189 => Event::FspAeadCompletionReturnedWorkerOpen,
         190 => Event::DecryptFspOwnerHandoffDropped,
         191 => Event::FmpAeadCompletionReplayDroppedPrechecked,
@@ -1469,8 +1453,8 @@ fn event_from_index(idx: usize) -> Event {
         198 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow,
         199 => Event::DecryptFspMalformedDropped,
         200 => Event::FspAeadCompletionAeadFailedLocal,
-        201 => Event::FspAeadCompletionAeadFailedHelper,
-        202 => Event::FspAeadCompletionAeadFailedHelperReturned,
+        201 => Event::ReservedRetiredEvent201,
+        202 => Event::ReservedRetiredEvent202,
         203 => Event::FspAeadCompletionAeadFailedWorkerOpen,
         204 => Event::FspAeadCompletionAeadFailedWorkerOpenReturned,
         205 => Event::FspAeadCompletionEpochMismatch,

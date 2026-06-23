@@ -332,8 +332,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_fsp_path_handoff"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspPathHelper as usize).name(),
-        "decrypt_fsp_path_helper"
+        event_from_index(Event::ReservedRetiredEvent74 as usize).name(),
+        "reserved_retired_event_74"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspPathFallback as usize).name(),
@@ -364,8 +364,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_fsp_path_handoff_bulk"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspPathHelperBulk as usize).name(),
-        "decrypt_fsp_path_helper_bulk"
+        event_from_index(Event::ReservedRetiredEvent186 as usize).name(),
+        "reserved_retired_event_186"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspPathWorkerOpenBulk as usize).name(),
@@ -492,12 +492,12 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_aead_failed_local"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionAeadFailedHelper as usize).name(),
-        "fsp_aead_completion_aead_failed_helper"
+        event_from_index(Event::ReservedRetiredEvent201 as usize).name(),
+        "reserved_retired_event_201"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionAeadFailedHelperReturned as usize).name(),
-        "fsp_aead_completion_aead_failed_helper_returned"
+        event_from_index(Event::ReservedRetiredEvent202 as usize).name(),
+        "reserved_retired_event_202"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionAeadFailedWorkerOpen as usize).name(),
@@ -528,12 +528,12 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_replay_dropped"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReplayDroppedHelper as usize).name(),
-        "fsp_aead_completion_replay_dropped_helper"
+        event_from_index(Event::ReservedRetiredEvent146 as usize).name(),
+        "reserved_retired_event_146"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReplayDroppedHelperReturned as usize).name(),
-        "fsp_aead_completion_replay_dropped_helper_returned"
+        event_from_index(Event::ReservedRetiredEvent147 as usize).name(),
+        "reserved_retired_event_147"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReplayDroppedWorkerOpen as usize).name(),
@@ -824,12 +824,12 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_worker_bulk_interleave_budget_exhausted"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspHelperCompletionBacklogFallback as usize).name(),
-        "decrypt_fsp_helper_completion_backlog_fallback"
+        event_from_index(Event::ReservedRetiredEvent141 as usize).name(),
+        "reserved_retired_event_141"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspHelperQueueFullFallback as usize).name(),
-        "decrypt_fsp_helper_queue_full_fallback"
+        event_from_index(Event::ReservedRetiredEvent142 as usize).name(),
+        "reserved_retired_event_142"
     );
     assert_eq!(
         event_from_index(Event::ReservedRetiredEvent143 as usize).name(),
@@ -848,8 +848,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_fsp_open_worker_returned_dropped"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReturnedHelper as usize).name(),
-        "fsp_aead_completion_returned_helper"
+        event_from_index(Event::ReservedRetiredEvent188 as usize).name(),
+        "reserved_retired_event_188"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReturnedWorkerOpen as usize).name(),
@@ -1064,12 +1064,12 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         "decrypt_fsp_worker_bulk_input_tail_wait"
     );
     assert_eq!(
-        stage_from_index(Stage::FspAeadHelperQueueWait as usize).name(),
-        "fsp_aead_helper_queue_wait"
+        stage_from_index(Stage::ReservedRetiredStage45 as usize).name(),
+        "reserved_retired_stage_45"
     );
     assert_eq!(
-        stage_from_index(Stage::FspAeadHelperCompletionWait as usize).name(),
-        "fsp_aead_helper_completion_wait"
+        stage_from_index(Stage::ReservedRetiredStage46 as usize).name(),
+        "reserved_retired_stage_46"
     );
     assert_eq!(
         stage_from_index(Stage::FmpWorkerFspSeal as usize).name(),
@@ -1227,7 +1227,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     let fsp_owner_mismatch_before = EVENTS[Event::DecryptFspOwnerMismatch as usize].load(Relaxed);
     let fsp_path_local_before = EVENTS[Event::DecryptFspPathLocal as usize].load(Relaxed);
     let fsp_path_handoff_before = EVENTS[Event::DecryptFspPathHandoff as usize].load(Relaxed);
-    let fsp_path_helper_before = EVENTS[Event::DecryptFspPathHelper as usize].load(Relaxed);
     let fsp_path_fallback_before = EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed);
     let fsp_owner_handoff_dropped_before =
         EVENTS[Event::DecryptFspOwnerHandoffDropped as usize].load(Relaxed);
@@ -1293,7 +1292,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptFspOwnerMismatch, 73);
     record_event_count_sample(Event::DecryptFspPathLocal, 79);
     record_event_count_sample(Event::DecryptFspPathHandoff, 83);
-    record_event_count_sample(Event::DecryptFspPathHelper, 89);
     record_event_count_sample(Event::DecryptFspPathFallback, 97);
     record_event_count_sample(Event::DecryptFspOwnerHandoffDropped, 98);
     record_event_count_sample(Event::DecryptFspPathWorkerOpen, 99);
@@ -1456,10 +1454,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     assert_eq!(
         EVENTS[Event::DecryptFspPathHandoff as usize].load(Relaxed) - fsp_path_handoff_before,
         83
-    );
-    assert_eq!(
-        EVENTS[Event::DecryptFspPathHelper as usize].load(Relaxed) - fsp_path_helper_before,
-        89
     );
     assert_eq!(
         EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed) - fsp_path_fallback_before,
