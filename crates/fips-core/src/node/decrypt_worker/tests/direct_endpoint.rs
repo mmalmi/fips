@@ -561,6 +561,64 @@
     }
 
     #[test]
+    fn decrypt_worker_fsp_unregister_full_keeps_shared_session_for_retry() {
+        let (pool, control_rx, priority_rx, _bulk_rx) = one_slot_worker_pool();
+        let source_addr = *test_source_peer().node_addr();
+        let shared = Arc::new(FspSharedCryptoSession::new(
+            0,
+            7,
+            11,
+            false,
+            Arc::new(test_chacha_key([0x6a; 32])),
+        ));
+        pool.fsp_aead_sessions
+            .write()
+            .expect("test FSP session map")
+            .insert(source_addr, Arc::clone(&shared));
+        assert!(
+            control_rx.try_recv().is_err(),
+            "test control lane should start empty"
+        );
+
+        assert!(pool.register_fsp_session(
+            source_addr,
+            crate::node::session::FspRecvSessionSnapshot {
+                source_peer: test_source_peer(),
+                current_k_bit: false,
+                current: crate::node::session::FspRecvEpochSnapshot {
+                    cipher: test_chacha_key([0x6b; 32]),
+                    replay: ReplayWindow::new(),
+                },
+                pending: None,
+                previous: None,
+            },
+        ));
+        assert_eq!(
+            control_rx.len(),
+            1,
+            "test control queue should be full before FSP unregister"
+        );
+
+        assert!(
+            !pool.unregister_fsp_session(source_addr),
+            "FSP unregister should report pressure when the control lane is full"
+        );
+        assert_eq!(
+            control_rx.len(),
+            1,
+            "failed FSP unregister must not overflow the bounded control lane"
+        );
+        assert!(priority_rx.is_empty(), "priority lane should remain available");
+        let retained = pool
+            .fsp_aead_session(&source_addr)
+            .expect("shared FSP opener state must remain published for retry");
+        assert!(
+            Arc::ptr_eq(&retained, &shared),
+            "failed FSP unregister must not half-remove shared worker state"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_drain_registers_control_before_bulk_jobs() {
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);

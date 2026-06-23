@@ -848,24 +848,33 @@ impl DecryptWorkerPool {
         }
     }
 
+    /// Drop the shared FSP opener state only after the owner worker accepts the
+    /// bounded unregister control message. A full control lane means the worker
+    /// still owns that receive state, so callers must treat `false` as pressure.
+    #[must_use = "unregistration may have failed under queue pressure"]
     pub fn unregister_fsp_session(&self, source_addr: NodeAddr) -> bool {
         if self.senders.is_empty() {
             return false;
         }
         let idx = self.worker_idx_for_fsp(&source_addr);
-        if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
-            sessions.remove(&source_addr);
-        }
         match self.senders[idx]
             .control
             .try_send(WorkerMsg::UnregisterFspSession { source_addr })
         {
-            Ok(()) => true,
+            Ok(()) => {
+                if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
+                    sessions.remove(&source_addr);
+                }
+                true
+            }
             Err(TrySendError::Full(_)) => {
                 record_decrypt_worker_control_drop(idx, "unregister-fsp");
                 false
             }
             Err(TrySendError::Disconnected(_)) => {
+                if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
+                    sessions.remove(&source_addr);
+                }
                 debug!(
                     worker = idx,
                     "DecryptWorker thread gone; ignoring FSP unregister"
