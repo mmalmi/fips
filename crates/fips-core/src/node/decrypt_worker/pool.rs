@@ -69,9 +69,7 @@ fn record_decrypt_worker_bulk_queue_depth(
 
 fn decrypt_worker_bulk_queue_role(item: &DecryptWorkerBulkItem) -> DecryptWorkerBulkQueueRole {
     match item {
-        DecryptWorkerBulkItem::Job(_) | DecryptWorkerBulkItem::Batch(_) => {
-            DecryptWorkerBulkQueueRole::FmpBulk
-        }
+        DecryptWorkerBulkItem::Batch(_) => DecryptWorkerBulkQueueRole::FmpBulk,
         DecryptWorkerBulkItem::FspBatch(_) => DecryptWorkerBulkQueueRole::FspOwner,
         DecryptWorkerBulkItem::FspAeadOpenBatch(_) => DecryptWorkerBulkQueueRole::FspOpen,
     }
@@ -256,7 +254,7 @@ impl DecryptWorkerPool {
     }
 
     fn dispatch_bulk_job(&self, idx: usize, job: DecryptJob) {
-        self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Job(job));
+        self.dispatch_bulk_item(idx, decrypt_worker_bulk_item_from_jobs(vec![job]));
     }
 
     fn fsp_bulk_open_worker_enabled(&self) -> bool {
@@ -463,13 +461,7 @@ impl DecryptWorkerPool {
             job.set_trace_enqueued_at(queued_at);
         }
 
-        if jobs.len() == 1 {
-            let job = jobs.pop().expect("checked non-empty batch");
-            self.dispatch_bulk_job(idx, job);
-            return;
-        }
-
-        self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Batch(jobs));
+        self.dispatch_bulk_item(idx, decrypt_worker_bulk_item_from_jobs(jobs));
     }
 
     fn dispatch_bulk_item(&self, idx: usize, item: DecryptWorkerBulkItem) {

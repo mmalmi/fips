@@ -263,6 +263,7 @@ impl DecryptWorkerShard {
         }
     }
 
+    #[cfg(test)]
     fn handle_bulk_job_msg(
         &mut self,
         idx: usize,

@@ -675,15 +675,6 @@ fn handle_bulk_item_with_buffers(
 ) -> usize {
     debug_assert!(bulk_batchers.is_empty());
     match item {
-        DecryptWorkerBulkItem::Job(job) => {
-            let item_service_started_at = crate::perf_profile::stamp();
-            let item_started_at = crate::perf_profile::stamp();
-            record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, 1);
-            record_decrypt_worker_bulk_input_tail_wait(item_started_at);
-            shard.handle_bulk_job_msg(idx, job, plaintext_batch);
-            record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
-            1
-        }
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
             let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();
@@ -701,16 +692,18 @@ fn handle_bulk_item_with_buffers(
             }
             let fsp_batcher = &mut bulk_batchers.fsp_batcher;
             let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
-            drain_reserved_work_before_bulk_item(
-                idx,
-                shard,
-                control_rx,
-                priority_rx,
-                fsp_aead_completion_rx,
-                plaintext_batch,
-                batch_stats,
-                BulkTurnBatchers::new(Some(&mut *fsp_batcher), Some(&mut *fsp_open_batcher)),
-            );
+            if count > 1 {
+                drain_reserved_work_before_bulk_item(
+                    idx,
+                    shard,
+                    control_rx,
+                    priority_rx,
+                    fsp_aead_completion_rx,
+                    plaintext_batch,
+                    batch_stats,
+                    BulkTurnBatchers::new(Some(&mut *fsp_batcher), Some(&mut *fsp_open_batcher)),
+                );
+            }
             for job in jobs {
                 if trace_enabled {
                     record_decrypt_worker_bulk_input_tail_wait(item_started_at);

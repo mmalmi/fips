@@ -315,7 +315,7 @@
         ));
         assert!(matches!(
             bulk_rx.try_recv().expect("bulk item"),
-            DecryptWorkerBulkItem::Job(_)
+            DecryptWorkerBulkItem::Batch(_)
         ));
     }
 
@@ -337,9 +337,9 @@
         assert!(
             matches!(
                 bulk_rx.try_recv().expect("single packet bulk item"),
-                DecryptWorkerBulkItem::Job(_)
+                DecryptWorkerBulkItem::Batch(_)
             ),
-            "single-packet capacity must not be inflated into a wider batch"
+            "single-packet capacity must enqueue a one-packet batch"
         );
     }
 
@@ -362,9 +362,9 @@
         assert!(
             matches!(
                 bulk_rx[0].try_recv().expect("single bulk item"),
-                DecryptWorkerBulkItem::Job(_)
+                DecryptWorkerBulkItem::Batch(_)
             ),
-            "single-job flush should still dispatch a single job, not a batch"
+            "single-job flush should dispatch one canonical bulk batch"
         );
     }
 
@@ -393,7 +393,6 @@
                 WORKER_PACKET_CAP,
                 "batch width should stop at the worker packet capacity"
             ),
-            DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected an eight-packet bulk batch")
             }
@@ -616,7 +615,7 @@
         queue_bulk_item_for_test(
             &bulk_tx,
             &bulk_queued_packets,
-            DecryptWorkerBulkItem::Job(bulk_job),
+            decrypt_worker_bulk_item_from_jobs(vec![bulk_job]),
         );
 
         let mut shard = test_shard();
@@ -696,7 +695,7 @@
         queue_bulk_item_for_test(
             &bulk_tx,
             &bulk_queued_packets,
-            DecryptWorkerBulkItem::Job(bulk_job),
+            decrypt_worker_bulk_item_from_jobs(vec![bulk_job]),
         );
 
         let mut shard = test_shard();
@@ -813,7 +812,7 @@
         queue_bulk_item_for_test(
             &bulk_tx,
             &bulk_queued_packets,
-            DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
+            dummy_bulk_decrypt_item(session_key),
         );
         priority_tx
             .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
@@ -904,7 +903,7 @@
             queue_bulk_item_for_test(
                 &bulk_tx,
                 &bulk_queued_packets,
-                DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
+                dummy_bulk_decrypt_item(session_key),
             );
         }
 
@@ -996,7 +995,7 @@
             queue_bulk_item_for_test(
                 &bulk_tx,
                 &bulk_queued_packets,
-                DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
+                dummy_bulk_decrypt_item(session_key),
             );
         }
 
