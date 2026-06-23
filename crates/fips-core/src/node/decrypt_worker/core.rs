@@ -901,6 +901,30 @@ enum FmpReadyCompletion {
     AeadFailed(DecryptFailureReport),
 }
 
+#[derive(Default)]
+struct FmpOrderedDrain {
+    ready: usize,
+    accepted: usize,
+    aead_failures: usize,
+    replay_drops: usize,
+}
+
+impl FmpOrderedDrain {
+    fn accounted_ready(&self) -> usize {
+        self.accepted + self.aead_failures + self.replay_drops
+    }
+
+    fn record(&self) {
+        debug_assert_eq!(self.ready, self.accounted_ready());
+        crate::perf_profile::record_fmp_aead_completion_drain(
+            self.ready,
+            self.accepted,
+            self.aead_failures,
+            self.replay_drops,
+        );
+    }
+}
+
 fn local_established_fsp_datagram_meta(
     packet_data: &[u8],
     local_node_addr: NodeAddr,
@@ -1305,10 +1329,11 @@ impl OwnedSessionState {
         ticket: FmpReceiveTicket,
         completion: FmpOrderedCompletion,
         mut on_output: impl FnMut(FmpReadyCompletion),
-    ) -> Result<usize, OrderedCompletionError> {
+    ) -> Result<FmpOrderedDrain, OrderedCompletionError> {
         let fmp_replay = &mut self.fmp_replay;
         let fmp_receive_order = &mut self.fmp_receive_order;
-        fmp_receive_order.complete(ticket, completion, |completion| {
+        let mut drain = FmpOrderedDrain::default();
+        let ready_count = fmp_receive_order.complete(ticket, completion, |completion| {
             match completion {
                 FmpOrderedCompletion::Opened { opened, precheck } => {
                     if let Some(reason) = fmp_replay.rejection_reason(precheck.counter) {
@@ -1317,16 +1342,22 @@ impl OwnedSessionState {
                             reason,
                             counter_lag,
                         );
+                        drain.replay_drops += 1;
                         return;
                     }
                     fmp_replay.accept(precheck.counter);
+                    drain.accepted += 1;
                     on_output(FmpReadyCompletion::Opened(opened));
                 }
                 FmpOrderedCompletion::AeadFailed { failure } => {
+                    drain.aead_failures += 1;
                     on_output(FmpReadyCompletion::AeadFailed(failure));
                 }
             }
-        })
+        })?;
+        drain.ready = ready_count;
+        drain.record();
+        Ok(drain)
     }
 }
 

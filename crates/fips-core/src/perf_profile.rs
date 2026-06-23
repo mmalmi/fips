@@ -72,9 +72,8 @@
 //!   * `DECRYPT_FSP_WORKER_BULK_INPUT_TAIL_WAIT` — FSP batch item service start → individual job handling
 //!   * `DECRYPT_WORKER_BULK_INPUT_HEAD_WAIT` — bulk decrypt-worker enqueue → batch item service start
 //!   * `DECRYPT_WORKER_BULK_INPUT_TAIL_WAIT` — decrypt-worker batch item service start → individual job handling
-//!   * `DECRYPT_WORKER_BULK_ITEM_SERVICE` — decrypt-worker bulk item service time
-//!   * `FMP_AEAD_HELPER_*` / `FMP_RECEIVE_ORDER_WINDOW_WAIT` — retired FMP helper slots kept for
-//!     stable trace decoding; the live FMP receive path opens on the session owner.
+//!   * `reserved_retired_stage_53..58` — retired compatibility slots kept out of
+//!     the live FMP receive vocabulary.
 //!   * `DECRYPT_WORKER_OUTPUT_FLUSH` — worker output batch flush into rx_loop/endpoint lanes
 //!   * `FSP_AEAD_WORKER_OPEN_QUEUE_WAIT` — FSP opener-worker bulk queue residence
 //!   * `FSP_AEAD_WORKER_OPEN_COMPLETION_WAIT` — FSP opener-worker completion residence
@@ -239,18 +238,18 @@ pub enum Stage {
     DecryptWorkerBulkInputTailWait = 51,
     /// Time a decrypt worker spends servicing one dequeued bulk item.
     DecryptWorkerBulkItemService = 52,
-    /// Retired FMP AEAD helper slot kept for stable trace decoding.
-    FmpAeadHelperQueueWait = 53,
-    /// Retired FMP AEAD helper slot kept for stable trace decoding.
-    FmpAeadHelperCompletionWait = 54,
-    /// Retired FMP AEAD helper slot kept for stable trace decoding.
-    FmpAeadHelperPriorityCompletionWait = 55,
-    /// Retired FMP AEAD helper slot kept for stable trace decoding.
-    FmpAeadHelperBulkCompletionWait = 56,
-    /// Retired FMP helper receive-order slot kept for stable trace decoding.
-    FmpReceiveOrderWindowWait = 57,
-    /// Retired FMP AEAD helper slot kept for stable trace decoding.
-    FmpAeadHelperCompletionService = 58,
+    /// Retired compatibility slot kept for stable trace decoding.
+    ReservedRetiredStage53 = 53,
+    /// Retired compatibility slot kept for stable trace decoding.
+    ReservedRetiredStage54 = 54,
+    /// Retired compatibility slot kept for stable trace decoding.
+    ReservedRetiredStage55 = 55,
+    /// Retired compatibility slot kept for stable trace decoding.
+    ReservedRetiredStage56 = 56,
+    /// Retired compatibility slot kept for stable trace decoding.
+    ReservedRetiredStage57 = 57,
+    /// Retired compatibility slot kept for stable trace decoding.
+    ReservedRetiredStage58 = 58,
     /// Time spent flushing decrypt-worker output batches into rx_loop fallback
     /// and direct endpoint delivery lanes.
     DecryptWorkerOutputFlush = 59,
@@ -361,14 +360,12 @@ impl Stage {
             Stage::DecryptWorkerBulkInputHeadWait => "decrypt_worker_bulk_input_head_wait",
             Stage::DecryptWorkerBulkInputTailWait => "decrypt_worker_bulk_input_tail_wait",
             Stage::DecryptWorkerBulkItemService => "decrypt_worker_bulk_item_service",
-            Stage::FmpAeadHelperQueueWait => "fmp_aead_helper_queue_wait",
-            Stage::FmpAeadHelperCompletionWait => "fmp_aead_helper_completion_wait",
-            Stage::FmpAeadHelperPriorityCompletionWait => {
-                "fmp_aead_helper_priority_completion_wait"
-            }
-            Stage::FmpAeadHelperBulkCompletionWait => "fmp_aead_helper_bulk_completion_wait",
-            Stage::FmpReceiveOrderWindowWait => "fmp_receive_order_window_wait",
-            Stage::FmpAeadHelperCompletionService => "fmp_aead_helper_completion_service",
+            Stage::ReservedRetiredStage53 => "reserved_retired_stage_53",
+            Stage::ReservedRetiredStage54 => "reserved_retired_stage_54",
+            Stage::ReservedRetiredStage55 => "reserved_retired_stage_55",
+            Stage::ReservedRetiredStage56 => "reserved_retired_stage_56",
+            Stage::ReservedRetiredStage57 => "reserved_retired_stage_57",
+            Stage::ReservedRetiredStage58 => "reserved_retired_stage_58",
             Stage::DecryptWorkerOutputFlush => "decrypt_worker_output_flush",
             Stage::FspAeadCompletionService => "fsp_aead_completion_service",
             Stage::EndpointSendPrepare => "endpoint_send_prepare",
@@ -443,12 +440,12 @@ fn stage_from_index(idx: usize) -> Stage {
         50 => Stage::DecryptWorkerBulkInputHeadWait,
         51 => Stage::DecryptWorkerBulkInputTailWait,
         52 => Stage::DecryptWorkerBulkItemService,
-        53 => Stage::FmpAeadHelperQueueWait,
-        54 => Stage::FmpAeadHelperCompletionWait,
-        55 => Stage::FmpAeadHelperPriorityCompletionWait,
-        56 => Stage::FmpAeadHelperBulkCompletionWait,
-        57 => Stage::FmpReceiveOrderWindowWait,
-        58 => Stage::FmpAeadHelperCompletionService,
+        53 => Stage::ReservedRetiredStage53,
+        54 => Stage::ReservedRetiredStage54,
+        55 => Stage::ReservedRetiredStage55,
+        56 => Stage::ReservedRetiredStage56,
+        57 => Stage::ReservedRetiredStage57,
+        58 => Stage::ReservedRetiredStage58,
         59 => Stage::DecryptWorkerOutputFlush,
         60 => Stage::FspAeadCompletionService,
         61 => Stage::EndpointSendPrepare,
@@ -548,8 +545,8 @@ pub enum Event {
     DecryptFspPathHandoff = 73,
     DecryptFspPathHelper = 74,
     DecryptFspPathFallback = 75,
-    DecryptFmpPreownerHelper = 76,
-    DecryptFmpPreownerHelperFallback = 77,
+    ReservedRetiredEvent76 = 76,
+    ReservedRetiredEvent77 = 77,
     DecryptFmpPreownerWindowFallback = 78,
     DecryptFmpPreownerInlineFallback = 79,
     FmpWorkerDispatchFlowKeyed = 80,
@@ -563,7 +560,7 @@ pub enum Event {
     FmpWorkerDispatchWorker6 = 88,
     FmpWorkerDispatchWorker7 = 89,
     FmpWorkerDispatchWorkerOther = 90,
-    // Retired FMP AEAD helper completion slots kept for stable trace decoding.
+    // FMP AEAD completion telemetry for worker-open replay diagnostics.
     FmpAeadCompletionReady = 91,
     FmpAeadCompletionAccepted = 92,
     FmpAeadCompletionAeadFailed = 93,
@@ -616,7 +613,7 @@ pub enum Event {
     DecryptWorkerDrainControl = 140,
     DecryptFspHelperCompletionBacklogFallback = 141,
     DecryptFspHelperQueueFullFallback = 142,
-    DecryptFmpHelperCompletionBacklogFallback = 143,
+    ReservedRetiredEvent143 = 143,
     DecryptFmpPreownerCompletionBacklogFallback = 144,
     DecryptFspOpenWorkerCompletionBacklogFallback = 145,
     FspAeadCompletionReplayDroppedHelper = 146,
@@ -786,7 +783,6 @@ impl Event {
                 | Event::EncryptWorkerBulkQueueFull
                 | Event::DecryptFspOwnerMismatch
                 | Event::DecryptFspPathFallback
-                | Event::DecryptFmpPreownerHelperFallback
                 | Event::DecryptFmpPreownerWindowFallback
                 | Event::DecryptFmpPreownerInlineFallback
                 | Event::FmpAeadCompletionAeadFailed
@@ -805,7 +801,6 @@ impl Event {
                 | Event::DecryptWorkerControlDropped
                 | Event::DecryptFspHelperCompletionBacklogFallback
                 | Event::DecryptFspHelperQueueFullFallback
-                | Event::DecryptFmpHelperCompletionBacklogFallback
                 | Event::DecryptFmpPreownerCompletionBacklogFallback
                 | Event::DecryptFspOpenWorkerCompletionBacklogFallback
                 | Event::FspAeadCompletionReplayDroppedHelper
@@ -943,8 +938,8 @@ impl Event {
             Event::DecryptFspPathHandoff => "decrypt_fsp_path_handoff",
             Event::DecryptFspPathHelper => "decrypt_fsp_path_helper",
             Event::DecryptFspPathFallback => "decrypt_fsp_path_fallback",
-            Event::DecryptFmpPreownerHelper => "decrypt_fmp_preowner_helper",
-            Event::DecryptFmpPreownerHelperFallback => "decrypt_fmp_preowner_helper_fallback",
+            Event::ReservedRetiredEvent76 => "reserved_retired_event_76",
+            Event::ReservedRetiredEvent77 => "reserved_retired_event_77",
             Event::DecryptFmpPreownerWindowFallback => "decrypt_fmp_preowner_window_fallback",
             Event::DecryptFmpPreownerInlineFallback => "decrypt_fmp_preowner_inline_fallback",
             Event::FmpWorkerDispatchFlowKeyed => "fmp_worker_dispatch_flow_keyed",
@@ -1027,9 +1022,7 @@ impl Event {
                 "decrypt_fsp_helper_completion_backlog_fallback"
             }
             Event::DecryptFspHelperQueueFullFallback => "decrypt_fsp_helper_queue_full_fallback",
-            Event::DecryptFmpHelperCompletionBacklogFallback => {
-                "decrypt_fmp_helper_completion_backlog_fallback"
-            }
+            Event::ReservedRetiredEvent143 => "reserved_retired_event_143",
             Event::DecryptFmpPreownerCompletionBacklogFallback => {
                 "decrypt_fmp_preowner_completion_backlog_fallback"
             }
@@ -1351,8 +1344,8 @@ fn event_from_index(idx: usize) -> Event {
         73 => Event::DecryptFspPathHandoff,
         74 => Event::DecryptFspPathHelper,
         75 => Event::DecryptFspPathFallback,
-        76 => Event::DecryptFmpPreownerHelper,
-        77 => Event::DecryptFmpPreownerHelperFallback,
+        76 => Event::ReservedRetiredEvent76,
+        77 => Event::ReservedRetiredEvent77,
         78 => Event::DecryptFmpPreownerWindowFallback,
         79 => Event::DecryptFmpPreownerInlineFallback,
         80 => Event::FmpWorkerDispatchFlowKeyed,
@@ -1418,7 +1411,7 @@ fn event_from_index(idx: usize) -> Event {
         140 => Event::DecryptWorkerDrainControl,
         141 => Event::DecryptFspHelperCompletionBacklogFallback,
         142 => Event::DecryptFspHelperQueueFullFallback,
-        143 => Event::DecryptFmpHelperCompletionBacklogFallback,
+        143 => Event::ReservedRetiredEvent143,
         144 => Event::DecryptFmpPreownerCompletionBacklogFallback,
         145 => Event::DecryptFspOpenWorkerCompletionBacklogFallback,
         146 => Event::FspAeadCompletionReplayDroppedHelper,
@@ -2383,6 +2376,31 @@ pub(crate) fn record_fsp_aead_completion_drain(
 }
 
 #[inline]
+pub(crate) fn record_fmp_aead_completion_drain(
+    ready: usize,
+    accepted: usize,
+    aead_failures: usize,
+    replay_drops: usize,
+) {
+    if ready == 0 {
+        return;
+    }
+    record_event_count(Event::FmpAeadCompletionReady, ready as u64);
+    if accepted > 0 {
+        record_event_count(Event::FmpAeadCompletionAccepted, accepted as u64);
+    }
+    if aead_failures > 0 {
+        record_event_count(Event::FmpAeadCompletionAeadFailed, aead_failures as u64);
+    }
+    if replay_drops > 0 {
+        record_event_count(Event::FmpAeadCompletionReplayDropped, replay_drops as u64);
+    }
+    if ready > 1 {
+        record_event_count(Event::FmpAeadCompletionReadyMulti, 1);
+    }
+}
+
+#[inline]
 pub(crate) fn record_fsp_aead_completion_source_replay_drops(
     worker_open: usize,
     worker_open_returned: usize,
@@ -2434,7 +2452,6 @@ pub(crate) fn record_fmp_aead_completion_prechecked_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
 ) {
-    record_event(Event::FmpAeadCompletionReplayDropped);
     record_event(Event::FmpAeadCompletionReplayDroppedPrechecked);
     let event = match reason {
         crate::noise::ReplayRejection::Duplicate => Event::FmpAeadCompletionReplayDroppedDuplicate,

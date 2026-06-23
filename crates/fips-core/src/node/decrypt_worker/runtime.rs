@@ -736,6 +736,17 @@ struct DecryptWorkerOutput {
 enum DecryptWorkerJobAction {
     Output(DecryptWorkerOutput),
     FspJob(FspDecryptJob),
+    Many(Vec<DecryptWorkerJobAction>),
+}
+
+impl DecryptWorkerJobAction {
+    fn from_vec(mut actions: Vec<Self>) -> Option<Self> {
+        match actions.len() {
+            0 => None,
+            1 => actions.pop(),
+            _ => Some(Self::Many(actions)),
+        }
+    }
 }
 
 impl DecryptWorkerOutput {

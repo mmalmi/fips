@@ -394,6 +394,9 @@
             DecryptWorkerJobAction::FspJob(_) => {
                 panic!("coordinate FSP must not use worker-owned FSP open")
             }
+            DecryptWorkerJobAction::Many(_) => {
+                panic!("coordinate FSP should return one plaintext action")
+            }
         }
     }
 

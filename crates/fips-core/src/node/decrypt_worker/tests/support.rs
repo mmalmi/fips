@@ -1595,6 +1595,50 @@
         )
     }
 
+    #[test]
+    fn job_action_many_reuses_plaintext_output_batcher() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let pool = DecryptWorkerPool {
+            senders: Arc::from(Vec::<DecryptWorkerSender>::new().into_boxed_slice()),
+            direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+            fallback_tx: fallback_tx.clone(),
+        };
+        let mut shard = DecryptWorkerShard::new(pool);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(fallback_tx);
+        let packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+
+        shard.push_job_action_output(
+            0,
+            Some(DecryptWorkerJobAction::Many(vec![
+                DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+                    event: dummy_plaintext_event(packet_len),
+                    direct_delivery: None,
+                }),
+                DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+                    event: dummy_plaintext_event(packet_len),
+                    direct_delivery: None,
+                }),
+            ])),
+            &mut plaintext_batch,
+            None,
+            None,
+        );
+        plaintext_batch.flush();
+
+        let event = fallback_rx.bulk.try_recv().expect("batched plaintext output");
+        match &event {
+            DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
+                assert_eq!(fallbacks.len(), 2);
+            }
+            other => panic!(
+                "many output actions should reuse plaintext batching, got {} packet(s)",
+                other.packet_count()
+            ),
+        }
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+    }
+
     fn dummy_failure_event() -> DecryptWorkerEvent {
         DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
             source_peer: test_source_peer(),

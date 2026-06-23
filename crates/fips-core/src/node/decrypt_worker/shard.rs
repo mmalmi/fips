@@ -424,6 +424,20 @@ impl DecryptWorkerShard {
                 );
                 plaintext_batch.flush();
             }
+            Some(DecryptWorkerJobAction::Many(actions)) => {
+                let mut plaintext_batch =
+                    DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
+                for action in actions {
+                    self.push_job_action_output(
+                        idx,
+                        Some(action),
+                        &mut plaintext_batch,
+                        None,
+                        None,
+                    );
+                }
+                plaintext_batch.flush();
+            }
         }
     }
 
@@ -432,18 +446,29 @@ impl DecryptWorkerShard {
         idx: usize,
         action: Option<DecryptWorkerJobAction>,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-        fsp_batcher: Option<&mut FspDecryptJobBatcher>,
-        fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
+        mut fsp_batcher: Option<&mut FspDecryptJobBatcher>,
+        mut fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
     ) {
         let Some(action) = action else {
             return;
         };
         match action {
             DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
+            DecryptWorkerJobAction::Many(actions) => {
+                for action in actions {
+                    self.push_job_action_output(
+                        idx,
+                        Some(action),
+                        plaintext_batch,
+                        fsp_batcher.as_deref_mut(),
+                        fsp_open_batcher.as_deref_mut(),
+                    );
+                }
+            }
             DecryptWorkerJobAction::FspJob(job) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
                 record_fsp_owner_match(owner_idx == idx);
-                let job = if let Some(fsp_open_batcher) = fsp_open_batcher {
+                let job = if let Some(fsp_open_batcher) = fsp_open_batcher.as_deref_mut() {
                     match self.try_prepare_fsp_bulk_open_worker_job(idx, job) {
                         Ok((open_idx, owner_idx, open_job)) => {
                             record_fsp_path_worker_open_bulk();
@@ -492,7 +517,7 @@ impl DecryptWorkerShard {
                     return;
                 }
                 record_fsp_path_handoff(job.lane());
-                if let Some(fsp_batcher) = fsp_batcher {
+                if let Some(fsp_batcher) = fsp_batcher.as_deref_mut() {
                     fsp_batcher.push(&self.pool, job);
                     return;
                 }
@@ -1547,7 +1572,7 @@ impl DecryptWorkerShard {
         // yet registered, or unregistered mid-flight), drop. The caller only
         // marks a session worker-owned after registration is accepted, so an
         // absent session here is stale in-flight work, not a fallback path.
-        let mut ready = None;
+        let mut completions = Vec::new();
         {
             let state = match self.sessions.get_mut(&session_key) {
                 Some(s) => s,
@@ -1610,16 +1635,11 @@ impl DecryptWorkerShard {
                     },
                 },
             };
-            if let Err(error) = state.complete_ordered_fmp_open(ticket, completion, |completion| {
-                if ready.is_some() {
-                    debug_assert!(
-                        false,
-                        "synchronous FMP receive retired more than one completion"
-                    );
-                    return;
-                }
-                ready = Some(completion);
-            }) {
+            if let Err(error) =
+                state.complete_ordered_fmp_open(ticket, completion, |completion| {
+                    completions.push(completion);
+                })
+            {
                 debug!(
                     worker = idx,
                     ?session_key,
@@ -1630,17 +1650,24 @@ impl DecryptWorkerShard {
             };
         }
 
-        let Some(completion) = ready else {
-            return Ok(None);
-        };
+        let actions = completions
+            .into_iter()
+            .filter_map(Self::action_for_fmp_ready_completion)
+            .collect();
+        Ok(DecryptWorkerJobAction::from_vec(actions))
+    }
+
+    fn action_for_fmp_ready_completion(
+        completion: FmpReadyCompletion,
+    ) -> Option<DecryptWorkerJobAction> {
         match completion {
-            FmpReadyCompletion::Opened(opened) => Ok(Self::handle_opened_fmp_job(opened)),
-            FmpReadyCompletion::AeadFailed(failure) => Ok(Some(DecryptWorkerJobAction::Output(
+            FmpReadyCompletion::Opened(opened) => Self::handle_opened_fmp_job(opened),
+            FmpReadyCompletion::AeadFailed(failure) => Some(DecryptWorkerJobAction::Output(
                 DecryptWorkerOutput {
                     event: DecryptWorkerEvent::DecryptFailure(failure),
                     direct_delivery: None,
                 },
-            ))),
+            )),
         }
     }
 

@@ -215,7 +215,7 @@
         );
         let invalid_ticket = state.issue_fmp_receive_ticket().expect("invalid ticket");
         let mut ready = Vec::new();
-        let invalid_ready = state
+        let invalid_drain = state
             .complete_ordered_fmp_open(
                 invalid_ticket,
                 FmpOrderedCompletion::AeadFailed {
@@ -224,7 +224,10 @@
                 |completion| ready.push(completion),
             )
             .expect("invalid AEAD completion should retire");
-        assert_eq!(invalid_ready, 1);
+        assert_eq!(invalid_drain.ready, 1);
+        assert_eq!(invalid_drain.aead_failures, 1);
+        assert_eq!(invalid_drain.accepted, 0);
+        assert_eq!(invalid_drain.replay_drops, 0);
         assert!(matches!(ready.last(), Some(FmpReadyCompletion::AeadFailed(_))));
         assert_eq!(invalid_precheck.replay_highest, 0);
         assert_eq!(
@@ -247,7 +250,7 @@
         )
         .expect("valid AEAD must open");
         let valid_ticket = state.issue_fmp_receive_ticket().expect("valid ticket");
-        let valid_ready = state
+        let valid_drain = state
             .complete_ordered_fmp_open(
                 valid_ticket,
                 FmpOrderedCompletion::Opened {
@@ -257,7 +260,10 @@
                 |completion| ready.push(completion),
             )
             .expect("valid AEAD completion should retire");
-        assert_eq!(valid_ready, 1);
+        assert_eq!(valid_drain.ready, 1);
+        assert_eq!(valid_drain.accepted, 1);
+        assert_eq!(valid_drain.aead_failures, 0);
+        assert_eq!(valid_drain.replay_drops, 0);
         assert!(
             matches!(ready.last(), Some(FmpReadyCompletion::Opened(_))),
             "valid AEAD should emit an opened ready completion"
@@ -335,7 +341,7 @@
         );
         let failed_ticket = state.issue_fmp_receive_ticket().expect("failed AEAD ticket");
         let mut ready = Vec::new();
-        let failed_ready = state
+        let failed_drain = state
             .complete_ordered_fmp_open(
                 failed_ticket,
                 FmpOrderedCompletion::AeadFailed {
@@ -344,7 +350,10 @@
                 |completion| ready.push(completion),
             )
             .expect("failed AEAD completion should retire");
-        assert_eq!(failed_ready, 1);
+        assert_eq!(failed_drain.ready, 1);
+        assert_eq!(failed_drain.aead_failures, 1);
+        assert_eq!(failed_drain.accepted, 0);
+        assert_eq!(failed_drain.replay_drops, 0);
         assert!(matches!(ready.last(), Some(FmpReadyCompletion::AeadFailed(_))));
         assert!(
             state.fmp_replay.check(counter),
@@ -384,7 +393,7 @@
         );
         let duplicate_ticket = state.issue_fmp_receive_ticket().expect("duplicate ticket");
         let ready_before_duplicate = ready.len();
-        let duplicate_ready = state
+        let duplicate_drain = state
             .complete_ordered_fmp_open(
                 duplicate_ticket,
                 FmpOrderedCompletion::Opened {
@@ -394,7 +403,10 @@
                 |completion| ready.push(completion),
             )
             .expect("duplicate completion should retire as replay drop");
-        assert_eq!(duplicate_ready, 1);
+        assert_eq!(duplicate_drain.ready, 1);
+        assert_eq!(duplicate_drain.replay_drops, 1);
+        assert_eq!(duplicate_drain.accepted, 0);
+        assert_eq!(duplicate_drain.aead_failures, 0);
         assert_eq!(
             ready.len(),
             ready_before_duplicate,
@@ -425,7 +437,8 @@
                 |completion| ready.push(completion),
             )
             .expect("later completion should fit receive order");
-        assert_eq!(later, 0);
+        assert_eq!(later.ready, 0);
+        assert_eq!(later.accounted_ready(), 0);
         assert!(
             ready.is_empty(),
             "later completion must wait for the missing ticket"
@@ -440,7 +453,10 @@
                 |completion| ready.push(completion),
             )
             .expect("oldest completion should drain itself and buffered later completion");
-        assert_eq!(drain, 2);
+        assert_eq!(drain.ready, 2);
+        assert_eq!(drain.aead_failures, 2);
+        assert_eq!(drain.accepted, 0);
+        assert_eq!(drain.replay_drops, 0);
         assert_eq!(ready.len(), 2);
         match (&ready[0], &ready[1]) {
             (
@@ -462,7 +478,8 @@
                 |completion| ready.push(completion),
             )
             .expect("third completion should drain after the first two");
-        assert_eq!(drain, 1);
+        assert_eq!(drain.ready, 1);
+        assert_eq!(drain.aead_failures, 1);
         assert_eq!(ready.len(), 3);
     }
 
@@ -504,7 +521,10 @@
                 |completion| ready.push(completion),
             )
             .expect("first completion should retire");
-        assert_eq!(first, 1);
+        assert_eq!(first.ready, 1);
+        assert_eq!(first.accepted, 1);
+        assert_eq!(first.aead_failures, 0);
+        assert_eq!(first.replay_drops, 0);
         assert_eq!(state.fmp_replay.highest(), counter);
         assert_eq!(ready.len(), 1);
 
@@ -518,7 +538,10 @@
                 |completion| ready.push(completion),
             )
             .expect("duplicate completion should fit receive order");
-        assert_eq!(duplicate, 1);
+        assert_eq!(duplicate.ready, 1);
+        assert_eq!(duplicate.replay_drops, 1);
+        assert_eq!(duplicate.accepted, 0);
+        assert_eq!(duplicate.aead_failures, 0);
         assert_eq!(
             ready.len(),
             1,
