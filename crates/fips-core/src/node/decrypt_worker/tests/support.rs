@@ -368,10 +368,7 @@
         let item = bulk_receivers[open_idx]
             .try_recv()
             .expect("opener work should be queued");
-        assert!(matches!(
-            &item,
-            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) if jobs.len() == 1
-        ));
+        assert!(matches!(&item, DecryptWorkerBulkItem::FspAeadOpen(_)));
         handle_bulk_item(
             open_idx,
             &mut shard,
@@ -430,6 +427,7 @@
             .expect("opener batch work should be queued");
         match &item {
             DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => assert_eq!(jobs.len(), 2),
+            DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected opener batch"),
             DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
@@ -463,7 +461,7 @@
     }
 
     #[test]
-    fn fsp_open_job_batcher_queues_single_flush_as_one_job_batch() {
+    fn fsp_open_job_batcher_reuses_pending_buffer_for_single_flush() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(2, DECRYPT_WORKER_BULK_BATCH_MAX);
         let source_addr = NodeAddr::from_bytes([0x42; 16]);
@@ -477,6 +475,7 @@
         let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
         let cipher = Arc::new(test_chacha_key([0x52; 32]));
         let mut batcher = FspAeadOpenJobBatcher::new();
+        let pending_buffer = batcher.pending_buffer_ptr();
 
         let returned = batcher.push(
             &pool,
@@ -490,12 +489,19 @@
             "single opener job should queue without returning to caller"
         );
 
-        match bulk_receivers[open_idx].try_recv().expect("single opener job") {
-            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
-                assert_eq!(jobs.len(), 1, "single opener batch");
-                let job = jobs.into_jobs().pop().expect("single opener job");
+        assert_eq!(
+            batcher.pending_buffer_ptr(),
+            pending_buffer,
+            "single opener flushes should not allocate a replacement pending buffer"
+        );
+        match bulk_receivers[open_idx]
+            .try_recv()
+            .expect("single opener job")
+        {
+            DecryptWorkerBulkItem::FspAeadOpen(job) => {
                 assert_eq!(job.completion_owner_idx, Some(owner_idx));
             }
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_) => panic!("expected a single opener job"),
             DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
@@ -571,6 +577,9 @@
             .expect("opener work should dispatch at the batch boundary")
         {
             DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => assert_eq!(jobs.len(), 2),
+            DecryptWorkerBulkItem::FspAeadOpen(_) => {
+                panic!("pending opener jobs should remain coalesced")
+            }
             DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
@@ -635,7 +644,6 @@
         {
             DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
                 assert_eq!(jobs.len(), 2);
-                let jobs = jobs.as_slice();
                 assert!(
                     jobs.iter()
                         .all(|job| job.completion_owner_idx == Some(owner_idx))
@@ -653,6 +661,9 @@
                     jobs.iter()
                         .all(|job| job.completion_source.is_worker_open())
                 );
+            }
+            DecryptWorkerBulkItem::FspAeadOpen(_) => {
+                panic!("owner FSP batch should not fragment into a single opener job")
             }
             DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
@@ -701,6 +712,7 @@
         {
             DecryptWorkerBulkItem::FspJob(job) => assert_eq!(job.source_addr, source_addr),
             DecryptWorkerBulkItem::FspBatch(_)
+            | DecryptWorkerBulkItem::FspAeadOpen(_)
             | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::Batch(_) => panic!("expected owner FSP job handoff"),
@@ -760,15 +772,16 @@
             .try_recv()
             .expect("same-owner immediate bulk FSP job should use opener worker")
         {
-            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
-                assert_eq!(jobs.len(), 1, "single opener batch");
-                let job = jobs.into_jobs().pop().expect("single opener job");
+            DecryptWorkerBulkItem::FspAeadOpen(job) => {
                 assert_eq!(job.source_addr, source_addr);
                 assert_eq!(job.completion_owner_idx, Some(owner_idx));
                 assert_eq!(job.receive_order_id, receive_order_id);
                 assert_eq!(job.crypto_generation, crypto_generation);
                 assert_eq!(job.ticket.sequence, 0);
                 assert!(job.completion_source.is_worker_open());
+            }
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
+                panic!("single immediate FSP job should dispatch one opener job")
             }
             DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
