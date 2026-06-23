@@ -913,7 +913,6 @@ struct FspAeadOpenJob {
     completion_source: FspAeadCompletionSource,
     completion_owner_idx: Option<usize>,
     open_queued_at: Option<crate::perf_profile::TraceStamp>,
-    fallback_to_rx_loop_on_aead_failure: bool,
 }
 
 #[derive(Default)]
@@ -1136,7 +1135,8 @@ impl FspAeadOpenJob {
                 let mut nonce_bytes = [0u8; 12];
                 nonce_bytes[4..12].copy_from_slice(&self.header.counter.to_le_bytes());
                 let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-                if self.fallback_to_rx_loop_on_aead_failure {
+                let preserve_ciphertext_for_fallback = source.is_worker_open();
+                if preserve_ciphertext_for_fallback {
                     scratch.preserve_ciphertext_from(ciphertext);
                 }
                 let open_result = self
@@ -1155,15 +1155,15 @@ impl FspAeadOpenJob {
                         }
                     }
                     Err(_) => {
-                        if self.fallback_to_rx_loop_on_aead_failure {
+                        if preserve_ciphertext_for_fallback {
                             ciphertext.copy_from_slice(scratch.preserved_ciphertext());
                         }
                         FspOrderedCompletion::AeadFailed {
                             job: self.job,
                             header: self.header,
                             source,
-                            fallback_to_rx_loop: self.fallback_to_rx_loop_on_aead_failure,
-                            count_failure: !self.fallback_to_rx_loop_on_aead_failure,
+                            fallback_to_rx_loop: preserve_ciphertext_for_fallback,
+                            count_failure: !preserve_ciphertext_for_fallback,
                         }
                     }
                 }

@@ -482,7 +482,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -519,7 +518,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
         let duplicate_drain = state
@@ -882,7 +880,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -902,7 +899,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -1041,7 +1037,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: true,
         }
         .into_completion();
         let protected_drain = state
@@ -1087,7 +1082,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -1095,6 +1089,7 @@
         *second_payload
             .last_mut()
             .expect("test FSP frame has ciphertext") ^= 0x55;
+        let second_payload_after_corruption = second_payload.clone();
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
         let second_completion = FspAeadOpenJob {
@@ -1110,7 +1105,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -1126,17 +1120,14 @@
 
         let first_drain = state
             .complete_ordered_fsp_open_for_test(first_completion.ticket, first_completion.result)
-            .expect("first completion should release the queued AEAD failure");
+            .expect("first completion should release the queued fallback");
         assert_eq!(first_drain.ready, 2);
         assert_eq!(first_drain.accepted, 1);
-        assert_eq!(first_drain.aead_failures, 1);
-        assert_eq!(first_drain.rx_loop_fallbacks, 0);
+        assert_eq!(first_drain.aead_failures, 0);
+        assert_eq!(first_drain.rx_loop_fallbacks, 1);
         assert_eq!(
             first_drain.aead_failure_sources,
-            FspAeadFailureSources {
-                worker_open: 1,
-                ..FspAeadFailureSources::default()
-            }
+            FspAeadFailureSources::default()
         );
         assert_eq!(first_drain.outputs.len(), 2);
         match (&first_drain.outputs[0], &first_drain.outputs[1]) {
@@ -1149,10 +1140,14 @@
                 },
             ) => {
                 assert_eq!(opened.plaintext_len, first_plaintext_len);
-                assert!(!*fallback_to_rx_loop);
+                assert!(*fallback_to_rx_loop);
                 assert_eq!(job.fallback.packet_len, second_payload_len);
+                assert_eq!(
+                    &job.fallback.packet_data[..second_payload_len],
+                    second_payload_after_corruption.as_slice()
+                );
             }
-            _ => panic!("first packet should open, second packet should fail AEAD"),
+            _ => panic!("first packet should open, second packet should fall back"),
         }
         assert!(
             protected_plaintext_len > 0 && second_plaintext_len > 0,
@@ -1534,7 +1529,6 @@
             completion_source: FspAeadCompletionSource::Local,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
         let local_drain = state
@@ -1557,7 +1551,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
         let open_drain = state

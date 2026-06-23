@@ -718,7 +718,7 @@
                 );
                 assert!(
                     jobs.iter()
-                        .all(|job| job.fallback_to_rx_loop_on_aead_failure)
+                        .all(|job| job.completion_source.is_worker_open())
                 );
             }
             DecryptWorkerBulkItem::FspAeadOpen(_) => {
@@ -837,7 +837,7 @@
                 assert_eq!(job.receive_order_id, receive_order_id);
                 assert_eq!(job.crypto_generation, crypto_generation);
                 assert_eq!(job.ticket.sequence, 0);
-                assert!(job.fallback_to_rx_loop_on_aead_failure);
+                assert!(job.completion_source.is_worker_open());
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("single immediate FSP job should dispatch one opener job")
@@ -1749,7 +1749,6 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: false,
         }
     }
 

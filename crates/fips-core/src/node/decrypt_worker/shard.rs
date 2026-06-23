@@ -722,7 +722,6 @@ impl DecryptWorkerShard {
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
-            fallback_to_rx_loop_on_aead_failure: true,
         };
         Ok((open_idx, owner_idx, open_job))
     }
@@ -795,7 +794,6 @@ impl DecryptWorkerShard {
                 completion_source: FspAeadCompletionSource::WorkerOpen,
                 completion_owner_idx: None,
                 open_queued_at: None,
-                fallback_to_rx_loop_on_aead_failure: true,
             })
             .collect();
 
