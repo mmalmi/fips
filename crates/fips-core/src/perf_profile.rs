@@ -1547,6 +1547,9 @@ static MAX_NS: [AtomicU64; N_STAGES] = [const { AtomicU64::new(0) }; N_STAGES];
 static HIST: [AtomicU64; N_STAGES * HIST_BUCKETS] =
     [const { AtomicU64::new(0) }; N_STAGES * HIST_BUCKETS];
 static EVENTS: [AtomicU64; N_EVENTS] = [const { AtomicU64::new(0) }; N_EVENTS];
+#[cfg(test)]
+static FORCE_EVENT_COUNTERS_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 static TRACE_EPOCH: OnceLock<Instant> = OnceLock::new();
 
 /// Compact monotonic timestamp carried by packet/job queue handoffs.
@@ -1593,10 +1596,25 @@ pub(crate) fn enabled() -> bool {
 /// True iff the low-overhead event reporter is enabled. Full tracing implies
 /// event counters, but event-only mode does not enable stamps or histograms.
 pub(crate) fn event_counters_enabled() -> bool {
+    #[cfg(test)]
+    if FORCE_EVENT_COUNTERS_FOR_TEST.load(Relaxed) {
+        return true;
+    }
+
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         enabled() || env_any_enabled(["FIPS_PIPELINE_EVENTS", "NVPN_PIPELINE_EVENTS"])
     })
+}
+
+#[cfg(test)]
+pub(crate) fn force_event_counters_for_test() {
+    FORCE_EVENT_COUNTERS_FOR_TEST.store(true, Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn event_count_for_test(event: Event) -> u64 {
+    EVENTS[event as usize].load(Relaxed)
 }
 
 fn env_any_enabled<const N: usize>(keys: [&str; N]) -> bool {
@@ -2412,6 +2430,23 @@ pub(crate) fn record_fsp_aead_completion_accept_kbit_mismatch() {
 }
 
 #[inline]
+pub(crate) fn record_fmp_aead_completion_prechecked_replay_drop_reason(
+    reason: crate::noise::ReplayRejection,
+    counter_lag: u64,
+) {
+    record_event(Event::FmpAeadCompletionReplayDropped);
+    record_event(Event::FmpAeadCompletionReplayDroppedPrechecked);
+    let event = match reason {
+        crate::noise::ReplayRejection::Duplicate => Event::FmpAeadCompletionReplayDroppedDuplicate,
+        crate::noise::ReplayRejection::TooOld => Event::FmpAeadCompletionReplayDroppedTooOld,
+    };
+    record_event(event);
+    if reason == crate::noise::ReplayRejection::TooOld {
+        record_fmp_aead_completion_too_old_lag_buckets(counter_lag);
+    }
+}
+
+#[inline]
 pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
@@ -2455,6 +2490,23 @@ fn record_fsp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
     }
     if counter_lag >= window.saturating_mul(64) {
         record_event(Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow);
+    }
+}
+
+#[inline]
+fn record_fmp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
+    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
+    if counter_lag >= window.saturating_mul(2) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow);
+    }
+    if counter_lag >= window.saturating_mul(4) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow);
+    }
+    if counter_lag >= window.saturating_mul(16) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow);
+    }
+    if counter_lag >= window.saturating_mul(64) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow);
     }
 }
 

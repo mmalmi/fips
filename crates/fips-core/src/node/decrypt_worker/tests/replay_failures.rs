@@ -468,6 +468,16 @@
 
     #[test]
     fn fmp_ordered_completion_rechecks_duplicate_counter_at_retire() {
+        crate::perf_profile::force_event_counters_for_test();
+        let replay_dropped_before = crate::perf_profile::event_count_for_test(
+            crate::perf_profile::Event::FmpAeadCompletionReplayDropped,
+        );
+        let prechecked_before = crate::perf_profile::event_count_for_test(
+            crate::perf_profile::Event::FmpAeadCompletionReplayDroppedPrechecked,
+        );
+        let duplicate_before = crate::perf_profile::event_count_for_test(
+            crate::perf_profile::Event::FmpAeadCompletionReplayDroppedDuplicate,
+        );
         let mut state = OwnedSessionState::new(
             test_chacha_key([0x62; 32]),
             ReplayWindow::new(),
@@ -513,6 +523,24 @@
             ready.len(),
             1,
             "duplicate counter must not emit a second ready packet"
+        );
+        assert!(
+            crate::perf_profile::event_count_for_test(
+                crate::perf_profile::Event::FmpAeadCompletionReplayDropped,
+            ) > replay_dropped_before,
+            "retire-time duplicate replay drop should increment the aggregate FMP counter"
+        );
+        assert!(
+            crate::perf_profile::event_count_for_test(
+                crate::perf_profile::Event::FmpAeadCompletionReplayDroppedPrechecked,
+            ) > prechecked_before,
+            "retire-time duplicate replay drop should retain the prechecked classification"
+        );
+        assert!(
+            crate::perf_profile::event_count_for_test(
+                crate::perf_profile::Event::FmpAeadCompletionReplayDroppedDuplicate,
+            ) > duplicate_before,
+            "retire-time duplicate replay drop should record the duplicate reason"
         );
     }
 

@@ -1296,17 +1296,6 @@ impl OwnedSessionState {
         Ok(FmpOpenOutcome { plaintext_len })
     }
 
-    fn accept_prechecked_fmp_replay_on(
-        fmp_replay: &mut ReplayWindow,
-        precheck: FmpReplayPrecheck,
-    ) -> Result<(), FmpOpenError> {
-        if !fmp_replay.check(precheck.counter) {
-            return Err(FmpOpenError::Replay);
-        }
-        fmp_replay.accept(precheck.counter);
-        Ok(())
-    }
-
     fn issue_fmp_receive_ticket(&mut self) -> Option<FmpReceiveTicket> {
         self.fmp_receive_order.issue()
     }
@@ -1322,9 +1311,15 @@ impl OwnedSessionState {
         fmp_receive_order.complete(ticket, completion, |completion| {
             match completion {
                 FmpOrderedCompletion::Opened { opened, precheck } => {
-                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_err() {
+                    if let Some(reason) = fmp_replay.rejection_reason(precheck.counter) {
+                        let counter_lag = fmp_replay.highest().saturating_sub(precheck.counter);
+                        crate::perf_profile::record_fmp_aead_completion_prechecked_replay_drop_reason(
+                            reason,
+                            counter_lag,
+                        );
                         return;
                     }
+                    fmp_replay.accept(precheck.counter);
                     on_output(FmpReadyCompletion::Opened(opened));
                 }
                 FmpOrderedCompletion::AeadFailed { failure } => {
