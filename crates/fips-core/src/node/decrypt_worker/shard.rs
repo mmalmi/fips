@@ -213,6 +213,12 @@ impl FspOpenWorkerPrepareError {
     }
 }
 
+struct FspBulkOpenWorkerTarget<'a> {
+    owner_idx: usize,
+    open_idx: usize,
+    state: &'a mut OwnedFspSessionState,
+}
+
 struct DecryptWorkerShard {
     pool: DecryptWorkerPool,
     // Lives entirely on this OS thread — never observed by any other thread.
@@ -502,6 +508,34 @@ impl DecryptWorkerShard {
         Ok(header)
     }
 
+    fn try_fsp_bulk_open_worker_target(
+        &mut self,
+        idx: usize,
+        source_addr: &NodeAddr,
+    ) -> Result<FspBulkOpenWorkerTarget<'_>, FspOpenWorkerIneligibleReason> {
+        let owner_idx = self.pool.worker_idx_for_fsp(source_addr);
+        if owner_idx != idx {
+            return Err(FspOpenWorkerIneligibleReason::NotOwner);
+        }
+        if !self.pool.fsp_bulk_open_worker_enabled() {
+            return Err(FspOpenWorkerIneligibleReason::NoSiblingWorker);
+        }
+        let Some(state) = self.fsp_sessions.get_mut(source_addr) else {
+            return Err(FspOpenWorkerIneligibleReason::NoOwnerState);
+        };
+        if !state.has_single_current_epoch() {
+            return Err(FspOpenWorkerIneligibleReason::NoOwnerState);
+        }
+        let Some(open_idx) = self.pool.worker_idx_for_fsp_open_avoiding(source_addr, idx) else {
+            return Err(FspOpenWorkerIneligibleReason::NoSiblingWorker);
+        };
+        Ok(FspBulkOpenWorkerTarget {
+            owner_idx,
+            open_idx,
+            state,
+        })
+    }
+
     fn parse_fsp_encrypted_payload(
         packet_data: &[u8],
         fsp_payload_offset: usize,
@@ -628,45 +662,16 @@ impl DecryptWorkerShard {
         }
 
         let source_addr = job.source_addr;
-        let owner_idx = self.pool.worker_idx_for_fsp(&source_addr);
-        if owner_idx != idx {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::NotOwner,
-            ));
-        }
-        if !self.pool.fsp_bulk_open_worker_enabled() {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::NoSiblingWorker,
-            ));
-        }
-        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::NoOwnerState,
-            ));
+        let target = match self.try_fsp_bulk_open_worker_target(idx, &source_addr) {
+            Ok(target) => target,
+            Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(job, reason)),
         };
-        if !state.has_single_current_epoch() {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::NoOwnerState,
-            ));
-        }
-
-        let open_idx = self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx);
-        let Some(open_idx) = open_idx else {
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::NoSiblingWorker,
-            ));
-        };
-        let current_k_bit = state.current_k_bit;
+        let current_k_bit = target.state.current_k_bit;
         let header = match Self::current_fsp_bulk_open_header(&job, current_k_bit) {
             Ok(header) => header,
             Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(job, reason)),
         };
-        let Some(ticket) = state.issue_fsp_worker_open_ticket() else {
+        let Some(ticket) = target.state.issue_fsp_worker_open_ticket() else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 1,
@@ -678,17 +683,17 @@ impl DecryptWorkerShard {
         };
         let open_job = FspAeadOpenJob {
             source_addr,
-            receive_order_id: state.fsp_receive_order_id(),
-            crypto_generation: state.fsp_crypto_generation(),
+            receive_order_id: target.state.fsp_receive_order_id(),
+            crypto_generation: target.state.fsp_crypto_generation(),
             ticket,
-            cipher: Arc::clone(&state.current.cipher),
+            cipher: Arc::clone(&target.state.current.cipher),
             job,
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
         };
-        Ok((open_idx, owner_idx, open_job))
+        Ok((target.open_idx, target.owner_idx, open_job))
     }
 
     fn try_prepare_fsp_bulk_open_worker_job_batch(
@@ -707,23 +712,12 @@ impl DecryptWorkerShard {
             return Err(jobs);
         }
 
-        let owner_idx = self.pool.worker_idx_for_fsp(&source_addr);
-        if owner_idx != idx || !self.pool.fsp_bulk_open_worker_enabled() {
-            return Err(jobs);
-        }
-        let open_idx = match self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx) {
-            Some(open_idx) => open_idx,
-            None => return Err(jobs),
+        let target = match self.try_fsp_bulk_open_worker_target(idx, &source_addr) {
+            Ok(target) => target,
+            Err(_) => return Err(jobs),
         };
 
-        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
-            return Err(jobs);
-        };
-        if !state.has_single_current_epoch() {
-            return Err(jobs);
-        }
-
-        let current_k_bit = state.current_k_bit;
+        let current_k_bit = target.state.current_k_bit;
         let mut headers = Vec::with_capacity(jobs.len());
         for job in &jobs {
             match Self::current_fsp_bulk_open_header(job, current_k_bit) {
@@ -732,16 +726,17 @@ impl DecryptWorkerShard {
             }
         }
 
-        let Some(first_sequence) = state.issue_fsp_worker_open_ticket_batch(headers.len()) else {
+        let Some(first_sequence) = target.state.issue_fsp_worker_open_ticket_batch(headers.len())
+        else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 headers.len() as u64,
             );
             return Err(jobs);
         };
-        let receive_order_id = state.fsp_receive_order_id();
-        let crypto_generation = state.fsp_crypto_generation();
-        let cipher = Arc::clone(&state.current.cipher);
+        let receive_order_id = target.state.fsp_receive_order_id();
+        let crypto_generation = target.state.fsp_crypto_generation();
+        let cipher = Arc::clone(&target.state.current.cipher);
         let open_jobs = jobs
             .into_iter()
             .zip(headers)
@@ -762,7 +757,7 @@ impl DecryptWorkerShard {
             })
             .collect();
 
-        Ok((open_idx, owner_idx, open_jobs))
+        Ok((target.open_idx, target.owner_idx, open_jobs))
     }
 
     fn drop_returned_fsp_aead_open_jobs<I>(
