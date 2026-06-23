@@ -29,6 +29,30 @@ fn test_received_packet_with_timestamp() {
 }
 
 #[test]
+fn packet_buffer_keep_range_reuses_allocation() {
+    let mut buffer = PacketBuffer::from(vec![0, 1, 2, 3, 4, 5, 6]);
+    let ptr = buffer.as_ptr();
+    let capacity = buffer.capacity();
+
+    buffer.keep_range(2, 3);
+
+    assert_eq!(&buffer[..], &[2, 3, 4]);
+    assert_eq!(buffer.as_ptr(), ptr);
+    assert_eq!(buffer.capacity(), capacity);
+}
+
+#[test]
+fn packet_buffer_keep_range_can_truncate_from_front() {
+    let mut buffer = PacketBuffer::from(vec![0, 1, 2, 3, 4]);
+    let ptr = buffer.as_ptr();
+
+    buffer.keep_range(0, 3);
+
+    assert_eq!(&buffer[..], &[0, 1, 2]);
+    assert_eq!(buffer.as_ptr(), ptr);
+}
+
+#[test]
 fn received_packet_can_reuse_batch_timestamps() {
     let trace_enqueued_at = crate::perf_profile::stamp();
     let packet = ReceivedPacket::with_trace_timestamp(

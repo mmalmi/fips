@@ -320,14 +320,12 @@ impl AuthenticatedSessionMessage {
         // Keep the receive hot path allocation-free after AEAD open. Slow
         // paths store plaintext at offset 0; worker fast paths may store it
         // inside the original FMP packet buffer. In both cases, move the
-        // endpoint body to the front of the existing Vec and truncate the
-        // trailing wire bytes instead of allocating a fresh payload Vec.
+        // endpoint body to the front of the existing packet buffer and
+        // truncate the trailing wire bytes instead of allocating a fresh
+        // payload Vec.
         let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
         let body_len = self.body_len();
-        if body_offset > 0 {
-            self.buffer.drain(..body_offset);
-        }
-        self.buffer.truncate(body_len);
+        self.buffer.keep_range(body_offset, body_len);
         EndpointDataDelivery::new(self.source_peer, self.buffer)
     }
 }

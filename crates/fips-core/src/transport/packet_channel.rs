@@ -113,6 +113,19 @@ impl PacketBuffer {
         }
     }
 
+    pub(crate) fn keep_range(&mut self, offset: usize, len: usize) {
+        let end = offset
+            .checked_add(len)
+            .expect("packet buffer retained range should not overflow");
+        debug_assert!(end <= self.data.len());
+        if offset == 0 {
+            self.data.truncate(len);
+            return;
+        }
+        self.data.copy_within(offset..end, 0);
+        self.data.truncate(len);
+    }
+
     pub(crate) fn into_vec(mut self) -> Vec<u8> {
         self.pool = None;
         mem::take(&mut self.data)
