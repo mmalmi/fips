@@ -3,7 +3,7 @@ use super::budget::{
     FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
     NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
     RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT, RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
-    authenticated_bulk_preempts_packet_rx, fallback_drain_plan, non_packet_drain_budget,
+    fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -83,15 +83,6 @@ fn fallback_drain_plan_stays_bounded_under_return_pressure() {
             && plan.interleave_budget <= 16
             && super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET <= 16,
         "non-packet turns must stay short so fresh transport priority is not held behind bulk work"
-    );
-}
-
-#[test]
-fn authenticated_bulk_yields_to_ready_transport_priority() {
-    assert!(authenticated_bulk_preempts_packet_rx(0));
-    assert!(
-        !authenticated_bulk_preempts_packet_rx(1),
-        "bulk endpoint delivery should not preempt a ready control-sized transport packet"
     );
 }
 

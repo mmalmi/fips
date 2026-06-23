@@ -79,10 +79,6 @@ pub(super) fn fallback_drain_plan() -> FallbackDrainPlan {
     FallbackDrainPlan::normal()
 }
 
-pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {
-    transport_priority_packets == 0
-}
-
 pub(super) fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
     let raw = std::env::var("FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS").ok()?;
     let ms = raw

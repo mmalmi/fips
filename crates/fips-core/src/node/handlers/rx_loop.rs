@@ -247,28 +247,6 @@ impl Node {
                         );
                     }
                 }
-                Some(event) = decrypt_fallback_rx.authenticated_bulk.recv(),
-                    if authenticated_bulk_preempts_packet_rx(packet_rx.priority_ready_packets()) =>
-                {
-                    let fallback_drained = self.drain_decrypt_fallback(
-                        &mut decrypt_fallback_rx,
-                        None,
-                        Some(event),
-                        None,
-                        NON_PACKET_DRAIN_BUDGET,
-                    ).await;
-                    let side_drained = self.drain_rx_loop_side_queues(
-                        &mut control_query_rx,
-                        &mut endpoint_bulk_feedback_rx,
-                        &mut tun_outbound_rx,
-                        &mut endpoint_priority_command_rx,
-                        &mut endpoint_command_rx,
-                        SIDE_QUEUE_INTERLEAVE_BUDGET,
-                    ).await;
-                    if fallback_drained > 0 || side_drained.has_data_drained() {
-                        maintenance_state.record_data_activity(Instant::now());
-                    }
-                }
                 Some(message) = control_query_rx.recv() => {
                     self.drain_control_queries(
                         &mut control_query_rx,
