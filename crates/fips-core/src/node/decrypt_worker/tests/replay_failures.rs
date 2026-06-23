@@ -188,7 +188,7 @@
     }
 
     #[test]
-    fn owned_session_state_open_fmp_owns_replay_acceptance() {
+    fn owned_session_state_open_fmp_accepts_replay_only_after_aead_success() {
         let key_bytes = [4u8; 32];
         let seal_cipher = test_chacha_key(key_bytes);
         let open_cipher = test_chacha_key(key_bytes);
@@ -201,6 +201,11 @@
         let invalid_precheck = state
             .precheck_fmp_replay(counter)
             .expect("fresh counter should pass before AEAD");
+        assert_eq!(invalid_precheck.replay_highest, 0);
+        assert!(
+            state.fmp_replay.check(counter),
+            "precheck must not advance the replay window before AEAD succeeds"
+        );
         assert!(
             OwnedSessionState::open_fmp_aead_in_place(
                 &state.fmp_cipher,
@@ -213,23 +218,6 @@
             .is_err(),
             "invalid AEAD must not open"
         );
-        let invalid_ticket = state.issue_fmp_receive_ticket().expect("invalid ticket");
-        let mut ready = Vec::new();
-        let invalid_drain = state
-            .complete_ordered_fmp_open(
-                invalid_ticket,
-                FmpOrderedCompletion::AeadFailed {
-                    failure: dummy_fmp_decrypt_failure(counter),
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("invalid AEAD completion should retire");
-        assert_eq!(invalid_drain.ready, 1);
-        assert_eq!(invalid_drain.aead_failures, 1);
-        assert_eq!(invalid_drain.accepted, 0);
-        assert_eq!(invalid_drain.replay_drops, 0);
-        assert!(matches!(ready.last(), Some(FmpReadyCompletion::AeadFailed(_))));
-        assert_eq!(invalid_precheck.replay_highest, 0);
         assert_eq!(
             state.fmp_replay.highest(),
             0,
@@ -249,24 +237,9 @@
             &valid_header,
         )
         .expect("valid AEAD must open");
-        let valid_ticket = state.issue_fmp_receive_ticket().expect("valid ticket");
-        let valid_drain = state
-            .complete_ordered_fmp_open(
-                valid_ticket,
-                FmpOrderedCompletion::Opened {
-                    opened: dummy_opened_fmp_job(counter),
-                    precheck: valid_precheck,
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("valid AEAD completion should retire");
-        assert_eq!(valid_drain.ready, 1);
-        assert_eq!(valid_drain.accepted, 1);
-        assert_eq!(valid_drain.aead_failures, 0);
-        assert_eq!(valid_drain.replay_drops, 0);
         assert!(
-            matches!(ready.last(), Some(FmpReadyCompletion::Opened(_))),
-            "valid AEAD should emit an opened ready completion"
+            state.accept_prechecked_fmp_replay(valid_precheck),
+            "successful AEAD should accept the prechecked counter"
         );
         assert_eq!(outcome.plaintext_len, 5);
         assert_eq!(
@@ -302,7 +275,7 @@
     }
 
     #[test]
-    fn fmp_replay_precheck_waits_for_ordered_crypto_completion() {
+    fn fmp_replay_precheck_keeps_counter_available_until_accept() {
         let key_bytes = [0x55u8; 32];
         let seal_cipher = test_chacha_key(key_bytes);
         let open_cipher = test_chacha_key(key_bytes);
@@ -339,29 +312,13 @@
             .is_err(),
             "failed AEAD must be reported without consuming replay"
         );
-        let failed_ticket = state.issue_fmp_receive_ticket().expect("failed AEAD ticket");
-        let mut ready = Vec::new();
-        let failed_drain = state
-            .complete_ordered_fmp_open(
-                failed_ticket,
-                FmpOrderedCompletion::AeadFailed {
-                    failure: dummy_fmp_decrypt_failure(counter),
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("failed AEAD completion should retire");
-        assert_eq!(failed_drain.ready, 1);
-        assert_eq!(failed_drain.aead_failures, 1);
-        assert_eq!(failed_drain.accepted, 0);
-        assert_eq!(failed_drain.replay_drops, 0);
-        assert!(matches!(ready.last(), Some(FmpReadyCompletion::AeadFailed(_))));
         assert!(
             state.fmp_replay.check(counter),
             "failed AEAD must leave the prechecked counter available for a valid packet"
         );
-        let duplicate_precheck = state
+        let retry_precheck = state
             .precheck_fmp_replay(counter)
-            .expect("a duplicate can pass precheck while the first completion is still pending");
+            .expect("failed AEAD must leave the counter available for a valid retry");
 
         let (mut valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
         OwnedSessionState::open_fmp_aead_in_place(
@@ -373,122 +330,21 @@
             &valid_header,
         )
         .expect("worker-side AEAD should authenticate independently");
-        let success_ticket = state
-            .issue_fmp_receive_ticket()
-            .expect("successful AEAD ticket");
-        state
-            .complete_ordered_fmp_open(
-                success_ticket,
-                FmpOrderedCompletion::Opened {
-                    opened: dummy_opened_fmp_job(counter),
-                    precheck,
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("first ordered completion consumes replay");
+        assert!(
+            state.accept_prechecked_fmp_replay(retry_precheck),
+            "successful retry must consume replay after AEAD opens"
+        );
         assert_eq!(state.fmp_replay.highest(), counter);
         assert!(
             !state.fmp_replay.check(counter),
-            "ordered completion accept makes the counter a replay"
+            "accepting replay after AEAD makes the counter a replay"
         );
-        let duplicate_ticket = state.issue_fmp_receive_ticket().expect("duplicate ticket");
-        let ready_before_duplicate = ready.len();
-        let duplicate_drain = state
-            .complete_ordered_fmp_open(
-                duplicate_ticket,
-                FmpOrderedCompletion::Opened {
-                    opened: dummy_opened_fmp_job(counter),
-                    precheck: duplicate_precheck,
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("duplicate completion should retire as replay drop");
-        assert_eq!(duplicate_drain.ready, 1);
-        assert_eq!(duplicate_drain.replay_drops, 1);
-        assert_eq!(duplicate_drain.accepted, 0);
-        assert_eq!(duplicate_drain.aead_failures, 0);
-        assert_eq!(
-            ready.len(),
-            ready_before_duplicate,
-            "duplicate ordered completion must not emit a ready packet"
-        );
+        assert_eq!(precheck.replay_highest, 0);
     }
 
     #[test]
-    fn fmp_ordered_completion_buffers_later_ready_until_missing_ticket() {
-        let mut state = OwnedSessionState::new(
-            test_chacha_key([0x61; 32]),
-            ReplayWindow::new(),
-            test_source_peer(),
-        );
-        let tickets = [
-            state.issue_fmp_receive_ticket().expect("ticket 0"),
-            state.issue_fmp_receive_ticket().expect("ticket 1"),
-            state.issue_fmp_receive_ticket().expect("ticket 2"),
-        ];
-        let mut ready = Vec::new();
-
-        let later = state
-            .complete_ordered_fmp_open(
-                tickets[1],
-                FmpOrderedCompletion::AeadFailed {
-                    failure: dummy_fmp_decrypt_failure(2),
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("later completion should fit receive order");
-        assert_eq!(later.ready, 0);
-        assert_eq!(later.accounted_ready(), 0);
-        assert!(
-            ready.is_empty(),
-            "later completion must wait for the missing ticket"
-        );
-
-        let drain = state
-            .complete_ordered_fmp_open(
-                tickets[0],
-                FmpOrderedCompletion::AeadFailed {
-                    failure: dummy_fmp_decrypt_failure(1),
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("oldest completion should drain itself and buffered later completion");
-        assert_eq!(drain.ready, 2);
-        assert_eq!(drain.aead_failures, 2);
-        assert_eq!(drain.accepted, 0);
-        assert_eq!(drain.replay_drops, 0);
-        assert_eq!(ready.len(), 2);
-        match (&ready[0], &ready[1]) {
-            (
-                FmpReadyCompletion::AeadFailed(first),
-                FmpReadyCompletion::AeadFailed(second),
-            ) => {
-                assert_eq!(first.fmp_counter, 1);
-                assert_eq!(second.fmp_counter, 2);
-            }
-            _ => panic!("expected ordered FMP failure completions"),
-        }
-
-        let drain = state
-            .complete_ordered_fmp_open(
-                tickets[2],
-                FmpOrderedCompletion::AeadFailed {
-                    failure: dummy_fmp_decrypt_failure(3),
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("third completion should drain after the first two");
-        assert_eq!(drain.ready, 1);
-        assert_eq!(drain.aead_failures, 1);
-        assert_eq!(ready.len(), 3);
-    }
-
-    #[test]
-    fn fmp_ordered_completion_rechecks_duplicate_counter_at_retire() {
+    fn fmp_accept_prechecked_duplicate_counter_drops_and_counts() {
         crate::perf_profile::force_event_counters_for_test();
-        let replay_dropped_before = crate::perf_profile::event_count_for_test(
-            crate::perf_profile::Event::FmpAeadCompletionReplayDropped,
-        );
         let prechecked_before = crate::perf_profile::event_count_for_test(
             crate::perf_profile::Event::FmpAeadCompletionReplayDroppedPrechecked,
         );
@@ -506,64 +362,28 @@
             .expect("fresh counter should pass precheck");
         let duplicate_precheck = state
             .precheck_fmp_replay(counter)
-            .expect("duplicate can precheck before the first completion retires");
-        let first_ticket = state.issue_fmp_receive_ticket().expect("ticket 0");
-        let duplicate_ticket = state.issue_fmp_receive_ticket().expect("ticket 1");
-        let mut ready = Vec::new();
-
-        let first = state
-            .complete_ordered_fmp_open(
-                first_ticket,
-                FmpOrderedCompletion::Opened {
-                    opened: dummy_opened_fmp_job(counter),
-                    precheck: first_precheck,
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("first completion should retire");
-        assert_eq!(first.ready, 1);
-        assert_eq!(first.accepted, 1);
-        assert_eq!(first.aead_failures, 0);
-        assert_eq!(first.replay_drops, 0);
-        assert_eq!(state.fmp_replay.highest(), counter);
-        assert_eq!(ready.len(), 1);
-
-        let duplicate = state
-            .complete_ordered_fmp_open(
-                duplicate_ticket,
-                FmpOrderedCompletion::Opened {
-                    opened: dummy_opened_fmp_job(counter),
-                    precheck: duplicate_precheck,
-                },
-                |completion| ready.push(completion),
-            )
-            .expect("duplicate completion should fit receive order");
-        assert_eq!(duplicate.ready, 1);
-        assert_eq!(duplicate.replay_drops, 1);
-        assert_eq!(duplicate.accepted, 0);
-        assert_eq!(duplicate.aead_failures, 0);
-        assert_eq!(
-            ready.len(),
-            1,
-            "duplicate counter must not emit a second ready packet"
-        );
+            .expect("a stale precheck can exist before the first accept");
         assert!(
-            crate::perf_profile::event_count_for_test(
-                crate::perf_profile::Event::FmpAeadCompletionReplayDropped,
-            ) > replay_dropped_before,
-            "retire-time duplicate replay drop should increment the aggregate FMP counter"
+            state.accept_prechecked_fmp_replay(first_precheck),
+            "first prechecked counter should be accepted"
+        );
+        assert_eq!(state.fmp_replay.highest(), counter);
+        assert_eq!(
+            state.accept_prechecked_fmp_replay(duplicate_precheck),
+            false,
+            "stale duplicate precheck must not be accepted a second time"
         );
         assert!(
             crate::perf_profile::event_count_for_test(
                 crate::perf_profile::Event::FmpAeadCompletionReplayDroppedPrechecked,
             ) > prechecked_before,
-            "retire-time duplicate replay drop should retain the prechecked classification"
+            "stale-precheck duplicate drop should retain the prechecked classification"
         );
         assert!(
             crate::perf_profile::event_count_for_test(
                 crate::perf_profile::Event::FmpAeadCompletionReplayDroppedDuplicate,
             ) > duplicate_before,
-            "retire-time duplicate replay drop should record the duplicate reason"
+            "stale-precheck duplicate drop should record the duplicate reason"
         );
     }
 
@@ -789,36 +609,5 @@
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected decrypt failure report"),
-        }
-    }
-
-    fn dummy_fmp_decrypt_failure(counter: u64) -> DecryptFailureReport {
-        DecryptFailureReport {
-            source_peer: test_source_peer(),
-            fmp_counter: counter,
-            fmp_replay_highest: counter.saturating_sub(1),
-            trace_enqueued_at: None,
-        }
-    }
-
-    fn dummy_opened_fmp_job(counter: u64) -> OpenedFmpJob {
-        let source_peer = test_source_peer();
-        let mut packet_data =
-            vec![0u8; crate::node::wire::ESTABLISHED_HEADER_SIZE + std::mem::size_of::<u32>()];
-        let timestamp = (counter as u32).to_le_bytes();
-        packet_data[crate::node::wire::ESTABLISHED_HEADER_SIZE..].copy_from_slice(&timestamp);
-        OpenedFmpJob {
-            packet_data: packet_data.into(),
-            source_peer,
-            transport_id: TransportId::new(1),
-            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            local_node_addr: *source_peer.node_addr(),
-            timestamp_ms: counter,
-            packet_len: crate::node::wire::ESTABLISHED_HEADER_SIZE
-                + std::mem::size_of::<u32>(),
-            fmp_counter: counter,
-            fmp_flags: 0,
-            fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
-            fmp_plaintext_len: std::mem::size_of::<u32>(),
         }
     }

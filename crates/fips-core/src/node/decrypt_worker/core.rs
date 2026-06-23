@@ -237,7 +237,6 @@ fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
 pub(crate) struct OwnedSessionState {
     fmp_cipher: Arc<LessSafeKey>,
     fmp_replay: ReplayWindow,
-    fmp_receive_order: FmpReceiveOrder,
     source_peer: PeerIdentity,
 }
 
@@ -573,7 +572,6 @@ struct OrderedReceiveTicket {
 }
 
 type FspReceiveTicket = OrderedReceiveTicket;
-type FmpReceiveTicket = OrderedReceiveTicket;
 
 #[derive(Debug)]
 enum OrderedCompletionError {
@@ -712,13 +710,8 @@ impl<T> OrderedReceiveWindow<T> {
 }
 
 type FspReceiveOrder = OrderedReceiveWindow<FspOrderedCompletion>;
-type FmpReceiveOrder = OrderedReceiveWindow<FmpOrderedCompletion>;
 
 fn new_fsp_receive_order() -> FspReceiveOrder {
-    OrderedReceiveWindow::new(fsp_receive_window())
-}
-
-fn new_fmp_receive_order() -> FmpReceiveOrder {
     OrderedReceiveWindow::new(fsp_receive_window())
 }
 
@@ -884,45 +877,6 @@ struct OpenedFmpJob {
     fmp_flags: u8,
     fmp_plaintext_offset: usize,
     fmp_plaintext_len: usize,
-}
-
-enum FmpOrderedCompletion {
-    Opened {
-        opened: OpenedFmpJob,
-        precheck: FmpReplayPrecheck,
-    },
-    AeadFailed {
-        failure: DecryptFailureReport,
-    },
-}
-
-enum FmpReadyCompletion {
-    Opened(OpenedFmpJob),
-    AeadFailed(DecryptFailureReport),
-}
-
-#[derive(Default)]
-struct FmpOrderedDrain {
-    ready: usize,
-    accepted: usize,
-    aead_failures: usize,
-    replay_drops: usize,
-}
-
-impl FmpOrderedDrain {
-    fn accounted_ready(&self) -> usize {
-        self.accepted + self.aead_failures + self.replay_drops
-    }
-
-    fn record(&self) {
-        debug_assert_eq!(self.ready, self.accounted_ready());
-        crate::perf_profile::record_fmp_aead_completion_drain(
-            self.ready,
-            self.accepted,
-            self.aead_failures,
-            self.replay_drops,
-        );
-    }
 }
 
 fn local_established_fsp_datagram_meta(
@@ -1283,7 +1237,6 @@ impl OwnedSessionState {
         Self {
             fmp_cipher: Arc::new(fmp_cipher),
             fmp_replay,
-            fmp_receive_order: new_fmp_receive_order(),
             source_peer,
         }
     }
@@ -1320,44 +1273,17 @@ impl OwnedSessionState {
         Ok(FmpOpenOutcome { plaintext_len })
     }
 
-    fn issue_fmp_receive_ticket(&mut self) -> Option<FmpReceiveTicket> {
-        self.fmp_receive_order.issue()
-    }
-
-    fn complete_ordered_fmp_open(
-        &mut self,
-        ticket: FmpReceiveTicket,
-        completion: FmpOrderedCompletion,
-        mut on_output: impl FnMut(FmpReadyCompletion),
-    ) -> Result<FmpOrderedDrain, OrderedCompletionError> {
-        let fmp_replay = &mut self.fmp_replay;
-        let fmp_receive_order = &mut self.fmp_receive_order;
-        let mut drain = FmpOrderedDrain::default();
-        let ready_count = fmp_receive_order.complete(ticket, completion, |completion| {
-            match completion {
-                FmpOrderedCompletion::Opened { opened, precheck } => {
-                    if let Some(reason) = fmp_replay.rejection_reason(precheck.counter) {
-                        let counter_lag = fmp_replay.highest().saturating_sub(precheck.counter);
-                        crate::perf_profile::record_fmp_aead_completion_prechecked_replay_drop_reason(
-                            reason,
-                            counter_lag,
-                        );
-                        drain.replay_drops += 1;
-                        return;
-                    }
-                    fmp_replay.accept(precheck.counter);
-                    drain.accepted += 1;
-                    on_output(FmpReadyCompletion::Opened(opened));
-                }
-                FmpOrderedCompletion::AeadFailed { failure } => {
-                    drain.aead_failures += 1;
-                    on_output(FmpReadyCompletion::AeadFailed(failure));
-                }
-            }
-        })?;
-        drain.ready = ready_count;
-        drain.record();
-        Ok(drain)
+    fn accept_prechecked_fmp_replay(&mut self, precheck: FmpReplayPrecheck) -> bool {
+        if let Some(reason) = self.fmp_replay.rejection_reason(precheck.counter) {
+            let counter_lag = self.fmp_replay.highest().saturating_sub(precheck.counter);
+            crate::perf_profile::record_fmp_aead_completion_prechecked_replay_drop_reason(
+                reason,
+                counter_lag,
+            );
+            return false;
+        }
+        self.fmp_replay.accept(precheck.counter);
+        true
     }
 }
 

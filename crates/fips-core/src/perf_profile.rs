@@ -2354,31 +2354,6 @@ pub(crate) fn record_fsp_aead_completion_drain(
 }
 
 #[inline]
-pub(crate) fn record_fmp_aead_completion_drain(
-    ready: usize,
-    accepted: usize,
-    aead_failures: usize,
-    replay_drops: usize,
-) {
-    if ready == 0 {
-        return;
-    }
-    record_event_count(Event::FmpAeadCompletionReady, ready as u64);
-    if accepted > 0 {
-        record_event_count(Event::FmpAeadCompletionAccepted, accepted as u64);
-    }
-    if aead_failures > 0 {
-        record_event_count(Event::FmpAeadCompletionAeadFailed, aead_failures as u64);
-    }
-    if replay_drops > 0 {
-        record_event_count(Event::FmpAeadCompletionReplayDropped, replay_drops as u64);
-    }
-    if ready > 1 {
-        record_event_count(Event::FmpAeadCompletionReadyMulti, 1);
-    }
-}
-
-#[inline]
 pub(crate) fn record_fsp_aead_completion_source_replay_drops(
     worker_open: usize,
     worker_open_returned: usize,
