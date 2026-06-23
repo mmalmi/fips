@@ -44,7 +44,8 @@
                     DecryptWorkerLane::Bulk
                 );
             }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_) | DecryptWorkerBulkItem::Batch(_) => {
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected bulk FSP job")
             }
         }
@@ -82,7 +83,8 @@
                 );
                 assert!(jobs.iter().all(|job| job.source_addr == source_addr));
             }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_) | DecryptWorkerBulkItem::Batch(_) => {
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected a multi-job FSP batch")
             }
         }
@@ -119,7 +121,8 @@
                 assert_eq!(job.lane(), DecryptWorkerLane::Bulk);
                 assert_eq!(job.source_addr, source_addr);
             }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_) | DecryptWorkerBulkItem::Batch(_) => {
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected a one-job FSP bulk batch")
             }
         }
@@ -168,7 +171,8 @@
                             .all(|job| matches!(job.lane(), DecryptWorkerLane::Bulk))
                     );
                 }
-                DecryptWorkerBulkItem::FspAeadOpenBatch(_) | DecryptWorkerBulkItem::Batch(_) => {
+                DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+                | DecryptWorkerBulkItem::Batch { .. } => {
                     panic!("partial-capacity retry should keep one-job FSP batches")
                 }
             }
@@ -222,7 +226,8 @@
                         .all(|job| matches!(job.lane(), DecryptWorkerLane::Bulk))
                 );
             }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_) | DecryptWorkerBulkItem::Batch(_) => {
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected existing one-job FSP batch")
             }
         }
@@ -237,7 +242,8 @@
                         .all(|job| matches!(job.lane(), DecryptWorkerLane::Bulk))
                 );
             }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_) | DecryptWorkerBulkItem::Batch(_) => {
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected an FSP prefix batch")
             }
         }
@@ -271,7 +277,11 @@
         );
 
         match bulk_receivers[0].try_recv().expect("existing bulk job") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
                 assert_eq!(jobs.len(), 1);
                 assert_eq!(jobs[0].session_key, session_key);
             }
@@ -279,7 +289,11 @@
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected existing bulk job"),
         }
         match bulk_receivers[0].try_recv().expect("admitted prefix batch") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
                 assert_eq!(jobs.len(), 2);
                 assert!(jobs.iter().all(|job| job.session_key == session_key));
             }
@@ -675,7 +689,11 @@
         );
 
         match bulk_rx.try_recv().expect("spilled priority packet") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
                 assert_eq!(jobs.len(), 1);
                 let job = &jobs[0];
                 assert_eq!(job.session_key, session_key);
@@ -743,7 +761,11 @@
             "three same-worker bulk packets should consume one channel slot"
         );
         match bulk_rx[0].try_recv().expect("batched bulk item") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
                 assert_eq!(jobs.len(), 3);
                 assert!(jobs.iter().all(DecryptJob::is_bulk_lane));
             }
@@ -772,14 +794,14 @@
         assert!(
             matches!(
                 bulk_rx[0].try_recv().expect("first session-local bulk item"),
-                DecryptWorkerBulkItem::Batch(_)
+                DecryptWorkerBulkItem::Batch { .. }
             ),
             "a session change should flush the pending singleton before batching resumes"
         );
         assert!(
             matches!(
                 bulk_rx[0].try_recv().expect("second session-local bulk item"),
-                DecryptWorkerBulkItem::Batch(_)
+                DecryptWorkerBulkItem::Batch { .. }
             ),
             "the new session singleton should flush separately at the end"
         );
@@ -818,7 +840,7 @@
             &control_rx,
             &priority_rx,
             &fsp_aead_completion_rx,
-            DecryptWorkerBulkItem::Batch(vec![
+            decrypt_worker_bulk_item_from_jobs(vec![
                 decrypt_job_for_test_packet(
                     packet_one,
                     header_one,
@@ -888,7 +910,7 @@
         let mut plaintext_batch =
             DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
-        let item = DecryptWorkerBulkItem::Batch(vec![
+        let item = decrypt_worker_bulk_item_from_jobs(vec![
             dummy_bulk_decrypt_job(session_key),
             dummy_bulk_decrypt_job(session_key),
         ]);

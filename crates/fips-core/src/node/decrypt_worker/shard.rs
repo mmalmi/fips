@@ -1479,22 +1479,10 @@ impl DecryptWorkerShard {
     fn collect_bulk_job_actions(
         &mut self,
         idx: usize,
+        session_key: DecryptSessionKey,
         jobs: Vec<DecryptJob>,
         actions: &mut Vec<DecryptWorkerJobAction>,
     ) {
-        let Some(session_key) = jobs.first().map(DecryptJob::session_key) else {
-            return;
-        };
-        if !jobs.iter().all(|job| job.session_key() == session_key) {
-            debug_assert!(
-                false,
-                "decrypt worker bulk batches should be grouped by FMP session"
-            );
-            for job in jobs {
-                self.collect_job_actions(idx, job, actions);
-            }
-            return;
-        }
         let Some(state) = self.sessions.get_mut(&session_key) else {
             return;
         };

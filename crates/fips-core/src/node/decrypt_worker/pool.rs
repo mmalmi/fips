@@ -75,7 +75,7 @@ fn record_decrypt_worker_bulk_queue_depth(
 
 fn decrypt_worker_bulk_queue_role(item: &DecryptWorkerBulkItem) -> DecryptWorkerBulkQueueRole {
     match item {
-        DecryptWorkerBulkItem::Batch(_) => DecryptWorkerBulkQueueRole::FmpBulk,
+        DecryptWorkerBulkItem::Batch { .. } => DecryptWorkerBulkQueueRole::FmpBulk,
         DecryptWorkerBulkItem::FspBatch(_) => DecryptWorkerBulkQueueRole::FspOwner,
         DecryptWorkerBulkItem::FspAeadOpenBatch(_) => DecryptWorkerBulkQueueRole::FspOpen,
     }

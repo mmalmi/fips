@@ -315,7 +315,7 @@
         ));
         assert!(matches!(
             bulk_rx.try_recv().expect("bulk item"),
-            DecryptWorkerBulkItem::Batch(_)
+            DecryptWorkerBulkItem::Batch { .. }
         ));
     }
 
@@ -337,7 +337,7 @@
         assert!(
             matches!(
                 bulk_rx.try_recv().expect("single packet bulk item"),
-                DecryptWorkerBulkItem::Batch(_)
+                DecryptWorkerBulkItem::Batch { .. }
             ),
             "single-packet capacity must enqueue a one-packet batch"
         );
@@ -362,7 +362,7 @@
         assert!(
             matches!(
                 bulk_rx[0].try_recv().expect("single bulk item"),
-                DecryptWorkerBulkItem::Batch(_)
+                DecryptWorkerBulkItem::Batch { .. }
             ),
             "single-job flush should dispatch one canonical bulk batch"
         );
@@ -388,11 +388,17 @@
             "worker packet capacity should be consumed by one bounded batch"
         );
         match bulk_rx[0].try_recv().expect("bounded bulk batch") {
-            DecryptWorkerBulkItem::Batch(jobs) => assert_eq!(
-                jobs.len(),
-                WORKER_PACKET_CAP,
-                "batch width should stop at the worker packet capacity"
-            ),
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
+                assert_eq!(
+                    jobs.len(),
+                    WORKER_PACKET_CAP,
+                    "batch width should stop at the worker packet capacity"
+                );
+            }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected an eight-packet bulk batch")
             }
@@ -1130,7 +1136,7 @@
             &control_rx,
             &priority_rx,
             &fsp_aead_completion_rx,
-            DecryptWorkerBulkItem::Batch(vec![
+            decrypt_worker_bulk_item_from_jobs(vec![
                 dummy_bulk_decrypt_job(session_key),
                 dummy_bulk_decrypt_job(session_key),
             ]),

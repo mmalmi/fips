@@ -30,7 +30,10 @@ enum WorkerMsg {
 #[allow(clippy::large_enum_variant)]
 enum DecryptWorkerBulkItem {
     FspAeadOpenBatch(Vec<FspAeadOpenJob>),
-    Batch(Vec<DecryptJob>),
+    Batch {
+        session_key: DecryptSessionKey,
+        jobs: Vec<DecryptJob>,
+    },
     FspBatch(Vec<FspDecryptJob>),
 }
 
@@ -38,7 +41,7 @@ impl DecryptWorkerBulkItem {
     fn packet_count(&self) -> usize {
         match self {
             Self::FspAeadOpenBatch(jobs) => jobs.len(),
-            Self::Batch(jobs) => jobs.len(),
+            Self::Batch { jobs, .. } => jobs.len(),
             Self::FspBatch(jobs) => jobs.len(),
         }
     }
@@ -61,9 +64,12 @@ impl DecryptWorkerBulkItem {
                     Some(decrypt_worker_bulk_item_from_fsp_aead_open_jobs(overflow)),
                 )
             }
-            Self::Batch(mut jobs) => {
+            Self::Batch {
+                session_key,
+                mut jobs,
+            } => {
                 if packet_count >= jobs.len() {
-                    return (Some(Self::Batch(jobs)), None);
+                    return (Some(Self::Batch { session_key, jobs }), None);
                 }
                 let overflow = jobs.split_off(packet_count);
                 (
@@ -94,7 +100,12 @@ fn decrypt_worker_bulk_item_from_fsp_aead_open_jobs(
 
 fn decrypt_worker_bulk_item_from_jobs(jobs: Vec<DecryptJob>) -> DecryptWorkerBulkItem {
     debug_assert!(!jobs.is_empty());
-    DecryptWorkerBulkItem::Batch(jobs)
+    let session_key = jobs[0].session_key();
+    debug_assert!(
+        jobs.iter().all(|job| job.session_key() == session_key),
+        "decrypt worker bulk batches must be grouped by FMP session"
+    );
+    DecryptWorkerBulkItem::Batch { session_key, jobs }
 }
 
 fn decrypt_worker_bulk_item_from_fsp_jobs(jobs: Vec<FspDecryptJob>) -> DecryptWorkerBulkItem {
@@ -105,9 +116,8 @@ fn decrypt_worker_bulk_item_from_fsp_jobs(jobs: Vec<FspDecryptJob>) -> DecryptWo
 fn fsp_jobs_from_decrypt_worker_bulk_item(item: DecryptWorkerBulkItem) -> Vec<FspDecryptJob> {
     match item {
         DecryptWorkerBulkItem::FspBatch(jobs) => jobs,
-        DecryptWorkerBulkItem::FspAeadOpenBatch(_) | DecryptWorkerBulkItem::Batch(_) => {
-            unreachable!("bulk FSP dispatch only sends FSP jobs")
-        }
+        DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+        | DecryptWorkerBulkItem::Batch { .. } => unreachable!("bulk FSP dispatch only sends FSP jobs"),
     }
 }
 
@@ -116,7 +126,7 @@ fn fsp_aead_open_jobs_from_decrypt_worker_bulk_item(
 ) -> Vec<FspAeadOpenJob> {
     match item {
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => jobs,
-        DecryptWorkerBulkItem::Batch(_) | DecryptWorkerBulkItem::FspBatch(_) => {
+        DecryptWorkerBulkItem::Batch { .. } | DecryptWorkerBulkItem::FspBatch(_) => {
             unreachable!("FSP AEAD opener dispatch only sends opener jobs")
         }
     }
@@ -188,7 +198,7 @@ impl DecryptWorkerBatchStats {
             DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
                 self.add_lane(DecryptWorkerLane::Bulk, jobs.len());
             }
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch { jobs, .. } => {
                 for job in jobs {
                     self.add_lane(job.lane(), 1);
                 }

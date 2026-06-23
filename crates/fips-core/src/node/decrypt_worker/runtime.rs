@@ -649,7 +649,7 @@ fn handle_bulk_item_with_buffers(
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count
         }
-        DecryptWorkerBulkItem::Batch(jobs) => {
+        DecryptWorkerBulkItem::Batch { session_key, jobs } => {
             let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();
             let item_started_at = crate::perf_profile::stamp();
@@ -676,7 +676,7 @@ fn handle_bulk_item_with_buffers(
                 }
             }
             let mut actions = Vec::with_capacity(count);
-            shard.collect_bulk_job_actions(idx, jobs, &mut actions);
+            shard.collect_bulk_job_actions(idx, session_key, jobs, &mut actions);
             for action in actions {
                 shard.push_job_action_output(
                     idx,
