@@ -1039,7 +1039,6 @@
         *second_payload
             .last_mut()
             .expect("test FSP frame has ciphertext") ^= 0x55;
-        let second_payload_after_corruption = second_payload.clone();
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
         let second_completion = FspAeadOpenJob {
@@ -1073,11 +1072,14 @@
             .expect("first completion should release the queued AEAD failure");
         assert_eq!(first_drain.ready, 2);
         assert_eq!(first_drain.accepted, 1);
-        assert_eq!(first_drain.aead_failures, 0);
-        assert_eq!(first_drain.rx_loop_fallbacks, 1);
+        assert_eq!(first_drain.aead_failures, 1);
+        assert_eq!(first_drain.rx_loop_fallbacks, 0);
         assert_eq!(
             first_drain.aead_failure_sources,
-            FspAeadFailureSources::default()
+            FspAeadFailureSources {
+                worker_open: 1,
+                ..FspAeadFailureSources::default()
+            }
         );
         assert_eq!(first_drain.outputs.len(), 2);
         match (&first_drain.outputs[0], &first_drain.outputs[1]) {
@@ -1090,11 +1092,8 @@
                 },
             ) => {
                 assert_eq!(opened.plaintext_len, first_plaintext_len);
-                assert!(*fallback_to_rx_loop);
-                assert_eq!(
-                    &job.fallback.packet_data[..second_payload_len],
-                    second_payload_after_corruption.as_slice()
-                );
+                assert!(!*fallback_to_rx_loop);
+                assert_eq!(job.fallback.packet_len, second_payload_len);
             }
             _ => panic!("first packet should open, second packet should fail AEAD"),
         }
