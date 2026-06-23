@@ -294,12 +294,13 @@
 
         let mut plaintext_batch =
             DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
-        shard.handle_bulk_job_msg(0, first, &mut plaintext_batch);
+        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        shard.handle_bulk_job_msg(0, first, &mut plaintext_batch, &mut fsp_open_batcher);
         assert!(
             fallback_rx.authenticated_bulk.try_recv().is_err(),
             "first local FSP direct-data output should stay in the worker return batch"
         );
-        shard.handle_bulk_job_msg(0, second, &mut plaintext_batch);
+        shard.handle_bulk_job_msg(0, second, &mut plaintext_batch, &mut fsp_open_batcher);
         assert!(
             fallback_rx.authenticated_bulk.try_recv().is_err(),
             "second local FSP direct-data output should still wait below the batch cap"

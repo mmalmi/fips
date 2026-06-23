@@ -699,7 +699,7 @@
             ))),
             &mut plaintext_batch,
             None,
-            Some(&mut fsp_open_batcher),
+            &mut fsp_open_batcher,
         );
         assert!(
             fsp_open_batcher.flush(&shard.pool).is_empty(),
@@ -1007,7 +1007,7 @@
             ))),
             &mut plaintext_batch,
             None,
-            Some(&mut fsp_open_batcher),
+            &mut fsp_open_batcher,
         );
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         assert_eq!(

@@ -268,10 +268,17 @@ impl DecryptWorkerShard {
         idx: usize,
         job: DecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        fsp_open_batcher: &mut FspAeadOpenJobBatcher,
     ) {
         match self.handle_job_action(idx, job) {
             Ok(action) => {
-                self.push_job_action_output(idx, action, plaintext_batch, None, None);
+                self.push_job_action_output(
+                    idx,
+                    action,
+                    plaintext_batch,
+                    None,
+                    fsp_open_batcher,
+                );
             }
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
@@ -305,7 +312,7 @@ impl DecryptWorkerShard {
             Some(DecryptWorkerJobAction::FspJob(job)),
             plaintext_batch,
             None,
-            Some(fsp_open_batcher),
+            fsp_open_batcher,
         );
         trace!(worker = idx, "processed batched bulk FSP decrypt worker job");
     }
@@ -437,7 +444,7 @@ impl DecryptWorkerShard {
         action: Option<DecryptWorkerJobAction>,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
         fsp_batcher: Option<&mut FspDecryptJobBatcher>,
-        fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
+        fsp_open_batcher: &mut FspAeadOpenJobBatcher,
     ) {
         let Some(action) = action else {
             return;
@@ -447,37 +454,25 @@ impl DecryptWorkerShard {
             DecryptWorkerJobAction::FspJob(job) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
                 record_fsp_owner_match(owner_idx == idx);
-                let job = if let Some(fsp_open_batcher) = fsp_open_batcher {
-                    match self.try_prepare_fsp_bulk_open_worker_job(idx, job) {
-                        Ok((open_idx, owner_idx, open_job)) => {
-                            record_fsp_path_worker_open_bulk();
-                            let returned =
-                                fsp_open_batcher.push(&self.pool, open_idx, owner_idx, open_job);
-                            if !returned.is_empty() {
-                                self.drop_returned_fsp_aead_open_jobs(
-                                    idx,
-                                    returned,
-                                    plaintext_batch,
-                                );
-                            }
-                            return;
+                let job = match self.try_prepare_fsp_bulk_open_worker_job(idx, job) {
+                    Ok((open_idx, owner_idx, open_job)) => {
+                        record_fsp_path_worker_open_bulk();
+                        let returned =
+                            fsp_open_batcher.push(&self.pool, open_idx, owner_idx, open_job);
+                        if !returned.is_empty() {
+                            self.drop_returned_fsp_aead_open_jobs(
+                                idx,
+                                returned,
+                                plaintext_batch,
+                            );
                         }
-                        Err(error) => {
-                            if owner_idx == idx {
-                                record_fsp_open_worker_local_ineligible(error.reason);
-                            }
-                            error.into_job()
-                        }
+                        return;
                     }
-                } else {
-                    match self.try_start_fsp_bulk_open_worker(idx, job, plaintext_batch) {
-                        Ok(()) => return,
-                        Err(error) => {
-                            if owner_idx == idx {
-                                record_fsp_open_worker_local_ineligible(error.reason);
-                            }
-                            error.into_job()
+                    Err(error) => {
+                        if owner_idx == idx {
+                            record_fsp_open_worker_local_ineligible(error.reason);
                         }
+                        error.into_job()
                     }
                 };
                 if owner_idx == idx {
@@ -787,36 +782,6 @@ impl DecryptWorkerShard {
         Ok((open_idx, owner_idx, open_jobs))
     }
 
-    #[allow(clippy::result_large_err)]
-    fn try_start_fsp_bulk_open_worker(
-        &mut self,
-        idx: usize,
-        job: FspDecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) -> Result<(), FspOpenWorkerPrepareError> {
-        let (open_idx, owner_idx, open_job) = match self.try_prepare_fsp_bulk_open_worker_job(
-            idx, job,
-        ) {
-            Ok(prepared) => prepared,
-            Err(error) => return Err(error),
-        };
-        record_fsp_path_worker_open_bulk();
-        match self
-            .pool
-            .dispatch_fsp_aead_open_worker_job(open_idx, owner_idx, open_job)
-        {
-            Ok(()) => Ok(()),
-            Err(open_job) => {
-                self.drop_returned_fsp_aead_open_jobs(
-                    idx,
-                    std::iter::once(open_job),
-                    plaintext_batch,
-                );
-                Ok(())
-            }
-        }
-    }
-
     fn drop_returned_fsp_aead_open_jobs<I>(
         &mut self,
         idx: usize,
@@ -1045,13 +1010,15 @@ impl DecryptWorkerShard {
     fn dispatch_or_handle_fsp_job_immediate(&mut self, idx: usize, job: FspDecryptJob) {
         let mut plaintext_batch =
             DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
+        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         self.push_job_action_output(
             idx,
             Some(DecryptWorkerJobAction::FspJob(job)),
             &mut plaintext_batch,
             None,
-            None,
+            &mut fsp_open_batcher,
         );
+        flush_fsp_open_batcher(idx, self, &mut plaintext_batch, &mut fsp_open_batcher);
         plaintext_batch.flush();
     }
 

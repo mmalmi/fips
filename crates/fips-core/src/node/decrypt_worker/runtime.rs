@@ -696,7 +696,10 @@ fn handle_bulk_item_with_buffers(
             let item_started_at = crate::perf_profile::stamp();
             record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, 1);
             record_decrypt_worker_bulk_input_tail_wait(item_started_at);
-            shard.handle_bulk_job_msg(idx, job, plaintext_batch);
+            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
+            shard.handle_bulk_job_msg(idx, job, plaintext_batch, &mut *fsp_open_batcher);
+            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
+            debug_assert!(bulk_batchers.is_empty());
             record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
             1
         }
@@ -759,7 +762,7 @@ fn handle_bulk_item_with_buffers(
                             actions,
                             plaintext_batch,
                             Some(&mut *fsp_batcher),
-                            Some(&mut *fsp_open_batcher),
+                            &mut *fsp_open_batcher,
                         );
                     }
                     Err(err) => {
