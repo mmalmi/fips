@@ -2407,11 +2407,6 @@ pub(crate) fn record_fsp_aead_completion_source_aead_failures(
 }
 
 #[inline]
-pub(crate) fn record_fsp_aead_completion_local_open_aead_failure() {
-    record_event(Event::FspAeadCompletionAeadFailedLocalOpen);
-}
-
-#[inline]
 pub(crate) fn record_fsp_aead_completion_accept_kbit_mismatch() {
     record_event(Event::FspAeadCompletionAeadFailedAcceptKbitMismatch);
 }

@@ -291,26 +291,6 @@ impl DecryptWorkerShard {
         trace!(worker = idx, "processed FSP decrypt worker job");
     }
 
-    fn handle_bulk_fsp_job_with_open_batcher(
-        &mut self,
-        idx: usize,
-        job: FspDecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-        fsp_open_batcher: &mut FspAeadOpenJobBatcher,
-    ) {
-        job.record_queue_wait();
-        let _t_service =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
-        self.push_job_action_output(
-            idx,
-            Some(DecryptWorkerJobAction::FspJob(job)),
-            plaintext_batch,
-            None,
-            Some(fsp_open_batcher),
-        );
-        trace!(worker = idx, "processed batched bulk FSP decrypt worker job");
-    }
-
     fn handle_bulk_fsp_job_batch_with_open_batcher(
         &mut self,
         idx: usize,
@@ -346,12 +326,18 @@ impl DecryptWorkerShard {
                     if trace_enabled {
                         record_fsp_worker_bulk_input_tail_wait(item_started_at);
                     }
-                    self.handle_bulk_fsp_job_with_open_batcher(
-                        idx,
-                        job,
-                        plaintext_batch,
-                        fsp_open_batcher,
+                    job.record_queue_wait();
+                    let _t_service = crate::perf_profile::Timer::start(
+                        crate::perf_profile::Stage::DecryptFspWorkerService,
                     );
+                    self.push_job_action_output(
+                        idx,
+                        Some(DecryptWorkerJobAction::FspJob(job)),
+                        plaintext_batch,
+                        None,
+                        Some(&mut *fsp_open_batcher),
+                    );
+                    trace!(worker = idx, "processed batched bulk FSP decrypt worker job");
                 }
             }
         }
@@ -1320,13 +1306,10 @@ impl DecryptWorkerShard {
             });
             (ticket, open_result, receive_order_id, crypto_generation)
         };
-        let fallback_to_rx_loop = if matches!(open_result, Some(Err(FspOpenError::Aead))) {
+        if matches!(open_result, Some(Err(FspOpenError::Aead))) {
             let restore = &mut fallback.packet_data[ciphertext_offset..payload_end];
             restore.copy_from_slice(self.fsp_open_scratch.preserved_ciphertext());
-            true
-        } else {
-            false
-        };
+        }
         let job = FspDecryptJob {
             fallback,
             lane,
@@ -1350,16 +1333,12 @@ impl DecryptWorkerShard {
                 source: FspAeadCompletionSource::Local,
             },
             Some(Err(FspOpenError::Aead)) => {
-                let count_failure = !fallback_to_rx_loop;
-                if count_failure {
-                    crate::perf_profile::record_fsp_aead_completion_local_open_aead_failure();
-                }
                 FspOrderedCompletion::AeadFailed {
                     job,
                     header,
                     source: FspAeadCompletionSource::Local,
-                    fallback_to_rx_loop,
-                    count_failure,
+                    fallback_to_rx_loop: true,
+                    count_failure: false,
                 }
             }
             Some(Err(FspOpenError::Replay)) => {
