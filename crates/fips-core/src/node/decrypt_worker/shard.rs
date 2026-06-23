@@ -255,12 +255,9 @@ impl DecryptWorkerShard {
     }
 
     fn handle_job_msg(&mut self, idx: usize, job: DecryptJob) {
-        match self.handle_job_action(idx, job) {
-            Ok(action) => self.handle_job_action_immediate(idx, action),
-            Err(err) => {
-                debug!(worker = idx, error = %err, "decrypt worker job failed");
-            }
-        }
+        let mut actions = Vec::with_capacity(1);
+        self.collect_job_actions(idx, job, &mut actions);
+        self.handle_job_actions_immediate(idx, actions);
     }
 
     #[cfg(test)]
@@ -270,13 +267,10 @@ impl DecryptWorkerShard {
         job: DecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        match self.handle_job_action(idx, job) {
-            Ok(action) => {
-                self.push_job_action_output(idx, action, plaintext_batch, None, None);
-            }
-            Err(err) => {
-                debug!(worker = idx, error = %err, "decrypt worker job failed");
-            }
+        let mut actions = Vec::with_capacity(1);
+        self.collect_job_actions(idx, job, &mut actions);
+        for action in actions {
+            self.push_job_action_output(idx, action, plaintext_batch, None, None);
         }
     }
 
@@ -332,7 +326,7 @@ impl DecryptWorkerShard {
                     );
                     self.push_job_action_output(
                         idx,
-                        Some(DecryptWorkerJobAction::FspJob(job)),
+                        DecryptWorkerJobAction::FspJob(job),
                         plaintext_batch,
                         None,
                         Some(&mut *fsp_open_batcher),
@@ -397,74 +391,33 @@ impl DecryptWorkerShard {
         &mut self,
         job: DecryptJob,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let action = self.handle_job_action(0, job)?;
-        self.handle_job_action_immediate(0, action);
+        let mut actions = Vec::with_capacity(1);
+        self.collect_job_actions(0, job, &mut actions);
+        self.handle_job_actions_immediate(0, actions);
         Ok(())
     }
 
-    fn handle_job_action_immediate(
-        &mut self,
-        idx: usize,
-        action: Option<DecryptWorkerJobAction>,
-    ) {
-        match action {
-            None => {}
-            Some(DecryptWorkerJobAction::Output(output)) => {
-                let _ = output.send(&self.pool.fallback_tx);
-            }
-            Some(DecryptWorkerJobAction::FspJob(job)) => {
-                let mut plaintext_batch =
-                    DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
-                self.push_job_action_output(
-                    idx,
-                    Some(DecryptWorkerJobAction::FspJob(job)),
-                    &mut plaintext_batch,
-                    None,
-                    None,
-                );
-                plaintext_batch.flush();
-            }
-            Some(DecryptWorkerJobAction::Many(actions)) => {
-                let mut plaintext_batch =
-                    DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
-                for action in actions {
-                    self.push_job_action_output(
-                        idx,
-                        Some(action),
-                        &mut plaintext_batch,
-                        None,
-                        None,
-                    );
-                }
-                plaintext_batch.flush();
-            }
+    fn handle_job_actions_immediate(&mut self, idx: usize, actions: Vec<DecryptWorkerJobAction>) {
+        if actions.is_empty() {
+            return;
         }
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
+        for action in actions {
+            self.push_job_action_output(idx, action, &mut plaintext_batch, None, None);
+        }
+        plaintext_batch.flush();
     }
 
     fn push_job_action_output(
         &mut self,
         idx: usize,
-        action: Option<DecryptWorkerJobAction>,
+        action: DecryptWorkerJobAction,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
         mut fsp_batcher: Option<&mut FspDecryptJobBatcher>,
         mut fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
     ) {
-        let Some(action) = action else {
-            return;
-        };
         match action {
             DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
-            DecryptWorkerJobAction::Many(actions) => {
-                for action in actions {
-                    self.push_job_action_output(
-                        idx,
-                        Some(action),
-                        plaintext_batch,
-                        fsp_batcher.as_deref_mut(),
-                        fsp_open_batcher.as_deref_mut(),
-                    );
-                }
-            }
             DecryptWorkerJobAction::FspJob(job) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
                 record_fsp_owner_match(owner_idx == idx);
@@ -1542,16 +1495,70 @@ impl DecryptWorkerShard {
         });
     }
 
-    fn handle_job_action(
+    fn collect_job_actions(
         &mut self,
         idx: usize,
         job: DecryptJob,
-    ) -> Result<Option<DecryptWorkerJobAction>, Box<dyn std::error::Error + Send + Sync>> {
+        actions: &mut Vec<DecryptWorkerJobAction>,
+    ) {
+        let session_key = job.session_key();
+        let Some(state) = self.sessions.get_mut(&session_key) else {
+            let _ = job;
+            return;
+        };
+        let mut completions = Vec::new();
+        Self::collect_job_actions_with_state(idx, session_key, state, job, &mut completions, actions);
+    }
+
+    fn collect_bulk_job_actions(
+        &mut self,
+        idx: usize,
+        jobs: Vec<DecryptJob>,
+        actions: &mut Vec<DecryptWorkerJobAction>,
+    ) {
+        let Some(session_key) = jobs.first().map(DecryptJob::session_key) else {
+            return;
+        };
+        if !jobs.iter().all(|job| job.session_key() == session_key) {
+            debug_assert!(
+                false,
+                "decrypt worker bulk batches should be grouped by FMP session"
+            );
+            for job in jobs {
+                self.collect_job_actions(idx, job, actions);
+            }
+            return;
+        }
+        let Some(state) = self.sessions.get_mut(&session_key) else {
+            return;
+        };
+        let mut completions = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            Self::collect_job_actions_with_state(
+                idx,
+                session_key,
+                state,
+                job,
+                &mut completions,
+                actions,
+            );
+        }
+    }
+
+    fn collect_job_actions_with_state(
+        idx: usize,
+        session_key: DecryptSessionKey,
+        state: &mut OwnedSessionState,
+        job: DecryptJob,
+        completions: &mut Vec<FmpReadyCompletion>,
+        actions: &mut Vec<DecryptWorkerJobAction>,
+    ) {
+        completions.clear();
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
             lane,
-            session_key,
+            session_key: _,
             worker_idx: _,
             _transport_id: transport_id,
             _remote_addr: remote_addr,
@@ -1568,93 +1575,77 @@ impl DecryptWorkerShard {
         // open doesn't change Vec::len), but documenting the intent.
         let packet_len = packet_data.len();
 
-        // Look up the shard-owned session state. If absent (session not
-        // yet registered, or unregistered mid-flight), drop. The caller only
-        // marks a session worker-owned after registration is accepted, so an
-        // absent session here is stale in-flight work, not a fallback path.
-        let mut completions = Vec::new();
-        {
-            let state = match self.sessions.get_mut(&session_key) {
-                Some(s) => s,
-                None => {
-                    let _ = packet_data;
-                    return Ok(None);
-                }
-            };
-            let source_peer = state.source_peer;
+        let source_peer = state.source_peer;
 
-            // **Owner-sequenced FMP receive** — the shard-owned session issues
-            // the receive ticket, opens AEAD work, then retires contiguous
-            // completions in wire order before replay accept or output.
-            let replay_precheck = match state.precheck_fmp_replay(fmp_counter) {
-                Ok(precheck) => precheck,
-                Err(FmpOpenError::Replay) => return Ok(None),
-            };
-            let ticket = match state.issue_fmp_receive_ticket() {
-                Some(ticket) => ticket,
-                None => {
-                    match lane {
-                        DecryptWorkerLane::Priority => {
-                            record_decrypt_worker_priority_drop(idx, "fmp-receive-window");
-                        }
-                        DecryptWorkerLane::Bulk => record_decrypt_worker_bulk_drop_count(idx, 1),
+        // **Owner-sequenced FMP receive** — the shard-owned session issues
+        // the receive ticket, opens AEAD work, then retires contiguous
+        // completions in wire order before replay accept or output.
+        let replay_precheck = match state.precheck_fmp_replay(fmp_counter) {
+            Ok(precheck) => precheck,
+            Err(FmpOpenError::Replay) => return,
+        };
+        let ticket = match state.issue_fmp_receive_ticket() {
+            Some(ticket) => ticket,
+            None => {
+                match lane {
+                    DecryptWorkerLane::Priority => {
+                        record_decrypt_worker_priority_drop(idx, "fmp-receive-window");
                     }
-                    return Ok(None);
+                    DecryptWorkerLane::Bulk => record_decrypt_worker_bulk_drop_count(idx, 1),
                 }
-            };
-            let completion = match OwnedSessionState::open_fmp_aead_in_place(
-                &state.fmp_cipher,
-                &mut packet_data,
-                fmp_ciphertext_offset,
-                fmp_counter,
-                fmp_flags,
-                &fmp_header,
-            ) {
-                Ok(outcome) => FmpOrderedCompletion::Opened {
-                    opened: OpenedFmpJob {
-                        packet_data,
-                        source_peer,
-                        transport_id,
-                        remote_addr,
-                        local_node_addr,
-                        timestamp_ms,
-                        packet_len,
-                        fmp_counter,
-                        fmp_flags,
-                        fmp_plaintext_offset: fmp_ciphertext_offset,
-                        fmp_plaintext_len: outcome.plaintext_len,
-                    },
-                    precheck: replay_precheck,
+                return;
+            }
+        };
+        let completion = match OwnedSessionState::open_fmp_aead_in_place(
+            &state.fmp_cipher,
+            &mut packet_data,
+            fmp_ciphertext_offset,
+            fmp_counter,
+            fmp_flags,
+            &fmp_header,
+        ) {
+            Ok(outcome) => FmpOrderedCompletion::Opened {
+                opened: OpenedFmpJob {
+                    packet_data,
+                    source_peer,
+                    transport_id,
+                    remote_addr,
+                    local_node_addr,
+                    timestamp_ms,
+                    packet_len,
+                    fmp_counter,
+                    fmp_flags,
+                    fmp_plaintext_offset: fmp_ciphertext_offset,
+                    fmp_plaintext_len: outcome.plaintext_len,
                 },
-                Err(()) => FmpOrderedCompletion::AeadFailed {
-                    failure: DecryptFailureReport {
-                        source_peer,
-                        fmp_counter,
-                        fmp_replay_highest: replay_precheck.replay_highest,
-                        trace_enqueued_at: None,
-                    },
+                precheck: replay_precheck,
+            },
+            Err(()) => FmpOrderedCompletion::AeadFailed {
+                failure: DecryptFailureReport {
+                    source_peer,
+                    fmp_counter,
+                    fmp_replay_highest: replay_precheck.replay_highest,
+                    trace_enqueued_at: None,
                 },
-            };
-            if let Err(error) =
-                state.complete_ordered_fmp_open(ticket, completion, |completion| {
-                    completions.push(completion);
-                })
-            {
-                debug!(
-                    worker = idx,
-                    ?session_key,
-                    ?error,
-                    "dropping FMP completion rejected by receive order"
-                );
-                return Ok(None);
-            };
-        }
+            },
+        };
+        if let Err(error) = state.complete_ordered_fmp_open(ticket, completion, |completion| {
+            completions.push(completion);
+        }) {
+            debug!(
+                worker = idx,
+                ?session_key,
+                ?error,
+                "dropping FMP completion rejected by receive order"
+            );
+            return;
+        };
 
-        let actions = completions
-            .into_iter()
-            .filter_map(Self::action_for_fmp_ready_completion)
-            .collect();
-        Ok(DecryptWorkerJobAction::from_vec(actions))
+        actions.extend(
+            completions
+                .drain(..)
+                .filter_map(Self::action_for_fmp_ready_completion),
+        );
     }
 
     fn action_for_fmp_ready_completion(

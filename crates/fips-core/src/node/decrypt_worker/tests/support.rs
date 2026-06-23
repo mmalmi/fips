@@ -722,9 +722,9 @@
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             current_idx,
-            Some(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
+            DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
                 source_addr,
-            ))),
+            )),
             &mut plaintext_batch,
             None,
             Some(&mut fsp_open_batcher),
@@ -797,9 +797,9 @@
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
         shard.push_job_action_output(
             owner_idx,
-            Some(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
+            DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
                 source_addr,
-            ))),
+            )),
             &mut plaintext_batch,
             None,
             None,
@@ -1034,9 +1034,9 @@
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
-            Some(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
+            DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
                 source_addr,
-            ))),
+            )),
             &mut plaintext_batch,
             None,
             Some(&mut fsp_open_batcher),
@@ -1097,9 +1097,9 @@
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
-            Some(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
+            DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
                 source_addr,
-            ))),
+            )),
             &mut plaintext_batch,
             None,
             Some(&mut fsp_open_batcher),
@@ -1596,7 +1596,75 @@
     }
 
     #[test]
-    fn job_action_many_reuses_plaintext_output_batcher() {
+    fn bulk_fmp_batch_retires_same_session_with_plaintext_batch_output() {
+        let key_bytes = [0x71; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let session_key = test_session_key(1, 84);
+        let source_peer = test_source_peer();
+        let mut shard = test_shard();
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState::new(open_cipher, ReplayWindow::new(), source_peer),
+        );
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        shard.pool.fallback_tx = fallback_tx.clone();
+
+        let link_body_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+        let (packet1, header1) = sealed_fmp_test_packet_with_link_body(
+            &seal_cipher,
+            1,
+            0,
+            link_body_len,
+        );
+        let (packet2, header2) = sealed_fmp_test_packet_with_link_body(
+            &seal_cipher,
+            2,
+            0,
+            link_body_len,
+        );
+        let item = DecryptWorkerBulkItem::Batch(vec![
+            decrypt_job_for_test_packet(packet1, header1, session_key, 1, 0),
+            decrypt_job_for_test_packet(packet2, header2, session_key, 2, 0),
+        ]);
+
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let fsp_completion_rx = test_fsp_aead_completion_lane(1);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(fallback_tx);
+        let mut batch_stats = DecryptWorkerBatchStats::default();
+        let processed = handle_bulk_item(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fsp_completion_rx,
+            item,
+            &mut plaintext_batch,
+            &mut batch_stats,
+        );
+        plaintext_batch.flush();
+
+        assert_eq!(processed, 2);
+        let event = fallback_rx.bulk.try_recv().expect("bulk plaintext batch");
+        match &event {
+            DecryptWorkerEvent::PlaintextBatch(fallbacks) => assert_eq!(fallbacks.len(), 2),
+            other => panic!(
+                "bulk FMP batch should coalesce plaintext output, got {} packet(s)",
+                other.packet_count()
+            ),
+        }
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(
+            shard.fmp_replay_highest(session_key),
+            Some(2),
+            "ordered bulk FMP retire should accept both counters"
+        );
+    }
+
+    #[test]
+    fn job_actions_reuse_plaintext_output_batcher() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let pool = DecryptWorkerPool {
             senders: Arc::from(Vec::<DecryptWorkerSender>::new().into_boxed_slice()),
@@ -1609,16 +1677,20 @@
 
         shard.push_job_action_output(
             0,
-            Some(DecryptWorkerJobAction::Many(vec![
-                DecryptWorkerJobAction::Output(DecryptWorkerOutput {
-                    event: dummy_plaintext_event(packet_len),
-                    direct_delivery: None,
-                }),
-                DecryptWorkerJobAction::Output(DecryptWorkerOutput {
-                    event: dummy_plaintext_event(packet_len),
-                    direct_delivery: None,
-                }),
-            ])),
+            DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+                event: dummy_plaintext_event(packet_len),
+                direct_delivery: None,
+            }),
+            &mut plaintext_batch,
+            None,
+            None,
+        );
+        shard.push_job_action_output(
+            0,
+            DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+                event: dummy_plaintext_event(packet_len),
+                direct_delivery: None,
+            }),
             &mut plaintext_batch,
             None,
             None,
@@ -1631,7 +1703,7 @@
                 assert_eq!(fallbacks.len(), 2);
             }
             other => panic!(
-                "many output actions should reuse plaintext batching, got {} packet(s)",
+                "sequential output actions should reuse plaintext batching, got {} packet(s)",
                 other.packet_count()
             ),
         }

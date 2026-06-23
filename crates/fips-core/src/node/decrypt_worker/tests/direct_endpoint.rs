@@ -981,7 +981,6 @@
                 );
             }
             DecryptWorkerJobAction::Output(_) => panic!("expected established FSP worker job"),
-            DecryptWorkerJobAction::Many(_) => panic!("expected one established FSP worker job"),
         }
     }
 

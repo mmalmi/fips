@@ -670,24 +670,21 @@ fn handle_bulk_item_with_buffers(
             }
             let fsp_batcher = &mut bulk_batchers.fsp_batcher;
             let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
-            for job in jobs {
-                if trace_enabled {
+            if trace_enabled {
+                for _ in 0..count {
                     record_decrypt_worker_bulk_input_tail_wait(item_started_at);
                 }
-                match shard.handle_job_action(idx, job) {
-                    Ok(actions) => {
-                        shard.push_job_action_output(
-                            idx,
-                            actions,
-                            plaintext_batch,
-                            Some(&mut *fsp_batcher),
-                            Some(&mut *fsp_open_batcher),
-                        );
-                    }
-                    Err(err) => {
-                        debug!(worker = idx, error = %err, "decrypt worker job failed");
-                    }
-                }
+            }
+            let mut actions = Vec::with_capacity(count);
+            shard.collect_bulk_job_actions(idx, jobs, &mut actions);
+            for action in actions {
+                shard.push_job_action_output(
+                    idx,
+                    action,
+                    plaintext_batch,
+                    Some(&mut *fsp_batcher),
+                    Some(&mut *fsp_open_batcher),
+                );
             }
             fsp_batcher.flush(&shard.pool);
             flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
@@ -736,17 +733,6 @@ struct DecryptWorkerOutput {
 enum DecryptWorkerJobAction {
     Output(DecryptWorkerOutput),
     FspJob(FspDecryptJob),
-    Many(Vec<DecryptWorkerJobAction>),
-}
-
-impl DecryptWorkerJobAction {
-    fn from_vec(mut actions: Vec<Self>) -> Option<Self> {
-        match actions.len() {
-            0 => None,
-            1 => actions.pop(),
-            _ => Some(Self::Many(actions)),
-        }
-    }
 }
 
 impl DecryptWorkerOutput {
