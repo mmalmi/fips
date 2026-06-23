@@ -426,7 +426,16 @@ impl DecryptWorkerShard {
                 let _ = output.send(&self.pool.fallback_tx);
             }
             Some(DecryptWorkerJobAction::FspJob(job)) => {
-                self.dispatch_or_handle_fsp_job_immediate(idx, job);
+                let mut plaintext_batch =
+                    DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
+                self.push_job_action_output(
+                    idx,
+                    Some(DecryptWorkerJobAction::FspJob(job)),
+                    &mut plaintext_batch,
+                    None,
+                    None,
+                );
+                plaintext_batch.flush();
             }
         }
     }
@@ -501,20 +510,6 @@ impl DecryptWorkerShard {
                 }
             }
         }
-    }
-
-    fn local_established_fsp_meta(
-        packet_data: &[u8],
-        local_node_addr: NodeAddr,
-        link_msg_start: usize,
-        link_msg_end: usize,
-    ) -> Option<FspDecryptJobMeta> {
-        local_established_fsp_datagram_meta(
-            packet_data,
-            local_node_addr,
-            link_msg_start,
-            link_msg_end,
-        )
     }
 
     fn current_fsp_bulk_open_header(
@@ -1040,19 +1035,6 @@ impl DecryptWorkerShard {
                 fallback_to_rx_loop,
             )),
         }
-    }
-
-    fn dispatch_or_handle_fsp_job_immediate(&mut self, idx: usize, job: FspDecryptJob) {
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
-        self.push_job_action_output(
-            idx,
-            Some(DecryptWorkerJobAction::FspJob(job)),
-            &mut plaintext_batch,
-            None,
-            None,
-        );
-        plaintext_batch.flush();
     }
 
     fn output_for_fsp_aead_failure(
@@ -1739,7 +1721,7 @@ impl DecryptWorkerShard {
         // FMP decrypt so they cannot flood the priority lane during LAN TCP
         // transfers. Handshakes, coordinate-carrying refreshes, heartbeats,
         // and other link control messages continue through the fallback path.
-        let fsp_meta = Self::local_established_fsp_meta(
+        let fsp_meta = local_established_fsp_datagram_meta(
             &packet_data,
             local_node_addr,
             link_msg_start,

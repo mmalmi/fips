@@ -763,10 +763,17 @@
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
-        shard.dispatch_or_handle_fsp_job_immediate(
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        shard.push_job_action_output(
             owner_idx,
-            dummy_bulk_fsp_open_job(source_addr),
+            Some(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
+                source_addr,
+            ))),
+            &mut plaintext_batch,
+            None,
+            None,
         );
+        plaintext_batch.flush();
 
         match bulk_receivers[open_idx]
             .try_recv()
