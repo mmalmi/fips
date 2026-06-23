@@ -301,30 +301,11 @@ impl Node {
         &mut self,
         authenticated: DecryptAuthenticatedSession,
     ) {
-        let clock = WorkerReceiveClock::now();
-        self.record_worker_authenticated_fmp_receive_at(
-            &authenticated.fmp,
-            Some(authenticated.previous_hop_peer.node_addr()),
-            clock,
-        );
-
-        let source_addr = authenticated.source_addr;
-        let receive_applied =
-            self.apply_worker_fsp_receive_sync_at(source_addr, authenticated.receive_sync, clock);
-        if !receive_applied {
-            debug!(
-                src = %self.peer_display_name(&source_addr),
-                "Dropping worker-authenticated session message for missing or stale session"
-            );
+        let Some(dispatch) =
+            self.authenticated_session_dispatch_from_worker_at(authenticated, WorkerReceiveClock::now())
+        else {
             return;
-        }
-
-        let dispatch = AuthenticatedSessionDispatch::new(
-            source_addr,
-            *authenticated.previous_hop_peer.node_addr(),
-            authenticated.ce_flag,
-            authenticated.message,
-        );
+        };
         if dispatch.is_endpoint_data() {
             let finish = dispatch.dispatch_endpoint_data_fast(self);
             if let Some(dest_addr) = finish.pending_flush_dest() {
@@ -342,29 +323,11 @@ impl Node {
         let mut pending_flush_dests = Vec::new();
         let clock = WorkerReceiveClock::now();
         for authenticated in sessions {
-            self.record_worker_authenticated_fmp_receive_at(
-                &authenticated.fmp,
-                Some(authenticated.previous_hop_peer.node_addr()),
-                clock,
-            );
-
-            let source_addr = authenticated.source_addr;
-            let receive_applied =
-                self.apply_worker_fsp_receive_sync_at(source_addr, authenticated.receive_sync, clock);
-            if !receive_applied {
-                debug!(
-                    src = %self.peer_display_name(&source_addr),
-                    "Dropping worker-authenticated session message for missing or stale session"
-                );
+            let Some(dispatch) =
+                self.authenticated_session_dispatch_from_worker_at(authenticated, clock)
+            else {
                 continue;
-            }
-
-            let dispatch = AuthenticatedSessionDispatch::new(
-                source_addr,
-                *authenticated.previous_hop_peer.node_addr(),
-                authenticated.ce_flag,
-                authenticated.message,
-            );
+            };
             if dispatch.is_endpoint_data() {
                 Self::note_pending_flush_dest(
                     &mut pending_flush_dests,
@@ -379,6 +342,37 @@ impl Node {
         }
         self.flush_pending_destinations(&mut pending_flush_dests)
             .await;
+    }
+
+    fn authenticated_session_dispatch_from_worker_at(
+        &mut self,
+        authenticated: DecryptAuthenticatedSession,
+        clock: WorkerReceiveClock,
+    ) -> Option<AuthenticatedSessionDispatch> {
+        let source_addr = authenticated.source_addr;
+        let previous_hop_addr = *authenticated.previous_hop_peer.node_addr();
+        self.record_worker_authenticated_fmp_receive_at(
+            &authenticated.fmp,
+            Some(&previous_hop_addr),
+            clock,
+        );
+
+        let receive_applied =
+            self.apply_worker_fsp_receive_sync_at(source_addr, authenticated.receive_sync, clock);
+        if !receive_applied {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                "Dropping worker-authenticated session message for missing or stale session"
+            );
+            return None;
+        }
+
+        Some(AuthenticatedSessionDispatch::new(
+            source_addr,
+            previous_hop_addr,
+            authenticated.ce_flag,
+            authenticated.message,
+        ))
     }
 
     pub(in crate::node) async fn process_direct_session_data_from_worker(
