@@ -1043,42 +1043,16 @@ impl DecryptWorkerShard {
     }
 
     fn dispatch_or_handle_fsp_job_immediate(&mut self, idx: usize, job: FspDecryptJob) {
-        let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
-        record_fsp_owner_match(owner_idx == idx);
-        if owner_idx == idx {
-            let mut plaintext_batch =
-                DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
-            if matches!(job.lane(), DecryptWorkerLane::Bulk) {
-                match self.try_start_fsp_bulk_open_worker(idx, job, &mut plaintext_batch) {
-                    Ok(()) => {
-                        plaintext_batch.flush();
-                        return;
-                    }
-                    Err(error) => {
-                        record_fsp_open_worker_local_ineligible(error.reason);
-                        let job = error.into_job();
-                        record_fsp_path_local(job.lane());
-                        self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
-                        plaintext_batch.flush();
-                        return;
-                    }
-                }
-            }
-            record_fsp_path_local(job.lane());
-            self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
-            plaintext_batch.flush();
-            return;
-        }
-        record_fsp_path_handoff(job.lane());
-        match self.pool.dispatch_fsp_job_or_return(job) {
-            Ok(()) => {}
-            Err(job) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFspPathFallback,
-                );
-                drop_fsp_owner_handoff_job(job);
-            }
-        }
+        let mut plaintext_batch =
+            DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
+        self.push_job_action_output(
+            idx,
+            Some(DecryptWorkerJobAction::FspJob(job)),
+            &mut plaintext_batch,
+            None,
+            None,
+        );
+        plaintext_batch.flush();
     }
 
     fn output_for_fsp_aead_failure(
