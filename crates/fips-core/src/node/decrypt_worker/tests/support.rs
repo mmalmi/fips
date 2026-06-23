@@ -1744,6 +1744,7 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
     }
 

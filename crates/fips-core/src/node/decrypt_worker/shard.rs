@@ -711,6 +711,8 @@ impl DecryptWorkerShard {
                 FspOpenWorkerIneligibleReason::WindowFull,
             ));
         };
+        let fallback_to_rx_loop_on_aead_failure =
+            state.should_protect_worker_open_aead_failure(ticket);
 
         let open_job = FspAeadOpenJob {
             source_addr,
@@ -723,6 +725,7 @@ impl DecryptWorkerShard {
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure,
         };
         Ok((open_idx, owner_idx, open_job))
     }
@@ -778,6 +781,7 @@ impl DecryptWorkerShard {
         let receive_order_id = state.fsp_receive_order_id();
         let crypto_generation = state.fsp_crypto_generation();
         let cipher = Arc::clone(&state.current.cipher);
+        let protect_until_sequence = state.worker_open_protect_until_sequence;
         let open_jobs = jobs
             .into_iter()
             .zip(headers)
@@ -795,6 +799,8 @@ impl DecryptWorkerShard {
                 completion_source: FspAeadCompletionSource::WorkerOpen,
                 completion_owner_idx: None,
                 open_queued_at: None,
+                fallback_to_rx_loop_on_aead_failure: first_sequence.saturating_add(offset as u64)
+                    < protect_until_sequence,
             })
             .collect();
 

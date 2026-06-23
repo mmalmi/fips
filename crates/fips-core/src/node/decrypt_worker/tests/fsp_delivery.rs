@@ -482,6 +482,7 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -518,6 +519,7 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
         let duplicate_drain = state
@@ -880,6 +882,7 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -899,6 +902,7 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -1016,6 +1020,57 @@
             }
         };
 
+        let (mut protected_payload, protected_plaintext_len) = make_payload(b"protected worker-open");
+        *protected_payload
+            .last_mut()
+            .expect("test FSP frame has ciphertext") ^= 0x44;
+        let protected_payload_after_corruption = protected_payload.clone();
+        let protected_payload_len = protected_payload.len();
+        let protected_header =
+            FspEncryptedHeader::parse(&protected_payload).expect("protected FSP header");
+        let protected_completion = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            crypto_generation,
+            ticket: state
+                .issue_fsp_receive_ticket()
+                .expect("owner receive window should admit protected worker-open ticket"),
+            cipher: Arc::clone(&cipher),
+            job: make_job(protected_payload, protected_payload_len),
+            header: protected_header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_owner_idx: None,
+            open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: true,
+        }
+        .into_completion();
+        let protected_drain = state
+            .complete_ordered_fsp_open_for_test(
+                protected_completion.ticket,
+                protected_completion.result,
+            )
+            .expect("protected failed worker-open completion should fit receive order");
+        assert_eq!(protected_drain.ready, 1);
+        assert_eq!(protected_drain.aead_failures, 0);
+        assert_eq!(protected_drain.rx_loop_fallbacks, 1);
+        assert_eq!(protected_drain.outputs.len(), 1);
+        match &protected_drain.outputs[0] {
+            FspReadyCompletion::AeadFailed {
+                job,
+                fallback_to_rx_loop,
+                ..
+            } => {
+                assert!(*fallback_to_rx_loop);
+                assert_eq!(
+                    &job.fallback.packet_data[..protected_payload_len],
+                    protected_payload_after_corruption.as_slice()
+                );
+            }
+            FspReadyCompletion::Opened { .. } => {
+                panic!("corrupted protected worker-open frame must not open")
+            }
+        }
+
         let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
         let first_payload_len = first_payload.len();
         let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
@@ -1032,6 +1087,7 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -1054,6 +1110,7 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
 
@@ -1098,7 +1155,7 @@
             _ => panic!("first packet should open, second packet should fail AEAD"),
         }
         assert!(
-            second_plaintext_len > 0,
+            protected_plaintext_len > 0 && second_plaintext_len > 0,
             "test should corrupt a non-empty encrypted frame"
         );
     }
@@ -1477,6 +1534,7 @@
             completion_source: FspAeadCompletionSource::Local,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
         let local_drain = state
@@ -1499,6 +1557,7 @@
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx: None,
             open_queued_at: None,
+            fallback_to_rx_loop_on_aead_failure: false,
         }
         .into_completion();
         let open_drain = state
