@@ -614,7 +614,7 @@ impl BulkBatchBuffers {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn drain_reserved_work_before_bulk_packet(
+fn drain_reserved_work_before_bulk_item(
     idx: usize,
     shard: &mut DecryptWorkerShard,
     control_rx: &Receiver<WorkerMsg>,
@@ -736,20 +736,17 @@ fn handle_bulk_item_with_buffers(
             }
             let fsp_batcher = &mut bulk_batchers.fsp_batcher;
             let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
+            drain_reserved_work_before_bulk_item(
+                idx,
+                shard,
+                control_rx,
+                priority_rx,
+                fsp_aead_completion_rx,
+                plaintext_batch,
+                batch_stats,
+                BulkTurnBatchers::new(Some(&mut *fsp_batcher), Some(&mut *fsp_open_batcher)),
+            );
             for job in jobs {
-                drain_reserved_work_before_bulk_packet(
-                    idx,
-                    shard,
-                    control_rx,
-                    priority_rx,
-                    fsp_aead_completion_rx,
-                    plaintext_batch,
-                    batch_stats,
-                    BulkTurnBatchers::new(
-                        Some(&mut *fsp_batcher),
-                        Some(&mut *fsp_open_batcher),
-                    ),
-                );
                 record_decrypt_worker_bulk_input_tail_wait(item_started_at);
                 match shard.handle_job_action(idx, job) {
                     Ok(actions) => {
@@ -778,17 +775,17 @@ fn handle_bulk_item_with_buffers(
             record_fsp_worker_bulk_input_head_wait_batch(&jobs);
             let count = jobs.len();
             let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
+            drain_reserved_work_before_bulk_item(
+                idx,
+                shard,
+                control_rx,
+                priority_rx,
+                fsp_aead_completion_rx,
+                plaintext_batch,
+                batch_stats,
+                BulkTurnBatchers::new(None, Some(&mut *fsp_open_batcher)),
+            );
             for job in jobs {
-                drain_reserved_work_before_bulk_packet(
-                    idx,
-                    shard,
-                    control_rx,
-                    priority_rx,
-                    fsp_aead_completion_rx,
-                    plaintext_batch,
-                    batch_stats,
-                    BulkTurnBatchers::new(None, Some(&mut *fsp_open_batcher)),
-                );
                 record_fsp_worker_bulk_input_tail_wait(item_started_at);
                 shard.handle_bulk_fsp_job_with_open_batcher(
                     idx,
