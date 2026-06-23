@@ -497,26 +497,35 @@ impl Node {
     ) {
         let mut pending_flush_dests = Vec::new();
         let clock = WorkerReceiveClock::now();
-        for commit in commits {
-            let Some(finish) = self.commit_direct_session_data_from_worker_at(
-                &commit.fmp,
-                commit.source_addr,
-                commit.previous_hop_peer,
-                commit.receive_sync,
-                commit.body_len,
-                clock,
-            ) else {
+        let mut start = 0;
+        while start < commits.len() {
+            let mut end = start + 1;
+            while end < commits.len()
+                && Self::direct_session_commit_batch_key_matches(&commits[start], &commits[end])
+            {
+                end += 1;
+            }
+
+            let Some(finish) =
+                self.commit_direct_session_commit_run_from_worker_at(&commits[start..end], clock)
+            else {
+                start = end;
                 continue;
             };
 
-            if commit.ce_flag && commit.delivered_ipv6 {
-                self.stats_mut().congestion.record_ce_received();
-            }
-
             Self::note_pending_flush_dest(&mut pending_flush_dests, finish);
+            start = end;
         }
         self.flush_pending_destinations(&mut pending_flush_dests)
             .await;
+    }
+
+    fn direct_session_commit_batch_key_matches(
+        first: &DecryptDirectSessionCommit,
+        next: &DecryptDirectSessionCommit,
+    ) -> bool {
+        first.source_addr == next.source_addr
+            && first.previous_hop_peer.node_addr() == next.previous_hop_peer.node_addr()
     }
 
     fn commit_direct_session_data_from_worker(
@@ -576,6 +585,101 @@ impl Node {
         .finish_receive_at(self, clock.now_ms);
 
         Some(finish)
+    }
+
+    fn commit_direct_session_commit_run_from_worker_at(
+        &mut self,
+        commits: &[DecryptDirectSessionCommit],
+        clock: WorkerReceiveClock,
+    ) -> Option<SessionDispatchFinish> {
+        let first = commits.first()?;
+        let source_addr = first.source_addr;
+        let previous_hop_peer = first.previous_hop_peer;
+        let previous_hop_addr = *previous_hop_peer.node_addr();
+        for commit in commits {
+            self.record_worker_authenticated_fmp_receive_at(
+                &commit.fmp,
+                Some(commit.previous_hop_peer.node_addr()),
+                clock,
+            );
+        }
+
+        let mut refresh_worker_session = false;
+        let mut received_packets = 0usize;
+        let mut received_bytes = 0usize;
+        let mut ce_ipv6_packets = 0usize;
+        let source_display = self.peer_display_name(&source_addr).to_string();
+        {
+            let Some(entry) = self.sessions.get_mut(&source_addr) else {
+                debug!(
+                    src = %source_display,
+                    "Dropping worker-decoded direct session commit batch for missing session"
+                );
+                return None;
+            };
+            for commit in commits {
+                let apply = entry.apply_fsp_receive_sync_result(
+                    commit.receive_sync,
+                    clock.now_ms,
+                    clock.now,
+                );
+                if !apply.is_applied() {
+                    debug!(
+                        src = %source_display,
+                        "Dropping worker-decoded direct session commit for stale session"
+                    );
+                    continue;
+                }
+                refresh_worker_session |= apply.refresh_worker_session();
+                received_packets += 1;
+                received_bytes += commit.body_len;
+                if commit.ce_flag && commit.delivered_ipv6 {
+                    ce_ipv6_packets += 1;
+                }
+            }
+            if received_packets == 0 {
+                return None;
+            }
+            entry.record_recv_batch(received_packets, received_bytes);
+            if previous_hop_addr == source_addr {
+                entry.touch_inbound_data_frame(clock.now_ms);
+            }
+            entry.touch(clock.now_ms);
+        }
+
+        if refresh_worker_session {
+            self.register_decrypt_worker_fsp_session(&source_addr);
+        }
+        for _ in 0..ce_ipv6_packets {
+            self.stats_mut().congestion.record_ce_received();
+        }
+
+        self.learn_reverse_route_at(source_addr, previous_hop_addr, clock.now_ms);
+        if let Some(peer) = self.peers.get_mut(&previous_hop_addr) {
+            peer.touch(clock.now_ms);
+        }
+
+        let direct_path = previous_hop_addr == source_addr;
+        if direct_path && self.clear_session_direct_path_degraded(&source_addr) {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                "Authenticated direct endpoint data restored direct payload routing"
+            );
+        }
+
+        let retry_peer = if direct_path {
+            source_addr
+        } else {
+            previous_hop_addr
+        };
+        self.clear_retry_unless_direct_refresh_needed(&retry_peer);
+
+        Some(SessionDispatchFinish {
+            pending_flush_dest: self
+                .pending_session_traffic
+                .has_traffic_for(&source_addr)
+                .then_some(source_addr),
+        })
     }
 
     pub(in crate::node) async fn process_fsp_decrypt_failure_from_worker(

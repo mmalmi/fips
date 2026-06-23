@@ -536,6 +536,12 @@ impl SessionEntry {
         self.bytes_recv += bytes as u64;
     }
 
+    /// Record multiple received data packets.
+    pub(crate) fn record_recv_batch(&mut self, packets: usize, bytes: usize) {
+        self.packets_recv += packets as u64;
+        self.bytes_recv += bytes as u64;
+    }
+
     /// Get traffic counters: (packets_sent, packets_recv, bytes_sent, bytes_recv).
     pub(crate) fn traffic_counters(&self) -> (u64, u64, u64, u64) {
         (

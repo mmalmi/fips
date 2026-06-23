@@ -1181,6 +1181,7 @@
             .sessions
             .get(&source_addr)
             .expect("session should remain");
+        assert_eq!(entry.traffic_counters(), (0, 2, 0, (body_len * 2) as u64));
         assert_eq!(entry.current_highest_counter(), Some(8));
     }
 
