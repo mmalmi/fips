@@ -545,8 +545,8 @@ pub enum Event {
     DecryptFspPathFallback = 75,
     ReservedRetiredEvent76 = 76,
     ReservedRetiredEvent77 = 77,
-    DecryptFmpPreownerWindowFallback = 78,
-    DecryptFmpPreownerInlineFallback = 79,
+    ReservedRetiredEvent78 = 78,
+    ReservedRetiredEvent79 = 79,
     FmpWorkerDispatchFlowKeyed = 80,
     FmpWorkerDispatchTargetOnly = 81,
     FmpWorkerDispatchWorker0 = 82,
@@ -612,7 +612,7 @@ pub enum Event {
     ReservedRetiredEvent141 = 141,
     ReservedRetiredEvent142 = 142,
     ReservedRetiredEvent143 = 143,
-    DecryptFmpPreownerCompletionBacklogFallback = 144,
+    ReservedRetiredEvent144 = 144,
     DecryptFspOpenWorkerCompletionBacklogFallback = 145,
     ReservedRetiredEvent146 = 146,
     ReservedRetiredEvent147 = 147,
@@ -781,8 +781,6 @@ impl Event {
                 | Event::EncryptWorkerBulkQueueFull
                 | Event::DecryptFspOwnerMismatch
                 | Event::DecryptFspPathFallback
-                | Event::DecryptFmpPreownerWindowFallback
-                | Event::DecryptFmpPreownerInlineFallback
                 | Event::FmpAeadCompletionAeadFailed
                 | Event::FmpAeadCompletionReplayDropped
                 | Event::FspAeadCompletionAeadFailed
@@ -797,7 +795,6 @@ impl Event {
                 | Event::FspAeadCompletionWindowExceeded
                 | Event::DecryptFspOpenWorkerWindowFallback
                 | Event::DecryptWorkerControlDropped
-                | Event::DecryptFmpPreownerCompletionBacklogFallback
                 | Event::DecryptFspOpenWorkerCompletionBacklogFallback
                 | Event::FspAeadCompletionReplayDroppedWorkerOpen
                 | Event::FspAeadCompletionReplayDroppedWorkerOpenReturned
@@ -932,8 +929,8 @@ impl Event {
             Event::DecryptFspPathFallback => "decrypt_fsp_path_fallback",
             Event::ReservedRetiredEvent76 => "reserved_retired_event_76",
             Event::ReservedRetiredEvent77 => "reserved_retired_event_77",
-            Event::DecryptFmpPreownerWindowFallback => "decrypt_fmp_preowner_window_fallback",
-            Event::DecryptFmpPreownerInlineFallback => "decrypt_fmp_preowner_inline_fallback",
+            Event::ReservedRetiredEvent78 => "reserved_retired_event_78",
+            Event::ReservedRetiredEvent79 => "reserved_retired_event_79",
             Event::FmpWorkerDispatchFlowKeyed => "fmp_worker_dispatch_flow_keyed",
             Event::FmpWorkerDispatchTargetOnly => "fmp_worker_dispatch_target_only",
             Event::FmpWorkerDispatchWorker0 => "fmp_worker_dispatch_worker0",
@@ -1013,9 +1010,7 @@ impl Event {
             Event::ReservedRetiredEvent141 => "reserved_retired_event_141",
             Event::ReservedRetiredEvent142 => "reserved_retired_event_142",
             Event::ReservedRetiredEvent143 => "reserved_retired_event_143",
-            Event::DecryptFmpPreownerCompletionBacklogFallback => {
-                "decrypt_fmp_preowner_completion_backlog_fallback"
-            }
+            Event::ReservedRetiredEvent144 => "reserved_retired_event_144",
             Event::DecryptFspOpenWorkerCompletionBacklogFallback => {
                 "decrypt_fsp_open_worker_completion_backlog_fallback"
             }
@@ -1330,8 +1325,8 @@ fn event_from_index(idx: usize) -> Event {
         75 => Event::DecryptFspPathFallback,
         76 => Event::ReservedRetiredEvent76,
         77 => Event::ReservedRetiredEvent77,
-        78 => Event::DecryptFmpPreownerWindowFallback,
-        79 => Event::DecryptFmpPreownerInlineFallback,
+        78 => Event::ReservedRetiredEvent78,
+        79 => Event::ReservedRetiredEvent79,
         80 => Event::FmpWorkerDispatchFlowKeyed,
         81 => Event::FmpWorkerDispatchTargetOnly,
         82 => Event::FmpWorkerDispatchWorker0,
@@ -1396,7 +1391,7 @@ fn event_from_index(idx: usize) -> Event {
         141 => Event::ReservedRetiredEvent141,
         142 => Event::ReservedRetiredEvent142,
         143 => Event::ReservedRetiredEvent143,
-        144 => Event::DecryptFmpPreownerCompletionBacklogFallback,
+        144 => Event::ReservedRetiredEvent144,
         145 => Event::DecryptFspOpenWorkerCompletionBacklogFallback,
         146 => Event::ReservedRetiredEvent146,
         147 => Event::ReservedRetiredEvent147,

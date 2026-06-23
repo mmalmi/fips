@@ -384,20 +384,20 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "reserved_retired_event_77"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFmpPreownerWindowFallback as usize).name(),
-        "decrypt_fmp_preowner_window_fallback"
+        event_from_index(Event::ReservedRetiredEvent78 as usize).name(),
+        "reserved_retired_event_78"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFmpPreownerInlineFallback as usize).name(),
-        "decrypt_fmp_preowner_inline_fallback"
+        event_from_index(Event::ReservedRetiredEvent79 as usize).name(),
+        "reserved_retired_event_79"
     );
     assert_eq!(
         event_from_index(Event::ReservedRetiredEvent143 as usize).name(),
         "reserved_retired_event_143"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFmpPreownerCompletionBacklogFallback as usize).name(),
-        "decrypt_fmp_preowner_completion_backlog_fallback"
+        event_from_index(Event::ReservedRetiredEvent144 as usize).name(),
+        "reserved_retired_event_144"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize).name(),
@@ -836,8 +836,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "reserved_retired_event_143"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFmpPreownerCompletionBacklogFallback as usize).name(),
-        "decrypt_fmp_preowner_completion_backlog_fallback"
+        event_from_index(Event::ReservedRetiredEvent144 as usize).name(),
+        "reserved_retired_event_144"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize).name(),
@@ -1232,12 +1232,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptFspOwnerHandoffDropped as usize].load(Relaxed);
     let fsp_path_worker_open_before =
         EVENTS[Event::DecryptFspPathWorkerOpen as usize].load(Relaxed);
-    let fmp_preowner_window_fallback_before =
-        EVENTS[Event::DecryptFmpPreownerWindowFallback as usize].load(Relaxed);
-    let fmp_preowner_inline_fallback_before =
-        EVENTS[Event::DecryptFmpPreownerInlineFallback as usize].load(Relaxed);
-    let fmp_preowner_completion_backlog_fallback_before =
-        EVENTS[Event::DecryptFmpPreownerCompletionBacklogFallback as usize].load(Relaxed);
     let fsp_open_worker_completion_backlog_fallback_before =
         EVENTS[Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize].load(Relaxed);
     let fsp_open_worker_returned_dropped_before =
@@ -1295,9 +1289,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptFspPathFallback, 97);
     record_event_count_sample(Event::DecryptFspOwnerHandoffDropped, 98);
     record_event_count_sample(Event::DecryptFspPathWorkerOpen, 99);
-    record_event_count_sample(Event::DecryptFmpPreownerWindowFallback, 107);
-    record_event_count_sample(Event::DecryptFmpPreownerInlineFallback, 109);
-    record_event_count_sample(Event::DecryptFmpPreownerCompletionBacklogFallback, 112);
     record_event_count_sample(Event::DecryptFspOpenWorkerCompletionBacklogFallback, 116);
     record_event_count_sample(Event::DecryptFspOpenWorkerReturnedDropped, 117);
     record_event_count_sample(Event::DecryptFspPathWorkerOpenStriped, 118);
@@ -1468,21 +1459,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptFspPathWorkerOpen as usize].load(Relaxed)
             - fsp_path_worker_open_before,
         99
-    );
-    assert_eq!(
-        EVENTS[Event::DecryptFmpPreownerWindowFallback as usize].load(Relaxed)
-            - fmp_preowner_window_fallback_before,
-        107
-    );
-    assert_eq!(
-        EVENTS[Event::DecryptFmpPreownerInlineFallback as usize].load(Relaxed)
-            - fmp_preowner_inline_fallback_before,
-        109
-    );
-    assert_eq!(
-        EVENTS[Event::DecryptFmpPreownerCompletionBacklogFallback as usize].load(Relaxed)
-            - fmp_preowner_completion_backlog_fallback_before,
-        112
     );
     assert_eq!(
         EVENTS[Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize].load(Relaxed)
