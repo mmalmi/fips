@@ -1206,6 +1206,81 @@
     }
 
     #[test]
+    fn local_bulk_fsp_aead_miss_restores_packet_before_rx_loop_fallback() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (_fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.register_fsp_session(0, source_addr, OwnedFspSessionState::from(snapshot));
+
+        let mut fsp_payload = crate::node::session_wire::build_fsp_header(1, 0, 1).to_vec();
+        fsp_payload.extend_from_slice(&[0u8; crate::noise::TAG_SIZE]);
+        let frame_len = fsp_payload.len();
+        let mut packet_data = fsp_payload;
+        packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0xaa);
+        let original_packet_data = packet_data.clone();
+        let packet_len = packet_data.len();
+        let job = FspDecryptJob {
+            lane: decrypt_worker_packet_lane(packet_len),
+            fallback: DecryptFallback::new(
+                previous_hop_peer,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                1_000,
+                packet_len,
+                10,
+                0,
+                packet_data,
+                0,
+                frame_len,
+            ),
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len: frame_len,
+            trace_enqueued_at: None,
+        };
+        assert_eq!(job.lane, DecryptWorkerLane::Bulk);
+
+        let mut plaintext_batch =
+            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        shard.push_current_epoch_fsp_job_outputs(0, job, &mut plaintext_batch);
+        plaintext_batch.flush();
+
+        match fallback_rx
+            .bulk
+            .try_recv()
+            .expect("bulk plaintext fallback should be queued")
+        {
+            DecryptWorkerEvent::Plaintext(fallback) => {
+                assert_eq!(fallback.packet_data.as_ref(), original_packet_data.as_slice());
+            }
+            other => panic!("expected plaintext fallback, got {:?}", other.packet_count()),
+        }
+    }
+
+    #[test]
     fn fsp_ordered_completion_tracks_epoch_mismatch_separately_from_aead() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();

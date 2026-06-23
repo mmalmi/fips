@@ -1187,10 +1187,7 @@ impl DecryptWorkerShard {
             ));
             return;
         };
-        let local_open_preserves_ciphertext = matches!(lane, DecryptWorkerLane::Bulk);
-        let restore_ciphertext =
-            matches!(lane, DecryptWorkerLane::Priority).then(|| ciphertext.to_vec());
-        let mut scratch_ciphertext = Vec::new();
+        let restore_ciphertext = ciphertext.to_vec();
         let (ticket, open_result, receive_order_id, crypto_generation) = {
             let state = self
                 .fsp_sessions
@@ -1212,34 +1209,18 @@ impl DecryptWorkerShard {
             let open_result = state.current_epoch_matches(&header).then(|| {
                 let _t_fsp =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                if local_open_preserves_ciphertext {
-                    scratch_ciphertext.extend_from_slice(ciphertext);
-                    state.open_current_established_frame_in_place_deferred_replay(
-                        &header,
-                        &mut scratch_ciphertext,
-                    )
-                } else {
-                    state.open_current_established_frame_in_place_deferred_replay(
-                        &header, ciphertext,
-                    )
-                }
+                state.open_current_established_frame_in_place_deferred_replay(&header, ciphertext)
             });
             (ticket, open_result, receive_order_id, crypto_generation)
         };
         let fallback_to_rx_loop = if matches!(open_result, Some(Err(FspOpenError::Aead))) {
-            if local_open_preserves_ciphertext {
-                true
-            } else if let Some(original) = restore_ciphertext.as_deref() {
-                let restore = &mut fallback.packet_data[ciphertext_offset..payload_end];
-                restore.copy_from_slice(original);
-                true
-            } else {
-                false
-            }
+            let restore = &mut fallback.packet_data[ciphertext_offset..payload_end];
+            restore.copy_from_slice(&restore_ciphertext);
+            true
         } else {
             false
         };
-        let mut job = FspDecryptJob {
+        let job = FspDecryptJob {
             fallback,
             lane,
             local_node_addr,
@@ -1253,22 +1234,14 @@ impl DecryptWorkerShard {
             trace_enqueued_at: None,
         };
         let completion = match open_result {
-            Some(Ok(plaintext_len)) => {
-                if local_open_preserves_ciphertext {
-                    let plaintext = &scratch_ciphertext[..plaintext_len];
-                    let restore =
-                        &mut job.fallback.packet_data[ciphertext_offset..ciphertext_offset + plaintext_len];
-                    restore.copy_from_slice(plaintext);
-                }
-                FspOrderedCompletion::Opened {
-                    opened: FspOpenedJob {
-                        job,
-                        header,
-                        plaintext_len,
-                    },
-                    source: FspAeadCompletionSource::Local,
-                }
-            }
+            Some(Ok(plaintext_len)) => FspOrderedCompletion::Opened {
+                opened: FspOpenedJob {
+                    job,
+                    header,
+                    plaintext_len,
+                },
+                source: FspAeadCompletionSource::Local,
+            },
             Some(Err(FspOpenError::Aead)) => {
                 let count_failure = !fallback_to_rx_loop;
                 if count_failure {
