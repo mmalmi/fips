@@ -34,9 +34,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 269);
+    assert_eq!(N_EVENTS, 262);
     assert!(
-        (Event::DecryptWorkerSelectFmpCompletionBatch as usize) < N_EVENTS,
+        (Event::DecryptWorkerFspOpenQueueDepthGe4096 as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -130,34 +130,6 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptWorkerFspOpenQueueDepthGe4096 as usize).name(),
         "decrypt_worker_fsp_open_queue_depth_ge4096"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionStaleSession as usize).name(),
-        "fmp_aead_completion_stale_session"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionStaleOrder as usize).name(),
-        "fmp_aead_completion_stale_order"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionStaleTicket as usize).name(),
-        "fmp_aead_completion_stale_ticket"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionDuplicateTicket as usize).name(),
-        "fmp_aead_completion_duplicate_ticket"
-    );
-    assert_eq!(
-        event_from_index(Event::FmpAeadCompletionWindowExceeded as usize).name(),
-        "fmp_aead_completion_window_exceeded"
-    );
-    assert_eq!(
-        event_from_index(Event::DecryptWorkerSelectFmpCompletionPackets as usize).name(),
-        "decrypt_worker_select_fmp_completion_packets"
-    );
-    assert_eq!(
-        event_from_index(Event::DecryptWorkerSelectFmpCompletionBatch as usize).name(),
-        "decrypt_worker_select_fmp_completion_batch"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOpenWorkerLocalIneligibleNoShared as usize).name(),

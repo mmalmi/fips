@@ -46,7 +46,6 @@ const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 16;
 const DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
-const DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
@@ -66,7 +65,6 @@ const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
     DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FSP_CRYPTO_GENERATION: AtomicU64 = AtomicU64::new(1);
-static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -126,11 +124,6 @@ fn decrypt_fsp_open_worker_fast_hash(source_addr: &NodeAddr) -> u64 {
 }
 
 #[inline]
-fn decrypt_fmp_open_worker_fast_hash(session_key: DecryptSessionKey) -> u64 {
-    mix_decrypt_session_hash(decrypt_session_fast_hash(session_key) ^ 0x8f3d_6a2b_19c4_e5f7)
-}
-
-#[inline]
 fn mix_decrypt_session_hash(mut value: u64) -> u64 {
     value ^= value >> 30;
     value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -172,20 +165,9 @@ fn fsp_receive_window_from_bulk_cap(bulk_cap: usize) -> usize {
         .saturating_add(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
 }
 
-fn fmp_receive_window_from_bulk_cap(bulk_cap: usize) -> usize {
-    bulk_cap
-        .max(1)
-        .saturating_add(DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE)
-}
-
 fn fsp_receive_window() -> usize {
     static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| fsp_receive_window_from_bulk_cap(bulk_channel_cap()))
-}
-
-fn fmp_receive_window() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| fmp_receive_window_from_bulk_cap(bulk_channel_cap()))
 }
 
 fn fsp_aead_completion_channel_cap_from_bulk_cap(bulk_cap: usize) -> usize {
@@ -255,8 +237,6 @@ pub(crate) struct OwnedSessionState {
     fmp_cipher: Arc<LessSafeKey>,
     fmp_replay: ReplayWindow,
     source_peer: PeerIdentity,
-    fmp_receive_order_id: u64,
-    fmp_receive_order: FmpReceiveOrder,
 }
 
 struct OwnedFspEpochState {
@@ -843,38 +823,9 @@ impl<T> OrderedReceiveWindow<T> {
 }
 
 type FspReceiveOrder = OrderedReceiveWindow<FspOrderedCompletion>;
-type FmpReceiveTicket = OrderedReceiveTicket;
-type FmpReceiveOrder = OrderedReceiveWindow<FmpOrderedCompletion>;
 
 fn new_fsp_receive_order() -> FspReceiveOrder {
     OrderedReceiveWindow::new(fsp_receive_window())
-}
-
-fn new_fmp_receive_order() -> FmpReceiveOrder {
-    OrderedReceiveWindow::new(fmp_receive_window())
-}
-
-#[derive(Default)]
-struct FmpOrderedDrain {
-    ready: usize,
-    accepted: usize,
-    aead_failures: usize,
-    replay_drops: usize,
-    dropped: usize,
-}
-
-enum FmpOrderedCompletion {
-    Opened {
-        precheck: FmpReplayPrecheck,
-        opened: OpenedFmpJob,
-    },
-    AeadFailed {
-        source_peer: PeerIdentity,
-        fmp_counter: u64,
-        fmp_replay_highest: u64,
-        lane: DecryptWorkerLane,
-    },
-    Dropped,
 }
 
 struct FspOpenedJob {
@@ -1039,91 +990,6 @@ struct OpenedFmpJob {
     fmp_flags: u8,
     fmp_plaintext_offset: usize,
     fmp_plaintext_len: usize,
-}
-
-struct FmpAeadOpenJob {
-    session_key: DecryptSessionKey,
-    receive_order_id: u64,
-    ticket: FmpReceiveTicket,
-    cipher: Arc<LessSafeKey>,
-    precheck: FmpReplayPrecheck,
-    opened: OpenedFmpJob,
-    completion_owner_idx: Option<usize>,
-    open_queued_at: Option<crate::perf_profile::TraceStamp>,
-}
-
-struct FmpAeadCompletion {
-    session_key: DecryptSessionKey,
-    receive_order_id: u64,
-    ticket: FmpReceiveTicket,
-    result: FmpOrderedCompletion,
-    completed_at: Option<crate::perf_profile::TraceStamp>,
-}
-
-impl FmpAeadOpenJob {
-    fn into_completion(mut self) -> FmpAeadCompletion {
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::FmpAeadHelperQueueWait,
-            self.open_queued_at,
-            1,
-        );
-        let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
-        let fmp_header = self.opened.fmp_header();
-        let result = match OwnedSessionState::open_fmp_aead_in_place(
-            &self.cipher,
-            &mut self.opened.packet_data,
-            self.opened.fmp_plaintext_offset,
-            self.opened.fmp_counter,
-            self.opened.fmp_flags,
-            &fmp_header,
-        ) {
-            Ok(outcome) => {
-                self.opened.fmp_plaintext_len = outcome.plaintext_len;
-                FmpOrderedCompletion::Opened {
-                    precheck: self.precheck,
-                    opened: self.opened,
-                }
-            }
-            Err(()) => FmpOrderedCompletion::AeadFailed {
-                source_peer: self.opened.source_peer,
-                fmp_counter: self.opened.fmp_counter,
-                fmp_replay_highest: self.precheck.replay_highest,
-                lane: decrypt_worker_packet_lane(self.opened.packet_len),
-            },
-        };
-        FmpAeadCompletion {
-            session_key: self.session_key,
-            receive_order_id: self.receive_order_id,
-            ticket: self.ticket,
-            result,
-            completed_at,
-        }
-    }
-
-    fn into_dropped_completion(self) -> FmpAeadCompletion {
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::FmpAeadHelperQueueWait,
-            self.open_queued_at,
-            1,
-        );
-        let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
-        FmpAeadCompletion {
-            session_key: self.session_key,
-            receive_order_id: self.receive_order_id,
-            ticket: self.ticket,
-            result: FmpOrderedCompletion::Dropped,
-            completed_at,
-        }
-    }
-}
-
-impl OpenedFmpJob {
-    fn fmp_header(&self) -> [u8; 16] {
-        let mut header = [0u8; 16];
-        let header_len = header.len().min(self.fmp_plaintext_offset);
-        header[..header_len].copy_from_slice(&self.packet_data[..header_len]);
-        header
-    }
 }
 
 fn local_established_fsp_datagram_meta(
@@ -1486,8 +1352,6 @@ impl OwnedSessionState {
             fmp_cipher: Arc::new(fmp_cipher),
             fmp_replay,
             source_peer,
-            fmp_receive_order_id: NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
-            fmp_receive_order: new_fmp_receive_order(),
         }
     }
 
@@ -1532,47 +1396,6 @@ impl OwnedSessionState {
         }
         fmp_replay.accept(precheck.counter);
         Ok(())
-    }
-
-    fn fmp_receive_order_id(&self) -> u64 {
-        self.fmp_receive_order_id
-    }
-
-    fn issue_fmp_receive_ticket(&mut self) -> Option<FmpReceiveTicket> {
-        self.fmp_receive_order.issue()
-    }
-
-    fn complete_ordered_fmp_open(
-        &mut self,
-        ticket: FmpReceiveTicket,
-        completion: FmpOrderedCompletion,
-        mut on_output: impl FnMut(OpenedFmpJob),
-    ) -> Result<FmpOrderedDrain, OrderedCompletionError> {
-        let fmp_replay = &mut self.fmp_replay;
-        let mut drain = FmpOrderedDrain::default();
-        let ready_count = self
-            .fmp_receive_order
-            .complete(ticket, completion, |completion| match completion {
-                FmpOrderedCompletion::Opened { precheck, opened } => {
-                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
-                        drain.accepted += 1;
-                        on_output(opened);
-                    } else {
-                        drain.replay_drops += 1;
-                        crate::perf_profile::record_event(
-                            crate::perf_profile::Event::FmpAeadCompletionReplayDropped,
-                        );
-                    }
-                }
-                FmpOrderedCompletion::AeadFailed { .. } => {
-                    drain.aead_failures += 1;
-                }
-                FmpOrderedCompletion::Dropped => {
-                    drain.dropped += 1;
-                }
-            })?;
-        drain.ready = ready_count;
-        Ok(drain)
     }
 
     #[cfg(test)]

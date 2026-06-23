@@ -396,7 +396,6 @@
             DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected an eight-packet bulk batch"),
-            DecryptWorkerBulkItem::FmpAeadOpen(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected an eight-packet bulk batch")
             }
@@ -840,12 +839,10 @@
             .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
             .expect("priority packet should enqueue");
 
-        let (_fmp_aead_completion_tx, fmp_aead_completion_rx) = bounded::<FmpAeadCompletion>(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         match recv_worker_item_biased(
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
         ) {
@@ -864,9 +861,6 @@
             }
             DecryptWorkerQueueItem::FspAeadCompletion(_) => {
                 panic!("blocking receive must not select FSP AEAD completion while control is ready")
-            }
-            DecryptWorkerQueueItem::FmpAeadCompletion(_) => {
-                panic!("blocking receive must not select FMP AEAD completion while control is ready")
             }
             DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
