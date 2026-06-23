@@ -290,19 +290,6 @@ impl DecryptWorkerShard {
         trace!(worker = idx, "processed FSP decrypt worker job");
     }
 
-    fn handle_bulk_fsp_job_msg(
-        &mut self,
-        idx: usize,
-        job: FspDecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
-        job.record_queue_wait();
-        let _t_service =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
-        self.push_fsp_job_outputs(idx, job, plaintext_batch);
-        trace!(worker = idx, "processed bulk FSP decrypt worker job");
-    }
-
     fn handle_bulk_fsp_job_with_open_batcher(
         &mut self,
         idx: usize,

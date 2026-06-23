@@ -704,7 +704,15 @@ fn handle_bulk_item_with_buffers(
             let item_started_at = crate::perf_profile::stamp();
             record_fsp_worker_bulk_input_head_wait(&job);
             record_fsp_worker_bulk_input_tail_wait(item_started_at);
-            shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
+            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
+            shard.handle_bulk_fsp_job_with_open_batcher(
+                idx,
+                job,
+                plaintext_batch,
+                &mut *fsp_open_batcher,
+            );
+            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
+            debug_assert!(bulk_batchers.is_empty());
             1
         }
         DecryptWorkerBulkItem::FspAeadOpen(job) => {
