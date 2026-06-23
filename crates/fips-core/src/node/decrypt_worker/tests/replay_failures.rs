@@ -11,6 +11,7 @@
             OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer()),
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        shard.pool.fallback_tx = fallback_tx.clone();
         let counter = 7;
         let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
 
@@ -22,7 +23,6 @@
                 session_key,
                 counter,
                 flags,
-                fallback_tx.clone(),
             ))
             .expect("invalid worker job should be handled");
         match fallback_rx
@@ -80,7 +80,6 @@
                 session_key,
                 counter,
                 flags,
-                fallback_tx.clone(),
             ))
             .expect("valid worker job should be handled");
         assert!(
@@ -104,7 +103,6 @@
                 session_key,
                 counter,
                 flags,
-                fallback_tx,
             ))
             .expect("replay worker job should be handled");
         assert!(
@@ -131,6 +129,7 @@
             OwnedSessionState::new(open_cipher, ReplayWindow::new(), source_peer),
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        shard.pool.fallback_tx = fallback_tx.clone();
         let counter = 11;
         let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
         let inner_timestamp_ms = 0x0102_0304_u32;
@@ -148,7 +147,6 @@
                 session_key,
                 counter,
                 flags,
-                fallback_tx,
             ))
             .expect("timestamp-only worker job should be handled");
 
@@ -415,6 +413,7 @@
         );
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        shard.pool.fallback_tx = fallback_tx.clone();
 
         let job = DecryptJob::new(
             wire,
@@ -428,7 +427,6 @@
             flags_byte,
             header,
             HDR,
-            fallback_tx,
         );
 
         shard.handle_job(job).expect("worker job handled");
@@ -506,6 +504,7 @@
         );
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        shard.pool.fallback_tx = fallback_tx.clone();
         let job = DecryptJob::new(
             wire,
             session_key,
@@ -518,7 +517,6 @@
             0,
             header,
             HDR,
-            fallback_tx,
         );
 
         shard.handle_job(job).expect("worker job handled");

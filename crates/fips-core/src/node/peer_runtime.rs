@@ -700,7 +700,6 @@ pub(crate) struct ConnectedUdpDecryptFastPath {
     expected_k_bit: bool,
     local_node_addr: NodeAddr,
     workers: decrypt_worker::DecryptWorkerPool,
-    fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -727,7 +726,6 @@ impl ConnectedUdpDecryptFastPath {
         expected_k_bit: bool,
         local_node_addr: NodeAddr,
         workers: decrypt_worker::DecryptWorkerPool,
-        fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
     ) -> Self {
         Self {
             session_key,
@@ -735,7 +733,6 @@ impl ConnectedUdpDecryptFastPath {
             expected_k_bit,
             local_node_addr,
             workers,
-            fallback_tx,
         }
     }
 
@@ -775,7 +772,6 @@ impl ConnectedUdpDecryptFastPath {
             header.flags,
             header.header_bytes,
             header.ciphertext_offset(),
-            self.fallback_tx.clone(),
         ))
     }
 }

@@ -255,7 +255,8 @@ impl DecryptWorkerShard {
         job.record_queue_wait();
         let _t_service =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut plaintext_batch =
+            DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
         self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
         plaintext_batch.flush();
         trace!(worker = idx, "processed FSP decrypt worker job");
@@ -372,7 +373,7 @@ impl DecryptWorkerShard {
         match action {
             None => {}
             Some(DecryptWorkerJobAction::Output(output)) => {
-                let _ = output.send();
+                let _ = output.send(&self.pool.fallback_tx);
             }
             Some(DecryptWorkerJobAction::FspJob(job)) => {
                 self.dispatch_or_handle_fsp_job_immediate(idx, job);
@@ -909,7 +910,8 @@ impl DecryptWorkerShard {
         let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
         record_fsp_owner_match(owner_idx == idx);
         if owner_idx == idx {
-            let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+            let mut plaintext_batch =
+                DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
             if matches!(job.lane(), DecryptWorkerLane::Bulk) {
                 match self.try_start_fsp_bulk_open_worker(idx, job, &mut plaintext_batch) {
                     Ok(()) => {
@@ -949,7 +951,6 @@ impl DecryptWorkerShard {
         fallback_to_rx_loop: bool,
     ) -> DecryptWorkerOutput {
         let FspDecryptJob {
-            fallback_tx,
             fallback,
             lane,
             local_node_addr: _,
@@ -975,7 +976,6 @@ impl DecryptWorkerShard {
                 fmp_flags: fallback.fmp_flags,
             };
             return DecryptWorkerOutput {
-                fallback_tx,
                 event: DecryptWorkerEvent::FspDecryptFailure(DecryptFspFailureReport {
                     fmp,
                     source_addr,
@@ -988,7 +988,6 @@ impl DecryptWorkerShard {
             };
         }
         DecryptWorkerOutput {
-            fallback_tx,
             event: DecryptWorkerEvent::Plaintext(fallback),
             direct_delivery: None,
         }
@@ -996,7 +995,6 @@ impl DecryptWorkerShard {
 
     fn output_for_malformed_fsp_drop(
         &self,
-        fallback_tx: DecryptWorkerFallbackSender,
         fallback: DecryptFallback,
         lane: DecryptWorkerLane,
         inner_timestamp_ms: u32,
@@ -1004,7 +1002,6 @@ impl DecryptWorkerShard {
     ) -> DecryptWorkerOutput {
         crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspMalformedDropped);
         DecryptWorkerOutput {
-            fallback_tx,
             event: DecryptWorkerEvent::AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive {
                 fmp: DecryptFmpBookkeeping {
                     source_peer: fallback.source_peer,
@@ -1036,7 +1033,6 @@ impl DecryptWorkerShard {
             plaintext_len,
         } = opened;
         let FspDecryptJob {
-            fallback_tx,
             fallback,
             lane,
             local_node_addr,
@@ -1101,13 +1097,11 @@ impl DecryptWorkerShard {
                     lane,
                 );
                 Some(DecryptWorkerOutput {
-                    fallback_tx,
                     event,
                     direct_delivery,
                 })
             }
             Err(message) => Some(DecryptWorkerOutput {
-                fallback_tx,
                 event: DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
                     fmp,
                     source_addr,
@@ -1147,7 +1141,6 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         let FspDecryptJob {
-            fallback_tx,
             mut fallback,
             lane,
             local_node_addr,
@@ -1162,7 +1155,6 @@ impl DecryptWorkerShard {
         } = job;
         let Some(state) = self.fsp_sessions.get(&source_addr) else {
             plaintext_batch.push_output(DecryptWorkerOutput {
-                fallback_tx,
                 event: DecryptWorkerEvent::Plaintext(fallback),
                 direct_delivery: None,
             });
@@ -1174,7 +1166,6 @@ impl DecryptWorkerShard {
         let header = {
             let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
                 plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                    fallback_tx,
                     fallback,
                     lane,
                     inner_timestamp_ms,
@@ -1184,7 +1175,6 @@ impl DecryptWorkerShard {
             };
             let Some(header) = FspEncryptedHeader::parse(payload) else {
                 plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                    fallback_tx,
                     fallback,
                     lane,
                     inner_timestamp_ms,
@@ -1198,7 +1188,6 @@ impl DecryptWorkerShard {
         let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
         let Some(ciphertext) = fallback.packet_data.get_mut(ciphertext_offset..payload_end) else {
             plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                fallback_tx,
                 fallback,
                 lane,
                 inner_timestamp_ms,
@@ -1258,7 +1247,6 @@ impl DecryptWorkerShard {
             false
         };
         let mut job = FspDecryptJob {
-            fallback_tx,
             fallback,
             lane,
             local_node_addr,
@@ -1346,7 +1334,6 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         let FspDecryptJob {
-            fallback_tx,
             fallback,
             lane,
             local_node_addr,
@@ -1362,7 +1349,6 @@ impl DecryptWorkerShard {
 
         let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
             plaintext_batch.push_output(DecryptWorkerOutput {
-                fallback_tx,
                 event: DecryptWorkerEvent::Plaintext(fallback),
                 direct_delivery: None,
             });
@@ -1372,7 +1358,6 @@ impl DecryptWorkerShard {
         let header = {
             let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
                 plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                    fallback_tx,
                     fallback,
                     lane,
                     inner_timestamp_ms,
@@ -1382,7 +1367,6 @@ impl DecryptWorkerShard {
             };
             let Some(header) = FspEncryptedHeader::parse(payload) else {
                 plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                    fallback_tx,
                     fallback,
                     lane,
                     inner_timestamp_ms,
@@ -1394,7 +1378,6 @@ impl DecryptWorkerShard {
         };
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
             plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
-                fallback_tx,
                 fallback,
                 lane,
                 inner_timestamp_ms,
@@ -1419,7 +1402,6 @@ impl DecryptWorkerShard {
             }
             Err(FspOpenError::Aead) => {
                 let job = FspDecryptJob {
-                    fallback_tx,
                     fallback,
                     lane,
                     local_node_addr,
@@ -1488,7 +1470,6 @@ impl DecryptWorkerShard {
                         lane,
                     );
                     plaintext_batch.push_output(DecryptWorkerOutput {
-                        fallback_tx,
                         event,
                         direct_delivery,
                     });
@@ -1509,7 +1490,6 @@ impl DecryptWorkerShard {
             };
 
         plaintext_batch.push_output(DecryptWorkerOutput {
-            fallback_tx,
             event,
             direct_delivery: None,
         });
@@ -1534,7 +1514,6 @@ impl DecryptWorkerShard {
             fmp_flags,
             fmp_header,
             fmp_ciphertext_offset,
-            fallback_tx,
             trace_enqueued_at: _,
         } = job;
         // Capture the wire packet length BEFORE decrypt mutates the
@@ -1550,7 +1529,6 @@ impl DecryptWorkerShard {
             let state = match self.sessions.get_mut(&session_key) {
                 Some(s) => s,
                 None => {
-                    let _ = fallback_tx; // explicitly ignore — drop path
                     let _ = packet_data;
                     return Ok(None);
                 }
@@ -1581,7 +1559,6 @@ impl DecryptWorkerShard {
                 Err(()) => {
                     return Ok(Some(DecryptWorkerJobAction::Output(
                         DecryptWorkerOutput {
-                            fallback_tx,
                             event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
                                 source_peer,
                                 fmp_counter,
@@ -1616,7 +1593,6 @@ impl DecryptWorkerShard {
             fmp_flags,
             fmp_plaintext_offset: fmp_ciphertext_offset,
             fmp_plaintext_len,
-            fallback_tx,
         };
         Ok(Self::handle_opened_fmp_job(opened))
     }
@@ -1634,7 +1610,6 @@ impl DecryptWorkerShard {
             fmp_flags,
             fmp_plaintext_offset,
             fmp_plaintext_len,
-            fallback_tx,
         } = job;
 
         // The FMP plaintext lives in packet_data[fmp_ciphertext_offset..
@@ -1665,7 +1640,6 @@ impl DecryptWorkerShard {
                 fmp_flags,
             };
             return Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
-                fallback_tx,
                 event: DecryptWorkerEvent::AuthenticatedFmpReceive(
                     DecryptAuthenticatedFmpReceive {
                         fmp,
@@ -1709,7 +1683,6 @@ impl DecryptWorkerShard {
 
         if let Some(meta) = fsp_meta {
             let fsp_job = FspDecryptJob {
-                fallback_tx,
                 fallback,
                 lane: DecryptWorkerLane::Bulk,
                 local_node_addr,
@@ -1727,7 +1700,6 @@ impl DecryptWorkerShard {
 
         let event = DecryptWorkerEvent::Plaintext(fallback);
         Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
-            fallback_tx,
             event,
             direct_delivery: None,
         }))

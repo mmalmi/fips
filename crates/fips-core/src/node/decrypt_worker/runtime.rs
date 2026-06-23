@@ -120,8 +120,9 @@ fn run_worker(
 ) {
     trace!(worker = idx, "FMP+FSP decrypt worker thread starting");
 
+    let fallback_tx = pool.fallback_tx.clone();
     let mut shard = DecryptWorkerShard::new(pool);
-    let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+    let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(fallback_tx);
     let mut bulk_batchers = BulkBatchBuffers::new();
 
     loop {
@@ -805,7 +806,6 @@ fn handle_bulk_item_with_buffers(
 }
 
 struct DecryptWorkerOutput {
-    fallback_tx: DecryptWorkerFallbackSender,
     event: DecryptWorkerEvent,
     direct_delivery: Option<PendingDirectSessionDelivery>,
 }
@@ -817,9 +817,9 @@ enum DecryptWorkerJobAction {
 }
 
 impl DecryptWorkerOutput {
-    fn send(mut self) -> bool {
+    fn send(mut self, fallback_tx: &DecryptWorkerFallbackSender) -> bool {
         let direct_delivery = self.direct_delivery.take();
-        if !self.fallback_tx.send(self.event) {
+        if !fallback_tx.send(self.event) {
             return false;
         }
         if let Some(delivery) = direct_delivery {

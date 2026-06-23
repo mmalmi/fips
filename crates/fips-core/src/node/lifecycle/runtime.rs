@@ -122,6 +122,7 @@ impl Node {
                     crate::node::decrypt_worker::DecryptWorkerPool::spawn_with_direct_delivery_sink(
                         decrypt_worker_count,
                         direct_delivery_sink,
+                        self.decrypt_fallback_tx.clone(),
                     ),
                 );
                 info!(

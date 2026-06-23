@@ -990,7 +990,6 @@ struct OpenedFmpJob {
     fmp_flags: u8,
     fmp_plaintext_offset: usize,
     fmp_plaintext_len: usize,
-    fallback_tx: DecryptWorkerFallbackSender,
 }
 
 fn local_established_fsp_datagram_meta(
@@ -1475,11 +1474,6 @@ pub(crate) struct DecryptJob {
     pub fmp_header: [u8; 16],
     /// Offset within `packet_data` where the FMP ciphertext+tag begins.
     pub fmp_ciphertext_offset: usize,
-    /// Worker completions return through this channel. Control-shaped link
-    /// plaintext still falls back to rx_loop dispatch; local established FSP
-    /// data can return as a worker-decoded direct-data completion whose final
-    /// commit still runs on rx_loop.
-    pub fallback_tx: DecryptWorkerFallbackSender,
     /// Monotonic timestamp captured immediately before rx_loop queues this job
     /// to the decrypt worker. Used only when pipeline tracing is on.
     trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
@@ -1499,7 +1493,6 @@ impl DecryptJob {
         fmp_flags: u8,
         fmp_header: [u8; 16],
         fmp_ciphertext_offset: usize,
-        fallback_tx: DecryptWorkerFallbackSender,
     ) -> Self {
         let packet_data = packet_data.into();
         let lane = decrypt_worker_packet_lane(packet_data.len());
@@ -1516,7 +1509,6 @@ impl DecryptJob {
             fmp_flags,
             fmp_header,
             fmp_ciphertext_offset,
-            fallback_tx,
             trace_enqueued_at: None,
         }
     }

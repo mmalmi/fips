@@ -106,7 +106,6 @@ impl Node {
             header.flags,
             header.header_bytes,
             header.ciphertext_offset(),
-            self.decrypt_fallback_tx.clone(),
         );
         EncryptedFrameFastPath::Dispatch(job)
     }
@@ -292,7 +291,6 @@ impl Node {
                 header.flags,
                 header.header_bytes,
                 header.ciphertext_offset(),
-                self.decrypt_fallback_tx.clone(),
             );
             workers.dispatch_job(job);
             return;

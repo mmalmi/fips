@@ -241,7 +241,6 @@ impl DecryptWorkerBatchStats {
 }
 
 struct FspDecryptJob {
-    fallback_tx: DecryptWorkerFallbackSender,
     fallback: DecryptFallback,
     lane: DecryptWorkerLane,
     local_node_addr: NodeAddr,

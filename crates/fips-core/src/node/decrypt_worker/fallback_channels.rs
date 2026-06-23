@@ -59,20 +59,6 @@ impl DecryptWorkerFallbackSender {
         self.send(event)
     }
 
-    fn same_channels(&self, other: &Self) -> bool {
-        self.priority.same_channel(&other.priority)
-            && self.bulk.same_channel(&other.bulk)
-            && self
-                .authenticated_bulk
-                .same_channel(&other.authenticated_bulk)
-            && Arc::ptr_eq(&self.bulk_queued_packets, &other.bulk_queued_packets)
-            && Arc::ptr_eq(
-                &self.authenticated_bulk_queued_packets,
-                &other.authenticated_bulk_queued_packets,
-            )
-            && self.bulk_packet_cap == other.bulk_packet_cap
-    }
-
     fn send(&self, mut event: DecryptWorkerEvent) -> bool {
         let lane = decrypt_worker_event_lane(&event);
         let packet_count = event.packet_count();

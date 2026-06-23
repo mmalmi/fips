@@ -106,16 +106,10 @@ fn connected_udp_decrypt_fast_path_prepares_priority_matching_established_packet
     let session_key =
         crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, receiver_idx.as_u32());
     let workers = crate::node::decrypt_worker::DecryptWorkerPool::spawn(1);
-    let (fallback_tx, _fallback_rx) =
+    let (_fallback_tx, _fallback_rx) =
         crate::node::decrypt_worker::decrypt_worker_fallback_channels();
-    let fast_path = ConnectedUdpDecryptFastPath::new(
-        session_key,
-        0,
-        false,
-        make_node_addr(0x77),
-        workers,
-        fallback_tx,
-    );
+    let fast_path =
+        ConnectedUdpDecryptFastPath::new(session_key, 0, false, make_node_addr(0x77), workers);
     let remote_addr = TransportAddr::from_string("127.0.0.1:2121");
 
     let header = build_established_header(receiver_idx, 99, FLAG_CE | FLAG_SP, 0);

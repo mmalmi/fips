@@ -143,11 +143,11 @@
             0,
             fmp_header,
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
-            fallback_tx,
         );
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.fallback_tx = fallback_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -259,7 +259,6 @@
                 0,
                 fmp_header,
                 crate::node::wire::ESTABLISHED_HEADER_SIZE,
-                fallback_tx.clone(),
             );
             job.lane = DecryptWorkerLane::Bulk;
             job
@@ -271,6 +270,7 @@
         let second = make_job(78, &second_payload);
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.fallback_tx = fallback_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -292,7 +292,8 @@
             OwnedFspSessionState::from(fsp_snapshot),
         );
 
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut plaintext_batch =
+            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
         shard.handle_bulk_job_msg(0, first, &mut plaintext_batch);
         assert!(
             fallback_rx.authenticated_bulk.try_recv().is_err(),
@@ -364,7 +365,7 @@
             "test packet must stay on the priority lane"
         );
 
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let action = DecryptWorkerShard::handle_opened_fmp_job(OpenedFmpJob {
             packet_data: packet_data.clone().into(),
             source_peer,
@@ -377,7 +378,6 @@
             fmp_flags: 0,
             fmp_plaintext_offset: 0,
             fmp_plaintext_len: packet_data.len(),
-            fallback_tx,
         })
         .expect("coordinate FSP plaintext should return to rx_loop");
 
@@ -443,9 +443,8 @@
         let receive_order_id = state.fsp_receive_order_id();
 
         let make_job = |packet_data: Vec<u8>| {
-            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
             FspDecryptJob {
-                fallback_tx,
                 lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
                     previous_hop_peer,
@@ -621,9 +620,8 @@
         let mut packet_data = frame;
         packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0);
         let packet_len = packet_data.len();
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let job = FspDecryptJob {
-            fallback_tx,
             lane: decrypt_worker_packet_lane(packet_len),
             fallback: DecryptFallback::new(
                 previous_hop_peer,
@@ -738,7 +736,6 @@
         let packet_len = packet_data.len();
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let job = FspDecryptJob {
-            fallback_tx,
             lane: decrypt_worker_packet_lane(packet_len),
             fallback: DecryptFallback::new(
                 previous_hop_peer,
@@ -765,8 +762,10 @@
 
         let pool = DecryptWorkerPool::spawn(1);
         let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.fallback_tx = fallback_tx.clone();
         shard.fsp_sessions.insert(source_addr, refreshed);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut plaintext_batch =
+            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
         shard.handle_fsp_aead_completion_batch_msg(
             0,
             FspAeadCompletionBatch::one(FspAeadCompletion {
@@ -852,9 +851,8 @@
         };
 
         let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
-            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
             FspDecryptJob {
-                fallback_tx,
                 lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
                     previous_hop_peer,
@@ -1002,9 +1000,8 @@
         };
 
         let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
-            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
             FspDecryptJob {
-                fallback_tx,
                 lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
                     previous_hop_peer,
@@ -1142,9 +1139,8 @@
         let mut packet_data = frame;
         packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0);
         let packet_len = packet_data.len();
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let job = FspDecryptJob {
-            fallback_tx,
             lane: decrypt_worker_packet_lane(packet_len),
             fallback: DecryptFallback::new(
                 previous_hop_peer,
@@ -1254,9 +1250,8 @@
             "test frame must carry the opposite K-bit from the worker snapshot"
         );
 
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let job = FspDecryptJob {
-            fallback_tx,
             lane: decrypt_worker_packet_lane(fsp_payload.len()),
             fallback: DecryptFallback::new(
                 previous_hop_peer,
@@ -1365,9 +1360,8 @@
         };
 
         let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
-            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
             FspDecryptJob {
-                fallback_tx,
                 lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
                     previous_hop_peer,
@@ -1593,7 +1587,8 @@
         let pool = DecryptWorkerPool::spawn(1);
         let mut shard = DecryptWorkerShard::new(pool);
         shard.fsp_sessions.insert(source_addr, state);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut plaintext_batch =
+            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
 
         shard.handle_fsp_aead_completion_batch_msg(
             0,
@@ -1695,7 +1690,6 @@
             true,
         );
         let output = DecryptWorkerOutput {
-            fallback_tx,
             event: DecryptWorkerEvent::DirectSessionCommit(commit),
             direct_delivery: Some(PendingDirectSessionDelivery {
                 sink: DecryptDirectSessionDeliverySink::new(Some(tun_tx), None, None),
@@ -1710,7 +1704,10 @@
             tun_rx.try_recv().is_err(),
             "direct TUN bytes must wait until the commit is queued"
         );
-        assert!(output.send(), "commit queue should accept direct commit");
+        assert!(
+            output.send(&fallback_tx),
+            "commit queue should accept direct commit"
+        );
 
         match fallback_rx
             .authenticated_bulk
@@ -1736,7 +1733,7 @@
         let source_addr = *source_peer.node_addr();
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
-        let mut batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
 
         let mut first = vec![0u8; 48];
         first[0] = 0x60;
@@ -1745,7 +1742,6 @@
         second[0] = 0x60;
 
         batch.push_output(dummy_direct_tun_output(
-            fallback_tx.clone(),
             tun_tx.clone(),
             source_peer,
             1,
@@ -1762,7 +1758,6 @@
         );
 
         batch.push_output(dummy_direct_tun_output(
-            fallback_tx,
             tun_tx,
             source_peer,
             2,
@@ -1818,9 +1813,8 @@
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 1);
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
 
-        let mut first_batch = DecryptPlaintextFallbackBatch::new();
+        let mut first_batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
         first_batch.push_output(dummy_direct_tun_output(
-            fallback_tx.clone(),
             tun_tx.clone(),
             source_peer,
             1,
@@ -1833,9 +1827,8 @@
             .try_recv()
             .expect("first accepted direct TUN delivery");
 
-        let mut second_batch = DecryptPlaintextFallbackBatch::new();
+        let mut second_batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
         second_batch.push_output(dummy_direct_tun_output(
-            fallback_tx,
             tun_tx,
             source_peer,
             2,
@@ -1909,6 +1902,7 @@
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.fallback_tx = fallback_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -1942,7 +1936,6 @@
             0,
             header_a,
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
-            fallback_tx.clone(),
         );
         first.lane = DecryptWorkerLane::Bulk;
         let mut second = DecryptJob::new(
@@ -1957,7 +1950,6 @@
             0,
             header_b,
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
-            fallback_tx,
         );
         second.lane = DecryptWorkerLane::Bulk;
 
@@ -2046,12 +2038,12 @@
             0,
             fmp_header,
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
-            fallback_tx,
         );
         job.lane = DecryptWorkerLane::Bulk;
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.fallback_tx = fallback_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -2162,12 +2154,12 @@
             0,
             fmp_header,
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
-            fallback_tx,
         );
         job.lane = DecryptWorkerLane::Bulk;
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.fallback_tx = fallback_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -2260,12 +2252,12 @@
             0,
             fmp_header,
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
-            fallback_tx,
         );
         job.lane = DecryptWorkerLane::Bulk;
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.fallback_tx = fallback_tx.clone();
         shard.register_session(
             0,
             session_key,

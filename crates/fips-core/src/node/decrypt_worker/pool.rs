@@ -6,6 +6,7 @@
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
+    fallback_tx: DecryptWorkerFallbackSender,
     fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
@@ -100,12 +101,18 @@ fn record_decrypt_worker_control_drop(worker: usize, kind: &'static str) {
 impl DecryptWorkerPool {
     #[cfg(test)]
     pub(crate) fn spawn(n: usize) -> Self {
-        Self::spawn_with_direct_delivery_sink(n, DecryptDirectSessionDeliverySink::default())
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels();
+        Self::spawn_with_direct_delivery_sink(
+            n,
+            DecryptDirectSessionDeliverySink::default(),
+            fallback_tx,
+        )
     }
 
     pub(crate) fn spawn_with_direct_delivery_sink(
         n: usize,
         direct_delivery_sink: DecryptDirectSessionDeliverySink,
+        fallback_tx: DecryptWorkerFallbackSender,
     ) -> Self {
         let n = n.max(1);
         let bulk_channel_cap = bulk_channel_cap();
@@ -141,6 +148,7 @@ impl DecryptWorkerPool {
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
+            fallback_tx,
             fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };

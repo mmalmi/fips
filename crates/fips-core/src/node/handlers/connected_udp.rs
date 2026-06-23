@@ -353,7 +353,6 @@ impl Node {
             expected_k_bit,
             *self.node_addr(),
             workers,
-            self.decrypt_fallback_tx.clone(),
         )))
     }
 
