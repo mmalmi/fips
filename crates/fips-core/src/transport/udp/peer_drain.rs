@@ -12,13 +12,13 @@
 //! repeated nonblocking `recv(2)` on Darwin), and exit cleanly when the
 //! parent signals shutdown via a self-pipe.
 //!
-//! When a decrypt fast path is installed, the dispatch thread may skip
-//! the wildcard packet-channel hop for priority-sized matching established
-//! packets, but that is still the canonical decrypt-worker path: session/peer
-//! ownership, replay, and TUN/endpoint delivery stay with the normal worker
-//! owner. Non-matching and bulk packets return untouched to `packet_tx`; bulk
-//! pressure is handled by visible bounded-ring/worker drops, not by alternate
-//! replay ownership.
+//! When a decrypt fast path is installed, the drain thread may skip the
+//! wildcard packet-channel hop for priority-sized matching established packets,
+//! but that is still the canonical decrypt-worker path: session/peer ownership,
+//! replay, and TUN/endpoint delivery stay with the normal worker owner.
+//! Non-matching and bulk packets return untouched to `packet_tx`; bulk pressure
+//! is handled by the visible bounded transport channel and worker drops, not by
+//! alternate replay ownership.
 //!
 //! Future: when the full data-plane shard lands, this per-peer thread
 //! becomes a `epoll_wait` arm inside the shard's event loop instead
@@ -34,7 +34,6 @@ use super::PacketTx;
 use super::connected_peer::ConnectedPeerSocket;
 use crate::discovery::is_punch_packet;
 use crate::transport::packet_channel::PacketBatch;
-use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded, unbounded};
 use std::io;
 use std::net::SocketAddr;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -46,7 +45,6 @@ use tracing::{debug, trace, warn};
 
 const CONNECTED_UDP_RECV_BUF_SIZE: usize = 1600; // covers any practical FIPS MTU.
 pub(crate) const CONNECTED_UDP_PRIORITY_MAX_LEN: usize = 512;
-const CONNECTED_UDP_DRAIN_BULK_RING_PACKETS: usize = 32 * 1024;
 const CONNECTED_UDP_DISPATCH_BATCH_LIMIT: usize = super::UDP_RECV_BATCH_SIZE;
 
 pub(crate) trait ConnectedUdpPacketFastPath: Send + Sync {
@@ -71,35 +69,6 @@ struct ConnectedUdpDrainPacket {
     enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
-#[derive(Clone)]
-struct ConnectedUdpDrainQueue {
-    priority: Sender<ConnectedUdpDrainPacket>,
-    bulk: Sender<ConnectedUdpDrainPacket>,
-}
-
-enum ConnectedUdpDrainEnqueueError {
-    Closed,
-    BulkFull(ConnectedUdpDrainPacket),
-}
-
-impl ConnectedUdpDrainQueue {
-    fn enqueue(
-        &self,
-        packet: ConnectedUdpDrainPacket,
-    ) -> Result<(), ConnectedUdpDrainEnqueueError> {
-        if packet.data.len() <= CONNECTED_UDP_PRIORITY_MAX_LEN {
-            self.priority
-                .send(packet)
-                .map_err(|_| ConnectedUdpDrainEnqueueError::Closed)
-        } else {
-            self.bulk.try_send(packet).map_err(|error| match error {
-                TrySendError::Full(packet) => ConnectedUdpDrainEnqueueError::BulkFull(packet),
-                TrySendError::Disconnected(_) => ConnectedUdpDrainEnqueueError::Closed,
-            })
-        }
-    }
-}
-
 /// Handle to a running per-peer drain thread. Drops the thread (and
 /// closes its self-pipe) on drop; the thread exits next time it
 /// returns from `poll(2)`.
@@ -113,9 +82,9 @@ pub(crate) struct PeerRecvDrain {
     /// to know it should exit. Set before writing to `stop_pipe_tx`
     /// so the thread observes the flag once woken.
     stop: Arc<AtomicBool>,
-    /// Joined on drop; the thread is cheap (just exits after the
-    /// next `poll` returns) so the wait is bounded.
-    joins: Vec<std::thread::JoinHandle<()>>,
+    /// Detached on drop; waking the self-pipe lets the thread exit
+    /// without blocking the runtime owner.
+    join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl PeerRecvDrain {
@@ -138,39 +107,6 @@ impl PeerRecvDrain {
         let (pipe_rx, pipe_tx) = make_pipe()?;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let (priority_tx, priority_rx) = unbounded();
-        let (bulk_tx, bulk_rx) = bounded(CONNECTED_UDP_DRAIN_BULK_RING_PACKETS);
-
-        let dispatch_packet_tx = packet_tx.clone();
-        let dispatch_thread = std::thread::Builder::new()
-            .name(format!("fips-peer-dispatch-{}", socket.peer_addr()))
-            .spawn(move || {
-                dispatch_loop(
-                    transport_id,
-                    peer_addr,
-                    dispatch_packet_tx,
-                    fast_path,
-                    priority_rx,
-                    bulk_rx,
-                );
-            });
-        let dispatch_join = match dispatch_thread {
-            Ok(join) => join,
-            Err(e) => {
-                unsafe {
-                    libc::close(pipe_rx);
-                    libc::close(pipe_tx);
-                }
-                return Err(io::Error::other(format!(
-                    "failed to spawn peer dispatch thread: {e}"
-                )));
-            }
-        };
-
-        let drain_queue = ConnectedUdpDrainQueue {
-            priority: priority_tx,
-            bulk: bulk_tx,
-        };
         let stop_clone = stop.clone();
         let socket_clone = socket.clone();
         let drain_thread = std::thread::Builder::new()
@@ -181,7 +117,7 @@ impl PeerRecvDrain {
                     transport_id,
                     peer_addr,
                     packet_tx,
-                    drain_queue,
+                    fast_path,
                     pipe_rx,
                     stop_clone,
                 );
@@ -193,7 +129,7 @@ impl PeerRecvDrain {
             Ok(join) => Ok(Self {
                 stop_pipe_tx: Some(pipe_tx),
                 stop,
-                joins: vec![join, dispatch_join],
+                join: Some(join),
             }),
             Err(e) => {
                 stop.store(true, Ordering::Release);
@@ -201,7 +137,6 @@ impl PeerRecvDrain {
                     libc::close(pipe_rx);
                     libc::close(pipe_tx);
                 }
-                let _ = dispatch_join.join();
                 Err(io::Error::other(format!(
                     "failed to spawn peer drain thread: {e}"
                 )))
@@ -235,9 +170,8 @@ impl Drop for PeerRecvDrain {
         }
 
         // 3. Detach the std::thread. Joining here can block the single
-        // runtime driver while the drain worker is parked in blocking_send
-        // waiting for that same runtime to make progress.
-        self.joins.clear();
+        // runtime driver while the drain worker exits through poll/send work.
+        self.join.take();
     }
 }
 
@@ -248,7 +182,7 @@ fn drain_loop(
     transport_id: TransportId,
     peer_addr: SocketAddr,
     packet_tx: PacketTx,
-    drain_queue: ConnectedUdpDrainQueue,
+    fast_path: Option<Arc<dyn ConnectedUdpPacketFastPath>>,
     stop_pipe_rx: RawFd,
     stop: Arc<AtomicBool>,
 ) {
@@ -264,6 +198,10 @@ fn drain_loop(
         .map(|_| packet_tx.recv_buffer(CONNECTED_UDP_RECV_BUF_SIZE))
         .collect();
     let mut lens: [usize; BATCH] = [0; BATCH];
+    let packet_addr = TransportAddr::from_socket_addr(peer_addr);
+    let mut fast_path_batcher = fast_path.as_ref().map(|fast_path| fast_path.batcher());
+    let mut priority_packets = Vec::with_capacity(BATCH);
+    let mut bulk_packets = Vec::with_capacity(BATCH);
     #[cfg(target_os = "linux")]
     let mut kernel_drop_sampler = ConnectedUdpKernelDropSampler::new(socket_fd);
 
@@ -349,6 +287,9 @@ fn drain_loop(
         );
 
         let timestamp_ms = received_timestamp_ms();
+        let trace_enqueued_at = crate::perf_profile::stamp();
+        priority_packets.clear();
+        bulk_packets.clear();
         for i in 0..count {
             let len = lens[i];
             if len == 0 {
@@ -376,24 +317,26 @@ fn drain_loop(
             let packet = ConnectedUdpDrainPacket {
                 data: packet_tx.packet_buffer(data),
                 timestamp_ms,
-                enqueued_at: crate::perf_profile::stamp(),
+                enqueued_at: trace_enqueued_at,
             };
-            match drain_queue.enqueue(packet) {
-                Ok(()) => {}
-                Err(ConnectedUdpDrainEnqueueError::BulkFull(packet)) => {
-                    drop(packet);
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::TransportBulkDropped,
-                    );
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::ConnectedUdpDrainBulkDropped,
-                    );
-                }
-                Err(ConnectedUdpDrainEnqueueError::Closed) => {
-                    trace!("fips-peer-drain: dispatch channel closed; exiting");
-                    return;
-                }
+            if packet.data.len() <= CONNECTED_UDP_PRIORITY_MAX_LEN {
+                priority_packets.push(packet);
+            } else {
+                bulk_packets.push(packet);
             }
+        }
+
+        if (!priority_packets.is_empty() || !bulk_packets.is_empty())
+            && !dispatch_ready_packets(
+                priority_packets.drain(..).chain(bulk_packets.drain(..)),
+                transport_id,
+                &packet_addr,
+                &packet_tx,
+                fast_path_batcher.as_mut(),
+            )
+        {
+            trace!("fips-peer-drain: packet channel closed; exiting");
+            return;
         }
     }
 
@@ -404,131 +347,29 @@ fn drain_loop(
     );
 }
 
-fn dispatch_loop(
-    transport_id: TransportId,
-    peer_addr: SocketAddr,
-    packet_tx: PacketTx,
-    fast_path: Option<Arc<dyn ConnectedUdpPacketFastPath>>,
-    priority_rx: Receiver<ConnectedUdpDrainPacket>,
-    bulk_rx: Receiver<ConnectedUdpDrainPacket>,
-) {
-    let packet_addr = TransportAddr::from_socket_addr(peer_addr);
-    let mut fast_path_batcher = fast_path.as_ref().map(|fast_path| fast_path.batcher());
-    let never = crossbeam_channel::never();
-    let mut priority_open = true;
-    let mut bulk_open = true;
-
-    trace!(
-        transport_id = %transport_id,
-        peer_addr = %peer_addr,
-        "fips-peer-dispatch: starting"
-    );
-
-    while priority_open || bulk_open {
-        let first = {
-            let priority_wait = if priority_open { &priority_rx } else { &never };
-            let bulk_wait = if bulk_open { &bulk_rx } else { &never };
-            crossbeam_channel::select_biased! {
-                recv(priority_wait) -> msg => match msg {
-                    Ok(packet) => Some(packet),
-                    Err(_) => {
-                        priority_open = false;
-                        None
-                    }
-                },
-                recv(bulk_wait) -> msg => match msg {
-                    Ok(packet) => Some(packet),
-                    Err(_) => {
-                        bulk_open = false;
-                        None
-                    }
-                },
-            }
-        };
-        let Some(first) = first else {
-            continue;
-        };
-
-        if !dispatch_ready_packets(
-            first,
-            transport_id,
-            &packet_addr,
-            &packet_tx,
-            fast_path_batcher.as_mut(),
-            &priority_rx,
-            &bulk_rx,
-            &mut priority_open,
-            &mut bulk_open,
-        ) {
-            break;
-        }
-    }
-
-    trace!(
-        transport_id = %transport_id,
-        peer_addr = %peer_addr,
-        "fips-peer-dispatch: stopped"
-    );
-}
-
-fn dispatch_ready_packets(
-    first: ConnectedUdpDrainPacket,
+fn dispatch_ready_packets<I>(
+    ready_packets: I,
     transport_id: TransportId,
     packet_addr: &TransportAddr,
     packet_tx: &PacketTx,
     mut fast_path_batcher: Option<&mut Box<dyn ConnectedUdpPacketFastPathBatcher>>,
-    priority_rx: &Receiver<ConnectedUdpDrainPacket>,
-    bulk_rx: &Receiver<ConnectedUdpDrainPacket>,
-    priority_open: &mut bool,
-    bulk_open: &mut bool,
-) -> bool {
+) -> bool
+where
+    I: IntoIterator<Item = ConnectedUdpDrainPacket>,
+{
     let dispatch_started_at = crate::perf_profile::stamp();
     let mut dispatch_count = 0u64;
     let mut packets = packet_tx.packet_batch(CONNECTED_UDP_DISPATCH_BATCH_LIMIT);
 
-    dispatch_one_packet(
-        first,
-        transport_id,
-        packet_addr,
-        &mut packets,
-        &mut fast_path_batcher,
-        &mut dispatch_count,
-    );
-
-    while dispatch_count < CONNECTED_UDP_DISPATCH_BATCH_LIMIT as u64 {
-        match priority_rx.try_recv() {
-            Ok(packet) => dispatch_one_packet(
-                packet,
-                transport_id,
-                packet_addr,
-                &mut packets,
-                &mut fast_path_batcher,
-                &mut dispatch_count,
-            ),
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => {
-                *priority_open = false;
-                break;
-            }
-        }
-    }
-
-    while dispatch_count < CONNECTED_UDP_DISPATCH_BATCH_LIMIT as u64 {
-        match bulk_rx.try_recv() {
-            Ok(packet) => dispatch_one_packet(
-                packet,
-                transport_id,
-                packet_addr,
-                &mut packets,
-                &mut fast_path_batcher,
-                &mut dispatch_count,
-            ),
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => {
-                *bulk_open = false;
-                break;
-            }
-        }
+    for packet in ready_packets {
+        dispatch_one_packet(
+            packet,
+            transport_id,
+            packet_addr,
+            &mut packets,
+            &mut fast_path_batcher,
+            &mut dispatch_count,
+        );
     }
 
     if let Some(fast_path) = fast_path_batcher.as_mut() {
@@ -554,7 +395,6 @@ fn dispatch_one_packet(
     *dispatch_count = dispatch_count.saturating_add(1);
     let timestamp_ms = packet.timestamp_ms;
     let trace_enqueued_at = packet.enqueued_at;
-    record_connected_udp_drain_ring_wait(packet.data.len(), trace_enqueued_at);
     let mut packet_data = packet.data;
     if let Some(fast_path) = fast_path_batcher.as_mut() {
         match fast_path.try_dispatch(transport_id, packet_addr.clone(), packet_data, timestamp_ms) {
@@ -570,23 +410,6 @@ fn dispatch_one_packet(
         trace_enqueued_at,
     );
     packets.push(packet);
-}
-
-fn record_connected_udp_drain_ring_wait(
-    packet_len: usize,
-    enqueued_at: Option<crate::perf_profile::TraceStamp>,
-) {
-    crate::perf_profile::record_since_count(
-        crate::perf_profile::Stage::ConnectedUdpDrainRingWait,
-        enqueued_at,
-        1,
-    );
-    let lane_stage = if packet_len <= CONNECTED_UDP_PRIORITY_MAX_LEN {
-        crate::perf_profile::Stage::ConnectedUdpDrainPriorityRingWait
-    } else {
-        crate::perf_profile::Stage::ConnectedUdpDrainBulkRingWait
-    };
-    crate::perf_profile::record_since_count(lane_stage, enqueued_at, 1);
 }
 
 fn take_socket_error(fd: RawFd) -> io::Result<Option<io::Error>> {
@@ -877,6 +700,10 @@ mod tests {
 
     struct IneligibleFastPathBatcher;
 
+    struct OrderRecordingBatcher {
+        seen_tx: mpsc::Sender<usize>,
+    }
+
     impl ConnectedUdpPacketFastPath for RecordingFastPath {
         fn batcher(&self) -> Box<dyn ConnectedUdpPacketFastPathBatcher> {
             Box::new(RecordingFastPathBatcher {
@@ -954,6 +781,65 @@ mod tests {
         }
 
         fn flush(&mut self) {}
+    }
+
+    impl ConnectedUdpPacketFastPathBatcher for OrderRecordingBatcher {
+        fn try_dispatch(
+            &mut self,
+            _transport_id: TransportId,
+            _remote_addr: TransportAddr,
+            packet_data: PacketBuffer,
+            _timestamp_ms: u64,
+        ) -> Result<(), PacketBuffer> {
+            self.seen_tx
+                .send(packet_data.len())
+                .expect("order receiver should stay alive");
+            Err(packet_data)
+        }
+
+        fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn dispatch_prioritizes_local_control_lane_before_bulk_lane() {
+        let (tx, _rx) = packet_channel(32);
+        let packet_addr = TransportAddr::from_socket_addr("127.0.0.1:12345".parse().unwrap());
+        let priority_len = 8;
+        let bulk_len = CONNECTED_UDP_PRIORITY_MAX_LEN + 1;
+        let mut priority_packets = vec![ConnectedUdpDrainPacket {
+            data: tx.packet_buffer(vec![0x11; priority_len]),
+            timestamp_ms: 1,
+            enqueued_at: None,
+        }];
+        let mut bulk_packets = vec![ConnectedUdpDrainPacket {
+            data: tx.packet_buffer(vec![0x22; bulk_len]),
+            timestamp_ms: 1,
+            enqueued_at: None,
+        }];
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let mut batcher: Box<dyn ConnectedUdpPacketFastPathBatcher> =
+            Box::new(OrderRecordingBatcher { seen_tx });
+
+        assert!(dispatch_ready_packets(
+            priority_packets.drain(..).chain(bulk_packets.drain(..)),
+            TransportId::new(42),
+            &packet_addr,
+            &tx,
+            Some(&mut batcher),
+        ));
+
+        assert_eq!(
+            seen_rx
+                .recv_timeout(Duration::from_millis(50))
+                .expect("priority packet should reach fast path"),
+            priority_len,
+        );
+        assert_eq!(
+            seen_rx
+                .recv_timeout(Duration::from_millis(50))
+                .expect("bulk packet should reach fast path after priority"),
+            bulk_len,
+        );
     }
 
     /// End-to-end: open a ConnectedPeerSocket, spawn a drain thread

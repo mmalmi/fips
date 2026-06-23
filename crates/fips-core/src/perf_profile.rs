@@ -289,14 +289,12 @@ pub enum Stage {
     /// left the kernel: punch filtering, fast-path admission/flush, and
     /// fallback packet-channel handoff.
     ConnectedUdpFastPathDispatch = 70,
-    /// Time a drained connected UDP packet spends in the owned userspace ring
-    /// before the dispatch thread starts handling it.
+    /// Legacy connected UDP two-thread drain ring residence. Retained so older
+    /// artifacts decode, but the current single-thread drain no longer emits it.
     ConnectedUdpDrainRingWait = 71,
-    /// Priority-sized connected UDP ring residence, split from the aggregate
-    /// ring wait so control/liveness progress stays independently visible.
+    /// Legacy priority-sized connected UDP ring residence.
     ConnectedUdpDrainPriorityRingWait = 72,
-    /// Bulk-sized connected UDP ring residence, split from the aggregate ring
-    /// wait so bulk burst absorption cannot hide priority behavior.
+    /// Legacy bulk-sized connected UDP ring residence.
     ConnectedUdpDrainBulkRingWait = 73,
 }
 
@@ -651,8 +649,9 @@ pub enum Event {
     UdpSocketKernelDropped = 173,
     /// Linux namespace-wide UDP `RcvbufErrors` from `/proc/net/snmp`.
     UdpNamespaceRcvbufErrors = 174,
-    /// Bulk packets drained from a connected UDP socket but shed by the
-    /// userspace connected-drain ring before decrypt/dispatch could catch up.
+    /// Legacy connected UDP two-thread drain-ring shed counter. Retained so
+    /// older artifacts decode; current connected drains shed via transport bulk
+    /// pressure counters instead.
     ConnectedUdpDrainBulkDropped = 175,
     DecryptFspWorkerReplayDroppedDuplicate = 176,
     DecryptFspWorkerReplayDroppedTooOld = 177,
