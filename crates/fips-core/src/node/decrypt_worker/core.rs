@@ -50,11 +50,14 @@ const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
 /// Match the WireGuard-style packet mover for the common same-owner case:
-/// the peer/session owner keeps replay and delivery order, and same-owner bulk
-/// opens locally through the same ordered receive window instead of bouncing
-/// through an opener queue. Pre-owner bulk may still use a sibling opener so a
-/// non-owner FMP worker does not hand encrypted FSP work through the owner just
-/// to send it back out for AEAD.
+/// the peer/session owner keeps replay and delivery order, while bulk FSP
+/// AEAD can run on another worker and return through the owner's ordered
+/// completion lane. Same-owner bulk stays on this opener path; pressure is
+/// surfaced as bounded opener/completion backpressure instead of a local open
+/// fallback that would make a second semantic path for the same packet stream.
+/// This is no longer an env-gated experiment: when a sibling decrypt worker
+/// exists, same-owner bulk uses the opener path and pressure is bounded by the
+/// opener bulk queue plus the ordered receive-ticket window.
 /// Keep FMP receive sessions on the same peer-derived owner as FSP receive
 /// sessions. This removes the direct-peer hash lottery between local and
 /// handoff FSP lanes while preserving the wire protocol.
