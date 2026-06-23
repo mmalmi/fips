@@ -117,6 +117,39 @@
     }
 
     #[test]
+    fn ordered_receive_window_bulk_reserve_leaves_unreserved_tickets() {
+        let mut window = OrderedReceiveWindow::<&'static str>::new(4);
+        assert_eq!(
+            window
+                .issue_batch_with_reserve(2, 2)
+                .expect("bulk should fit before the reserve"),
+            0
+        );
+        assert!(
+            window.issue_with_reserve(2).is_none(),
+            "bulk admission must stop before the reserved ticket slice"
+        );
+        assert_eq!(
+            window
+                .issue()
+                .expect("unreserved owner ticket should still fit")
+                .sequence,
+            2
+        );
+        assert_eq!(
+            window
+                .issue()
+                .expect("second unreserved owner ticket should still fit")
+                .sequence,
+            3
+        );
+        assert!(
+            window.issue().is_none(),
+            "the total ordered receive window remains bounded"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
@@ -1028,6 +1061,76 @@
                 .next_ticket(),
             1,
             "opener path should issue the owner receive ticket"
+        );
+    }
+
+    #[test]
+    fn fsp_worker_open_window_pressure_leaves_owner_receive_reserve() {
+        let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
+        let open_idx = pool
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .expect("three-worker pool should have a sibling opener");
+        let bulk_ticket_limit =
+            fsp_receive_window().saturating_sub(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE);
+        assert!(bulk_ticket_limit > 0);
+
+        let state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x59; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+
+        let mut shard = DecryptWorkerShard::new(pool.clone());
+        shard.register_fsp_session(owner_idx, source_addr, state);
+        shard
+            .fsp_sessions
+            .get_mut(&source_addr)
+            .expect("owner state should stay registered")
+            .fsp_receive_order
+            .advance_next_ticket_to(bulk_ticket_limit as u64);
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        shard.push_job_action_output(
+            owner_idx,
+            Some(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
+                source_addr,
+            ))),
+            &mut plaintext_batch,
+            None,
+            Some(&mut fsp_open_batcher),
+        );
+
+        assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
+        assert_eq!(
+            bulk_receivers[open_idx].len(),
+            0,
+            "bulk pressure at the receive reserve must not enqueue opener work"
+        );
+        let state = shard
+            .fsp_sessions
+            .get_mut(&source_addr)
+            .expect("owner state should stay registered");
+        assert_eq!(
+            state.fsp_receive_order.next_ticket(),
+            bulk_ticket_limit as u64,
+            "bulk pressure must drop instead of consuming the owner receive reserve"
+        );
+        assert_eq!(
+            state
+                .issue_fsp_receive_ticket()
+                .expect("priority/local owner ticket should keep reserved progress")
+                .sequence,
+            bulk_ticket_limit as u64
         );
     }
 

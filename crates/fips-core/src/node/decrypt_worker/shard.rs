@@ -474,6 +474,11 @@ impl DecryptWorkerShard {
                         Err(error) => {
                             if owner_idx == idx {
                                 record_fsp_open_worker_local_ineligible(error.reason);
+                                if matches!(error.reason, FspOpenWorkerIneligibleReason::WindowFull)
+                                {
+                                    record_decrypt_worker_bulk_drop_count(idx, 1);
+                                    return;
+                                }
                             }
                             error.into_job()
                         }
@@ -484,6 +489,11 @@ impl DecryptWorkerShard {
                         Err(error) => {
                             if owner_idx == idx {
                                 record_fsp_open_worker_local_ineligible(error.reason);
+                                if matches!(error.reason, FspOpenWorkerIneligibleReason::WindowFull)
+                                {
+                                    record_decrypt_worker_bulk_drop_count(idx, 1);
+                                    return;
+                                }
                             }
                             error.into_job()
                         }
@@ -683,7 +693,7 @@ impl DecryptWorkerShard {
             Ok(header) => header,
             Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(job, reason)),
         };
-        let Some(ticket) = state.issue_fsp_receive_ticket() else {
+        let Some(ticket) = state.issue_fsp_worker_open_ticket() else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 1,
@@ -749,7 +759,7 @@ impl DecryptWorkerShard {
             }
         }
 
-        let Some(first_sequence) = state.issue_fsp_receive_ticket_batch(headers.len()) else {
+        let Some(first_sequence) = state.issue_fsp_worker_open_ticket_batch(headers.len()) else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 headers.len() as u64,

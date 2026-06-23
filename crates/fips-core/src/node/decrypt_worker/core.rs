@@ -363,8 +363,14 @@ impl OwnedFspSessionState {
         self.fsp_receive_order.issue()
     }
 
-    fn issue_fsp_receive_ticket_batch(&mut self, count: usize) -> Option<u64> {
-        self.fsp_receive_order.issue_batch(count)
+    fn issue_fsp_worker_open_ticket(&mut self) -> Option<FspReceiveTicket> {
+        self.fsp_receive_order
+            .issue_with_reserve(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
+    }
+
+    fn issue_fsp_worker_open_ticket_batch(&mut self, count: usize) -> Option<u64> {
+        self.fsp_receive_order
+            .issue_batch_with_reserve(count, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
     }
 
     fn open_established_frame(
@@ -659,27 +665,25 @@ impl<T> OrderedReceiveWindow<T> {
     }
 
     fn issue(&mut self) -> Option<OrderedReceiveTicket> {
-        if self
-            .next_ticket
-            .saturating_sub(self.completions.next_ready())
-            >= self.completions.pending_limit() as u64
-        {
-            return None;
-        }
-        let ticket = OrderedReceiveTicket {
-            sequence: self.next_ticket,
-        };
-        self.next_ticket = self.next_ticket.saturating_add(1);
-        Some(ticket)
+        self.issue_with_reserve(0)
     }
 
-    fn issue_batch(&mut self, count: usize) -> Option<u64> {
+    fn issue_with_reserve(&mut self, reserve: usize) -> Option<OrderedReceiveTicket> {
+        self.issue_batch_with_reserve(1, reserve)
+            .map(|sequence| OrderedReceiveTicket { sequence })
+    }
+
+    fn issue_batch_with_reserve(&mut self, count: usize, reserve: usize) -> Option<u64> {
         if count == 0 {
             return Some(self.next_ticket);
         }
+        let limit = self.completions.pending_limit().saturating_sub(reserve);
+        if limit == 0 {
+            return None;
+        }
         let count = count as u64;
         let in_flight = self.next_ticket.saturating_sub(self.completions.next_ready());
-        if in_flight.saturating_add(count) > self.completions.pending_limit() as u64 {
+        if in_flight.saturating_add(count) > limit as u64 {
             return None;
         }
         let first = self.next_ticket;
