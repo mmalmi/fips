@@ -788,8 +788,23 @@ impl DecryptWorkerShard {
                 result,
                 completed_at: _,
             } = completion;
-            debug_assert_eq!(completion_source_addr, source_addr);
-            debug_assert_eq!(completion_receive_order_id, receive_order_id);
+            if completion_source_addr != source_addr
+                || completion_receive_order_id != receive_order_id
+            {
+                record_fsp_aead_completion_drop(
+                    crate::perf_profile::Event::FspAeadCompletionStaleOrder,
+                    1,
+                );
+                debug!(
+                    worker = idx,
+                    expected_source = %source_addr,
+                    completion_source = %completion_source_addr,
+                    expected_receive_order = receive_order_id,
+                    completion_receive_order = completion_receive_order_id,
+                    "dropping mismatched FSP AEAD completion from batch"
+                );
+                continue;
+            }
             let result = if source.is_worker_open() && crypto_generation != state.fsp_crypto_generation() {
                 FspOrderedCompletion::StaleWorkerOpen { source }
             } else {
