@@ -441,11 +441,18 @@ impl Node {
         self.find_udp_transport_for_remote_addr(socket_addr)?;
 
         // A healthy current endpoint has already authenticated for this peer,
-        // so prefer it over older static/overlay hints during idle refresh.
-        // Once liveness has marked the peer stale, keep the old tuple
-        // probeable but stop presenting it as fresh; newer advert/traversal
-        // candidates should get the limited race budget first after roaming.
-        if peer.is_healthy() {
+        // so prefer it over older overlay hints during idle refresh. If the
+        // roster has explicit static UDP candidates and the current tuple is
+        // only an observed source address, keep it probeable but let the
+        // configured addresses race first; observed source ports can be
+        // ephemeral across NAT and macOS roaming events.
+        let current_is_configured = self
+            .configured_path_priority(peer_node_addr, peer.transport_id()?, current_addr)
+            .is_some();
+        let has_configured_static_udp = self
+            .configured_static_udp_path_for_peer(peer_node_addr, peer.transport_id()?)
+            .is_some();
+        if peer.is_healthy() && (!has_configured_static_udp || current_is_configured) {
             Some(
                 PeerAddress::with_priority("udp", socket_addr.to_string(), 0)
                     .with_seen_at_ms(Self::now_ms()),
@@ -628,6 +635,14 @@ impl Node {
             || self.session_direct_path_blocks_direct_payload(peer_node_addr, now_ms)
         {
             return true;
+        }
+
+        if !self.alternate_path_priority_allows_replace(
+            peer_node_addr,
+            candidate_transport_id,
+            candidate_addr,
+        ) {
+            return false;
         }
 
         debug!(

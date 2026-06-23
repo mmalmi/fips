@@ -707,10 +707,14 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert_eq!(
         active.current_addr(),
-        Some(&public_addr),
-        "authenticated traffic should rotate the live path even when the configured static hint has better dial priority"
+        Some(&static_addr),
+        "a healthy configured static path should not be overwritten by a lower-priority observed source tuple"
     );
-    assert_eq!(active.idle_time(2_500), 500);
+    assert_eq!(
+        active.idle_time(2_500),
+        1_500,
+        "suppressed alternate-path bookkeeping must not refresh direct-path liveness"
+    );
 
     node.mark_session_direct_path_degraded(peer_node_addr, 3_000);
     node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(

@@ -220,7 +220,7 @@ async fn active_direct_refresh_reclaims_inflight_slot_for_configured_static_path
 }
 
 #[tokio::test]
-async fn active_direct_refresh_prioritizes_last_observed_udp_endpoint() {
+async fn active_direct_refresh_prioritizes_configured_static_over_observed_udp_endpoint() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
     node.packet_tx = Some(packet_tx.clone());
@@ -243,6 +243,7 @@ async fn active_direct_refresh_prioritizes_last_observed_udp_endpoint() {
     let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
     let peer_node_addr = *peer_identity.node_addr();
     let observed_addr = TransportAddr::from_string("127.0.0.1:21000");
+    let static_addr = TransportAddr::from_string("127.0.0.1:22000");
     let active_link_id = LinkId::new(7);
     let mut active_peer = ActivePeer::new(peer_identity, active_link_id, 1_000);
     active_peer.set_current_addr(primary_id, &observed_addr);
@@ -251,15 +252,11 @@ async fn active_direct_refresh_prioritizes_last_observed_udp_endpoint() {
     let peer_config = crate::config::PeerConfig {
         npub: peer_full.npub(),
         alias: None,
-        addresses: (0..4)
-            .map(|offset| {
-                crate::config::PeerAddress::with_priority(
-                    "udp",
-                    format!("127.0.0.1:{}", 22000 + offset),
-                    1,
-                )
-            })
-            .collect(),
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            static_addr.to_string(),
+            1,
+        )],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
         discovery_fallback_transit: true,
@@ -267,16 +264,32 @@ async fn active_direct_refresh_prioritizes_last_observed_udp_endpoint() {
     node.config.peers = vec![peer_config.clone()];
     refresh_configured_peer_cache_for_test(&mut node);
 
-    let mut state = super::super::retry::RetryState::new(peer_config);
-    state.retry_after_ms = 0;
-    state.reconnect = true;
-    node.retry_pending.insert(peer_node_addr, state);
+    let mut candidates = node.peer_address_candidates(&peer_config).await;
+    if let Some(candidate) = node.active_peer_current_udp_candidate(&peer_node_addr)
+        && !candidates.iter().any(|existing| {
+            existing.transport == candidate.transport && existing.addr == candidate.addr
+        })
+    {
+        candidates.push(candidate);
+        candidates.sort_by(|a, b| {
+            if a.priority != b.priority {
+                return a.priority.cmp(&b.priority);
+            }
+            match (a.seen_at_ms, b.seen_at_ms) {
+                (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+    }
 
-    node.process_pending_retries(1_000).await;
-
-    assert!(
-        node.find_link_by_addr(primary_id, &observed_addr).is_some(),
-        "active direct refresh should try the last authenticated UDP endpoint before stale static hints exhaust the path race"
+    assert_eq!(candidates[0].addr, static_addr.to_string());
+    assert_eq!(candidates[1].addr, observed_addr.to_string());
+    assert_eq!(
+        candidates[1].priority,
+        u8::MAX,
+        "observed source tuples must not outrank configured static UDP addresses"
     );
 
     for transport in node.transports.values_mut() {
