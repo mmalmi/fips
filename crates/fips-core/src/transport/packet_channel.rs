@@ -1048,7 +1048,7 @@ impl PacketRx {
 
 #[inline]
 fn packet_channel_tracks_backlog() -> bool {
-    cfg!(test) || crate::perf_profile::enabled()
+    cfg!(test) || crate::perf_profile::event_counters_enabled()
 }
 
 fn release_reserved_bulk_packets(counter: &AtomicUsize, count: usize) {

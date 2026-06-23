@@ -1592,7 +1592,7 @@ pub(crate) fn enabled() -> bool {
 
 /// True iff the low-overhead event reporter is enabled. Full tracing implies
 /// event counters, but event-only mode does not enable stamps or histograms.
-fn event_counters_enabled() -> bool {
+pub(crate) fn event_counters_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         enabled() || env_any_enabled(["FIPS_PIPELINE_EVENTS", "NVPN_PIPELINE_EVENTS"])
