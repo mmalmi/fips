@@ -366,6 +366,74 @@ fn fresh_udp_nostr_peer_without_static_addresses_skips_direct_retry() {
 }
 
 #[test]
+fn fresh_static_udp_peer_data_liveness_skips_retry_without_resolving_hints() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "192.168.50.24:51820",
+            100,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig::default(),
+        packet_tx,
+    );
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let now_ms = Node::now_ms();
+    let mut active = ActivePeer::new(peer, LinkId::new(7), now_ms);
+    active.set_current_addr(
+        transport_id,
+        &TransportAddr::from_string("198.51.100.24:51820"),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let mut entry = SessionEntry::new(
+        peer_addr,
+        peer_identity.pubkey_full(),
+        EndToEndState::Established(session),
+        1_000,
+        true,
+    );
+    entry.record_recv(512);
+    entry.touch_inbound_data_frame(now_ms);
+    node.sessions.insert(peer_addr, entry);
+
+    assert!(
+        !node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
+        "fresh authenticated endpoint data should treat static UDP addresses as hints, not mandatory retry targets"
+    );
+    assert_eq!(
+        node.udp_transport_resolution_cache.len(),
+        0,
+        "fresh endpoint data should skip static hint resolution entirely"
+    );
+}
+
+#[test]
 fn degraded_static_udp_peer_keeps_direct_retry_even_when_sendable() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {

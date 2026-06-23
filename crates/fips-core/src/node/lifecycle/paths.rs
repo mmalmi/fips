@@ -218,6 +218,9 @@ impl Node {
             let Some(peer) = self.peers.get(peer_node_addr) else {
                 return true;
             };
+            if self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr) {
+                return false;
+            }
             if peer
                 .transport_id()
                 .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))

@@ -150,6 +150,14 @@ impl UdpTransportResolutionCache {
         }
     }
 
+    #[cfg(test)]
+    pub(in crate::node) fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+
     pub(in crate::node) fn clear(&self) {
         if let Ok(mut entries) = self.entries.lock() {
             entries.clear();
