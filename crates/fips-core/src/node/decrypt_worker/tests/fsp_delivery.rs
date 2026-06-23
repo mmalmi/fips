@@ -2486,7 +2486,7 @@
         let mut registered_job = dummy_priority_decrypt_job(session_key);
         registered_job.worker_idx = owner;
         pool.dispatch_job(registered_job);
-        assert!(pool.unregister_session(session_key));
+        assert!(pool.unregister_session(session_key, owner));
 
         match control_receivers[owner]
             .try_recv()

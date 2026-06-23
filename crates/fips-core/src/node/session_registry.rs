@@ -212,12 +212,11 @@ impl SessionRegistry {
             .record_worker_registration(session_key, owner_idx)
     }
 
-    pub(in crate::node) fn unregister_worker_session_if_registered(
+    pub(in crate::node) fn take_worker_registration(
         &mut self,
         session_key: &DecryptSessionKey,
-    ) -> bool {
-        self.worker_registrations
-            .unregister_if_registered(session_key)
+    ) -> Option<usize> {
+        self.worker_registrations.take(session_key)
     }
 
     #[cfg(test)]
@@ -266,11 +265,8 @@ impl DecryptSessionRegistrations {
         self.sessions.get(session_key).copied()
     }
 
-    pub(in crate::node) fn unregister_if_registered(
-        &mut self,
-        session_key: &DecryptSessionKey,
-    ) -> bool {
-        self.sessions.remove(session_key).is_some()
+    pub(in crate::node) fn take(&mut self, session_key: &DecryptSessionKey) -> Option<usize> {
+        self.sessions.remove(session_key)
     }
 
     #[cfg(test)]

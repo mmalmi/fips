@@ -17,7 +17,7 @@ use crate::upper::tun::TunTx;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::{
     Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
@@ -99,6 +99,7 @@ impl From<(TransportId, u32)> for DecryptSessionKey {
     }
 }
 
+#[cfg(test)]
 #[inline]
 fn decrypt_session_fast_hash(session_key: DecryptSessionKey) -> u64 {
     let packed =

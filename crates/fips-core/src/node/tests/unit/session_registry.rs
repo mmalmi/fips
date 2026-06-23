@@ -32,7 +32,7 @@ fn session_registry_owns_endpoint_session_storage_and_worker_registration_mirror
     );
     assert!(!registry.is_worker_registered(&session_key));
     assert_eq!(registry.worker_owner(&session_key), None);
-    assert!(!registry.unregister_worker_session_if_registered(&session_key));
+    assert_eq!(registry.take_worker_registration(&session_key), None);
 
     assert!(registry.record_worker_registration(session_key, Some(3)));
     assert!(registry.is_worker_registered(&session_key));
@@ -68,8 +68,9 @@ fn session_registry_owns_endpoint_session_storage_and_worker_registration_mirror
         .remove(&peer_addr)
         .expect("session storage should live in the session owner");
     assert_eq!(removed.remote_pubkey(), &peer.pubkey_full());
-    assert!(
-        registry.unregister_worker_session_if_registered(&session_key),
+    assert_eq!(
+        registry.take_worker_registration(&session_key),
+        Some(3),
         "worker registration mirror should be cleaned through the session owner"
     );
     assert!(!registry.is_worker_registered(&session_key));
@@ -390,8 +391,9 @@ fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
         "a full worker queue must not make rx-loop dispatch to an unregistered shard"
     );
     assert_eq!(registrations.owner(&session_key), None);
-    assert!(
-        !registrations.unregister_if_registered(&session_key),
+    assert_eq!(
+        registrations.take(&session_key),
+        None,
         "worker unregister should be skipped when local registration never succeeded"
     );
 
@@ -401,7 +403,7 @@ fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
     assert!(!registrations.is_registered(&other_key));
     assert_eq!(registrations.owner(&other_key), None);
 
-    assert!(registrations.unregister_if_registered(&session_key));
+    assert_eq!(registrations.take(&session_key), Some(2));
     assert!(!registrations.is_registered(&session_key));
     assert!(registrations.is_empty());
 }

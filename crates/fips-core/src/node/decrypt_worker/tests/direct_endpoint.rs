@@ -473,7 +473,7 @@
         pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
 
-        assert!(pool.unregister_session(session_key));
+        assert!(pool.unregister_session(session_key, 0));
         assert_eq!(control_rx.len(), 1, "unregister should enqueue");
         assert_eq!(
             priority_rx.len(),
@@ -541,7 +541,7 @@
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let pool_for_thread = pool.clone();
         std::thread::spawn(move || {
-            let unregistered = pool_for_thread.unregister_session(session_key);
+            let unregistered = pool_for_thread.unregister_session(session_key, 0);
             done_tx.send(unregistered).unwrap();
         });
 

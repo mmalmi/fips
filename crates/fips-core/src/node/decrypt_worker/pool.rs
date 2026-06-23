@@ -7,7 +7,6 @@ pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
     fallback_tx: DecryptWorkerFallbackSender,
-    fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
 }
 
 #[derive(Clone)]
@@ -148,7 +147,6 @@ impl DecryptWorkerPool {
             senders: senders.into(),
             direct_delivery_sink,
             fallback_tx,
-            fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
         };
         for (
             i,
@@ -180,9 +178,9 @@ impl DecryptWorkerPool {
         pool
     }
 
-    /// Stable hash from session key → worker index. Same hash is used
-    /// for session registration and per-packet dispatch so packets and
-    /// registration arrive at the same shard.
+    /// Test helper for legacy pre-registration dispatch. Production
+    /// registration is source-affine and rx-loop carries the accepted owner.
+    #[cfg(test)]
     fn worker_idx_for(&self, session_key: DecryptSessionKey) -> usize {
         (decrypt_session_fast_hash(session_key) as usize) % self.senders.len()
     }
@@ -191,25 +189,12 @@ impl DecryptWorkerPool {
         (decrypt_fsp_session_fast_hash(source_addr) as usize) % self.senders.len()
     }
 
-    fn registered_fmp_session_owner(&self, session_key: DecryptSessionKey) -> Option<usize> {
-        self.fmp_session_owners
-            .read()
-            .ok()
-            .and_then(|owners| owners.get(&session_key).copied())
-            .filter(|idx| *idx < self.senders.len())
-    }
-
     fn worker_idx_for_new_fmp_session(
         &self,
         _session_key: DecryptSessionKey,
         source_peer: &PeerIdentity,
     ) -> usize {
         self.worker_idx_for_fsp(source_peer.node_addr())
-    }
-
-    fn worker_idx_for_fmp_session(&self, session_key: DecryptSessionKey) -> usize {
-        self.registered_fmp_session_owner(session_key)
-            .unwrap_or_else(|| self.worker_idx_for(session_key))
     }
 
     fn worker_idx_for_fsp_open_avoiding(
@@ -726,19 +711,12 @@ impl DecryptWorkerPool {
         if self.senders.is_empty() {
             return None;
         }
-        let idx = self.registered_fmp_session_owner(session_key).unwrap_or_else(|| {
-            self.worker_idx_for_new_fmp_session(session_key, &state.source_peer)
-        });
+        let idx = self.worker_idx_for_new_fmp_session(session_key, &state.source_peer);
         match self.senders[idx]
             .control
             .try_send(WorkerMsg::RegisterSession { session_key, state })
         {
-            Ok(()) => {
-                if let Ok(mut owners) = self.fmp_session_owners.write() {
-                    owners.insert(session_key, idx);
-                }
-                Some(idx)
-            }
+            Ok(()) => Some(idx),
             Err(TrySendError::Full(_)) => {
                 record_decrypt_worker_control_drop(idx, "register");
                 crate::perf_profile::record_event(
@@ -831,31 +809,22 @@ impl DecryptWorkerPool {
     /// bounded control lane. A full control lane is still non-blocking, but it
     /// records visible pressure instead of silently hiding stale worker-owned
     /// session state.
-    pub fn unregister_session(&self, session_key: DecryptSessionKey) -> bool {
-        if self.senders.is_empty() {
+    pub fn unregister_session(&self, session_key: DecryptSessionKey, owner_idx: usize) -> bool {
+        if self.senders.is_empty() || owner_idx >= self.senders.len() {
             return false;
         }
-        let idx = self.worker_idx_for_fmp_session(session_key);
-        match self.senders[idx]
+        match self.senders[owner_idx]
             .control
             .try_send(WorkerMsg::UnregisterSession { session_key })
         {
-            Ok(()) => {
-                if let Ok(mut owners) = self.fmp_session_owners.write() {
-                    owners.remove(&session_key);
-                }
-                true
-            }
+            Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                record_decrypt_worker_control_drop(idx, "unregister");
+                record_decrypt_worker_control_drop(owner_idx, "unregister");
                 false
             }
             Err(TrySendError::Disconnected(_)) => {
-                if let Ok(mut owners) = self.fmp_session_owners.write() {
-                    owners.remove(&session_key);
-                }
                 debug!(
-                    worker = idx,
+                    worker = owner_idx,
                     "DecryptWorker thread gone; ignoring unregister"
                 );
                 false
