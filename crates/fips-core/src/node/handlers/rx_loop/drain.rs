@@ -169,10 +169,10 @@ impl RxLoopMaintenanceState {
 
     pub(super) fn skip_slow_maintenance(
         &self,
-        drained: RxLoopDataDrainStats,
+        _drained: RxLoopDataDrainStats,
         data_pressure: bool,
     ) -> bool {
-        drained.has_data_drained() || (data_pressure && self.slow_maintenance_timed_out_under_data)
+        data_pressure && self.slow_maintenance_timed_out_under_data
     }
 
     pub(super) fn plan_maintenance(
@@ -197,6 +197,8 @@ impl RxLoopMaintenanceState {
             self.slow_maintenance_timed_out_under_data = false;
         } else if slow_timed_out {
             self.slow_maintenance_timed_out_under_data = true;
+        } else {
+            self.slow_maintenance_timed_out_under_data = false;
         }
     }
 
