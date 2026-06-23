@@ -550,38 +550,6 @@ fn flush_fsp_open_batcher(
     }
 }
 
-struct BulkTurnBatchers<'a> {
-    fsp_batcher: Option<&'a mut FspDecryptJobBatcher>,
-    fsp_open_batcher: Option<&'a mut FspAeadOpenJobBatcher>,
-}
-
-impl<'a> BulkTurnBatchers<'a> {
-    fn new(
-        fsp_batcher: Option<&'a mut FspDecryptJobBatcher>,
-        fsp_open_batcher: Option<&'a mut FspAeadOpenJobBatcher>,
-    ) -> Self {
-        Self {
-            fsp_batcher,
-            fsp_open_batcher,
-        }
-    }
-
-    fn flush_pending(
-        &mut self,
-        idx: usize,
-        shard: &mut DecryptWorkerShard,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
-        if let Some(fsp_batcher) = self.fsp_batcher.as_deref_mut() {
-            fsp_batcher.flush(&shard.pool);
-        }
-        if let Some(fsp_open_batcher) = self.fsp_open_batcher.as_deref_mut() {
-            flush_fsp_open_batcher(idx, shard, plaintext_batch, fsp_open_batcher);
-        }
-        plaintext_batch.flush();
-    }
-}
-
 struct BulkBatchBuffers {
     fsp_batcher: FspDecryptJobBatcher,
     fsp_open_batcher: FspAeadOpenJobBatcher,
@@ -598,6 +566,17 @@ impl BulkBatchBuffers {
     fn is_empty(&self) -> bool {
         self.fsp_batcher.is_empty() && self.fsp_open_batcher.is_empty()
     }
+
+    fn flush_pending(
+        &mut self,
+        idx: usize,
+        shard: &mut DecryptWorkerShard,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        self.fsp_batcher.flush(&shard.pool);
+        flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut self.fsp_open_batcher);
+        plaintext_batch.flush();
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -609,16 +588,16 @@ fn drain_reserved_work_before_bulk_item(
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     batch_stats: &mut DecryptWorkerBatchStats,
-    mut batchers: BulkTurnBatchers<'_>,
+    bulk_batchers: &mut BulkBatchBuffers,
 ) {
     while let Ok(msg) = control_rx.try_recv() {
-        batchers.flush_pending(idx, shard, plaintext_batch);
+        bulk_batchers.flush_pending(idx, shard, plaintext_batch);
         crate::perf_profile::record_decrypt_worker_drain_control();
         batch_stats.add_msg(&msg);
         shard.handle_msg(idx, msg);
     }
     while let Ok(msg) = priority_rx.try_recv() {
-        batchers.flush_pending(idx, shard, plaintext_batch);
+        bulk_batchers.flush_pending(idx, shard, plaintext_batch);
         crate::perf_profile::record_decrypt_worker_drain_priority();
         batch_stats.add_msg(&msg);
         shard.handle_msg(idx, msg);
@@ -690,8 +669,6 @@ fn handle_bulk_item_with_buffers(
             if let Some(job) = jobs.first() {
                 record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, count);
             }
-            let fsp_batcher = &mut bulk_batchers.fsp_batcher;
-            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
             if count > 1 {
                 drain_reserved_work_before_bulk_item(
                     idx,
@@ -701,9 +678,11 @@ fn handle_bulk_item_with_buffers(
                     fsp_aead_completion_rx,
                     plaintext_batch,
                     batch_stats,
-                    BulkTurnBatchers::new(Some(&mut *fsp_batcher), Some(&mut *fsp_open_batcher)),
+                    bulk_batchers,
                 );
             }
+            let fsp_batcher = &mut bulk_batchers.fsp_batcher;
+            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
             for job in jobs {
                 if trace_enabled {
                     record_decrypt_worker_bulk_input_tail_wait(item_started_at);
@@ -735,7 +714,6 @@ fn handle_bulk_item_with_buffers(
             record_fsp_worker_bulk_input_head_wait_batch(&jobs);
             let count = jobs.len();
             let trace_enabled = crate::perf_profile::enabled();
-            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
             drain_reserved_work_before_bulk_item(
                 idx,
                 shard,
@@ -744,8 +722,9 @@ fn handle_bulk_item_with_buffers(
                 fsp_aead_completion_rx,
                 plaintext_batch,
                 batch_stats,
-                BulkTurnBatchers::new(None, Some(&mut *fsp_open_batcher)),
+                bulk_batchers,
             );
+            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
             shard.handle_bulk_fsp_job_batch_with_open_batcher(
                 idx,
                 jobs,
