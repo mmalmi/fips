@@ -1028,6 +1028,91 @@
     }
 
     #[test]
+    fn fsp_single_current_worker_accepts_current_cipher_with_stale_k_bit_hint() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let state = OwnedFspSessionState::from(snapshot);
+
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"current cipher with stale k-bit hint",
+        );
+        let fsp_counter = fsp_sender.current_send_counter();
+        let fsp_header = crate::node::session_wire::build_fsp_header(
+            fsp_counter,
+            FSP_FLAG_K,
+            inner_plaintext.len() as u16,
+        );
+        let fsp_ciphertext = fsp_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .expect("test FSP frame should encrypt with the current cipher");
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let header = FspEncryptedHeader::parse(&fsp_payload).expect("FSP header");
+        assert!(
+            !state.current_epoch_matches(&header),
+            "test frame must carry a stale/opposite K-bit hint"
+        );
+
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let job = FspDecryptJob {
+            fallback_tx,
+            lane: decrypt_worker_packet_lane(fsp_payload.len()),
+            fallback: DecryptFallback::new(
+                previous_hop_peer,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                1_000,
+                fsp_payload.len(),
+                10,
+                0,
+                fsp_payload,
+                0,
+                fsp_header.len() + fsp_ciphertext.len(),
+            ),
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len: fsp_header.len() + fsp_ciphertext.len(),
+            trace_enqueued_at: None,
+        };
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.register_fsp_session(0, source_addr, state);
+        let outputs = shard.handle_fsp_job_outputs(0, job);
+
+        assert!(
+            matches!(
+                outputs.first().map(|output| &output.event),
+                Some(DecryptWorkerEvent::DirectSessionData(_))
+            ),
+            "worker should authenticate current-cipher FSP frames even when the K-bit hint is stale"
+        );
+    }
+
+    #[test]
     fn fsp_local_owner_open_uses_shared_order_with_worker_open_results() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();

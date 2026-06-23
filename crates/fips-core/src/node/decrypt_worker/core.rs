@@ -648,6 +648,7 @@ impl OwnedFspSessionState {
         self.fsp_receive_order.completions.next_ready()
     }
 
+    #[cfg(test)]
     fn current_epoch_matches(&self, header: &FspEncryptedHeader) -> bool {
         (header.flags & FSP_FLAG_K != 0) == self.current_k_bit
     }
@@ -740,9 +741,6 @@ impl OwnedFspSessionState {
         header: &FspEncryptedHeader,
     ) -> Result<EpochSlot, FspOpenError> {
         debug_assert!(self.has_single_current_epoch());
-        if header.flags & FSP_FLAG_K != u8::from(self.current_k_bit) * FSP_FLAG_K {
-            return Err(FspOpenError::Aead);
-        }
         if let Some(rejection) = self.current.replay.rejection_reason(header.counter) {
             let counter_lag = self.current.replay.highest().saturating_sub(header.counter);
             crate::perf_profile::record_fsp_aead_completion_replay_drop_reason(
@@ -812,6 +810,7 @@ impl OwnedFspSessionState {
                             .push(FspReadyCompletion::AeadFailed { job, header });
                     }
                 }
+                #[cfg(test)]
                 FspOrderedCompletion::EpochMismatch {
                     job,
                     header,
@@ -1050,6 +1049,7 @@ enum FspOrderedCompletion {
         header: FspEncryptedHeader,
         source: FspAeadCompletionSource,
     },
+    #[cfg(test)]
     EpochMismatch {
         job: FspDecryptJob,
         header: FspEncryptedHeader,

@@ -1276,11 +1276,11 @@ impl DecryptWorkerShard {
                     previous_hop_peer,
                 )];
             };
-            let open_result = state.current_epoch_matches(&header).then(|| {
+            let open_result = {
                 let _t_fsp =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
                 state.open_current_established_frame_in_place_deferred_replay(&header, ciphertext)
-            });
+            };
             let job = FspDecryptJob {
                 fallback_tx,
                 fallback,
@@ -1296,7 +1296,7 @@ impl DecryptWorkerShard {
                 trace_enqueued_at: None,
             };
             let completion = match open_result {
-                Some(Ok(plaintext_len)) => FspOrderedCompletion::Opened {
+                Ok(plaintext_len) => FspOrderedCompletion::Opened {
                     opened: FspOpenedJob {
                         job,
                         header,
@@ -1304,7 +1304,7 @@ impl DecryptWorkerShard {
                     },
                     source: FspAeadCompletionSource::Local,
                 },
-                Some(Err(FspOpenError::Aead)) => {
+                Err(FspOpenError::Aead) => {
                     crate::perf_profile::record_fsp_aead_completion_local_open_aead_failure();
                     FspOrderedCompletion::AeadFailed {
                         job,
@@ -1312,18 +1312,13 @@ impl DecryptWorkerShard {
                         source: FspAeadCompletionSource::Local,
                     }
                 }
-                Some(Err(FspOpenError::Replay)) => {
+                Err(FspOpenError::Replay) => {
                     FspOrderedCompletion::AeadFailed {
                         job,
                         header,
                         source: FspAeadCompletionSource::Local,
                     }
                 }
-                None => FspOrderedCompletion::EpochMismatch {
-                    job,
-                    header,
-                    source: FspAeadCompletionSource::Local,
-                },
             };
             let drain = match state.complete_ordered_fsp_open(ticket, completion) {
                 Ok(drain) => drain,
