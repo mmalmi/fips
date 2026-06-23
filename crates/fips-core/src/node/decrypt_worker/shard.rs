@@ -996,12 +996,13 @@ impl DecryptWorkerShard {
             FspAeadCompletionBatch::One(completion) => {
                 self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
             }
-            FspAeadCompletionBatch::Many {
-                source_addr,
-                receive_order_id,
-                completions,
-            } => {
+            FspAeadCompletionBatch::Many(completions) => {
                 let completion_count = completions.len();
+                let Some(first) = completions.first() else {
+                    return;
+                };
+                let source_addr = first.source_addr;
+                let receive_order_id = first.receive_order_id;
                 let _t_service = crate::perf_profile::Timer::start(
                     crate::perf_profile::Stage::FspAeadCompletionService,
                 );

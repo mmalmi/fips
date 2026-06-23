@@ -975,11 +975,7 @@ struct FspAeadCompletion {
 #[allow(clippy::large_enum_variant)]
 enum FspAeadCompletionBatch {
     One(FspAeadCompletion),
-    Many {
-        source_addr: NodeAddr,
-        receive_order_id: u64,
-        completions: Vec<FspAeadCompletion>,
-    },
+    Many(Vec<FspAeadCompletion>),
 }
 
 impl FspAeadCompletionBatch {
@@ -990,11 +986,12 @@ impl FspAeadCompletionBatch {
     fn source_order(&self) -> (NodeAddr, u64) {
         match self {
             Self::One(completion) => (completion.source_addr, completion.receive_order_id),
-            Self::Many {
-                source_addr,
-                receive_order_id,
-                ..
-            } => (*source_addr, *receive_order_id),
+            Self::Many(completions) => {
+                let completion = completions
+                    .first()
+                    .expect("FSP AEAD completion batch must not be empty");
+                (completion.source_addr, completion.receive_order_id)
+            }
         }
     }
 
@@ -1010,30 +1007,26 @@ impl FspAeadCompletionBatch {
             Self::One(_) => {
                 let Self::One(existing) = std::mem::replace(
                     self,
-                    Self::Many {
-                        source_addr,
-                        receive_order_id,
-                        completions: Vec::with_capacity(
-                            DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
-                        ),
-                    },
+                    Self::Many(Vec::with_capacity(
+                        DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
+                    )),
                 ) else {
                     unreachable!("replaced One with Many")
                 };
-                let Self::Many { completions, .. } = self else {
+                let Self::Many(completions) = self else {
                     unreachable!("batch was replaced with Many")
                 };
                 completions.push(existing);
                 completions.push(completion);
             }
-            Self::Many { completions, .. } => completions.push(completion),
+            Self::Many(completions) => completions.push(completion),
         }
     }
 
     fn len(&self) -> usize {
         match self {
             Self::One(_) => 1,
-            Self::Many { completions, .. } => completions.len(),
+            Self::Many(completions) => completions.len(),
         }
     }
 }

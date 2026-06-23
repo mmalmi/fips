@@ -1302,12 +1302,9 @@
             .expect("returned mismatch opener jobs should advance owner order");
         assert_eq!(completion.len(), 2);
         match completion {
-            FspAeadCompletionBatch::Many {
-                source_addr: batch_source_addr,
-                receive_order_id,
-                completions,
-            } => {
-                assert_eq!(batch_source_addr, source_addr);
+            FspAeadCompletionBatch::Many(completions) => {
+                let receive_order_id = completions[0].receive_order_id;
+                assert!(completions.iter().all(|completion| completion.source_addr == source_addr));
                 assert!(
                     completions
                         .iter()

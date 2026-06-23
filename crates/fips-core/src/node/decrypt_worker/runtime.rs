@@ -566,17 +566,6 @@ impl BulkBatchBuffers {
     fn is_empty(&self) -> bool {
         self.fsp_batcher.is_empty() && self.fsp_open_batcher.is_empty()
     }
-
-    fn flush_pending(
-        &mut self,
-        idx: usize,
-        shard: &mut DecryptWorkerShard,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
-        self.fsp_batcher.flush(&shard.pool);
-        flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut self.fsp_open_batcher);
-        plaintext_batch.flush();
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -588,16 +577,15 @@ fn drain_reserved_work_before_bulk_item(
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     batch_stats: &mut DecryptWorkerBatchStats,
-    bulk_batchers: &mut BulkBatchBuffers,
 ) {
     while let Ok(msg) = control_rx.try_recv() {
-        bulk_batchers.flush_pending(idx, shard, plaintext_batch);
+        plaintext_batch.flush();
         crate::perf_profile::record_decrypt_worker_drain_control();
         batch_stats.add_msg(&msg);
         shard.handle_msg(idx, msg);
     }
     while let Ok(msg) = priority_rx.try_recv() {
-        bulk_batchers.flush_pending(idx, shard, plaintext_batch);
+        plaintext_batch.flush();
         crate::perf_profile::record_decrypt_worker_drain_priority();
         batch_stats.add_msg(&msg);
         shard.handle_msg(idx, msg);
@@ -678,7 +666,6 @@ fn handle_bulk_item_with_buffers(
                     fsp_aead_completion_rx,
                     plaintext_batch,
                     batch_stats,
-                    bulk_batchers,
                 );
             }
             let fsp_batcher = &mut bulk_batchers.fsp_batcher;
@@ -722,7 +709,6 @@ fn handle_bulk_item_with_buffers(
                 fsp_aead_completion_rx,
                 plaintext_batch,
                 batch_stats,
-                bulk_batchers,
             );
             let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
             shard.handle_bulk_fsp_job_batch_with_open_batcher(

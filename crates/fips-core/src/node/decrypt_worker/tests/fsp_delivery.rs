@@ -1672,10 +1672,7 @@
 
         shard.handle_fsp_aead_completion_batch_msg(
             0,
-            FspAeadCompletionBatch::Many {
-                source_addr,
-                receive_order_id,
-                completions: vec![
+            FspAeadCompletionBatch::Many(vec![
                     FspAeadCompletion {
                         source_addr,
                         receive_order_id,
@@ -1698,8 +1695,7 @@
                         },
                         completed_at: None,
                     },
-                ],
-            },
+                ]),
             &mut plaintext_batch,
         );
         let state = shard
@@ -1736,45 +1732,41 @@
 
         shard.handle_fsp_aead_completion_batch_msg(
             0,
-            FspAeadCompletionBatch::Many {
-                source_addr,
-                receive_order_id,
-                completions: vec![
-                    FspAeadCompletion {
-                        source_addr: other_addr,
-                        receive_order_id,
-                        crypto_generation,
-                        ticket,
+            FspAeadCompletionBatch::Many(vec![
+                FspAeadCompletion {
+                    source_addr,
+                    receive_order_id,
+                    crypto_generation,
+                    ticket,
+                    source: FspAeadCompletionSource::WorkerOpen,
+                    result: FspOrderedCompletion::Dropped {
                         source: FspAeadCompletionSource::WorkerOpen,
-                        result: FspOrderedCompletion::Dropped {
-                            source: FspAeadCompletionSource::WorkerOpen,
-                        },
-                        completed_at: None,
                     },
-                    FspAeadCompletion {
-                        source_addr,
-                        receive_order_id: receive_order_id + 1,
-                        crypto_generation,
-                        ticket,
+                    completed_at: None,
+                },
+                FspAeadCompletion {
+                    source_addr: other_addr,
+                    receive_order_id,
+                    crypto_generation,
+                    ticket,
+                    source: FspAeadCompletionSource::WorkerOpen,
+                    result: FspOrderedCompletion::Dropped {
                         source: FspAeadCompletionSource::WorkerOpen,
-                        result: FspOrderedCompletion::Dropped {
-                            source: FspAeadCompletionSource::WorkerOpen,
-                        },
-                        completed_at: None,
                     },
-                    FspAeadCompletion {
-                        source_addr,
-                        receive_order_id,
-                        crypto_generation,
-                        ticket,
+                    completed_at: None,
+                },
+                FspAeadCompletion {
+                    source_addr,
+                    receive_order_id: receive_order_id + 1,
+                    crypto_generation,
+                    ticket,
+                    source: FspAeadCompletionSource::WorkerOpen,
+                    result: FspOrderedCompletion::Dropped {
                         source: FspAeadCompletionSource::WorkerOpen,
-                        result: FspOrderedCompletion::Dropped {
-                            source: FspAeadCompletionSource::WorkerOpen,
-                        },
-                        completed_at: None,
                     },
-                ],
-            },
+                    completed_at: None,
+                },
+            ]),
             &mut plaintext_batch,
         );
 
