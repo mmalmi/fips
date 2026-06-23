@@ -379,21 +379,11 @@ impl Node {
         &mut self,
         direct: DecryptDirectSessionData,
     ) {
-        let Some(finish) = self.commit_direct_session_data_from_worker(
-            &direct.fmp,
-            direct.source_addr,
-            direct.previous_hop_peer,
-            direct.receive_sync,
-            direct.body_len,
-        ) else {
+        let Some(finish) =
+            self.process_direct_session_data_from_worker_at(direct, WorkerReceiveClock::now())
+        else {
             return;
         };
-
-        self.deliver_direct_session_delivery_from_worker(
-            direct.source_addr,
-            direct.ce_flag,
-            direct.delivery,
-        );
 
         if let Some(dest_addr) = finish.pending_flush_dest() {
             self.flush_pending_packets(&dest_addr).await;
@@ -440,38 +430,49 @@ impl Node {
         let mut pending_flush_dests = Vec::new();
         let clock = WorkerReceiveClock::now();
         for direct in directs {
-            let Some(finish) = self.commit_direct_session_data_from_worker_at(
-                &direct.fmp,
-                direct.source_addr,
-                direct.previous_hop_peer,
-                direct.receive_sync,
-                direct.body_len,
-                clock,
-            ) else {
+            let Some(finish) = self.process_direct_session_data_from_worker_at(direct, clock)
+            else {
                 continue;
             };
-
-            self.deliver_direct_session_delivery_from_worker(
-                direct.source_addr,
-                direct.ce_flag,
-                direct.delivery,
-            );
             Self::note_pending_flush_dest(&mut pending_flush_dests, finish);
         }
         self.flush_pending_destinations(&mut pending_flush_dests)
             .await;
     }
 
+    fn process_direct_session_data_from_worker_at(
+        &mut self,
+        direct: DecryptDirectSessionData,
+        clock: WorkerReceiveClock,
+    ) -> Option<SessionDispatchFinish> {
+        let finish = self.commit_direct_session_data_from_worker_at(
+            &direct.fmp,
+            direct.source_addr,
+            direct.previous_hop_peer,
+            direct.receive_sync,
+            direct.body_len,
+            clock,
+        )?;
+
+        self.deliver_direct_session_delivery_from_worker(
+            direct.source_addr,
+            direct.ce_flag,
+            direct.delivery,
+        );
+        Some(finish)
+    }
+
     pub(in crate::node) async fn process_direct_session_commit_from_worker(
         &mut self,
         commit: DecryptDirectSessionCommit,
     ) {
-        let Some(finish) = self.commit_direct_session_data_from_worker(
+        let Some(finish) = self.commit_direct_session_data_from_worker_at(
             &commit.fmp,
             commit.source_addr,
             commit.previous_hop_peer,
             commit.receive_sync,
             commit.body_len,
+            WorkerReceiveClock::now(),
         ) else {
             return;
         };
@@ -520,24 +521,6 @@ impl Node {
     ) -> bool {
         first.source_addr == next.source_addr
             && first.previous_hop_peer.node_addr() == next.previous_hop_peer.node_addr()
-    }
-
-    fn commit_direct_session_data_from_worker(
-        &mut self,
-        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
-        source_addr: NodeAddr,
-        previous_hop_peer: PeerIdentity,
-        receive_sync: crate::node::session::FspReceiveSync,
-        body_len: usize,
-    ) -> Option<SessionDispatchFinish> {
-        self.commit_direct_session_data_from_worker_at(
-            fmp,
-            source_addr,
-            previous_hop_peer,
-            receive_sync,
-            body_len,
-            WorkerReceiveClock::now(),
-        )
     }
 
     fn commit_direct_session_data_from_worker_at(
