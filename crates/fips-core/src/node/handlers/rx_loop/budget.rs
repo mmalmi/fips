@@ -58,27 +58,6 @@ pub(super) fn remaining_side_queue_budget(budget: usize, drained: usize) -> usiz
     budget.saturating_sub(drained)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct FallbackDrainPlan {
-    pub(super) interleave_every: usize,
-    pub(super) interleave_budget: usize,
-    pub(super) trailing_budget: usize,
-}
-
-impl FallbackDrainPlan {
-    const fn normal() -> Self {
-        Self {
-            interleave_every: FALLBACK_INTERLEAVE_EVERY,
-            interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
-            trailing_budget: NON_PACKET_DRAIN_BUDGET,
-        }
-    }
-}
-
-pub(super) fn fallback_drain_plan() -> FallbackDrainPlan {
-    FallbackDrainPlan::normal()
-}
-
 pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {
     transport_priority_packets == 0
 }

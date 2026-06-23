@@ -320,13 +320,12 @@ impl Node {
                     }
                 }
                 Some(event) = decrypt_fallback_rx.bulk.recv() => {
-                    let fallback_plan = fallback_drain_plan();
                     let fallback_drained = self.drain_decrypt_fallback(
                         &mut decrypt_fallback_rx,
                         None,
                         None,
                         Some(event),
-                        fallback_plan.trailing_budget,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut control_query_rx,
@@ -449,11 +448,10 @@ impl Node {
         } else {
             0
         };
-        let fallback_plan = fallback_drain_plan();
         let mut drain = PacketDrainCursor::new(
             first_packet,
             budget,
-            fallback_plan.interleave_every,
+            FALLBACK_INTERLEAVE_EVERY,
             side_queue_interleave_every,
         );
         let mut decrypt_jobs = DecryptJobBatcher::new();
@@ -482,7 +480,7 @@ impl Node {
                             None,
                             None,
                             None,
-                            fallback_plan.interleave_budget,
+                            FALLBACK_INTERLEAVE_BUDGET,
                         )
                         .await
                     } else {
@@ -530,7 +528,7 @@ impl Node {
                 None,
                 None,
                 None,
-                fallback_plan.trailing_budget.min(budget),
+                NON_PACKET_DRAIN_BUDGET.min(budget),
             )
             .await;
             self.finish_endpoint_event_batch();

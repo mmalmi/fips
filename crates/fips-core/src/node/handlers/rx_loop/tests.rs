@@ -1,9 +1,9 @@
 use super::budget::{
     CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
-    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, NON_PACKET_DRAIN_BUDGET,
+    PACKET_DRAIN_BUDGET, RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
     RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT, RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
-    authenticated_bulk_preempts_packet_rx, fallback_drain_plan, non_packet_drain_budget,
+    authenticated_bulk_preempts_packet_rx, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -60,29 +60,20 @@ fn non_packet_drain_budget_caps_large_packet_turns() {
 }
 
 #[test]
-fn fallback_drain_plan_stays_bounded_under_return_pressure() {
-    let plan = fallback_drain_plan();
-    assert_eq!(
-        plan,
-        FallbackDrainPlan {
-            interleave_every: FALLBACK_INTERLEAVE_EVERY,
-            interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
-            trailing_budget: NON_PACKET_DRAIN_BUDGET,
-        }
-    );
+fn fallback_drain_constants_stay_bounded_under_return_pressure() {
     assert!(
-        plan.interleave_budget <= NON_PACKET_DRAIN_BUDGET,
+        FALLBACK_INTERLEAVE_BUDGET <= NON_PACKET_DRAIN_BUDGET,
         "fallback returns should keep a bounded normal turn even when bulk is backlogged"
     );
     assert!(
-        plan.trailing_budget <= NON_PACKET_DRAIN_BUDGET,
-        "trailing fallback returns should not grow into a pressure side path"
-    );
-    assert!(
         NON_PACKET_DRAIN_BUDGET <= 16
-            && plan.interleave_budget <= 16
+            && FALLBACK_INTERLEAVE_BUDGET <= 16
             && super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET <= 16,
         "non-packet turns must stay short so fresh transport priority is not held behind bulk work"
+    );
+    assert!(
+        FALLBACK_INTERLEAVE_EVERY > 0,
+        "fallback interleaves must remain enabled inside hot packet drains"
     );
 }
 
