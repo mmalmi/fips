@@ -316,8 +316,8 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
     assert!(!state.data_pressure(empty, start, window));
     assert!(!state.skip_slow_maintenance(empty, false));
     assert!(
-        state.skip_slow_maintenance(drained, true),
-        "queued dataplane work should skip slow discovery maintenance instead of competing with packets"
+        !state.skip_slow_maintenance(drained, true),
+        "queued dataplane work should timebox slow maintenance instead of starving it"
     );
 
     state.record_data_activity(start);
@@ -331,13 +331,12 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
 
     state.record_maintenance_result(true, false);
     assert!(
-        state.skip_slow_maintenance(empty, true),
-        "dataplane pressure should keep slow discovery maintenance parked even after a successful busy tick"
+        !state.skip_slow_maintenance(empty, true),
+        "one skipped or successful busy tick should clear the timeout latch"
     );
 
     state.record_maintenance_result(false, true);
-    assert!(state.skip_slow_maintenance(empty, true));
-    assert!(!state.skip_slow_maintenance(empty, false));
+    assert!(!state.skip_slow_maintenance(empty, true));
 }
 
 #[test]
@@ -371,7 +370,7 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
         busy_timeout,
     );
     assert!(recent_busy.data_pressure());
-    assert_eq!(recent_busy.slow_timeout(), None);
+    assert_eq!(recent_busy.slow_timeout(), Some(busy_timeout));
 
     state.record_maintenance_result(true, true);
     let skipped_busy_after_timeout = state.plan_maintenance(
@@ -395,8 +394,8 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
     assert!(retried_busy_after_skip.data_pressure());
     assert_eq!(
         retried_busy_after_skip.slow_timeout(),
-        None,
-        "slow discovery maintenance should stay parked while dataplane pressure continues"
+        Some(busy_timeout),
+        "slow maintenance should retry under sustained data pressure after one skip"
     );
 
     let busy_with_queued_data = RxLoopMaintenanceState::default().plan_maintenance(
@@ -407,7 +406,7 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
         busy_timeout,
     );
     assert!(busy_with_queued_data.data_pressure());
-    assert_eq!(busy_with_queued_data.slow_timeout(), None);
+    assert_eq!(busy_with_queued_data.slow_timeout(), Some(busy_timeout));
 
     let expired_idle = state.plan_maintenance(
         empty,
