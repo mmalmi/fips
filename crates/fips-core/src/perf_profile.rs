@@ -96,7 +96,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 262;
+const N_EVENTS: usize = 269;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -745,6 +745,13 @@ pub enum Event {
     DecryptWorkerFspOpenQueueDepthGe256 = 259,
     DecryptWorkerFspOpenQueueDepthGe1024 = 260,
     DecryptWorkerFspOpenQueueDepthGe4096 = 261,
+    FmpAeadCompletionStaleSession = 262,
+    FmpAeadCompletionStaleOrder = 263,
+    FmpAeadCompletionStaleTicket = 264,
+    FmpAeadCompletionDuplicateTicket = 265,
+    FmpAeadCompletionWindowExceeded = 266,
+    DecryptWorkerSelectFmpCompletionPackets = 267,
+    DecryptWorkerSelectFmpCompletionBatch = 268,
 }
 
 impl Event {
@@ -853,6 +860,11 @@ impl Event {
                 | Event::FspAeadCompletionAeadFailedLocalOpen
                 | Event::FspAeadCompletionAeadFailedAcceptKbitMismatch
                 | Event::FspAeadCompletionStaleEpochWorkerOpen
+                | Event::FmpAeadCompletionStaleSession
+                | Event::FmpAeadCompletionStaleOrder
+                | Event::FmpAeadCompletionStaleTicket
+                | Event::FmpAeadCompletionDuplicateTicket
+                | Event::FmpAeadCompletionWindowExceeded
                 | Event::LinuxWgBatchFlowQueueFullPackets
                 | Event::LinuxWgBatchWorkerQueueFullPackets
                 | Event::LinuxWgBatchAdmissionUnavailablePackets
@@ -1269,6 +1281,17 @@ impl Event {
             Event::DecryptWorkerFspOpenQueueDepthGe4096 => {
                 "decrypt_worker_fsp_open_queue_depth_ge4096"
             }
+            Event::FmpAeadCompletionStaleSession => "fmp_aead_completion_stale_session",
+            Event::FmpAeadCompletionStaleOrder => "fmp_aead_completion_stale_order",
+            Event::FmpAeadCompletionStaleTicket => "fmp_aead_completion_stale_ticket",
+            Event::FmpAeadCompletionDuplicateTicket => "fmp_aead_completion_duplicate_ticket",
+            Event::FmpAeadCompletionWindowExceeded => "fmp_aead_completion_window_exceeded",
+            Event::DecryptWorkerSelectFmpCompletionPackets => {
+                "decrypt_worker_select_fmp_completion_packets"
+            }
+            Event::DecryptWorkerSelectFmpCompletionBatch => {
+                "decrypt_worker_select_fmp_completion_batch"
+            }
         }
     }
 }
@@ -1537,6 +1560,13 @@ fn event_from_index(idx: usize) -> Event {
         259 => Event::DecryptWorkerFspOpenQueueDepthGe256,
         260 => Event::DecryptWorkerFspOpenQueueDepthGe1024,
         261 => Event::DecryptWorkerFspOpenQueueDepthGe4096,
+        262 => Event::FmpAeadCompletionStaleSession,
+        263 => Event::FmpAeadCompletionStaleOrder,
+        264 => Event::FmpAeadCompletionStaleTicket,
+        265 => Event::FmpAeadCompletionDuplicateTicket,
+        266 => Event::FmpAeadCompletionWindowExceeded,
+        267 => Event::DecryptWorkerSelectFmpCompletionPackets,
+        268 => Event::DecryptWorkerSelectFmpCompletionBatch,
         _ => unreachable!(),
     }
 }
@@ -2269,6 +2299,15 @@ pub(crate) fn record_decrypt_worker_select_fsp_completion(packets: usize) {
     record_event(Event::DecryptWorkerSelectFspCompletionBatch);
     record_event_count(
         Event::DecryptWorkerSelectFspCompletionPackets,
+        packets as u64,
+    );
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_select_fmp_completion(packets: usize) {
+    record_event(Event::DecryptWorkerSelectFmpCompletionBatch);
+    record_event_count(
+        Event::DecryptWorkerSelectFmpCompletionPackets,
         packets as u64,
     );
 }

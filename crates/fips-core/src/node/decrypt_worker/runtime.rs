@@ -114,6 +114,7 @@ fn run_worker(
     pool: DecryptWorkerPool,
     control_rx: Receiver<WorkerMsg>,
     priority_rx: Receiver<WorkerMsg>,
+    fmp_aead_completion_rx: Receiver<FmpAeadCompletion>,
     fsp_aead_completion_rx: Receiver<FspAeadCompletionBatch>,
     bulk_rx: Receiver<DecryptWorkerBulkItem>,
     bulk_queued_packets: Arc<AtomicUsize>,
@@ -131,6 +132,7 @@ fn run_worker(
             &mut shard,
             &control_rx,
             &priority_rx,
+            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -142,6 +144,7 @@ fn run_worker(
         match recv_worker_item_biased(
             &control_rx,
             &priority_rx,
+            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
         ) {
@@ -158,6 +161,11 @@ fn run_worker(
                 batch_stats.add_msg(&msg);
                 shard.handle_msg(idx, msg);
                 batch_stats.record(idx);
+            }
+            DecryptWorkerQueueItem::FmpAeadCompletion(completion) => {
+                crate::perf_profile::record_decrypt_worker_select_fmp_completion(1);
+                shard.handle_fmp_aead_completion_msg(idx, completion, &mut plaintext_batch);
+                plaintext_batch.flush();
             }
             DecryptWorkerQueueItem::FspAeadCompletion(completions) => {
                 crate::perf_profile::record_decrypt_worker_select_fsp_completion(
@@ -176,6 +184,7 @@ fn run_worker(
                     &mut shard,
                     &control_rx,
                     &priority_rx,
+                    &fmp_aead_completion_rx,
                     &fsp_aead_completion_rx,
                     item,
                     &mut plaintext_batch,
@@ -191,6 +200,7 @@ fn run_worker(
                     &mut shard,
                     &control_rx,
                     &priority_rx,
+                    &fmp_aead_completion_rx,
                     &fsp_aead_completion_rx,
                     &bulk_rx,
                     &bulk_queued_packets,
@@ -208,6 +218,7 @@ fn run_worker(
 enum DecryptWorkerQueueItem {
     Control(WorkerMsg),
     Priority(WorkerMsg),
+    FmpAeadCompletion(FmpAeadCompletion),
     FspAeadCompletion(FspAeadCompletionBatch),
     Bulk(DecryptWorkerBulkItem),
     Closed,
@@ -228,6 +239,41 @@ fn handle_fsp_aead_completion(
     let count = completions.len();
     shard.handle_fsp_aead_completion_batch_msg(idx, completions, plaintext_batch);
     count
+}
+
+fn handle_fmp_aead_completion(
+    idx: usize,
+    shard: &mut DecryptWorkerShard,
+    completion: FmpAeadCompletion,
+    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+) -> usize {
+    shard.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
+    1
+}
+
+fn drain_fmp_aead_completions_for_bulk_item(
+    idx: usize,
+    shard: &mut DecryptWorkerShard,
+    fmp_aead_completion_rx: &Receiver<FmpAeadCompletion>,
+    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    remaining_budget: &mut usize,
+) -> bool {
+    let mut drained_packets = 0usize;
+    let mut drained_messages = 0usize;
+    while *remaining_budget > 0 {
+        let Ok(completion) = fmp_aead_completion_rx.try_recv() else {
+            break;
+        };
+        let handled = handle_fmp_aead_completion(idx, shard, completion, plaintext_batch);
+        drained_packets = drained_packets.saturating_add(handled.max(1));
+        drained_messages = drained_messages.saturating_add(1);
+        *remaining_budget = remaining_budget.saturating_sub(handled.max(1));
+    }
+    crate::perf_profile::record_decrypt_worker_bulk_interleave_aead_completion(
+        drained_messages,
+        drained_packets,
+    );
+    drained_packets > 0
 }
 
 fn drain_aead_completions_for_bulk_item(
@@ -262,6 +308,7 @@ fn drain_aead_completions_for_bulk_item(
 fn recv_worker_item_biased(
     control_rx: &Receiver<WorkerMsg>,
     priority_rx: &Receiver<WorkerMsg>,
+    fmp_aead_completion_rx: &Receiver<FmpAeadCompletion>,
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
 ) -> DecryptWorkerQueueItem {
@@ -270,6 +317,9 @@ fn recv_worker_item_biased(
     }
     if let Ok(msg) = priority_rx.try_recv() {
         return DecryptWorkerQueueItem::Priority(msg);
+    }
+    if let Ok(completion) = fmp_aead_completion_rx.try_recv() {
+        return DecryptWorkerQueueItem::FmpAeadCompletion(completion);
     }
     if let Some(completion) = try_recv_fsp_aead_completion(fsp_aead_completion_rx) {
         return DecryptWorkerQueueItem::FspAeadCompletion(completion);
@@ -281,6 +331,10 @@ fn recv_worker_item_biased(
         },
         recv(priority_rx) -> msg => match msg {
             Ok(msg) => DecryptWorkerQueueItem::Priority(msg),
+            Err(_) => DecryptWorkerQueueItem::Closed,
+        },
+        recv(fmp_aead_completion_rx) -> completion => match completion {
+            Ok(completion) => DecryptWorkerQueueItem::FmpAeadCompletion(completion),
             Err(_) => DecryptWorkerQueueItem::Closed,
         },
         recv(fsp_aead_completion_rx) -> completion => match completion {
@@ -306,12 +360,14 @@ fn drain_worker_queues(
     bulk_queued_packets: &AtomicUsize,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
 ) -> bool {
+    let (_fmp_aead_completion_tx, fmp_aead_completion_rx) = bounded::<FmpAeadCompletion>(1);
     let mut bulk_batchers = BulkBatchBuffers::new();
     drain_worker_queues_with_buffers(
         idx,
         shard,
         control_rx,
         priority_rx,
+        &fmp_aead_completion_rx,
         fsp_aead_completion_rx,
         bulk_rx,
         bulk_queued_packets,
@@ -326,6 +382,7 @@ fn drain_worker_queues_with_buffers(
     shard: &mut DecryptWorkerShard,
     control_rx: &Receiver<WorkerMsg>,
     priority_rx: &Receiver<WorkerMsg>,
+    fmp_aead_completion_rx: &Receiver<FmpAeadCompletion>,
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
     bulk_queued_packets: &AtomicUsize,
@@ -367,6 +424,17 @@ fn drain_worker_queues_with_buffers(
             continue;
         }
         if drained_completion_packets < DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET
+            && let Ok(completion) = fmp_aead_completion_rx.try_recv()
+        {
+            did_work = true;
+            let handled = handle_fmp_aead_completion(idx, shard, completion, plaintext_batch);
+            drained_completion_packets =
+                drained_completion_packets.saturating_add(handled.max(1));
+            completion_outputs_need_flush = true;
+            crate::perf_profile::record_decrypt_worker_drain_aead_completion(1, handled);
+            continue;
+        }
+        if drained_completion_packets < DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET
             && let Some(completion) = try_recv_fsp_aead_completion(fsp_aead_completion_rx)
         {
             did_work = true;
@@ -392,6 +460,7 @@ fn drain_worker_queues_with_buffers(
                     shard,
                     control_rx,
                     priority_rx,
+                    fmp_aead_completion_rx,
                     fsp_aead_completion_rx,
                     item,
                     plaintext_batch,
@@ -622,6 +691,7 @@ fn drain_reserved_work_before_bulk_item(
     shard: &mut DecryptWorkerShard,
     control_rx: &Receiver<WorkerMsg>,
     priority_rx: &Receiver<WorkerMsg>,
+    fmp_aead_completion_rx: &Receiver<FmpAeadCompletion>,
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     batch_stats: &mut DecryptWorkerBatchStats,
@@ -640,6 +710,13 @@ fn drain_reserved_work_before_bulk_item(
         shard.handle_msg(idx, msg);
     }
     let mut completion_interleave_budget = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+    let mut drained_any_completion = drain_fmp_aead_completions_for_bulk_item(
+        idx,
+        shard,
+        fmp_aead_completion_rx,
+        plaintext_batch,
+        &mut completion_interleave_budget,
+    );
     if drain_aead_completions_for_bulk_item(
         idx,
         shard,
@@ -647,6 +724,9 @@ fn drain_reserved_work_before_bulk_item(
         plaintext_batch,
         &mut completion_interleave_budget,
     ) {
+        drained_any_completion = true;
+    }
+    if drained_any_completion {
         plaintext_batch.flush();
     }
 }
@@ -663,12 +743,14 @@ fn handle_bulk_item(
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     batch_stats: &mut DecryptWorkerBatchStats,
 ) -> usize {
+    let (_fmp_aead_completion_tx, fmp_aead_completion_rx) = bounded::<FmpAeadCompletion>(1);
     let mut bulk_batchers = BulkBatchBuffers::new();
     handle_bulk_item_with_buffers(
         idx,
         shard,
         control_rx,
         priority_rx,
+        &fmp_aead_completion_rx,
         fsp_aead_completion_rx,
         item,
         plaintext_batch,
@@ -683,6 +765,7 @@ fn handle_bulk_item_with_buffers(
     shard: &mut DecryptWorkerShard,
     control_rx: &Receiver<WorkerMsg>,
     priority_rx: &Receiver<WorkerMsg>,
+    fmp_aead_completion_rx: &Receiver<FmpAeadCompletion>,
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     item: DecryptWorkerBulkItem,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
@@ -705,6 +788,24 @@ fn handle_bulk_item_with_buffers(
             record_fsp_worker_bulk_input_head_wait(&job);
             record_fsp_worker_bulk_input_tail_wait(item_started_at);
             shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
+            1
+        }
+        DecryptWorkerBulkItem::FmpAeadOpen(mut job) => {
+            let item_service_started_at = crate::perf_profile::stamp();
+            let Some(owner_idx) = job.completion_owner_idx.take() else {
+                record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
+                return 1;
+            };
+            let completion = job.into_completion();
+            if !shard.pool.send_fmp_aead_completion(owner_idx, completion) {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFmpPreownerCompletionBacklogFallback,
+                );
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::FmpAeadCompletionStaleSession,
+                );
+            }
+            record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
             1
         }
         DecryptWorkerBulkItem::FspAeadOpen(job) => {
@@ -745,6 +846,7 @@ fn handle_bulk_item_with_buffers(
                 shard,
                 control_rx,
                 priority_rx,
+                fmp_aead_completion_rx,
                 fsp_aead_completion_rx,
                 plaintext_batch,
                 batch_stats,
@@ -756,7 +858,7 @@ fn handle_bulk_item_with_buffers(
                 }
                 match shard.handle_job_action(idx, job) {
                     Ok(actions) => {
-                        shard.push_job_action_output(
+                        shard.push_job_actions_output(
                             idx,
                             actions,
                             plaintext_batch,
@@ -787,6 +889,7 @@ fn handle_bulk_item_with_buffers(
                 shard,
                 control_rx,
                 priority_rx,
+                fmp_aead_completion_rx,
                 fsp_aead_completion_rx,
                 plaintext_batch,
                 batch_stats,
@@ -820,6 +923,42 @@ struct DecryptWorkerOutput {
 enum DecryptWorkerJobAction {
     Output(DecryptWorkerOutput),
     FspJob(FspDecryptJob),
+}
+
+#[allow(clippy::large_enum_variant)]
+enum DecryptWorkerJobActions {
+    None,
+    One(DecryptWorkerJobAction),
+    Many(Vec<DecryptWorkerJobAction>),
+}
+
+impl DecryptWorkerJobActions {
+    fn one(action: DecryptWorkerJobAction) -> Self {
+        Self::One(action)
+    }
+
+    fn push(&mut self, action: DecryptWorkerJobAction) {
+        match std::mem::replace(self, Self::None) {
+            Self::None => *self = Self::One(action),
+            Self::One(existing) => *self = Self::Many(vec![existing, action]),
+            Self::Many(mut actions) => {
+                actions.push(action);
+                *self = Self::Many(actions);
+            }
+        }
+    }
+
+    fn for_each(self, mut on_action: impl FnMut(DecryptWorkerJobAction)) {
+        match self {
+            Self::None => {}
+            Self::One(action) => on_action(action),
+            Self::Many(actions) => {
+                for action in actions {
+                    on_action(action);
+                }
+            }
+        }
+    }
 }
 
 impl DecryptWorkerOutput {
