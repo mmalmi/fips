@@ -569,8 +569,8 @@ impl Node {
             .drain_tun_outbound(tun_outbound_rx, None, tun_budget)
             .await;
 
-        let endpoint_remainder = remaining_side_queue_budget(endpoint_budget, drained_endpoint);
-        let tun_remainder = remaining_side_queue_budget(tun_budget, drained_tun);
+        let endpoint_remainder = endpoint_budget.saturating_sub(drained_endpoint);
+        let tun_remainder = tun_budget.saturating_sub(drained_tun);
         if endpoint_remainder > 0 && !tun_outbound_rx.is_empty() {
             drained_tun += self
                 .drain_tun_outbound(tun_outbound_rx, None, endpoint_remainder)

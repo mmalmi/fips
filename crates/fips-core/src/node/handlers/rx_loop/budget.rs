@@ -54,10 +54,6 @@ pub(super) fn split_side_queue_budget(budget: usize) -> (usize, usize) {
     (endpoint_budget, tun_budget)
 }
 
-pub(super) fn remaining_side_queue_budget(budget: usize, drained: usize) -> usize {
-    budget.saturating_sub(drained)
-}
-
 pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {
     transport_priority_packets == 0
 }
