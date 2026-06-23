@@ -691,10 +691,10 @@ pub(in crate::node) struct PreparedFmpWorkerSend {
 #[derive(Clone)]
 pub(crate) struct ConnectedUdpDecryptFastPath {
     // Connected UDP owns established FMP receive for this peer by routing
-    // matching current-epoch packets straight to the decrypt worker
-    // owner/batcher. Misses (handshake, stale index, wrong transport, rekey
-    // epoch transition) return untouched to the normal packet path, where
-    // rx_loop owns session lookup and pending-session promotion.
+    // matching packets straight to the decrypt worker owner/batcher. Misses
+    // (handshake, stale index, wrong transport, rekey epoch transition) return
+    // untouched to the normal packet path, where rx_loop owns session lookup
+    // and pending-session promotion.
     session_key: decrypt_worker::DecryptSessionKey,
     worker_idx: usize,
     expected_k_bit: bool,
@@ -744,6 +744,9 @@ impl ConnectedUdpDecryptFastPath {
         timestamp_ms: u64,
     ) -> Result<decrypt_worker::DecryptJob, crate::transport::PacketBuffer> {
         let packet_data = packet_data.into();
+        if packet_data.len() > crate::transport::udp::peer_drain::CONNECTED_UDP_PRIORITY_MAX_LEN {
+            return Err(packet_data);
+        }
         let Some(header) = wire::EncryptedHeader::parse(&packet_data) else {
             return Err(packet_data);
         };

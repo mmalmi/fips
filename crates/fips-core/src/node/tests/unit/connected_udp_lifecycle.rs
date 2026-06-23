@@ -100,7 +100,7 @@ fn peer_lifecycle_registry_owns_connected_udp_activation_plan() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn connected_udp_decrypt_fast_path_prepares_matching_current_epoch_established_packets() {
+fn connected_udp_decrypt_fast_path_prepares_priority_matching_established_packets() {
     let transport_id = TransportId::new(7);
     let receiver_idx = SessionIndex::new(0x0a0b_0c0d);
     let session_key =
@@ -128,18 +128,15 @@ fn connected_udp_decrypt_fast_path_prepares_matching_current_epoch_established_p
         &header,
         &vec![0u8; crate::transport::udp::peer_drain::CONNECTED_UDP_PRIORITY_MAX_LEN],
     );
-    let bulk_job = fast_path
-        .prepare_job(
-            transport_id,
-            remote_addr.clone(),
-            bulk_packet.clone(),
-            1_235,
-        )
-        .expect("matching established bulk packet should prepare a decrypt job");
-    assert_eq!(bulk_job.packet_data, bulk_packet);
-    assert_eq!(bulk_job.session_key, session_key);
-    assert_eq!(bulk_job.fmp_counter, 99);
-    assert_eq!(bulk_job.fmp_ciphertext_offset, ESTABLISHED_HEADER_SIZE);
+    match fast_path.prepare_job(
+        transport_id,
+        remote_addr.clone(),
+        bulk_packet.clone(),
+        1_235,
+    ) {
+        Ok(_) => panic!("matching established bulk packet should stay on canonical packet receive"),
+        Err(returned) => assert_eq!(returned, bulk_packet),
+    }
 
     let wrong_epoch_header =
         build_established_header(receiver_idx, 100, FLAG_CE | FLAG_KEY_EPOCH, 0);
