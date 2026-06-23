@@ -466,20 +466,12 @@ impl Node {
         &mut self,
         commit: DecryptDirectSessionCommit,
     ) {
-        let Some(finish) = self.commit_direct_session_data_from_worker_at(
-            &commit.fmp,
-            commit.source_addr,
-            commit.previous_hop_peer,
-            commit.receive_sync,
-            commit.body_len,
+        let Some(finish) = self.commit_direct_session_commit_run_from_worker_at(
+            std::slice::from_ref(&commit),
             WorkerReceiveClock::now(),
         ) else {
             return;
         };
-
-        if commit.ce_flag && commit.delivered_ipv6 {
-            self.stats_mut().congestion.record_ce_received();
-        }
 
         if let Some(dest_addr) = finish.pending_flush_dest() {
             self.flush_pending_packets(&dest_addr).await;
