@@ -261,9 +261,9 @@ impl DecryptWorkerShard {
     }
 
     fn handle_job_msg(&mut self, idx: usize, job: DecryptJob) {
-        let mut actions = Vec::with_capacity(1);
-        self.collect_job_actions(idx, job, &mut actions);
-        self.handle_job_actions_immediate(idx, actions);
+        if let Some(action) = self.collect_job_action(job) {
+            self.handle_job_action_immediate(idx, action);
+        }
     }
 
     #[cfg(test)]
@@ -273,10 +273,8 @@ impl DecryptWorkerShard {
         job: DecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        let mut actions = Vec::with_capacity(1);
-        self.collect_job_actions(idx, job, &mut actions);
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
-        for action in actions {
+        if let Some(action) = self.collect_job_action(job) {
             self.push_job_action_output(
                 idx,
                 action,
@@ -405,27 +403,22 @@ impl DecryptWorkerShard {
         &mut self,
         job: DecryptJob,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut actions = Vec::with_capacity(1);
-        self.collect_job_actions(0, job, &mut actions);
-        self.handle_job_actions_immediate(0, actions);
+        if let Some(action) = self.collect_job_action(job) {
+            self.handle_job_action_immediate(0, action);
+        }
         Ok(())
     }
 
-    fn handle_job_actions_immediate(&mut self, idx: usize, actions: Vec<DecryptWorkerJobAction>) {
-        if actions.is_empty() {
-            return;
-        }
+    fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
-        for action in actions {
-            self.push_job_action_output(
-                idx,
-                action,
-                &mut plaintext_batch,
-                None,
-                &mut fsp_open_batcher,
-            );
-        }
+        self.push_job_action_output(
+            idx,
+            action,
+            &mut plaintext_batch,
+            None,
+            &mut fsp_open_batcher,
+        );
         flush_fsp_open_batcher(idx, self, &mut plaintext_batch, &mut fsp_open_batcher);
         plaintext_batch.flush();
     }
@@ -1462,42 +1455,48 @@ impl DecryptWorkerShard {
         });
     }
 
-    fn collect_job_actions(
-        &mut self,
-        idx: usize,
-        job: DecryptJob,
-        actions: &mut Vec<DecryptWorkerJobAction>,
-    ) {
+    fn collect_job_action(&mut self, job: DecryptJob) -> Option<DecryptWorkerJobAction> {
         let session_key = job.session_key();
         let Some(state) = self.sessions.get_mut(&session_key) else {
             let _ = job;
-            return;
+            return None;
         };
-        Self::collect_job_actions_with_state(idx, session_key, state, job, actions);
+        Self::collect_job_action_with_state(state, job)
     }
 
-    fn collect_bulk_job_actions(
+    fn push_bulk_job_outputs(
         &mut self,
         idx: usize,
         session_key: DecryptSessionKey,
         jobs: Vec<DecryptJob>,
-        actions: &mut Vec<DecryptWorkerJobAction>,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        fsp_batcher: &mut FspDecryptJobBatcher,
+        fsp_open_batcher: &mut FspAeadOpenJobBatcher,
     ) {
-        let Some(state) = self.sessions.get_mut(&session_key) else {
+        // Hold FMP session/replay state while FSP/output handling borrows the
+        // rest of the shard; no control work is interleaved inside this item.
+        let Some(mut state) = self.sessions.remove(&session_key) else {
             return;
         };
         for job in jobs {
-            Self::collect_job_actions_with_state(idx, session_key, state, job, actions);
+            if let Some(action) = Self::collect_job_action_with_state(&mut state, job) {
+                self.push_job_action_output(
+                    idx,
+                    action,
+                    plaintext_batch,
+                    Some(&mut *fsp_batcher),
+                    fsp_open_batcher,
+                );
+            }
         }
+        let previous = self.sessions.insert(session_key, state);
+        debug_assert!(previous.is_none());
     }
 
-    fn collect_job_actions_with_state(
-        _idx: usize,
-        _session_key: DecryptSessionKey,
+    fn collect_job_action_with_state(
         state: &mut OwnedSessionState,
         job: DecryptJob,
-        actions: &mut Vec<DecryptWorkerJobAction>,
-    ) {
+    ) -> Option<DecryptWorkerJobAction> {
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
@@ -1527,7 +1526,7 @@ impl DecryptWorkerShard {
         // only add hot-path bookkeeping without enabling parallel completions.
         let replay_precheck = match state.precheck_fmp_replay(fmp_counter) {
             Ok(precheck) => precheck,
-            Err(FmpOpenError::Replay) => return,
+            Err(FmpOpenError::Replay) => return None,
         };
         let outcome = match OwnedSessionState::open_fmp_aead_in_place(
             &state.fmp_cipher,
@@ -1539,7 +1538,7 @@ impl DecryptWorkerShard {
         ) {
             Ok(outcome) => outcome,
             Err(()) => {
-                actions.push(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+                return Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
                     event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
                         source_peer,
                         fmp_counter,
@@ -1548,13 +1547,12 @@ impl DecryptWorkerShard {
                     }),
                     direct_delivery: None,
                 }));
-                return;
             }
         };
         if !state.accept_prechecked_fmp_replay(replay_precheck) {
-            return;
+            return None;
         }
-        if let Some(action) = Self::handle_opened_fmp_job(OpenedFmpJob {
+        Self::handle_opened_fmp_job(OpenedFmpJob {
             packet_data,
             source_peer,
             transport_id,
@@ -1566,9 +1564,7 @@ impl DecryptWorkerShard {
             fmp_flags,
             fmp_plaintext_offset: fmp_ciphertext_offset,
             fmp_plaintext_len: outcome.plaintext_len,
-        }) {
-            actions.push(action);
-        }
+        })
     }
 
     fn handle_opened_fmp_job(job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {

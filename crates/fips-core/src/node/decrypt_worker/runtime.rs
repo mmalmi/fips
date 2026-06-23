@@ -675,17 +675,14 @@ fn handle_bulk_item_with_buffers(
                     record_decrypt_worker_bulk_input_tail_wait(item_started_at);
                 }
             }
-            let mut actions = Vec::with_capacity(count);
-            shard.collect_bulk_job_actions(idx, session_key, jobs, &mut actions);
-            for action in actions {
-                shard.push_job_action_output(
-                    idx,
-                    action,
-                    plaintext_batch,
-                    Some(&mut *fsp_batcher),
-                    &mut *fsp_open_batcher,
-                );
-            }
+            shard.push_bulk_job_outputs(
+                idx,
+                session_key,
+                jobs,
+                plaintext_batch,
+                fsp_batcher,
+                fsp_open_batcher,
+            );
             fsp_batcher.flush(&shard.pool);
             flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
             debug_assert!(bulk_batchers.is_empty());
