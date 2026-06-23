@@ -566,7 +566,26 @@ impl DecryptWorkerShard {
                 DecryptDirectSessionDelivery::EndpointData(message.into_endpoint_data_delivery()),
             ),
             Some(SessionMessageType::DataPacket) => {
-                let packet = message.into_ipv6_packet(source_addr, local_node_addr)?;
+                let body = message.body();
+                if body.len() < FSP_PORT_HEADER_SIZE {
+                    return Err(message);
+                }
+                let dst_port = u16::from_le_bytes([body[2], body[3]]);
+                if dst_port != FSP_PORT_IPV6_SHIM {
+                    return Err(message);
+                }
+
+                let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
+                let dst_ipv6 = FipsAddress::from_node_addr(&local_node_addr)
+                    .to_ipv6()
+                    .octets();
+                let Some(packet) = crate::upper::ipv6_shim::decompress_ipv6(
+                    &body[FSP_PORT_HEADER_SIZE..],
+                    src_ipv6,
+                    dst_ipv6,
+                ) else {
+                    return Err(message);
+                };
                 Ok(DecryptDirectSessionDelivery::Ipv6Packet(packet))
             }
             _ => Err(message),

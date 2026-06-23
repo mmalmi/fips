@@ -70,61 +70,44 @@ pub fn decompress_ipv6(
     src_ipv6: [u8; 16],
     dst_ipv6: [u8; 16],
 ) -> Option<Vec<u8>> {
-    let upper_len = shim_payload
-        .len()
-        .saturating_sub(1 + IPV6_SHIM_RESIDUAL_SIZE);
+    if shim_payload.len() < 1 + IPV6_SHIM_RESIDUAL_SIZE {
+        return None;
+    }
+
+    let format = shim_payload[0];
+    if format != IPV6_SHIM_FORMAT_COMPRESSED {
+        return None;
+    }
+
+    let residual = &shim_payload[1..1 + IPV6_SHIM_RESIDUAL_SIZE];
+    let upper_payload = &shim_payload[1 + IPV6_SHIM_RESIDUAL_SIZE..];
+    let upper_len = upper_payload.len();
+
     let mut ipv6 = Vec::with_capacity(IPV6_HEADER_SIZE + upper_len);
-    ipv6.extend_from_slice(shim_payload);
-    decompress_ipv6_in_place(&mut ipv6, 0, shim_payload.len(), src_ipv6, dst_ipv6).then_some(ipv6)
-}
 
-/// Decompress a shim payload that already lives inside `buffer`.
-///
-/// On success the decompressed IPv6 packet occupies `buffer[0..len]` and the
-/// buffer is truncated to that packet. This lets receive paths reuse the
-/// authenticated packet allocation instead of materializing a second Vec.
-pub(crate) fn decompress_ipv6_in_place(
-    buffer: &mut Vec<u8>,
-    shim_offset: usize,
-    shim_len: usize,
-    src_ipv6: [u8; 16],
-    dst_ipv6: [u8; 16],
-) -> bool {
-    let Some(shim_end) = shim_offset.checked_add(shim_len) else {
-        return false;
-    };
-    if shim_end > buffer.len() || shim_len < 1 + IPV6_SHIM_RESIDUAL_SIZE {
-        return false;
-    }
-    if buffer[shim_offset] != IPV6_SHIM_FORMAT_COMPRESSED {
-        return false;
-    }
+    // Bytes 0-3: restore version nibble to 6
+    ipv6.push((residual[0] & 0x0F) | 0x60);
+    ipv6.extend_from_slice(&residual[1..4]);
 
-    let residual_start = shim_offset + 1;
-    let mut residual = [0u8; IPV6_SHIM_RESIDUAL_SIZE];
-    residual.copy_from_slice(&buffer[residual_start..residual_start + IPV6_SHIM_RESIDUAL_SIZE]);
+    // Bytes 4-5: payload length (big-endian)
+    ipv6.extend_from_slice(&(upper_len as u16).to_be_bytes());
 
-    let upper_offset = residual_start + IPV6_SHIM_RESIDUAL_SIZE;
-    let upper_len = shim_end - upper_offset;
-    if upper_len > u16::MAX as usize {
-        return false;
-    }
-    let packet_len = IPV6_HEADER_SIZE + upper_len;
-    if buffer.len() < packet_len {
-        buffer.resize(packet_len, 0);
-    }
-    buffer.copy_within(upper_offset..shim_end, IPV6_HEADER_SIZE);
-    buffer.truncate(packet_len);
+    // Byte 6: next header
+    ipv6.push(residual[4]);
 
-    buffer[0] = (residual[0] & 0x0F) | 0x60;
-    buffer[1..4].copy_from_slice(&residual[1..4]);
-    buffer[4..6].copy_from_slice(&(upper_len as u16).to_be_bytes());
-    buffer[6] = residual[4];
-    buffer[7] = residual[5];
-    buffer[8..24].copy_from_slice(&src_ipv6);
-    buffer[24..40].copy_from_slice(&dst_ipv6);
+    // Byte 7: hop limit
+    ipv6.push(residual[5]);
 
-    true
+    // Bytes 8-23: source address
+    ipv6.extend_from_slice(&src_ipv6);
+
+    // Bytes 24-39: destination address
+    ipv6.extend_from_slice(&dst_ipv6);
+
+    // Upper-layer payload
+    ipv6.extend_from_slice(upper_payload);
+
+    Some(ipv6)
 }
 
 #[cfg(test)]
@@ -303,29 +286,6 @@ mod tests {
 
         let payload_len = u16::from_be_bytes([decompressed[4], decompressed[5]]);
         assert_eq!(payload_len, 256);
-    }
-
-    #[test]
-    fn test_decompress_in_place_reuses_offset_buffer() {
-        let payload = b"in-place shim payload";
-        let pkt = build_ipv6_packet(0x20, 0x12345, 17, 63, sample_src(), sample_dst(), payload);
-        let compressed = compress_ipv6(&pkt).unwrap();
-        let mut buffer = b"outer-prefix".to_vec();
-        let shim_offset = buffer.len();
-        buffer.extend_from_slice(&compressed);
-        buffer.extend_from_slice(b"outer-trailer");
-        let original_capacity = buffer.capacity();
-
-        assert!(decompress_ipv6_in_place(
-            &mut buffer,
-            shim_offset,
-            compressed.len(),
-            sample_src(),
-            sample_dst()
-        ));
-
-        assert_eq!(buffer, pkt);
-        assert!(buffer.capacity() >= original_capacity);
     }
 
     // ===== Compression size savings =====

@@ -756,61 +756,6 @@
     }
 
     #[test]
-    fn authenticated_session_message_rebuilds_ipv6_from_wire_buffer() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-        let source_addr = *peer.node_addr();
-        let local_addr = *local.node_addr();
-        let src_ipv6 = crate::FipsAddress::from_node_addr(&source_addr)
-            .to_ipv6()
-            .octets();
-        let dst_ipv6 = crate::FipsAddress::from_node_addr(&local_addr)
-            .to_ipv6()
-            .octets();
-        let ipv6_payload = b"buffer ipv6 delivery";
-        let mut ipv6 = Vec::with_capacity(40 + ipv6_payload.len());
-        ipv6.extend_from_slice(&[0x60, 0x12, 0x34, 0x56]);
-        ipv6.extend_from_slice(&(ipv6_payload.len() as u16).to_be_bytes());
-        ipv6.push(17);
-        ipv6.push(64);
-        ipv6.extend_from_slice(&src_ipv6);
-        ipv6.extend_from_slice(&dst_ipv6);
-        ipv6.extend_from_slice(ipv6_payload);
-
-        let compressed =
-            crate::upper::ipv6_shim::compress_ipv6(&ipv6).expect("IPv6 packet should compress");
-        let mut body = Vec::with_capacity(FSP_PORT_HEADER_SIZE + compressed.len());
-        body.extend_from_slice(&0u16.to_le_bytes());
-        body.extend_from_slice(&FSP_PORT_IPV6_SHIM.to_le_bytes());
-        body.extend_from_slice(&compressed);
-        let plaintext = fsp_prepend_inner_header(
-            0x0102_0304,
-            SessionMessageType::DataPacket.to_byte(),
-            0,
-            &body,
-        );
-        let mut buffer = b"outer-fmp-prefix".to_vec();
-        let plaintext_offset = buffer.len();
-        buffer.extend_from_slice(&plaintext);
-        buffer.extend_from_slice(b"outer-fmp-trailer");
-        let message = AuthenticatedSessionMessage::from_buffer(
-            source_peer,
-            buffer,
-            plaintext_offset,
-            plaintext.len(),
-            SessionMessageType::DataPacket.to_byte(),
-            0,
-            0x0102_0304,
-        );
-
-        let packet = message
-            .into_ipv6_packet(source_addr, local_addr)
-            .expect("IPv6 shim data packet should decode");
-        assert_eq!(packet, ipv6);
-    }
-
-    #[test]
     fn authenticated_session_dispatch_owns_route_ce_and_completion_facts() {
         let peer = Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());

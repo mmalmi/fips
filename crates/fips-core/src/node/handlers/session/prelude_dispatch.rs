@@ -328,46 +328,6 @@ impl AuthenticatedSessionMessage {
         self.buffer.keep_range(body_offset, body_len);
         EndpointDataDelivery::new(self.source_peer, self.buffer)
     }
-
-    #[allow(clippy::result_large_err)]
-    pub(in crate::node) fn into_ipv6_packet(
-        mut self,
-        source_addr: NodeAddr,
-        local_node_addr: NodeAddr,
-    ) -> Result<Vec<u8>, Self> {
-        if self.msg_type != SessionMessageType::DataPacket.to_byte() {
-            return Err(self);
-        }
-        let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
-        let body_len = self.body_len();
-        if body_len < FSP_PORT_HEADER_SIZE {
-            return Err(self);
-        }
-        let body = &self.buffer[body_offset..body_offset + body_len];
-        let dst_port = u16::from_le_bytes([body[2], body[3]]);
-        if dst_port != FSP_PORT_IPV6_SHIM {
-            return Err(self);
-        }
-
-        let shim_offset = body_offset + FSP_PORT_HEADER_SIZE;
-        let shim_len = body_len - FSP_PORT_HEADER_SIZE;
-        let src_ipv6 = crate::FipsAddress::from_node_addr(&source_addr)
-            .to_ipv6()
-            .octets();
-        let dst_ipv6 = crate::FipsAddress::from_node_addr(&local_node_addr)
-            .to_ipv6()
-            .octets();
-        if !crate::upper::ipv6_shim::decompress_ipv6_in_place(
-            &mut self.buffer,
-            shim_offset,
-            shim_len,
-            src_ipv6,
-            dst_ipv6,
-        ) {
-            return Err(self);
-        }
-        Ok(self.buffer.into_vec())
-    }
 }
 
 /// Local dispatch context for an authenticated established-FSP message.
@@ -482,48 +442,64 @@ impl AuthenticatedSessionDispatch {
 
         match SessionMessageType::from_byte(msg_type) {
             Some(SessionMessageType::DataPacket) => {
-                let ce_flag = self.ce_flag();
-                match self.message.into_ipv6_packet(source_addr, *node.node_addr()) {
-                    Ok(mut packet) => {
-                        if ce_flag {
-                            mark_ipv6_ecn_ce(&mut packet);
-                            node.stats_mut().congestion.record_ce_received();
-                        }
-                        if node.external_packet_tx.is_some() {
-                            node.deliver_external_ipv6_packet(&source_addr, packet);
-                        } else if let Some(tun_tx) = &node.tun_tx {
-                            let _t =
-                                crate::perf_profile::Timer::start(crate::perf_profile::Stage::TunWrite);
-                            if let Err(error) = tun_tx.send(packet) {
-                                debug!(error = %error, "Failed to deliver decompressed IPv6 packet to TUN");
+                let rest = self.body();
+                // msg_type 0x10: port-multiplexed service dispatch
+                if rest.len() < FSP_PORT_HEADER_SIZE {
+                    debug!(len = rest.len(), "DataPacket too short for port header");
+                    return;
+                }
+                let dst_port = u16::from_le_bytes([rest[2], rest[3]]);
+                let service_payload = &rest[FSP_PORT_HEADER_SIZE..];
+
+                match dst_port {
+                    FSP_PORT_IPV6_SHIM => {
+                        use crate::FipsAddress;
+                        let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
+                        let dst_ipv6 = FipsAddress::from_node_addr(node.node_addr())
+                            .to_ipv6()
+                            .octets();
+
+                        match crate::upper::ipv6_shim::decompress_ipv6(
+                            service_payload,
+                            src_ipv6,
+                            dst_ipv6,
+                        ) {
+                            Some(mut packet) => {
+                                if self.ce_flag() {
+                                    mark_ipv6_ecn_ce(&mut packet);
+                                    node.stats_mut().congestion.record_ce_received();
+                                }
+                                if node.external_packet_tx.is_some() {
+                                    node.deliver_external_ipv6_packet(&source_addr, packet);
+                                } else if let Some(tun_tx) = &node.tun_tx {
+                                    let _t = crate::perf_profile::Timer::start(
+                                        crate::perf_profile::Stage::TunWrite,
+                                    );
+                                    if let Err(e) = tun_tx.send(packet) {
+                                        debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
+                                    }
+                                } else {
+                                    trace!(
+                                        src = %node.peer_display_name(&source_addr),
+                                        "IPv6 shim packet decompressed (no TUN interface)"
+                                    );
+                                }
                             }
-                        } else {
-                            trace!(
-                                src = %node.peer_display_name(&source_addr),
-                                "IPv6 shim packet decompressed (no TUN interface)"
-                            );
+                            None => {
+                                debug!(
+                                    src = %node.peer_display_name(&source_addr),
+                                    len = service_payload.len(),
+                                    "IPv6 shim decompression failed"
+                                );
+                            }
                         }
                     }
-                    Err(message) => {
-                        let rest = message.body();
-                        if rest.len() < FSP_PORT_HEADER_SIZE {
-                            debug!(len = rest.len(), "DataPacket too short for port header");
-                            return;
-                        }
-                        let dst_port = u16::from_le_bytes([rest[2], rest[3]]);
-                        if dst_port == FSP_PORT_IPV6_SHIM {
-                            debug!(
-                                src = %node.peer_display_name(&source_addr),
-                                len = rest.len() - FSP_PORT_HEADER_SIZE,
-                                "IPv6 shim decompression failed"
-                            );
-                        } else {
-                            debug!(
-                                src = %node.peer_display_name(&source_addr),
-                                dst_port,
-                                "Unknown FSP service port, dropping DataPacket"
-                            );
-                        }
+                    _ => {
+                        debug!(
+                            src = %node.peer_display_name(&source_addr),
+                            dst_port,
+                            "Unknown FSP service port, dropping DataPacket"
+                        );
                     }
                 }
             }
