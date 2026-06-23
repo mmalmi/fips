@@ -671,6 +671,9 @@ fn selected_send_group_stats(groups: &[SelectedSendBatch]) -> (usize, usize, usi
 
 #[cfg(unix)]
 fn record_selected_send_groups(groups: &[SelectedSendBatch]) {
+    if !crate::perf_profile::enabled() || groups.is_empty() {
+        return;
+    }
     let (group_count, packets, single_groups) = selected_send_group_stats(groups);
     crate::perf_profile::record_fmp_send_groups(group_count, packets, single_groups);
 }

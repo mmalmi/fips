@@ -24,7 +24,7 @@ impl FmpWorkerBatchStats {
         self.priority_packets.saturating_add(self.bulk_packets)
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg(test)]
     fn from_batch(batch: &[QueuedFmpSendJob]) -> Self {
         let mut stats = Self::default();
         for job in batch {

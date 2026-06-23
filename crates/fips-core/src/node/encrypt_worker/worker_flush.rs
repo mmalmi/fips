@@ -277,16 +277,12 @@ fn run_linux_wg_batch_worker(idx: usize, rx: Receiver<LinuxWgEncryptBatch>, max_
             continue;
         }
 
-        let stats = FmpWorkerBatchStats::from_batch(&batch.jobs);
-        crate::perf_profile::record_fmp_worker_batch(
-            packet_count,
-            stats.priority_packets,
-            stats.bulk_packets,
-            max_batch,
-        );
+        if crate::perf_profile::enabled() {
+            crate::perf_profile::record_fmp_worker_batch(packet_count, 0, packet_count, max_batch);
+        }
 
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
-        let groups = seal_linux_queued_batch_to_send_groups(&mut batch.jobs);
+        let groups = seal_linux_wg_batch_to_send_groups(&mut batch.jobs, batch.target_key);
         drop(_t);
         batch.ready.complete(groups);
     }
@@ -437,22 +433,26 @@ fn flush_linux_deferred_send_groups(groups: Vec<SelectedSendBatch>) {
 }
 
 #[cfg(target_os = "linux")]
-fn seal_linux_queued_batch_to_send_groups(
-    batch: &mut Vec<QueuedFmpSendJob>,
+fn seal_linux_wg_batch_to_send_groups(
+    batch: &mut Vec<FmpSendJob>,
+    target_key: SendTargetKey,
 ) -> Vec<SelectedSendBatch> {
     let group_packet_capacity = batch.len();
     let mut groups = Vec::with_capacity(1);
 
-    for queued in batch.drain(..) {
-        let Ok(sealed) = SealedSendPacket::from_queued(queued) else {
+    for job in batch.drain(..) {
+        debug_assert!(job.bulk_endpoint_data);
+        debug_assert_eq!(job.send_target_key(), target_key);
+        let Ok(sealed) = SealedSendPacket::from_job_with_target_key(job, target_key) else {
             continue;
         };
-        let (send_target, target_key, lane, wire_packet, drop_on_backpressure) =
+        let (send_target, sealed_target_key, lane, wire_packet, drop_on_backpressure) =
             sealed.into_parts();
+        debug_assert_eq!(sealed_target_key, target_key);
         push_selected_send_batch_with_lane_and_capacity(
             &mut groups,
             send_target,
-            target_key,
+            sealed_target_key,
             lane,
             wire_packet,
             drop_on_backpressure,

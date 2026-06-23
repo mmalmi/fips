@@ -493,7 +493,7 @@ impl EncryptWorkerPool {
         let mut chunk = Vec::with_capacity(chunk_size);
 
         for job in jobs {
-            chunk.push(QueuedFmpSendJob::direct(job));
+            chunk.push(job);
             if chunk.len() >= chunk_size {
                 self.dispatch_linux_wg_chunk(Arc::clone(&flow), std::mem::take(&mut chunk));
                 chunk = Vec::with_capacity(chunk_size);
@@ -523,7 +523,7 @@ impl EncryptWorkerPool {
         let mut all_enqueued = true;
 
         for job in jobs {
-            chunk.push(QueuedFmpSendJob::direct(job));
+            chunk.push(job);
             if chunk.len() >= chunk_size {
                 all_enqueued &= self
                     .dispatch_linux_wg_chunk_blocking(Arc::clone(&flow), std::mem::take(&mut chunk));
@@ -541,11 +541,16 @@ impl EncryptWorkerPool {
     fn dispatch_linux_wg_chunk(
         &self,
         flow: Arc<LinuxWgBatchSendFlow>,
-        jobs: Vec<QueuedFmpSendJob>,
+        jobs: Vec<FmpSendJob>,
     ) {
         if jobs.is_empty() {
             return;
         }
+        let target_key = jobs[0].send_target_key();
+        debug_assert!(
+            jobs.iter()
+                .all(|job| job.bulk_endpoint_data && job.send_target_key() == target_key)
+        );
         crate::perf_profile::record_linux_wg_batch_chunk(
             jobs.len(),
             DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE,
@@ -554,7 +559,7 @@ impl EncryptWorkerPool {
         let ready = Arc::new(LinuxWgSendBatch::default());
         if flow.try_enqueue(Arc::clone(&ready)).is_err() {
             crate::perf_profile::record_linux_wg_batch_flow_queue_full(jobs.len());
-            self.drop_linux_wg_jobs(0, &jobs);
+            self.drop_linux_wg_jobs(0, jobs.len());
             return;
         }
 
@@ -562,16 +567,25 @@ impl EncryptWorkerPool {
             .next_wg_batch_worker
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % self.linux_wg_batch_senders.len();
-        for job in &jobs {
-            crate::perf_profile::record_fmp_worker_dispatch_target(idx, job.endpoint_flow_keyed());
+        if crate::perf_profile::enabled() {
+            for job in &jobs {
+                crate::perf_profile::record_fmp_worker_dispatch_target(
+                    idx,
+                    job.endpoint_flow_dispatch_key.is_some(),
+                );
+            }
         }
 
-        let batch = LinuxWgEncryptBatch { ready, jobs };
+        let batch = LinuxWgEncryptBatch {
+            ready,
+            target_key,
+            jobs,
+        };
         match self.linux_wg_batch_senders[idx].try_send(batch) {
             Ok(()) => {}
             Err(TrySendError::Full(batch)) | Err(TrySendError::Disconnected(batch)) => {
                 crate::perf_profile::record_linux_wg_batch_worker_queue_full(batch.jobs.len());
-                self.drop_linux_wg_jobs(idx, &batch.jobs);
+                self.drop_linux_wg_jobs(idx, batch.jobs.len());
                 batch.ready.complete(Vec::new());
             }
         }
@@ -581,11 +595,16 @@ impl EncryptWorkerPool {
     fn dispatch_linux_wg_chunk_blocking(
         &self,
         flow: Arc<LinuxWgBatchSendFlow>,
-        jobs: Vec<QueuedFmpSendJob>,
+        jobs: Vec<FmpSendJob>,
     ) -> bool {
         if jobs.is_empty() {
             return true;
         }
+        let target_key = jobs[0].send_target_key();
+        debug_assert!(
+            jobs.iter()
+                .all(|job| job.bulk_endpoint_data && job.send_target_key() == target_key)
+        );
         crate::perf_profile::record_linux_wg_batch_chunk(
             jobs.len(),
             DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE,
@@ -594,7 +613,7 @@ impl EncryptWorkerPool {
         let ready = Arc::new(LinuxWgSendBatch::default());
         if !flow.enqueue_blocking(Arc::clone(&ready)) {
             crate::perf_profile::record_linux_wg_batch_flow_queue_full(jobs.len());
-            self.drop_linux_wg_jobs(0, &jobs);
+            self.drop_linux_wg_jobs(0, jobs.len());
             return false;
         }
 
@@ -602,16 +621,25 @@ impl EncryptWorkerPool {
             .next_wg_batch_worker
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % self.linux_wg_batch_senders.len();
-        for job in &jobs {
-            crate::perf_profile::record_fmp_worker_dispatch_target(idx, job.endpoint_flow_keyed());
+        if crate::perf_profile::enabled() {
+            for job in &jobs {
+                crate::perf_profile::record_fmp_worker_dispatch_target(
+                    idx,
+                    job.endpoint_flow_dispatch_key.is_some(),
+                );
+            }
         }
 
-        let batch = LinuxWgEncryptBatch { ready, jobs };
+        let batch = LinuxWgEncryptBatch {
+            ready,
+            target_key,
+            jobs,
+        };
         match self.linux_wg_batch_senders[idx].send(batch) {
             Ok(()) => true,
             Err(SendError(batch)) => {
                 crate::perf_profile::record_linux_wg_batch_worker_queue_full(batch.jobs.len());
-                self.drop_linux_wg_jobs(idx, &batch.jobs);
+                self.drop_linux_wg_jobs(idx, batch.jobs.len());
                 batch.ready.complete(Vec::new());
                 false
             }
@@ -619,9 +647,9 @@ impl EncryptWorkerPool {
     }
 
     #[cfg(target_os = "linux")]
-    fn drop_linux_wg_jobs(&self, idx: usize, jobs: &[QueuedFmpSendJob]) {
-        for job in jobs {
-            record_encrypt_worker_queue_full(job.queue_lane());
+    fn drop_linux_wg_jobs(&self, idx: usize, packets: usize) {
+        for _ in 0..packets {
+            record_encrypt_worker_queue_full(EncryptWorkerLane::Bulk);
             record_encrypt_worker_backpressure_drop(idx);
         }
     }
@@ -700,7 +728,8 @@ fn record_encrypt_worker_backpressure_drop(worker: usize) {
 #[cfg(target_os = "linux")]
 struct LinuxWgEncryptBatch {
     ready: Arc<LinuxWgSendBatch>,
-    jobs: Vec<QueuedFmpSendJob>,
+    target_key: SendTargetKey,
+    jobs: Vec<FmpSendJob>,
 }
 
 #[cfg(target_os = "linux")]
