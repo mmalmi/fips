@@ -141,7 +141,6 @@ impl PeerRecvDrain {
         let (priority_tx, priority_rx) = unbounded();
         let (bulk_tx, bulk_rx) = bounded(CONNECTED_UDP_DRAIN_BULK_RING_PACKETS);
 
-        let dispatch_stop = stop.clone();
         let dispatch_packet_tx = packet_tx.clone();
         let dispatch_thread = std::thread::Builder::new()
             .name(format!("fips-peer-dispatch-{}", socket.peer_addr()))
@@ -153,7 +152,6 @@ impl PeerRecvDrain {
                     fast_path,
                     priority_rx,
                     bulk_rx,
-                    dispatch_stop,
                 );
             });
         let dispatch_join = match dispatch_thread {
@@ -413,7 +411,6 @@ fn dispatch_loop(
     fast_path: Option<Arc<dyn ConnectedUdpPacketFastPath>>,
     priority_rx: Receiver<ConnectedUdpDrainPacket>,
     bulk_rx: Receiver<ConnectedUdpDrainPacket>,
-    stop: Arc<AtomicBool>,
 ) {
     let packet_addr = TransportAddr::from_socket_addr(peer_addr);
     let mut fast_path_batcher = fast_path.as_ref().map(|fast_path| fast_path.batcher());
@@ -463,10 +460,6 @@ fn dispatch_loop(
             &mut priority_open,
             &mut bulk_open,
         ) {
-            break;
-        }
-
-        if stop.load(Ordering::Acquire) && !priority_open && !bulk_open {
             break;
         }
     }
