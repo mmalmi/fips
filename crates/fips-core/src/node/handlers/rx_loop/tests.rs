@@ -1,7 +1,7 @@
 use super::budget::{
-    CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, NON_PACKET_DRAIN_BUDGET,
-    PACKET_DRAIN_BUDGET, RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+    CONTROL_QUERY_INTERLEAVE_BUDGET, DECRYPT_RETURN_INTERLEAVE_BUDGET,
+    DECRYPT_RETURN_INTERLEAVE_EVERY, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
     RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT, RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
     authenticated_bulk_preempts_packet_rx, non_packet_drain_budget,
 };
@@ -60,20 +60,20 @@ fn non_packet_drain_budget_caps_large_packet_turns() {
 }
 
 #[test]
-fn fallback_drain_constants_stay_bounded_under_return_pressure() {
+fn decrypt_return_drain_constants_stay_bounded_under_return_pressure() {
     assert!(
-        FALLBACK_INTERLEAVE_BUDGET <= NON_PACKET_DRAIN_BUDGET,
-        "fallback returns should keep a bounded normal turn even when bulk is backlogged"
+        DECRYPT_RETURN_INTERLEAVE_BUDGET <= NON_PACKET_DRAIN_BUDGET,
+        "worker returns should keep a bounded normal turn even when bulk is backlogged"
     );
     assert!(
         NON_PACKET_DRAIN_BUDGET <= 16
-            && FALLBACK_INTERLEAVE_BUDGET <= 16
+            && DECRYPT_RETURN_INTERLEAVE_BUDGET <= 16
             && super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET <= 16,
         "non-packet turns must stay short so fresh transport priority is not held behind bulk work"
     );
     assert!(
-        FALLBACK_INTERLEAVE_EVERY > 0,
-        "fallback interleaves must remain enabled inside hot packet drains"
+        DECRYPT_RETURN_INTERLEAVE_EVERY > 0,
+        "decrypt return interleaves must remain enabled inside hot packet drains"
     );
 }
 
@@ -507,26 +507,26 @@ async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
 }
 
 #[tokio::test]
-async fn fallback_drain_prefers_ready_priority_over_selected_bulk() {
+async fn decrypt_return_drain_prefers_ready_priority_over_selected_bulk() {
     let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
     let (_authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
     let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
 
-    priority_tx.send("priority-fallback").await.unwrap();
-    bulk_tx.send("queued-bulk-fallback").await.unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, None, Some("selected-bulk-fallback"), 4);
+    priority_tx.send("priority-return").await.unwrap();
+    bulk_tx.send("queued-bulk-return").await.unwrap();
+    let mut drain = DecryptReturnDrainCursor::new(None, None, Some("selected-bulk-return"), 4);
 
     assert_eq!(
         drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("priority-fallback")
+        Some("priority-return")
     );
     assert_eq!(
         drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("selected-bulk-fallback")
+        Some("selected-bulk-return")
     );
     assert_eq!(
         drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-bulk-fallback")
+        Some("queued-bulk-return")
     );
     assert_eq!(
         drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
@@ -734,7 +734,7 @@ async fn packet_drain_cursor_owns_first_packet_budget_and_interleave() {
     );
     assert_eq!(
         drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
+        Some(PacketDrainAction::InterleaveDecryptReturn)
     );
     assert_eq!(drain.next(&mut packet_rx), None);
     assert_eq!(packet_rx.try_recv().ok(), Some("queued-2"));
@@ -759,7 +759,7 @@ async fn packet_drain_cursor_charges_interleaves_against_budget() {
     );
     assert_eq!(
         drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
+        Some(PacketDrainAction::InterleaveDecryptReturn)
     );
     assert_eq!(
         drain.next(&mut packet_rx),
@@ -784,7 +784,7 @@ async fn packet_drain_cursor_refunds_empty_interleave_turns() {
     );
     assert_eq!(
         drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
+        Some(PacketDrainAction::InterleaveDecryptReturn)
     );
     drain.refund_empty_interleave_turn();
     assert_eq!(
@@ -793,7 +793,7 @@ async fn packet_drain_cursor_refunds_empty_interleave_turns() {
     );
     assert_eq!(
         drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
+        Some(PacketDrainAction::InterleaveDecryptReturn)
     );
     drain.refund_empty_interleave_turn();
     assert_eq!(
@@ -805,7 +805,7 @@ async fn packet_drain_cursor_refunds_empty_interleave_turns() {
 }
 
 #[tokio::test]
-async fn packet_drain_cursor_interleaves_side_queues_after_fallback() {
+async fn packet_drain_cursor_interleaves_side_queues_after_decrypt_return() {
     let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
 
     packet_tx.send("queued-1").unwrap();
@@ -823,7 +823,7 @@ async fn packet_drain_cursor_interleaves_side_queues_after_fallback() {
     );
     assert_eq!(
         drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
+        Some(PacketDrainAction::InterleaveDecryptReturn)
     );
     assert_eq!(
         drain.next(&mut packet_rx),

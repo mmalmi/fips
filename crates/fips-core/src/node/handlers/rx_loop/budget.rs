@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-/// How often the raw-packet drain loop yields a slice of work to the
-/// decrypt-fallback drain. Keeps TCP ACK / heartbeat / handshake
-/// progress steady under sustained inbound bursts.
-pub(super) const FALLBACK_INTERLEAVE_EVERY: usize = 32;
-/// Cap on the per-interleave fallback drain so a hot inbound spike
-/// can't starve the outer raw-packet drain in the opposite direction.
-pub(super) const FALLBACK_INTERLEAVE_BUDGET: usize = 16;
+/// How often the raw-packet drain loop yields a slice of work to the decrypt
+/// worker return drain. Keeps TCP ACK / heartbeat / handshake progress steady
+/// under sustained inbound bursts.
+pub(super) const DECRYPT_RETURN_INTERLEAVE_EVERY: usize = 32;
+/// Cap on the per-interleave decrypt return drain so a hot inbound spike can't
+/// starve the outer raw-packet drain in the opposite direction.
+pub(super) const DECRYPT_RETURN_INTERLEAVE_BUDGET: usize = 16;
 /// How often a hot inbound packet drain gives outbound side queues a bounded
 /// turn. This keeps TUN egress and endpoint control sends moving when
 /// `packet_rx` remains ready for many consecutive biased select iterations.
@@ -26,13 +26,13 @@ pub(super) const CONTROL_QUERY_INTERLEAVE_BUDGET: usize = 4;
 pub(super) const ENDPOINT_COMMAND_COALESCE_MAX_PACKETS: usize = 256;
 /// Top-level non-packet queues get shorter turns than raw packet receive.
 /// Returning to the biased select loop after a small slice lets ready
-/// `packet_rx` preempt bulk fallback, TUN egress, and endpoint command work
-/// without adding a second packet-drain path inside those handlers.
+/// `packet_rx` preempt bulk worker returns, TUN egress, and endpoint command
+/// work without adding a second packet-drain path inside those handlers.
 pub(super) const NON_PACKET_DRAIN_BUDGET: usize = 16;
 /// Raw receive burst cap. This amortizes select/scheduler hops across a hot
-/// transport queue; fallback/side interleaves reserve progress throughout the
-/// turn, so widening the canonical turn reduces channel residence without
-/// adding a second receive path.
+/// transport queue; decrypt-return/side interleaves reserve progress
+/// throughout the turn, so widening the canonical turn reduces channel
+/// residence without adding a second receive path.
 pub(super) const PACKET_DRAIN_BUDGET: usize = 1024;
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);

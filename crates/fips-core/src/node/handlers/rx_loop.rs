@@ -101,9 +101,9 @@ impl Node {
                 }
             };
 
-        // Take the decrypt worker fallback receiver if a worker pool
-        // is in use. The worker pushes non-fast-path packets (anything
-        // that's not bulk EndpointData) here for the legacy dispatch.
+        // Take the decrypt worker return receiver. Workers keep protocol
+        // state on their owner threads, then return ordered outputs here for
+        // canonical rx-loop delivery, failure handling, or plaintext parsing.
         let (mut decrypt_fallback_rx, _decrypt_fallback_guard) =
             match self.decrypt_fallback_rx.take() {
                 Some(rx) => (rx, None),
@@ -155,16 +155,16 @@ impl Node {
         loop {
             tokio::select! {
                 biased;
-                // Priority decrypt-worker fallback drains first. The
+                // Priority decrypt-worker returns drain first. The
                 // previous packet-first ordering could hold small ACK,
                 // heartbeat, and failure-report plaintexts behind a hot
                 // raw-packet drain long enough to collapse TCP. Bulk
-                // fallback is intentionally below `packet_rx`: bulk
+                // returns are intentionally below `packet_rx`: bulk
                 // plaintext must keep making bounded progress, but it
                 // should not stop fresh transport priority packets from
-                // being dequeued. `drain_packet_rx` interleaves fallback
+                // being dequeued. `drain_packet_rx` interleaves return
                 // turns every few dozen packets to keep that progress
-                // reserve while avoiding a bulk-fallback convoy.
+                // reserve while avoiding a bulk-return convoy.
                 Some(event) = decrypt_fallback_rx.priority.recv() => {
                     let fallback_drained = self.drain_decrypt_priority_fallback(
                         &mut decrypt_fallback_rx.priority,
@@ -185,7 +185,7 @@ impl Node {
                 }
                 // Timer-driven liveness is a reserved-progress branch. It
                 // performs bounded pre/post data drains and timeboxes slow
-                // discovery/status work, so hot packet or bulk-fallback
+                // discovery/status work, so hot packet or bulk-return
                 // queues cannot indefinitely postpone heartbeat, rekey, MMP,
                 // route aging, or path maintenance.
                 _ = tick.tick() => {
@@ -451,7 +451,7 @@ impl Node {
         let mut drain = PacketDrainCursor::new(
             first_packet,
             budget,
-            FALLBACK_INTERLEAVE_EVERY,
+            DECRYPT_RETURN_INTERLEAVE_EVERY,
             side_queue_interleave_every,
         );
         let mut decrypt_jobs = DecryptJobBatcher::new();
@@ -472,7 +472,7 @@ impl Node {
                         }
                     }
                 }
-                PacketDrainAction::InterleaveFallback => {
+                PacketDrainAction::InterleaveDecryptReturn => {
                     self.flush_decrypt_job_batcher(&mut decrypt_jobs);
                     let drained = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
                         self.drain_decrypt_fallback(
@@ -480,7 +480,7 @@ impl Node {
                             None,
                             None,
                             None,
-                            FALLBACK_INTERLEAVE_BUDGET,
+                            DECRYPT_RETURN_INTERLEAVE_BUDGET,
                         )
                         .await
                     } else {
@@ -519,9 +519,9 @@ impl Node {
         self.flush_decrypt_job_batcher(&mut decrypt_jobs);
         let drained = drain.drained();
         if drained > 0 {
-            // One trailing fallback slice so the last bounced packets of the
+            // One trailing worker-return slice so the last bounced packets of the
             // burst aren't held up by the post-burst send flush. Keep it a
-            // non-packet turn: bulk fallback should not convoy ahead of fresh
+            // non-packet turn: bulk returns should not convoy ahead of fresh
             // transport receive work after every hot packet drain.
             self.drain_decrypt_fallback(
                 decrypt_fallback_rx,
@@ -786,7 +786,7 @@ impl Node {
         self.record_stats_history();
     }
 
-    /// Hand a decrypt-worker fallback to the canonical post-FMP-decrypt
+    /// Hand a decrypt-worker plaintext return to the canonical post-FMP-decrypt
     /// processor as one authenticated receive envelope. The envelope keeps the
     /// worker-captured source peer, FMP flags, packet facts, and plaintext slice
     /// together so peer bookkeeping and link dispatch cannot drift apart.
@@ -861,10 +861,10 @@ impl Node {
         self.handle_decrypt_failure_report(&report).await;
     }
 
-    /// Drain only the priority decrypt-worker fallback lane.
+    /// Drain only the priority decrypt-worker return lane.
     ///
     /// This is the top-level reserved-progress arm: priority plaintext and
-    /// decrypt failures get first service, but bulk fallback stays behind
+    /// decrypt failures get first service, but bulk returns stay behind
     /// `packet_rx` unless it is explicitly interleaved inside a packet drain
     /// or selected by its own lower-priority branch.
     async fn drain_decrypt_priority_fallback(
@@ -883,9 +883,9 @@ impl Node {
         drained
     }
 
-    /// Drain up to `budget` queued fallbacks without yielding back to
+    /// Drain up to `budget` queued worker returns without yielding back to
     /// `select!`. Returns the number processed. Called both from the
-    /// bulk-fallback select arm (after the selected head item) and interleaved
+    /// bulk-return select arm (after the selected head item) and interleaved
     /// inside the packet_rx drain loop so bounced FMP plaintexts can't
     /// accumulate behind a hot inbound packet turn.
     async fn drain_decrypt_fallback(

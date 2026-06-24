@@ -28,7 +28,7 @@ pub(super) enum PacketProcessAction {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum PacketDrainAction<T> {
     Packet(T),
-    InterleaveFallback,
+    InterleaveDecryptReturn,
     InterleaveSideQueues,
 }
 
@@ -271,9 +271,9 @@ pub(super) struct PacketDrainCursor<T> {
     first_packet: Option<T>,
     remaining: usize,
     drained: usize,
-    fallback_interleave_every: usize,
+    decrypt_return_interleave_every: usize,
     side_queue_interleave_every: usize,
-    packets_until_fallback_interleave: usize,
+    packets_until_decrypt_return_interleave: usize,
     packets_until_side_queue_interleave: usize,
 }
 
@@ -281,16 +281,16 @@ impl<T> PacketDrainCursor<T> {
     pub(super) fn new(
         first_packet: Option<T>,
         budget: usize,
-        fallback_interleave_every: usize,
+        decrypt_return_interleave_every: usize,
         side_queue_interleave_every: usize,
     ) -> Self {
         Self {
             first_packet,
             remaining: budget,
             drained: 0,
-            fallback_interleave_every,
+            decrypt_return_interleave_every,
             side_queue_interleave_every,
-            packets_until_fallback_interleave: fallback_interleave_every,
+            packets_until_decrypt_return_interleave: decrypt_return_interleave_every,
             packets_until_side_queue_interleave: side_queue_interleave_every,
         }
     }
@@ -303,10 +303,10 @@ impl<T> PacketDrainCursor<T> {
             return None;
         }
 
-        if self.fallback_interleave_due() {
-            self.packets_until_fallback_interleave = self.fallback_interleave_every;
+        if self.decrypt_return_interleave_due() {
+            self.packets_until_decrypt_return_interleave = self.decrypt_return_interleave_every;
             self.charge_interleave_turn();
-            return Some(PacketDrainAction::InterleaveFallback);
+            return Some(PacketDrainAction::InterleaveDecryptReturn);
         }
 
         if self.side_queue_interleave_due() {
@@ -327,10 +327,10 @@ impl<T> PacketDrainCursor<T> {
         self.drained
     }
 
-    fn fallback_interleave_due(&self) -> bool {
+    fn decrypt_return_interleave_due(&self) -> bool {
         self.drained > 0
-            && self.fallback_interleave_every > 0
-            && self.packets_until_fallback_interleave == 0
+            && self.decrypt_return_interleave_every > 0
+            && self.packets_until_decrypt_return_interleave == 0
     }
 
     fn side_queue_interleave_due(&self) -> bool {
@@ -342,8 +342,8 @@ impl<T> PacketDrainCursor<T> {
     fn charge_packet(&mut self) {
         self.remaining -= 1;
         self.drained += 1;
-        if self.packets_until_fallback_interleave > 0 {
-            self.packets_until_fallback_interleave -= 1;
+        if self.packets_until_decrypt_return_interleave > 0 {
+            self.packets_until_decrypt_return_interleave -= 1;
         }
         if self.packets_until_side_queue_interleave > 0 {
             self.packets_until_side_queue_interleave -= 1;
