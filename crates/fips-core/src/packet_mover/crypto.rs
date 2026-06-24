@@ -12,15 +12,16 @@ pub(crate) struct CryptoWork<W> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CryptoCompletion<W> {
+pub(crate) struct CryptoCompletion<W, R = ()> {
     pub(crate) ticket: CryptoTicket,
-    pub(crate) result: CryptoResult<W>,
+    pub(crate) result: CryptoResult<W, R>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CryptoResult<W> {
+pub(crate) enum CryptoResult<W, R = ()> {
     Opened(W),
     Rejected(CryptoReject),
+    RejectedWith { reject: CryptoReject, value: R },
     Dropped,
 }
 
@@ -34,8 +35,12 @@ pub(crate) enum CryptoReject {
 
 pub(crate) trait StatelessCryptoWorker<W> {
     type Output;
+    type RejectOutput;
 
-    fn execute(&mut self, work: CryptoWork<W>) -> CryptoCompletion<Self::Output>;
+    fn execute(
+        &mut self,
+        work: CryptoWork<W>,
+    ) -> CryptoCompletion<Self::Output, Self::RejectOutput>;
 }
 
 pub(crate) trait OwnerOrderedCompletion {
@@ -111,8 +116,12 @@ pub(crate) struct NoopCryptoWorker;
 
 impl<W> StatelessCryptoWorker<W> for NoopCryptoWorker {
     type Output = W;
+    type RejectOutput = ();
 
-    fn execute(&mut self, work: CryptoWork<W>) -> CryptoCompletion<Self::Output> {
+    fn execute(
+        &mut self,
+        work: CryptoWork<W>,
+    ) -> CryptoCompletion<Self::Output, Self::RejectOutput> {
         CryptoCompletion {
             ticket: work.ticket,
             result: CryptoResult::Opened(work.work),
@@ -158,11 +167,12 @@ mod tests {
 
         impl StatelessCryptoWorker<&'static str> for LenWorker {
             type Output = usize;
+            type RejectOutput = ();
 
             fn execute(
                 &mut self,
                 work: CryptoWork<&'static str>,
-            ) -> CryptoCompletion<Self::Output> {
+            ) -> CryptoCompletion<Self::Output, Self::RejectOutput> {
                 CryptoCompletion {
                     ticket: work.ticket,
                     result: CryptoResult::Opened(work.work.len()),
@@ -190,6 +200,62 @@ mod tests {
 
         assert_eq!(completion.ticket.reservation, reservation);
         assert_eq!(completion.result, CryptoResult::Opened(6));
+    }
+
+    #[test]
+    fn stateless_worker_can_return_rejected_payload_for_owner_retire() {
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        struct RejectPayload {
+            bytes: usize,
+        }
+
+        struct RejectingWorker;
+
+        impl StatelessCryptoWorker<&'static [u8]> for RejectingWorker {
+            type Output = &'static [u8];
+            type RejectOutput = RejectPayload;
+
+            fn execute(
+                &mut self,
+                work: CryptoWork<&'static [u8]>,
+            ) -> CryptoCompletion<Self::Output, Self::RejectOutput> {
+                CryptoCompletion {
+                    ticket: work.ticket,
+                    result: CryptoResult::RejectedWith {
+                        reject: CryptoReject::Aead,
+                        value: RejectPayload {
+                            bytes: work.work.len(),
+                        },
+                    },
+                }
+            }
+        }
+
+        let reservation = OwnerReservation {
+            owner: OwnerKey::Fsp {
+                source_addr: NodeAddr::from_bytes([3; 16]),
+            },
+            generation: OwnerGeneration(11),
+            order: OrderToken {
+                receive_order_id: 6,
+                sequence: OrderSequence(9),
+            },
+            lane: PacketLane::Bulk,
+            packet_count: 1,
+        };
+        let completion = RejectingWorker.execute(CryptoWork {
+            ticket: CryptoTicket { reservation },
+            work: &[1, 2, 3],
+        });
+
+        assert_eq!(completion.ticket.reservation, reservation);
+        assert_eq!(
+            completion.result,
+            CryptoResult::RejectedWith {
+                reject: CryptoReject::Aead,
+                value: RejectPayload { bytes: 3 }
+            }
+        );
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]

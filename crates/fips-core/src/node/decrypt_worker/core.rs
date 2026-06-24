@@ -984,8 +984,12 @@ struct FmpAeadOpener;
 
 impl StatelessCryptoWorker<FmpAeadOpenWork> for FmpAeadOpener {
     type Output = FmpAeadOpened;
+    type RejectOutput = ();
 
-    fn execute(&mut self, work: CryptoWork<FmpAeadOpenWork>) -> CryptoCompletion<Self::Output> {
+    fn execute(
+        &mut self,
+        work: CryptoWork<FmpAeadOpenWork>,
+    ) -> CryptoCompletion<Self::Output, Self::RejectOutput> {
         let ticket = work.ticket;
         let result = match work.work.open() {
             Ok(opened) => CryptoResult::Opened(opened),
@@ -1113,6 +1117,110 @@ impl FspAeadOpenScratch {
     }
 }
 
+struct FspAeadOpenWork {
+    cipher: Arc<LessSafeKey>,
+    job: FspDecryptJob,
+    header: FspEncryptedHeader,
+    preserve_ciphertext_for_fallback: bool,
+}
+
+struct FspAeadOpenReject {
+    job: FspDecryptJob,
+    header: FspEncryptedHeader,
+    fallback_to_rx_loop: bool,
+    count_failure: bool,
+}
+
+struct FspAeadOpener<'a> {
+    scratch: &'a mut FspAeadOpenScratch,
+}
+
+impl<'a> FspAeadOpener<'a> {
+    fn new(scratch: &'a mut FspAeadOpenScratch) -> Self {
+        Self { scratch }
+    }
+}
+
+impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener<'_> {
+    type Output = FspOpenedJob;
+    type RejectOutput = FspAeadOpenReject;
+
+    fn execute(
+        &mut self,
+        work: CryptoWork<FspAeadOpenWork>,
+    ) -> CryptoCompletion<Self::Output, Self::RejectOutput> {
+        let ticket = work.ticket;
+        let FspAeadOpenWork {
+            cipher,
+            mut job,
+            header,
+            preserve_ciphertext_for_fallback,
+        } = work.work;
+        let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
+        let ciphertext_offset = job.fsp_payload_offset + FSP_HEADER_SIZE;
+        let Some(ciphertext) = job
+            .fallback
+            .packet_data
+            .get_mut(ciphertext_offset..payload_end)
+        else {
+            return CryptoCompletion {
+                ticket,
+                result: CryptoResult::RejectedWith {
+                    reject: CryptoReject::Malformed,
+                    value: FspAeadOpenReject {
+                        job,
+                        header,
+                        fallback_to_rx_loop: false,
+                        count_failure: true,
+                    },
+                },
+            };
+        };
+
+        let _t_fsp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&header.counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let open_result = if preserve_ciphertext_for_fallback {
+            let scratch_ciphertext = self.scratch.ciphertext_from(ciphertext);
+            cipher
+                .open_in_place(nonce, Aad::from(&header.header_bytes), scratch_ciphertext)
+                .map(|plaintext| {
+                    let plaintext_len = plaintext.len();
+                    ciphertext[..plaintext_len].copy_from_slice(plaintext);
+                    plaintext_len
+                })
+        } else {
+            cipher
+                .open_in_place(nonce, Aad::from(&header.header_bytes), ciphertext)
+                .map(|plaintext| plaintext.len())
+        };
+
+        match open_result {
+            Ok(plaintext_len) => CryptoCompletion {
+                ticket,
+                result: CryptoResult::Opened(FspOpenedJob {
+                    job,
+                    header,
+                    plaintext_len,
+                }),
+            },
+            Err(_) => CryptoCompletion {
+                ticket,
+                result: CryptoResult::RejectedWith {
+                    reject: CryptoReject::Aead,
+                    value: FspAeadOpenReject {
+                        job,
+                        header,
+                        fallback_to_rx_loop: preserve_ciphertext_for_fallback,
+                        count_failure: !preserve_ciphertext_for_fallback,
+                    },
+                },
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FspAeadCompletionSource {
     Local,
@@ -1161,6 +1269,33 @@ fn fmp_receive_ticket_from_reservation(reservation: OwnerReservation) -> FmpRece
 }
 
 impl FspAeadCompletion {
+    fn from_crypto_completion(
+        source: FspAeadCompletionSource,
+        crypto: CryptoCompletion<FspOpenedJob, FspAeadOpenReject>,
+        completed_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> Self {
+        let crypto_ticket = crypto.ticket;
+        let result = match crypto.result {
+            CryptoResult::Opened(opened) => FspOrderedCompletion::Opened { opened, source },
+            CryptoResult::RejectedWith { value, .. } => FspOrderedCompletion::AeadFailed {
+                job: value.job,
+                header: value.header,
+                source,
+                fallback_to_rx_loop: value.fallback_to_rx_loop,
+                count_failure: value.count_failure,
+            },
+            CryptoResult::Rejected(_) | CryptoResult::Dropped => FspOrderedCompletion::Dropped {
+                source,
+            },
+        };
+        Self {
+            crypto_ticket,
+            source,
+            result,
+            completed_at,
+        }
+    }
+
     fn owner_reservation(&self) -> OwnerReservation {
         self.crypto_ticket.reservation
     }
@@ -1297,7 +1432,7 @@ impl FspAeadOpenJob {
         self.into_completion_with_scratch(&mut scratch)
     }
 
-    fn into_completion_with_scratch(mut self, scratch: &mut FspAeadOpenScratch) -> FspAeadCompletion {
+    fn into_completion_with_scratch(self, scratch: &mut FspAeadOpenScratch) -> FspAeadCompletion {
         let source = self.completion_source;
         if source.is_worker_open() {
             crate::perf_profile::record_since_count(
@@ -1307,76 +1442,17 @@ impl FspAeadOpenJob {
             );
         }
         let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
-        let payload_end = self
-            .job
-            .fsp_payload_offset
-            .saturating_add(self.job.fsp_payload_len);
-        let ciphertext_offset = self.job.fsp_payload_offset + FSP_HEADER_SIZE;
-        let result = match self
-            .job
-            .fallback
-            .packet_data
-            .get_mut(ciphertext_offset..payload_end)
-        {
-            Some(ciphertext) => {
-                let _t_fsp =
-                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                let mut nonce_bytes = [0u8; 12];
-                nonce_bytes[4..12].copy_from_slice(&self.header.counter.to_le_bytes());
-                let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-                let preserve_ciphertext_for_fallback = source.is_worker_open();
-                let open_result = if preserve_ciphertext_for_fallback {
-                    let scratch_ciphertext = scratch.ciphertext_from(ciphertext);
-                    self.cipher
-                        .open_in_place(
-                            nonce,
-                            Aad::from(&self.header.header_bytes),
-                            scratch_ciphertext,
-                        )
-                        .map(|plaintext| {
-                            let plaintext_len = plaintext.len();
-                            ciphertext[..plaintext_len].copy_from_slice(plaintext);
-                            plaintext_len
-                        })
-                } else {
-                    self.cipher
-                        .open_in_place(nonce, Aad::from(&self.header.header_bytes), ciphertext)
-                        .map(|plaintext| plaintext.len())
-                };
-                match open_result {
-                    Ok(plaintext_len) => {
-                        FspOrderedCompletion::Opened {
-                            opened: FspOpenedJob {
-                                job: self.job,
-                                header: self.header,
-                                plaintext_len,
-                            },
-                            source,
-                        }
-                    }
-                    Err(_) => FspOrderedCompletion::AeadFailed {
-                        job: self.job,
-                        header: self.header,
-                        source,
-                        fallback_to_rx_loop: preserve_ciphertext_for_fallback,
-                        count_failure: !preserve_ciphertext_for_fallback,
-                    },
-                }
-            }
-            None => FspOrderedCompletion::AeadFailed {
+        let crypto_work = CryptoWork {
+            ticket: self.crypto_ticket,
+            work: FspAeadOpenWork {
+                cipher: self.cipher,
                 job: self.job,
                 header: self.header,
-                source,
-                fallback_to_rx_loop: false,
-                count_failure: true,
+                preserve_ciphertext_for_fallback: source.is_worker_open(),
             },
         };
-        FspAeadCompletion {
-            crypto_ticket: self.crypto_ticket,
-            source,
-            result,
-            completed_at,
-        }
+        let mut opener = FspAeadOpener::new(scratch);
+        FspAeadCompletion::from_crypto_completion(source, opener.execute(crypto_work), completed_at)
     }
 
     fn into_dropped_completion(self) -> FspAeadCompletion {
@@ -1539,12 +1615,22 @@ impl OwnedSessionState {
                 opened,
                 replay_precheck,
             },
-            CryptoResult::Rejected(CryptoReject::Replay) | CryptoResult::Dropped => {
-                FmpOrderedCompletion::Dropped
+            CryptoResult::Rejected(CryptoReject::Replay)
+            | CryptoResult::RejectedWith {
+                reject: CryptoReject::Replay,
+                ..
             }
+            | CryptoResult::Dropped => FmpOrderedCompletion::Dropped,
             CryptoResult::Rejected(
                 CryptoReject::Aead | CryptoReject::Malformed | CryptoReject::StaleGeneration,
-            ) => FmpOrderedCompletion::AeadFailed {
+            )
+            | CryptoResult::RejectedWith {
+                reject:
+                    CryptoReject::Aead
+                    | CryptoReject::Malformed
+                    | CryptoReject::StaleGeneration,
+                ..
+            } => FmpOrderedCompletion::AeadFailed {
                 fmp_counter: replay_precheck.counter,
                 fmp_replay_highest: replay_precheck.replay_highest,
             },

@@ -85,11 +85,13 @@ impl<P> OrderedRetireBuffer<P> {
         let sequence = reservation.order.sequence.0;
         let output = match completion.result {
             CryptoResult::Opened(packet) => RetireOutput::Payload { target, packet },
-            CryptoResult::Rejected(reject) => RetireOutput::Drop(OutputDrop {
-                reason: output_drop_reason_for_reject(reject),
-                packet_count: reservation.packet_count,
-                byte_count: 0,
-            }),
+            CryptoResult::Rejected(reject) | CryptoResult::RejectedWith { reject, .. } => {
+                RetireOutput::Drop(OutputDrop {
+                    reason: output_drop_reason_for_reject(reject),
+                    packet_count: reservation.packet_count,
+                    byte_count: 0,
+                })
+            }
             CryptoResult::Dropped => RetireOutput::Drop(OutputDrop {
                 reason: OutputDropReason::RetirePressure,
                 packet_count: reservation.packet_count,
