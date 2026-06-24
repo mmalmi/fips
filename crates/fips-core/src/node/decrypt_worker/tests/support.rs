@@ -888,9 +888,9 @@
         }
         assert!(return_batch.fallbacks.is_empty());
         assert!(return_batch.authenticated_sessions.is_empty());
-        assert!(return_batch.direct_commits.is_empty());
+        assert!(return_batch.direct_outputs.is_empty());
         assert!(return_batch.direct_data.is_empty());
-        assert!(return_batch.endpoint_commits.is_empty());
+        assert!(return_batch.endpoint_outputs.is_empty());
     }
 
     #[test]

@@ -1226,9 +1226,9 @@
         assert!(return_rx.authenticated_bulk.try_recv().is_err());
         assert!(return_batch.fallbacks.is_empty());
         assert!(return_batch.authenticated_sessions.is_empty());
-        assert!(return_batch.direct_commits.is_empty());
+        assert!(return_batch.direct_outputs.is_empty());
         assert!(return_batch.direct_data.is_empty());
-        assert!(return_batch.endpoint_commits.is_empty());
+        assert!(return_batch.endpoint_outputs.is_empty());
     }
 
     #[test]
@@ -2262,9 +2262,9 @@
         );
         assert!(return_batch.fallbacks.is_empty());
         assert!(return_batch.authenticated_sessions.is_empty());
-        assert!(return_batch.direct_commits.is_empty());
+        assert!(return_batch.direct_outputs.is_empty());
         assert!(return_batch.direct_data.is_empty());
-        assert!(return_batch.endpoint_commits.is_empty());
+        assert!(return_batch.endpoint_outputs.is_empty());
     }
 
     #[test]

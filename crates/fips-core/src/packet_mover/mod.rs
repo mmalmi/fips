@@ -56,8 +56,8 @@ pub(crate) use crypto::{
     NoopCryptoWorker, OwnerCompletionBatch, OwnerOrderedCompletion, StatelessCryptoWorker,
 };
 pub(crate) use output::{
-    OutputDrop, OutputDropReason, OutputTarget, PacketOutput, PacketOutputTarget, RetireOutput,
-    RetiredPacket, VecOutputSink,
+    CommitBeforeOutputBatch, CommitBeforeOutputItems, OutputDrop, OutputDropReason, OutputTarget,
+    PacketOutput, PacketOutputTarget, RetireOutput, RetiredPacket, VecOutputSink,
 };
 pub(crate) use owner::{
     OrderSequence, OrderToken, OwnerCompletionError, OwnerGeneration, OwnerKey, OwnerReceiveTicket,
