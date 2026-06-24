@@ -5,20 +5,16 @@
     use std::time::Duration;
 
     #[test]
-    fn decrypt_worker_channel_cap_prefers_specific_then_shared_value() {
-        assert_eq!(parse_channel_cap(Some("4"), Some("8"), 1024), 4);
-        assert_eq!(parse_channel_cap(None, Some("8"), 1024), 8);
-        assert_eq!(parse_channel_cap(Some("bad"), Some("9"), 1024), 9);
-        assert_eq!(parse_channel_cap(Some("0"), None, 1024), 1);
-        assert_eq!(parse_channel_cap(Some("999999"), None, 1024), 1024);
+    fn decrypt_worker_channel_cap_is_explicit_and_bounded() {
+        assert_eq!(parse_channel_cap(Some("4"), 1024), 4);
+        assert_eq!(parse_channel_cap(None, 1024), 1024);
+        assert_eq!(parse_channel_cap(Some("bad"), 1024), 1024);
+        assert_eq!(parse_channel_cap(Some("0"), 1024), 1);
+        assert_eq!(parse_channel_cap(Some("999999"), 1024), 1024);
     }
 
     #[test]
-    fn decrypt_fallback_bulk_cap_ignores_shared_worker_cap() {
-        assert_eq!(
-            parse_channel_cap(None, Some("4"), DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP),
-            4
-        );
+    fn decrypt_fallback_bulk_cap_is_explicit() {
         assert_eq!(
             fallback_bulk_channel_cap_from_raw(None),
             DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP
