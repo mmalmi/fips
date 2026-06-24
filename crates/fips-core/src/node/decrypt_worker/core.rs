@@ -363,11 +363,6 @@ impl OwnedFspSessionState {
         self.fsp_receive_order.issue()
     }
 
-    fn issue_fsp_worker_open_ticket(&mut self) -> Option<FspReceiveTicket> {
-        self.fsp_receive_order
-            .issue_with_reserve(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
-    }
-
     fn issue_fsp_worker_open_ticket_batch(&mut self, count: usize) -> Option<u64> {
         self.fsp_receive_order
             .issue_batch_with_reserve(count, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
