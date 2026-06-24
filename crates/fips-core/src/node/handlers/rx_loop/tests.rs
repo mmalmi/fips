@@ -507,92 +507,86 @@ async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
 #[tokio::test]
 async fn decrypt_return_drain_prefers_ready_priority_over_selected_bulk() {
     let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (_authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+    let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
 
     priority_tx.send("priority-return").await.unwrap();
-    bulk_tx.send("queued-bulk-return").await.unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, None, Some("selected-bulk-return"), 4);
+    authenticated_bulk_tx
+        .send("queued-bulk-return")
+        .await
+        .unwrap();
+    let mut drain = DecryptReturnDrainCursor::new(None, Some("selected-bulk-return"), 4);
 
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         Some("priority-return")
     );
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         Some("selected-bulk-return")
     );
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         Some("queued-bulk-return")
     );
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         None
     );
     assert_eq!(drain.drained(), 3);
 }
 
 #[tokio::test]
-async fn decrypt_return_drain_prefers_authenticated_bulk_over_selected_fallback_bulk() {
+async fn decrypt_return_drain_uses_one_bulk_completion_lane() {
     let (_priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
     let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
 
     authenticated_bulk_tx
         .send("queued-authenticated-bulk")
         .await
         .unwrap();
-    bulk_tx.send("queued-fallback-bulk").await.unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, None, Some("selected-fallback-bulk"), 4);
+    let mut drain = DecryptReturnDrainCursor::new(None, Some("selected-bulk"), 4);
 
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
+        Some("selected-bulk")
+    );
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         Some("queued-authenticated-bulk")
     );
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("selected-fallback-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-fallback-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         None
     );
-    assert_eq!(drain.drained(), 3);
+    assert_eq!(drain.drained(), 2);
 }
 
 #[tokio::test]
 async fn decrypt_return_drain_prefers_priority_over_selected_authenticated_bulk() {
     let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
     let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (_bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
 
     priority_tx.send("queued-priority").await.unwrap();
     authenticated_bulk_tx
         .send("queued-authenticated-bulk")
         .await
         .unwrap();
-    let mut drain =
-        DecryptReturnDrainCursor::new(None, Some("selected-authenticated-bulk"), None, 4);
+    let mut drain = DecryptReturnDrainCursor::new(None, Some("selected-authenticated-bulk"), 4);
 
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         Some("queued-priority")
     );
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         Some("selected-authenticated-bulk")
     );
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         Some("queued-authenticated-bulk")
     );
     assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+        drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
         None
     );
     assert_eq!(drain.drained(), 3);

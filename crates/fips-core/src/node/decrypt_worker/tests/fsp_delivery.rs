@@ -1219,7 +1219,6 @@
         assert_eq!(state.fsp_receive_order_next_ready(), ticket.sequence + 1);
         assert_eq!(state.fsp_receive_order.next_ticket(), ticket.sequence + 1);
         assert!(return_rx.priority.try_recv().is_err());
-        assert!(return_rx.bulk.try_recv().is_err());
         assert!(return_rx.authenticated_bulk.try_recv().is_err());
         assert!(return_batch.authenticated_sessions.is_empty());
         assert!(return_batch.direct_outputs.is_empty());
@@ -1754,9 +1753,9 @@
         return_batch.flush();
 
         match return_rx
-            .bulk
+            .authenticated_bulk
             .try_recv()
-            .expect("bulk FSP failure report should be queued")
+            .expect("bulk FSP failure report should be queued on the completion lane")
         {
             DecryptWorkerEvent::FspDecryptFailure(report) => {
                 assert_eq!(report.source_addr, source_addr);
@@ -2565,8 +2564,7 @@
             .handle_job(second)
             .expect("second worker job should not fail");
         assert!(
-            return_rx.authenticated_bulk.try_recv().is_err()
-                && return_rx.bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "FSP replay must not bounce into rx-loop decrypt failure accounting"
         );
         assert_eq!(
@@ -2665,9 +2663,9 @@
 
         shard.handle_job(job).expect("worker job should not fail");
         let event = return_rx
-            .bulk
+            .authenticated_bulk
             .try_recv()
-            .expect("FSP AEAD failure should return a failure report");
+            .expect("FSP AEAD failure should return a completion-lane failure report");
         match event {
             DecryptWorkerEvent::FspDecryptFailure(report) => {
                 assert_eq!(report.fmp.source_peer, previous_hop_peer);
@@ -2787,7 +2785,7 @@
 
         shard.handle_job(job).expect("worker job should not fail");
         let event = return_rx
-            .bulk
+            .authenticated_bulk
             .try_recv()
             .expect("multi-epoch FSP AEAD failure should report owner failure");
         match event {

@@ -41,7 +41,7 @@ pub(super) struct RxLoopSideQueues<'a> {
 }
 
 pub(super) fn decrypt_return_has_ready(rx: &DecryptWorkerReturnReceivers) -> bool {
-    !rx.priority.is_empty() || !rx.authenticated_bulk.is_empty() || !rx.bulk.is_empty()
+    !rx.priority.is_empty() || !rx.authenticated_bulk.is_empty()
 }
 
 pub(super) fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
@@ -454,7 +454,6 @@ impl<T> PriorityBulkDrainCursor<T> {
 pub(super) struct DecryptReturnDrainCursor<T> {
     first_priority: Option<T>,
     first_authenticated_bulk: Option<T>,
-    first_bulk: Option<T>,
     remaining: usize,
     drained: usize,
 }
@@ -463,13 +462,11 @@ impl<T> DecryptReturnDrainCursor<T> {
     pub(super) fn new(
         first_priority: Option<T>,
         first_authenticated_bulk: Option<T>,
-        first_bulk: Option<T>,
         budget: usize,
     ) -> Self {
         Self {
             first_priority,
             first_authenticated_bulk,
-            first_bulk,
             remaining: budget,
             drained: 0,
         }
@@ -479,7 +476,6 @@ impl<T> DecryptReturnDrainCursor<T> {
         &mut self,
         priority_rx: &mut Receiver<T>,
         authenticated_bulk_rx: &mut Receiver<T>,
-        bulk_rx: &mut Receiver<T>,
     ) -> Option<T> {
         if self.remaining == 0 {
             return None;
@@ -493,8 +489,6 @@ impl<T> DecryptReturnDrainCursor<T> {
                 .ok()
                 .or_else(|| self.first_authenticated_bulk.take())
                 .or_else(|| authenticated_bulk_rx.try_recv().ok())
-                .or_else(|| self.first_bulk.take())
-                .or_else(|| bulk_rx.try_recv().ok())
         }?;
 
         self.remaining -= 1;

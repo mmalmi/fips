@@ -915,10 +915,6 @@
         );
         return_batch.flush();
 
-        assert!(
-            return_rx.bulk.try_recv().is_err(),
-            "missing FSP owner must not use the failure/fallback bulk lane"
-        );
         let event = return_rx
             .authenticated_bulk
             .try_recv()

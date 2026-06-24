@@ -1,17 +1,13 @@
 #[derive(Clone)]
 pub(crate) struct DecryptWorkerReturnSender {
     priority: TokioSender<DecryptWorkerEvent>,
-    bulk: TokioSender<DecryptWorkerEvent>,
     authenticated_bulk: TokioSender<DecryptWorkerEvent>,
-    bulk_credits: LaneCreditGate,
     authenticated_bulk_credits: LaneCreditGate,
 }
 
 pub(crate) struct DecryptWorkerReturnReceivers {
     pub(crate) priority: TokioReceiver<DecryptWorkerEvent>,
-    pub(crate) bulk: TokioReceiver<DecryptWorkerEvent>,
     pub(crate) authenticated_bulk: TokioReceiver<DecryptWorkerEvent>,
-    bulk_credits: LaneCreditGate,
     authenticated_bulk_credits: LaneCreditGate,
 }
 
@@ -28,24 +24,18 @@ fn decrypt_worker_return_channels_with_caps(
     bulk_cap: usize,
 ) -> (DecryptWorkerReturnSender, DecryptWorkerReturnReceivers) {
     let (priority_tx, priority_rx) = tokio::sync::mpsc::channel(priority_cap.max(1));
-    let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(bulk_cap.max(1));
     let (authenticated_bulk_tx, authenticated_bulk_rx) =
         tokio::sync::mpsc::channel(bulk_cap.max(1));
-    let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, bulk_cap);
     let authenticated_bulk_credits = LaneCreditGate::new(PacketLane::Bulk, bulk_cap);
     (
         DecryptWorkerReturnSender {
             priority: priority_tx,
-            bulk: bulk_tx,
             authenticated_bulk: authenticated_bulk_tx,
-            bulk_credits: bulk_credits.clone(),
             authenticated_bulk_credits: authenticated_bulk_credits.clone(),
         },
         DecryptWorkerReturnReceivers {
             priority: priority_rx,
-            bulk: bulk_rx,
             authenticated_bulk: authenticated_bulk_rx,
-            bulk_credits,
             authenticated_bulk_credits,
         },
     )
@@ -61,68 +51,44 @@ impl DecryptWorkerReturnSender {
         let lane = decrypt_worker_event_lane(&event);
         let packet_count = event.packet_count();
         let drop_event = decrypt_worker_event_drop_event(&event, lane);
-        let bulk_lane = if matches!(lane, DecryptWorkerLane::Bulk) {
-            Some(decrypt_worker_event_return_bulk_lane(&event))
-        } else {
-            None
-        };
         event.set_trace_enqueued_at(crate::perf_profile::stamp());
         let mut bulk_reservation = None;
-        if let Some(bulk_lane) = bulk_lane {
-            let credits = self.return_bulk_credits(bulk_lane);
-            let Ok((reservation, previous)) = credits.reserve_with_previous(packet_count, 0)
+        if matches!(lane, DecryptWorkerLane::Bulk) {
+            let Ok((reservation, previous)) = self
+                .authenticated_bulk_credits
+                .reserve_with_previous(packet_count, 0)
             else {
                 record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
                 return false;
             };
-            bulk_reservation = Some((bulk_lane, reservation));
+            bulk_reservation = Some(reservation);
             let queued = previous.saturating_add(packet_count);
             if previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
                 && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
             {
-                let event = match bulk_lane {
-                    DecryptWorkerReturnBulkLane::Failure => {
-                        crate::perf_profile::Event::DecryptFallbackBacklogHigh
-                    }
-                    DecryptWorkerReturnBulkLane::Authenticated => {
-                        crate::perf_profile::Event::DecryptAuthenticatedBacklogHigh
-                    }
-                };
-                crate::perf_profile::record_event(event);
+                crate::perf_profile::record_event(decrypt_worker_event_backlog_high_event(&event));
             }
         }
         let result = match lane {
             DecryptWorkerLane::Priority => self.priority.try_send(event),
-            DecryptWorkerLane::Bulk => match bulk_lane.expect("bulk event has return bulk lane") {
-                DecryptWorkerReturnBulkLane::Failure => self.bulk.try_send(event),
-                DecryptWorkerReturnBulkLane::Authenticated => {
-                    self.authenticated_bulk.try_send(event)
-                }
-            },
+            DecryptWorkerLane::Bulk => self.authenticated_bulk.try_send(event),
         };
         match result {
             Ok(()) => true,
             Err(TokioTrySendError::Full(_)) => {
-                if let Some((bulk_lane, reservation)) = bulk_reservation {
-                    self.return_bulk_credits(bulk_lane).release(reservation);
+                if let Some(reservation) = bulk_reservation {
+                    self.authenticated_bulk_credits.release(reservation);
                 }
                 record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
                 false
             }
             Err(TokioTrySendError::Closed(_)) => {
-                if let Some((bulk_lane, reservation)) = bulk_reservation {
-                    self.return_bulk_credits(bulk_lane).release(reservation);
+                if let Some(reservation) = bulk_reservation {
+                    self.authenticated_bulk_credits.release(reservation);
                 }
                 debug!(?lane, "decrypt return receiver gone; dropping worker event");
                 false
             }
-        }
-    }
-
-    fn return_bulk_credits(&self, lane: DecryptWorkerReturnBulkLane) -> &LaneCreditGate {
-        match lane {
-            DecryptWorkerReturnBulkLane::Failure => &self.bulk_credits,
-            DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_credits,
         }
     }
 }
@@ -130,32 +96,24 @@ impl DecryptWorkerReturnSender {
 impl DecryptWorkerReturnReceivers {
     pub(crate) fn release_dequeued_event(&self, event: &DecryptWorkerEvent) {
         if matches!(event.lane(), DecryptWorkerLane::Bulk) {
-            let credits = self.return_bulk_credits(decrypt_worker_event_return_bulk_lane(event));
-            credits.release_count(event.packet_count());
+            self.authenticated_bulk_credits
+                .release_count(event.packet_count());
         }
     }
 
     #[cfg(test)]
     pub(crate) fn bulk_queued_packets(&self) -> usize {
-        self.bulk_credits.queued_packets()
+        self.authenticated_bulk_queued_packets()
     }
 
     #[cfg(test)]
     pub(crate) fn bulk_pressure_queued_packets(&self) -> usize {
-        self.bulk_queued_packets()
-            .saturating_add(self.authenticated_bulk_queued_packets())
+        self.authenticated_bulk_queued_packets()
     }
 
     #[cfg(test)]
     pub(crate) fn authenticated_bulk_queued_packets(&self) -> usize {
         self.authenticated_bulk_credits.queued_packets()
-    }
-
-    fn return_bulk_credits(&self, lane: DecryptWorkerReturnBulkLane) -> &LaneCreditGate {
-        match lane {
-            DecryptWorkerReturnBulkLane::Failure => &self.bulk_credits,
-            DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_credits,
-        }
     }
 }
 
@@ -175,15 +133,9 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DecryptWorkerReturnBulkLane {
-    Failure,
-    Authenticated,
-}
-
-fn decrypt_worker_event_return_bulk_lane(
+fn decrypt_worker_event_backlog_high_event(
     event: &DecryptWorkerEvent,
-) -> DecryptWorkerReturnBulkLane {
+) -> crate::perf_profile::Event {
     match event {
         DecryptWorkerEvent::AuthenticatedLink(_)
         | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
@@ -194,10 +146,10 @@ fn decrypt_worker_event_return_bulk_lane(
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
         | DecryptWorkerEvent::DirectSessionData(_)
         | DecryptWorkerEvent::DirectSessionDataBatch(_) => {
-            DecryptWorkerReturnBulkLane::Authenticated
+            crate::perf_profile::Event::DecryptAuthenticatedBacklogHigh
         }
         DecryptWorkerEvent::FspDecryptFailure(_) | DecryptWorkerEvent::DecryptFailure(_) => {
-            DecryptWorkerReturnBulkLane::Failure
+            crate::perf_profile::Event::DecryptFallbackBacklogHigh
         }
     }
 }

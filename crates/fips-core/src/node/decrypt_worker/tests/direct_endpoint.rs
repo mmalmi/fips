@@ -126,10 +126,6 @@
             }
             event => panic!("expected endpoint data batch, got {event:?}"),
         }
-        assert!(
-            return_rx.bulk.try_recv().is_err(),
-            "direct endpoint commit batching should not use the fallback bulk lane"
-        );
     }
 
     #[test]
@@ -677,8 +673,8 @@
             "bulk job for unregistered session must not use stale state and emit AEAD failure"
         );
         assert!(
-            return_rx.bulk.is_empty(),
-            "bulk job for unregistered session must not produce plaintext"
+            return_rx.authenticated_bulk.is_empty(),
+            "bulk job for unregistered session must not produce a worker return"
         );
         assert!(
             control_rx.is_empty(),
@@ -1007,8 +1003,8 @@
             direct_delivery: None,
         });
         assert!(
-            return_rx.bulk.try_recv().is_err(),
-            "first bulk return should stay buffered below the fallback cap"
+            return_rx.authenticated_bulk.try_recv().is_err(),
+            "first bulk return should stay buffered below the bulk completion cap"
         );
 
         let bulk_job = dummy_fsp_job(bulk_len);
@@ -1055,7 +1051,7 @@
         assert_eq!(second.packet_count(), 1);
         return_rx.release_dequeued_event(&second);
         assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
+        assert_eq!(return_rx.bulk_pressure_queued_packets(), 0);
     }
 
     #[test]
@@ -1159,7 +1155,7 @@
         assert_eq!(second.packet_count(), 1);
         return_rx.release_dequeued_event(&second);
         assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
+        assert_eq!(return_rx.bulk_pressure_queued_packets(), 0);
     }
 
     #[test]

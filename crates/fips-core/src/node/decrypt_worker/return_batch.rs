@@ -27,7 +27,7 @@ impl DecryptWorkerReturnBatch {
 
     fn batch_max(&self) -> usize {
         self.return_tx
-            .bulk_credits
+            .authenticated_bulk_credits
             .capacity()
             .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX)
     }

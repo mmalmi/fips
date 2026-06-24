@@ -383,8 +383,8 @@
             "FSP owner pressure must not create a priority return"
         );
         assert!(
-            return_rx.bulk.try_recv().is_err(),
-            "FSP owner pressure must not create a bulk failure return"
+            return_rx.authenticated_bulk.try_recv().is_err(),
+            "FSP owner pressure must not create a bulk completion return"
         );
     }
 
@@ -424,8 +424,8 @@
         );
         assert_eq!(
             return_rx.bulk_queued_packets(),
-            0,
-            "opened-FMP link dispatch must not use plaintext fallback capacity"
+            1,
+            "opened-FMP link dispatch should reserve canonical bulk capacity"
         );
 
         let event = return_rx

@@ -253,7 +253,6 @@ impl Node {
                         &mut decrypt_return_rx,
                         None,
                         Some(event),
-                        None,
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if return_drained > 0 {
@@ -318,26 +317,6 @@ impl Node {
                         None => break, // channel closed
                     }
                 }
-                Some(event) = decrypt_return_rx.bulk.recv() => {
-                    let return_drained = self.drain_decrypt_return(
-                        &mut decrypt_return_rx,
-                        None,
-                        None,
-                        Some(event),
-                        NON_PACKET_DRAIN_BUDGET,
-                    ).await;
-                    let side_drained = self.drain_rx_loop_side_queues(
-                        &mut control_query_rx,
-                        &mut endpoint_bulk_feedback_rx,
-                        &mut tun_outbound_rx,
-                        &mut endpoint_priority_command_rx,
-                        &mut endpoint_command_rx,
-                        SIDE_QUEUE_INTERLEAVE_BUDGET,
-                    ).await;
-                    if return_drained > 0 || side_drained.has_data_drained() {
-                        maintenance_state.record_data_activity(Instant::now());
-                    }
-                }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     let drained = self.drain_tun_outbound(
                         &mut tun_outbound_rx,
@@ -397,7 +376,7 @@ impl Node {
             .await;
         let non_packet_budget = non_packet_drain_budget(budget);
         let drained_decrypt = if decrypt_return_has_ready(decrypt_return_rx) {
-            self.drain_decrypt_return(decrypt_return_rx, None, None, None, non_packet_budget)
+            self.drain_decrypt_return(decrypt_return_rx, None, None, non_packet_budget)
                 .await
         } else {
             0
@@ -478,7 +457,6 @@ impl Node {
                             decrypt_return_rx,
                             None,
                             None,
-                            None,
                             DECRYPT_RETURN_INTERLEAVE_BUDGET,
                         )
                         .await
@@ -524,7 +502,6 @@ impl Node {
             // transport receive work after every hot packet drain.
             self.drain_decrypt_return(
                 decrypt_return_rx,
-                None,
                 None,
                 None,
                 NON_PACKET_DRAIN_BUDGET.min(budget),
@@ -892,19 +869,15 @@ impl Node {
         rx: &mut DecryptWorkerReturnReceivers,
         first_priority_event: Option<DecryptWorkerEvent>,
         first_authenticated_bulk_event: Option<DecryptWorkerEvent>,
-        first_bulk_event: Option<DecryptWorkerEvent>,
         budget: usize,
     ) -> usize {
         self.begin_endpoint_event_batch();
         let mut drain = DecryptReturnDrainCursor::new(
             first_priority_event,
             first_authenticated_bulk_event,
-            first_bulk_event,
             budget,
         );
-        while let Some(event) =
-            drain.next(&mut rx.priority, &mut rx.authenticated_bulk, &mut rx.bulk)
-        {
+        while let Some(event) = drain.next(&mut rx.priority, &mut rx.authenticated_bulk) {
             rx.release_dequeued_event(&event);
             let extra = event.packet_count().saturating_sub(1);
             self.process_decrypt_worker_event(event).await;

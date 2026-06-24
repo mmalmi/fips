@@ -115,8 +115,8 @@
             "replayed counter must be dropped before plaintext or failure events"
         );
         assert!(
-            return_rx.bulk.is_empty(),
-            "replayed counter must not reach the bulk return lane"
+            return_rx.authenticated_bulk.is_empty(),
+            "replayed counter must not reach the bulk completion lane"
         );
     }
 
@@ -181,8 +181,8 @@
             }
         }
         assert!(
-            return_rx.bulk.try_recv().is_err(),
-            "timestamp-only receive must not consume the fallback bulk lane"
+            return_rx.authenticated_bulk.try_recv().is_err(),
+            "timestamp-only receive must not consume the bulk completion lane"
         );
         assert_eq!(
             shard.fmp_replay_highest(session_key).unwrap(),
