@@ -374,8 +374,7 @@ impl DecryptWorkerPool {
         };
         let queued_at = crate::perf_profile::stamp();
         for job in &mut jobs {
-            job.completion_owner_idx = Some(owner_idx);
-            job.open_queued_at = queued_at;
+            job.queue_for_completion_owner(owner_idx, queued_at);
         }
 
         self.dispatch_fsp_bulk_jobs_or_return(

@@ -12,8 +12,8 @@ use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
 use crate::packet_mover::{
-    CryptoCompletion, CryptoReject, CryptoResult, CryptoTicket, CryptoWork, LaneCreditGate,
-    OrderSequence, OrderToken, OwnerCompletionBatch, OwnerGeneration, OwnerKey,
+    CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
+    LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch, OwnerGeneration, OwnerKey,
     OwnerOrderedCompletion, OwnerReservation, PacketLane, StatelessCryptoWorker,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
@@ -1087,7 +1087,10 @@ fn local_established_fsp_datagram_meta(
 }
 
 struct FspAeadOpenJob {
-    work: CryptoWork<FspAeadOpenWork>,
+    dispatch: CryptoDispatch<FspAeadOpenWork, FspAeadOpenRoute>,
+}
+
+struct FspAeadOpenRoute {
     completion_source: FspAeadCompletionSource,
     completion_owner_idx: Option<usize>,
     open_queued_at: Option<crate::perf_profile::TraceStamp>,
@@ -1398,29 +1401,51 @@ impl FspAeadOpenJob {
         open_queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Self {
         Self {
-            work: CryptoWork {
-                ticket: crypto_ticket,
-                work: FspAeadOpenWork {
-                    cipher,
-                    job,
-                    header,
-                    preserve_ciphertext_for_fallback: completion_source.is_worker_open(),
+            dispatch: CryptoDispatch::new(
+                CryptoWork {
+                    ticket: crypto_ticket,
+                    work: FspAeadOpenWork {
+                        cipher,
+                        job,
+                        header,
+                        preserve_ciphertext_for_fallback: completion_source.is_worker_open(),
+                    },
                 },
-            },
-            completion_source,
-            completion_owner_idx,
-            open_queued_at,
+                FspAeadOpenRoute {
+                    completion_source,
+                    completion_owner_idx,
+                    open_queued_at,
+                },
+            ),
         }
     }
 
     #[cfg(test)]
     fn crypto_ticket(&self) -> CryptoTicket {
-        self.work.ticket
+        self.dispatch.work.ticket
+    }
+
+    fn completion_owner_idx(&self) -> Option<usize> {
+        self.dispatch.route.completion_owner_idx
+    }
+
+    fn queue_for_completion_owner(
+        &mut self,
+        owner_idx: usize,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+    ) {
+        self.dispatch.route.completion_owner_idx = Some(owner_idx);
+        self.dispatch.route.open_queued_at = queued_at;
+    }
+
+    #[cfg(test)]
+    fn completion_source(&self) -> FspAeadCompletionSource {
+        self.dispatch.route.completion_source
     }
 
     fn set_completion_source(&mut self, source: FspAeadCompletionSource) {
-        self.completion_source = source;
-        self.work.work.preserve_ciphertext_for_fallback = source.is_worker_open();
+        self.dispatch.route.completion_source = source;
+        self.dispatch.work.work.preserve_ciphertext_for_fallback = source.is_worker_open();
     }
 
     #[cfg(test)]
@@ -1449,13 +1474,13 @@ impl FspAeadOpenJob {
     }
 
     fn mark_returned_completion(&mut self) {
-        match self.completion_source {
+        match self.dispatch.route.completion_source {
             FspAeadCompletionSource::WorkerOpen => crate::perf_profile::record_event(
                 crate::perf_profile::Event::FspAeadCompletionReturnedWorkerOpen,
             ),
             FspAeadCompletionSource::Local | FspAeadCompletionSource::WorkerOpenReturned => {}
         }
-        self.set_completion_source(self.completion_source.returned());
+        self.set_completion_source(self.dispatch.route.completion_source.returned());
     }
 
     #[cfg(test)]
@@ -1465,31 +1490,33 @@ impl FspAeadOpenJob {
     }
 
     fn into_completion_with_scratch(self, scratch: &mut FspAeadOpenScratch) -> FspAeadCompletion {
-        let source = self.completion_source;
+        let CryptoDispatch { work, route } = self.dispatch;
+        let source = route.completion_source;
         if source.is_worker_open() {
             crate::perf_profile::record_since_count(
                 crate::perf_profile::Stage::FspAeadWorkerOpenQueueWait,
-                self.open_queued_at,
+                route.open_queued_at,
                 1,
             );
         }
-        let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
+        let completed_at = route.open_queued_at.and_then(|_| crate::perf_profile::stamp());
         let mut opener = FspAeadOpener::new(scratch);
-        FspAeadCompletion::from_crypto_completion(source, opener.execute(self.work), completed_at)
+        FspAeadCompletion::from_crypto_completion(source, opener.execute(work), completed_at)
     }
 
     fn into_dropped_completion(self) -> FspAeadCompletion {
-        let source = self.completion_source;
+        let CryptoDispatch { work, route } = self.dispatch;
+        let source = route.completion_source;
         if source.is_worker_open() {
             crate::perf_profile::record_since_count(
                 crate::perf_profile::Stage::FspAeadWorkerOpenQueueWait,
-                self.open_queued_at,
+                route.open_queued_at,
                 1,
             );
         }
-        let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
+        let completed_at = route.open_queued_at.and_then(|_| crate::perf_profile::stamp());
         FspAeadCompletion {
-            crypto_ticket: self.work.ticket,
+            crypto_ticket: work.ticket,
             source,
             result: FspOrderedCompletion::Dropped { source },
             completed_at,

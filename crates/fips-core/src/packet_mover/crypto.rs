@@ -12,6 +12,18 @@ pub(crate) struct CryptoWork<W> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CryptoDispatch<W, R> {
+    pub(crate) work: CryptoWork<W>,
+    pub(crate) route: R,
+}
+
+impl<W, R> CryptoDispatch<W, R> {
+    pub(crate) fn new(work: CryptoWork<W>, route: R) -> Self {
+        Self { work, route }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CryptoCompletion<W, R = ()> {
     pub(crate) ticket: CryptoTicket,
     pub(crate) result: CryptoResult<W, R>,
@@ -256,6 +268,38 @@ mod tests {
                 value: RejectPayload { bytes: 3 }
             }
         );
+    }
+
+    #[test]
+    fn crypto_dispatch_carries_work_and_route_metadata_together() {
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        struct Route {
+            owner_idx: usize,
+        }
+
+        let reservation = OwnerReservation {
+            owner: OwnerKey::Fsp {
+                source_addr: NodeAddr::from_bytes([4; 16]),
+            },
+            generation: OwnerGeneration(12),
+            order: OrderToken {
+                receive_order_id: 7,
+                sequence: OrderSequence(10),
+            },
+            lane: PacketLane::Bulk,
+            packet_count: 1,
+        };
+        let dispatch = CryptoDispatch::new(
+            CryptoWork {
+                ticket: CryptoTicket { reservation },
+                work: "ciphertext",
+            },
+            Route { owner_idx: 2 },
+        );
+
+        assert_eq!(dispatch.work.ticket.reservation, reservation);
+        assert_eq!(dispatch.work.work, "ciphertext");
+        assert_eq!(dispatch.route, Route { owner_idx: 2 });
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]

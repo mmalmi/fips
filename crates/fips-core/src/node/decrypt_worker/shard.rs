@@ -759,7 +759,7 @@ impl DecryptWorkerShard {
         let mut batcher = FspAeadCompletionBatchBuilder::new();
         for mut job in jobs {
             returned_count = returned_count.saturating_add(1);
-            let completion_owner_idx = job.completion_owner_idx.take();
+            let completion_owner_idx = job.completion_owner_idx();
             let local_completion =
                 completion_owner_idx == Some(idx) || completion_owner_idx.is_none();
             job.mark_returned_completion();

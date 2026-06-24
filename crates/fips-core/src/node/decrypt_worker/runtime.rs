@@ -462,8 +462,8 @@ fn complete_fsp_aead_open_jobs(
 ) {
     let mut batcher = FspAeadCompletionBatchBuilder::new();
 
-    for mut job in jobs {
-        let Some(owner_idx) = job.completion_owner_idx.take() else {
+    for job in jobs {
+        let Some(owner_idx) = job.completion_owner_idx() else {
             continue;
         };
         if let Some(flush) = batcher.push(

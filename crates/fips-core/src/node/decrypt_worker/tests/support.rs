@@ -660,7 +660,7 @@
             DecryptWorkerBulkItem::FspAeadOpenBatch(mut jobs) => {
                 assert_eq!(jobs.len(), 1);
                 let job = jobs.pop().expect("checked one opener job");
-                assert_eq!(job.completion_owner_idx, Some(owner_idx));
+                assert_eq!(job.completion_owner_idx(), Some(owner_idx));
             }
             DecryptWorkerBulkItem::Batch { .. }
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a one-job opener batch"),
@@ -799,7 +799,7 @@
                 assert_eq!(jobs.len(), 2);
                 assert!(
                     jobs.iter()
-                        .all(|job| job.completion_owner_idx == Some(owner_idx))
+                        .all(|job| job.completion_owner_idx() == Some(owner_idx))
                 );
                 assert_eq!(
                     jobs.iter()
@@ -814,7 +814,7 @@
                 );
                 assert!(
                     jobs.iter()
-                        .all(|job| job.completion_source.is_worker_open())
+                        .all(|job| job.completion_source().is_worker_open())
                 );
             }
             DecryptWorkerBulkItem::Batch { .. }
@@ -938,11 +938,11 @@
                 assert_eq!(jobs.len(), 1);
                 let job = jobs.pop().expect("checked one opener job");
                 assert_eq!(job.source_addr(), source_addr);
-                assert_eq!(job.completion_owner_idx, Some(owner_idx));
+                assert_eq!(job.completion_owner_idx(), Some(owner_idx));
                 assert_eq!(job.receive_order_id(), receive_order_id);
                 assert_eq!(job.crypto_generation(), crypto_generation);
                 assert_eq!(job.receive_ticket().sequence, 0);
-                assert!(job.completion_source.is_worker_open());
+                assert!(job.completion_source().is_worker_open());
             }
             DecryptWorkerBulkItem::Batch { .. }
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected one-job opener batch"),
@@ -1014,11 +1014,11 @@
                 assert_eq!(jobs.len(), 1);
                 let job = jobs.pop().expect("checked one opener job");
                 assert_eq!(job.source_addr(), source_addr);
-                assert_eq!(job.completion_owner_idx, Some(owner_idx));
+                assert_eq!(job.completion_owner_idx(), Some(owner_idx));
                 assert_eq!(job.receive_order_id(), receive_order_id);
                 assert_eq!(job.crypto_generation(), crypto_generation);
                 assert_eq!(job.receive_ticket().sequence, 0);
-                assert!(job.completion_source.is_worker_open());
+                assert!(job.completion_source().is_worker_open());
             }
             DecryptWorkerBulkItem::Batch { .. }
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected one-job opener batch"),

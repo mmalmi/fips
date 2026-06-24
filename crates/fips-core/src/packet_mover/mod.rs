@@ -51,8 +51,8 @@ pub(crate) use admission::{
     PacketFacts, PacketLane, UdpAdmission, UdpIngress, classify_udp_admission,
 };
 pub(crate) use crypto::{
-    CryptoCompletion, CryptoReject, CryptoResult, CryptoTicket, CryptoWork, NoopCryptoWorker,
-    OwnerCompletionBatch, OwnerOrderedCompletion, StatelessCryptoWorker,
+    CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
+    NoopCryptoWorker, OwnerCompletionBatch, OwnerOrderedCompletion, StatelessCryptoWorker,
 };
 pub(crate) use output::{
     OutputDrop, OutputDropReason, OutputTarget, PacketOutput, RetireOutput, RetiredPacket,
