@@ -10,7 +10,6 @@
 #[allow(clippy::large_enum_variant)]
 enum WorkerMsg {
     Job(DecryptJob),
-    FspJob(FspDecryptJob),
     RegisterSession {
         session_key: DecryptSessionKey,
         state: OwnedSessionState,
@@ -177,7 +176,6 @@ impl DecryptWorkerBatchStats {
         }
         match msg {
             WorkerMsg::Job(job) => self.add_lane(job.lane(), 1),
-            WorkerMsg::FspJob(job) => self.add_lane(job.lane(), 1),
             WorkerMsg::RegisterSession { .. }
             | WorkerMsg::RegisterFspSession { .. }
             | WorkerMsg::UnregisterSession { .. }
@@ -358,12 +356,8 @@ impl FspDecryptJobBatcher {
     fn push_to(&mut self, workers: &DecryptWorkerPool, worker_idx: usize, job: FspDecryptJob) {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             self.flush(workers);
-            if let Err(job) = workers.dispatch_fsp_job_or_return(job) {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFspPathFallback,
-                );
-                drop_fsp_owner_handoff_job(job);
-            }
+            crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathFallback);
+            drop_fsp_owner_handoff_job(job);
             return;
         }
 

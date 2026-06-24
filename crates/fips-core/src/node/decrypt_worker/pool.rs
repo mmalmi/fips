@@ -393,52 +393,6 @@ impl DecryptWorkerPool {
     }
 
     #[allow(clippy::result_large_err)]
-    fn dispatch_fsp_job_or_return(&self, job: FspDecryptJob) -> Result<(), FspDecryptJob> {
-        if self.senders.is_empty() {
-            return Err(job);
-        }
-        let idx = self.worker_idx_for_fsp(&job.source_addr);
-        match job.lane() {
-            DecryptWorkerLane::Priority => self.dispatch_priority_fsp_job_or_return(idx, job),
-            DecryptWorkerLane::Bulk => self.dispatch_bulk_fsp_job_or_return(idx, job),
-        }
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn dispatch_priority_fsp_job_or_return(
-        &self,
-        idx: usize,
-        mut job: FspDecryptJob,
-    ) -> Result<(), FspDecryptJob> {
-        job.set_trace_enqueued_at(crate::perf_profile::stamp());
-        match self.senders[idx].priority.try_send(WorkerMsg::FspJob(job)) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(job)) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptWorkerQueueFull,
-                );
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFspPriorityQueueFullFallback,
-                );
-                Err(match job {
-                    WorkerMsg::FspJob(job) => job,
-                    _ => unreachable!("priority FSP dispatch only sends FSP jobs"),
-                })
-            }
-            Err(TrySendError::Disconnected(job)) => {
-                debug!(
-                    worker = idx,
-                    "DecryptWorker thread gone; falling FSP priority job back to rx_loop"
-                );
-                Err(match job {
-                    WorkerMsg::FspJob(job) => job,
-                    _ => unreachable!("priority FSP dispatch only sends FSP jobs"),
-                })
-            }
-        }
-    }
-
-    #[allow(clippy::result_large_err)]
     fn dispatch_bulk_fsp_job_or_return(
         &self,
         idx: usize,

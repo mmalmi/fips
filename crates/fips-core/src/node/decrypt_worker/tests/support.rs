@@ -191,9 +191,10 @@
 
         let priority_job = WorkerMsg::Job(dummy_priority_decrypt_job(session_key));
         stats.add_msg(&priority_job);
-        let bulk_fsp_job =
-            WorkerMsg::FspJob(dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1));
-        stats.add_msg(&bulk_fsp_job);
+        let bulk_fsp_job = DecryptWorkerBulkItem::FspBatch(vec![dummy_fsp_job(
+            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1,
+        )]);
+        stats.add_bulk_item(&bulk_fsp_job);
         let bulk_batch = decrypt_worker_bulk_item_from_jobs(vec![
             dummy_bulk_decrypt_job(session_key),
             dummy_bulk_decrypt_job(session_key),

@@ -242,9 +242,6 @@ impl DecryptWorkerShard {
             WorkerMsg::Job(job) => {
                 self.handle_job_msg(idx, job);
             }
-            WorkerMsg::FspJob(job) => {
-                self.handle_fsp_job_msg(idx, job);
-            }
             WorkerMsg::RegisterSession { session_key, state } => {
                 self.register_session(idx, session_key, state);
             }
@@ -284,17 +281,6 @@ impl DecryptWorkerShard {
             );
         }
         flush_fsp_open_batcher(idx, self, plaintext_batch, &mut fsp_open_batcher);
-    }
-
-    fn handle_fsp_job_msg(&mut self, idx: usize, job: FspDecryptJob) {
-        job.record_queue_wait();
-        let _t_service =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
-        self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
-        plaintext_batch.flush();
-        trace!(worker = idx, "processed FSP decrypt worker job");
     }
 
     fn handle_bulk_fsp_job_batch_with_open_batcher(
@@ -471,7 +457,14 @@ impl DecryptWorkerShard {
                     fsp_batcher.push_to(&self.pool, owner_idx, job);
                     return;
                 }
-                match self.pool.dispatch_fsp_job_or_return(job) {
+                if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
+                    crate::perf_profile::record_event(
+                        crate::perf_profile::Event::DecryptFspPathFallback,
+                    );
+                    drop_fsp_owner_handoff_job(job);
+                    return;
+                }
+                match self.pool.dispatch_bulk_fsp_job_or_return(owner_idx, job) {
                     Ok(()) => {}
                     Err(job) => {
                         crate::perf_profile::record_event(
