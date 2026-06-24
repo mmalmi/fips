@@ -63,8 +63,8 @@ pub(crate) use owner::{
     OwnerReceiveWindow, OwnerReservation, OwnerReserveError, OwnerSequencer, OwnerWindow,
 };
 pub(crate) use queues::{
-    BoundedLaneQueues, LaneCreditGate, LaneCreditReservation, QueueAdmission, QueueCaps,
-    QueuedPacket,
+    BoundedLaneQueues, DispatchBatcher, LaneCreditGate, LaneCreditReservation, QueueAdmission,
+    QueueCaps, QueuedPacket,
 };
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
 

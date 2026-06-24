@@ -484,9 +484,9 @@ fn flush_fsp_open_batcher(
     idx: usize,
     shard: &mut DecryptWorkerShard,
     return_batch: &mut DecryptWorkerReturnBatch,
-    fsp_open_batcher: &mut FspAeadOpenJobBatcher,
+    fsp_open_batcher: &mut FspAeadOpenDispatchBatcher,
 ) {
-    let returned = fsp_open_batcher.flush(&shard.pool);
+    let returned = flush_fsp_aead_open_dispatch(fsp_open_batcher, &shard.pool);
     if !returned.is_empty() {
         shard.drop_returned_fsp_aead_open_jobs(idx, returned, return_batch);
     }
@@ -494,14 +494,14 @@ fn flush_fsp_open_batcher(
 
 struct BulkBatchBuffers {
     fsp_batcher: FspDecryptJobBatcher,
-    fsp_open_batcher: FspAeadOpenJobBatcher,
+    fsp_open_batcher: FspAeadOpenDispatchBatcher,
 }
 
 impl BulkBatchBuffers {
     fn new() -> Self {
         Self {
             fsp_batcher: FspDecryptJobBatcher::new(),
-            fsp_open_batcher: FspAeadOpenJobBatcher::new(),
+            fsp_open_batcher: new_fsp_aead_open_dispatch_batcher(),
         }
     }
 

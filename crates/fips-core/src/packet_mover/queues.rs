@@ -257,6 +257,96 @@ impl<T> BoundedLaneQueues<T> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct DispatchBatcher<K, T> {
+    key: Option<K>,
+    items: Vec<T>,
+    buffer_capacity: usize,
+}
+
+impl<K: Copy + Eq, T> DispatchBatcher<K, T> {
+    pub(crate) fn new(buffer_capacity: usize) -> Self {
+        Self {
+            key: None,
+            items: Vec::with_capacity(buffer_capacity),
+            buffer_capacity,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.key.is_none() && self.items.is_empty()
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        key: K,
+        batch_max: usize,
+        item: T,
+        mut dispatch: impl FnMut(K, Vec<T>) -> Vec<T>,
+    ) -> Vec<T> {
+        let mut returned = Vec::new();
+        let batch_max = batch_max.max(1);
+        if self.key != Some(key) || self.items.len() >= batch_max {
+            returned.extend(self.flush_with(&mut dispatch));
+        }
+
+        self.key = Some(key);
+        self.items.push(item);
+
+        if self.items.len() >= batch_max {
+            returned.extend(self.flush_with(&mut dispatch));
+        }
+        returned
+    }
+
+    pub(crate) fn push_batch(
+        &mut self,
+        key: K,
+        batch_max: usize,
+        items: Vec<T>,
+        mut dispatch: impl FnMut(K, Vec<T>) -> Vec<T>,
+    ) -> Vec<T> {
+        if items.is_empty() {
+            return Vec::new();
+        }
+
+        let mut returned = Vec::new();
+        let batch_max = batch_max.max(1);
+        if self.key != Some(key) || self.items.len().saturating_add(items.len()) > batch_max {
+            returned.extend(self.flush_with(&mut dispatch));
+        }
+
+        self.key = Some(key);
+        if self.items.is_empty() && items.len() >= batch_max {
+            self.items = items;
+            returned.extend(self.flush_with(&mut dispatch));
+            return returned;
+        }
+
+        self.items.extend(items);
+        if self.items.len() >= batch_max {
+            returned.extend(self.flush_with(&mut dispatch));
+        }
+        returned
+    }
+
+    pub(crate) fn flush(&mut self, mut dispatch: impl FnMut(K, Vec<T>) -> Vec<T>) -> Vec<T> {
+        self.flush_with(&mut dispatch)
+    }
+
+    fn flush_with(&mut self, dispatch: &mut impl FnMut(K, Vec<T>) -> Vec<T>) -> Vec<T> {
+        let Some(key) = self.key.take() else {
+            return Vec::new();
+        };
+        if self.items.is_empty() {
+            return Vec::new();
+        }
+
+        let items = std::mem::replace(&mut self.items, Vec::with_capacity(self.buffer_capacity));
+        dispatch(key, items)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +452,87 @@ mod tests {
         assert_eq!(previous, 0);
         assert_eq!(reservation.packet_count(), 0);
         assert_eq!(gate.queued_packets(), 0);
+    }
+
+    #[test]
+    fn dispatch_batcher_groups_same_key_until_capacity() {
+        let mut batcher = DispatchBatcher::new(4);
+        let mut dispatched = Vec::new();
+
+        assert!(
+            batcher
+                .push(1, 3, "a", |key, items| {
+                    dispatched.push((key, items));
+                    Vec::new()
+                })
+                .is_empty()
+        );
+        assert!(
+            batcher
+                .push(1, 3, "b", |key, items| {
+                    dispatched.push((key, items));
+                    Vec::new()
+                })
+                .is_empty()
+        );
+        assert!(dispatched.is_empty());
+
+        assert!(
+            batcher
+                .push(1, 3, "c", |key, items| {
+                    dispatched.push((key, items));
+                    Vec::new()
+                })
+                .is_empty()
+        );
+
+        assert_eq!(dispatched, vec![(1, vec!["a", "b", "c"])]);
+        assert!(batcher.is_empty());
+    }
+
+    #[test]
+    fn dispatch_batcher_flushes_on_key_change_and_preserves_returned_items() {
+        let mut batcher = DispatchBatcher::new(4);
+        assert!(
+            batcher
+                .push(1, 8, "a", |_key, _items| Vec::new())
+                .is_empty()
+        );
+
+        let returned = batcher.push(2, 8, "b", |key, items| {
+            assert_eq!(key, 1);
+            assert_eq!(items, vec!["a"]);
+            vec!["returned"]
+        });
+
+        assert_eq!(returned, vec!["returned"]);
+        let mut dispatched = Vec::new();
+        assert!(
+            batcher
+                .flush(|key, items| {
+                    dispatched.push((key, items));
+                    Vec::new()
+                })
+                .is_empty()
+        );
+        assert_eq!(dispatched, vec![(2, vec!["b"])]);
+    }
+
+    #[test]
+    fn dispatch_batcher_directly_flushes_full_batch_when_empty() {
+        let mut batcher = DispatchBatcher::new(4);
+        let mut dispatched = Vec::new();
+
+        assert!(
+            batcher
+                .push_batch(7, 2, vec!["a", "b"], |key, items| {
+                    dispatched.push((key, items));
+                    Vec::new()
+                })
+                .is_empty()
+        );
+
+        assert_eq!(dispatched, vec![(7, vec!["a", "b"])]);
+        assert!(batcher.is_empty());
     }
 }

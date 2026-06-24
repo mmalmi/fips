@@ -406,103 +406,67 @@ impl FspDecryptJobBatcher {
     }
 }
 
-struct FspAeadOpenJobBatcher {
-    open_idx: Option<usize>,
-    owner_idx: Option<usize>,
-    jobs: Vec<FspAeadOpenJob>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FspAeadOpenDispatchKey {
+    open_idx: usize,
+    owner_idx: usize,
 }
 
-impl FspAeadOpenJobBatcher {
-    fn new() -> Self {
-        Self {
-            open_idx: None,
-            owner_idx: None,
-            jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-        }
+type FspAeadOpenDispatchBatcher = DispatchBatcher<FspAeadOpenDispatchKey, FspAeadOpenJob>;
+
+fn new_fsp_aead_open_dispatch_batcher() -> FspAeadOpenDispatchBatcher {
+    DispatchBatcher::new(DECRYPT_WORKER_BULK_BATCH_MAX)
+}
+
+fn fsp_aead_open_dispatch_key(open_idx: usize, owner_idx: usize) -> FspAeadOpenDispatchKey {
+    FspAeadOpenDispatchKey {
+        open_idx,
+        owner_idx,
     }
+}
 
-    fn is_empty(&self) -> bool {
-        self.open_idx.is_none() && self.owner_idx.is_none() && self.jobs.is_empty()
-    }
+fn dispatch_fsp_aead_open_batch(
+    workers: &DecryptWorkerPool,
+    key: FspAeadOpenDispatchKey,
+    jobs: Vec<FspAeadOpenJob>,
+) -> Vec<FspAeadOpenJob> {
+    workers
+        .dispatch_fsp_aead_open_worker_job_batch_or_return(key.open_idx, key.owner_idx, jobs)
+        .err()
+        .unwrap_or_default()
+}
 
-    fn push(
-        &mut self,
-        workers: &DecryptWorkerPool,
-        open_idx: usize,
-        owner_idx: usize,
-        job: FspAeadOpenJob,
-    ) -> Vec<FspAeadOpenJob> {
-        let mut returned = Vec::new();
-        let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
-        if self.open_idx != Some(open_idx)
-            || self.owner_idx != Some(owner_idx)
-            || self.jobs.len() >= batch_max
-        {
-            returned.extend(self.flush(workers));
-        }
-        self.open_idx = Some(open_idx);
-        self.owner_idx = Some(owner_idx);
-        self.jobs.push(job);
+fn push_fsp_aead_open_dispatch(
+    batcher: &mut FspAeadOpenDispatchBatcher,
+    workers: &DecryptWorkerPool,
+    open_idx: usize,
+    owner_idx: usize,
+    job: FspAeadOpenJob,
+) -> Vec<FspAeadOpenJob> {
+    let key = fsp_aead_open_dispatch_key(open_idx, owner_idx);
+    let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
+    batcher.push(key, batch_max, job, |key, jobs| {
+        dispatch_fsp_aead_open_batch(workers, key, jobs)
+    })
+}
 
-        if self.jobs.len() >= batch_max {
-            returned.extend(self.flush(workers));
-        }
-        returned
-    }
+fn push_fsp_aead_open_dispatch_batch(
+    batcher: &mut FspAeadOpenDispatchBatcher,
+    workers: &DecryptWorkerPool,
+    open_idx: usize,
+    owner_idx: usize,
+    jobs: Vec<FspAeadOpenJob>,
+) -> Vec<FspAeadOpenJob> {
+    let key = fsp_aead_open_dispatch_key(open_idx, owner_idx);
+    let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
+    batcher.push_batch(key, batch_max, jobs, |key, jobs| {
+        dispatch_fsp_aead_open_batch(workers, key, jobs)
+    })
+}
 
-    fn push_batch(
-        &mut self,
-        workers: &DecryptWorkerPool,
-        open_idx: usize,
-        owner_idx: usize,
-        jobs: Vec<FspAeadOpenJob>,
-    ) -> Vec<FspAeadOpenJob> {
-        if jobs.is_empty() {
-            return Vec::new();
-        }
-
-        let mut returned = Vec::new();
-        let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
-        if self.open_idx != Some(open_idx)
-            || self.owner_idx != Some(owner_idx)
-            || self.jobs.len().saturating_add(jobs.len()) > batch_max
-        {
-            returned.extend(self.flush(workers));
-        }
-        self.open_idx = Some(open_idx);
-        self.owner_idx = Some(owner_idx);
-
-        if self.jobs.is_empty() && jobs.len() >= batch_max {
-            self.jobs = jobs;
-            returned.extend(self.flush(workers));
-            return returned;
-        }
-
-        self.jobs.extend(jobs);
-        if self.jobs.len() >= batch_max {
-            returned.extend(self.flush(workers));
-        }
-        returned
-    }
-
-    fn flush(&mut self, workers: &DecryptWorkerPool) -> Vec<FspAeadOpenJob> {
-        let Some(open_idx) = self.open_idx.take() else {
-            return Vec::new();
-        };
-        let Some(owner_idx) = self.owner_idx.take() else {
-            return Vec::new();
-        };
-        if self.jobs.is_empty() {
-            return Vec::new();
-        }
-
-        let jobs = std::mem::replace(
-            &mut self.jobs,
-            Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-        );
-        workers
-            .dispatch_fsp_aead_open_worker_job_batch_or_return(open_idx, owner_idx, jobs)
-            .err()
-            .unwrap_or_default()
-    }
+fn flush_fsp_aead_open_dispatch(
+    batcher: &mut FspAeadOpenDispatchBatcher,
+    workers: &DecryptWorkerPool,
+) -> Vec<FspAeadOpenJob> {
+    batcher.flush(|key, jobs| dispatch_fsp_aead_open_batch(workers, key, jobs))
 }

@@ -626,7 +626,7 @@
     }
 
     #[test]
-    fn fsp_open_job_batcher_flushes_single_job_as_one_item_batch() {
+    fn fsp_open_dispatch_batcher_flushes_single_job_as_one_item_batch() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(2, DECRYPT_WORKER_BULK_BATCH_MAX);
         let source_addr = NodeAddr::from_bytes([0x42; 16]);
@@ -639,9 +639,10 @@
         header_packet.extend_from_slice(&[0u8; 16]);
         let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
         let cipher = Arc::new(test_chacha_key([0x52; 32]));
-        let mut batcher = FspAeadOpenJobBatcher::new();
+        let mut batcher = new_fsp_aead_open_dispatch_batcher();
 
-        let returned = batcher.push(
+        let returned = push_fsp_aead_open_dispatch(
+            &mut batcher,
             &pool,
             open_idx,
             owner_idx,
@@ -649,7 +650,7 @@
         );
         assert!(returned.is_empty(), "single opener job should fit in the batcher");
         assert!(
-            batcher.flush(&pool).is_empty(),
+            flush_fsp_aead_open_dispatch(&mut batcher, &pool).is_empty(),
             "single opener job should queue without returning to caller"
         );
 
@@ -681,10 +682,11 @@
         header_packet.extend_from_slice(&[0u8; 16]);
         let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
         let cipher = Arc::new(test_chacha_key([0x5b; 32]));
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
 
         for sequence in 0..2 {
-            let returned = fsp_open_batcher.push(
+            let returned = push_fsp_aead_open_dispatch(
+                &mut fsp_open_batcher,
                 &pool,
                 open_idx,
                 owner_idx,
@@ -727,7 +729,7 @@
             "completion interleave should not fragment a pending opener batch"
         );
         assert!(
-            fsp_open_batcher.flush(&shard.pool).is_empty(),
+            flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty(),
             "explicit batch boundary should dispatch queued opener work"
         );
         match bulk_receivers[open_idx]
@@ -841,7 +843,7 @@
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
         shard.push_job_action_output(
             current_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
@@ -852,7 +854,7 @@
             &mut fsp_open_batcher,
         );
         assert!(
-            fsp_open_batcher.flush(&shard.pool).is_empty(),
+            flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty(),
             "pre-owner handoff must not leave opener work batched locally"
         );
 
@@ -917,7 +919,7 @@
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
         let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
         shard.push_job_action_output(
             owner_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
@@ -927,7 +929,7 @@
             None,
             &mut fsp_open_batcher,
         );
-        assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
+        assert!(flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty());
         return_batch.flush();
 
         match bulk_receivers[open_idx]
@@ -1155,7 +1157,7 @@
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
         let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
         shard.push_job_action_output(
             owner_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
@@ -1165,7 +1167,7 @@
             None,
             &mut fsp_open_batcher,
         );
-        assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
+        assert!(flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty());
         assert_eq!(
             bulk_receivers[open_idx].len(),
             1,
@@ -1218,7 +1220,7 @@
             .advance_next_ticket_to(bulk_ticket_limit as u64);
 
         let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
         shard.push_job_action_output(
             owner_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
@@ -1229,7 +1231,7 @@
             &mut fsp_open_batcher,
         );
 
-        assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
+        assert!(flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty());
         assert_eq!(
             bulk_receivers[open_idx].len(),
             0,
@@ -1798,7 +1800,7 @@
         };
         let mut shard = DecryptWorkerShard::new(pool);
         let mut return_batch = DecryptWorkerReturnBatch::new(return_tx);
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
         let packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
 
         shard.push_job_action_output(
@@ -1821,7 +1823,7 @@
             None,
             &mut fsp_open_batcher,
         );
-        assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
+        assert!(flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty());
         return_batch.flush();
 
         let event = return_rx.bulk.try_recv().expect("batched plaintext output");

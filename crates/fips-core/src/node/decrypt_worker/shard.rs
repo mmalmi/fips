@@ -273,7 +273,7 @@ impl DecryptWorkerShard {
         job: DecryptJob,
         return_batch: &mut DecryptWorkerReturnBatch,
     ) {
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
         if let Some(action) = self.collect_job_action(job) {
             self.push_job_action_output(
                 idx,
@@ -304,7 +304,7 @@ impl DecryptWorkerShard {
         item_started_at: Option<crate::perf_profile::TraceStamp>,
         trace_enabled: bool,
         return_batch: &mut DecryptWorkerReturnBatch,
-        fsp_open_batcher: &mut FspAeadOpenJobBatcher,
+        fsp_open_batcher: &mut FspAeadOpenDispatchBatcher,
     ) {
         let count = jobs.len();
         match self.try_prepare_fsp_bulk_open_worker_job_batch(idx, jobs) {
@@ -316,8 +316,13 @@ impl DecryptWorkerShard {
                 }
                 record_fsp_owner_match_count(true, count);
                 record_fsp_path_worker_open_bulk_count(count);
-                let returned =
-                    fsp_open_batcher.push_batch(&self.pool, open_idx, owner_idx, open_jobs);
+                let returned = push_fsp_aead_open_dispatch_batch(
+                    fsp_open_batcher,
+                    &self.pool,
+                    open_idx,
+                    owner_idx,
+                    open_jobs,
+                );
                 if !returned.is_empty() {
                     self.drop_returned_fsp_aead_open_jobs(idx, returned, return_batch);
                 }
@@ -411,7 +416,7 @@ impl DecryptWorkerShard {
 
     fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
         let mut return_batch = DecryptWorkerReturnBatch::new(self.pool.return_tx.clone());
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
         self.push_job_action_output(
             idx,
             action,
@@ -429,7 +434,7 @@ impl DecryptWorkerShard {
         action: DecryptWorkerJobAction,
         return_batch: &mut DecryptWorkerReturnBatch,
         mut fsp_batcher: Option<&mut FspDecryptJobBatcher>,
-        fsp_open_batcher: &mut FspAeadOpenJobBatcher,
+        fsp_open_batcher: &mut FspAeadOpenDispatchBatcher,
     ) {
         match action {
             DecryptWorkerJobAction::Output(output) => return_batch.push_output(output),
@@ -439,8 +444,13 @@ impl DecryptWorkerShard {
                 let job = match self.try_prepare_fsp_bulk_open_worker_job(idx, owner_idx, job) {
                     Ok((open_idx, owner_idx, open_job)) => {
                         record_fsp_path_worker_open_bulk();
-                        let returned =
-                            fsp_open_batcher.push(&self.pool, open_idx, owner_idx, open_job);
+                        let returned = push_fsp_aead_open_dispatch(
+                            fsp_open_batcher,
+                            &self.pool,
+                            open_idx,
+                            owner_idx,
+                            open_job,
+                        );
                         if !returned.is_empty() {
                             self.drop_returned_fsp_aead_open_jobs(
                                 idx,
@@ -1448,7 +1458,7 @@ impl DecryptWorkerShard {
         jobs: Vec<DecryptJob>,
         return_batch: &mut DecryptWorkerReturnBatch,
         fsp_batcher: &mut FspDecryptJobBatcher,
-        fsp_open_batcher: &mut FspAeadOpenJobBatcher,
+        fsp_open_batcher: &mut FspAeadOpenDispatchBatcher,
     ) {
         // Hold FMP session/replay state while FSP/output handling borrows the
         // rest of the shard; no control work is interleaved inside this item.

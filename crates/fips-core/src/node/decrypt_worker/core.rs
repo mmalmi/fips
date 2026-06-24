@@ -13,8 +13,9 @@ use crate::node::{
 };
 use crate::packet_mover::{
     CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
-    LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch, OwnerGeneration, OwnerKey,
-    OwnerOrderedCompletion, OwnerReservation, PacketLane, StatelessCryptoWorker,
+    DispatchBatcher, LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch,
+    OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation, PacketLane,
+    StatelessCryptoWorker,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};
