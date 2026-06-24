@@ -344,31 +344,6 @@
     }
 
     #[test]
-    fn decrypt_job_batcher_reuses_pending_buffer_for_single_bulk_flush() {
-        let (pool, _control_rx, _priority_rx, bulk_rx) =
-            test_worker_pool(1, DECRYPT_WORKER_BULK_BATCH_MAX);
-        let session_key = test_session_key(1, 104);
-        let mut batcher = DecryptJobBatcher::new();
-        let pending_buffer = batcher.pending_buffer_ptr();
-
-        batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
-        batcher.flush(&pool);
-
-        assert_eq!(
-            batcher.pending_buffer_ptr(),
-            pending_buffer,
-            "single-job flushes should not allocate a replacement pending buffer"
-        );
-        assert!(
-            matches!(
-                bulk_rx[0].try_recv().expect("single bulk item"),
-                DecryptWorkerBulkItem::Batch(_)
-            ),
-            "single-job flush should dispatch one canonical bulk batch"
-        );
-    }
-
-    #[test]
     fn decrypt_job_batcher_limits_batch_width_to_worker_packet_capacity() {
         const WORKER_PACKET_CAP: usize = 8;
 

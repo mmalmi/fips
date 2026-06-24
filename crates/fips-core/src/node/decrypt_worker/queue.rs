@@ -282,11 +282,6 @@ impl DecryptJobBatcher {
         }
     }
 
-    #[cfg(test)]
-    fn pending_buffer_ptr(&self) -> *const DecryptJob {
-        self.jobs.as_ptr()
-    }
-
     pub(crate) fn push(&mut self, workers: &DecryptWorkerPool, job: DecryptJob) {
         if !job.is_bulk_lane() {
             self.flush(workers);
@@ -319,12 +314,6 @@ impl DecryptJobBatcher {
         };
         self.session_key = None;
         if self.jobs.is_empty() {
-            return;
-        }
-
-        if self.jobs.len() == 1 {
-            let job = self.jobs.pop().expect("checked single pending job");
-            workers.dispatch_bulk_job(worker_idx, job);
             return;
         }
 
