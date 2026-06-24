@@ -401,20 +401,22 @@
     }
 
     #[test]
-    fn decrypt_worker_bulk_accounting_can_reserve_partial_capacity() {
+    fn decrypt_worker_bulk_accounting_rejects_partial_capacity() {
         let counter = AtomicUsize::new(2);
 
-        assert_eq!(try_reserve_bulk_packets_partial(&counter, 4, 4), 2);
-        assert_eq!(counter.load(Ordering::Relaxed), 4);
         assert_eq!(
-            try_reserve_bulk_packets_partial(&counter, 4, 1),
-            0,
-            "full packet capacity should not over-reserve"
+            try_reserve_bulk_packets_with_previous(&counter, 4, 4),
+            None,
+            "partial packet capacity should not reserve a prefix"
         );
-        release_bulk_packets(&counter, 3);
-        assert_eq!(counter.load(Ordering::Relaxed), 1);
-        assert_eq!(try_reserve_bulk_packets_partial(&counter, 4, 2), 2);
-        assert_eq!(counter.load(Ordering::Relaxed), 3);
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+        assert!(
+            try_reserve_bulk_packets(&counter, 4, 2),
+            "a whole batch that fits should reserve"
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 4);
+        release_bulk_packets(&counter, 4);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -41,47 +41,6 @@ impl DecryptWorkerBulkItem {
             Self::FspBatch(jobs) => jobs.len(),
         }
     }
-
-    fn split_at_packet_count(
-        self,
-        packet_count: usize,
-    ) -> (Option<DecryptWorkerBulkItem>, Option<DecryptWorkerBulkItem>) {
-        if packet_count == 0 {
-            return (None, Some(self));
-        }
-        match self {
-            Self::FspAeadOpenBatch(mut jobs) => {
-                if packet_count >= jobs.len() {
-                    return (Some(Self::FspAeadOpenBatch(jobs)), None);
-                }
-                let overflow = jobs.split_off(packet_count);
-                (
-                    Some(decrypt_worker_bulk_item_from_fsp_aead_open_jobs(jobs)),
-                    Some(decrypt_worker_bulk_item_from_fsp_aead_open_jobs(overflow)),
-                )
-            }
-            Self::Batch(mut jobs) => {
-                if packet_count >= jobs.len() {
-                    return (Some(Self::Batch(jobs)), None);
-                }
-                let overflow = jobs.split_off(packet_count);
-                (
-                    Some(decrypt_worker_bulk_item_from_jobs(jobs)),
-                    Some(decrypt_worker_bulk_item_from_jobs(overflow)),
-                )
-            }
-            Self::FspBatch(mut jobs) => {
-                if packet_count >= jobs.len() {
-                    return (Some(Self::FspBatch(jobs)), None);
-                }
-                let overflow = jobs.split_off(packet_count);
-                (
-                    Some(decrypt_worker_bulk_item_from_fsp_jobs(jobs)),
-                    Some(decrypt_worker_bulk_item_from_fsp_jobs(overflow)),
-                )
-            }
-        }
-    }
 }
 
 fn decrypt_worker_bulk_item_from_fsp_aead_open_jobs(

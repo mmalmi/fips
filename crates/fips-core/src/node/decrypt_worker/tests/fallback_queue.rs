@@ -130,7 +130,7 @@
     }
 
     #[test]
-    fn bulk_fsp_batch_dispatch_uses_partial_worker_capacity() {
+    fn bulk_fsp_batch_dispatch_returns_whole_batch_when_capacity_is_low() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
             test_worker_pool(1, 2);
         let existing_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
@@ -150,18 +150,18 @@
 
         assert_eq!(
             returned.len(),
-            1,
-            "partial worker capacity should admit one packet and return only overflow"
+            2,
+            "insufficient worker capacity should return the whole FSP batch"
         );
         assert_eq!(
             bulk_receivers[0].len(),
-            2,
-            "the existing packet plus one batch packet should remain queued"
+            1,
+            "only the existing packet should remain queued"
         );
         assert_eq!(
             pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
-            2,
-            "bulk packet accounting should match the admitted packet count"
+            1,
+            "bulk packet accounting should not reserve returned packets"
         );
         for item in bulk_receivers[0].try_iter() {
             match item {
@@ -174,14 +174,14 @@
                 }
                 DecryptWorkerBulkItem::FspAeadOpenBatch(_)
                 | DecryptWorkerBulkItem::Batch(_) => {
-                    panic!("partial-capacity retry should keep one-job FSP batches")
+                    panic!("expected the existing one-job FSP batch")
                 }
             }
         }
     }
 
     #[test]
-    fn bulk_fsp_batch_dispatch_keeps_partial_capacity_batched() {
+    fn bulk_fsp_batch_dispatch_does_not_fragment_on_partial_capacity() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
             test_worker_pool(1, 3);
         let existing_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
@@ -202,18 +202,18 @@
 
         assert_eq!(
             returned.len(),
-            1,
-            "partial worker capacity should return only the overflow tail"
+            3,
+            "insufficient worker capacity should return the whole FSP batch"
         );
         assert_eq!(
             bulk_receivers[0].len(),
-            2,
-            "the existing packet plus one prefix batch should be queued"
+            1,
+            "only the existing packet should remain queued"
         );
         assert_eq!(
             pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
-            3,
-            "bulk packet accounting should include the admitted prefix batch"
+            1,
+            "bulk packet accounting should not reserve returned packets"
         );
 
         match bulk_receivers[0]
@@ -232,26 +232,14 @@
                 panic!("expected existing one-job FSP batch")
             }
         }
-        match bulk_receivers[0]
-            .try_recv()
-            .expect("admitted FSP prefix batch")
-        {
-            DecryptWorkerBulkItem::FspBatch(jobs) => {
-                assert_eq!(jobs.len(), 2);
-                assert!(
-                    jobs.iter()
-                        .all(|job| matches!(job.lane(), DecryptWorkerLane::Bulk))
-                );
-            }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::Batch(_) => {
-                panic!("expected an FSP prefix batch")
-            }
-        }
+        assert!(
+            bulk_receivers[0].try_recv().is_err(),
+            "partial-capacity dispatch must not fragment a returned FSP batch"
+        );
     }
 
     #[test]
-    fn decrypt_worker_bulk_batch_admits_prefix_when_packet_capacity_is_low() {
+    fn decrypt_worker_bulk_batch_drops_whole_batch_when_packet_capacity_is_low() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
             test_worker_pool(1, 3);
         let session_key = test_session_key(1, 123);
@@ -268,13 +256,13 @@
 
         assert_eq!(
             bulk_receivers[0].len(),
-            2,
-            "existing packet plus admitted prefix batch should remain queued"
+            1,
+            "only the existing packet should remain queued"
         );
         assert_eq!(
             pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
-            3,
-            "overflow tail must not consume bulk packet capacity"
+            1,
+            "dropped batch must not consume bulk packet capacity"
         );
 
         match bulk_receivers[0].try_recv().expect("existing bulk job") {
@@ -285,16 +273,10 @@
             DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected existing bulk job"),
         }
-        match bulk_receivers[0].try_recv().expect("admitted prefix batch") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
-                assert_eq!(jobs.len(), 2);
-                assert!(jobs.iter().all(|job| job.session_key == session_key));
-            }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => {
-                panic!("expected admitted decrypt prefix batch")
-            }
-        }
+        assert!(
+            bulk_receivers[0].try_recv().is_err(),
+            "partial-capacity dispatch must not fragment a dropped bulk batch"
+        );
     }
 
     #[test]

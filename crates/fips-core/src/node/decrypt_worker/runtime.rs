@@ -40,31 +40,6 @@ fn try_reserve_bulk_packets(counter: &AtomicUsize, capacity: usize, count: usize
     try_reserve_bulk_packets_with_previous(counter, capacity, count).is_some()
 }
 
-fn try_reserve_bulk_packets_partial(
-    counter: &AtomicUsize,
-    capacity: usize,
-    count: usize,
-) -> usize {
-    if count == 0 {
-        return 0;
-    }
-
-    let mut reserved = 0;
-    let result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        let available = capacity.saturating_sub(current);
-        if available == 0 {
-            reserved = 0;
-            return None;
-        }
-        reserved = count.min(available);
-        current
-            .checked_add(reserved)
-            .filter(|next| *next <= capacity)
-    });
-
-    if result.is_ok() { reserved } else { 0 }
-}
-
 fn release_bulk_packets(counter: &AtomicUsize, count: usize) {
     if count == 0 {
         return;
