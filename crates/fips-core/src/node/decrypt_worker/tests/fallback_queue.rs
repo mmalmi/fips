@@ -896,6 +896,45 @@
     }
 
     #[test]
+    fn decrypt_worker_single_bulk_item_interleaves_priority_work() {
+        let session_key = test_session_key(1, 108);
+        let mut shard = test_shard();
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        drop(control_tx);
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        priority_tx
+            .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
+            .expect("test priority lane should accept one packet");
+        drop(priority_tx);
+
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        let mut plaintext_batch =
+            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        let item = decrypt_worker_bulk_item_from_jobs(vec![dummy_bulk_decrypt_job(session_key)]);
+        batch_stats.add_bulk_item(&item);
+
+        let processed = handle_bulk_item(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fsp_aead_completion_rx,
+            item,
+            &mut plaintext_batch,
+            &mut batch_stats,
+        );
+
+        assert_eq!(processed, 1);
+        assert!(
+            priority_rx.is_empty(),
+            "priority packets must not wait behind a singleton bulk item"
+        );
+        assert_eq!(batch_stats.priority_packets, 1);
+        assert_eq!(batch_stats.bulk_packets, 1);
+    }
+
+    #[test]
     fn decrypt_worker_fsp_bulk_batch_interleaves_priority_work() {
         let mut shard = test_shard();
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
@@ -936,6 +975,64 @@
         );
         assert_eq!(batch_stats.priority_packets, 1);
         assert_eq!(batch_stats.bulk_packets, 2);
+    }
+
+    #[test]
+    fn decrypt_worker_fsp_open_batch_interleaves_priority_work() {
+        let (pool, _control_receivers, _priority_receivers, _bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(2, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_addr = NodeAddr::from_bytes([0x67; 16]);
+        let owner_idx = 0;
+        let open_idx = pool
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .expect("two-worker pool should have a sibling opener");
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let mut header_packet = header_bytes.to_vec();
+        header_packet.extend_from_slice(&[0u8; 16]);
+        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
+        let mut shard = DecryptWorkerShard::new(pool);
+
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        drop(control_tx);
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        priority_tx
+            .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(
+                test_session_key(1, 109),
+            )))
+            .expect("test priority lane should accept one packet");
+        drop(priority_tx);
+
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        let mut plaintext_batch =
+            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        let item = DecryptWorkerBulkItem::FspAeadOpenBatch(vec![test_fsp_aead_open_job(
+            source_addr,
+            0,
+            Arc::new(test_chacha_key([0x67; 32])),
+            header,
+            Some(owner_idx),
+        )]);
+        batch_stats.add_bulk_item(&item);
+
+        let processed = handle_bulk_item(
+            open_idx,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fsp_aead_completion_rx,
+            item,
+            &mut plaintext_batch,
+            &mut batch_stats,
+        );
+
+        assert_eq!(processed, 1);
+        assert!(
+            priority_rx.is_empty(),
+            "priority FMP packets must not wait behind an opener bulk item"
+        );
+        assert_eq!(batch_stats.priority_packets, 1);
+        assert_eq!(batch_stats.bulk_packets, 1);
     }
 
     #[test]
