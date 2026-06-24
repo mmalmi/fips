@@ -702,7 +702,8 @@ impl DecryptWorkerOutput {
             (
                 DecryptWorkerEvent::DirectSessionCommit(commit),
                 Some(delivery),
-            ) if matches!(commit.lane, DecryptWorkerLane::Bulk) && delivery.is_endpoint_data()
+            ) if matches!(commit.lane, DecryptWorkerLane::Bulk)
+                && delivery.output_target() == Some(OutputTarget::Endpoint)
         )
     }
 
@@ -712,7 +713,8 @@ impl DecryptWorkerOutput {
             (
                 DecryptWorkerEvent::DirectSessionCommit(commit),
                 Some(delivery),
-            ) if matches!(commit.lane, DecryptWorkerLane::Bulk) && delivery.is_ipv6_packet()
+            ) if matches!(commit.lane, DecryptWorkerLane::Bulk)
+                && delivery.output_target() == Some(OutputTarget::Tun)
         )
     }
 

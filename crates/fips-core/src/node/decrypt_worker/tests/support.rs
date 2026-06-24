@@ -1995,6 +1995,49 @@
     }
 
     #[test]
+    fn pending_direct_delivery_reports_packet_mover_endpoint_target() {
+        let (endpoint_tx, _endpoint_rx) = EndpointEventSender::channel(1);
+        let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
+        let source_peer = test_source_peer();
+        let output = dummy_direct_endpoint_output(sink, source_peer, 7, b"endpoint");
+        let delivery = output
+            .direct_delivery
+            .expect("dummy direct endpoint output carries delivery");
+
+        assert_eq!(delivery.output_target(), Some(OutputTarget::Endpoint));
+    }
+
+    #[test]
+    fn pending_direct_delivery_reports_packet_mover_tun_target() {
+        let (tun_tx, _tun_rx) = std::sync::mpsc::channel();
+        let source_peer = test_source_peer();
+        let output = dummy_direct_tun_output(tun_tx, source_peer, 8, Vec::new(), false);
+        let delivery = output
+            .direct_delivery
+            .expect("dummy direct TUN output carries delivery");
+
+        assert_eq!(delivery.output_target(), Some(OutputTarget::Tun));
+    }
+
+    #[test]
+    fn pending_direct_delivery_without_sink_has_no_output_target() {
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let delivery = PendingDirectSessionDelivery {
+            sink: DecryptDirectSessionDeliverySink::default(),
+            source_addr,
+            source_peer,
+            ce_flag: false,
+            delivery: DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                source_peer,
+                b"endpoint".to_vec(),
+            )),
+        };
+
+        assert_eq!(delivery.output_target(), None);
+    }
+
+    #[test]
     fn decrypt_worker_return_drop_metric_splits_fallback_and_authenticated_outputs() {
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
         let plaintext = dummy_plaintext_event(bulk_len);

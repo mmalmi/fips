@@ -7,6 +7,10 @@ pub(crate) enum OutputTarget {
     Transport,
 }
 
+pub(crate) trait PacketOutputTarget {
+    fn output_target(&self) -> Option<OutputTarget>;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OutputDropReason {
     AdmissionPressure,

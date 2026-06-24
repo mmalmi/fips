@@ -14,8 +14,8 @@ use crate::node::{
 use crate::packet_mover::{
     CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
     DispatchBatcher, LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch,
-    OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation, PacketLane,
-    StatelessCryptoWorker,
+    OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation, OutputTarget, PacketLane,
+    PacketOutputTarget, StatelessCryptoWorker,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};
@@ -1992,11 +1992,15 @@ impl DecryptDirectSessionDeliverySink {
         }
     }
 
-    fn can_deliver(&self, delivery: &DecryptDirectSessionDelivery) -> bool {
+    fn output_target_for(&self, delivery: &DecryptDirectSessionDelivery) -> Option<OutputTarget> {
         match delivery {
-            DecryptDirectSessionDelivery::EndpointData(_) => self.endpoint_event_tx.is_some(),
+            DecryptDirectSessionDelivery::EndpointData(_) => self
+                .endpoint_event_tx
+                .is_some()
+                .then_some(OutputTarget::Endpoint),
             DecryptDirectSessionDelivery::Ipv6Packet(_) => {
-                self.external_packet_tx.is_some() || self.tun_tx.is_some()
+                (self.external_packet_tx.is_some() || self.tun_tx.is_some())
+                    .then_some(OutputTarget::Tun)
             }
         }
     }
@@ -2088,19 +2092,6 @@ impl PendingDirectSessionDelivery {
         );
     }
 
-    fn is_endpoint_data(&self) -> bool {
-        match &self.delivery {
-            DecryptDirectSessionDelivery::EndpointData(_) => {
-                self.sink.endpoint_event_sender().is_some()
-            }
-            DecryptDirectSessionDelivery::Ipv6Packet(_) => false,
-        }
-    }
-
-    fn is_ipv6_packet(&self) -> bool {
-        matches!(&self.delivery, DecryptDirectSessionDelivery::Ipv6Packet(_))
-    }
-
     #[allow(clippy::result_large_err)]
     fn into_endpoint_data(
         self,
@@ -2115,6 +2106,12 @@ impl PendingDirectSessionDelivery {
                 delivery,
             }),
         }
+    }
+}
+
+impl PacketOutputTarget for PendingDirectSessionDelivery {
+    fn output_target(&self) -> Option<OutputTarget> {
+        self.sink.output_target_for(&self.delivery)
     }
 }
 

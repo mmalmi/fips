@@ -218,8 +218,9 @@
             bulk_payload.clone(),
         ));
 
-        assert!(
-            sink.can_deliver(&delivery),
+        assert_eq!(
+            sink.output_target_for(&delivery),
+            Some(OutputTarget::Endpoint),
             "direct-hop bulk endpoint payloads should not bounce through rx_loop after worker decrypt"
         );
 
