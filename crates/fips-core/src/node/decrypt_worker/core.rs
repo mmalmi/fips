@@ -16,7 +16,7 @@ use crate::transport::{PacketBuffer, TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::{
@@ -366,7 +366,7 @@ impl OwnedFspSessionState {
 
     #[cfg(test)]
     fn fsp_receive_order_next_ready(&self) -> u64 {
-        self.fsp_receive_order.completions.next_ready()
+        self.fsp_receive_order.next_ready()
     }
 
     fn current_epoch_matches(&self, header: &FspEncryptedHeader) -> bool {
@@ -606,148 +606,10 @@ impl OwnedFspSessionState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct OrderedReceiveTicket {
-    sequence: u64,
-}
-
+type OrderedReceiveTicket = crate::packet_mover::OwnerReceiveTicket;
 type FspReceiveTicket = OrderedReceiveTicket;
-
-#[derive(Debug)]
-enum OrderedCompletionError {
-    Stale,
-    Duplicate,
-    WindowExceeded,
-}
-
-#[derive(Debug)]
-struct OrderedCompletionBuffer<T> {
-    next_ready: u64,
-    pending: VecDeque<Option<T>>,
-    pending_limit: usize,
-}
-
-impl<T> OrderedCompletionBuffer<T> {
-    fn new(pending_limit: usize) -> Self {
-        Self {
-            next_ready: 0,
-            pending: VecDeque::new(),
-            pending_limit: pending_limit.max(1),
-        }
-    }
-
-    fn complete(
-        &mut self,
-        ticket: OrderedReceiveTicket,
-        completion: T,
-        mut on_ready: impl FnMut(T),
-    ) -> Result<usize, OrderedCompletionError> {
-        if ticket.sequence < self.next_ready {
-            return Err(OrderedCompletionError::Stale);
-        }
-
-        let offset = (ticket.sequence - self.next_ready) as usize;
-        if offset == 0 {
-            on_ready(completion);
-            self.next_ready = self.next_ready.saturating_add(1);
-            if !self.pending.is_empty() {
-                let _ = self.pending.pop_front();
-            }
-
-            let mut ready = 1;
-            while matches!(self.pending.front(), Some(Some(_))) {
-                let completion = self
-                    .pending
-                    .pop_front()
-                    .and_then(|completion| completion)
-                    .expect("checked ready pending completion");
-                on_ready(completion);
-                self.next_ready = self.next_ready.saturating_add(1);
-                ready += 1;
-            }
-            return Ok(ready);
-        }
-
-        if offset >= self.pending_limit {
-            return Err(OrderedCompletionError::WindowExceeded);
-        }
-
-        if self.pending.len() <= offset {
-            self.pending.resize_with(offset + 1, || None);
-        }
-        if self.pending[offset].is_some() {
-            return Err(OrderedCompletionError::Duplicate);
-        }
-        self.pending[offset] = Some(completion);
-        Ok(0)
-    }
-
-    fn next_ready(&self) -> u64 {
-        self.next_ready
-    }
-
-    fn pending_limit(&self) -> usize {
-        self.pending_limit
-    }
-}
-
-struct OrderedReceiveWindow<T> {
-    next_ticket: u64,
-    completions: OrderedCompletionBuffer<T>,
-}
-
-impl<T> OrderedReceiveWindow<T> {
-    fn new(pending_limit: usize) -> Self {
-        Self {
-            next_ticket: 0,
-            completions: OrderedCompletionBuffer::new(pending_limit),
-        }
-    }
-
-    fn issue(&mut self) -> Option<OrderedReceiveTicket> {
-        self.issue_with_reserve(0)
-    }
-
-    fn issue_with_reserve(&mut self, reserve: usize) -> Option<OrderedReceiveTicket> {
-        self.issue_batch_with_reserve(1, reserve)
-            .map(|sequence| OrderedReceiveTicket { sequence })
-    }
-
-    fn issue_batch_with_reserve(&mut self, count: usize, reserve: usize) -> Option<u64> {
-        if count == 0 {
-            return Some(self.next_ticket);
-        }
-        let limit = self.completions.pending_limit().saturating_sub(reserve);
-        if limit == 0 {
-            return None;
-        }
-        let count = count as u64;
-        let in_flight = self.next_ticket.saturating_sub(self.completions.next_ready());
-        if in_flight.saturating_add(count) > limit as u64 {
-            return None;
-        }
-        let first = self.next_ticket;
-        self.next_ticket = self.next_ticket.saturating_add(count);
-        Some(first)
-    }
-
-    fn next_ticket(&self) -> u64 {
-        self.next_ticket
-    }
-
-    fn advance_next_ticket_to(&mut self, next_ticket: u64) {
-        self.next_ticket = self.next_ticket.max(next_ticket);
-    }
-
-    fn complete(
-        &mut self,
-        ticket: OrderedReceiveTicket,
-        completion: T,
-        on_ready: impl FnMut(T),
-    ) -> Result<usize, OrderedCompletionError> {
-        self.completions.complete(ticket, completion, on_ready)
-    }
-}
+type OrderedCompletionError = crate::packet_mover::OwnerCompletionError;
+type OrderedReceiveWindow<T> = crate::packet_mover::OwnerReceiveWindow<T>;
 
 type FspReceiveOrder = OrderedReceiveWindow<FspOrderedCompletion>;
 

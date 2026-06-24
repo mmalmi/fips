@@ -59,8 +59,8 @@ pub(crate) use output::{
     VecOutputSink,
 };
 pub(crate) use owner::{
-    OrderSequence, OrderToken, OwnerGeneration, OwnerKey, OwnerReservation, OwnerReserveError,
-    OwnerSequencer, OwnerWindow,
+    OrderSequence, OrderToken, OwnerCompletionError, OwnerGeneration, OwnerKey, OwnerReceiveTicket,
+    OwnerReceiveWindow, OwnerReservation, OwnerReserveError, OwnerSequencer, OwnerWindow,
 };
 pub(crate) use queues::{
     BoundedLaneQueues, LaneCreditGate, LaneCreditReservation, QueueAdmission, QueueCaps,

@@ -99,7 +99,7 @@
             3
         );
         assert_eq!(ready, vec!["first", "second", "third"]);
-        assert_eq!(window.completions.next_ready(), 3);
+        assert_eq!(window.next_ready(), 3);
     }
 
     #[test]

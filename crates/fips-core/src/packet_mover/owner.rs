@@ -1,5 +1,6 @@
 use super::PacketLane;
 use crate::NodeAddr;
+use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum OwnerKey {
@@ -37,8 +38,156 @@ pub(crate) enum OwnerReserveError {
     MissingOwner { owner: OwnerKey },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OwnerReceiveTicket {
+    pub(crate) sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnerCompletionError {
+    Stale,
+    Duplicate,
+    WindowExceeded,
+}
+
+#[derive(Debug)]
+struct OwnerCompletionBuffer<T> {
+    next_ready: u64,
+    pending: VecDeque<Option<T>>,
+    pending_limit: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct OwnerReceiveWindow<T> {
+    next_ticket: u64,
+    completions: OwnerCompletionBuffer<T>,
+}
+
 pub(crate) trait OwnerSequencer<P, W> {
     fn reserve(&mut self, packet: P) -> Result<W, OwnerReserveError>;
+}
+
+impl<T> OwnerCompletionBuffer<T> {
+    fn new(pending_limit: usize) -> Self {
+        Self {
+            next_ready: 0,
+            pending: VecDeque::new(),
+            pending_limit: pending_limit.max(1),
+        }
+    }
+
+    fn complete(
+        &mut self,
+        ticket: OwnerReceiveTicket,
+        completion: T,
+        mut on_ready: impl FnMut(T),
+    ) -> Result<usize, OwnerCompletionError> {
+        if ticket.sequence < self.next_ready {
+            return Err(OwnerCompletionError::Stale);
+        }
+
+        let offset = (ticket.sequence - self.next_ready) as usize;
+        if offset == 0 {
+            on_ready(completion);
+            self.next_ready = self.next_ready.saturating_add(1);
+            if !self.pending.is_empty() {
+                let _ = self.pending.pop_front();
+            }
+
+            let mut ready = 1;
+            while matches!(self.pending.front(), Some(Some(_))) {
+                let completion = self
+                    .pending
+                    .pop_front()
+                    .and_then(|completion| completion)
+                    .expect("checked ready pending completion");
+                on_ready(completion);
+                self.next_ready = self.next_ready.saturating_add(1);
+                ready += 1;
+            }
+            return Ok(ready);
+        }
+
+        if offset >= self.pending_limit {
+            return Err(OwnerCompletionError::WindowExceeded);
+        }
+
+        if self.pending.len() <= offset {
+            self.pending.resize_with(offset + 1, || None);
+        }
+        if self.pending[offset].is_some() {
+            return Err(OwnerCompletionError::Duplicate);
+        }
+        self.pending[offset] = Some(completion);
+        Ok(0)
+    }
+
+    fn next_ready(&self) -> u64 {
+        self.next_ready
+    }
+
+    fn pending_limit(&self) -> usize {
+        self.pending_limit
+    }
+}
+
+impl<T> OwnerReceiveWindow<T> {
+    pub(crate) fn new(pending_limit: usize) -> Self {
+        Self {
+            next_ticket: 0,
+            completions: OwnerCompletionBuffer::new(pending_limit),
+        }
+    }
+
+    pub(crate) fn issue(&mut self) -> Option<OwnerReceiveTicket> {
+        self.issue_with_reserve(0)
+    }
+
+    pub(crate) fn issue_with_reserve(&mut self, reserve: usize) -> Option<OwnerReceiveTicket> {
+        self.issue_batch_with_reserve(1, reserve)
+            .map(|sequence| OwnerReceiveTicket { sequence })
+    }
+
+    pub(crate) fn issue_batch_with_reserve(&mut self, count: usize, reserve: usize) -> Option<u64> {
+        if count == 0 {
+            return Some(self.next_ticket);
+        }
+        let limit = self.completions.pending_limit().saturating_sub(reserve);
+        if limit == 0 {
+            return None;
+        }
+        let count = count as u64;
+        let in_flight = self
+            .next_ticket
+            .saturating_sub(self.completions.next_ready());
+        if in_flight.saturating_add(count) > limit as u64 {
+            return None;
+        }
+        let first = self.next_ticket;
+        self.next_ticket = self.next_ticket.saturating_add(count);
+        Some(first)
+    }
+
+    pub(crate) fn next_ticket(&self) -> u64 {
+        self.next_ticket
+    }
+
+    pub(crate) fn next_ready(&self) -> u64 {
+        self.completions.next_ready()
+    }
+
+    pub(crate) fn advance_next_ticket_to(&mut self, next_ticket: u64) {
+        self.next_ticket = self.next_ticket.max(next_ticket);
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        ticket: OwnerReceiveTicket,
+        completion: T,
+        on_ready: impl FnMut(T),
+    ) -> Result<usize, OwnerCompletionError> {
+        self.completions.complete(ticket, completion, on_ready)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,5 +288,52 @@ mod tests {
 
         window.release(reservation);
         assert!(window.reserve(PacketLane::Bulk, 1).is_ok());
+    }
+
+    #[test]
+    fn owner_receive_window_buffers_until_oldest_completion_is_ready() {
+        let mut window = OwnerReceiveWindow::new(4);
+        let first = window.issue().expect("first ticket");
+        let second = window.issue().expect("second ticket");
+        let third = window.issue().expect("third ticket");
+
+        let mut ready = Vec::new();
+        assert_eq!(
+            window
+                .complete(second, "second", |completion| ready.push(completion))
+                .expect("second completion should buffer"),
+            0
+        );
+        assert_eq!(
+            window
+                .complete(third, "third", |completion| ready.push(completion))
+                .expect("third completion should buffer"),
+            0
+        );
+        assert!(ready.is_empty());
+
+        assert_eq!(
+            window
+                .complete(first, "first", |completion| ready.push(completion))
+                .expect("first completion should drain all ready completions"),
+            3
+        );
+        assert_eq!(ready, vec!["first", "second", "third"]);
+        assert_eq!(window.next_ready(), 3);
+    }
+
+    #[test]
+    fn owner_receive_window_bounds_in_flight_tickets_with_reserve() {
+        let mut window = OwnerReceiveWindow::<&'static str>::new(4);
+        assert_eq!(
+            window
+                .issue_batch_with_reserve(2, 2)
+                .expect("bulk should fit before reserve"),
+            0
+        );
+        assert!(window.issue_with_reserve(2).is_none());
+        assert_eq!(window.issue().expect("reserved ticket").sequence, 2);
+        assert_eq!(window.issue().expect("reserved ticket").sequence, 3);
+        assert!(window.issue().is_none());
     }
 }
