@@ -21,19 +21,7 @@ use tracing::warn;
 
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_connected_udp_enabled(config_enabled: bool) -> bool {
-    macos_env_flag("FIPS_CONNECTED_UDP")
-        .or_else(|| macos_env_flag("FIPS_MACOS_CONNECTED_UDP").filter(|enabled| *enabled))
-        .unwrap_or(config_enabled)
-}
-
-#[cfg(target_os = "macos")]
-fn macos_env_flag(name: &str) -> Option<bool> {
-    let value = std::env::var(name).ok()?;
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
+    config_enabled
 }
 
 /// Maximum number of datagrams a single `recvmmsg` syscall pulls from the

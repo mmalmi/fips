@@ -25,20 +25,18 @@
 //! Darwin tests found liveness regressions under load. Later performance work
 //! made the connected path available, but mobile/hotspot testing showed the
 //! `SO_REUSEPORT` listener group can still destabilize the wildcard receive
-//! path when the application has not opted into the fast path. Keep macOS
+//! path when the application has not opted into the connected socket path. Keep macOS
 //! opt-in so listener setup, socket activation, and app config agree. Peers
 //! with a configured static UDP endpoint stay on wildcard UDP because NAT/VM
 //! paths can drift between the configured endpoint and observed source tuples,
 //! and liveness recovery must accept either path. Operators can configure it
-//! through `node.connected_udp.*`; `FIPS_CONNECTED_UDP` and
-//! `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment overrides for A/B tests.
-//! `node.connected_udp.max_peers` / `FIPS_CONNECTED_UDP_MAX_PEERS`
-//! caps the one-drain-thread-per-peer fast path for large meshes without
+//! through `node.connected_udp.*`; `FIPS_CONNECTED_UDP_FD_RESERVE`,
+//! `FIPS_CONNECTED_UDP_MAX_PEERS`, and the connected-UDP buffer env vars remain
+//! sizing overrides for controlled load tests. `node.connected_udp.max_peers`
+//! caps the one-drain-thread-per-peer socket path for large meshes without
 //! disabling wildcard UDP delivery. Peer-cap and fd-budget skips are reported
 //! as perf events so a large mesh can show why some peers stayed on wildcard
-//! UDP without looking like activation failures. The old macOS-specific
-//! `FIPS_MACOS_CONNECTED_UDP=1` still enables the macOS path for legacy lab
-//! plists.
+//! UDP without looking like activation failures.
 
 use crate::NodeAddr;
 use crate::node::Node;
@@ -64,7 +62,7 @@ impl Node {
     pub(in crate::node) async fn activate_connected_udp_sessions(&mut self) {
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            // No-op on platforms without the connected-UDP fast path.
+            // No-op on platforms without the connected-UDP socket path.
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
@@ -187,26 +185,15 @@ impl Node {
                 .configured_static_udp_path_for_peer(node_addr, tid)
                 .as_ref()
             {
-                let forced = connected_udp_env_forced_enabled();
                 let current_matches_configured = &addr == configured_addr;
-                if connected_udp_static_path_allows_install(forced, current_matches_configured) {
-                    debug!(
-                        peer = %self.peer_display_name(node_addr),
-                        current_addr = %addr,
-                        configured_addr = %configured_addr,
-                        "connected UDP forced for matching configured static UDP endpoint"
-                    );
-                } else {
-                    debug!(
-                        peer = %self.peer_display_name(node_addr),
-                        current_addr = %addr,
-                        configured_addr = %configured_addr,
-                        forced,
-                        current_matches_configured,
-                        "connected UDP skipped for peer with configured static UDP endpoint"
-                    );
-                    return Ok(false);
-                }
+                debug!(
+                    peer = %self.peer_display_name(node_addr),
+                    current_addr = %addr,
+                    configured_addr = %configured_addr,
+                    current_matches_configured,
+                    "connected UDP skipped for peer with configured static UDP endpoint"
+                );
+                return Ok(false);
             }
             (tid, addr)
         };
@@ -327,42 +314,14 @@ impl Node {
     pub(in crate::node) fn clear_connected_udp_for_peer(&mut self, _node_addr: &NodeAddr) {}
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_env_forced_enabled() -> bool {
-    env_flag("FIPS_CONNECTED_UDP") == Some(true)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_static_path_allows_install(
-    forced: bool,
-    current_matches_configured: bool,
-) -> bool {
-    forced && current_matches_configured
-}
-
 #[cfg(target_os = "linux")]
 fn connected_udp_enabled(config_enabled: bool) -> bool {
-    env_flag("FIPS_CONNECTED_UDP").unwrap_or(config_enabled)
+    config_enabled
 }
 
 #[cfg(target_os = "macos")]
 fn connected_udp_enabled(config_enabled: bool) -> bool {
     crate::transport::udp::socket::macos_connected_udp_enabled(config_enabled)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn env_flag(name: &str) -> Option<bool> {
-    let value = std::env::var(name).ok()?;
-    parse_env_flag(&value)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
-fn parse_env_flag(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -472,33 +431,6 @@ fn connected_udp_fd_budget_skipped_candidates(
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn connected_udp_decrypt_fast_path_env_flag_parser_is_explicit() {
-        assert_eq!(parse_env_flag("1"), Some(true));
-        assert_eq!(parse_env_flag("true"), Some(true));
-        assert_eq!(parse_env_flag("ON"), Some(true));
-        assert_eq!(parse_env_flag("0"), Some(false));
-        assert_eq!(parse_env_flag("false"), Some(false));
-        assert_eq!(parse_env_flag("off"), Some(false));
-        assert_eq!(parse_env_flag("maybe"), None);
-    }
-
-    #[test]
-    fn static_configured_path_requires_explicit_force_and_matching_tuple() {
-        assert!(
-            !connected_udp_static_path_allows_install(false, true),
-            "static configured peers stay on wildcard UDP unless explicitly forced"
-        );
-        assert!(
-            !connected_udp_static_path_allows_install(true, false),
-            "forced static connected UDP must not hide configured/observed path drift"
-        );
-        assert!(
-            connected_udp_static_path_allows_install(true, true),
-            "controlled A/B can force static connected UDP when the tuple still matches"
-        );
-    }
 
     #[test]
     fn fd_budget_reserves_headroom_for_other_sockets() {
