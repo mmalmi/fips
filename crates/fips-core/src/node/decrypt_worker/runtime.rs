@@ -649,9 +649,13 @@ fn handle_bulk_item_with_buffers(
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count
         }
-        DecryptWorkerBulkItem::Batch { session_key, jobs } => {
+        DecryptWorkerBulkItem::Batch(jobs) => {
             let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();
+            let session_key = jobs
+                .first()
+                .expect("decrypt worker bulk batch must not be empty")
+                .session_key();
             let item_started_at = crate::perf_profile::stamp();
             let trace_enabled = crate::perf_profile::enabled();
             if let Some(job) = jobs.first() {

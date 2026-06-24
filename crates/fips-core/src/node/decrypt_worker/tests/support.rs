@@ -475,7 +475,7 @@
             .expect("opener batch work should be queued");
         match &item {
             DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => assert_eq!(jobs.len(), 2),
-            DecryptWorkerBulkItem::Batch { .. }
+            DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
         }
 
@@ -542,7 +542,7 @@
                 let job = jobs.pop().expect("checked one opener job");
                 assert_eq!(job.completion_owner_idx, Some(owner_idx));
             }
-            DecryptWorkerBulkItem::Batch { .. }
+            DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a one-job opener batch"),
         }
     }
@@ -615,7 +615,7 @@
             .expect("opener work should dispatch at the batch boundary")
         {
             DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => assert_eq!(jobs.len(), 2),
-            DecryptWorkerBulkItem::Batch { .. }
+            DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
         }
     }
@@ -695,7 +695,7 @@
                         .all(|job| job.completion_source.is_worker_open())
                 );
             }
-            DecryptWorkerBulkItem::Batch { .. }
+            DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
         }
         assert_eq!(
@@ -746,7 +746,7 @@
                 );
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::Batch { .. } => panic!("expected owner FSP job handoff"),
+            | DecryptWorkerBulkItem::Batch(_) => panic!("expected owner FSP job handoff"),
         }
         assert_eq!(
             bulk_receivers[current_idx].len(),
@@ -822,7 +822,7 @@
                 assert_eq!(job.ticket.sequence, 0);
                 assert!(job.completion_source.is_worker_open());
             }
-            DecryptWorkerBulkItem::Batch { .. }
+            DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected one-job opener batch"),
         }
         assert_eq!(
@@ -898,7 +898,7 @@
                 assert_eq!(job.ticket.sequence, 0);
                 assert!(job.completion_source.is_worker_open());
             }
-            DecryptWorkerBulkItem::Batch { .. }
+            DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected one-job opener batch"),
         }
         assert_eq!(

@@ -315,7 +315,7 @@
         ));
         assert!(matches!(
             bulk_rx.try_recv().expect("bulk item"),
-            DecryptWorkerBulkItem::Batch { .. }
+            DecryptWorkerBulkItem::Batch(_)
         ));
     }
 
@@ -337,7 +337,7 @@
         assert!(
             matches!(
                 bulk_rx.try_recv().expect("single packet bulk item"),
-                DecryptWorkerBulkItem::Batch { .. }
+                DecryptWorkerBulkItem::Batch(_)
             ),
             "single-packet capacity must enqueue a one-packet batch"
         );
@@ -362,7 +362,7 @@
         assert!(
             matches!(
                 bulk_rx[0].try_recv().expect("single bulk item"),
-                DecryptWorkerBulkItem::Batch { .. }
+                DecryptWorkerBulkItem::Batch(_)
             ),
             "single-job flush should dispatch one canonical bulk batch"
         );
@@ -388,16 +388,13 @@
             "worker packet capacity should be consumed by one bounded batch"
         );
         match bulk_rx[0].try_recv().expect("bounded bulk batch") {
-            DecryptWorkerBulkItem::Batch {
-                session_key: batch_session_key,
-                jobs,
-            } => {
-                assert_eq!(batch_session_key, session_key);
+            DecryptWorkerBulkItem::Batch(jobs) => {
                 assert_eq!(
                     jobs.len(),
                     WORKER_PACKET_CAP,
                     "batch width should stop at the worker packet capacity"
                 );
+                assert!(jobs.iter().all(|job| job.session_key() == session_key));
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected an eight-packet bulk batch")
