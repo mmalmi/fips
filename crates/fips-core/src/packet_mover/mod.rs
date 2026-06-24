@@ -43,6 +43,7 @@ mod admission;
 mod crypto;
 mod output;
 mod owner;
+mod pipeline;
 mod queues;
 mod retire;
 
@@ -62,6 +63,10 @@ pub(crate) use output::{
 pub(crate) use owner::{
     OrderSequence, OrderToken, OwnerCompletionError, OwnerGeneration, OwnerKey, OwnerReceiveTicket,
     OwnerReceiveWindow, OwnerReservation, OwnerReserveError, OwnerSequencer, OwnerWindow,
+};
+pub(crate) use pipeline::{
+    CanonicalOwnerPacketMover, CanonicalOwnerPacketMoverConfig, PacketMoverDispatch,
+    PacketMoverRetireError,
 };
 pub(crate) use queues::{
     BoundedLaneQueues, DispatchBatcher, LaneCreditGate, LaneCreditReservation, QueueAdmission,

@@ -139,14 +139,26 @@ fn take_items<T>(items: &mut Vec<T>, capacity: usize) -> CommitBeforeOutputItems
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct VecOutputSink<P> {
     outputs: Vec<RetiredPacket<P>>,
+}
+
+impl<P> Default for VecOutputSink<P> {
+    fn default() -> Self {
+        Self {
+            outputs: Vec::new(),
+        }
+    }
 }
 
 impl<P> VecOutputSink<P> {
     pub(crate) fn into_outputs(self) -> Vec<RetiredPacket<P>> {
         self.outputs
+    }
+
+    pub(crate) fn take_outputs(&mut self) -> Vec<RetiredPacket<P>> {
+        std::mem::take(&mut self.outputs)
     }
 }
 
