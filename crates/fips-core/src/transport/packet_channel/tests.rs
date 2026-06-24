@@ -569,6 +569,55 @@ async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
 }
 
 #[tokio::test]
+async fn packet_channel_bounded_priority_drops_without_blocking_bulk() {
+    crate::perf_profile::force_event_counters_for_test();
+    let dropped_before = crate::perf_profile::event_count_for_test(
+        crate::perf_profile::Event::TransportPriorityDropped,
+    );
+    let (tx, mut rx) = packet_channel(1);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        vec![0x11; 32],
+    ))
+    .expect("first priority packet should fill bounded priority lane");
+    assert_eq!(tx.queued_packets(), 1);
+    assert_eq!(tx.priority_queued_packets(), 1);
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        vec![0x22; 48],
+    ))
+    .expect("full priority lane should drop overload without closing sender");
+    assert!(
+        crate::perf_profile::event_count_for_test(
+            crate::perf_profile::Event::TransportPriorityDropped
+        ) - dropped_before
+            >= 1
+    );
+    assert_eq!(tx.queued_packets(), 1);
+    assert_eq!(tx.priority_queued_packets(), 1);
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+    ))
+    .expect("bulk packet should still enter its separate bounded lane");
+    assert_eq!(tx.queued_packets(), 2);
+    assert_eq!(tx.bulk_queued_packets(), 1);
+
+    assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
+    assert_eq!(tx.priority_queued_packets(), 0);
+    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+    assert_eq!(tx.bulk_queued_packets(), 0);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[tokio::test]
 async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
     let (tx, mut rx) = packet_channel(2);
     let addr = TransportAddr::from_string("test");
@@ -695,6 +744,40 @@ async fn packet_channel_bounded_bulk_batch_admits_prefix_before_dropping_tail() 
         "dequeued bulk batch should release all admitted prefix credits"
     );
     assert_eq!(rx.recv().await.unwrap().data[0], 0xbc);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[tokio::test]
+async fn packet_channel_bounded_priority_batch_admits_prefix_before_dropping_tail() {
+    crate::perf_profile::force_event_counters_for_test();
+    let dropped_before = crate::perf_profile::event_count_for_test(
+        crate::perf_profile::Event::TransportPriorityDropped,
+    );
+    let (tx, mut rx) = packet_channel(2);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send_batch(vec![
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+        ReceivedPacket::new(TransportId::new(1), addr, vec![0x33; 64]),
+    ])
+    .expect("partial priority admission should shed only overflow tail");
+    assert!(
+        crate::perf_profile::event_count_for_test(
+            crate::perf_profile::Event::TransportPriorityDropped
+        ) - dropped_before
+            >= 1
+    );
+    assert_eq!(tx.queued_packets(), 2);
+    assert_eq!(tx.priority_queued_packets(), 2);
+
+    assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
+    assert_eq!(
+        tx.priority_queued_packets(),
+        0,
+        "dequeued priority batch should release all admitted prefix credits"
+    );
+    assert_eq!(rx.recv().await.unwrap().data[0], 0x22);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 }
 

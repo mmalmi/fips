@@ -79,7 +79,7 @@
 //!   * `FSP_AEAD_WORKER_OPEN_COMPLETION_WAIT` — FSP opener-worker completion residence
 //!   * `CONNECTED_UDP_DRAIN_RECV` — connected peer socket `recvmmsg` drain batch
 //!   * `CONNECTED_UDP_DRAIN_RING_WAIT` — connected peer socket drain → userspace dispatch
-//!   * `CONNECTED_UDP_FAST_PATH_DISPATCH` — drained connected peer packet dispatch + flush
+//!   * `CONNECTED_UDP_DRAIN_DISPATCH` — drained connected peer packet-channel admission
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -95,7 +95,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 262;
+const N_EVENTS: usize = 263;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -738,6 +738,7 @@ pub enum Event {
     DecryptWorkerFspOpenQueueDepthGe256 = 259,
     DecryptWorkerFspOpenQueueDepthGe1024 = 260,
     DecryptWorkerFspOpenQueueDepthGe4096 = 261,
+    TransportPriorityDropped = 262,
 }
 
 impl Event {
@@ -763,6 +764,7 @@ impl Event {
                 | Event::EndpointEventBacklogHigh
                 | Event::EndpointCommandBulkDropped
                 | Event::TransportChannelBacklogHigh
+                | Event::TransportPriorityDropped
                 | Event::TransportBulkDropped
                 | Event::EndpointEventBulkDropped
                 | Event::DecryptFallbackBacklogHigh
@@ -866,6 +868,7 @@ impl Event {
             Event::EndpointEventBacklogHigh => "endpoint_event_backlog_high",
             Event::EndpointCommandBulkDropped => "endpoint_command_bulk_dropped",
             Event::TransportChannelBacklogHigh => "transport_channel_backlog_high",
+            Event::TransportPriorityDropped => "transport_priority_dropped",
             Event::TransportBulkDropped => "transport_bulk_dropped",
             Event::EndpointEventBulkDropped => "endpoint_event_bulk_dropped",
             Event::ReservedRetiredEvent26 => "reserved_retired_event_26",
@@ -1506,6 +1509,7 @@ fn event_from_index(idx: usize) -> Event {
         259 => Event::DecryptWorkerFspOpenQueueDepthGe256,
         260 => Event::DecryptWorkerFspOpenQueueDepthGe1024,
         261 => Event::DecryptWorkerFspOpenQueueDepthGe4096,
+        262 => Event::TransportPriorityDropped,
         _ => unreachable!(),
     }
 }
