@@ -18,6 +18,7 @@ pub mod identity {
 pub mod mmp;
 pub mod node;
 pub mod noise;
+pub(crate) mod packet_mover;
 pub mod peer;
 pub(crate) mod perf_profile;
 pub mod protocol;
