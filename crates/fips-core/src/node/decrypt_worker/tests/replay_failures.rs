@@ -275,6 +275,155 @@
     }
 
     #[test]
+    fn fmp_owner_retire_accepts_replay_only_after_open_completion() {
+        let key_bytes = [0x64u8; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let counter = 33;
+        let flags = crate::node::wire::FLAG_SP;
+        let mut state =
+            OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer());
+
+        let (invalid_packet, invalid_header) = invalid_fmp_test_packet(flags);
+        let invalid_reservation = state
+            .reserve_fmp_open(DecryptWorkerLane::Priority, counter)
+            .expect("fresh counter should reserve an FMP owner ticket");
+        let mut opener = FmpAeadOpener;
+        let invalid_completion = FmpAeadCompletion::new(
+            invalid_reservation,
+            opener.execute(state.fmp_open_work(
+                invalid_reservation,
+                invalid_packet.into(),
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                counter,
+                flags,
+                invalid_header,
+            )),
+        );
+        let mut failure = None;
+        assert_eq!(
+            state
+                .complete_fmp_aead_completion(invalid_completion, |ready| failure = Some(ready))
+                .expect("invalid FMP completion should retire"),
+            1
+        );
+        assert!(matches!(
+            failure,
+            Some(FmpReadyCompletion::DecryptFailure {
+                fmp_counter,
+                fmp_replay_highest: 0,
+            }) if fmp_counter == counter
+        ));
+        assert!(
+            state.fmp_replay.check(counter),
+            "failed AEAD completion must not consume the owner replay window"
+        );
+
+        let (valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        let valid_reservation = state
+            .reserve_fmp_open(DecryptWorkerLane::Priority, counter)
+            .expect("failed AEAD must leave the counter available");
+        let valid_completion = FmpAeadCompletion::new(
+            valid_reservation,
+            opener.execute(state.fmp_open_work(
+                valid_reservation,
+                valid_packet.into(),
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                counter,
+                flags,
+                valid_header,
+            )),
+        );
+        let mut opened_len = None;
+        assert_eq!(
+            state
+                .complete_fmp_aead_completion(valid_completion, |ready| {
+                    if let FmpReadyCompletion::Opened(opened) = ready {
+                        opened_len = Some(opened.plaintext_len);
+                    }
+                })
+                .expect("valid FMP completion should retire"),
+            1
+        );
+        assert_eq!(opened_len, Some(5));
+        assert_eq!(
+            state.fmp_replay.highest(),
+            counter,
+            "successful owner-retired open must accept replay"
+        );
+    }
+
+    #[test]
+    fn fmp_owner_retire_holds_later_crypto_completion_until_gap_arrives() {
+        let key_bytes = [0x65u8; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let flags = crate::node::wire::FLAG_SP;
+        let mut state =
+            OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer());
+        let mut opener = FmpAeadOpener;
+
+        let (first_packet, first_header) = sealed_fmp_test_packet(&seal_cipher, 41, flags);
+        let first_reservation = state
+            .reserve_fmp_open(DecryptWorkerLane::Bulk, 41)
+            .expect("first FMP ticket");
+        let first_completion = FmpAeadCompletion::new(
+            first_reservation,
+            opener.execute(state.fmp_open_work(
+                first_reservation,
+                first_packet.into(),
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                41,
+                flags,
+                first_header,
+            )),
+        );
+
+        let (second_packet, second_header) = sealed_fmp_test_packet(&seal_cipher, 42, flags);
+        let second_reservation = state
+            .reserve_fmp_open(DecryptWorkerLane::Bulk, 42)
+            .expect("second FMP ticket");
+        let second_completion = FmpAeadCompletion::new(
+            second_reservation,
+            opener.execute(state.fmp_open_work(
+                second_reservation,
+                second_packet.into(),
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                42,
+                flags,
+                second_header,
+            )),
+        );
+
+        let mut ready = 0;
+        assert_eq!(
+            state
+                .complete_fmp_aead_completion(second_completion, |_| ready += 1)
+                .expect("second completion should be held"),
+            0
+        );
+        assert_eq!(ready, 0);
+        assert_eq!(
+            state.fmp_replay.highest(),
+            0,
+            "later FMP completion must not accept replay before the owner gap retires"
+        );
+
+        assert_eq!(
+            state
+                .complete_fmp_aead_completion(first_completion, |_| ready += 1)
+                .expect("first completion should release both packets"),
+            2
+        );
+        assert_eq!(ready, 2);
+        assert_eq!(
+            state.fmp_replay.highest(),
+            42,
+            "owner retire should accept ready FMP completions in receive order"
+        );
+    }
+
+    #[test]
     fn fmp_replay_precheck_keeps_counter_available_until_accept() {
         let key_bytes = [0x55u8; 32];
         let seal_cipher = test_chacha_key(key_bytes);

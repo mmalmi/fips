@@ -33,7 +33,9 @@ pub(crate) enum CryptoReject {
 }
 
 pub(crate) trait StatelessCryptoWorker<W> {
-    fn execute(&mut self, work: CryptoWork<W>) -> CryptoCompletion<W>;
+    type Output;
+
+    fn execute(&mut self, work: CryptoWork<W>) -> CryptoCompletion<Self::Output>;
 }
 
 pub(crate) trait OwnerOrderedCompletion {
@@ -108,7 +110,9 @@ const DEFAULT_OWNER_COMPLETION_BATCH_CAPACITY: usize = 16;
 pub(crate) struct NoopCryptoWorker;
 
 impl<W> StatelessCryptoWorker<W> for NoopCryptoWorker {
-    fn execute(&mut self, work: CryptoWork<W>) -> CryptoCompletion<W> {
+    type Output = W;
+
+    fn execute(&mut self, work: CryptoWork<W>) -> CryptoCompletion<Self::Output> {
         CryptoCompletion {
             ticket: work.ticket,
             result: CryptoResult::Opened(work.work),
@@ -146,6 +150,46 @@ mod tests {
 
         assert_eq!(completion.ticket.reservation, reservation);
         assert_eq!(completion.result, CryptoResult::Opened("payload"));
+    }
+
+    #[test]
+    fn stateless_worker_can_return_transformed_output() {
+        struct LenWorker;
+
+        impl StatelessCryptoWorker<&'static str> for LenWorker {
+            type Output = usize;
+
+            fn execute(
+                &mut self,
+                work: CryptoWork<&'static str>,
+            ) -> CryptoCompletion<Self::Output> {
+                CryptoCompletion {
+                    ticket: work.ticket,
+                    result: CryptoResult::Opened(work.work.len()),
+                }
+            }
+        }
+
+        let reservation = OwnerReservation {
+            owner: OwnerKey::Fmp {
+                source_addr: NodeAddr::from_bytes([2; 16]),
+            },
+            generation: OwnerGeneration(10),
+            order: OrderToken {
+                receive_order_id: 5,
+                sequence: OrderSequence(8),
+            },
+            lane: PacketLane::Priority,
+            packet_count: 1,
+        };
+        let mut worker = LenWorker;
+        let completion = worker.execute(CryptoWork {
+            ticket: CryptoTicket { reservation },
+            work: "packet",
+        });
+
+        assert_eq!(completion.ticket.reservation, reservation);
+        assert_eq!(completion.result, CryptoResult::Opened(6));
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]

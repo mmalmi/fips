@@ -12,8 +12,9 @@ use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
 use crate::packet_mover::{
-    CryptoTicket, LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch,
-    OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation, PacketLane,
+    CryptoCompletion, CryptoReject, CryptoResult, CryptoTicket, CryptoWork, LaneCreditGate,
+    OrderSequence, OrderToken, OwnerCompletionBatch, OwnerGeneration, OwnerKey,
+    OwnerOrderedCompletion, OwnerReservation, PacketLane, StatelessCryptoWorker,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};
@@ -69,6 +70,8 @@ const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
     DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FSP_CRYPTO_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_FMP_CRYPTO_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -250,6 +253,9 @@ fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
 pub(crate) struct OwnedSessionState {
     fmp_cipher: Arc<LessSafeKey>,
     fmp_replay: ReplayWindow,
+    fmp_crypto_generation: u64,
+    fmp_receive_order_id: u64,
+    fmp_receive_order: FmpReceiveOrder,
     source_peer: PeerIdentity,
 }
 
@@ -745,11 +751,17 @@ impl OwnedFspSessionState {
 }
 
 type OrderedReceiveTicket = crate::packet_mover::OwnerReceiveTicket;
+type FmpReceiveTicket = OrderedReceiveTicket;
 type FspReceiveTicket = OrderedReceiveTicket;
 type OrderedCompletionError = crate::packet_mover::OwnerCompletionError;
 type OrderedReceiveWindow<T> = crate::packet_mover::OwnerReceiveWindow<T>;
 
+type FmpReceiveOrder = OrderedReceiveWindow<FmpOrderedCompletion>;
 type FspReceiveOrder = OrderedReceiveWindow<FspOrderedCompletion>;
+
+fn new_fmp_receive_order() -> FmpReceiveOrder {
+    OrderedReceiveWindow::new(fsp_receive_window())
+}
 
 fn new_fsp_receive_order() -> FspReceiveOrder {
     OrderedReceiveWindow::new(fsp_receive_window())
@@ -905,6 +917,129 @@ struct FmpReplayPrecheck {
     replay_highest: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FmpOpenReservation {
+    crypto_ticket: CryptoTicket,
+    replay_precheck: FmpReplayPrecheck,
+}
+
+impl FmpOpenReservation {
+    fn new(reservation: OwnerReservation, replay_precheck: FmpReplayPrecheck) -> Self {
+        Self {
+            crypto_ticket: CryptoTicket { reservation },
+            replay_precheck,
+        }
+    }
+
+    fn crypto_ticket(self) -> CryptoTicket {
+        self.crypto_ticket
+    }
+
+    fn replay_precheck(self) -> FmpReplayPrecheck {
+        self.replay_precheck
+    }
+}
+
+struct FmpAeadOpenWork {
+    cipher: Arc<LessSafeKey>,
+    packet_data: PacketBuffer,
+    fmp_ciphertext_offset: usize,
+    fmp_counter: u64,
+    fmp_flags: u8,
+    fmp_header: [u8; 16],
+}
+
+impl FmpAeadOpenWork {
+    fn open(self) -> Result<FmpAeadOpened, ()> {
+        let Self {
+            cipher,
+            mut packet_data,
+            fmp_ciphertext_offset,
+            fmp_counter,
+            fmp_flags,
+            fmp_header,
+        } = self;
+        let outcome = OwnedSessionState::open_fmp_aead_in_place(
+            cipher.as_ref(),
+            &mut packet_data,
+            fmp_ciphertext_offset,
+            fmp_counter,
+            fmp_flags,
+            &fmp_header,
+        )?;
+        Ok(FmpAeadOpened {
+            packet_data,
+            plaintext_len: outcome.plaintext_len,
+        })
+    }
+}
+
+struct FmpAeadOpened {
+    packet_data: PacketBuffer,
+    plaintext_len: usize,
+}
+
+#[derive(Default)]
+struct FmpAeadOpener;
+
+impl StatelessCryptoWorker<FmpAeadOpenWork> for FmpAeadOpener {
+    type Output = FmpAeadOpened;
+
+    fn execute(&mut self, work: CryptoWork<FmpAeadOpenWork>) -> CryptoCompletion<Self::Output> {
+        let ticket = work.ticket;
+        let result = match work.work.open() {
+            Ok(opened) => CryptoResult::Opened(opened),
+            Err(()) => CryptoResult::Rejected(CryptoReject::Aead),
+        };
+        CryptoCompletion { ticket, result }
+    }
+}
+
+struct FmpAeadCompletion {
+    crypto: CryptoCompletion<FmpAeadOpened>,
+    replay_precheck: FmpReplayPrecheck,
+}
+
+impl FmpAeadCompletion {
+    fn new(reservation: FmpOpenReservation, crypto: CryptoCompletion<FmpAeadOpened>) -> Self {
+        debug_assert_eq!(crypto.ticket, reservation.crypto_ticket());
+        Self {
+            crypto,
+            replay_precheck: reservation.replay_precheck(),
+        }
+    }
+
+    fn owner_reservation(&self) -> OwnerReservation {
+        self.crypto.ticket.reservation
+    }
+}
+
+impl OwnerOrderedCompletion for FmpAeadCompletion {
+    fn owner_reservation(&self) -> OwnerReservation {
+        self.crypto.ticket.reservation
+    }
+}
+
+enum FmpOrderedCompletion {
+    Opened {
+        opened: FmpAeadOpened,
+        replay_precheck: FmpReplayPrecheck,
+    },
+    AeadFailed {
+        fmp_counter: u64,
+        fmp_replay_highest: u64,
+    },
+    Dropped,
+}
+
+enum FmpReadyCompletion {
+    Opened(FmpAeadOpened),
+    DecryptFailure {
+        fmp_counter: u64,
+        fmp_replay_highest: u64,
+    },
+}
+
 struct OpenedFmpJob {
     packet_data: PacketBuffer,
     source_peer: PeerIdentity,
@@ -1015,6 +1150,12 @@ fn fsp_reservation_source_addr(reservation: OwnerReservation) -> NodeAddr {
 
 fn fsp_receive_ticket_from_reservation(reservation: OwnerReservation) -> FspReceiveTicket {
     FspReceiveTicket {
+        sequence: reservation.order.sequence.0,
+    }
+}
+
+fn fmp_receive_ticket_from_reservation(reservation: OwnerReservation) -> FmpReceiveTicket {
+    FmpReceiveTicket {
         sequence: reservation.order.sequence.0,
     }
 }
@@ -1265,6 +1406,7 @@ struct FmpOpenOutcome {
 #[derive(Debug, PartialEq, Eq)]
 enum FmpOpenError {
     Replay,
+    WindowFull,
 }
 
 impl OwnedSessionState {
@@ -1276,8 +1418,25 @@ impl OwnedSessionState {
         Self {
             fmp_cipher: Arc::new(fmp_cipher),
             fmp_replay,
+            fmp_crypto_generation: NEXT_FMP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed),
+            fmp_receive_order_id: NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
+            fmp_receive_order: new_fmp_receive_order(),
             source_peer,
         }
+    }
+
+    fn fmp_owner_key(&self) -> OwnerKey {
+        OwnerKey::Fmp {
+            source_addr: *self.source_peer.node_addr(),
+        }
+    }
+
+    fn fmp_crypto_generation(&self) -> u64 {
+        self.fmp_crypto_generation
+    }
+
+    fn fmp_receive_order_id(&self) -> u64 {
+        self.fmp_receive_order_id
     }
 
     fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
@@ -1289,6 +1448,52 @@ impl OwnedSessionState {
             counter: fmp_counter,
             replay_highest,
         })
+    }
+
+    fn reserve_fmp_open(
+        &mut self,
+        lane: DecryptWorkerLane,
+        fmp_counter: u64,
+    ) -> Result<FmpOpenReservation, FmpOpenError> {
+        let replay_precheck = self.precheck_fmp_replay(fmp_counter)?;
+        let Some(ticket) = self.fmp_receive_order.issue() else {
+            return Err(FmpOpenError::WindowFull);
+        };
+        Ok(FmpOpenReservation::new(
+            OwnerReservation {
+                owner: self.fmp_owner_key(),
+                generation: OwnerGeneration(self.fmp_crypto_generation()),
+                order: OrderToken {
+                    receive_order_id: self.fmp_receive_order_id(),
+                    sequence: OrderSequence(ticket.sequence),
+                },
+                lane: lane.into(),
+                packet_count: 1,
+            },
+            replay_precheck,
+        ))
+    }
+
+    fn fmp_open_work(
+        &self,
+        reservation: FmpOpenReservation,
+        packet_data: PacketBuffer,
+        fmp_ciphertext_offset: usize,
+        fmp_counter: u64,
+        fmp_flags: u8,
+        fmp_header: [u8; 16],
+    ) -> CryptoWork<FmpAeadOpenWork> {
+        CryptoWork {
+            ticket: reservation.crypto_ticket(),
+            work: FmpAeadOpenWork {
+                cipher: Arc::clone(&self.fmp_cipher),
+                packet_data,
+                fmp_ciphertext_offset,
+                fmp_counter,
+                fmp_flags,
+                fmp_header,
+            },
+        }
     }
 
     fn open_fmp_aead_in_place(
@@ -1312,17 +1517,79 @@ impl OwnedSessionState {
         Ok(FmpOpenOutcome { plaintext_len })
     }
 
-    fn accept_prechecked_fmp_replay(&mut self, precheck: FmpReplayPrecheck) -> bool {
-        if let Some(reason) = self.fmp_replay.rejection_reason(precheck.counter) {
-            let counter_lag = self.fmp_replay.highest().saturating_sub(precheck.counter);
+    fn complete_fmp_aead_completion(
+        &mut self,
+        completion: FmpAeadCompletion,
+        mut on_ready: impl FnMut(FmpReadyCompletion),
+    ) -> Result<usize, OrderedCompletionError> {
+        let reservation = completion.owner_reservation();
+        debug_assert_eq!(reservation.owner, self.fmp_owner_key());
+        debug_assert_eq!(
+            reservation.order.receive_order_id,
+            self.fmp_receive_order_id()
+        );
+        debug_assert_eq!(
+            reservation.generation,
+            OwnerGeneration(self.fmp_crypto_generation())
+        );
+        let ticket = fmp_receive_ticket_from_reservation(reservation);
+        let replay_precheck = completion.replay_precheck;
+        let ordered = match completion.crypto.result {
+            CryptoResult::Opened(opened) => FmpOrderedCompletion::Opened {
+                opened,
+                replay_precheck,
+            },
+            CryptoResult::Rejected(CryptoReject::Replay) | CryptoResult::Dropped => {
+                FmpOrderedCompletion::Dropped
+            }
+            CryptoResult::Rejected(
+                CryptoReject::Aead | CryptoReject::Malformed | CryptoReject::StaleGeneration,
+            ) => FmpOrderedCompletion::AeadFailed {
+                fmp_counter: replay_precheck.counter,
+                fmp_replay_highest: replay_precheck.replay_highest,
+            },
+        };
+        let fmp_replay = &mut self.fmp_replay;
+        self.fmp_receive_order
+            .complete(ticket, ordered, |completion| match completion {
+                FmpOrderedCompletion::Opened {
+                    opened,
+                    replay_precheck,
+                } => {
+                    if Self::accept_prechecked_fmp_replay_in(fmp_replay, replay_precheck) {
+                        on_ready(FmpReadyCompletion::Opened(opened));
+                    }
+                }
+                FmpOrderedCompletion::AeadFailed {
+                    fmp_counter,
+                    fmp_replay_highest,
+                } => on_ready(FmpReadyCompletion::DecryptFailure {
+                    fmp_counter,
+                    fmp_replay_highest,
+                }),
+                FmpOrderedCompletion::Dropped => {}
+            })
+    }
+
+    fn accept_prechecked_fmp_replay_in(
+        fmp_replay: &mut ReplayWindow,
+        precheck: FmpReplayPrecheck,
+    ) -> bool {
+        if let Some(reason) = fmp_replay.rejection_reason(precheck.counter) {
+            let counter_lag = fmp_replay.highest().saturating_sub(precheck.counter);
             crate::perf_profile::record_fmp_aead_completion_prechecked_replay_drop_reason(
                 reason,
                 counter_lag,
             );
             return false;
         }
-        self.fmp_replay.accept(precheck.counter);
+        fmp_replay.accept(precheck.counter);
         true
+    }
+
+    #[cfg(test)]
+    fn accept_prechecked_fmp_replay(&mut self, precheck: FmpReplayPrecheck) -> bool {
+        Self::accept_prechecked_fmp_replay_in(&mut self.fmp_replay, precheck)
     }
 }
 
