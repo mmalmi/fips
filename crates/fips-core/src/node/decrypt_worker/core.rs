@@ -290,14 +290,20 @@ impl FspOpenReservation {
         self.crypto_ticket.reservation.order.receive_order_id
     }
 
+    #[cfg(test)]
     fn crypto_generation(self) -> u64 {
         self.crypto_ticket.reservation.generation.0
     }
 
+    #[cfg(test)]
     fn ticket(self) -> FspReceiveTicket {
         FspReceiveTicket {
             sequence: self.crypto_ticket.reservation.order.sequence.0,
         }
+    }
+
+    fn crypto_ticket(self) -> CryptoTicket {
+        self.crypto_ticket
     }
 
     #[cfg(test)]
@@ -311,10 +317,12 @@ impl FspOpenReservationBatch {
         Self { reservation }
     }
 
+    #[cfg(test)]
     fn receive_order_id(self) -> u64 {
         self.reservation.order.receive_order_id
     }
 
+    #[cfg(test)]
     fn crypto_generation(self) -> u64 {
         self.reservation.generation.0
     }
@@ -323,10 +331,19 @@ impl FspOpenReservationBatch {
         self.reservation.order.sequence.0
     }
 
+    #[cfg(test)]
     fn ticket_at(self, offset: usize) -> FspReceiveTicket {
         FspReceiveTicket {
             sequence: self.first_sequence().saturating_add(offset as u64),
         }
+    }
+
+    fn crypto_ticket_at(self, offset: usize) -> CryptoTicket {
+        let mut reservation = self.reservation;
+        reservation.order.sequence =
+            OrderSequence(self.first_sequence().saturating_add(offset as u64));
+        reservation.packet_count = 1;
+        CryptoTicket { reservation }
     }
 
     #[cfg(test)]
@@ -908,10 +925,7 @@ fn local_established_fsp_datagram_meta(
 }
 
 struct FspAeadOpenJob {
-    source_addr: NodeAddr,
-    receive_order_id: u64,
-    crypto_generation: u64,
-    ticket: FspReceiveTicket,
+    crypto_ticket: CryptoTicket,
     cipher: Arc<LessSafeKey>,
     job: FspDecryptJob,
     header: FspEncryptedHeader,
@@ -963,13 +977,45 @@ impl FspAeadCompletionSource {
 }
 
 struct FspAeadCompletion {
-    source_addr: NodeAddr,
-    receive_order_id: u64,
-    crypto_generation: u64,
-    ticket: FspReceiveTicket,
+    crypto_ticket: CryptoTicket,
     source: FspAeadCompletionSource,
     result: FspOrderedCompletion,
     completed_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+fn fsp_reservation_source_addr(reservation: OwnerReservation) -> NodeAddr {
+    match reservation.owner {
+        OwnerKey::Fsp { source_addr } => source_addr,
+        owner => unreachable!("FSP AEAD owner reservation must be FSP, got {owner:?}"),
+    }
+}
+
+fn fsp_receive_ticket_from_reservation(reservation: OwnerReservation) -> FspReceiveTicket {
+    FspReceiveTicket {
+        sequence: reservation.order.sequence.0,
+    }
+}
+
+impl FspAeadCompletion {
+    fn owner_reservation(&self) -> OwnerReservation {
+        self.crypto_ticket.reservation
+    }
+
+    fn source_addr(&self) -> NodeAddr {
+        fsp_reservation_source_addr(self.owner_reservation())
+    }
+
+    fn receive_order_id(&self) -> u64 {
+        self.owner_reservation().order.receive_order_id
+    }
+
+    fn crypto_generation(&self) -> u64 {
+        self.owner_reservation().generation.0
+    }
+
+    fn receive_ticket(&self) -> FspReceiveTicket {
+        fsp_receive_ticket_from_reservation(self.owner_reservation())
+    }
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -985,12 +1031,12 @@ impl FspAeadCompletionBatch {
 
     fn source_order(&self) -> (NodeAddr, u64) {
         match self {
-            Self::One(completion) => (completion.source_addr, completion.receive_order_id),
+            Self::One(completion) => (completion.source_addr(), completion.receive_order_id()),
             Self::Many(completions) => {
                 let completion = completions
                     .first()
                     .expect("FSP AEAD completion batch must not be empty");
-                (completion.source_addr, completion.receive_order_id)
+                (completion.source_addr(), completion.receive_order_id())
             }
         }
     }
@@ -1001,8 +1047,8 @@ impl FspAeadCompletionBatch {
 
     fn push(&mut self, completion: FspAeadCompletion) {
         let (source_addr, receive_order_id) = self.source_order();
-        debug_assert_eq!(completion.source_addr, source_addr);
-        debug_assert_eq!(completion.receive_order_id, receive_order_id);
+        debug_assert_eq!(completion.source_addr(), source_addr);
+        debug_assert_eq!(completion.receive_order_id(), receive_order_id);
         match self {
             Self::One(_) => {
                 let Self::One(existing) = std::mem::replace(
@@ -1061,8 +1107,8 @@ impl FspAeadCompletionBatchBuilder {
         completion: FspAeadCompletion,
     ) -> Option<FspAeadCompletionBatchFlush> {
         let owner_idx = owner_idx.filter(|_| !local_completion);
-        let source_addr = completion.source_addr;
-        let receive_order_id = completion.receive_order_id;
+        let source_addr = completion.source_addr();
+        let receive_order_id = completion.receive_order_id();
         let same_batch = self
             .current_batch
             .as_ref()
@@ -1095,6 +1141,31 @@ impl FspAeadCompletionBatchBuilder {
 }
 
 impl FspAeadOpenJob {
+    #[cfg(test)]
+    fn owner_reservation(&self) -> OwnerReservation {
+        self.crypto_ticket.reservation
+    }
+
+    #[cfg(test)]
+    fn source_addr(&self) -> NodeAddr {
+        fsp_reservation_source_addr(self.owner_reservation())
+    }
+
+    #[cfg(test)]
+    fn receive_order_id(&self) -> u64 {
+        self.owner_reservation().order.receive_order_id
+    }
+
+    #[cfg(test)]
+    fn crypto_generation(&self) -> u64 {
+        self.owner_reservation().generation.0
+    }
+
+    #[cfg(test)]
+    fn receive_ticket(&self) -> FspReceiveTicket {
+        fsp_receive_ticket_from_reservation(self.owner_reservation())
+    }
+
     fn mark_returned_completion(&mut self) {
         match self.completion_source {
             FspAeadCompletionSource::WorkerOpen => crate::perf_profile::record_event(
@@ -1186,10 +1257,7 @@ impl FspAeadOpenJob {
             },
         };
         FspAeadCompletion {
-            source_addr: self.source_addr,
-            receive_order_id: self.receive_order_id,
-            crypto_generation: self.crypto_generation,
-            ticket: self.ticket,
+            crypto_ticket: self.crypto_ticket,
             source,
             result,
             completed_at,
@@ -1207,10 +1275,7 @@ impl FspAeadOpenJob {
         }
         let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
         FspAeadCompletion {
-            source_addr: self.source_addr,
-            receive_order_id: self.receive_order_id,
-            crypto_generation: self.crypto_generation,
-            ticket: self.ticket,
+            crypto_ticket: self.crypto_ticket,
             source,
             result: FspOrderedCompletion::Dropped { source },
             completed_at,

@@ -676,10 +676,7 @@ impl DecryptWorkerShard {
             ));
         };
         let open_job = FspAeadOpenJob {
-            source_addr,
-            receive_order_id: reservation.receive_order_id(),
-            crypto_generation: reservation.crypto_generation(),
-            ticket: reservation.ticket(),
+            crypto_ticket: reservation.crypto_ticket(),
             cipher: Arc::clone(&target.state.current.cipher),
             job,
             header,
@@ -735,10 +732,7 @@ impl DecryptWorkerShard {
             .zip(headers)
             .enumerate()
             .map(|(offset, (job, header))| FspAeadOpenJob {
-                source_addr,
-                receive_order_id: reservation.receive_order_id(),
-                crypto_generation: reservation.crypto_generation(),
-                ticket: reservation.ticket_at(offset),
+                crypto_ticket: reservation.crypto_ticket_at(offset),
                 cipher: Arc::clone(&cipher),
                 job,
                 header,
@@ -843,11 +837,12 @@ impl DecryptWorkerShard {
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
         for completion in completions.by_ref() {
             record_fsp_aead_completion_wait(completion.source, completion.completed_at);
+            let completion_source_addr = completion.source_addr();
+            let completion_receive_order_id = completion.receive_order_id();
+            let crypto_generation = completion.crypto_generation();
+            let ticket = completion.receive_ticket();
             let FspAeadCompletion {
-                source_addr: completion_source_addr,
-                receive_order_id: completion_receive_order_id,
-                crypto_generation,
-                ticket,
+                crypto_ticket: _,
                 source,
                 result,
                 completed_at: _,
@@ -909,8 +904,8 @@ impl DecryptWorkerShard {
         let _t_service = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::FspAeadCompletionService,
         );
-        let source_addr = completion.source_addr;
-        let receive_order_id = completion.receive_order_id;
+        let source_addr = completion.source_addr();
+        let receive_order_id = completion.receive_order_id();
         self.complete_fsp_aead_completions_for_source(
             idx,
             source_addr,
@@ -937,8 +932,8 @@ impl DecryptWorkerShard {
                 let Some(first) = completions.first() else {
                     return;
                 };
-                let source_addr = first.source_addr;
-                let receive_order_id = first.receive_order_id;
+                let source_addr = first.source_addr();
+                let receive_order_id = first.receive_order_id();
                 let _t_service = crate::perf_profile::Timer::start(
                     crate::perf_profile::Stage::FspAeadCompletionService,
                 );
@@ -1288,10 +1283,7 @@ impl DecryptWorkerShard {
             source_addr,
             reservation.receive_order_id(),
             std::iter::once(FspAeadCompletion {
-                source_addr,
-                receive_order_id: reservation.receive_order_id(),
-                crypto_generation: reservation.crypto_generation(),
-                ticket: reservation.ticket(),
+                crypto_ticket: reservation.crypto_ticket(),
                 source: FspAeadCompletionSource::Local,
                 result: completion,
                 completed_at: None,

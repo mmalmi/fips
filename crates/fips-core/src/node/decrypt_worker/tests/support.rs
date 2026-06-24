@@ -4,6 +4,40 @@
     use ring::aead::{LessSafeKey, UnboundKey};
     use std::time::Duration;
 
+    fn test_fsp_crypto_ticket(
+        source_addr: NodeAddr,
+        receive_order_id: u64,
+        crypto_generation: u64,
+        sequence: u64,
+    ) -> CryptoTicket {
+        CryptoTicket {
+            reservation: OwnerReservation {
+                owner: OwnerKey::Fsp { source_addr },
+                generation: OwnerGeneration(crypto_generation),
+                order: OrderToken {
+                    receive_order_id,
+                    sequence: OrderSequence(sequence),
+                },
+                lane: PacketLane::Bulk,
+                packet_count: 1,
+            },
+        }
+    }
+
+    fn test_fsp_crypto_ticket_for_receive_ticket(
+        source_addr: NodeAddr,
+        receive_order_id: u64,
+        crypto_generation: u64,
+        ticket: FspReceiveTicket,
+    ) -> CryptoTicket {
+        test_fsp_crypto_ticket(
+            source_addr,
+            receive_order_id,
+            crypto_generation,
+            ticket.sequence,
+        )
+    }
+
     #[test]
     fn decrypt_worker_channel_cap_prefers_specific_then_shared_value() {
         assert_eq!(parse_channel_cap(Some("4"), Some("8"), 1024), 4);
@@ -730,13 +764,15 @@
                         .all(|job| job.completion_owner_idx == Some(owner_idx))
                 );
                 assert_eq!(
-                    jobs.iter().map(|job| job.ticket.sequence).collect::<Vec<_>>(),
+                    jobs.iter()
+                        .map(|job| job.receive_ticket().sequence)
+                        .collect::<Vec<_>>(),
                     vec![0, 1]
                 );
                 assert!(
                     jobs.iter()
-                        .all(|job| job.receive_order_id == receive_order_id
-                            && job.crypto_generation == crypto_generation)
+                        .all(|job| job.receive_order_id() == receive_order_id
+                            && job.crypto_generation() == crypto_generation)
                 );
                 assert!(
                     jobs.iter()
@@ -863,11 +899,11 @@
             DecryptWorkerBulkItem::FspAeadOpenBatch(mut jobs) => {
                 assert_eq!(jobs.len(), 1);
                 let job = jobs.pop().expect("checked one opener job");
-                assert_eq!(job.source_addr, source_addr);
+                assert_eq!(job.source_addr(), source_addr);
                 assert_eq!(job.completion_owner_idx, Some(owner_idx));
-                assert_eq!(job.receive_order_id, receive_order_id);
-                assert_eq!(job.crypto_generation, crypto_generation);
-                assert_eq!(job.ticket.sequence, 0);
+                assert_eq!(job.receive_order_id(), receive_order_id);
+                assert_eq!(job.crypto_generation(), crypto_generation);
+                assert_eq!(job.receive_ticket().sequence, 0);
                 assert!(job.completion_source.is_worker_open());
             }
             DecryptWorkerBulkItem::Batch { .. }
@@ -939,11 +975,11 @@
             DecryptWorkerBulkItem::FspAeadOpenBatch(mut jobs) => {
                 assert_eq!(jobs.len(), 1);
                 let job = jobs.pop().expect("checked one opener job");
-                assert_eq!(job.source_addr, source_addr);
+                assert_eq!(job.source_addr(), source_addr);
                 assert_eq!(job.completion_owner_idx, Some(owner_idx));
-                assert_eq!(job.receive_order_id, receive_order_id);
-                assert_eq!(job.crypto_generation, crypto_generation);
-                assert_eq!(job.ticket.sequence, 0);
+                assert_eq!(job.receive_order_id(), receive_order_id);
+                assert_eq!(job.crypto_generation(), crypto_generation);
+                assert_eq!(job.receive_ticket().sequence, 0);
                 assert!(job.completion_source.is_worker_open());
             }
             DecryptWorkerBulkItem::Batch { .. }
@@ -1353,12 +1389,16 @@
         assert_eq!(completion.len(), 2);
         match completion {
             FspAeadCompletionBatch::Many(completions) => {
-                let receive_order_id = completions[0].receive_order_id;
-                assert!(completions.iter().all(|completion| completion.source_addr == source_addr));
+                let receive_order_id = completions[0].receive_order_id();
                 assert!(
                     completions
                         .iter()
-                        .all(|completion| completion.receive_order_id == receive_order_id)
+                        .all(|completion| completion.source_addr() == source_addr)
+                );
+                assert!(
+                    completions
+                        .iter()
+                        .all(|completion| completion.receive_order_id() == receive_order_id)
                 );
                 assert!(completions.iter().all(|completion| matches!(
                     (
@@ -1589,10 +1629,7 @@
         let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
         job.source_addr = source_addr;
         FspAeadCompletionBatch::one(FspAeadCompletion {
-            source_addr,
-            receive_order_id: 7,
-            crypto_generation: 0,
-            ticket: FspReceiveTicket { sequence },
+            crypto_ticket: test_fsp_crypto_ticket(source_addr, 7, 0, sequence),
             source: FspAeadCompletionSource::WorkerOpen,
             result: FspOrderedCompletion::AeadFailed {
                 job,
@@ -2028,12 +2065,12 @@
         job.source_addr = source_addr;
         job.fsp_payload_len = 0;
         FspAeadOpenJob {
-            source_addr,
-            receive_order_id,
-            crypto_generation,
-            ticket: FspReceiveTicket {
-                sequence: ticket_sequence,
-            },
+            crypto_ticket: test_fsp_crypto_ticket(
+                source_addr,
+                receive_order_id,
+                crypto_generation,
+                ticket_sequence,
+            ),
             cipher,
             job,
             header,
