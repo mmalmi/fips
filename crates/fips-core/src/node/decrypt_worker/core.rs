@@ -11,6 +11,10 @@ use crate::node::session_wire::{
 use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
+use crate::packet_mover::{
+    CryptoTicket, OrderSequence, OrderToken, OwnerGeneration, OwnerKey, OwnerReservation,
+    PacketLane,
+};
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
@@ -70,6 +74,15 @@ static NEXT_FSP_CRYPTO_GENERATION: AtomicU64 = AtomicU64::new(1);
 enum DecryptWorkerLane {
     Priority,
     Bulk,
+}
+
+impl From<DecryptWorkerLane> for PacketLane {
+    fn from(lane: DecryptWorkerLane) -> Self {
+        match lane {
+            DecryptWorkerLane::Priority => Self::Priority,
+            DecryptWorkerLane::Bulk => Self::Bulk,
+        }
+    }
 }
 
 /// Stable owner key for decrypt-worker shard state.
@@ -258,16 +271,68 @@ pub(crate) struct OwnedFspSessionState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FspOpenReservation {
-    receive_order_id: u64,
-    crypto_generation: u64,
-    ticket: FspReceiveTicket,
+    crypto_ticket: CryptoTicket,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FspOpenReservationBatch {
-    receive_order_id: u64,
-    crypto_generation: u64,
-    first_sequence: u64,
+    reservation: OwnerReservation,
+}
+
+impl FspOpenReservation {
+    fn new(reservation: OwnerReservation) -> Self {
+        Self {
+            crypto_ticket: CryptoTicket { reservation },
+        }
+    }
+
+    fn receive_order_id(self) -> u64 {
+        self.crypto_ticket.reservation.order.receive_order_id
+    }
+
+    fn crypto_generation(self) -> u64 {
+        self.crypto_ticket.reservation.generation.0
+    }
+
+    fn ticket(self) -> FspReceiveTicket {
+        FspReceiveTicket {
+            sequence: self.crypto_ticket.reservation.order.sequence.0,
+        }
+    }
+
+    #[cfg(test)]
+    fn owner_reservation(self) -> OwnerReservation {
+        self.crypto_ticket.reservation
+    }
+}
+
+impl FspOpenReservationBatch {
+    fn new(reservation: OwnerReservation) -> Self {
+        Self { reservation }
+    }
+
+    fn receive_order_id(self) -> u64 {
+        self.reservation.order.receive_order_id
+    }
+
+    fn crypto_generation(self) -> u64 {
+        self.reservation.generation.0
+    }
+
+    fn first_sequence(self) -> u64 {
+        self.reservation.order.sequence.0
+    }
+
+    fn ticket_at(self, offset: usize) -> FspReceiveTicket {
+        FspReceiveTicket {
+            sequence: self.first_sequence().saturating_add(offset as u64),
+        }
+    }
+
+    #[cfg(test)]
+    fn owner_reservation(self) -> OwnerReservation {
+        self.reservation
+    }
 }
 
 struct FspOpenSuccess {
@@ -373,39 +438,72 @@ impl OwnedFspSessionState {
         (header.flags & FSP_FLAG_K != 0) == self.current_k_bit
     }
 
-    fn reservation_for_ticket(&self, ticket: FspReceiveTicket) -> FspOpenReservation {
-        FspOpenReservation {
-            receive_order_id: self.fsp_receive_order_id(),
-            crypto_generation: self.fsp_crypto_generation(),
-            ticket,
+    fn fsp_owner_key(&self) -> OwnerKey {
+        OwnerKey::Fsp {
+            source_addr: *self.source_peer.node_addr(),
         }
     }
 
-    fn reservation_for_ticket_batch(&self, first_sequence: u64) -> FspOpenReservationBatch {
-        FspOpenReservationBatch {
-            receive_order_id: self.fsp_receive_order_id(),
-            crypto_generation: self.fsp_crypto_generation(),
+    fn owner_reservation_for_sequence(
+        &self,
+        sequence: u64,
+        lane: PacketLane,
+        packet_count: usize,
+    ) -> OwnerReservation {
+        OwnerReservation {
+            owner: self.fsp_owner_key(),
+            generation: OwnerGeneration(self.fsp_crypto_generation()),
+            order: OrderToken {
+                receive_order_id: self.fsp_receive_order_id(),
+                sequence: OrderSequence(sequence),
+            },
+            lane,
+            packet_count,
+        }
+    }
+
+    fn reservation_for_ticket(
+        &self,
+        ticket: FspReceiveTicket,
+        lane: PacketLane,
+    ) -> FspOpenReservation {
+        FspOpenReservation::new(self.owner_reservation_for_sequence(ticket.sequence, lane, 1))
+    }
+
+    fn reservation_for_ticket_batch(
+        &self,
+        first_sequence: u64,
+        lane: PacketLane,
+        packet_count: usize,
+    ) -> FspOpenReservationBatch {
+        FspOpenReservationBatch::new(self.owner_reservation_for_sequence(
             first_sequence,
-        }
+            lane,
+            packet_count,
+        ))
     }
 
-    fn reserve_local_fsp_open(&mut self) -> Option<FspOpenReservation> {
+    fn reserve_local_fsp_open(&mut self, lane: DecryptWorkerLane) -> Option<FspOpenReservation> {
         let ticket = self.fsp_receive_order.issue()?;
-        Some(self.reservation_for_ticket(ticket))
+        Some(self.reservation_for_ticket(ticket, lane.into()))
     }
 
     fn reserve_worker_fsp_open(&mut self) -> Option<FspOpenReservation> {
         let ticket = self
             .fsp_receive_order
             .issue_with_reserve(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
-        Some(self.reservation_for_ticket(ticket))
+        Some(self.reservation_for_ticket(ticket, PacketLane::Bulk))
     }
 
     fn reserve_worker_fsp_open_batch(&mut self, count: usize) -> Option<FspOpenReservationBatch> {
         let first_sequence = self
             .fsp_receive_order
             .issue_batch_with_reserve(count, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
-        Some(self.reservation_for_ticket_batch(first_sequence))
+        Some(self.reservation_for_ticket_batch(
+            first_sequence,
+            PacketLane::Bulk,
+            count,
+        ))
     }
 
     #[cfg(test)]

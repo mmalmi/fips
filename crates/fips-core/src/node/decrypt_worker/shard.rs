@@ -677,9 +677,9 @@ impl DecryptWorkerShard {
         };
         let open_job = FspAeadOpenJob {
             source_addr,
-            receive_order_id: reservation.receive_order_id,
-            crypto_generation: reservation.crypto_generation,
-            ticket: reservation.ticket,
+            receive_order_id: reservation.receive_order_id(),
+            crypto_generation: reservation.crypto_generation(),
+            ticket: reservation.ticket(),
             cipher: Arc::clone(&target.state.current.cipher),
             job,
             header,
@@ -736,11 +736,9 @@ impl DecryptWorkerShard {
             .enumerate()
             .map(|(offset, (job, header))| FspAeadOpenJob {
                 source_addr,
-                receive_order_id: reservation.receive_order_id,
-                crypto_generation: reservation.crypto_generation,
-                ticket: FspReceiveTicket {
-                    sequence: reservation.first_sequence.saturating_add(offset as u64),
-                },
+                receive_order_id: reservation.receive_order_id(),
+                crypto_generation: reservation.crypto_generation(),
+                ticket: reservation.ticket_at(offset),
                 cipher: Arc::clone(&cipher),
                 job,
                 header,
@@ -1216,7 +1214,7 @@ impl DecryptWorkerShard {
                 .fsp_sessions
                 .get_mut(&source_addr)
                 .expect("FSP session was checked before current-epoch local open");
-            let Some(reservation) = state.reserve_local_fsp_open() else {
+            let Some(reservation) = state.reserve_local_fsp_open(lane) else {
                 match lane {
                     DecryptWorkerLane::Priority => {
                         record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
@@ -1288,12 +1286,12 @@ impl DecryptWorkerShard {
         self.complete_fsp_aead_completions_for_source(
             idx,
             source_addr,
-            reservation.receive_order_id,
+            reservation.receive_order_id(),
             std::iter::once(FspAeadCompletion {
                 source_addr,
-                receive_order_id: reservation.receive_order_id,
-                crypto_generation: reservation.crypto_generation,
-                ticket: reservation.ticket,
+                receive_order_id: reservation.receive_order_id(),
+                crypto_generation: reservation.crypto_generation(),
+                ticket: reservation.ticket(),
                 source: FspAeadCompletionSource::Local,
                 result: completion,
                 completed_at: None,

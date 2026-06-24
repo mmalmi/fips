@@ -183,23 +183,36 @@
         let worker = state
             .reserve_worker_fsp_open()
             .expect("worker open should reserve first ticket");
-        assert_eq!(worker.receive_order_id, receive_order_id);
-        assert_eq!(worker.crypto_generation, crypto_generation);
-        assert_eq!(worker.ticket.sequence, 0);
+        assert_eq!(worker.receive_order_id(), receive_order_id);
+        assert_eq!(worker.crypto_generation(), crypto_generation);
+        assert_eq!(worker.ticket().sequence, 0);
+        let worker_owner = worker.owner_reservation();
+        assert_eq!(worker_owner.owner, OwnerKey::Fsp {
+            source_addr: *source_peer.node_addr()
+        });
+        assert_eq!(worker_owner.lane, PacketLane::Bulk);
+        assert_eq!(worker_owner.packet_count, 1);
 
         let worker_batch = state
             .reserve_worker_fsp_open_batch(2)
             .expect("worker open batch should reserve adjacent tickets");
-        assert_eq!(worker_batch.receive_order_id, receive_order_id);
-        assert_eq!(worker_batch.crypto_generation, crypto_generation);
-        assert_eq!(worker_batch.first_sequence, 1);
+        assert_eq!(worker_batch.receive_order_id(), receive_order_id);
+        assert_eq!(worker_batch.crypto_generation(), crypto_generation);
+        assert_eq!(worker_batch.first_sequence(), 1);
+        assert_eq!(worker_batch.ticket_at(1).sequence, 2);
+        let worker_batch_owner = worker_batch.owner_reservation();
+        assert_eq!(worker_batch_owner.lane, PacketLane::Bulk);
+        assert_eq!(worker_batch_owner.packet_count, 2);
 
         let local = state
-            .reserve_local_fsp_open()
+            .reserve_local_fsp_open(DecryptWorkerLane::Priority)
             .expect("local owner open should reserve from the same stream");
-        assert_eq!(local.receive_order_id, receive_order_id);
-        assert_eq!(local.crypto_generation, crypto_generation);
-        assert_eq!(local.ticket.sequence, 3);
+        assert_eq!(local.receive_order_id(), receive_order_id);
+        assert_eq!(local.crypto_generation(), crypto_generation);
+        assert_eq!(local.ticket().sequence, 3);
+        let local_owner = local.owner_reservation();
+        assert_eq!(local_owner.lane, PacketLane::Priority);
+        assert_eq!(local_owner.packet_count, 1);
     }
 
     #[test]
