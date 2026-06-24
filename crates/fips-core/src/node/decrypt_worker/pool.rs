@@ -15,8 +15,7 @@ struct DecryptWorkerSender {
     priority: Sender<WorkerMsg>,
     bulk: Sender<DecryptWorkerBulkItem>,
     fsp_aead_completion: Sender<FspAeadCompletionBatch>,
-    bulk_queued_packets: Arc<AtomicUsize>,
-    bulk_packet_cap: usize,
+    bulk_credits: LaneCreditGate,
 }
 
 #[derive(Clone, Copy)]
@@ -54,10 +53,10 @@ fn record_decrypt_worker_bulk_queue_depth(
     if !crate::perf_profile::enabled() || packets == 0 {
         return;
     }
-    let depth = sender.bulk_queued_packets.load(Ordering::Relaxed);
+    let depth = sender.bulk_credits.queued_packets();
     crate::perf_profile::record_decrypt_worker_bulk_queue_depth(
         depth,
-        sender.bulk_packet_cap,
+        sender.bulk_credits.capacity(),
         packets,
     );
     match role {
@@ -86,18 +85,14 @@ fn try_send_bulk_item_prefix(
     item: DecryptWorkerBulkItem,
 ) -> Result<(usize, Option<DecryptWorkerBulkItem>), BulkQueueSendError> {
     let packet_count = item.packet_count();
-    let reserved_packets = try_reserve_bulk_packets_partial(
-        &sender.bulk_queued_packets,
-        sender.bulk_packet_cap,
-        packet_count,
-    );
-    if reserved_packets == 0 {
+    let Some(reservation) = sender.bulk_credits.reserve_prefix(packet_count) else {
         return Err(BulkQueueSendError {
             item,
             overflow: None,
             disconnected: false,
         });
-    }
+    };
+    let reserved_packets = reservation.packet_count();
 
     let (reserved_item, overflow) = item.split_at_packet_count(reserved_packets);
     let reserved_item = reserved_item.expect("positive reservation must produce a bulk item");
@@ -105,7 +100,7 @@ fn try_send_bulk_item_prefix(
     match sender.bulk.try_send(reserved_item) {
         Ok(()) => Ok((reserved_packets, overflow)),
         Err(TrySendError::Full(item)) => {
-            release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+            sender.bulk_credits.release(reservation);
             Err(BulkQueueSendError {
                 item,
                 overflow,
@@ -113,7 +108,7 @@ fn try_send_bulk_item_prefix(
             })
         }
         Err(TrySendError::Disconnected(item)) => {
-            release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+            sender.bulk_credits.release(reservation);
             Err(BulkQueueSendError {
                 item,
                 overflow,
@@ -168,21 +163,20 @@ impl DecryptWorkerPool {
                 bounded::<FspAeadCompletionBatch>(
                     fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
                 );
-            let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+            let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, bulk_channel_cap);
             receivers.push((
                 control_rx,
                 priority_rx,
                 fsp_aead_completion_rx,
                 bulk_rx,
-                Arc::clone(&bulk_queued_packets),
+                bulk_credits.clone(),
             ));
             senders.push(DecryptWorkerSender {
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
-                bulk_queued_packets,
-                bulk_packet_cap: bulk_channel_cap,
+                bulk_credits,
             });
         }
         let pool = Self {
@@ -197,7 +191,7 @@ impl DecryptWorkerPool {
                 priority_rx,
                 fsp_aead_completion_rx,
                 bulk_rx,
-                worker_bulk_queued_packets,
+                worker_bulk_credits,
             ),
         ) in receivers.into_iter().enumerate()
         {
@@ -212,7 +206,7 @@ impl DecryptWorkerPool {
                         priority_rx,
                         fsp_aead_completion_rx,
                         bulk_rx,
-                        worker_bulk_queued_packets,
+                        worker_bulk_credits,
                     )
                 })
                 .expect("failed to spawn fips-decrypt OS thread");
@@ -257,7 +251,8 @@ impl DecryptWorkerPool {
 
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
         self.senders[idx]
-            .bulk_packet_cap
+            .bulk_credits
+            .capacity()
             .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX)
     }
 

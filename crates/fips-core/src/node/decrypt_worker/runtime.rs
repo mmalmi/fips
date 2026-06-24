@@ -40,6 +40,7 @@ fn try_reserve_bulk_packets(counter: &AtomicUsize, capacity: usize, count: usize
     try_reserve_bulk_packets_with_previous(counter, capacity, count).is_some()
 }
 
+#[cfg(test)]
 fn try_reserve_bulk_packets_partial(
     counter: &AtomicUsize,
     capacity: usize,
@@ -117,7 +118,7 @@ fn run_worker(
     priority_rx: Receiver<WorkerMsg>,
     fsp_aead_completion_rx: Receiver<FspAeadCompletionBatch>,
     bulk_rx: Receiver<DecryptWorkerBulkItem>,
-    bulk_queued_packets: Arc<AtomicUsize>,
+    bulk_credits: LaneCreditGate,
 ) {
     trace!(worker = idx, "FMP+FSP decrypt worker thread starting");
 
@@ -134,7 +135,7 @@ fn run_worker(
             &priority_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
-            &bulk_queued_packets,
+            &bulk_credits,
             &mut return_batch,
             &mut bulk_batchers,
         ) {
@@ -169,7 +170,7 @@ fn run_worker(
             }
             DecryptWorkerQueueItem::Bulk(item) => {
                 crate::perf_profile::record_decrypt_worker_select_bulk(item.packet_count());
-                release_bulk_packets(&bulk_queued_packets, item.packet_count());
+                bulk_credits.release_count(item.packet_count());
                 let mut batch_stats = DecryptWorkerBatchStats::default();
                 batch_stats.add_bulk_item(&item);
                 handle_bulk_item_with_buffers(
@@ -194,7 +195,7 @@ fn run_worker(
                     &priority_rx,
                     &fsp_aead_completion_rx,
                     &bulk_rx,
-                    &bulk_queued_packets,
+                    &bulk_credits,
                     &mut return_batch,
                     &mut bulk_batchers,
                 );
@@ -304,7 +305,7 @@ fn drain_worker_queues(
     priority_rx: &Receiver<WorkerMsg>,
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
-    bulk_queued_packets: &AtomicUsize,
+    bulk_credits: &LaneCreditGate,
     return_batch: &mut DecryptWorkerReturnBatch,
 ) -> bool {
     let mut bulk_batchers = BulkBatchBuffers::new();
@@ -315,7 +316,7 @@ fn drain_worker_queues(
         priority_rx,
         fsp_aead_completion_rx,
         bulk_rx,
-        bulk_queued_packets,
+        bulk_credits,
         return_batch,
         &mut bulk_batchers,
     )
@@ -329,7 +330,7 @@ fn drain_worker_queues_with_buffers(
     priority_rx: &Receiver<WorkerMsg>,
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
-    bulk_queued_packets: &AtomicUsize,
+    bulk_credits: &LaneCreditGate,
     return_batch: &mut DecryptWorkerReturnBatch,
     bulk_batchers: &mut BulkBatchBuffers,
 ) -> bool {
@@ -386,7 +387,7 @@ fn drain_worker_queues_with_buffers(
             Ok(item) => {
                 did_work = true;
                 crate::perf_profile::record_decrypt_worker_drain_bulk(item.packet_count());
-                release_bulk_packets(bulk_queued_packets, item.packet_count());
+                bulk_credits.release_count(item.packet_count());
                 batch_stats.add_bulk_item(&item);
                 drained_bulk_jobs += handle_bulk_item_with_buffers(
                     idx,

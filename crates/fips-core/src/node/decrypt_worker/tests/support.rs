@@ -267,7 +267,7 @@
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
         let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
             bounded::<FspAeadCompletionBatch>(1);
-        let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+        let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, 1);
         let (return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
         (
             DecryptWorkerPool {
@@ -277,8 +277,7 @@
                         priority: priority_tx,
                         bulk: bulk_tx,
                         fsp_aead_completion: fsp_aead_completion_tx,
-                        bulk_queued_packets,
-                        bulk_packet_cap: 1,
+                        bulk_credits,
                     }]
                     .into_boxed_slice(),
                 ),
@@ -310,14 +309,12 @@
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
             let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(cap);
-            let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             senders.push(DecryptWorkerSender {
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
-                bulk_queued_packets,
-                bulk_packet_cap: cap,
+                bulk_credits: LaneCreditGate::new(PacketLane::Bulk, cap),
             });
             control_receivers.push(control_rx);
             priority_receivers.push(priority_rx);
@@ -357,14 +354,12 @@
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
             let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(cap);
-            let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             senders.push(DecryptWorkerSender {
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
-                bulk_queued_packets,
-                bulk_packet_cap: cap,
+                bulk_credits: LaneCreditGate::new(PacketLane::Bulk, cap),
             });
             control_receivers.push(control_rx);
             priority_receivers.push(priority_rx);
@@ -390,11 +385,11 @@
     ) -> (
         Sender<DecryptWorkerBulkItem>,
         Receiver<DecryptWorkerBulkItem>,
-        Arc<AtomicUsize>,
+        LaneCreditGate,
     ) {
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
-        let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
-        (bulk_tx, bulk_rx, bulk_queued_packets)
+        let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, cap);
+        (bulk_tx, bulk_rx, bulk_credits)
     }
 
     fn test_fsp_aead_completion_lane(cap: usize) -> Receiver<FspAeadCompletionBatch> {
@@ -404,10 +399,12 @@
 
     fn queue_bulk_item_for_test(
         tx: &Sender<DecryptWorkerBulkItem>,
-        queued_packets: &AtomicUsize,
+        bulk_credits: &LaneCreditGate,
         item: DecryptWorkerBulkItem,
     ) {
-        queued_packets.fetch_add(item.packet_count(), Ordering::Relaxed);
+        bulk_credits
+            .reserve(item.packet_count(), 0)
+            .expect("test bulk queue should have credit room");
         tx.try_send(item).expect("test bulk queue should have room");
     }
 

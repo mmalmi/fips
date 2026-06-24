@@ -158,7 +158,7 @@
             "the existing packet plus one batch packet should remain queued"
         );
         assert_eq!(
-            pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
+            pool.senders[0].bulk_credits.queued_packets(),
             2,
             "bulk packet accounting should match the admitted packet count"
         );
@@ -210,7 +210,7 @@
             "the existing packet plus one prefix batch should be queued"
         );
         assert_eq!(
-            pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
+            pool.senders[0].bulk_credits.queued_packets(),
             3,
             "bulk packet accounting should include the admitted prefix batch"
         );
@@ -271,7 +271,7 @@
             "existing packet plus admitted prefix batch should remain queued"
         );
         assert_eq!(
-            pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
+            pool.senders[0].bulk_credits.queued_packets(),
             3,
             "overflow tail must not consume bulk packet capacity"
         );
@@ -684,7 +684,7 @@
             "overflow priority packet should spill to the bulk lane"
         );
         assert_eq!(
-            pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
+            pool.senders[0].bulk_credits.queued_packets(),
             1,
             "spilled packet should reserve one bulk packet slot"
         );
@@ -730,8 +730,9 @@
     fn fsp_open_worker_backlog_does_not_shed_fmp_bulk_before_worker_boundary() {
         let (pool, _control_rx, _priority_rx, bulk_rx) = one_slot_worker_pool();
         pool.senders[0]
-            .bulk_queued_packets
-            .store(1, Ordering::Relaxed);
+            .bulk_credits
+            .reserve(1, 0)
+            .expect("test should reserve the only worker bulk packet slot");
 
         let session_key = test_session_key(1, 101);
         let mut batcher = DecryptJobBatcher::new();

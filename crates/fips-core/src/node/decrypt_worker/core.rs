@@ -12,8 +12,8 @@ use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
 use crate::packet_mover::{
-    CryptoTicket, OrderSequence, OrderToken, OwnerGeneration, OwnerKey, OwnerReservation,
-    PacketLane,
+    CryptoTicket, LaneCreditGate, OrderSequence, OrderToken, OwnerGeneration, OwnerKey,
+    OwnerReservation, PacketLane,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};

@@ -129,6 +129,10 @@ impl LaneCreditGate {
     pub(crate) fn queued_packets(&self) -> usize {
         self.queued_packets.load(Relaxed)
     }
+
+    pub(crate) fn capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
