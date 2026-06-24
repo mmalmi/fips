@@ -37,10 +37,6 @@
                     "failed AEAD must report the old replay high-water mark"
                 );
             }
-            DecryptWorkerEvent::Plaintext(_) => panic!("invalid packet must not produce plaintext"),
-            DecryptWorkerEvent::PlaintextBatch(_) => {
-                panic!("invalid packet must not produce plaintext")
-            }
             DecryptWorkerEvent::AuthenticatedLink(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
@@ -170,9 +166,6 @@
                 assert_eq!(receive.fmp.inner_timestamp_ms, inner_timestamp_ms);
                 assert_eq!(receive.fmp.fmp_flags, flags);
                 assert_eq!(receive.lane, DecryptWorkerLane::Priority);
-            }
-            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
-                panic!("timestamp-only receive must not bounce plaintext bytes")
             }
             DecryptWorkerEvent::AuthenticatedLink(_)
             | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
@@ -655,9 +648,7 @@
             .expect("authenticated link delivered");
         let link = match event {
             DecryptWorkerEvent::AuthenticatedLink(link) => link,
-            DecryptWorkerEvent::Plaintext(_) => panic!("expected authenticated link event"),
             DecryptWorkerEvent::DecryptFailure(_) => panic!("expected authenticated link event"),
-            DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected authenticated link event"),
             DecryptWorkerEvent::AuthenticatedLinkBatch(_) => {
                 panic!("expected authenticated link event")
             }
@@ -752,8 +743,6 @@
                 assert_eq!(report.source_peer, source_peer);
                 assert_eq!(report.fmp_counter, counter);
             }
-            DecryptWorkerEvent::Plaintext(_) => panic!("expected decrypt failure report"),
-            DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected decrypt failure report"),
             DecryptWorkerEvent::AuthenticatedLink(_) => {
                 panic!("expected decrypt failure report")
             }

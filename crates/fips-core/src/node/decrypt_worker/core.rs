@@ -2035,9 +2035,6 @@ impl DecryptFallback {
         }
     }
 
-    fn lane(&self) -> DecryptWorkerLane {
-        self.lane
-    }
 }
 
 /// Result of a successful FMP decrypt + replay accept whose link-layer message
@@ -2374,8 +2371,6 @@ pub(crate) struct DecryptFspFailureReport {
 
 /// Event emitted by the decrypt worker to the rx_loop.
 pub(crate) enum DecryptWorkerEvent {
-    Plaintext(DecryptFallback),
-    PlaintextBatch(Vec<DecryptFallback>),
     AuthenticatedLink(DecryptAuthenticatedLink),
     AuthenticatedLinkBatch(Vec<DecryptAuthenticatedLink>),
     AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive),
@@ -2397,7 +2392,7 @@ impl DecryptWorkerEvent {
 
     pub(crate) fn packet_count(&self) -> usize {
         match self {
-            Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
+            Self::DecryptFailure(_) => 1,
             Self::AuthenticatedLink(_) => 1,
             Self::AuthenticatedLinkBatch(links) => links.len(),
             Self::AuthenticatedFmpReceive(_) => 1,
@@ -2408,18 +2403,11 @@ impl DecryptWorkerEvent {
             Self::DirectSessionData(_) => 1,
             Self::DirectSessionDataBatch(directs) => directs.len(),
             Self::FspDecryptFailure(_) => 1,
-            Self::PlaintextBatch(fallbacks) => fallbacks.len(),
         }
     }
 
     fn set_trace_enqueued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
         match self {
-            Self::Plaintext(fallback) => fallback.trace_enqueued_at = queued_at,
-            Self::PlaintextBatch(fallbacks) => {
-                for fallback in fallbacks {
-                    fallback.trace_enqueued_at = queued_at;
-                }
-            }
             Self::AuthenticatedLink(link) => link.trace_enqueued_at = queued_at,
             Self::AuthenticatedLinkBatch(links) => {
                 for link in links {
@@ -2452,10 +2440,6 @@ impl DecryptWorkerEvent {
 
     fn trace_enqueued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
         match self {
-            Self::Plaintext(fallback) => fallback.trace_enqueued_at,
-            Self::PlaintextBatch(fallbacks) => fallbacks
-                .first()
-                .and_then(|fallback| fallback.trace_enqueued_at),
             Self::AuthenticatedLink(link) => link.trace_enqueued_at,
             Self::AuthenticatedLinkBatch(links) => {
                 links.first().and_then(|link| link.trace_enqueued_at)
@@ -2503,10 +2487,7 @@ impl DecryptWorkerEvent {
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait,
             ),
-            Self::Plaintext(_)
-            | Self::PlaintextBatch(_)
-            | Self::FspDecryptFailure(_)
-            | Self::DecryptFailure(_) => (
+            Self::FspDecryptFailure(_) | Self::DecryptFailure(_) => (
                 crate::perf_profile::Stage::DecryptFallbackWait,
                 crate::perf_profile::Stage::DecryptFallbackPriorityWait,
                 crate::perf_profile::Stage::DecryptFallbackBulkWait,

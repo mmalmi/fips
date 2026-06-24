@@ -680,14 +680,6 @@ impl DecryptWorkerOutput {
         true
     }
 
-    fn is_batchable_bulk_plaintext(&self) -> bool {
-        matches!(
-            &self.event,
-            DecryptWorkerEvent::Plaintext(fallback)
-                if matches!(fallback.lane(), DecryptWorkerLane::Bulk)
-        )
-    }
-
     fn is_batchable_authenticated_link(&self) -> bool {
         matches!(
             (&self.event, &self.direct_delivery),

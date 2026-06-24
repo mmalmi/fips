@@ -536,7 +536,7 @@ impl DecryptWorkerPool {
     /// Subsequent `dispatch_job` packets then arrived at a worker
     /// shard without that session in its local `HashMap` and were
     /// silently dropped (the "session unregistered mid-flight"
-    /// fallback path in `handle_job`). The caller's normal retry —
+    /// branch in `handle_job`). The caller's normal retry —
     /// "re-register on a later event" — is documented at the only
     /// call site (`register_decrypt_worker_session`).
     #[must_use = "registration may have failed under queue pressure; caller must gate its own session-registered flag on the returned bool"]
@@ -598,7 +598,7 @@ impl DecryptWorkerPool {
                 );
                 warn!(
                     worker = idx,
-                    "DecryptWorker channel full at FSP session registration; rx-loop fallback remains available"
+                    "DecryptWorker channel full at FSP session registration; will retry on next packet"
                 );
                 false
             }

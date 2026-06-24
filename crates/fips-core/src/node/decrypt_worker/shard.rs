@@ -1322,7 +1322,9 @@ impl DecryptWorkerShard {
 
         let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
             return_batch.push_output(DecryptWorkerOutput {
-                event: DecryptWorkerEvent::Plaintext(fallback),
+                event: DecryptWorkerEvent::AuthenticatedLink(
+                    DecryptAuthenticatedLink::from_opened_fmp(fallback),
+                ),
                 direct_delivery: None,
             });
             return;

@@ -1221,7 +1221,6 @@
         assert!(return_rx.priority.try_recv().is_err());
         assert!(return_rx.bulk.try_recv().is_err());
         assert!(return_rx.authenticated_bulk.try_recv().is_err());
-        assert!(return_batch.fallbacks.is_empty());
         assert!(return_batch.authenticated_sessions.is_empty());
         assert!(return_batch.direct_outputs.is_empty());
         assert!(return_batch.direct_data.is_empty());
@@ -2245,7 +2244,6 @@
             1,
             "mismatched completions must not consume the owner ticket"
         );
-        assert!(return_batch.fallbacks.is_empty());
         assert!(return_batch.authenticated_sessions.is_empty());
         assert!(return_batch.direct_outputs.is_empty());
         assert!(return_batch.direct_data.is_empty());
@@ -2680,9 +2678,7 @@
                 assert_eq!(report.counter, fsp_counter);
                 assert!(!report.received_k_bit);
             }
-            DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::Plaintext(_)
-            | DecryptWorkerEvent::AuthenticatedLink(_)
+            DecryptWorkerEvent::AuthenticatedLink(_)
             | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
@@ -2804,9 +2800,7 @@
                 assert_eq!(report.source_addr, *source.node_addr());
                 assert_eq!(report.counter, fsp_counter);
             }
-            DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::Plaintext(_)
-            | DecryptWorkerEvent::AuthenticatedLink(_)
+            DecryptWorkerEvent::AuthenticatedLink(_)
             | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
@@ -2898,9 +2892,6 @@
                 assert_eq!(receive.fmp.source_peer, previous_hop_peer);
                 assert_eq!(receive.fmp.fmp_counter, fmp_counter);
                 assert_eq!(receive.fmp.inner_timestamp_ms, inner_timestamp_ms);
-            }
-            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
-                panic!("malformed registered FSP must not bounce plaintext")
             }
             DecryptWorkerEvent::FspDecryptFailure(_) => {
                 panic!("malformed FSP without an encrypted header has no FSP counter to report")

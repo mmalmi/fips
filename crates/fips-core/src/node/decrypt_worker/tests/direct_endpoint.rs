@@ -55,9 +55,7 @@
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("expected a direct commit batch")
             }
-            DecryptWorkerEvent::Plaintext(_)
-            | DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::AuthenticatedLink(_)
+            DecryptWorkerEvent::AuthenticatedLink(_)
             | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
@@ -83,14 +81,6 @@
     #[test]
     fn decrypt_worker_direct_endpoint_batch_has_reserved_authenticated_bulk_lane() {
         let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 2);
-        let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
-        assert!(return_tx.send(dummy_plaintext_event(bulk_len)));
-        assert_eq!(
-            return_rx.bulk_queued_packets(),
-            1,
-            "test precondition should reserve one bulk packet slot"
-        );
-
         let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
@@ -111,25 +101,12 @@
 
         assert!(
             return_rx.authenticated_bulk_queued_packets() == 2,
-            "direct endpoint commits should reserve the authenticated lane, not the return lane"
+            "direct endpoint commits should reserve authenticated bulk capacity"
         );
-        assert_eq!(
-            return_rx.bulk_pressure_queued_packets(),
-            3,
-            "return-lane pressure should include plaintext and authenticated bulk"
-        );
-
-        let event = return_rx.bulk.try_recv().expect("pre-filled bulk event");
-        assert!(
-            matches!(event, DecryptWorkerEvent::Plaintext(_)),
-            "fallback bulk pressure should remain isolated from authenticated commits"
-        );
-        return_rx.release_dequeued_event(&event);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
         assert_eq!(
             return_rx.bulk_pressure_queued_packets(),
             2,
-            "authenticated bulk should still contribute to pressure after plaintext drains"
+            "bulk pressure should count authenticated return packets"
         );
 
         let event = return_rx
@@ -151,7 +128,7 @@
         }
         assert!(
             return_rx.bulk.try_recv().is_err(),
-            "only the pre-filled plaintext event should have reached the fallback bulk lane"
+            "direct endpoint commit batching should not use the fallback bulk lane"
         );
     }
 
@@ -618,8 +595,6 @@
             DecryptWorkerEvent::DecryptFailure(report) => {
                 assert_eq!(report.fmp_counter, 1);
             }
-            DecryptWorkerEvent::Plaintext(_) => panic!("invalid bulk job should fail AEAD"),
-            DecryptWorkerEvent::PlaintextBatch(_) => panic!("invalid bulk job should fail AEAD"),
             DecryptWorkerEvent::AuthenticatedLink(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
@@ -950,7 +925,7 @@
         match action {
             DecryptWorkerJobAction::FspJob(fsp_job) => {
                 assert_eq!(
-                    fsp_job.fallback.lane(),
+                    fsp_job.fallback.lane,
                     DecryptWorkerLane::Priority,
                     "the outer FMP packet remains small enough to be priority-sized"
                 );
@@ -1028,7 +1003,7 @@
 
         let mut return_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         return_batch.push_output(DecryptWorkerOutput {
-            event: dummy_plaintext_event(bulk_len),
+            event: dummy_authenticated_link_event(bulk_len),
             direct_delivery: None,
         });
         assert!(
@@ -1064,7 +1039,7 @@
         );
 
         let first = return_rx
-            .bulk
+            .authenticated_bulk
             .try_recv()
             .expect("completion drain should flush the already-ready return before bulk work");
         assert_eq!(
@@ -1074,11 +1049,12 @@
         );
         return_rx.release_dequeued_event(&first);
         let second = return_rx
-            .bulk
+            .authenticated_bulk
             .try_recv()
             .expect("bulk packet should flush at the end of the drain turn");
         assert_eq!(second.packet_count(), 1);
         return_rx.release_dequeued_event(&second);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
         assert_eq!(return_rx.bulk_queued_packets(), 0);
     }
 
@@ -1143,12 +1119,12 @@
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
         let mut return_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         return_batch.push_output(DecryptWorkerOutput {
-            event: dummy_plaintext_event(bulk_len),
+            event: dummy_authenticated_link_event(bulk_len),
             direct_delivery: None,
         });
         assert!(
-            return_rx.bulk.try_recv().is_err(),
-            "first bulk return should stay buffered below the fallback cap"
+            return_rx.authenticated_bulk.try_recv().is_err(),
+            "first authenticated link return should stay buffered below the batch cap"
         );
 
         let bulk_job = dummy_fsp_job(bulk_len);
@@ -1167,7 +1143,7 @@
 
         assert_eq!(processed, 1);
         let first = return_rx
-            .bulk
+            .authenticated_bulk
             .try_recv()
             .expect("completion interleave should flush the already-ready return");
         assert_eq!(
@@ -1177,11 +1153,12 @@
         );
         return_rx.release_dequeued_event(&first);
         let second = return_rx
-            .bulk
+            .authenticated_bulk
             .try_recv()
             .expect("bulk packet should flush after service");
         assert_eq!(second.packet_count(), 1);
         return_rx.release_dequeued_event(&second);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
         assert_eq!(return_rx.bulk_queued_packets(), 0);
     }
 

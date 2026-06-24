@@ -81,7 +81,7 @@ impl DecryptWorkerReturnSender {
                 && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
             {
                 let event = match bulk_lane {
-                    DecryptWorkerReturnBulkLane::Plaintext => {
+                    DecryptWorkerReturnBulkLane::Failure => {
                         crate::perf_profile::Event::DecryptFallbackBacklogHigh
                     }
                     DecryptWorkerReturnBulkLane::Authenticated => {
@@ -94,7 +94,7 @@ impl DecryptWorkerReturnSender {
         let result = match lane {
             DecryptWorkerLane::Priority => self.priority.try_send(event),
             DecryptWorkerLane::Bulk => match bulk_lane.expect("bulk event has return bulk lane") {
-                DecryptWorkerReturnBulkLane::Plaintext => self.bulk.try_send(event),
+                DecryptWorkerReturnBulkLane::Failure => self.bulk.try_send(event),
                 DecryptWorkerReturnBulkLane::Authenticated => {
                     self.authenticated_bulk.try_send(event)
                 }
@@ -121,7 +121,7 @@ impl DecryptWorkerReturnSender {
 
     fn return_bulk_credits(&self, lane: DecryptWorkerReturnBulkLane) -> &LaneCreditGate {
         match lane {
-            DecryptWorkerReturnBulkLane::Plaintext => &self.bulk_credits,
+            DecryptWorkerReturnBulkLane::Failure => &self.bulk_credits,
             DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_credits,
         }
     }
@@ -153,7 +153,7 @@ impl DecryptWorkerReturnReceivers {
 
     fn return_bulk_credits(&self, lane: DecryptWorkerReturnBulkLane) -> &LaneCreditGate {
         match lane {
-            DecryptWorkerReturnBulkLane::Plaintext => &self.bulk_credits,
+            DecryptWorkerReturnBulkLane::Failure => &self.bulk_credits,
             DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_credits,
         }
     }
@@ -164,8 +164,6 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
         DecryptWorkerEvent::AuthenticatedLink(link) => link.lane(),
         DecryptWorkerEvent::AuthenticatedLinkBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => receive.lane,
-        DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
-        DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedSession(session) => session.lane,
         DecryptWorkerEvent::AuthenticatedSessionBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::DirectSessionCommit(commit) => commit.lane,
@@ -179,7 +177,7 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerReturnBulkLane {
-    Plaintext,
+    Failure,
     Authenticated,
 }
 
@@ -198,10 +196,9 @@ fn decrypt_worker_event_return_bulk_lane(
         | DecryptWorkerEvent::DirectSessionDataBatch(_) => {
             DecryptWorkerReturnBulkLane::Authenticated
         }
-        DecryptWorkerEvent::Plaintext(_)
-        | DecryptWorkerEvent::PlaintextBatch(_)
-        | DecryptWorkerEvent::FspDecryptFailure(_)
-        | DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerReturnBulkLane::Plaintext,
+        DecryptWorkerEvent::FspDecryptFailure(_) | DecryptWorkerEvent::DecryptFailure(_) => {
+            DecryptWorkerReturnBulkLane::Failure
+        }
     }
 }
 
@@ -226,9 +223,7 @@ fn decrypt_worker_event_drop_event(
                 crate::perf_profile::Event::DecryptAuthenticatedSessionBulkDropped
             }
         },
-        DecryptWorkerEvent::Plaintext(_)
-        | DecryptWorkerEvent::PlaintextBatch(_)
-        | DecryptWorkerEvent::FspDecryptFailure(_)
+        DecryptWorkerEvent::FspDecryptFailure(_)
         | DecryptWorkerEvent::DecryptFailure(_) => match lane {
             DecryptWorkerLane::Priority => {
                 crate::perf_profile::Event::DecryptFallbackPriorityDropped

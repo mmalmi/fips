@@ -380,24 +380,24 @@
         assert_eq!(bulk_rx.len(), 1, "failed FSP handoff must not overflow bulk");
         assert!(
             return_rx.priority.try_recv().is_err(),
-            "FSP owner pressure must not create a priority plaintext return"
+            "FSP owner pressure must not create a priority return"
         );
         assert!(
             return_rx.bulk.try_recv().is_err(),
-            "FSP owner pressure must not create a bulk plaintext return"
+            "FSP owner pressure must not create a bulk failure return"
         );
     }
 
     #[test]
     fn decrypt_worker_return_event_classifier_uses_priority_and_bulk_lanes() {
         assert_eq!(
-            decrypt_worker_event_lane(&dummy_plaintext_event(
+            decrypt_worker_event_lane(&dummy_authenticated_link_event(
                 DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
             )),
             DecryptWorkerLane::Priority
         );
         assert_eq!(
-            decrypt_worker_event_lane(&dummy_plaintext_event(
+            decrypt_worker_event_lane(&dummy_authenticated_link_event(
                 DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
             )),
             DecryptWorkerLane::Bulk
@@ -406,7 +406,7 @@
             decrypt_worker_event_lane(&dummy_failure_event()),
             DecryptWorkerLane::Priority
         );
-        let batch = dummy_return_batch_event(3, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+        let batch = dummy_authenticated_link_batch_event(3, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert_eq!(decrypt_worker_event_lane(&batch), DecryptWorkerLane::Bulk);
         assert_eq!(batch.packet_count(), 3);
     }
@@ -439,12 +439,6 @@
 
     #[test]
     fn decrypt_worker_event_wait_metrics_split_authenticated_sessions_from_fallbacks() {
-        let plaintext = dummy_plaintext_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
-        assert_eq!(
-            plaintext.queue_wait_stages().0,
-            crate::perf_profile::Stage::DecryptFallbackWait
-        );
-
         let failure = dummy_failure_event();
         assert_eq!(
             failure.queue_wait_stages().1,
@@ -488,8 +482,6 @@
                     "trace stamps should only appear when pipeline tracing is enabled"
                 );
             }
-            DecryptWorkerEvent::Plaintext(_) => panic!("expected failure report"),
-            DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedLink(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedLinkBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => panic!("expected failure report"),
@@ -526,24 +518,24 @@
 
     #[test]
     fn decrypt_worker_return_event_owns_lane_selected_at_construction() {
-        let mut priority = dummy_plaintext_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+        let mut priority = dummy_authenticated_link_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
 
         assert_eq!(
             decrypt_worker_event_lane(&priority),
             DecryptWorkerLane::Priority
         );
-        let DecryptWorkerEvent::Plaintext(fallback) = &mut priority else {
-            panic!("dummy plaintext event should be plaintext");
+        let DecryptWorkerEvent::AuthenticatedLink(link) = &mut priority else {
+            panic!("dummy authenticated link event should be an authenticated link");
         };
-        fallback.packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1024;
-        fallback.packet_data.resize(fallback.packet_len, 0);
+        link.packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1024;
+        link.packet_data.resize(link.packet_len, 0);
         assert_eq!(
             decrypt_worker_event_lane(&priority),
             DecryptWorkerLane::Priority,
             "queued return events must keep the lane chosen before enqueue"
         );
 
-        let bulk = dummy_plaintext_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+        let bulk = dummy_authenticated_link_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert_eq!(decrypt_worker_event_lane(&bulk), DecryptWorkerLane::Bulk);
     }
 
@@ -551,11 +543,11 @@
     fn decrypt_worker_return_bulk_full_does_not_starve_priority_events() {
         let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
 
-        assert!(return_tx.send(dummy_plaintext_event(
+        assert!(return_tx.send(dummy_authenticated_link_event(
             DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
         )));
         assert!(
-            !return_tx.send(dummy_plaintext_event(
+            !return_tx.send(dummy_authenticated_link_event(
                 DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
             )),
             "second bulk return should be dropped at the bounded bulk lane"
@@ -565,15 +557,18 @@
             "priority return should still fit its reserved lane"
         );
 
-        assert_eq!(return_rx.bulk.len(), 1);
+        assert_eq!(return_rx.authenticated_bulk.len(), 1);
         assert_eq!(return_rx.priority.len(), 1);
         assert!(matches!(
             return_rx.priority.try_recv().expect("priority event"),
             DecryptWorkerEvent::DecryptFailure(_)
         ));
         assert!(matches!(
-            return_rx.bulk.try_recv().expect("bulk event"),
-            DecryptWorkerEvent::Plaintext(_)
+            return_rx
+                .authenticated_bulk
+                .try_recv()
+                .expect("authenticated bulk event"),
+            DecryptWorkerEvent::AuthenticatedLink(_)
         ));
     }
 
@@ -581,17 +576,17 @@
     fn decrypt_worker_return_bulk_capacity_counts_batch_packets() {
         let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(1, 2);
 
-        assert!(return_tx.send(dummy_return_batch_event(
+        assert!(return_tx.send(dummy_authenticated_link_batch_event(
             2,
             DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
         )));
         assert_eq!(
-            return_rx.bulk_queued_packets(),
+            return_rx.authenticated_bulk_queued_packets(),
             2,
             "batch should reserve one bulk slot per packet, not per mpsc item"
         );
         assert!(
-            !return_tx.send(dummy_plaintext_event(
+            !return_tx.send(dummy_authenticated_link_event(
                 DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
             )),
             "bulk packet cap should reject another packet while the two-packet batch is queued"
@@ -601,11 +596,17 @@
             "priority return must not consume bulk packet capacity"
         );
 
-        let event = return_rx.bulk.try_recv().expect("bulk batch event");
-        assert!(matches!(event, DecryptWorkerEvent::PlaintextBatch(_)));
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("authenticated link batch event");
+        assert!(matches!(
+            event,
+            DecryptWorkerEvent::AuthenticatedLinkBatch(_)
+        ));
         return_rx.release_dequeued_event(&event);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
-        assert!(return_tx.send(dummy_plaintext_event(
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
+        assert!(return_tx.send(dummy_authenticated_link_event(
             DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
         )));
     }
@@ -643,19 +644,22 @@
         );
 
         assert!(
-            return_tx.send(dummy_plaintext_event(
+            return_tx.send(dummy_authenticated_link_event(
                 DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
             )),
             "full priority return lane must not consume bulk return capacity"
         );
-        assert_eq!(return_rx.bulk.len(), 1);
+        assert_eq!(return_rx.authenticated_bulk.len(), 1);
         assert!(matches!(
             return_rx.priority.try_recv().expect("priority event"),
             DecryptWorkerEvent::DecryptFailure(_)
         ));
         assert!(matches!(
-            return_rx.bulk.try_recv().expect("bulk event"),
-            DecryptWorkerEvent::Plaintext(_)
+            return_rx
+                .authenticated_bulk
+                .try_recv()
+                .expect("authenticated bulk event"),
+            DecryptWorkerEvent::AuthenticatedLink(_)
         ));
     }
 
@@ -918,9 +922,7 @@
                     link.packet_len > DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
                 }));
             }
-            DecryptWorkerEvent::Plaintext(_)
-            | DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::AuthenticatedLink(_)
+            DecryptWorkerEvent::AuthenticatedLink(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
@@ -1021,43 +1023,49 @@
     }
 
     #[test]
-    fn decrypt_worker_return_batch_never_exceeds_plaintext_return_packet_cap() {
+    fn decrypt_worker_return_batch_never_exceeds_authenticated_link_packet_cap() {
         let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 2);
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
         let mut batch = DecryptWorkerReturnBatch::new(return_tx.clone());
 
         batch.push_output(DecryptWorkerOutput {
-            event: dummy_plaintext_event(bulk_len),
+            event: dummy_authenticated_link_event(bulk_len),
             direct_delivery: None,
         });
         assert!(
-            return_rx.bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "first packet should stay buffered until the return cap-width batch is full"
         );
         batch.push_output(DecryptWorkerOutput {
-            event: dummy_plaintext_event(bulk_len),
+            event: dummy_authenticated_link_event(bulk_len),
             direct_delivery: None,
         });
 
-        let event = return_rx.bulk.try_recv().expect("two-packet batch");
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("two-packet authenticated link batch");
         assert_eq!(
             event.packet_count(),
             2,
-            "plaintext batch should fill, but not exceed, the return packet cap"
+            "authenticated link batch should fill, but not exceed, the return packet cap"
         );
         return_rx.release_dequeued_event(&event);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
 
         batch.push_output(DecryptWorkerOutput {
-            event: dummy_plaintext_event(bulk_len),
+            event: dummy_authenticated_link_event(bulk_len),
             direct_delivery: None,
         });
         batch.flush();
 
-        let event = return_rx.bulk.try_recv().expect("single trailing packet");
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("single trailing authenticated link packet");
         assert_eq!(event.packet_count(), 1);
         return_rx.release_dequeued_event(&event);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
     }
 
     #[test]
@@ -1069,29 +1077,35 @@
 
         for _ in 0..DECRYPT_WORKER_BULK_BATCH_MAX {
             batch.push_output(DecryptWorkerOutput {
-                event: dummy_plaintext_event(bulk_len),
+                event: dummy_authenticated_link_event(bulk_len),
                 direct_delivery: None,
             });
         }
 
-        let event = return_rx.bulk.try_recv().expect("full-width batch");
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("full-width authenticated link batch");
         assert_eq!(
             event.packet_count(),
             DECRYPT_WORKER_BULK_BATCH_MAX,
-            "plaintext completion batches should use the configured bounded width"
+            "authenticated link completion batches should use the configured bounded width"
         );
         return_rx.release_dequeued_event(&event);
 
         batch.push_output(DecryptWorkerOutput {
-            event: dummy_plaintext_event(bulk_len),
+            event: dummy_authenticated_link_event(bulk_len),
             direct_delivery: None,
         });
         batch.flush();
 
-        let event = return_rx.bulk.try_recv().expect("single trailing packet");
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("single trailing authenticated link packet");
         assert_eq!(event.packet_count(), 1);
         return_rx.release_dequeued_event(&event);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
     }
 
     #[test]
@@ -1137,9 +1151,7 @@
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected authenticated session batch")
             }
-            DecryptWorkerEvent::Plaintext(_)
-            | DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::AuthenticatedLink(_)
+            DecryptWorkerEvent::AuthenticatedLink(_)
             | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
@@ -1246,9 +1258,7 @@
             DecryptWorkerEvent::DirectSessionData(_) => {
                 panic!("expected routed direct data batch")
             }
-            DecryptWorkerEvent::Plaintext(_)
-            | DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::AuthenticatedLink(_)
+            DecryptWorkerEvent::AuthenticatedLink(_)
             | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)

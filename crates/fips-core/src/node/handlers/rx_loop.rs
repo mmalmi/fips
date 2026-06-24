@@ -4,8 +4,8 @@ use crate::control::queries;
 use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
 use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::{
-    DecryptAuthenticatedLink, DecryptFailureReport, DecryptFallback, DecryptJobBatcher,
-    DecryptWorkerEvent, DecryptWorkerReturnReceivers,
+    DecryptAuthenticatedLink, DecryptFailureReport, DecryptJobBatcher, DecryptWorkerEvent,
+    DecryptWorkerReturnReceivers,
 };
 use crate::node::handlers::encrypted::EncryptedFrameFastPath;
 use crate::node::wire::{
@@ -785,21 +785,13 @@ impl Node {
         self.record_stats_history();
     }
 
-    /// Hand a decrypt-worker plaintext return to the canonical post-FMP-decrypt
-    /// processor as one authenticated receive envelope. The envelope keeps the
-    /// worker-captured source peer, FMP flags, packet facts, and plaintext slice
-    /// together so peer bookkeeping and link dispatch cannot drift apart.
+    /// Hand decrypt-worker returns to the canonical post-decrypt processors.
+    /// Authenticated link returns keep the worker-captured source peer, FMP
+    /// flags, packet facts, and plaintext slice together so peer bookkeeping
+    /// and link dispatch cannot drift apart.
     async fn process_decrypt_worker_event(&mut self, event: DecryptWorkerEvent) {
         event.record_queue_wait();
         match event {
-            DecryptWorkerEvent::Plaintext(fallback) => {
-                self.process_decrypt_plaintext_return(fallback).await;
-            }
-            DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
-                for fallback in fallbacks {
-                    self.process_decrypt_plaintext_return(fallback).await;
-                }
-            }
             DecryptWorkerEvent::AuthenticatedLink(link) => {
                 self.process_decrypt_authenticated_link(link).await;
             }
@@ -840,22 +832,6 @@ impl Node {
                 self.process_decrypt_failure_report(report).await;
             }
         }
-    }
-
-    async fn process_decrypt_plaintext_return(&mut self, fallback: DecryptFallback) {
-        let plaintext = &fallback.packet_data[fallback.fmp_plaintext_offset
-            ..fallback.fmp_plaintext_offset + fallback.fmp_plaintext_len];
-        self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
-            fallback.source_peer,
-            fallback.transport_id,
-            &fallback.remote_addr,
-            fallback.timestamp_ms,
-            fallback.packet_len,
-            fallback.fmp_counter,
-            fallback.fmp_flags,
-            plaintext,
-        ))
-        .await;
     }
 
     async fn process_decrypt_authenticated_link(&mut self, link: DecryptAuthenticatedLink) {

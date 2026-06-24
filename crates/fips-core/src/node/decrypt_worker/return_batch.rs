@@ -2,7 +2,6 @@ use crate::packet_mover::{CommitBeforeOutputBatch, CommitBeforeOutputItems};
 
 struct DecryptWorkerReturnBatch {
     return_tx: DecryptWorkerReturnSender,
-    fallbacks: Vec<DecryptFallback>,
     authenticated_links: Vec<DecryptAuthenticatedLink>,
     authenticated_sessions: Vec<DecryptAuthenticatedSession>,
     endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
@@ -15,7 +14,6 @@ impl DecryptWorkerReturnBatch {
     fn new(return_tx: DecryptWorkerReturnSender) -> Self {
         Self {
             return_tx,
-            fallbacks: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             authenticated_links: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             authenticated_sessions: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             endpoint_sink: None,
@@ -49,29 +47,7 @@ impl DecryptWorkerReturnBatch {
     }
 
     fn push_output(&mut self, output: DecryptWorkerOutput) {
-        if output.is_batchable_bulk_plaintext() {
-            self.flush_authenticated_links();
-            self.flush_authenticated_sessions();
-            self.flush_endpoint();
-            self.flush_direct();
-            self.flush_direct_data();
-            let DecryptWorkerOutput {
-                event,
-                direct_delivery,
-            } = output;
-            debug_assert!(direct_delivery.is_none());
-            let DecryptWorkerEvent::Plaintext(fallback) = event else {
-                unreachable!("checked batchable plaintext output")
-            };
-            self.fallbacks.push(fallback);
-            if self.fallbacks.len() >= self.batch_max() {
-                self.flush_plaintext();
-            }
-            return;
-        }
-
         if output.is_batchable_authenticated_link() {
-            self.flush_plaintext();
             self.flush_authenticated_sessions();
             self.flush_endpoint();
             self.flush_direct();
@@ -92,7 +68,6 @@ impl DecryptWorkerReturnBatch {
         }
 
         if output.is_batchable_authenticated_session() {
-            self.flush_plaintext();
             self.flush_authenticated_links();
             self.flush_endpoint();
             self.flush_direct();
@@ -113,7 +88,6 @@ impl DecryptWorkerReturnBatch {
         }
 
         if output.is_batchable_direct_endpoint() {
-            self.flush_plaintext();
             self.flush_authenticated_links();
             self.flush_authenticated_sessions();
             self.flush_direct();
@@ -153,7 +127,6 @@ impl DecryptWorkerReturnBatch {
         }
 
         if output.is_batchable_direct_ipv6() {
-            self.flush_plaintext();
             self.flush_authenticated_links();
             self.flush_authenticated_sessions();
             self.flush_endpoint();
@@ -177,7 +150,6 @@ impl DecryptWorkerReturnBatch {
         }
 
         if output.is_batchable_direct_data() {
-            self.flush_plaintext();
             self.flush_authenticated_links();
             self.flush_authenticated_sessions();
             self.flush_endpoint();
@@ -202,30 +174,11 @@ impl DecryptWorkerReturnBatch {
     }
 
     fn flush(&mut self) {
-        self.flush_plaintext();
         self.flush_authenticated_links();
         self.flush_authenticated_sessions();
         self.flush_endpoint();
         self.flush_direct();
         self.flush_direct_data();
-    }
-
-    fn flush_plaintext(&mut self) {
-        if self.fallbacks.is_empty() {
-            return;
-        }
-        let _t_flush =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
-        let event = if self.fallbacks.len() == 1 {
-            DecryptWorkerEvent::Plaintext(self.fallbacks.pop().expect("checked single fallback"))
-        } else {
-            let fallbacks = std::mem::replace(
-                &mut self.fallbacks,
-                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-            );
-            DecryptWorkerEvent::PlaintextBatch(fallbacks)
-        };
-        let _ = self.return_tx.send(event);
     }
 
     fn flush_authenticated_sessions(&mut self) {

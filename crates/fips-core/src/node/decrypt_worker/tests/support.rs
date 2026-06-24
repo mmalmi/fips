@@ -885,11 +885,57 @@
                 );
             }
         }
-        assert!(return_batch.fallbacks.is_empty());
         assert!(return_batch.authenticated_sessions.is_empty());
         assert!(return_batch.direct_outputs.is_empty());
         assert!(return_batch.direct_data.is_empty());
         assert!(return_batch.endpoint_outputs.is_empty());
+    }
+
+    #[test]
+    fn fsp_job_without_registered_owner_returns_authenticated_link() {
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
+        let (pool, _control_receivers, _priority_receivers, _bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(1, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_addr = NodeAddr::from_bytes([0x63; 16]);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.return_tx = return_tx.clone();
+        let mut return_batch = DecryptWorkerReturnBatch::new(return_tx);
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
+
+        shard.push_job_action_output(
+            0,
+            DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(source_addr)),
+            &mut return_batch,
+            None,
+            &mut fsp_open_batcher,
+        );
+        assert!(
+            flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty(),
+            "missing FSP owner should return the authenticated link, not opener work"
+        );
+        return_batch.flush();
+
+        assert!(
+            return_rx.bulk.try_recv().is_err(),
+            "missing FSP owner must not use the failure/fallback bulk lane"
+        );
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("missing FSP owner should return authenticated link");
+        match event {
+            DecryptWorkerEvent::AuthenticatedLink(link) => {
+                assert_eq!(link.fmp_counter, 1);
+                assert_eq!(
+                    link.packet_len,
+                    DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+                );
+            }
+            other => panic!(
+                "missing FSP owner should return authenticated link, got {} packet(s)",
+                other.packet_count()
+            ),
+        }
     }
 
     #[test]
@@ -1756,21 +1802,6 @@
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
     }
 
-    fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {
-        DecryptWorkerEvent::Plaintext(DecryptFallback::new(
-            test_source_peer(),
-            TransportId::new(1),
-            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            1_000,
-            packet_len,
-            1,
-            0,
-            vec![0; packet_len.max(1)],
-            0,
-            1,
-        ))
-    }
-
     fn dummy_authenticated_link_event(packet_len: usize) -> DecryptWorkerEvent {
         let fallback = DecryptFallback::new(
             test_source_peer(),
@@ -1789,11 +1820,11 @@
         ))
     }
 
-    fn dummy_return_batch_event(count: usize, packet_len: usize) -> DecryptWorkerEvent {
-        DecryptWorkerEvent::PlaintextBatch(
+    fn dummy_authenticated_link_batch_event(count: usize, packet_len: usize) -> DecryptWorkerEvent {
+        DecryptWorkerEvent::AuthenticatedLinkBatch(
             (0..count)
                 .map(|idx| {
-                    DecryptFallback::new(
+                    let fallback = DecryptFallback::new(
                         test_source_peer(),
                         TransportId::new(1),
                         crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
@@ -1804,7 +1835,8 @@
                         vec![0; packet_len.max(1)],
                         0,
                         1,
-                    )
+                    );
+                    DecryptAuthenticatedLink::from_opened_fmp(fallback)
                 })
                 .collect(),
         )
@@ -1882,7 +1914,7 @@
     }
 
     #[test]
-    fn job_actions_reuse_plaintext_output_batcher() {
+    fn job_actions_reuse_authenticated_link_output_batcher() {
         let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
         let pool = DecryptWorkerPool {
             senders: Arc::from(Vec::<DecryptWorkerSender>::new().into_boxed_slice()),
@@ -1897,7 +1929,7 @@
         shard.push_job_action_output(
             0,
             DecryptWorkerJobAction::Output(DecryptWorkerOutput {
-                event: dummy_plaintext_event(packet_len),
+                event: dummy_authenticated_link_event(packet_len),
                 direct_delivery: None,
             }),
             &mut return_batch,
@@ -1907,7 +1939,7 @@
         shard.push_job_action_output(
             0,
             DecryptWorkerJobAction::Output(DecryptWorkerOutput {
-                event: dummy_plaintext_event(packet_len),
+                event: dummy_authenticated_link_event(packet_len),
                 direct_delivery: None,
             }),
             &mut return_batch,
@@ -1917,18 +1949,21 @@
         assert!(flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty());
         return_batch.flush();
 
-        let event = return_rx.bulk.try_recv().expect("batched plaintext output");
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("batched authenticated link output");
         match &event {
-            DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
-                assert_eq!(fallbacks.len(), 2);
+            DecryptWorkerEvent::AuthenticatedLinkBatch(links) => {
+                assert_eq!(links.len(), 2);
             }
             other => panic!(
-                "sequential output actions should reuse plaintext batching, got {} packet(s)",
+                "sequential output actions should reuse authenticated link batching, got {} packet(s)",
                 other.packet_count()
             ),
         }
         return_rx.release_dequeued_event(&event);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
     }
 
     fn dummy_failure_event() -> DecryptWorkerEvent {
@@ -2134,10 +2169,10 @@
     #[test]
     fn decrypt_worker_return_drop_metric_splits_fallback_and_authenticated_outputs() {
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
-        let plaintext = dummy_plaintext_event(bulk_len);
+        let link = dummy_authenticated_link_event(bulk_len);
         assert_eq!(
-            decrypt_worker_event_drop_event(&plaintext, plaintext.lane()),
-            crate::perf_profile::Event::DecryptFallbackBulkDropped
+            decrypt_worker_event_drop_event(&link, link.lane()),
+            crate::perf_profile::Event::DecryptAuthenticatedSessionBulkDropped
         );
 
         let failure = dummy_failure_event();
