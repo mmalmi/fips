@@ -675,15 +675,15 @@ impl DecryptWorkerShard {
                 FspOpenWorkerIneligibleReason::WindowFull,
             ));
         };
-        let open_job = FspAeadOpenJob {
-            crypto_ticket: reservation.crypto_ticket(),
-            cipher: Arc::clone(&target.state.current.cipher),
+        let open_job = FspAeadOpenJob::new(
+            reservation.crypto_ticket(),
+            Arc::clone(&target.state.current.cipher),
             job,
             header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        };
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        );
         Ok((target.open_idx, target.owner_idx, open_job))
     }
 
@@ -731,14 +731,16 @@ impl DecryptWorkerShard {
             .into_iter()
             .zip(headers)
             .enumerate()
-            .map(|(offset, (job, header))| FspAeadOpenJob {
-                crypto_ticket: reservation.crypto_ticket_at(offset),
-                cipher: Arc::clone(&cipher),
-                job,
-                header,
-                completion_source: FspAeadCompletionSource::WorkerOpen,
-                completion_owner_idx: None,
-                open_queued_at: None,
+            .map(|(offset, (job, header))| {
+                FspAeadOpenJob::new(
+                    reservation.crypto_ticket_at(offset),
+                    Arc::clone(&cipher),
+                    job,
+                    header,
+                    FspAeadCompletionSource::WorkerOpen,
+                    None,
+                    None,
+                )
             })
             .collect();
 

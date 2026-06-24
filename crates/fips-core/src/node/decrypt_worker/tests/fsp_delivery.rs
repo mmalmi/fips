@@ -484,8 +484,8 @@
             }
         };
 
-        let completion = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let completion = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
@@ -493,13 +493,13 @@
                     .issue_fsp_receive_ticket()
                     .expect("owner receive window should admit first worker-open ticket"),
             ),
-            cipher: Arc::clone(&cipher),
-            job: make_job(fsp_payload.clone()),
-            header: header.clone(),
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            Arc::clone(&cipher),
+            make_job(fsp_payload.clone()),
+            header.clone(),
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        )
         .into_completion();
 
         let drain = state
@@ -522,8 +522,8 @@
             FspReadyCompletion::AeadFailed { .. } => panic!("valid worker-open frame must open"),
         }
 
-        let duplicate = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let duplicate = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
@@ -532,12 +532,12 @@
                     .expect("owner receive window should admit duplicate worker-open ticket"),
             ),
             cipher,
-            job: make_job(fsp_payload),
+            make_job(fsp_payload),
             header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        )
         .into_completion();
         let duplicate_drain = state
             .complete_fsp_aead_completion_for_test(duplicate)
@@ -898,8 +898,8 @@
         let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
         let first_payload_len = first_payload.len();
         let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
-        let first_completion = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let first_completion = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
@@ -907,20 +907,20 @@
                     .issue_fsp_receive_ticket()
                     .expect("owner receive window should admit first worker-open ticket"),
             ),
-            cipher: Arc::clone(&cipher),
-            job: make_job(first_payload, first_payload_len),
-            header: first_header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            Arc::clone(&cipher),
+            make_job(first_payload, first_payload_len),
+            first_header,
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        )
         .into_completion();
 
         let (second_payload, second_plaintext_len) = make_payload(b"second worker-open");
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
-        let second_completion = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let second_completion = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
@@ -929,12 +929,12 @@
                     .expect("owner receive window should admit second worker-open ticket"),
             ),
             cipher,
-            job: make_job(second_payload, second_payload_len),
-            header: second_header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            make_job(second_payload, second_payload_len),
+            second_header,
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        )
         .into_completion();
 
         let second_drain = state
@@ -1059,8 +1059,8 @@
         let protected_payload_len = protected_payload.len();
         let protected_header =
             FspEncryptedHeader::parse(&protected_payload).expect("protected FSP header");
-        let protected_completion = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let protected_completion = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
@@ -1068,13 +1068,13 @@
                     .issue_fsp_receive_ticket()
                     .expect("owner receive window should admit protected worker-open ticket"),
             ),
-            cipher: Arc::clone(&cipher),
-            job: make_job(protected_payload, protected_payload_len),
-            header: protected_header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            Arc::clone(&cipher),
+            make_job(protected_payload, protected_payload_len),
+            protected_header,
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        )
         .into_completion();
         let protected_drain = state
             .complete_fsp_aead_completion_for_test(protected_completion)
@@ -1103,8 +1103,8 @@
         let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
         let first_payload_len = first_payload.len();
         let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
-        let first_completion = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let first_completion = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
@@ -1112,13 +1112,13 @@
                     .issue_fsp_receive_ticket()
                     .expect("owner receive window should admit first worker-open ticket"),
             ),
-            cipher: Arc::clone(&cipher),
-            job: make_job(first_payload, first_payload_len),
-            header: first_header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            Arc::clone(&cipher),
+            make_job(first_payload, first_payload_len),
+            first_header,
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        )
         .into_completion();
 
         let (mut second_payload, second_plaintext_len) = make_payload(b"second worker-open");
@@ -1128,8 +1128,8 @@
         let second_payload_after_corruption = second_payload.clone();
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
-        let second_completion = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let second_completion = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
@@ -1138,12 +1138,12 @@
                     .expect("owner receive window should admit second worker-open ticket"),
             ),
             cipher,
-            job: make_job(second_payload, second_payload_len),
-            header: second_header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            make_job(second_payload, second_payload_len),
+            second_header,
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        )
         .into_completion();
 
         let second_drain = state
@@ -1556,20 +1556,20 @@
             .expect("local owner open should reserve from the same owner ticket source");
         assert_eq!(local_ticket.sequence, 1);
 
-        let local_completion = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let local_completion = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
                 local_ticket,
             ),
-            cipher: Arc::clone(&cipher),
-            job: make_job(local_payload, local_payload_len),
-            header: local_header,
-            completion_source: FspAeadCompletionSource::Local,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            Arc::clone(&cipher),
+            make_job(local_payload, local_payload_len),
+            local_header,
+            FspAeadCompletionSource::Local,
+            None,
+            None,
+        )
         .into_completion();
         let local_drain = state
             .complete_fsp_aead_completion_for_test(local_completion)
@@ -1580,20 +1580,20 @@
             "local owner completion must not bypass an older worker-open ticket"
         );
 
-        let open_completion = FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+        let open_completion = FspAeadOpenJob::new(
+            test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
                 open_ticket,
             ),
             cipher,
-            job: make_job(open_payload, open_payload_len),
-            header: open_header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_owner_idx: None,
-            open_queued_at: None,
-        }
+            make_job(open_payload, open_payload_len),
+            open_header,
+            FspAeadCompletionSource::WorkerOpen,
+            None,
+            None,
+        )
         .into_completion();
         let open_drain = state
             .complete_fsp_aead_completion_for_test(open_completion)

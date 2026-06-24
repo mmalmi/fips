@@ -1271,7 +1271,7 @@
             header,
             Some(owner_idx),
         );
-        open_job.completion_source = FspAeadCompletionSource::WorkerOpen;
+        open_job.set_completion_source(FspAeadCompletionSource::WorkerOpen);
 
         let mut shard = DecryptWorkerShard::new(pool);
         let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
@@ -1320,7 +1320,7 @@
             header,
             Some(owner_idx),
         );
-        open_job.completion_source = FspAeadCompletionSource::WorkerOpen;
+        open_job.set_completion_source(FspAeadCompletionSource::WorkerOpen);
         open_job.mark_returned_completion();
         drop(fsp_completion_receivers.remove(owner_idx));
 
@@ -1401,7 +1401,7 @@
                     header.clone(),
                     Some(owner_idx),
                 );
-                job.completion_source = FspAeadCompletionSource::WorkerOpen;
+                job.set_completion_source(FspAeadCompletionSource::WorkerOpen);
                 job
             },
             {
@@ -1412,7 +1412,7 @@
                     header,
                     Some(owner_idx),
                 );
-                job.completion_source = FspAeadCompletionSource::WorkerOpen;
+                job.set_completion_source(FspAeadCompletionSource::WorkerOpen);
                 job
             },
         ];
@@ -2102,8 +2102,8 @@
         let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
         job.source_addr = source_addr;
         job.fsp_payload_len = 0;
-        FspAeadOpenJob {
-            crypto_ticket: test_fsp_crypto_ticket(
+        FspAeadOpenJob::new(
+            test_fsp_crypto_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
@@ -2112,10 +2112,10 @@
             cipher,
             job,
             header,
-            completion_source: FspAeadCompletionSource::WorkerOpen,
+            FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx,
-            open_queued_at: None,
-        }
+            None,
+        )
     }
 
     fn dummy_authenticated_session_event(lane: DecryptWorkerLane) -> DecryptWorkerEvent {
