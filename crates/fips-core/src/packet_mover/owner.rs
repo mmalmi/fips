@@ -80,7 +80,7 @@ impl<T> OwnerCompletionBuffer<T> {
         &mut self,
         ticket: OwnerReceiveTicket,
         completion: T,
-        mut on_ready: impl FnMut(T),
+        mut on_ready: impl FnMut(OwnerReceiveTicket, T),
     ) -> Result<usize, OwnerCompletionError> {
         if ticket.sequence < self.next_ready {
             return Err(OwnerCompletionError::Stale);
@@ -88,7 +88,12 @@ impl<T> OwnerCompletionBuffer<T> {
 
         let offset = (ticket.sequence - self.next_ready) as usize;
         if offset == 0 {
-            on_ready(completion);
+            on_ready(
+                OwnerReceiveTicket {
+                    sequence: self.next_ready,
+                },
+                completion,
+            );
             self.next_ready = self.next_ready.saturating_add(1);
             if !self.pending.is_empty() {
                 let _ = self.pending.pop_front();
@@ -101,7 +106,12 @@ impl<T> OwnerCompletionBuffer<T> {
                     .pop_front()
                     .and_then(|completion| completion)
                     .expect("checked ready pending completion");
-                on_ready(completion);
+                on_ready(
+                    OwnerReceiveTicket {
+                        sequence: self.next_ready,
+                    },
+                    completion,
+                );
                 self.next_ready = self.next_ready.saturating_add(1);
                 ready += 1;
             }
@@ -184,7 +194,7 @@ impl<T> OwnerReceiveWindow<T> {
         &mut self,
         ticket: OwnerReceiveTicket,
         completion: T,
-        on_ready: impl FnMut(T),
+        on_ready: impl FnMut(OwnerReceiveTicket, T),
     ) -> Result<usize, OwnerCompletionError> {
         self.completions.complete(ticket, completion, on_ready)
     }
@@ -300,13 +310,15 @@ mod tests {
         let mut ready = Vec::new();
         assert_eq!(
             window
-                .complete(second, "second", |completion| ready.push(completion))
+                .complete(second, "second", |ticket, completion| ready
+                    .push((ticket.sequence, completion)))
                 .expect("second completion should buffer"),
             0
         );
         assert_eq!(
             window
-                .complete(third, "third", |completion| ready.push(completion))
+                .complete(third, "third", |ticket, completion| ready
+                    .push((ticket.sequence, completion)))
                 .expect("third completion should buffer"),
             0
         );
@@ -314,11 +326,12 @@ mod tests {
 
         assert_eq!(
             window
-                .complete(first, "first", |completion| ready.push(completion))
+                .complete(first, "first", |ticket, completion| ready
+                    .push((ticket.sequence, completion)))
                 .expect("first completion should drain all ready completions"),
             3
         );
-        assert_eq!(ready, vec!["first", "second", "third"]);
+        assert_eq!(ready, vec![(0, "first"), (1, "second"), (2, "third")]);
         assert_eq!(window.next_ready(), 3);
     }
 

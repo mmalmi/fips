@@ -603,6 +603,7 @@ impl DecryptWorkerShard {
         delivery: DecryptDirectSessionDelivery,
         receive_sync: FspReceiveSync,
         lane: DecryptWorkerLane,
+        owner_reservation: Option<OwnerReservation>,
     ) -> (DecryptWorkerEvent, Option<PendingDirectSessionDelivery>) {
         let source_peer = match &delivery {
             DecryptDirectSessionDelivery::EndpointData(delivery) => delivery.source_peer,
@@ -620,6 +621,7 @@ impl DecryptWorkerShard {
                     receive_sync,
                     body_len,
                     delivered_ipv6,
+                    owner_reservation,
                     lane,
                     trace_enqueued_at: None,
                 }),
@@ -642,6 +644,7 @@ impl DecryptWorkerShard {
                 receive_sync,
                 body_len,
                 delivery,
+                owner_reservation,
                 lane,
                 trace_enqueued_at: None,
             }),
@@ -953,19 +956,35 @@ impl DecryptWorkerShard {
     ) -> Option<DecryptWorkerOutput> {
         match completion {
             FspReadyCompletion::Opened {
+                reservation,
                 opened,
                 slot,
                 source_peer,
-            } => Self::output_for_opened_fsp_job(direct_delivery_sink, source_peer, opened, slot),
+            } => Self::output_for_opened_fsp_job(
+                direct_delivery_sink,
+                reservation,
+                source_peer,
+                opened,
+                slot,
+            ),
             FspReadyCompletion::AeadFailed {
+                reservation,
                 job,
                 header,
                 fallback_to_rx_loop,
-            } => Some(Self::output_for_fsp_aead_failure(
-                job,
-                &header,
-                fallback_to_rx_loop,
-            )),
+            } => {
+                debug_assert_eq!(
+                    reservation.owner,
+                    OwnerKey::Fsp {
+                        source_addr: job.source_addr
+                    }
+                );
+                Some(Self::output_for_fsp_aead_failure(
+                    job,
+                    &header,
+                    fallback_to_rx_loop,
+                ))
+            }
         }
     }
 
@@ -1047,6 +1066,7 @@ impl DecryptWorkerShard {
 
     fn output_for_opened_fsp_job(
         direct_delivery_sink: &DecryptDirectSessionDeliverySink,
+        reservation: OwnerReservation,
         source_peer: PeerIdentity,
         opened: FspOpenedJob,
         slot: EpochSlot,
@@ -1119,6 +1139,7 @@ impl DecryptWorkerShard {
                     delivery,
                     sync,
                     lane,
+                    Some(reservation),
                 );
                 Some(DecryptWorkerOutput {
                     event,
@@ -1408,6 +1429,7 @@ impl DecryptWorkerShard {
                         delivery,
                         sync,
                         lane,
+                        None,
                     );
                     return_batch.push_output(DecryptWorkerOutput {
                         event,

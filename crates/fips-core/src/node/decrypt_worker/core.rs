@@ -637,14 +637,27 @@ impl OwnedFspSessionState {
         completion: FspOrderedCompletion,
         mut on_output: impl FnMut(FspReadyCompletion),
     ) -> Result<FspOrderedDrain, OrderedCompletionError> {
+        let owner = self.fsp_owner_key();
+        let generation = OwnerGeneration(self.fsp_crypto_generation());
+        let receive_order_id = self.fsp_receive_order_id();
         let current = &mut self.current;
         let current_k_bit = self.current_k_bit;
         let source_peer = self.source_peer;
         let mut drain = FspOrderedDrain::default();
         let ready_count = self
             .fsp_receive_order
-            .complete(ticket, completion, |completion| match completion {
+            .complete(ticket, completion, |ready_ticket, completion| match completion {
                 FspOrderedCompletion::Opened { opened, source } => {
+                    let reservation = OwnerReservation {
+                        owner,
+                        generation,
+                        order: OrderToken {
+                            receive_order_id,
+                            sequence: OrderSequence(ready_ticket.sequence),
+                        },
+                        lane: opened.job.lane.into(),
+                        packet_count: 1,
+                    };
                     match Self::accept_opened_current_established_frame_for(
                         current,
                         current_k_bit,
@@ -653,6 +666,7 @@ impl OwnedFspSessionState {
                         Ok(slot) => {
                             drain.accepted += 1;
                             on_output(FspReadyCompletion::Opened {
+                                reservation,
                                 opened,
                                 slot,
                                 source_peer,
@@ -679,6 +693,16 @@ impl OwnedFspSessionState {
                     fallback_to_rx_loop,
                     count_failure,
                 } => {
+                    let reservation = OwnerReservation {
+                        owner,
+                        generation,
+                        order: OrderToken {
+                            receive_order_id,
+                            sequence: OrderSequence(ready_ticket.sequence),
+                        },
+                        lane: job.lane.into(),
+                        packet_count: 1,
+                    };
                     let mut emit_failure = true;
                     if count_failure {
                         let stale_worker_open_epoch = source.is_worker_open()
@@ -695,6 +719,7 @@ impl OwnedFspSessionState {
                     }
                     if emit_failure {
                         on_output(FspReadyCompletion::AeadFailed {
+                            reservation,
                             job,
                             header,
                             fallback_to_rx_loop,
@@ -706,9 +731,20 @@ impl OwnedFspSessionState {
                     header,
                     source,
                 } => {
+                    let reservation = OwnerReservation {
+                        owner,
+                        generation,
+                        order: OrderToken {
+                            receive_order_id,
+                            sequence: OrderSequence(ready_ticket.sequence),
+                        },
+                        lane: job.lane.into(),
+                        packet_count: 1,
+                    };
                     let _ = source;
                     drain.epoch_mismatches += 1;
                     on_output(FspReadyCompletion::AeadFailed {
+                        reservation,
                         job,
                         header,
                         fallback_to_rx_loop: true,
@@ -801,11 +837,13 @@ enum FspOrderedCompletion {
 
 enum FspReadyCompletion {
     Opened {
+        reservation: OwnerReservation,
         opened: FspOpenedJob,
         slot: EpochSlot,
         source_peer: PeerIdentity,
     },
     AeadFailed {
+        reservation: OwnerReservation,
         job: FspDecryptJob,
         header: FspEncryptedHeader,
         fallback_to_rx_loop: bool,
@@ -1673,7 +1711,7 @@ impl OwnedSessionState {
         };
         let fmp_replay = &mut self.fmp_replay;
         self.fmp_receive_order
-            .complete(ticket, ordered, |completion| match completion {
+            .complete(ticket, ordered, |_ticket, completion| match completion {
                 FmpOrderedCompletion::Opened {
                     opened,
                     replay_precheck,
@@ -2123,6 +2161,7 @@ pub(crate) struct DecryptDirectSessionData {
     pub receive_sync: FspReceiveSync,
     pub body_len: usize,
     pub delivery: DecryptDirectSessionDelivery,
+    pub(crate) owner_reservation: Option<OwnerReservation>,
     lane: DecryptWorkerLane,
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
@@ -2146,6 +2185,7 @@ impl DecryptDirectSessionData {
             receive_sync,
             body_len,
             delivery,
+            owner_reservation: None,
             lane: DecryptWorkerLane::Bulk,
             trace_enqueued_at: None,
         }
@@ -2160,6 +2200,7 @@ pub(crate) struct DecryptDirectSessionCommit {
     pub receive_sync: FspReceiveSync,
     pub body_len: usize,
     pub delivered_ipv6: bool,
+    pub(crate) owner_reservation: Option<OwnerReservation>,
     lane: DecryptWorkerLane,
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
@@ -2183,6 +2224,7 @@ impl DecryptDirectSessionCommit {
             receive_sync,
             body_len,
             delivered_ipv6,
+            owner_reservation: None,
             lane: DecryptWorkerLane::Bulk,
             trace_enqueued_at: None,
         }

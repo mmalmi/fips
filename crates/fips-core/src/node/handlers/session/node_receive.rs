@@ -445,6 +445,15 @@ impl Node {
         direct: DecryptDirectSessionData,
         clock: WorkerReceiveClock,
     ) -> Option<SessionDispatchFinish> {
+        if let Some(reservation) = direct.owner_reservation {
+            debug_assert_eq!(
+                reservation.owner,
+                crate::packet_mover::OwnerKey::Fsp {
+                    source_addr: direct.source_addr
+                }
+            );
+        }
+
         let finish = self.commit_direct_session_data_from_worker_at(
             &direct.fmp,
             direct.source_addr,
@@ -513,6 +522,28 @@ impl Node {
     ) -> bool {
         first.source_addr == next.source_addr
             && first.previous_hop_peer.node_addr() == next.previous_hop_peer.node_addr()
+            && Self::direct_session_owner_order_is_contiguous(first, next)
+    }
+
+    fn direct_session_owner_order_is_contiguous(
+        first: &DecryptDirectSessionCommit,
+        next: &DecryptDirectSessionCommit,
+    ) -> bool {
+        match (first.owner_reservation, next.owner_reservation) {
+            (Some(first), Some(next)) => {
+                first.owner == next.owner
+                    && first.generation == next.generation
+                    && first.order.receive_order_id == next.order.receive_order_id
+                    && next.order.sequence.0
+                        == first
+                            .order
+                            .sequence
+                            .0
+                            .saturating_add(first.packet_count as u64)
+            }
+            (None, None) => true,
+            _ => false,
+        }
     }
 
     fn commit_direct_session_data_from_worker_at(

@@ -1114,6 +1114,64 @@
         assert_eq!(entry.current_highest_counter(), Some(7));
     }
 
+    #[test]
+    fn direct_session_commit_batch_key_requires_contiguous_owner_order() {
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+
+        let commit = |sequence| {
+            let mut commit = DecryptDirectSessionCommit::for_test(
+                crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                    source_peer,
+                    transport_id: crate::transport::TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 2_000,
+                    packet_len: 256,
+                    fmp_counter: sequence + 1,
+                    inner_timestamp_ms: 22,
+                    fmp_flags: 0,
+                },
+                source_addr,
+                source_peer,
+                false,
+                crate::node::session::FspReceiveSync {
+                    counter: sequence + 1,
+                    slot: EpochSlot::Current,
+                    received_k_bit: false,
+                    timestamp: 0x0102_0304,
+                    plaintext_len: FSP_INNER_HEADER_SIZE + 16,
+                    ce_flag: false,
+                    path_mtu: 1_280,
+                    spin_bit: false,
+                },
+                16,
+                false,
+            );
+            commit.owner_reservation = Some(crate::packet_mover::OwnerReservation {
+                owner: crate::packet_mover::OwnerKey::Fsp { source_addr },
+                generation: crate::packet_mover::OwnerGeneration(9),
+                order: crate::packet_mover::OrderToken {
+                    receive_order_id: 44,
+                    sequence: crate::packet_mover::OrderSequence(sequence),
+                },
+                lane: crate::packet_mover::PacketLane::Bulk,
+                packet_count: 1,
+            });
+            commit
+        };
+
+        let first = commit(0);
+        let second = commit(1);
+        let gap = commit(3);
+        assert!(Node::direct_session_commit_batch_key_matches(
+            &first, &second
+        ));
+        assert!(!Node::direct_session_commit_batch_key_matches(
+            &second, &gap
+        ));
+    }
+
     #[tokio::test]
     async fn worker_direct_session_commit_batch_flushes_pending_after_ordered_commits() {
         let local = Identity::generate();

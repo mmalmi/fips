@@ -147,7 +147,8 @@
         let mut ready = Vec::new();
         assert_eq!(
             window
-                .complete(second, "second", |completion| ready.push(completion))
+                .complete(second, "second", |ticket, completion| ready
+                    .push((ticket.sequence, completion)))
                 .expect("second completion should buffer"),
             0
         );
@@ -155,7 +156,8 @@
 
         assert_eq!(
             window
-                .complete(third, "third", |completion| ready.push(completion))
+                .complete(third, "third", |ticket, completion| ready
+                    .push((ticket.sequence, completion)))
                 .expect("third completion should buffer behind first"),
             0
         );
@@ -163,11 +165,12 @@
 
         assert_eq!(
             window
-                .complete(first, "first", |completion| ready.push(completion))
+                .complete(first, "first", |ticket, completion| ready
+                    .push((ticket.sequence, completion)))
                 .expect("first completion should drain all ready completions"),
             3
         );
-        assert_eq!(ready, vec!["first", "second", "third"]);
+        assert_eq!(ready, vec![(0, "first"), (1, "second"), (2, "third")]);
         assert_eq!(window.next_ready(), 3);
     }
 
@@ -182,7 +185,7 @@
         );
 
         assert!(matches!(
-            window.complete(second, "second", |_| {}),
+            window.complete(second, "second", |_, _| {}),
             Ok(0)
         ));
         assert!(
@@ -191,7 +194,7 @@
         );
 
         assert!(matches!(
-            window.complete(first, "first", |_| {}),
+            window.complete(first, "first", |_, _| {}),
             Ok(2)
         ));
         let third = window

@@ -178,11 +178,10 @@
             pending: None,
             previous: None,
         };
-        shard.register_fsp_session(
-            0,
-            *source.node_addr(),
-            OwnedFspSessionState::from(fsp_snapshot),
-        );
+        let fsp_state = OwnedFspSessionState::from(fsp_snapshot);
+        let expected_fsp_receive_order_id = fsp_state.fsp_receive_order_id();
+        let expected_fsp_generation = fsp_state.fsp_crypto_generation();
+        shard.register_fsp_session(0, *source.node_addr(), fsp_state);
 
         shard.handle_job(job).expect("worker job should not fail");
         let event = return_rx
@@ -202,6 +201,25 @@
                 assert_eq!(direct.receive_sync.plaintext_len, inner_plaintext.len());
                 assert_eq!(direct.body_len, endpoint_body.len());
                 assert!(direct.receive_sync.spin_bit);
+                let reservation = direct
+                    .owner_reservation
+                    .expect("current-epoch direct FSP output should carry owner reservation");
+                assert_eq!(
+                    reservation.owner,
+                    OwnerKey::Fsp {
+                        source_addr: *source.node_addr()
+                    }
+                );
+                assert_eq!(
+                    reservation.generation,
+                    OwnerGeneration(expected_fsp_generation)
+                );
+                assert_eq!(
+                    reservation.order.receive_order_id,
+                    expected_fsp_receive_order_id
+                );
+                assert_eq!(reservation.order.sequence.0, 0);
+                assert_eq!(reservation.lane, PacketLane::Bulk);
                 match direct.delivery {
                     DecryptDirectSessionDelivery::EndpointData(delivery) => {
                         assert_eq!(delivery.source_peer, source_peer);
@@ -484,14 +502,15 @@
             }
         };
 
+        let ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("owner receive window should admit first worker-open ticket");
         let completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
                 crypto_generation,
-                state
-                    .issue_fsp_receive_ticket()
-                    .expect("owner receive window should admit first worker-open ticket"),
+                ticket,
             ),
             Arc::clone(&cipher),
             make_job(fsp_payload.clone()),
@@ -511,10 +530,19 @@
         assert_eq!(drain.outputs.len(), 1);
         match &drain.outputs[0] {
             FspReadyCompletion::Opened {
+                reservation,
                 opened,
                 slot,
                 source_peer: got_source_peer,
             } => {
+                assert_eq!(
+                    reservation.owner,
+                    OwnerKey::Fsp { source_addr },
+                    "ready FSP output should keep its packet-mover owner"
+                );
+                assert_eq!(reservation.generation, OwnerGeneration(crypto_generation));
+                assert_eq!(reservation.order.receive_order_id, receive_order_id);
+                assert_eq!(reservation.order.sequence.0, ticket.sequence);
                 assert_eq!(*slot, EpochSlot::Current);
                 assert_eq!(*got_source_peer, source_peer);
                 assert_eq!(opened.plaintext_len, inner_plaintext.len());
