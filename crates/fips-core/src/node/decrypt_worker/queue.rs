@@ -297,10 +297,6 @@ impl FspDecryptJobBatcher {
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.worker_idx.is_none() && self.jobs.is_empty()
-    }
-
     fn push_to(&mut self, workers: &DecryptWorkerPool, worker_idx: usize, job: FspDecryptJob) {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             self.flush(workers);
@@ -356,10 +352,6 @@ impl FspAeadOpenJobBatcher {
             owner_idx: None,
             jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.open_idx.is_none() && self.owner_idx.is_none() && self.jobs.is_empty()
     }
 
     fn push(

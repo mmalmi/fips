@@ -99,10 +99,9 @@ fn run_worker(
     let fallback_tx = pool.fallback_tx.clone();
     let mut shard = DecryptWorkerShard::new(pool);
     let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(fallback_tx);
-    let mut bulk_batchers = BulkBatchBuffers::new();
 
     loop {
-        if drain_worker_queues_with_buffers(
+        if drain_worker_queues(
             idx,
             &mut shard,
             &control_rx,
@@ -111,7 +110,6 @@ fn run_worker(
             &bulk_rx,
             &bulk_queued_packets,
             &mut plaintext_batch,
-            &mut bulk_batchers,
         ) {
             continue;
         }
@@ -147,7 +145,7 @@ fn run_worker(
                 release_bulk_packets(&bulk_queued_packets, item.packet_count());
                 let mut batch_stats = DecryptWorkerBatchStats::default();
                 batch_stats.add_bulk_item(&item);
-                handle_bulk_item_with_buffers(
+                handle_bulk_item(
                     idx,
                     &mut shard,
                     &control_rx,
@@ -156,13 +154,12 @@ fn run_worker(
                     item,
                     &mut plaintext_batch,
                     &mut batch_stats,
-                    &mut bulk_batchers,
                 );
                 plaintext_batch.flush();
                 batch_stats.record(idx);
             }
             DecryptWorkerQueueItem::Closed => {
-                drain_worker_queues_with_buffers(
+                drain_worker_queues(
                     idx,
                     &mut shard,
                     &control_rx,
@@ -171,7 +168,6 @@ fn run_worker(
                     &bulk_rx,
                     &bulk_queued_packets,
                     &mut plaintext_batch,
-                    &mut bulk_batchers,
                 );
                 break;
             }
@@ -271,7 +267,6 @@ fn recv_worker_item_biased(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 fn drain_worker_queues(
     idx: usize,
     shard: &mut DecryptWorkerShard,
@@ -281,32 +276,6 @@ fn drain_worker_queues(
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
     bulk_queued_packets: &AtomicUsize,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-) -> bool {
-    let mut bulk_batchers = BulkBatchBuffers::new();
-    drain_worker_queues_with_buffers(
-        idx,
-        shard,
-        control_rx,
-        priority_rx,
-        fsp_aead_completion_rx,
-        bulk_rx,
-        bulk_queued_packets,
-        plaintext_batch,
-        &mut bulk_batchers,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn drain_worker_queues_with_buffers(
-    idx: usize,
-    shard: &mut DecryptWorkerShard,
-    control_rx: &Receiver<WorkerMsg>,
-    priority_rx: &Receiver<WorkerMsg>,
-    fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
-    bulk_rx: &Receiver<DecryptWorkerBulkItem>,
-    bulk_queued_packets: &AtomicUsize,
-    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    bulk_batchers: &mut BulkBatchBuffers,
 ) -> bool {
     let mut did_work = false;
     let mut batch_stats = DecryptWorkerBatchStats::default();
@@ -363,7 +332,7 @@ fn drain_worker_queues_with_buffers(
                 crate::perf_profile::record_decrypt_worker_drain_bulk(item.packet_count());
                 release_bulk_packets(bulk_queued_packets, item.packet_count());
                 batch_stats.add_bulk_item(&item);
-                drained_bulk_jobs += handle_bulk_item_with_buffers(
+                drained_bulk_jobs += handle_bulk_item(
                     idx,
                     shard,
                     control_rx,
@@ -372,7 +341,6 @@ fn drain_worker_queues_with_buffers(
                     item,
                     plaintext_batch,
                     &mut batch_stats,
-                    bulk_batchers,
                 );
             }
             Err(_) => break,
@@ -525,24 +493,6 @@ fn flush_fsp_open_batcher(
     }
 }
 
-struct BulkBatchBuffers {
-    fsp_batcher: FspDecryptJobBatcher,
-    fsp_open_batcher: FspAeadOpenJobBatcher,
-}
-
-impl BulkBatchBuffers {
-    fn new() -> Self {
-        Self {
-            fsp_batcher: FspDecryptJobBatcher::new(),
-            fsp_open_batcher: FspAeadOpenJobBatcher::new(),
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.fsp_batcher.is_empty() && self.fsp_open_batcher.is_empty()
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn drain_reserved_work_before_bulk_item(
     idx: usize,
@@ -578,7 +528,6 @@ fn drain_reserved_work_before_bulk_item(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 fn handle_bulk_item(
     idx: usize,
     shard: &mut DecryptWorkerShard,
@@ -589,33 +538,6 @@ fn handle_bulk_item(
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     batch_stats: &mut DecryptWorkerBatchStats,
 ) -> usize {
-    let mut bulk_batchers = BulkBatchBuffers::new();
-    handle_bulk_item_with_buffers(
-        idx,
-        shard,
-        control_rx,
-        priority_rx,
-        fsp_aead_completion_rx,
-        item,
-        plaintext_batch,
-        batch_stats,
-        &mut bulk_batchers,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn handle_bulk_item_with_buffers(
-    idx: usize,
-    shard: &mut DecryptWorkerShard,
-    control_rx: &Receiver<WorkerMsg>,
-    priority_rx: &Receiver<WorkerMsg>,
-    fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
-    item: DecryptWorkerBulkItem,
-    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    batch_stats: &mut DecryptWorkerBatchStats,
-    bulk_batchers: &mut BulkBatchBuffers,
-) -> usize {
-    debug_assert!(bulk_batchers.is_empty());
     match item {
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
             let item_service_started_at = crate::perf_profile::stamp();
@@ -647,8 +569,8 @@ fn handle_bulk_item_with_buffers(
                     batch_stats,
                 );
             }
-            let fsp_batcher = &mut bulk_batchers.fsp_batcher;
-            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
+            let mut fsp_batcher = FspDecryptJobBatcher::new();
+            let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
             if trace_enabled {
                 for _ in 0..count {
                     record_decrypt_worker_bulk_input_tail_wait(item_started_at);
@@ -659,12 +581,11 @@ fn handle_bulk_item_with_buffers(
                 session_key,
                 jobs,
                 plaintext_batch,
-                fsp_batcher,
-                fsp_open_batcher,
+                &mut fsp_batcher,
+                &mut fsp_open_batcher,
             );
             fsp_batcher.flush(&shard.pool);
-            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
-            debug_assert!(bulk_batchers.is_empty());
+            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut fsp_open_batcher);
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count
         }
@@ -683,20 +604,19 @@ fn handle_bulk_item_with_buffers(
                 plaintext_batch,
                 batch_stats,
             );
-            let fsp_batcher = &mut bulk_batchers.fsp_batcher;
-            let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
+            let mut fsp_batcher = FspDecryptJobBatcher::new();
+            let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
             shard.handle_bulk_fsp_job_batch_with_open_batcher(
                 idx,
                 jobs,
                 item_started_at,
                 trace_enabled,
                 plaintext_batch,
-                &mut *fsp_batcher,
-                &mut *fsp_open_batcher,
+                &mut fsp_batcher,
+                &mut fsp_open_batcher,
             );
             fsp_batcher.flush(&shard.pool);
-            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
-            debug_assert!(bulk_batchers.is_empty());
+            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut fsp_open_batcher);
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count
         }
