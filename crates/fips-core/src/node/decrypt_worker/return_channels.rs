@@ -3,17 +3,16 @@ pub(crate) struct DecryptWorkerReturnSender {
     priority: TokioSender<DecryptWorkerEvent>,
     bulk: TokioSender<DecryptWorkerEvent>,
     authenticated_bulk: TokioSender<DecryptWorkerEvent>,
-    bulk_queued_packets: Arc<AtomicUsize>,
-    authenticated_bulk_queued_packets: Arc<AtomicUsize>,
-    bulk_packet_cap: usize,
+    bulk_credits: LaneCreditGate,
+    authenticated_bulk_credits: LaneCreditGate,
 }
 
 pub(crate) struct DecryptWorkerReturnReceivers {
     pub(crate) priority: TokioReceiver<DecryptWorkerEvent>,
     pub(crate) bulk: TokioReceiver<DecryptWorkerEvent>,
     pub(crate) authenticated_bulk: TokioReceiver<DecryptWorkerEvent>,
-    bulk_queued_packets: Arc<AtomicUsize>,
-    authenticated_bulk_queued_packets: Arc<AtomicUsize>,
+    bulk_credits: LaneCreditGate,
+    authenticated_bulk_credits: LaneCreditGate,
 }
 
 pub(crate) fn decrypt_worker_return_channels()
@@ -32,23 +31,22 @@ fn decrypt_worker_return_channels_with_caps(
     let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(bulk_cap.max(1));
     let (authenticated_bulk_tx, authenticated_bulk_rx) =
         tokio::sync::mpsc::channel(bulk_cap.max(1));
-    let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
-    let authenticated_bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+    let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, bulk_cap);
+    let authenticated_bulk_credits = LaneCreditGate::new(PacketLane::Bulk, bulk_cap);
     (
         DecryptWorkerReturnSender {
             priority: priority_tx,
             bulk: bulk_tx,
             authenticated_bulk: authenticated_bulk_tx,
-            bulk_queued_packets: Arc::clone(&bulk_queued_packets),
-            authenticated_bulk_queued_packets: Arc::clone(&authenticated_bulk_queued_packets),
-            bulk_packet_cap: bulk_cap.max(1),
+            bulk_credits: bulk_credits.clone(),
+            authenticated_bulk_credits: authenticated_bulk_credits.clone(),
         },
         DecryptWorkerReturnReceivers {
             priority: priority_rx,
             bulk: bulk_rx,
             authenticated_bulk: authenticated_bulk_rx,
-            bulk_queued_packets,
-            authenticated_bulk_queued_packets,
+            bulk_credits,
+            authenticated_bulk_credits,
         },
     )
 }
@@ -69,16 +67,15 @@ impl DecryptWorkerReturnSender {
             None
         };
         event.set_trace_enqueued_at(crate::perf_profile::stamp());
+        let mut bulk_reservation = None;
         if let Some(bulk_lane) = bulk_lane {
-            let queued_packets = self.return_bulk_queued_packets(bulk_lane);
-            let Some(previous) = try_reserve_bulk_packets_with_previous(
-                queued_packets,
-                self.bulk_packet_cap,
-                packet_count,
-            ) else {
+            let credits = self.return_bulk_credits(bulk_lane);
+            let Ok((reservation, previous)) = credits.reserve_with_previous(packet_count, 0)
+            else {
                 record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
                 return false;
             };
+            bulk_reservation = Some((bulk_lane, reservation));
             let queued = previous.saturating_add(packet_count);
             if previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
                 && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
@@ -106,15 +103,15 @@ impl DecryptWorkerReturnSender {
         match result {
             Ok(()) => true,
             Err(TokioTrySendError::Full(_)) => {
-                if let Some(bulk_lane) = bulk_lane {
-                    release_bulk_packets(self.return_bulk_queued_packets(bulk_lane), packet_count);
+                if let Some((bulk_lane, reservation)) = bulk_reservation {
+                    self.return_bulk_credits(bulk_lane).release(reservation);
                 }
                 record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
                 false
             }
             Err(TokioTrySendError::Closed(_)) => {
-                if let Some(bulk_lane) = bulk_lane {
-                    release_bulk_packets(self.return_bulk_queued_packets(bulk_lane), packet_count);
+                if let Some((bulk_lane, reservation)) = bulk_reservation {
+                    self.return_bulk_credits(bulk_lane).release(reservation);
                 }
                 debug!(?lane, "decrypt return receiver gone; dropping worker event");
                 false
@@ -122,10 +119,10 @@ impl DecryptWorkerReturnSender {
         }
     }
 
-    fn return_bulk_queued_packets(&self, lane: DecryptWorkerReturnBulkLane) -> &Arc<AtomicUsize> {
+    fn return_bulk_credits(&self, lane: DecryptWorkerReturnBulkLane) -> &LaneCreditGate {
         match lane {
-            DecryptWorkerReturnBulkLane::Plaintext => &self.bulk_queued_packets,
-            DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_queued_packets,
+            DecryptWorkerReturnBulkLane::Plaintext => &self.bulk_credits,
+            DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_credits,
         }
     }
 }
@@ -133,15 +130,14 @@ impl DecryptWorkerReturnSender {
 impl DecryptWorkerReturnReceivers {
     pub(crate) fn release_dequeued_event(&self, event: &DecryptWorkerEvent) {
         if matches!(event.lane(), DecryptWorkerLane::Bulk) {
-            let queued_packets =
-                self.return_bulk_queued_packets(decrypt_worker_event_return_bulk_lane(event));
-            release_bulk_packets(queued_packets, event.packet_count());
+            let credits = self.return_bulk_credits(decrypt_worker_event_return_bulk_lane(event));
+            credits.release_count(event.packet_count());
         }
     }
 
     #[cfg(test)]
     pub(crate) fn bulk_queued_packets(&self) -> usize {
-        self.bulk_queued_packets.load(Ordering::Relaxed)
+        self.bulk_credits.queued_packets()
     }
 
     #[cfg(test)]
@@ -152,14 +148,13 @@ impl DecryptWorkerReturnReceivers {
 
     #[cfg(test)]
     pub(crate) fn authenticated_bulk_queued_packets(&self) -> usize {
-        self.authenticated_bulk_queued_packets
-            .load(Ordering::Relaxed)
+        self.authenticated_bulk_credits.queued_packets()
     }
 
-    fn return_bulk_queued_packets(&self, lane: DecryptWorkerReturnBulkLane) -> &Arc<AtomicUsize> {
+    fn return_bulk_credits(&self, lane: DecryptWorkerReturnBulkLane) -> &LaneCreditGate {
         match lane {
-            DecryptWorkerReturnBulkLane::Plaintext => &self.bulk_queued_packets,
-            DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_queued_packets,
+            DecryptWorkerReturnBulkLane::Plaintext => &self.bulk_credits,
+            DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_credits,
         }
     }
 }

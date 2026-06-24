@@ -27,19 +27,22 @@ impl DecryptWorkerReturnBatch {
 
     fn batch_max(&self) -> usize {
         self.return_tx
-            .bulk_packet_cap
+            .bulk_credits
+            .capacity()
             .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX)
     }
 
     fn endpoint_batch_max(&self) -> usize {
         self.return_tx
-            .bulk_packet_cap
+            .authenticated_bulk_credits
+            .capacity()
             .clamp(1, DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX)
     }
 
     fn direct_batch_max(&self) -> usize {
         self.return_tx
-            .bulk_packet_cap
+            .authenticated_bulk_credits
+            .capacity()
             .clamp(1, DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX)
     }
 

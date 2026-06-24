@@ -58,21 +58,39 @@ impl LaneCreditGate {
         byte_count: usize,
     ) -> Result<LaneCreditReservation, AdmissionDrop> {
         let packet_count = packet_count.max(1);
-        if self
+        self.reserve_with_previous(packet_count, byte_count)
+            .map(|(reservation, _previous)| reservation)
+    }
+
+    pub(crate) fn reserve_with_previous(
+        &self,
+        packet_count: usize,
+        byte_count: usize,
+    ) -> Result<(LaneCreditReservation, usize), AdmissionDrop> {
+        if packet_count == 0 {
+            return Ok((
+                LaneCreditReservation {
+                    lane: self.lane,
+                    packet_count: 0,
+                },
+                self.queued_packets(),
+            ));
+        }
+        match self
             .queued_packets
             .fetch_update(Relaxed, Relaxed, |current| {
                 current
                     .checked_add(packet_count)
                     .filter(|next| *next <= self.capacity)
-            })
-            .is_ok()
-        {
-            Ok(LaneCreditReservation {
-                lane: self.lane,
-                packet_count,
-            })
-        } else {
-            Err(self.pressure_drop(packet_count, byte_count))
+            }) {
+            Ok(previous) => Ok((
+                LaneCreditReservation {
+                    lane: self.lane,
+                    packet_count,
+                },
+                previous,
+            )),
+            Err(_) => Err(self.pressure_drop(packet_count, byte_count)),
         }
     }
 
@@ -314,6 +332,35 @@ mod tests {
         gate.release(prefix);
         assert_eq!(gate.queued_packets(), 1);
         gate.release(existing);
+        assert_eq!(gate.queued_packets(), 0);
+    }
+
+    #[test]
+    fn lane_credit_gate_reports_previous_depth_for_backlog_edges() {
+        let gate = LaneCreditGate::new(PacketLane::Bulk, 4);
+
+        let (first, previous) = gate.reserve_with_previous(2, 200).expect("first");
+        assert_eq!(previous, 0);
+        assert_eq!(gate.queued_packets(), 2);
+
+        let (second, previous) = gate.reserve_with_previous(2, 200).expect("second");
+        assert_eq!(previous, 2);
+        assert_eq!(gate.queued_packets(), 4);
+        assert!(gate.reserve_with_previous(1, 100).is_err());
+
+        gate.release(first);
+        gate.release(second);
+        assert_eq!(gate.queued_packets(), 0);
+    }
+
+    #[test]
+    fn lane_credit_gate_zero_count_reservation_does_not_consume_capacity() {
+        let gate = LaneCreditGate::new(PacketLane::Bulk, 1);
+
+        let (reservation, previous) = gate.reserve_with_previous(0, 0).expect("zero");
+
+        assert_eq!(previous, 0);
+        assert_eq!(reservation.packet_count(), 0);
         assert_eq!(gate.queued_packets(), 0);
     }
 }

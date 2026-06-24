@@ -19,65 +19,6 @@ fn record_decrypt_worker_bulk_drop_count(worker: usize, count: usize) {
     }
 }
 
-fn try_reserve_bulk_packets_with_previous(
-    counter: &AtomicUsize,
-    capacity: usize,
-    count: usize,
-) -> Option<usize> {
-    if count == 0 {
-        return Some(counter.load(Ordering::Relaxed));
-    }
-
-    counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            current.checked_add(count).filter(|next| *next <= capacity)
-        })
-        .ok()
-}
-
-#[cfg(test)]
-fn try_reserve_bulk_packets(counter: &AtomicUsize, capacity: usize, count: usize) -> bool {
-    try_reserve_bulk_packets_with_previous(counter, capacity, count).is_some()
-}
-
-#[cfg(test)]
-fn try_reserve_bulk_packets_partial(
-    counter: &AtomicUsize,
-    capacity: usize,
-    count: usize,
-) -> usize {
-    if count == 0 {
-        return 0;
-    }
-
-    let mut reserved = 0;
-    let result = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        let available = capacity.saturating_sub(current);
-        if available == 0 {
-            reserved = 0;
-            return None;
-        }
-        reserved = count.min(available);
-        current
-            .checked_add(reserved)
-            .filter(|next| *next <= capacity)
-    });
-
-    if result.is_ok() { reserved } else { 0 }
-}
-
-fn release_bulk_packets(counter: &AtomicUsize, count: usize) {
-    if count == 0 {
-        return;
-    }
-
-    let previous = counter.fetch_sub(count, Ordering::Relaxed);
-    debug_assert!(
-        previous >= count,
-        "decrypt worker bulk job accounting underflow: previous={previous}, release={count}"
-    );
-}
-
 fn record_decrypt_worker_priority_drop(worker: usize, kind: &'static str) {
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerPriorityDropped);

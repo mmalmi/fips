@@ -411,41 +411,6 @@
     }
 
     #[test]
-    fn decrypt_worker_bulk_accounting_reserves_and_releases_exact_counts() {
-        let counter = AtomicUsize::new(0);
-
-        assert!(try_reserve_bulk_packets(&counter, 4, 3));
-        assert_eq!(counter.load(Ordering::Relaxed), 3);
-        assert!(
-            !try_reserve_bulk_packets(&counter, 4, 2),
-            "bulk packet capacity must be counted in jobs, not channel items"
-        );
-        release_bulk_packets(&counter, 2);
-        assert_eq!(counter.load(Ordering::Relaxed), 1);
-        assert!(try_reserve_bulk_packets(&counter, 4, 3));
-        assert_eq!(counter.load(Ordering::Relaxed), 4);
-        release_bulk_packets(&counter, 4);
-        assert_eq!(counter.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn decrypt_worker_bulk_accounting_can_reserve_partial_capacity() {
-        let counter = AtomicUsize::new(2);
-
-        assert_eq!(try_reserve_bulk_packets_partial(&counter, 4, 4), 2);
-        assert_eq!(counter.load(Ordering::Relaxed), 4);
-        assert_eq!(
-            try_reserve_bulk_packets_partial(&counter, 4, 1),
-            0,
-            "full packet capacity should not over-reserve"
-        );
-        release_bulk_packets(&counter, 3);
-        assert_eq!(counter.load(Ordering::Relaxed), 1);
-        assert_eq!(try_reserve_bulk_packets_partial(&counter, 4, 2), 2);
-        assert_eq!(counter.load(Ordering::Relaxed), 3);
-    }
-
-    #[test]
     fn decrypt_worker_register_uses_control_lane_when_bulk_queue_is_full() {
         let (pool, control_rx, priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 77);
