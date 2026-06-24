@@ -62,7 +62,10 @@ pub(crate) use owner::{
     OrderSequence, OrderToken, OwnerGeneration, OwnerKey, OwnerReservation, OwnerReserveError,
     OwnerSequencer, OwnerWindow,
 };
-pub(crate) use queues::{BoundedLaneQueues, QueueAdmission, QueueCaps, QueuedPacket};
+pub(crate) use queues::{
+    BoundedLaneQueues, LaneCreditGate, LaneCreditReservation, QueueAdmission, QueueCaps,
+    QueuedPacket,
+};
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
 
 pub(crate) const CANONICAL_PACKET_MOVER_STAGES: &[PacketMoverStage] = &[

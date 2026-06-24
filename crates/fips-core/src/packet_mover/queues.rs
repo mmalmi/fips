@@ -1,5 +1,9 @@
 use super::{AdmissionDrop, AdmissionDropReason, PacketLane};
 use std::collections::VecDeque;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering::Relaxed},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct QueueCaps {
@@ -13,6 +17,117 @@ impl QueueCaps {
             priority_packets: priority_packets.max(1),
             bulk_packets: bulk_packets.max(1),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LaneCreditGate {
+    lane: PacketLane,
+    queued_packets: Arc<AtomicUsize>,
+    capacity: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LaneCreditReservation {
+    lane: PacketLane,
+    packet_count: usize,
+}
+
+impl LaneCreditReservation {
+    pub(crate) fn lane(self) -> PacketLane {
+        self.lane
+    }
+
+    pub(crate) fn packet_count(self) -> usize {
+        self.packet_count
+    }
+}
+
+impl LaneCreditGate {
+    pub(crate) fn new(lane: PacketLane, capacity: usize) -> Self {
+        Self {
+            lane,
+            queued_packets: Arc::new(AtomicUsize::new(0)),
+            capacity: capacity.max(1),
+        }
+    }
+
+    pub(crate) fn reserve(
+        &self,
+        packet_count: usize,
+        byte_count: usize,
+    ) -> Result<LaneCreditReservation, AdmissionDrop> {
+        let packet_count = packet_count.max(1);
+        if self
+            .queued_packets
+            .fetch_update(Relaxed, Relaxed, |current| {
+                current
+                    .checked_add(packet_count)
+                    .filter(|next| *next <= self.capacity)
+            })
+            .is_ok()
+        {
+            Ok(LaneCreditReservation {
+                lane: self.lane,
+                packet_count,
+            })
+        } else {
+            Err(self.pressure_drop(packet_count, byte_count))
+        }
+    }
+
+    pub(crate) fn reserve_prefix(&self, requested: usize) -> Option<LaneCreditReservation> {
+        if requested == 0 {
+            return None;
+        }
+
+        let mut current = self.queued_packets.load(Relaxed);
+        loop {
+            let available = self.capacity.saturating_sub(current);
+            let granted = requested.min(available);
+            if granted == 0 {
+                return None;
+            }
+            match self.queued_packets.compare_exchange_weak(
+                current,
+                current + granted,
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(LaneCreditReservation {
+                        lane: self.lane,
+                        packet_count: granted,
+                    });
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub(crate) fn release(&self, reservation: LaneCreditReservation) {
+        debug_assert_eq!(reservation.lane, self.lane);
+        self.release_count(reservation.packet_count);
+    }
+
+    pub(crate) fn release_count(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+
+        let previous = self.queued_packets.fetch_sub(count, Relaxed);
+        debug_assert!(
+            previous >= count,
+            "packet mover lane credit accounting underflow"
+        );
+    }
+
+    pub(crate) fn pressure_drop(&self, packet_count: usize, byte_count: usize) -> AdmissionDrop {
+        AdmissionDrop::pressure(self.lane, packet_count, byte_count)
+    }
+
+    pub(crate) fn queued_packets(&self) -> usize {
+        self.queued_packets.load(Relaxed)
     }
 }
 
@@ -161,5 +276,40 @@ mod tests {
         assert_eq!(drop.packet_count, 1);
         assert_eq!(drop.byte_count, 200);
         assert_eq!(queues.queued_packets(PacketLane::Bulk), 1);
+    }
+
+    #[test]
+    fn lane_credit_gate_reports_pressure_without_expanding_queue() {
+        let gate = LaneCreditGate::new(PacketLane::Bulk, 1);
+
+        let reservation = gate.reserve(1, 100).expect("first packet");
+        let drop = gate.reserve(1, 200).expect_err("bulk lane should be full");
+
+        assert_eq!(drop.reason, AdmissionDropReason::BulkPressure);
+        assert_eq!(drop.lane, PacketLane::Bulk);
+        assert_eq!(drop.packet_count, 1);
+        assert_eq!(drop.byte_count, 200);
+        assert_eq!(gate.queued_packets(), 1);
+
+        gate.release(reservation);
+        assert_eq!(gate.queued_packets(), 0);
+    }
+
+    #[test]
+    fn lane_credit_gate_can_reserve_prefix_and_release_exact_count() {
+        let gate = LaneCreditGate::new(PacketLane::Priority, 3);
+        let existing = gate.reserve(1, 10).expect("existing packet");
+
+        let prefix = gate.reserve_prefix(4).expect("partial prefix");
+
+        assert_eq!(prefix.lane(), PacketLane::Priority);
+        assert_eq!(prefix.packet_count(), 2);
+        assert_eq!(gate.queued_packets(), 3);
+        assert!(gate.reserve_prefix(1).is_none());
+
+        gate.release(prefix);
+        assert_eq!(gate.queued_packets(), 1);
+        gate.release(existing);
+        assert_eq!(gate.queued_packets(), 0);
     }
 }

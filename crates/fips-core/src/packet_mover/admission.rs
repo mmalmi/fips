@@ -80,6 +80,21 @@ pub(crate) struct AdmissionDrop {
     pub(crate) byte_count: usize,
 }
 
+impl AdmissionDrop {
+    pub(crate) fn pressure(lane: PacketLane, packet_count: usize, byte_count: usize) -> Self {
+        let reason = match lane {
+            PacketLane::Priority => AdmissionDropReason::PriorityPressure,
+            PacketLane::Bulk => AdmissionDropReason::BulkPressure,
+        };
+        Self {
+            reason,
+            lane,
+            packet_count,
+            byte_count,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AdmissionDecision<P> {
     Admit(AdmittedPacket<P>),

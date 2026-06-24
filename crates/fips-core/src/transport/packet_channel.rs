@@ -1,7 +1,10 @@
 //! Priority-aware packet channel for transport receive paths.
 
 use super::{TransportAddr, TransportId};
-use crate::packet_mover::{AdmissionClass, PacketLane, classify_udp_admission};
+use crate::packet_mover::{
+    AdmissionClass, AdmissionDrop, AdmissionDropReason, LaneCreditGate, LaneCreditReservation,
+    PacketLane, classify_udp_admission,
+};
 use std::mem;
 use std::ops::{Deref, DerefMut, Index};
 use std::sync::{
@@ -265,11 +268,9 @@ pub struct PacketTx {
     buffer_pool: PacketBufferPool,
     /// Packet-count ready hint for priority lane probes. Bulk batch tails check
     /// this instead of touching an empty priority mpsc once per data packet.
-    priority_queued_packets: Arc<AtomicUsize>,
+    priority_credits: LaneCreditGate,
     queued_packets: Arc<AtomicUsize>,
-    bulk_queued_packets: Arc<AtomicUsize>,
-    priority_packet_capacity: usize,
-    bulk_packet_capacity: usize,
+    bulk_credits: LaneCreditGate,
     track_backlog: bool,
 }
 
@@ -277,9 +278,9 @@ pub struct PacketTx {
 pub struct PacketRx {
     priority: tokio::sync::mpsc::Receiver<PacketQueueItem>,
     bulk: tokio::sync::mpsc::Receiver<PacketQueueItem>,
-    priority_queued_packets: Arc<AtomicUsize>,
+    priority_credits: LaneCreditGate,
     queued_packets: Arc<AtomicUsize>,
-    bulk_queued_packets: Arc<AtomicUsize>,
+    bulk_credits: LaneCreditGate,
     track_backlog: bool,
     pending_priority: Option<PendingPackets>,
     pending_bulk: Option<PendingPackets>,
@@ -319,8 +320,7 @@ enum PacketQueueTx {
 
 enum PacketSendFailure {
     Closed(PacketQueueItem),
-    DroppedPriority(usize),
-    DroppedBulk(usize),
+    Dropped(PacketQueueItem),
 }
 
 struct PendingPackets {
@@ -336,28 +336,34 @@ struct PacketQueueDequeueCounts {
 }
 
 impl PacketQueueTx {
+    fn lane(self) -> PacketLane {
+        match self {
+            PacketQueueTx::Priority => PacketLane::Priority,
+            PacketQueueTx::Bulk => PacketLane::Bulk,
+        }
+    }
+
     fn try_send(self, owner: &PacketTx, item: PacketQueueItem) -> Result<(), PacketSendFailure> {
         match self {
-            PacketQueueTx::Priority => {
-                let packet_count = item.packet_count();
-                match owner.priority.try_send(item) {
-                    Ok(()) => Ok(()),
-                    Err(TrySendError::Full(_item)) => {
-                        Err(PacketSendFailure::DroppedPriority(packet_count))
-                    }
-                    Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item)),
-                }
-            }
-            PacketQueueTx::Bulk => {
-                let packet_count = item.packet_count();
-                match owner.bulk.try_send(item) {
-                    Ok(()) => Ok(()),
-                    Err(TrySendError::Full(_item)) => {
-                        Err(PacketSendFailure::DroppedBulk(packet_count))
-                    }
-                    Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item)),
-                }
-            }
+            PacketQueueTx::Priority => match owner.priority.try_send(item) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(item)) => Err(PacketSendFailure::Dropped(item)),
+                Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item)),
+            },
+            PacketQueueTx::Bulk => match owner.bulk.try_send(item) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(item)) => Err(PacketSendFailure::Dropped(item)),
+                Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item)),
+            },
+        }
+    }
+}
+
+impl From<PacketLane> for PacketQueueTx {
+    fn from(lane: PacketLane) -> Self {
+        match lane {
+            PacketLane::Priority => Self::Priority,
+            PacketLane::Bulk => Self::Bulk,
         }
     }
 }
@@ -367,6 +373,13 @@ impl PacketQueueItem {
         match self {
             PacketQueueItem::One(_) => 1,
             PacketQueueItem::Batch(packets) => packets.len(),
+        }
+    }
+
+    fn byte_count(&self) -> usize {
+        match self {
+            PacketQueueItem::One(packet) => packet.data.len(),
+            PacketQueueItem::Batch(packets) => packets.byte_count(),
         }
     }
 
@@ -563,6 +576,10 @@ impl PacketBatch {
         self.packets.len()
     }
 
+    fn byte_count(&self) -> usize {
+        self.packets.iter().map(|packet| packet.data.len()).sum()
+    }
+
     fn first(&self) -> Option<&ReceivedPacket> {
         self.packets.first()
     }
@@ -661,11 +678,7 @@ impl PacketTx {
         &self,
         packet: ReceivedPacket,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
-        let tx = if packet.data.len() <= PRIORITY_PACKET_MAX_LEN {
-            PacketQueueTx::Priority
-        } else {
-            PacketQueueTx::Bulk
-        };
+        let tx = PacketQueueTx::from(packet.admission_class().lane());
         self.send_item(tx, PacketQueueItem::One(packet))
             .map_err(|item| match item {
                 PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
@@ -730,22 +743,22 @@ impl PacketTx {
             return Ok(());
         }
 
-        let granted = self.try_reserve_priority_packet_prefix(packet_count);
-        if granted == 0 {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::TransportPriorityDropped,
-                packet_count as u64,
-            );
+        let Some(reservation) = self.priority_credits.reserve_prefix(packet_count) else {
+            let drop = self
+                .priority_credits
+                .pressure_drop(packet_count, packets.byte_count());
+            record_admission_drop(&drop);
             return Ok(());
-        }
+        };
+        let granted = reservation.packet_count();
 
         if granted < packet_count {
-            let dropped = packet_count - granted;
-            let _dropped_tail = packets.packets.split_off(granted);
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::TransportPriorityDropped,
-                dropped as u64,
+            let dropped_tail = packets.packets.split_off(granted);
+            let drop = self.priority_credits.pressure_drop(
+                dropped_tail.len(),
+                dropped_tail.iter().map(|packet| packet.data.len()).sum(),
             );
+            record_admission_drop(&drop);
         }
 
         let item = match packets.len() {
@@ -755,7 +768,7 @@ impl PacketTx {
             }
             _ => PacketQueueItem::Batch(packets),
         };
-        self.send_reserved_item(PacketQueueTx::Priority, item, Some(granted), None)
+        self.send_reserved_item(PacketQueueTx::Priority, item, Some(reservation), None)
             .map_err(|_| ())
     }
 
@@ -766,22 +779,22 @@ impl PacketTx {
             return Ok(());
         }
 
-        let granted = self.try_reserve_bulk_packet_prefix(packet_count);
-        if granted == 0 {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::TransportBulkDropped,
-                packet_count as u64,
-            );
+        let Some(reservation) = self.bulk_credits.reserve_prefix(packet_count) else {
+            let drop = self
+                .bulk_credits
+                .pressure_drop(packet_count, packets.byte_count());
+            record_admission_drop(&drop);
             return Ok(());
-        }
+        };
+        let granted = reservation.packet_count();
 
         if granted < packet_count {
-            let dropped = packet_count - granted;
-            let _dropped_tail = packets.packets.split_off(granted);
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::TransportBulkDropped,
-                dropped as u64,
+            let dropped_tail = packets.packets.split_off(granted);
+            let drop = self.bulk_credits.pressure_drop(
+                dropped_tail.len(),
+                dropped_tail.iter().map(|packet| packet.data.len()).sum(),
             );
+            record_admission_drop(&drop);
         }
 
         let item = match packets.len() {
@@ -791,32 +804,31 @@ impl PacketTx {
             }
             _ => PacketQueueItem::Batch(packets),
         };
-        self.send_reserved_item(PacketQueueTx::Bulk, item, None, Some(granted))
+        self.send_reserved_item(PacketQueueTx::Bulk, item, None, Some(reservation))
             .map_err(|_| ())
     }
 
     fn send_item(&self, tx: PacketQueueTx, item: PacketQueueItem) -> Result<(), PacketQueueItem> {
         let packet_count = item.packet_count();
+        let byte_count = item.byte_count();
         let (priority_reserved, bulk_reserved) = match tx {
             PacketQueueTx::Priority if packet_count > 0 => {
-                if !self.try_reserve_priority_packets(packet_count) {
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::TransportPriorityDropped,
-                        packet_count as u64,
-                    );
-                    return Ok(());
+                match self.priority_credits.reserve(packet_count, byte_count) {
+                    Ok(reservation) => (Some(reservation), None),
+                    Err(drop) => {
+                        record_admission_drop(&drop);
+                        return Ok(());
+                    }
                 }
-                (Some(packet_count), None)
             }
             PacketQueueTx::Bulk if packet_count > 0 => {
-                if !self.try_reserve_bulk_packets(packet_count) {
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::TransportBulkDropped,
-                        packet_count as u64,
-                    );
-                    return Ok(());
+                match self.bulk_credits.reserve(packet_count, byte_count) {
+                    Ok(reservation) => (None, Some(reservation)),
+                    Err(drop) => {
+                        record_admission_drop(&drop);
+                        return Ok(());
+                    }
                 }
-                (None, Some(packet_count))
             }
             _ => (None, None),
         };
@@ -827,18 +839,18 @@ impl PacketTx {
         &self,
         tx: PacketQueueTx,
         item: PacketQueueItem,
-        priority_reserved: Option<usize>,
-        bulk_reserved: Option<usize>,
+        priority_reserved: Option<LaneCreditReservation>,
+        bulk_reserved: Option<LaneCreditReservation>,
     ) -> Result<(), PacketQueueItem> {
         let packet_count = item.packet_count();
         debug_assert_eq!(
-            priority_reserved,
+            priority_reserved.map(LaneCreditReservation::packet_count),
             matches!(tx, PacketQueueTx::Priority)
                 .then_some(packet_count)
                 .filter(|count| *count > 0)
         );
         debug_assert_eq!(
-            bulk_reserved,
+            bulk_reserved.map(LaneCreditReservation::packet_count),
             matches!(tx, PacketQueueTx::Bulk)
                 .then_some(packet_count)
                 .filter(|count| *count > 0)
@@ -868,91 +880,30 @@ impl PacketTx {
                 if let Some(count) = tracked_count {
                     self.queued_packets.fetch_sub(count, Relaxed);
                 }
-                if let Some(count) = priority_reserved {
-                    self.release_priority_packets(count);
+                if let Some(reservation) = priority_reserved {
+                    self.priority_credits.release(reservation);
                 }
-                if let Some(count) = bulk_reserved {
-                    self.release_bulk_packets(count);
+                if let Some(reservation) = bulk_reserved {
+                    self.bulk_credits.release(reservation);
                 }
                 Err(item)
             }
-            Err(PacketSendFailure::DroppedPriority(dropped_count)) => {
+            Err(PacketSendFailure::Dropped(item)) => {
                 if let Some(count) = tracked_count {
                     self.queued_packets.fetch_sub(count, Relaxed);
                 }
-                if let Some(count) = priority_reserved {
-                    self.release_priority_packets(count);
+                if let Some(reservation) = priority_reserved {
+                    self.priority_credits.release(reservation);
                 }
-                if let Some(count) = bulk_reserved {
-                    self.release_bulk_packets(count);
+                if let Some(reservation) = bulk_reserved {
+                    self.bulk_credits.release(reservation);
                 }
-                crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::TransportPriorityDropped,
-                    dropped_count as u64,
-                );
-                Ok(())
-            }
-            Err(PacketSendFailure::DroppedBulk(dropped_count)) => {
-                if let Some(count) = tracked_count {
-                    self.queued_packets.fetch_sub(count, Relaxed);
-                }
-                if let Some(count) = priority_reserved {
-                    self.release_priority_packets(count);
-                }
-                if let Some(count) = bulk_reserved {
-                    self.release_bulk_packets(count);
-                }
-                crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::TransportBulkDropped,
-                    dropped_count as u64,
-                );
+                let drop =
+                    AdmissionDrop::pressure(tx.lane(), item.packet_count(), item.byte_count());
+                record_admission_drop(&drop);
                 Ok(())
             }
         }
-    }
-
-    fn try_reserve_bulk_packets(&self, count: usize) -> bool {
-        self.bulk_queued_packets
-            .fetch_update(Relaxed, Relaxed, |current| {
-                current
-                    .checked_add(count)
-                    .filter(|next| *next <= self.bulk_packet_capacity)
-            })
-            .is_ok()
-    }
-
-    fn try_reserve_priority_packets(&self, count: usize) -> bool {
-        self.priority_queued_packets
-            .fetch_update(Relaxed, Relaxed, |current| {
-                current
-                    .checked_add(count)
-                    .filter(|next| *next <= self.priority_packet_capacity)
-            })
-            .is_ok()
-    }
-
-    fn try_reserve_priority_packet_prefix(&self, requested: usize) -> usize {
-        reserve_packet_prefix(
-            &self.priority_queued_packets,
-            requested,
-            self.priority_packet_capacity,
-        )
-    }
-
-    fn try_reserve_bulk_packet_prefix(&self, requested: usize) -> usize {
-        reserve_packet_prefix(
-            &self.bulk_queued_packets,
-            requested,
-            self.bulk_packet_capacity,
-        )
-    }
-
-    fn release_priority_packets(&self, count: usize) {
-        release_priority_packets(&self.priority_queued_packets, count);
-    }
-
-    fn release_bulk_packets(&self, count: usize) {
-        release_reserved_bulk_packets(&self.bulk_queued_packets, count);
     }
 
     #[cfg(test)]
@@ -962,18 +913,18 @@ impl PacketTx {
 
     #[cfg(test)]
     pub(crate) fn priority_queued_packets(&self) -> usize {
-        self.priority_queued_packets.load(Relaxed)
+        self.priority_credits.queued_packets()
     }
 
     #[cfg(test)]
     pub(crate) fn bulk_queued_packets(&self) -> usize {
-        self.bulk_queued_packets.load(Relaxed)
+        self.bulk_credits.queued_packets()
     }
 }
 
 impl PacketRx {
     pub(crate) fn priority_queued_packets(&self) -> usize {
-        self.priority_queued_packets.load(Relaxed)
+        self.priority_credits.queued_packets()
     }
 
     pub(crate) fn priority_ready_packets(&self) -> usize {
@@ -1073,10 +1024,10 @@ impl PacketRx {
             self.queued_packets.fetch_sub(packet_count, Relaxed);
         }
         if matches!(lane, PacketLane::Priority) {
-            release_priority_packets(&self.priority_queued_packets, packet_count);
+            self.priority_credits.release_count(packet_count);
         }
         if matches!(lane, PacketLane::Bulk) {
-            release_reserved_bulk_packets(&self.bulk_queued_packets, packet_count);
+            self.bulk_credits.release_count(packet_count);
         }
         let rx_loop_owned_at = crate::perf_profile::stamp();
         match item {
@@ -1099,8 +1050,7 @@ impl PacketRx {
     }
 
     fn should_probe_priority(&self) -> bool {
-        !self.priority_closed
-            && (self.priority_queued_packets.load(Relaxed) > 0 || self.bulk_closed)
+        !self.priority_closed && (self.priority_credits.queued_packets() > 0 || self.bulk_closed)
     }
 
     fn take_pending(pending: &mut Option<PendingPackets>) -> Option<ReceivedPacket> {
@@ -1118,47 +1068,15 @@ fn packet_channel_tracks_backlog() -> bool {
     cfg!(test) || crate::perf_profile::event_counters_enabled()
 }
 
-fn reserve_packet_prefix(counter: &AtomicUsize, requested: usize, capacity: usize) -> usize {
-    if requested == 0 {
-        return 0;
-    }
-
-    let mut current = counter.load(Relaxed);
-    loop {
-        let available = capacity.saturating_sub(current);
-        let granted = requested.min(available);
-        if granted == 0 {
-            return 0;
+fn record_admission_drop(drop: &AdmissionDrop) {
+    let event = match drop.reason {
+        AdmissionDropReason::PriorityPressure => {
+            crate::perf_profile::Event::TransportPriorityDropped
         }
-        match counter.compare_exchange_weak(current, current + granted, Relaxed, Relaxed) {
-            Ok(_) => return granted,
-            Err(actual) => current = actual,
-        }
-    }
-}
-
-fn release_reserved_bulk_packets(counter: &AtomicUsize, count: usize) {
-    if count == 0 {
-        return;
-    }
-
-    let previous = counter.fetch_sub(count, Relaxed);
-    debug_assert!(
-        previous >= count,
-        "transport bulk queued packet accounting underflow"
-    );
-}
-
-fn release_priority_packets(counter: &AtomicUsize, count: usize) {
-    if count == 0 {
-        return;
-    }
-
-    let previous = counter.fetch_sub(count, Relaxed);
-    debug_assert!(
-        previous >= count,
-        "transport priority queued packet accounting underflow"
-    );
+        AdmissionDropReason::BulkPressure => crate::perf_profile::Event::TransportBulkDropped,
+        AdmissionDropReason::Malformed | AdmissionDropReason::ReceiverClosed => return,
+    };
+    crate::perf_profile::record_event_count(event, drop.packet_count as u64);
 }
 
 /// Create a packet channel.
@@ -1171,9 +1089,9 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
     let packet_capacity = buffer.max(1);
     let (priority_tx, priority_rx) = tokio::sync::mpsc::channel(packet_capacity);
     let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(packet_capacity);
-    let priority_queued_packets = Arc::new(AtomicUsize::new(0));
     let queued_packets = Arc::new(AtomicUsize::new(0));
-    let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+    let priority_credits = LaneCreditGate::new(PacketLane::Priority, packet_capacity);
+    let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, packet_capacity);
     let track_backlog = packet_channel_tracks_backlog();
     (
         PacketTx {
@@ -1181,19 +1099,17 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
             bulk: bulk_tx,
             batch_pool: PacketBatchPool::new(),
             buffer_pool: PacketBufferPool::new(),
-            priority_queued_packets: Arc::clone(&priority_queued_packets),
+            priority_credits: priority_credits.clone(),
             queued_packets: Arc::clone(&queued_packets),
-            bulk_queued_packets: Arc::clone(&bulk_queued_packets),
-            priority_packet_capacity: packet_capacity,
-            bulk_packet_capacity: packet_capacity,
+            bulk_credits: bulk_credits.clone(),
             track_backlog,
         },
         PacketRx {
             priority: priority_rx,
             bulk: bulk_rx,
-            priority_queued_packets,
+            priority_credits,
             queued_packets,
-            bulk_queued_packets,
+            bulk_credits,
             track_backlog,
             pending_priority: None,
             pending_bulk: None,

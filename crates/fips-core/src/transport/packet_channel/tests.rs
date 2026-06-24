@@ -1,6 +1,5 @@
 use super::*;
 use crate::transport::{TransportAddr, TransportId};
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use tokio::sync::mpsc::error::TryRecvError;
 
 #[test]
@@ -391,28 +390,6 @@ fn pending_packets_apply_rx_loop_owned_stamp_as_packets_are_taken() {
         pending.is_none(),
         "pending batch should clear after the last packet is taken"
     );
-}
-
-#[test]
-fn release_reserved_bulk_packets_subtracts_exact_count() {
-    let counter = AtomicUsize::new(5);
-
-    release_reserved_bulk_packets(&counter, 0);
-    assert_eq!(counter.load(Relaxed), 5);
-
-    release_reserved_bulk_packets(&counter, 3);
-    assert_eq!(counter.load(Relaxed), 2);
-}
-
-#[test]
-fn release_priority_packets_subtracts_exact_count() {
-    let counter = AtomicUsize::new(5);
-
-    release_priority_packets(&counter, 0);
-    assert_eq!(counter.load(Relaxed), 5);
-
-    release_priority_packets(&counter, 3);
-    assert_eq!(counter.load(Relaxed), 2);
 }
 
 #[test]
