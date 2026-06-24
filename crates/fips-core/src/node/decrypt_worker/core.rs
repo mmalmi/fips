@@ -1095,32 +1095,10 @@ struct FspAeadOpenRoute {
     open_queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
-#[derive(Default)]
-struct FspAeadOpenScratch {
-    ciphertext: Vec<u8>,
-}
-
-impl FspAeadOpenScratch {
-    fn preserve_ciphertext_from(&mut self, source: &[u8]) {
-        self.ciphertext.clear();
-        self.ciphertext.extend_from_slice(source);
-    }
-
-    fn ciphertext_from(&mut self, source: &[u8]) -> &mut [u8] {
-        self.preserve_ciphertext_from(source);
-        self.ciphertext.as_mut_slice()
-    }
-
-    fn preserved_ciphertext(&self) -> &[u8] {
-        &self.ciphertext
-    }
-}
-
 struct FspAeadOpenWork {
     cipher: Arc<LessSafeKey>,
     job: FspDecryptJob,
     header: FspEncryptedHeader,
-    preserve_ciphertext_for_fallback: bool,
 }
 
 struct FspAeadOpenReject {
@@ -1130,17 +1108,9 @@ struct FspAeadOpenReject {
     count_failure: bool,
 }
 
-struct FspAeadOpener<'a> {
-    scratch: &'a mut FspAeadOpenScratch,
-}
+struct FspAeadOpener;
 
-impl<'a> FspAeadOpener<'a> {
-    fn new(scratch: &'a mut FspAeadOpenScratch) -> Self {
-        Self { scratch }
-    }
-}
-
-impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener<'_> {
+impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener {
     type Output = FspOpenedJob;
     type RejectOutput = FspAeadOpenReject;
 
@@ -1153,7 +1123,6 @@ impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener<'_> {
             cipher,
             mut job,
             header,
-            preserve_ciphertext_for_fallback,
         } = work.work;
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
         let ciphertext_offset = job.fsp_payload_offset + FSP_HEADER_SIZE;
@@ -1180,20 +1149,9 @@ impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener<'_> {
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&header.counter.to_le_bytes());
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        let open_result = if preserve_ciphertext_for_fallback {
-            let scratch_ciphertext = self.scratch.ciphertext_from(ciphertext);
-            cipher
-                .open_in_place(nonce, Aad::from(&header.header_bytes), scratch_ciphertext)
-                .map(|plaintext| {
-                    let plaintext_len = plaintext.len();
-                    ciphertext[..plaintext_len].copy_from_slice(plaintext);
-                    plaintext_len
-                })
-        } else {
-            cipher
-                .open_in_place(nonce, Aad::from(&header.header_bytes), ciphertext)
-                .map(|plaintext| plaintext.len())
-        };
+        let open_result = cipher
+            .open_in_place(nonce, Aad::from(&header.header_bytes), ciphertext)
+            .map(|plaintext| plaintext.len());
 
         match open_result {
             Ok(plaintext_len) => CryptoCompletion {
@@ -1211,8 +1169,8 @@ impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener<'_> {
                     value: FspAeadOpenReject {
                         job,
                         header,
-                        fallback_to_rx_loop: preserve_ciphertext_for_fallback,
-                        count_failure: !preserve_ciphertext_for_fallback,
+                        fallback_to_rx_loop: false,
+                        count_failure: true,
                     },
                 },
             },
@@ -1405,7 +1363,6 @@ fn new_fsp_aead_open_dispatch(
                 cipher,
                 job,
                 header,
-                preserve_ciphertext_for_fallback: completion_source.is_worker_open(),
             },
         },
         FspAeadOpenRoute {
@@ -1450,10 +1407,7 @@ trait FspAeadOpenDispatchExt {
 
     fn mark_returned_completion(&mut self);
 
-    #[cfg(test)]
     fn into_completion(self) -> FspAeadCompletion;
-
-    fn into_completion_with_scratch(self, scratch: &mut FspAeadOpenScratch) -> FspAeadCompletion;
 
     fn into_dropped_completion(self) -> FspAeadCompletion;
 }
@@ -1484,7 +1438,6 @@ impl FspAeadOpenDispatchExt for FspAeadOpenDispatch {
 
     fn set_completion_source(&mut self, source: FspAeadCompletionSource) {
         self.route.completion_source = source;
-        self.work.work.preserve_ciphertext_for_fallback = source.is_worker_open();
     }
 
     #[cfg(test)]
@@ -1522,13 +1475,7 @@ impl FspAeadOpenDispatchExt for FspAeadOpenDispatch {
         self.set_completion_source(self.route.completion_source.returned());
     }
 
-    #[cfg(test)]
     fn into_completion(self) -> FspAeadCompletion {
-        let mut scratch = FspAeadOpenScratch::default();
-        self.into_completion_with_scratch(&mut scratch)
-    }
-
-    fn into_completion_with_scratch(self, scratch: &mut FspAeadOpenScratch) -> FspAeadCompletion {
         let CryptoDispatch { work, route } = self;
         let source = route.completion_source;
         if source.is_worker_open() {
@@ -1539,7 +1486,7 @@ impl FspAeadOpenDispatchExt for FspAeadOpenDispatch {
             );
         }
         let completed_at = route.open_queued_at.and_then(|_| crate::perf_profile::stamp());
-        let mut opener = FspAeadOpener::new(scratch);
+        let mut opener = FspAeadOpener;
         FspAeadCompletion::from_crypto_completion(source, opener.execute(work), completed_at)
     }
 

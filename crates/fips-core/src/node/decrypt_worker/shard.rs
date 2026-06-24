@@ -224,7 +224,6 @@ struct DecryptWorkerShard {
     // Lives entirely on this OS thread — never observed by any other thread.
     sessions: HashMap<DecryptSessionKey, OwnedSessionState>,
     fsp_sessions: HashMap<NodeAddr, OwnedFspSessionState>,
-    fsp_open_scratch: FspAeadOpenScratch,
 }
 
 impl DecryptWorkerShard {
@@ -233,7 +232,6 @@ impl DecryptWorkerShard {
             pool,
             sessions: HashMap::new(),
             fsp_sessions: HashMap::new(),
-            fsp_open_scratch: FspAeadOpenScratch::default(),
         }
     }
 
@@ -1202,7 +1200,6 @@ impl DecryptWorkerShard {
             return;
         };
         let ciphertext = &mut fallback.packet_data[ciphertext_offset..payload_end];
-        self.fsp_open_scratch.preserve_ciphertext_from(ciphertext);
         let (reservation, open_result) = {
             let state = self
                 .fsp_sessions
@@ -1226,10 +1223,6 @@ impl DecryptWorkerShard {
             });
             (reservation, open_result)
         };
-        if matches!(open_result, Some(Err(FspOpenError::Aead))) {
-            let restore = &mut fallback.packet_data[ciphertext_offset..payload_end];
-            restore.copy_from_slice(self.fsp_open_scratch.preserved_ciphertext());
-        }
         let job = FspDecryptJob {
             fallback,
             lane,
@@ -1257,8 +1250,8 @@ impl DecryptWorkerShard {
                     job,
                     header,
                     source: FspAeadCompletionSource::Local,
-                    fallback_to_rx_loop: true,
-                    count_failure: false,
+                    fallback_to_rx_loop: false,
+                    count_failure: true,
                 }
             }
             Some(Err(FspOpenError::Replay)) => {

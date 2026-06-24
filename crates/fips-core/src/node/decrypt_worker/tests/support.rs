@@ -112,15 +112,13 @@
         job.fsp_payload_offset = 0;
         job.fsp_payload_len = packet.len();
 
-        let mut scratch = FspAeadOpenScratch::default();
-        let mut opener = FspAeadOpener::new(&mut scratch);
+        let mut opener = FspAeadOpener;
         let completion = opener.execute(CryptoWork {
             ticket: test_fsp_crypto_ticket(source_addr, 7, 11, 0),
             work: FspAeadOpenWork {
                 cipher: Arc::new(test_chacha_key([0x67; 32])),
                 job,
                 header,
-                preserve_ciphertext_for_fallback: true,
             },
         });
 
@@ -129,9 +127,8 @@
                 reject: CryptoReject::Aead,
                 value,
             } => {
-                assert!(value.fallback_to_rx_loop);
-                assert!(!value.count_failure);
-                assert_eq!(value.job.fallback.packet_data.as_ref(), packet.as_slice());
+                assert!(!value.fallback_to_rx_loop);
+                assert!(value.count_failure);
             }
             _ => panic!("expected payload-carrying AEAD rejection"),
         }
