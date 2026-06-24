@@ -49,7 +49,7 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
 include!("decrypt_worker/core.rs");
-include!("decrypt_worker/fallback_channels.rs");
+include!("decrypt_worker/return_channels.rs");
 include!("decrypt_worker/queue.rs");
 include!("decrypt_worker/pool.rs");
 include!("decrypt_worker/runtime.rs");
@@ -60,7 +60,7 @@ include!("decrypt_worker/shard.rs");
 mod tests {
     include!("decrypt_worker/tests/support.rs");
     include!("decrypt_worker/tests/fsp_delivery.rs");
-    include!("decrypt_worker/tests/fallback_queue.rs");
+    include!("decrypt_worker/tests/return_queue.rs");
     include!("decrypt_worker/tests/direct_endpoint.rs");
     include!("decrypt_worker/tests/replay_failures.rs");
 }

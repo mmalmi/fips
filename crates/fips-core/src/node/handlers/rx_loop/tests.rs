@@ -202,21 +202,20 @@ async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (fallback_tx, mut fallback_rx) =
-        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
+    let (return_tx, mut return_rx) = crate::node::decrypt_worker::decrypt_worker_return_channels();
     let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
 
-    assert!(fallback_tx.send_for_test(DecryptWorkerEvent::AuthenticatedSessionBatch(Vec::new())));
-    assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
-    assert!(!fallback_rx.authenticated_bulk.is_empty());
+    assert!(return_tx.send_for_test(DecryptWorkerEvent::AuthenticatedSessionBatch(Vec::new())));
+    assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
+    assert!(!return_rx.authenticated_bulk.is_empty());
 
     let drained = node
         .drain_rx_loop_data_queues(
             &mut packet_rx,
-            &mut fallback_rx,
+            &mut return_rx,
             &mut feedback_rx,
             &mut tun_rx,
             &mut endpoint_priority_rx,
@@ -227,7 +226,7 @@ async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
 
     assert_eq!(drained.packets, 0);
     assert_eq!(drained.decrypt, 1);
-    assert!(fallback_rx.authenticated_bulk.is_empty());
+    assert!(return_rx.authenticated_bulk.is_empty());
     assert!(
         drained.has_data_drained(),
         "queued authenticated receive bookkeeping must be applied before link-dead maintenance"
@@ -251,8 +250,7 @@ async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_livene
     assert!(node.sessions.insert(dest_addr, session).is_none());
 
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (_fallback_tx, mut fallback_rx) =
-        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
+    let (_return_tx, mut return_rx) = crate::node::decrypt_worker::decrypt_worker_return_channels();
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
@@ -280,7 +278,7 @@ async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_livene
     let drained = node
         .drain_rx_loop_data_queues(
             &mut packet_rx,
-            &mut fallback_rx,
+            &mut return_rx,
             &mut feedback_rx,
             &mut tun_rx,
             &mut endpoint_priority_rx,

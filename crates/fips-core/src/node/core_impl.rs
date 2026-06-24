@@ -8,9 +8,9 @@ impl Node {
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();
 
-        let (decrypt_fallback_tx, decrypt_fallback_rx) =
-            decrypt_worker::decrypt_worker_fallback_channels();
-        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
+        let (decrypt_return_tx, decrypt_return_rx) =
+            decrypt_worker::decrypt_worker_return_channels();
+        let decrypt_return_rx = Some(decrypt_return_rx);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -108,8 +108,8 @@ impl Node {
             endpoint_bulk_send_runtime: None,
             encrypt_workers: None,
             decrypt_workers: None,
-            decrypt_fallback_tx,
-            decrypt_fallback_rx,
+            decrypt_return_tx,
+            decrypt_return_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -163,9 +163,9 @@ impl Node {
         config.validate()?;
         let node_addr = *identity.node_addr();
 
-        let (decrypt_fallback_tx, decrypt_fallback_rx) =
-            decrypt_worker::decrypt_worker_fallback_channels();
-        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
+        let (decrypt_return_tx, decrypt_return_rx) =
+            decrypt_worker::decrypt_worker_return_channels();
+        let decrypt_return_rx = Some(decrypt_return_rx);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -256,8 +256,8 @@ impl Node {
             endpoint_bulk_send_runtime: None,
             encrypt_workers: None,
             decrypt_workers: None,
-            decrypt_fallback_tx,
-            decrypt_fallback_rx,
+            decrypt_return_tx,
+            decrypt_return_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]

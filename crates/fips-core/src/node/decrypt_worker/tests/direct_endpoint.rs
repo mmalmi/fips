@@ -1,10 +1,10 @@
     #[test]
     fn decrypt_worker_direct_endpoint_batch_waits_for_commit_queue_acceptance() {
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
-        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(return_tx.clone());
 
         batch.push_output(dummy_direct_endpoint_output(
             sink.clone(),
@@ -13,7 +13,7 @@
             b"direct-one",
         ));
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "first endpoint completion should wait for a batch flush"
         );
         assert!(
@@ -28,7 +28,7 @@
             b"direct-two",
         ));
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "second endpoint completion should still wait below batch cap"
         );
         assert!(
@@ -37,7 +37,7 @@
         );
         batch.flush();
 
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("direct commit batch");
@@ -64,7 +64,7 @@
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => panic!("expected a direct commit batch"),
         }
-        fallback_rx.release_dequeued_event(&event);
+        return_rx.release_dequeued_event(&event);
 
         match endpoint_rx.try_recv().expect("endpoint batch") {
             NodeEndpointEvent::DataBatch { messages, .. } => {
@@ -80,11 +80,11 @@
 
     #[test]
     fn decrypt_worker_direct_endpoint_batch_has_reserved_authenticated_bulk_lane() {
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 2);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 2);
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
-        assert!(fallback_tx.send(dummy_plaintext_event(bulk_len)));
+        assert!(return_tx.send(dummy_plaintext_event(bulk_len)));
         assert_eq!(
-            fallback_rx.bulk_queued_packets(),
+            return_rx.bulk_queued_packets(),
             1,
             "test precondition should reserve one bulk packet slot"
         );
@@ -92,7 +92,7 @@
         let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
-        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(return_tx.clone());
 
         batch.push_output(dummy_direct_endpoint_output(
             sink.clone(),
@@ -108,36 +108,36 @@
         ));
 
         assert!(
-            fallback_rx.authenticated_bulk_queued_packets() == 2,
-            "direct endpoint commits should reserve the authenticated lane, not the fallback lane"
+            return_rx.authenticated_bulk_queued_packets() == 2,
+            "direct endpoint commits should reserve the authenticated lane, not the return lane"
         );
         assert_eq!(
-            fallback_rx.bulk_pressure_queued_packets(),
+            return_rx.bulk_pressure_queued_packets(),
             3,
             "return-lane pressure should include plaintext and authenticated bulk"
         );
 
-        let event = fallback_rx.bulk.try_recv().expect("pre-filled bulk event");
+        let event = return_rx.bulk.try_recv().expect("pre-filled bulk event");
         assert!(
             matches!(event, DecryptWorkerEvent::Plaintext(_)),
             "fallback bulk pressure should remain isolated from authenticated commits"
         );
-        fallback_rx.release_dequeued_event(&event);
-        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+        return_rx.release_dequeued_event(&event);
+        assert_eq!(return_rx.bulk_queued_packets(), 0);
         assert_eq!(
-            fallback_rx.bulk_pressure_queued_packets(),
+            return_rx.bulk_pressure_queued_packets(),
             2,
             "authenticated bulk should still contribute to pressure after plaintext drains"
         );
 
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("direct commit batch");
         assert_eq!(event.packet_count(), 2);
-        fallback_rx.release_dequeued_event(&event);
-        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
-        assert_eq!(fallback_rx.bulk_pressure_queued_packets(), 0);
+        return_rx.release_dequeued_event(&event);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
+        assert_eq!(return_rx.bulk_pressure_queued_packets(), 0);
 
         match endpoint_rx.try_recv().expect("endpoint data batch") {
             NodeEndpointEvent::DataBatch { messages, .. } => {
@@ -148,19 +148,19 @@
             event => panic!("expected endpoint data batch, got {event:?}"),
         }
         assert!(
-            fallback_rx.bulk.try_recv().is_err(),
+            return_rx.bulk.try_recv().is_err(),
             "only the pre-filled plaintext event should have reached the fallback bulk lane"
         );
     }
 
     #[test]
     fn decrypt_worker_direct_endpoint_batch_drops_delivery_when_authenticated_lane_is_full() {
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 2);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 2);
         let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
 
-        let mut first_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut first_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         first_batch.push_output(dummy_direct_endpoint_output(
             sink.clone(),
             source_peer,
@@ -174,12 +174,12 @@
             b"queued-two",
         ));
         first_batch.flush();
-        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 2);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 2);
         endpoint_rx
             .try_recv()
             .expect("first accepted endpoint batch");
 
-        let mut second_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut second_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         second_batch.push_output(dummy_direct_endpoint_output(
             sink,
             source_peer,
@@ -193,22 +193,22 @@
             "endpoint bytes must not release when their authenticated commit lane is full"
         );
 
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("first accepted commit batch");
         assert_eq!(event.packet_count(), 2);
-        fallback_rx.release_dequeued_event(&event);
-        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
+        return_rx.release_dequeued_event(&event);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "rejected endpoint commit must not enqueue after pressure rejection"
         );
     }
 
     #[test]
     fn decrypt_worker_direct_endpoint_delivery_accepts_bulk_payloads() {
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
@@ -223,7 +223,7 @@
             "direct-hop bulk endpoint payloads should not bounce through rx_loop after worker decrypt"
         );
 
-        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         batch.push_output(dummy_direct_endpoint_output(
             sink,
             source_peer,
@@ -232,12 +232,12 @@
         ));
         batch.flush();
 
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("direct commit");
         assert_eq!(event.packet_count(), 1);
-        fallback_rx.release_dequeued_event(&event);
+        return_rx.release_dequeued_event(&event);
 
         match endpoint_rx.try_recv().expect("bulk endpoint event") {
             NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, bulk_payload),
@@ -247,7 +247,7 @@
 
     #[test]
     fn decrypt_worker_direct_endpoint_batch_can_span_one_worker_burst() {
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(
             8,
             DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX + 1,
         );
@@ -256,7 +256,7 @@
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
         let bulk_payload = vec![0xCD; crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1];
-        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(return_tx.clone());
 
         for idx in 0..DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX {
             batch.push_output(dummy_direct_endpoint_output(
@@ -267,7 +267,7 @@
             ));
         }
 
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("burst-sized commit batch");
@@ -275,7 +275,7 @@
             event.packet_count(),
             DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX
         );
-        fallback_rx.release_dequeued_event(&event);
+        return_rx.release_dequeued_event(&event);
 
         match endpoint_rx.try_recv().expect("burst-sized endpoint batch") {
             NodeEndpointEvent::DataBatch { messages, .. } => {
@@ -616,7 +616,7 @@
             })
             .expect("control registration should enqueue");
 
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
         let bulk_job = dummy_bulk_decrypt_job(session_key);
         queue_bulk_item_for_test(
             &bulk_tx,
@@ -626,7 +626,7 @@
 
         let mut shard = test_shard();
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut return_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         drain_worker_queues(
             0,
             &mut shard,
@@ -642,7 +642,7 @@
             shard.contains_session(session_key),
             "control registration must be applied before queued bulk work"
         );
-        match fallback_rx
+        match return_rx
             .priority
             .try_recv()
             .expect("bulk job should run after registration")
@@ -696,7 +696,7 @@
             .try_send(WorkerMsg::UnregisterSession { session_key })
             .expect("control unregister should enqueue");
 
-        let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        let (return_tx, return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
         let bulk_job = dummy_bulk_decrypt_job(session_key);
         queue_bulk_item_for_test(
             &bulk_tx,
@@ -707,7 +707,7 @@
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut return_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         drain_worker_queues(
             0,
             &mut shard,
@@ -724,11 +724,11 @@
             "control unregister must remove stale session state before queued bulk work"
         );
         assert!(
-            fallback_rx.priority.is_empty(),
+            return_rx.priority.is_empty(),
             "bulk job for unregistered session must not use stale state and emit AEAD failure"
         );
         assert!(
-            fallback_rx.bulk.is_empty(),
+            return_rx.bulk.is_empty(),
             "bulk job for unregistered session must not produce plaintext"
         );
         assert!(
@@ -748,7 +748,7 @@
         let session_key = test_session_key(1, 79);
         let mut shard = test_shard();
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
 
         assert!(
             !drain_worker_queues(
@@ -916,7 +916,7 @@
         let mut shard = test_shard();
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         drain_worker_queues(
             0,
             &mut shard,
@@ -957,7 +957,7 @@
         );
         let mut packet_data = vec![0; packet_len];
         packet_data[fmp_plaintext_offset..].copy_from_slice(&fmp_plaintext);
-        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
         let action = DecryptWorkerShard::handle_opened_fmp_job(OpenedFmpJob {
             packet_data: packet_data.into(),
             source_peer: previous_hop,
@@ -1020,7 +1020,7 @@
 
         let mut shard = test_shard();
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         drain_worker_queues(
             0,
             &mut shard,
@@ -1049,16 +1049,16 @@
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 2);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 2);
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
 
-        let mut return_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         return_batch.push_output(DecryptWorkerOutput {
             event: dummy_plaintext_event(bulk_len),
             direct_delivery: None,
         });
         assert!(
-            fallback_rx.bulk.try_recv().is_err(),
+            return_rx.bulk.try_recv().is_err(),
             "first bulk return should stay buffered below the fallback cap"
         );
 
@@ -1089,7 +1089,7 @@
             &mut return_batch,
         );
 
-        let first = fallback_rx
+        let first = return_rx
             .bulk
             .try_recv()
             .expect("completion drain should flush the already-ready return before bulk work");
@@ -1098,14 +1098,14 @@
             1,
             "the pre-bulk completion flush must not coalesce with the next bulk packet"
         );
-        fallback_rx.release_dequeued_event(&first);
-        let second = fallback_rx
+        return_rx.release_dequeued_event(&first);
+        let second = return_rx
             .bulk
             .try_recv()
             .expect("bulk packet should flush at the end of the drain turn");
         assert_eq!(second.packet_count(), 1);
-        fallback_rx.release_dequeued_event(&second);
-        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+        return_rx.release_dequeued_event(&second);
+        assert_eq!(return_rx.bulk_queued_packets(), 0);
     }
 
     #[test]
@@ -1128,7 +1128,7 @@
         }
 
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let processed = handle_bulk_item(
             0,
@@ -1165,15 +1165,15 @@
             ))
             .expect("completion lane should have room");
 
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 2);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 2);
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
-        let mut return_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         return_batch.push_output(DecryptWorkerOutput {
             event: dummy_plaintext_event(bulk_len),
             direct_delivery: None,
         });
         assert!(
-            fallback_rx.bulk.try_recv().is_err(),
+            return_rx.bulk.try_recv().is_err(),
             "first bulk return should stay buffered below the fallback cap"
         );
 
@@ -1192,7 +1192,7 @@
         return_batch.flush();
 
         assert_eq!(processed, 1);
-        let first = fallback_rx
+        let first = return_rx
             .bulk
             .try_recv()
             .expect("completion interleave should flush the already-ready return");
@@ -1201,14 +1201,14 @@
             1,
             "the completion interleave flush must not coalesce with the bulk packet"
         );
-        fallback_rx.release_dequeued_event(&first);
-        let second = fallback_rx
+        return_rx.release_dequeued_event(&first);
+        let second = return_rx
             .bulk
             .try_recv()
             .expect("bulk packet should flush after service");
         assert_eq!(second.packet_count(), 1);
-        fallback_rx.release_dequeued_event(&second);
-        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+        return_rx.release_dequeued_event(&second);
+        assert_eq!(return_rx.bulk_queued_packets(), 0);
     }
 
     #[test]
@@ -1230,7 +1230,7 @@
         }
 
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let processed = handle_bulk_item(
             0,

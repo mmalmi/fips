@@ -14,7 +14,7 @@
     }
 
     #[test]
-    fn decrypt_fallback_bulk_cap_ignores_shared_worker_cap() {
+    fn decrypt_return_bulk_cap_ignores_shared_worker_cap() {
         assert_eq!(
             parse_channel_cap(None, Some("4"), DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP),
             4
@@ -255,7 +255,7 @@
         let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
             bounded::<FspAeadCompletionBatch>(1);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        let (return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
         (
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(
@@ -270,7 +270,7 @@
                     .into_boxed_slice(),
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fallback_tx,
+                return_tx,
             },
             control_rx,
             priority_rx,
@@ -310,12 +310,12 @@
             priority_receivers.push(priority_rx);
             bulk_receivers.push(bulk_rx);
         }
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(cap, cap);
+        let (return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(cap, cap);
         (
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fallback_tx,
+                return_tx,
             },
             control_receivers,
             priority_receivers,
@@ -358,12 +358,12 @@
             bulk_receivers.push(bulk_rx);
             fsp_completion_receivers.push(fsp_aead_completion_rx);
         }
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(cap, cap);
+        let (return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(cap, cap);
         (
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fallback_tx,
+                return_tx,
             },
             control_receivers,
             priority_receivers,
@@ -446,7 +446,7 @@
         drop(priority_tx);
         let opener_fsp_completion_rx = test_fsp_aead_completion_lane(1);
         let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = bulk_receivers[open_idx]
             .try_recv()
@@ -523,7 +523,7 @@
         drop(priority_tx);
         let opener_fsp_completion_rx = test_fsp_aead_completion_lane(1);
         let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         handle_bulk_item(
             open_idx,
@@ -629,7 +629,7 @@
         fsp_completion_tx
             .try_send(dummy_fsp_aead_completion_batch(source_addr, 99))
             .expect("test completion lane should have room");
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut completion_interleave_budget = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
 
         drain_aead_completions_for_bulk_item(
@@ -689,7 +689,7 @@
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = DecryptWorkerBulkItem::FspBatch(vec![
             dummy_bulk_fsp_open_job(source_addr),
@@ -756,7 +756,7 @@
         let current_idx = (owner_idx + 1) % 4;
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             current_idx,
@@ -832,7 +832,7 @@
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
@@ -905,7 +905,7 @@
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = DecryptWorkerBulkItem::FspBatch(vec![dummy_bulk_fsp_open_job(source_addr)]);
         batch_stats.add_bulk_item(&item);
@@ -1070,7 +1070,7 @@
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
@@ -1133,7 +1133,7 @@
             .fsp_receive_order
             .advance_next_ticket_to(bulk_ticket_limit as u64);
 
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
@@ -1190,7 +1190,7 @@
         open_job.completion_source = FspAeadCompletionSource::WorkerOpen;
 
         let mut shard = DecryptWorkerShard::new(pool);
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         shard.drop_returned_fsp_aead_open_jobs(
             current_idx,
             std::iter::once(open_job),
@@ -1334,7 +1334,7 @@
         ];
 
         let mut shard = DecryptWorkerShard::new(pool);
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         shard.drop_returned_fsp_aead_open_jobs(current_idx, jobs, &mut return_batch);
 
         let completion = fsp_completion_receivers[owner_idx]
@@ -1396,7 +1396,7 @@
             )];
 
         let mut shard = DecryptWorkerShard::new(pool);
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         shard.drop_returned_fsp_aead_open_jobs(current_idx, jobs, &mut return_batch);
 
         let completion = fsp_completion_receivers[owner_idx]
@@ -1449,7 +1449,7 @@
 
         let mut shard = DecryptWorkerShard::new(pool);
         shard.fsp_sessions.insert(source_addr, state);
-        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         shard.drop_returned_fsp_aead_open_jobs(
             0,
             std::iter::once(job),
@@ -1648,8 +1648,8 @@
             session_key,
             OwnedSessionState::new(open_cipher, ReplayWindow::new(), source_peer),
         );
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
+        shard.pool.return_tx = return_tx.clone();
 
         let link_body_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
         let (packet1, header1) = sealed_fmp_test_packet_with_link_body(
@@ -1672,7 +1672,7 @@
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let fsp_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut return_batch = DecryptWorkerReturnBatch::new(fallback_tx);
+        let mut return_batch = DecryptWorkerReturnBatch::new(return_tx);
         let mut batch_stats = DecryptWorkerBatchStats::default();
         let processed = handle_bulk_item(
             0,
@@ -1687,7 +1687,7 @@
         return_batch.flush();
 
         assert_eq!(processed, 2);
-        let event = fallback_rx.bulk.try_recv().expect("bulk plaintext batch");
+        let event = return_rx.bulk.try_recv().expect("bulk plaintext batch");
         match &event {
             DecryptWorkerEvent::PlaintextBatch(fallbacks) => assert_eq!(fallbacks.len(), 2),
             other => panic!(
@@ -1695,7 +1695,7 @@
                 other.packet_count()
             ),
         }
-        fallback_rx.release_dequeued_event(&event);
+        return_rx.release_dequeued_event(&event);
         assert_eq!(
             shard.fmp_replay_highest(session_key),
             Some(2),
@@ -1705,14 +1705,14 @@
 
     #[test]
     fn job_actions_reuse_plaintext_output_batcher() {
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
         let pool = DecryptWorkerPool {
             senders: Arc::from(Vec::<DecryptWorkerSender>::new().into_boxed_slice()),
             direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-            fallback_tx: fallback_tx.clone(),
+            return_tx: return_tx.clone(),
         };
         let mut shard = DecryptWorkerShard::new(pool);
-        let mut return_batch = DecryptWorkerReturnBatch::new(fallback_tx);
+        let mut return_batch = DecryptWorkerReturnBatch::new(return_tx);
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         let packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
 
@@ -1739,7 +1739,7 @@
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         return_batch.flush();
 
-        let event = fallback_rx.bulk.try_recv().expect("batched plaintext output");
+        let event = return_rx.bulk.try_recv().expect("batched plaintext output");
         match &event {
             DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
                 assert_eq!(fallbacks.len(), 2);
@@ -1749,8 +1749,8 @@
                 other.packet_count()
             ),
         }
-        fallback_rx.release_dequeued_event(&event);
-        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+        return_rx.release_dequeued_event(&event);
+        assert_eq!(return_rx.bulk_queued_packets(), 0);
     }
 
     fn dummy_failure_event() -> DecryptWorkerEvent {

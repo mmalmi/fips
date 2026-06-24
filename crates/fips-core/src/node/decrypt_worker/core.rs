@@ -1469,8 +1469,8 @@ pub(crate) struct DecryptFallback {
     /// MMP's 30-second link-dead timer fires even though packets
     /// are arriving fine.
     pub packet_len: usize,
-    /// Fallback queue lane selected when the worker creates this completion
-    /// event. The fallback sender consumes this queued value instead of
+    /// Return queue lane selected when the worker creates this completion
+    /// event. The return sender consumes this queued value instead of
     /// deriving queue policy later from mutable metadata.
     lane: DecryptWorkerLane,
     pub fmp_counter: u64,

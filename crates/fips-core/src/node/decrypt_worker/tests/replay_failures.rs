@@ -10,8 +10,8 @@
             session_key,
             OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer()),
         );
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
+        shard.pool.return_tx = return_tx.clone();
         let counter = 7;
         let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
 
@@ -25,7 +25,7 @@
                 flags,
             ))
             .expect("invalid worker job should be handled");
-        match fallback_rx
+        match return_rx
             .priority
             .try_recv()
             .expect("AEAD failure report")
@@ -84,7 +84,7 @@
             .expect("valid worker job should be handled");
         assert!(
             matches!(
-                fallback_rx.priority.try_recv().expect("plaintext fallback"),
+                return_rx.priority.try_recv().expect("plaintext fallback"),
                 DecryptWorkerEvent::Plaintext(_)
             ),
             "valid packet must bounce plaintext after FMP decrypt"
@@ -106,12 +106,12 @@
             ))
             .expect("replay worker job should be handled");
         assert!(
-            fallback_rx.priority.is_empty(),
+            return_rx.priority.is_empty(),
             "replayed counter must be dropped before plaintext or failure events"
         );
         assert!(
-            fallback_rx.bulk.is_empty(),
-            "replayed counter must not reach the bulk fallback lane"
+            return_rx.bulk.is_empty(),
+            "replayed counter must not reach the bulk return lane"
         );
     }
 
@@ -128,8 +128,8 @@
             session_key,
             OwnedSessionState::new(open_cipher, ReplayWindow::new(), source_peer),
         );
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
+        shard.pool.return_tx = return_tx.clone();
         let counter = 11;
         let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
         let inner_timestamp_ms = 0x0102_0304_u32;
@@ -150,7 +150,7 @@
             ))
             .expect("timestamp-only worker job should be handled");
 
-        match fallback_rx
+        match return_rx
             .priority
             .try_recv()
             .expect("timestamp-only authenticated receive")
@@ -177,7 +177,7 @@
             }
         }
         assert!(
-            fallback_rx.bulk.try_recv().is_err(),
+            return_rx.bulk.try_recv().is_err(),
             "timestamp-only receive must not consume the fallback bulk lane"
         );
         assert_eq!(
@@ -470,8 +470,8 @@
             OwnedSessionState::new(open_cipher, ReplayWindow::new(), source_peer),
         );
 
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
+        shard.pool.return_tx = return_tx.clone();
 
         let job = DecryptJob::new(
             wire,
@@ -489,7 +489,7 @@
 
         shard.handle_job(job).expect("worker job handled");
 
-        let event = fallback_rx.priority.try_recv().expect("fallback delivered");
+        let event = return_rx.priority.try_recv().expect("fallback delivered");
         let fallback = match event {
             DecryptWorkerEvent::Plaintext(fallback) => fallback,
             DecryptWorkerEvent::DecryptFailure(_) => panic!("expected plaintext fallback event"),
@@ -561,8 +561,8 @@
             OwnedSessionState::new(open_cipher, ReplayWindow::new(), source_peer),
         );
 
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
+        shard.pool.return_tx = return_tx.clone();
         let job = DecryptJob::new(
             wire,
             session_key,
@@ -579,7 +579,7 @@
 
         shard.handle_job(job).expect("worker job handled");
 
-        let event = fallback_rx.priority.try_recv().expect("failure delivered");
+        let event = return_rx.priority.try_recv().expect("failure delivered");
         match event {
             DecryptWorkerEvent::DecryptFailure(report) => {
                 assert_eq!(report.source_peer, source_peer);

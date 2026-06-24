@@ -6,7 +6,7 @@
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
-    fallback_tx: DecryptWorkerFallbackSender,
+    return_tx: DecryptWorkerReturnSender,
 }
 
 #[derive(Clone)]
@@ -141,18 +141,18 @@ fn record_decrypt_worker_control_drop(worker: usize, kind: &'static str) {
 impl DecryptWorkerPool {
     #[cfg(test)]
     pub(crate) fn spawn(n: usize) -> Self {
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels();
+        let (return_tx, _return_rx) = decrypt_worker_return_channels();
         Self::spawn_with_direct_delivery_sink(
             n,
             DecryptDirectSessionDeliverySink::default(),
-            fallback_tx,
+            return_tx,
         )
     }
 
     pub(crate) fn spawn_with_direct_delivery_sink(
         n: usize,
         direct_delivery_sink: DecryptDirectSessionDeliverySink,
-        fallback_tx: DecryptWorkerFallbackSender,
+        return_tx: DecryptWorkerReturnSender,
     ) -> Self {
         let n = n.max(1);
         let bulk_channel_cap = bulk_channel_cap();
@@ -188,7 +188,7 @@ impl DecryptWorkerPool {
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
-            fallback_tx,
+            return_tx,
         };
         for (
             i,

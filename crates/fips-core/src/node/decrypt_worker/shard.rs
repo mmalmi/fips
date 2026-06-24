@@ -291,7 +291,7 @@ impl DecryptWorkerShard {
         let _t_service =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(self.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(self.pool.return_tx.clone());
         self.push_fsp_job_outputs(idx, job, &mut return_batch);
         return_batch.flush();
         trace!(worker = idx, "processed FSP decrypt worker job");
@@ -410,7 +410,7 @@ impl DecryptWorkerShard {
     }
 
     fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
-        let mut return_batch = DecryptWorkerReturnBatch::new(self.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(self.pool.return_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         self.push_job_action_output(
             idx,

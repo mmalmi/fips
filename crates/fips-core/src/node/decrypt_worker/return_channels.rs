@@ -1,5 +1,5 @@
 #[derive(Clone)]
-pub(crate) struct DecryptWorkerFallbackSender {
+pub(crate) struct DecryptWorkerReturnSender {
     priority: TokioSender<DecryptWorkerEvent>,
     bulk: TokioSender<DecryptWorkerEvent>,
     authenticated_bulk: TokioSender<DecryptWorkerEvent>,
@@ -8,7 +8,7 @@ pub(crate) struct DecryptWorkerFallbackSender {
     bulk_packet_cap: usize,
 }
 
-pub(crate) struct DecryptWorkerFallbackReceivers {
+pub(crate) struct DecryptWorkerReturnReceivers {
     pub(crate) priority: TokioReceiver<DecryptWorkerEvent>,
     pub(crate) bulk: TokioReceiver<DecryptWorkerEvent>,
     pub(crate) authenticated_bulk: TokioReceiver<DecryptWorkerEvent>,
@@ -16,18 +16,18 @@ pub(crate) struct DecryptWorkerFallbackReceivers {
     authenticated_bulk_queued_packets: Arc<AtomicUsize>,
 }
 
-pub(crate) fn decrypt_worker_fallback_channels()
--> (DecryptWorkerFallbackSender, DecryptWorkerFallbackReceivers) {
-    decrypt_worker_fallback_channels_with_caps(
+pub(crate) fn decrypt_worker_return_channels()
+-> (DecryptWorkerReturnSender, DecryptWorkerReturnReceivers) {
+    decrypt_worker_return_channels_with_caps(
         fallback_priority_channel_cap(),
         fallback_bulk_channel_cap(),
     )
 }
 
-fn decrypt_worker_fallback_channels_with_caps(
+fn decrypt_worker_return_channels_with_caps(
     priority_cap: usize,
     bulk_cap: usize,
-) -> (DecryptWorkerFallbackSender, DecryptWorkerFallbackReceivers) {
+) -> (DecryptWorkerReturnSender, DecryptWorkerReturnReceivers) {
     let (priority_tx, priority_rx) = tokio::sync::mpsc::channel(priority_cap.max(1));
     let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(bulk_cap.max(1));
     let (authenticated_bulk_tx, authenticated_bulk_rx) =
@@ -35,7 +35,7 @@ fn decrypt_worker_fallback_channels_with_caps(
     let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
     let authenticated_bulk_queued_packets = Arc::new(AtomicUsize::new(0));
     (
-        DecryptWorkerFallbackSender {
+        DecryptWorkerReturnSender {
             priority: priority_tx,
             bulk: bulk_tx,
             authenticated_bulk: authenticated_bulk_tx,
@@ -43,7 +43,7 @@ fn decrypt_worker_fallback_channels_with_caps(
             authenticated_bulk_queued_packets: Arc::clone(&authenticated_bulk_queued_packets),
             bulk_packet_cap: bulk_cap.max(1),
         },
-        DecryptWorkerFallbackReceivers {
+        DecryptWorkerReturnReceivers {
             priority: priority_rx,
             bulk: bulk_rx,
             authenticated_bulk: authenticated_bulk_rx,
@@ -53,7 +53,7 @@ fn decrypt_worker_fallback_channels_with_caps(
     )
 }
 
-impl DecryptWorkerFallbackSender {
+impl DecryptWorkerReturnSender {
     #[cfg(test)]
     pub(crate) fn send_for_test(&self, event: DecryptWorkerEvent) -> bool {
         self.send(event)
@@ -116,10 +116,7 @@ impl DecryptWorkerFallbackSender {
                 if let Some(bulk_lane) = bulk_lane {
                     release_bulk_packets(self.return_bulk_queued_packets(bulk_lane), packet_count);
                 }
-                debug!(
-                    ?lane,
-                    "decrypt fallback receiver gone; dropping worker event"
-                );
+                debug!(?lane, "decrypt return receiver gone; dropping worker event");
                 false
             }
         }
@@ -133,7 +130,7 @@ impl DecryptWorkerFallbackSender {
     }
 }
 
-impl DecryptWorkerFallbackReceivers {
+impl DecryptWorkerReturnReceivers {
     pub(crate) fn release_dequeued_event(&self, event: &DecryptWorkerEvent) {
         if matches!(event.lane(), DecryptWorkerLane::Bulk) {
             let queued_packets =

@@ -1,5 +1,5 @@
 struct DecryptWorkerReturnBatch {
-    fallback_tx: DecryptWorkerFallbackSender,
+    return_tx: DecryptWorkerReturnSender,
     fallbacks: Vec<DecryptFallback>,
     authenticated_sessions: Vec<DecryptAuthenticatedSession>,
     endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
@@ -11,9 +11,9 @@ struct DecryptWorkerReturnBatch {
 }
 
 impl DecryptWorkerReturnBatch {
-    fn new(fallback_tx: DecryptWorkerFallbackSender) -> Self {
+    fn new(return_tx: DecryptWorkerReturnSender) -> Self {
         Self {
-            fallback_tx,
+            return_tx,
             fallbacks: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             authenticated_sessions: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             endpoint_sink: None,
@@ -26,19 +26,19 @@ impl DecryptWorkerReturnBatch {
     }
 
     fn batch_max(&self) -> usize {
-        self.fallback_tx
+        self.return_tx
             .bulk_packet_cap
             .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX)
     }
 
     fn endpoint_batch_max(&self) -> usize {
-        self.fallback_tx
+        self.return_tx
             .bulk_packet_cap
             .clamp(1, DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX)
     }
 
     fn direct_batch_max(&self) -> usize {
-        self.fallback_tx
+        self.return_tx
             .bulk_packet_cap
             .clamp(1, DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX)
     }
@@ -169,7 +169,7 @@ impl DecryptWorkerReturnBatch {
         }
 
         self.flush();
-        let _ = output.send(&self.fallback_tx);
+        let _ = output.send(&self.return_tx);
     }
 
     fn flush(&mut self) {
@@ -195,7 +195,7 @@ impl DecryptWorkerReturnBatch {
             );
             DecryptWorkerEvent::PlaintextBatch(fallbacks)
         };
-        let _ = self.fallback_tx.send(event);
+        let _ = self.return_tx.send(event);
     }
 
     fn flush_authenticated_sessions(&mut self) {
@@ -217,7 +217,7 @@ impl DecryptWorkerReturnBatch {
             );
             DecryptWorkerEvent::AuthenticatedSessionBatch(sessions)
         };
-        let _ = self.fallback_tx.send(event);
+        let _ = self.return_tx.send(event);
     }
 
     fn flush_endpoint(&mut self) {
@@ -251,7 +251,7 @@ impl DecryptWorkerReturnBatch {
             DecryptWorkerEvent::DirectSessionCommitBatch(commits)
         };
 
-        if !self.fallback_tx.send(event) {
+        if !self.return_tx.send(event) {
             self.endpoint_deliveries.clear();
             return;
         }
@@ -313,7 +313,7 @@ impl DecryptWorkerReturnBatch {
             DecryptWorkerEvent::DirectSessionCommitBatch(commits)
         };
 
-        if !self.fallback_tx.send(event) {
+        if !self.return_tx.send(event) {
             self.direct_deliveries.clear();
             return;
         }
@@ -344,6 +344,6 @@ impl DecryptWorkerReturnBatch {
             DecryptWorkerEvent::DirectSessionDataBatch(direct_data)
         };
 
-        let _ = self.fallback_tx.send(event);
+        let _ = self.return_tx.send(event);
     }
 }

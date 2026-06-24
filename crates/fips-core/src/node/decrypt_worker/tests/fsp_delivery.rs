@@ -130,7 +130,7 @@
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 9);
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let job = DecryptJob::new(
             wire,
             session_key,
@@ -147,7 +147,7 @@
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.pool.return_tx = return_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -170,7 +170,7 @@
         );
 
         shard.handle_job(job).expect("worker job should not fail");
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("direct FSP path should emit an event");
@@ -216,7 +216,7 @@
         let fmp_seal = test_chacha_key(fmp_key_bytes);
         let fmp_open = test_chacha_key(fmp_key_bytes);
         let session_key = test_session_key(1, 9);
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
 
         let mut make_job = |fmp_counter: u64, endpoint_body: &[u8]| {
             let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
@@ -270,7 +270,7 @@
         let second = make_job(78, &second_payload);
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.pool.return_tx = return_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -293,20 +293,20 @@
         );
 
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         shard.handle_bulk_job_msg(0, first, &mut return_batch);
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "first local FSP direct-data output should stay in the worker return batch"
         );
         shard.handle_bulk_job_msg(0, second, &mut return_batch);
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "second local FSP direct-data output should still wait below the batch cap"
         );
 
         return_batch.flush();
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("direct data batch");
@@ -339,7 +339,7 @@
                 other.packet_count()
             ),
         }
-        fallback_rx.release_dequeued_event(&event);
+        return_rx.release_dequeued_event(&event);
     }
 
     #[test]
@@ -365,7 +365,7 @@
             "test packet must stay on the priority lane"
         );
 
-        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let action = DecryptWorkerShard::handle_opened_fmp_job(OpenedFmpJob {
             packet_data: packet_data.clone().into(),
             source_peer,
@@ -442,7 +442,7 @@
         let cipher = Arc::clone(&state.current.cipher);
 
         let make_job = |packet_data: Vec<u8>| {
-            let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
             FspDecryptJob {
                 lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
@@ -617,7 +617,7 @@
         let mut packet_data = frame;
         packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0);
         let packet_len = packet_data.len();
-        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
         let job = FspDecryptJob {
             lane: decrypt_worker_packet_lane(packet_len),
             fallback: DecryptFallback::new(
@@ -722,7 +722,7 @@
         let mut packet_data = frame;
         packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0);
         let packet_len = packet_data.len();
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
         let job = FspDecryptJob {
             lane: decrypt_worker_packet_lane(packet_len),
             fallback: DecryptFallback::new(
@@ -750,10 +750,10 @@
 
         let pool = DecryptWorkerPool::spawn(1);
         let mut shard = DecryptWorkerShard::new(pool);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.pool.return_tx = return_tx.clone();
         shard.fsp_sessions.insert(source_addr, refreshed);
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         shard.handle_fsp_aead_completion_batch_msg(
             0,
             FspAeadCompletionBatch::one(FspAeadCompletion {
@@ -780,9 +780,9 @@
             .expect("refreshed FSP session should stay registered");
         assert_eq!(state.fsp_receive_order_next_ready(), ticket.sequence + 1);
         assert_eq!(state.fsp_receive_order.next_ticket(), ticket.sequence + 1);
-        assert!(fallback_rx.priority.try_recv().is_err());
-        assert!(fallback_rx.bulk.try_recv().is_err());
-        assert!(fallback_rx.authenticated_bulk.try_recv().is_err());
+        assert!(return_rx.priority.try_recv().is_err());
+        assert!(return_rx.bulk.try_recv().is_err());
+        assert!(return_rx.authenticated_bulk.try_recv().is_err());
         assert!(return_batch.fallbacks.is_empty());
         assert!(return_batch.authenticated_sessions.is_empty());
         assert!(return_batch.direct_commits.is_empty());
@@ -837,7 +837,7 @@
         };
 
         let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
-            let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
             FspDecryptJob {
                 lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
@@ -989,7 +989,7 @@
         };
 
         let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
-            let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
             FspDecryptJob {
                 lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
@@ -1183,7 +1183,7 @@
         let mut packet_data = frame;
         packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0);
         let packet_len = packet_data.len();
-        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
         let job = FspDecryptJob {
             lane: decrypt_worker_packet_lane(packet_len),
             fallback: DecryptFallback::new(
@@ -1268,10 +1268,10 @@
             pending: None,
             previous: None,
         };
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.pool.return_tx = return_tx.clone();
         shard.register_fsp_session(0, source_addr, OwnedFspSessionState::from(snapshot));
 
         let mut fsp_payload = crate::node::session_wire::build_fsp_header(1, 0, 0).to_vec();
@@ -1308,11 +1308,11 @@
         assert_eq!(job.lane, DecryptWorkerLane::Bulk);
 
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
         shard.push_current_epoch_fsp_job_outputs(0, job, &mut return_batch);
         return_batch.flush();
 
-        match fallback_rx
+        match return_rx
             .bulk
             .try_recv()
             .expect("bulk plaintext fallback should be queued")
@@ -1369,7 +1369,7 @@
             "test frame must carry the opposite K-bit from the worker snapshot"
         );
 
-        let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
         let job = FspDecryptJob {
             lane: decrypt_worker_packet_lane(fsp_payload.len()),
             fallback: DecryptFallback::new(
@@ -1475,7 +1475,7 @@
         };
 
         let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
-            let (_fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
             FspDecryptJob {
                 lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
@@ -1647,7 +1647,7 @@
         let mut shard = DecryptWorkerShard::new(pool);
         shard.fsp_sessions.insert(source_addr, state);
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
 
         shard.handle_fsp_aead_completion_batch_msg(
             0,
@@ -1728,7 +1728,7 @@
         let mut shard = DecryptWorkerShard::new(pool);
         shard.fsp_sessions.insert(source_addr, state);
         let mut return_batch =
-            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+            DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
 
         shard.handle_fsp_aead_completion_batch_msg(
             0,
@@ -1790,7 +1790,7 @@
     fn worker_direct_hop_tun_delivery_waits_for_commit_queue_acceptance() {
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
         let mut ipv6 = vec![0u8; 48];
         ipv6[0] = 0x60;
@@ -1839,11 +1839,11 @@
             "direct TUN bytes must wait until the commit is queued"
         );
         assert!(
-            output.send(&fallback_tx),
+            output.send(&return_tx),
             "commit queue should accept direct commit"
         );
 
-        match fallback_rx
+        match return_rx
             .authenticated_bulk
             .try_recv()
             .expect("commit event")
@@ -1865,9 +1865,9 @@
     fn decrypt_worker_direct_tun_batch_waits_for_commit_queue_acceptance() {
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
-        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(return_tx.clone());
 
         let mut first = vec![0u8; 48];
         first[0] = 0x60;
@@ -1883,7 +1883,7 @@
             true,
         ));
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "first direct TUN completion should wait for a batch flush"
         );
         assert!(
@@ -1899,7 +1899,7 @@
             false,
         ));
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "second direct TUN completion should still wait below batch cap"
         );
         assert!(
@@ -1908,7 +1908,7 @@
         );
         batch.flush();
 
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("direct TUN commit batch");
@@ -1925,7 +1925,7 @@
             DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected a commit batch"),
             _ => panic!("expected a direct TUN commit batch"),
         }
-        fallback_rx.release_dequeued_event(&event);
+        return_rx.release_dequeued_event(&event);
 
         let delivered_first = tun_rx.try_recv().expect("first TUN packet delivered");
         assert_eq!(
@@ -1944,10 +1944,10 @@
     #[test]
     fn decrypt_worker_direct_tun_batch_drops_delivery_when_authenticated_lane_is_full() {
         let source_peer = test_source_peer();
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 1);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 1);
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
 
-        let mut first_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut first_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         first_batch.push_output(dummy_direct_tun_output(
             tun_tx.clone(),
             source_peer,
@@ -1956,12 +1956,12 @@
             false,
         ));
         first_batch.flush();
-        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 1);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 1);
         tun_rx
             .try_recv()
             .expect("first accepted direct TUN delivery");
 
-        let mut second_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
+        let mut second_batch = DecryptWorkerReturnBatch::new(return_tx.clone());
         second_batch.push_output(dummy_direct_tun_output(
             tun_tx,
             source_peer,
@@ -1976,15 +1976,15 @@
             "direct TUN bytes must not release when their authenticated commit lane is full"
         );
 
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("first accepted direct TUN commit");
         assert_eq!(event.packet_count(), 1);
-        fallback_rx.release_dequeued_event(&event);
-        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
+        return_rx.release_dequeued_event(&event);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "rejected direct TUN commit must not enqueue after pressure rejection"
         );
     }
@@ -2032,11 +2032,11 @@
         let (wire_b, header_b) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, 78, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 9);
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.pool.return_tx = return_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -2091,7 +2091,7 @@
             .handle_job(first)
             .expect("first worker job should not fail");
         assert!(matches!(
-            fallback_rx
+            return_rx
                 .authenticated_bulk
                 .try_recv()
                 .expect("first FSP frame should authenticate"),
@@ -2101,8 +2101,8 @@
             .handle_job(second)
             .expect("second worker job should not fail");
         assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err()
-                && fallback_rx.bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err()
+                && return_rx.bulk.try_recv().is_err(),
             "FSP replay must not bounce into rx-loop decrypt failure accounting"
         );
         assert_eq!(
@@ -2159,7 +2159,7 @@
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 9);
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let mut job = DecryptJob::new(
             wire,
             session_key,
@@ -2177,7 +2177,7 @@
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.pool.return_tx = return_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -2200,7 +2200,7 @@
         );
 
         shard.handle_job(job).expect("worker job should not fail");
-        let event = fallback_rx
+        let event = return_rx
             .priority
             .try_recv()
             .expect("FSP AEAD failure should return a plaintext fallback");
@@ -2275,7 +2275,7 @@
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 10);
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let mut job = DecryptJob::new(
             wire,
             session_key,
@@ -2293,7 +2293,7 @@
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.pool.return_tx = return_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -2319,7 +2319,7 @@
         );
 
         shard.handle_job(job).expect("worker job should not fail");
-        let event = fallback_rx
+        let event = return_rx
             .priority
             .try_recv()
             .expect("multi-epoch FSP AEAD failure should fall back to rx_loop");
@@ -2373,7 +2373,7 @@
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 11);
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let mut job = DecryptJob::new(
             wire,
             session_key,
@@ -2391,7 +2391,7 @@
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
-        shard.pool.fallback_tx = fallback_tx.clone();
+        shard.pool.return_tx = return_tx.clone();
         shard.register_session(
             0,
             session_key,
@@ -2414,7 +2414,7 @@
         );
 
         shard.handle_job(job).expect("worker job should not fail");
-        let event = fallback_rx
+        let event = return_rx
             .authenticated_bulk
             .try_recv()
             .expect("malformed FSP should still record authenticated FMP receive");

@@ -1,5 +1,5 @@
 use crate::control::ControlMessage;
-use crate::node::decrypt_worker::{DecryptJob, DecryptWorkerFallbackReceivers};
+use crate::node::decrypt_worker::{DecryptJob, DecryptWorkerReturnReceivers};
 use crate::node::{EndpointBulkSendFeedback, NodeEndpointCommand};
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
@@ -40,7 +40,7 @@ pub(super) struct RxLoopSideQueues<'a> {
     pub(super) endpoint_command_rx: &'a mut Receiver<NodeEndpointCommand>,
 }
 
-pub(super) fn decrypt_fallback_has_ready(rx: &DecryptWorkerFallbackReceivers) -> bool {
+pub(super) fn decrypt_return_has_ready(rx: &DecryptWorkerReturnReceivers) -> bool {
     !rx.priority.is_empty() || !rx.authenticated_bulk.is_empty() || !rx.bulk.is_empty()
 }
 

@@ -328,8 +328,8 @@ pub struct Node {
     /// rx_loop can apply node-owned bookkeeping and any remaining legacy link
     /// dispatch. Drained with a bounded priority lane ahead of bounded
     /// authenticated and fallback bulk lanes.
-    decrypt_fallback_rx: Option<decrypt_worker::DecryptWorkerFallbackReceivers>,
-    decrypt_fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
+    decrypt_return_rx: Option<decrypt_worker::DecryptWorkerReturnReceivers>,
+    decrypt_return_tx: decrypt_worker::DecryptWorkerReturnSender,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.

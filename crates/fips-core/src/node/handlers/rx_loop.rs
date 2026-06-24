@@ -5,7 +5,7 @@ use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
 use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::{
     DecryptFailureReport, DecryptFallback, DecryptJobBatcher, DecryptWorkerEvent,
-    DecryptWorkerFallbackReceivers,
+    DecryptWorkerReturnReceivers,
 };
 use crate::node::handlers::encrypted::EncryptedFrameFastPath;
 use crate::node::wire::{
@@ -104,14 +104,13 @@ impl Node {
         // Take the decrypt worker return receiver. Workers keep protocol
         // state on their owner threads, then return ordered outputs here for
         // canonical rx-loop delivery, failure handling, or plaintext parsing.
-        let (mut decrypt_fallback_rx, _decrypt_fallback_guard) =
-            match self.decrypt_fallback_rx.take() {
-                Some(rx) => (rx, None),
-                None => {
-                    let (tx, rx) = crate::node::decrypt_worker::decrypt_worker_fallback_channels();
-                    (rx, Some(tx))
-                }
-            };
+        let (mut decrypt_return_rx, _decrypt_return_guard) = match self.decrypt_return_rx.take() {
+            Some(rx) => (rx, None),
+            None => {
+                let (tx, rx) = crate::node::decrypt_worker::decrypt_worker_return_channels();
+                (rx, Some(tx))
+            }
+        };
 
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
@@ -165,9 +164,9 @@ impl Node {
                 // being dequeued. `drain_packet_rx` interleaves return
                 // turns every few dozen packets to keep that progress
                 // reserve while avoiding a bulk-return convoy.
-                Some(event) = decrypt_fallback_rx.priority.recv() => {
-                    let fallback_drained = self.drain_decrypt_priority_fallback(
-                        &mut decrypt_fallback_rx.priority,
+                Some(event) = decrypt_return_rx.priority.recv() => {
+                    let return_drained = self.drain_decrypt_priority_return(
+                        &mut decrypt_return_rx.priority,
                         Some(event),
                         PACKET_DRAIN_BUDGET,
                     ).await;
@@ -179,7 +178,7 @@ impl Node {
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
-                    if fallback_drained > 0 || side_drained.has_data_drained() {
+                    if return_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
@@ -191,7 +190,7 @@ impl Node {
                 _ = tick.tick() => {
                     let drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
-                        &mut decrypt_fallback_rx,
+                        &mut decrypt_return_rx,
                         &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
@@ -228,7 +227,7 @@ impl Node {
 
                     let post_drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
-                        &mut decrypt_fallback_rx,
+                        &mut decrypt_return_rx,
                         &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
@@ -247,17 +246,17 @@ impl Node {
                         );
                     }
                 }
-                Some(event) = decrypt_fallback_rx.authenticated_bulk.recv(),
+                Some(event) = decrypt_return_rx.authenticated_bulk.recv(),
                     if authenticated_bulk_preempts_packet_rx(packet_rx.priority_ready_packets()) =>
                 {
-                    let fallback_drained = self.drain_decrypt_fallback(
-                        &mut decrypt_fallback_rx,
+                    let return_drained = self.drain_decrypt_return(
+                        &mut decrypt_return_rx,
                         None,
                         Some(event),
                         None,
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
-                    if fallback_drained > 0 {
+                    if return_drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
@@ -301,7 +300,7 @@ impl Node {
                         Some(p) => {
                             let drained = self.drain_packet_rx(
                                 &mut packet_rx,
-                                &mut decrypt_fallback_rx,
+                                &mut decrypt_return_rx,
                                 Some(RxLoopSideQueues {
                                     control_query_rx: &mut control_query_rx,
                                     endpoint_bulk_feedback_rx: &mut endpoint_bulk_feedback_rx,
@@ -319,9 +318,9 @@ impl Node {
                         None => break, // channel closed
                     }
                 }
-                Some(event) = decrypt_fallback_rx.bulk.recv() => {
-                    let fallback_drained = self.drain_decrypt_fallback(
-                        &mut decrypt_fallback_rx,
+                Some(event) = decrypt_return_rx.bulk.recv() => {
+                    let return_drained = self.drain_decrypt_return(
+                        &mut decrypt_return_rx,
                         None,
                         None,
                         Some(event),
@@ -335,7 +334,7 @@ impl Node {
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
-                    if fallback_drained > 0 || side_drained.has_data_drained() {
+                    if return_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
@@ -386,7 +385,7 @@ impl Node {
     async fn drain_rx_loop_data_queues(
         &mut self,
         packet_rx: &mut PacketRx,
-        decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
+        decrypt_return_rx: &mut DecryptWorkerReturnReceivers,
         endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
@@ -394,11 +393,11 @@ impl Node {
         budget: usize,
     ) -> RxLoopDataDrainStats {
         let drained_packets = self
-            .drain_packet_rx(packet_rx, decrypt_fallback_rx, None, None, budget)
+            .drain_packet_rx(packet_rx, decrypt_return_rx, None, None, budget)
             .await;
         let non_packet_budget = non_packet_drain_budget(budget);
-        let drained_decrypt = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
-            self.drain_decrypt_fallback(decrypt_fallback_rx, None, None, None, non_packet_budget)
+        let drained_decrypt = if decrypt_return_has_ready(decrypt_return_rx) {
+            self.drain_decrypt_return(decrypt_return_rx, None, None, None, non_packet_budget)
                 .await
         } else {
             0
@@ -432,7 +431,7 @@ impl Node {
     async fn drain_packet_rx(
         &mut self,
         packet_rx: &mut PacketRx,
-        decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
+        decrypt_return_rx: &mut DecryptWorkerReturnReceivers,
         mut side_queues: Option<RxLoopSideQueues<'_>>,
         first_packet: Option<ReceivedPacket>,
         budget: usize,
@@ -474,9 +473,9 @@ impl Node {
                 }
                 PacketDrainAction::InterleaveDecryptReturn => {
                     self.flush_decrypt_job_batcher(&mut decrypt_jobs);
-                    let drained = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
-                        self.drain_decrypt_fallback(
-                            decrypt_fallback_rx,
+                    let drained = if decrypt_return_has_ready(decrypt_return_rx) {
+                        self.drain_decrypt_return(
+                            decrypt_return_rx,
                             None,
                             None,
                             None,
@@ -523,8 +522,8 @@ impl Node {
             // burst aren't held up by the post-burst send flush. Keep it a
             // non-packet turn: bulk returns should not convoy ahead of fresh
             // transport receive work after every hot packet drain.
-            self.drain_decrypt_fallback(
-                decrypt_fallback_rx,
+            self.drain_decrypt_return(
+                decrypt_return_rx,
                 None,
                 None,
                 None,
@@ -794,11 +793,11 @@ impl Node {
         event.record_queue_wait();
         match event {
             DecryptWorkerEvent::Plaintext(fallback) => {
-                self.process_decrypt_fallback(fallback).await;
+                self.process_decrypt_plaintext_return(fallback).await;
             }
             DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
                 for fallback in fallbacks {
-                    self.process_decrypt_fallback(fallback).await;
+                    self.process_decrypt_plaintext_return(fallback).await;
                 }
             }
             DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => {
@@ -835,7 +834,7 @@ impl Node {
         }
     }
 
-    async fn process_decrypt_fallback(&mut self, fallback: DecryptFallback) {
+    async fn process_decrypt_plaintext_return(&mut self, fallback: DecryptFallback) {
         let plaintext = &fallback.packet_data[fallback.fmp_plaintext_offset
             ..fallback.fmp_plaintext_offset + fallback.fmp_plaintext_len];
         self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
@@ -867,7 +866,7 @@ impl Node {
     /// decrypt failures get first service, but bulk returns stay behind
     /// `packet_rx` unless it is explicitly interleaved inside a packet drain
     /// or selected by its own lower-priority branch.
-    async fn drain_decrypt_priority_fallback(
+    async fn drain_decrypt_priority_return(
         &mut self,
         priority_rx: &mut Receiver<DecryptWorkerEvent>,
         first_event: Option<DecryptWorkerEvent>,
@@ -888,9 +887,9 @@ impl Node {
     /// bulk-return select arm (after the selected head item) and interleaved
     /// inside the packet_rx drain loop so bounced FMP plaintexts can't
     /// accumulate behind a hot inbound packet turn.
-    async fn drain_decrypt_fallback(
+    async fn drain_decrypt_return(
         &mut self,
-        rx: &mut DecryptWorkerFallbackReceivers,
+        rx: &mut DecryptWorkerReturnReceivers,
         first_priority_event: Option<DecryptWorkerEvent>,
         first_authenticated_bulk_event: Option<DecryptWorkerEvent>,
         first_bulk_event: Option<DecryptWorkerEvent>,
