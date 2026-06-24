@@ -286,9 +286,8 @@ pub enum Stage {
     /// kernel drain cadence from userspace dispatch residence.
     ConnectedUdpDrainRecv = 69,
     /// Connected UDP peer-drain userspace dispatch time after packets have
-    /// left the kernel: punch filtering, fast-path admission/flush, and
-    /// fallback packet-channel handoff.
-    ConnectedUdpFastPathDispatch = 70,
+    /// left the kernel: punch filtering and packet-channel admission.
+    ConnectedUdpDrainDispatch = 70,
     /// Legacy connected UDP two-thread drain ring residence. Retained so older
     /// artifacts decode, but the current single-thread drain no longer emits it.
     ConnectedUdpDrainRingWait = 71,
@@ -373,7 +372,7 @@ impl Stage {
             Stage::DecryptDirectSessionCommitWait => "decrypt_direct_session_commit_wait",
             Stage::DecryptDirectSessionDataWait => "decrypt_direct_session_data_wait",
             Stage::ConnectedUdpDrainRecv => "connected_udp_drain_recv",
-            Stage::ConnectedUdpFastPathDispatch => "connected_udp_fast_path_dispatch",
+            Stage::ConnectedUdpDrainDispatch => "connected_udp_drain_dispatch",
             Stage::ConnectedUdpDrainRingWait => "connected_udp_drain_ring_wait",
             Stage::ConnectedUdpDrainPriorityRingWait => "connected_udp_drain_priority_ring_wait",
             Stage::ConnectedUdpDrainBulkRingWait => "connected_udp_drain_bulk_ring_wait",
@@ -453,7 +452,7 @@ fn stage_from_index(idx: usize) -> Stage {
         67 => Stage::DecryptDirectSessionCommitWait,
         68 => Stage::DecryptDirectSessionDataWait,
         69 => Stage::ConnectedUdpDrainRecv,
-        70 => Stage::ConnectedUdpFastPathDispatch,
+        70 => Stage::ConnectedUdpDrainDispatch,
         71 => Stage::ConnectedUdpDrainRingWait,
         72 => Stage::ConnectedUdpDrainPriorityRingWait,
         73 => Stage::ConnectedUdpDrainBulkRingWait,
@@ -491,8 +490,8 @@ pub enum Event {
     TransportChannelBacklogHigh = 23,
     TransportBulkDropped = 24,
     EndpointEventBulkDropped = 25,
-    ConnectedUdpDirectDecrypt = 26,
-    ConnectedUdpDirectDecryptMiss = 27,
+    ReservedRetiredEvent26 = 26,
+    ReservedRetiredEvent27 = 27,
     DecryptFallbackBacklogHigh = 28,
     RxLoopSlowMaintenanceTimeout = 29,
     RxLoopSlowMaintenanceSkipped = 30,
@@ -622,7 +621,7 @@ pub enum Event {
     FspAeadCompletionReplayDroppedTooOldLagGe4xWindow = 153,
     FspAeadCompletionReplayDroppedTooOldLagGe16xWindow = 154,
     FspAeadCompletionReplayDroppedTooOldLagGe64xWindow = 155,
-    ConnectedUdpDirectDecryptBulkShed = 156,
+    ReservedRetiredEvent156 = 156,
     DecryptFspOpenWorkerReturnedDropped = 157,
     /// Legacy pipeline name for transport UDP kernel receive drops sampled
     /// once per node tick from SO_RXQ_OVFL-backed transport counters.
@@ -803,7 +802,6 @@ impl Event {
                 | Event::FspAeadCompletionReplayDroppedTooOldLagGe4xWindow
                 | Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow
                 | Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow
-                | Event::ConnectedUdpDirectDecryptBulkShed
                 | Event::DecryptFspOpenWorkerReturnedDropped
                 | Event::ConnectedUdpKernelDropped
                 | Event::ConnectedUdpPeerKernelDropped
@@ -870,8 +868,8 @@ impl Event {
             Event::TransportChannelBacklogHigh => "transport_channel_backlog_high",
             Event::TransportBulkDropped => "transport_bulk_dropped",
             Event::EndpointEventBulkDropped => "endpoint_event_bulk_dropped",
-            Event::ConnectedUdpDirectDecrypt => "connected_udp_direct_decrypt",
-            Event::ConnectedUdpDirectDecryptMiss => "connected_udp_direct_decrypt_miss",
+            Event::ReservedRetiredEvent26 => "reserved_retired_event_26",
+            Event::ReservedRetiredEvent27 => "reserved_retired_event_27",
             Event::DecryptFallbackBacklogHigh => "decrypt_fallback_backlog_high",
             Event::RxLoopSlowMaintenanceTimeout => "rx_loop_slow_maintenance_timeout",
             Event::RxLoopSlowMaintenanceSkipped => "rx_loop_slow_maintenance_skipped",
@@ -1039,7 +1037,7 @@ impl Event {
             Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow => {
                 "fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
             }
-            Event::ConnectedUdpDirectDecryptBulkShed => "connected_udp_direct_decrypt_bulk_shed",
+            Event::ReservedRetiredEvent156 => "reserved_retired_event_156",
             Event::DecryptFspOpenWorkerReturnedDropped => {
                 "decrypt_fsp_open_worker_returned_dropped"
             }
@@ -1272,8 +1270,8 @@ fn event_from_index(idx: usize) -> Event {
         23 => Event::TransportChannelBacklogHigh,
         24 => Event::TransportBulkDropped,
         25 => Event::EndpointEventBulkDropped,
-        26 => Event::ConnectedUdpDirectDecrypt,
-        27 => Event::ConnectedUdpDirectDecryptMiss,
+        26 => Event::ReservedRetiredEvent26,
+        27 => Event::ReservedRetiredEvent27,
         28 => Event::DecryptFallbackBacklogHigh,
         29 => Event::RxLoopSlowMaintenanceTimeout,
         30 => Event::RxLoopSlowMaintenanceSkipped,
@@ -1402,7 +1400,7 @@ fn event_from_index(idx: usize) -> Event {
         153 => Event::FspAeadCompletionReplayDroppedTooOldLagGe4xWindow,
         154 => Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow,
         155 => Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow,
-        156 => Event::ConnectedUdpDirectDecryptBulkShed,
+        156 => Event::ReservedRetiredEvent156,
         157 => Event::DecryptFspOpenWorkerReturnedDropped,
         158 => Event::ConnectedUdpKernelDropped,
         159 => Event::ConnectedUdpPeerKernelDropped,

@@ -40,6 +40,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
+        event_from_index(Event::ReservedRetiredEvent26 as usize).name(),
+        "reserved_retired_event_26"
+    );
+    assert_eq!(
+        event_from_index(Event::ReservedRetiredEvent27 as usize).name(),
+        "reserved_retired_event_27"
+    );
+    assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
     );
@@ -568,8 +576,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
     );
     assert_eq!(
-        event_from_index(Event::ConnectedUdpDirectDecryptBulkShed as usize).name(),
-        "connected_udp_direct_decrypt_bulk_shed"
+        event_from_index(Event::ReservedRetiredEvent156 as usize).name(),
+        "reserved_retired_event_156"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOpenWorkerReturnedDropped as usize).name(),
@@ -1164,8 +1172,8 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         "connected_udp_drain_recv"
     );
     assert_eq!(
-        stage_from_index(Stage::ConnectedUdpFastPathDispatch as usize).name(),
-        "connected_udp_fast_path_dispatch"
+        stage_from_index(Stage::ConnectedUdpDrainDispatch as usize).name(),
+        "connected_udp_drain_dispatch"
     );
     assert_eq!(
         stage_from_index(Stage::ConnectedUdpDrainRingWait as usize).name(),

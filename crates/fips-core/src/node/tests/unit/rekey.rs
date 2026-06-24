@@ -111,7 +111,7 @@ async fn fmp_rekey_initiator_cutover_refreshes_connected_udp_fast_path() {
     assert_eq!(active_peer.current_k_bit(), !k_before);
     assert!(
         active_peer.connected_udp().is_none(),
-        "connected UDP must refresh after cutover because its fast path snapshots the old session key and K-bit"
+        "connected UDP must refresh after cutover so canonical receive uses fresh session indexes"
     );
 }
 

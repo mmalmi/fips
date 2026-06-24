@@ -137,7 +137,6 @@ fn make_test_connected_udp_pair(
         transport_id,
         peer_socket_addr,
         packet_tx,
-        None,
     )
     .expect("connected peer drain");
     (socket, drain)

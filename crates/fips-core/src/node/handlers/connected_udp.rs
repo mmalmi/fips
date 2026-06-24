@@ -17,14 +17,9 @@
 //! Once the peer's session is established, Linux/macOS install the connected
 //! socket; from that moment on the kernel routes that peer's traffic
 //! to it (most-specific 5-tuple match wins under `SO_REUSEPORT`).
-//! Matching packets for the activated current epoch go straight to the
-//! decrypt-worker batcher. Handshake, stale-index, wrong-transport, and
-//! rekey-epoch packets return untouched to `packet_tx`, so rx_loop remains
-//! the canonical owner for session lookup and pending-session promotion. The
-//! strict normal-receive A/B kept UDP loss at zero but repeatedly showed
-//! packet-channel pressure; keeping established connected packets on the
-//! worker-owned path avoids a second bulk pressure route for the same FSP
-//! state while preserving the FIPS wire protocol.
+//! The drain still feeds `packet_tx`; rx_loop remains the canonical owner for
+//! session lookup, pending-session promotion, decrypt-worker dispatch, and
+//! path/liveness bookkeeping.
 //!
 //! macOS originally defaulted to the wildcard UDP socket because early
 //! Darwin tests found liveness regressions under load. Later performance work
@@ -48,15 +43,9 @@
 use crate::NodeAddr;
 use crate::node::Node;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::node::{
-    ConnectedUdpClearResult, ConnectedUdpDecryptFastPath, ConnectedUdpInstallResult,
-};
+use crate::node::{ConnectedUdpClearResult, ConnectedUdpInstallResult};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::TransportHandle;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::transport::udp::peer_drain::ConnectedUdpPacketFastPath;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::sync::Arc;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -181,7 +170,7 @@ impl Node {
         installed_count: usize,
     ) -> Result<bool, String> {
         // Read-only pass: figure out which transport + remote addr we need.
-        let (transport_id, peer_transport_addr, decrypt_fast_path) = {
+        let (transport_id, peer_transport_addr) = {
             let Some(peer) = self.peers.get(node_addr) else {
                 return Ok(false);
             };
@@ -219,8 +208,7 @@ impl Node {
                     return Ok(false);
                 }
             }
-            let fast_path = self.connected_udp_decrypt_fast_path_for_peer(node_addr, tid);
-            (tid, addr, fast_path)
+            (tid, addr)
         };
 
         // Resolve the peer's TransportAddr → kernel SocketAddr via
@@ -287,7 +275,6 @@ impl Node {
             transport_id,
             peer_socket_addr,
             packet_tx,
-            decrypt_fast_path,
         )
         .map_err(|e| format!("PeerRecvDrain::spawn: {e}"))?;
 
@@ -332,28 +319,6 @@ impl Node {
         if self.peers.clear_connected_udp_for_peer(node_addr) == ConnectedUdpClearResult::Cleared {
             debug!(peer = %self.peer_display_name(node_addr), "connected UDP socket cleared");
         }
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn connected_udp_decrypt_fast_path_for_peer(
-        &self,
-        node_addr: &NodeAddr,
-        transport_id: crate::transport::TransportId,
-    ) -> Option<Arc<dyn ConnectedUdpPacketFastPath>> {
-        let workers = self.decrypt_workers.as_ref()?.clone();
-        let peer = self.peers.get(node_addr)?;
-        let our_index = peer.our_index()?;
-        let expected_k_bit = peer.current_k_bit();
-        let session_key =
-            crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32());
-        let worker_idx = self.sessions.worker_owner(&session_key)?;
-        Some(Arc::new(ConnectedUdpDecryptFastPath::new(
-            session_key,
-            worker_idx,
-            expected_k_bit,
-            *self.node_addr(),
-            workers,
-        )))
     }
 
     /// No-op shim for non-Linux builds so the rx_loop tick site can

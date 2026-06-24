@@ -542,10 +542,9 @@ impl Node {
                 );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
                 self.register_decrypt_worker_session(&node_addr);
-                // The connected-UDP fast path snapshots session key + K-bit
-                // at activation. Refresh it after cutover so normal traffic
-                // returns to the direct worker path instead of permanent
-                // rx_loop misses.
+                // Connected UDP demux is tied to an established tuple; refresh
+                // it after cutover so the canonical receive path sees fresh
+                // session indexes.
                 self.clear_connected_udp_for_peer(&node_addr);
             }
         }
