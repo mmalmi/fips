@@ -2434,21 +2434,6 @@ pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
 }
 
 #[inline]
-pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
-    reason: crate::noise::ReplayRejection,
-    counter_lag: u64,
-) {
-    let event = match reason {
-        crate::noise::ReplayRejection::Duplicate => Event::DecryptFspWorkerReplayDroppedDuplicate,
-        crate::noise::ReplayRejection::TooOld => Event::DecryptFspWorkerReplayDroppedTooOld,
-    };
-    record_event(event);
-    if reason == crate::noise::ReplayRejection::TooOld {
-        record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag);
-    }
-}
-
-#[inline]
 fn record_fsp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
     let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
     if counter_lag >= window.saturating_mul(2) {
@@ -2479,23 +2464,6 @@ fn record_fmp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
     }
     if counter_lag >= window.saturating_mul(64) {
         record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow);
-    }
-}
-
-#[inline]
-fn record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag: u64) {
-    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
-    if counter_lag >= window.saturating_mul(2) {
-        record_event(Event::DecryptFspWorkerReplayDroppedTooOldLagGe2xWindow);
-    }
-    if counter_lag >= window.saturating_mul(4) {
-        record_event(Event::DecryptFspWorkerReplayDroppedTooOldLagGe4xWindow);
-    }
-    if counter_lag >= window.saturating_mul(16) {
-        record_event(Event::DecryptFspWorkerReplayDroppedTooOldLagGe16xWindow);
-    }
-    if counter_lag >= window.saturating_mul(64) {
-        record_event(Event::DecryptFspWorkerReplayDroppedTooOldLagGe64xWindow);
     }
 }
 

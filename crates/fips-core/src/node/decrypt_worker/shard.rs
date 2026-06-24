@@ -1470,7 +1470,7 @@ impl DecryptWorkerShard {
         let open_result = {
             let _t_fsp =
                 crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-            state.open_established_frame(&header, ciphertext)
+            state.open_established_frame_deferred_replay(&header, ciphertext)
         };
         let job = FspDecryptJob {
             fallback,
@@ -1486,13 +1486,18 @@ impl DecryptWorkerShard {
             trace_enqueued_at: None,
         };
         let completion = match open_result {
-            Ok(FspOpenSuccess { plaintext, slot }) => FspOrderedCompletion::OpenedOwned {
+            Ok(FspOpenSuccess {
+                plaintext,
+                slot,
+                epoch_id,
+            }) => FspOrderedCompletion::OpenedOwned {
                 opened: FspOpenedOwnedJob {
                     job,
                     header,
                     plaintext,
                 },
                 slot,
+                epoch_id,
                 source: FspAeadCompletionSource::Local,
             },
             Err(FspOpenError::Replay) => {

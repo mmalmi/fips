@@ -728,6 +728,244 @@
     }
 
     #[test]
+    fn epoch_churn_fsp_open_defers_replay_and_promotion_until_owner_retire() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (_current_sender, current_receiver) = test_xk_session_pair(&source, &local);
+        let (mut pending_sender, pending_receiver) = test_xk_session_pair(&source, &local);
+
+        let warmup_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0303,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"warmup",
+        );
+        let warmup_header = crate::node::session_wire::build_fsp_header(
+            pending_sender.current_send_counter(),
+            FSP_FLAG_K,
+            warmup_plaintext.len() as u16,
+        );
+        let _ = pending_sender
+            .encrypt_with_aad(&warmup_plaintext, &warmup_header)
+            .expect("warmup FSP frame should encrypt");
+
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"pending waits for owner order",
+        );
+        let fsp_counter = pending_sender.current_send_counter();
+        let fsp_header = crate::node::session_wire::build_fsp_header(
+            fsp_counter,
+            FSP_FLAG_K,
+            inner_plaintext.len() as u16,
+        );
+        let fsp_ciphertext = pending_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .expect("pending FSP frame should encrypt");
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let header = FspEncryptedHeader::parse(&fsp_payload).expect("encrypted FSP header");
+        let ciphertext = fsp_payload[crate::node::session_wire::FSP_HEADER_SIZE..].to_vec();
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: current_receiver.recv_cipher_clone().unwrap(),
+                replay: current_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: Some(crate::node::session::FspRecvEpochSnapshot {
+                cipher: pending_receiver.recv_cipher_clone().unwrap(),
+                replay: pending_receiver.recv_replay_snapshot_owned(),
+            }),
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+        let pending_epoch_id = state
+            .pending
+            .as_ref()
+            .expect("test state should have pending epoch")
+            .epoch_id;
+        let gap_ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("owner receive window should admit gap ticket");
+        let pending_ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("owner receive window should admit pending ticket");
+
+        let opened = state
+            .open_established_frame_deferred_replay(&header, &ciphertext)
+            .expect("pending epoch should authenticate without owner mutation");
+        assert_eq!(opened.slot, EpochSlot::Pending);
+        assert_eq!(opened.epoch_id, pending_epoch_id);
+        assert_eq!(
+            state.current_k_bit, false,
+            "read-only open must not promote pending before owner retire"
+        );
+        assert!(
+            state.pending.is_some(),
+            "read-only open must leave pending epoch installed"
+        );
+        assert_eq!(
+            state
+                .pending
+                .as_ref()
+                .expect("pending epoch should still exist")
+                .replay
+                .highest(),
+            0,
+            "read-only open must not accept pending replay"
+        );
+
+        let packet_len = fsp_payload.len();
+        let job = FspDecryptJob {
+            lane: decrypt_worker_packet_lane(packet_len),
+            fallback: DecryptFallback::new(
+                previous_hop_peer,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                1_000,
+                packet_len,
+                10,
+                0,
+                fsp_payload,
+                0,
+                packet_len,
+            ),
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len: packet_len,
+            trace_enqueued_at: None,
+        };
+        let buffered = state
+            .complete_ordered_fsp_open_for_test(
+                pending_ticket,
+                FspOrderedCompletion::OpenedOwned {
+                    opened: FspOpenedOwnedJob {
+                        job,
+                        header: header.clone(),
+                        plaintext: opened.plaintext,
+                    },
+                    slot: opened.slot,
+                    epoch_id: opened.epoch_id,
+                    source: FspAeadCompletionSource::Local,
+                },
+            )
+            .expect("out-of-order pending completion should buffer");
+        assert_eq!(buffered.ready, 0);
+        assert_eq!(buffered.accepted, 0);
+        assert_eq!(state.current_k_bit, false);
+        assert!(state.pending.is_some());
+        assert_eq!(
+            state
+                .pending
+                .as_ref()
+                .expect("pending epoch should wait behind gap")
+                .replay
+                .highest(),
+            0,
+            "buffered completion must not accept replay before the gap retires"
+        );
+
+        let retired = state
+            .complete_ordered_fsp_open_for_test(
+                gap_ticket,
+                FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::Local,
+                },
+            )
+            .expect("gap completion should release buffered pending open");
+        assert_eq!(retired.ready, 2);
+        assert_eq!(retired.dropped, 1);
+        assert_eq!(retired.accepted, 1);
+        assert_eq!(retired.outputs.len(), 1);
+        match &retired.outputs[0] {
+            FspReadyCompletion::OpenedOwned {
+                slot,
+                reservation,
+                ..
+            } => {
+                assert_eq!(*slot, EpochSlot::Pending);
+                assert_eq!(reservation.order.sequence.0, pending_ticket.sequence);
+            }
+            _ => panic!("pending completion should authenticate after owner gap"),
+        }
+        assert_eq!(
+            state.current_k_bit, true,
+            "pending epoch should promote only after ordered retire"
+        );
+        assert!(state.pending.is_none());
+        assert!(state.previous.is_some());
+        assert_eq!(state.current.epoch_id, pending_epoch_id);
+        assert_eq!(state.current.replay.highest(), fsp_counter);
+
+        let duplicate_open = state
+            .open_established_frame_deferred_replay(&header, &ciphertext)
+            .expect("duplicate ciphertext still authenticates before owner replay retire");
+        let duplicate_ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("owner receive window should admit duplicate ticket");
+        let duplicate_job = FspDecryptJob {
+            lane: DecryptWorkerLane::Priority,
+            fallback: DecryptFallback::new(
+                previous_hop_peer,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                1_000,
+                header.header_bytes.len() + ciphertext.len(),
+                10,
+                0,
+                {
+                    let mut packet = header.header_bytes.to_vec();
+                    packet.extend_from_slice(&ciphertext);
+                    packet
+                },
+                0,
+                header.header_bytes.len() + ciphertext.len(),
+            ),
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len: header.header_bytes.len() + ciphertext.len(),
+            trace_enqueued_at: None,
+        };
+        let duplicate = state
+            .complete_ordered_fsp_open_for_test(
+                duplicate_ticket,
+                FspOrderedCompletion::OpenedOwned {
+                    opened: FspOpenedOwnedJob {
+                        job: duplicate_job,
+                        header,
+                        plaintext: duplicate_open.plaintext,
+                    },
+                    slot: duplicate_open.slot,
+                    epoch_id: duplicate_open.epoch_id,
+                    source: FspAeadCompletionSource::Local,
+                },
+            )
+            .expect("duplicate completion should retire in order");
+        assert_eq!(duplicate.ready, 1);
+        assert_eq!(duplicate.accepted, 0);
+        assert_eq!(duplicate.replay_drops, 1);
+        assert!(duplicate.outputs.is_empty());
+    }
+
+    #[test]
     fn fsp_session_refresh_preserves_inflight_worker_open_order() {
         let source = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());

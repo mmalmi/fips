@@ -71,6 +71,7 @@ const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
     DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FSP_CRYPTO_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_FSP_EPOCH_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FMP_CRYPTO_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -260,7 +261,10 @@ pub(crate) struct OwnedSessionState {
     source_peer: PeerIdentity,
 }
 
+type FspEpochId = u64;
+
 struct OwnedFspEpochState {
+    epoch_id: FspEpochId,
     cipher: Arc<LessSafeKey>,
     replay: ReplayWindow,
 }
@@ -362,8 +366,10 @@ impl FspOpenReservationBatch {
 struct FspOpenSuccess {
     plaintext: Vec<u8>,
     slot: EpochSlot,
+    epoch_id: FspEpochId,
 }
 
+#[derive(Debug)]
 enum FspOpenError {
     Replay,
     Aead,
@@ -374,18 +380,9 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
         Self {
             source_peer: snapshot.source_peer,
             current_k_bit: snapshot.current_k_bit,
-            current: OwnedFspEpochState {
-                cipher: Arc::new(snapshot.current.cipher),
-                replay: snapshot.current.replay,
-            },
-            pending: snapshot.pending.map(|epoch| OwnedFspEpochState {
-                cipher: Arc::new(epoch.cipher),
-                replay: epoch.replay,
-            }),
-            previous: snapshot.previous.map(|epoch| OwnedFspEpochState {
-                cipher: Arc::new(epoch.cipher),
-                replay: epoch.replay,
-            }),
+            current: OwnedFspEpochState::from(snapshot.current),
+            pending: snapshot.pending.map(OwnedFspEpochState::from),
+            previous: snapshot.previous.map(OwnedFspEpochState::from),
             fsp_crypto_generation: NEXT_FSP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order: new_fsp_receive_order(),
@@ -393,16 +390,23 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
     }
 }
 
+impl From<crate::node::session::FspRecvEpochSnapshot> for OwnedFspEpochState {
+    fn from(snapshot: crate::node::session::FspRecvEpochSnapshot) -> Self {
+        Self {
+            epoch_id: NEXT_FSP_EPOCH_ID.fetch_add(1, Ordering::Relaxed),
+            cipher: Arc::new(snapshot.cipher),
+            replay: snapshot.replay,
+        }
+    }
+}
+
 impl OwnedFspEpochState {
-    fn open(
-        &mut self,
+    fn open_deferred_replay(
+        &self,
         ciphertext: &[u8],
         counter: u64,
         aad: &[u8],
     ) -> Result<Vec<u8>, FspOpenError> {
-        if !self.replay.check(counter) {
-            return Err(FspOpenError::Replay);
-        }
         let mut plaintext = ciphertext.to_vec();
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
@@ -413,7 +417,6 @@ impl OwnedFspEpochState {
             .map_err(|_| FspOpenError::Aead)?
             .len();
         plaintext.truncate(plaintext_len);
-        self.replay.accept(counter);
         Ok(plaintext)
     }
 
@@ -430,6 +433,19 @@ impl OwnedFspEpochState {
             .open_in_place(nonce, Aad::from(aad), ciphertext)
             .map(|plaintext| plaintext.len())
             .map_err(|_| FspOpenError::Aead)
+    }
+
+    fn accept_replay(&mut self, counter: u64) -> Result<(), FspOpenError> {
+        if let Some(rejection) = self.replay.rejection_reason(counter) {
+            let counter_lag = self.replay.highest().saturating_sub(counter);
+            crate::perf_profile::record_fsp_aead_completion_replay_drop_reason(
+                rejection,
+                counter_lag,
+            );
+            return Err(FspOpenError::Replay);
+        }
+        self.replay.accept(counter);
+        Ok(())
     }
 }
 
@@ -535,8 +551,8 @@ impl OwnedFspSessionState {
         self.fsp_receive_order.issue()
     }
 
-    fn open_established_frame(
-        &mut self,
+    fn open_established_frame_deferred_replay(
+        &self,
         header: &FspEncryptedHeader,
         ciphertext: &[u8],
     ) -> Result<FspOpenSuccess, FspOpenError> {
@@ -548,57 +564,74 @@ impl OwnedFspSessionState {
             [EpochSlot::Current, EpochSlot::Pending, EpochSlot::Previous]
         };
 
-        let mut saw_replay = false;
-        let mut replay_rejection = None;
         for slot in order {
             let epoch = match slot {
-                EpochSlot::Current => Some(&mut self.current),
-                EpochSlot::Pending => self.pending.as_mut(),
-                EpochSlot::Previous => self.previous.as_mut(),
+                EpochSlot::Current => Some(&self.current),
+                EpochSlot::Pending => self.pending.as_ref(),
+                EpochSlot::Previous => self.previous.as_ref(),
             };
             let Some(epoch) = epoch else {
                 continue;
             };
-            match epoch.open(ciphertext, header.counter, &header.header_bytes) {
+            match epoch.open_deferred_replay(ciphertext, header.counter, &header.header_bytes) {
                 Ok(plaintext) => {
-                    if slot == EpochSlot::Pending {
-                        let old = std::mem::replace(
-                            &mut self.current,
-                            self.pending
-                                .take()
-                                .expect("pending epoch exists for pending slot"),
-                        );
-                        self.previous = Some(old);
-                        self.current_k_bit = !self.current_k_bit;
-                    }
-                    return Ok(FspOpenSuccess { plaintext, slot });
-                }
-                Err(FspOpenError::Replay) => {
-                    saw_replay = true;
-                    if replay_rejection.is_none()
-                        && let Some(reason) = epoch.replay.rejection_reason(header.counter)
-                    {
-                        replay_rejection = Some((
-                            reason,
-                            epoch.replay.highest().saturating_sub(header.counter),
-                        ));
-                    }
+                    return Ok(FspOpenSuccess {
+                        plaintext,
+                        slot,
+                        epoch_id: epoch.epoch_id,
+                    });
                 }
                 Err(FspOpenError::Aead) => {}
+                Err(FspOpenError::Replay) => unreachable!(
+                    "deferred FSP open does not consult replay before owner retire"
+                ),
             }
         }
 
-        if saw_replay {
-            if let Some((reason, counter_lag)) = replay_rejection {
-                crate::perf_profile::record_decrypt_fsp_worker_replay_drop_reason(
-                    reason,
-                    counter_lag,
-                );
+        Err(FspOpenError::Aead)
+    }
+
+    fn accept_opened_established_frame_for_epoch(
+        current: &mut OwnedFspEpochState,
+        pending: &mut Option<OwnedFspEpochState>,
+        previous: &mut Option<OwnedFspEpochState>,
+        current_k_bit: &mut bool,
+        header: &FspEncryptedHeader,
+        epoch_id: FspEpochId,
+    ) -> Result<EpochSlot, FspOpenError> {
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        if current.epoch_id == epoch_id {
+            if received_k_bit != *current_k_bit {
+                return Err(FspOpenError::Aead);
             }
-            Err(FspOpenError::Replay)
-        } else {
-            Err(FspOpenError::Aead)
+            current.accept_replay(header.counter)?;
+            return Ok(EpochSlot::Current);
         }
+
+        if pending.as_ref().is_some_and(|epoch| epoch.epoch_id == epoch_id) {
+            let pending_epoch = pending
+                .as_mut()
+                .expect("pending epoch exists after identity check");
+            pending_epoch.accept_replay(header.counter)?;
+            let old = std::mem::replace(
+                current,
+                pending
+                    .take()
+                    .expect("pending epoch exists after replay accept"),
+            );
+            *previous = Some(old);
+            *current_k_bit = received_k_bit;
+            return Ok(EpochSlot::Pending);
+        }
+
+        if let Some(previous_epoch) = previous.as_mut()
+            && previous_epoch.epoch_id == epoch_id
+        {
+            previous_epoch.accept_replay(header.counter)?;
+            return Ok(EpochSlot::Previous);
+        }
+
+        Err(FspOpenError::Aead)
     }
 
     fn open_current_established_frame_in_place_deferred_replay(
@@ -641,7 +674,9 @@ impl OwnedFspSessionState {
         let generation = OwnerGeneration(self.fsp_crypto_generation());
         let receive_order_id = self.fsp_receive_order_id();
         let current = &mut self.current;
-        let current_k_bit = self.current_k_bit;
+        let pending = &mut self.pending;
+        let previous = &mut self.previous;
+        let current_k_bit = &mut self.current_k_bit;
         let source_peer = self.source_peer;
         let mut drain = FspOrderedDrain::default();
         let ready_count = self
@@ -660,7 +695,7 @@ impl OwnedFspSessionState {
                     };
                     match Self::accept_opened_current_established_frame_for(
                         current,
-                        current_k_bit,
+                        *current_k_bit,
                         &opened.header,
                     ) {
                         Ok(slot) => {
@@ -689,6 +724,7 @@ impl OwnedFspSessionState {
                 FspOrderedCompletion::OpenedOwned {
                     opened,
                     slot,
+                    epoch_id,
                     source,
                 } => {
                     let reservation = OwnerReservation {
@@ -701,14 +737,37 @@ impl OwnedFspSessionState {
                         lane: opened.job.lane.into(),
                         packet_count: 1,
                     };
-                    let _ = source;
-                    drain.accepted += 1;
-                    on_output(FspReadyCompletion::OpenedOwned {
-                        reservation,
-                        opened,
-                        slot,
-                        source_peer,
-                    });
+                    match Self::accept_opened_established_frame_for_epoch(
+                        current,
+                        pending,
+                        previous,
+                        current_k_bit,
+                        &opened.header,
+                        epoch_id,
+                    ) {
+                        Ok(retired_slot) => {
+                            drain.accepted += 1;
+                            let _ = slot;
+                            on_output(FspReadyCompletion::OpenedOwned {
+                                reservation,
+                                opened,
+                                slot: retired_slot,
+                                source_peer,
+                            });
+                        }
+                        Err(FspOpenError::Replay) => {
+                            drain.replay_drops += 1;
+                            drain.replay_drop_sources.add(source);
+                            crate::perf_profile::record_event(
+                                crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
+                            );
+                        }
+                        Err(FspOpenError::Aead) => {
+                            drain.aead_failures += 1;
+                            drain.aead_failure_sources.add(source);
+                            crate::perf_profile::record_fsp_aead_completion_accept_kbit_mismatch();
+                        }
+                    }
                 }
                 FspOrderedCompletion::AeadFailed {
                     job,
@@ -730,7 +789,8 @@ impl OwnedFspSessionState {
                     let mut emit_failure = true;
                     if count_failure {
                         let stale_worker_open_epoch = source.is_worker_open()
-                            && header.flags & FSP_FLAG_K != u8::from(current_k_bit) * FSP_FLAG_K;
+                            && header.flags & FSP_FLAG_K
+                                != u8::from(*current_k_bit) * FSP_FLAG_K;
                         if stale_worker_open_epoch {
                             drain.stale_epoch_worker_open_failures += 1;
                             emit_failure = false;
@@ -848,6 +908,7 @@ enum FspOrderedCompletion {
     OpenedOwned {
         opened: FspOpenedOwnedJob,
         slot: EpochSlot,
+        epoch_id: FspEpochId,
         source: FspAeadCompletionSource,
     },
     AeadFailed {
