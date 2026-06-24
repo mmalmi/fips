@@ -719,6 +719,29 @@ impl OwnedFspSessionState {
         drain.ready = ready_count;
         Ok(drain)
     }
+
+    fn complete_fsp_aead_completion(
+        &mut self,
+        completion: FspAeadCompletion,
+        on_output: impl FnMut(FspReadyCompletion),
+    ) -> Result<FspOrderedDrain, OrderedCompletionError> {
+        let reservation = completion.owner_reservation();
+        debug_assert_eq!(reservation.owner, self.fsp_owner_key());
+        debug_assert_eq!(
+            reservation.order.receive_order_id,
+            self.fsp_receive_order_id()
+        );
+        let ticket = fsp_receive_ticket_from_reservation(reservation);
+        let source = completion.source;
+        let result = if source.is_worker_open()
+            && reservation.generation.0 != self.fsp_crypto_generation()
+        {
+            FspOrderedCompletion::StaleWorkerOpen { source }
+        } else {
+            completion.result
+        };
+        self.complete_ordered_fsp_open(ticket, result, on_output)
+    }
 }
 
 type OrderedReceiveTicket = crate::packet_mover::OwnerReceiveTicket;
@@ -1009,10 +1032,7 @@ impl FspAeadCompletion {
         self.owner_reservation().order.receive_order_id
     }
 
-    fn crypto_generation(&self) -> u64 {
-        self.owner_reservation().generation.0
-    }
-
+    #[cfg(test)]
     fn receive_ticket(&self) -> FspReceiveTicket {
         fsp_receive_ticket_from_reservation(self.owner_reservation())
     }

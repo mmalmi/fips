@@ -839,14 +839,6 @@ impl DecryptWorkerShard {
             record_fsp_aead_completion_wait(completion.source, completion.completed_at);
             let completion_source_addr = completion.source_addr();
             let completion_receive_order_id = completion.receive_order_id();
-            let crypto_generation = completion.crypto_generation();
-            let ticket = completion.receive_ticket();
-            let FspAeadCompletion {
-                crypto_ticket: _,
-                source,
-                result,
-                completed_at: _,
-            } = completion;
             if completion_source_addr != source_addr
                 || completion_receive_order_id != receive_order_id
             {
@@ -864,12 +856,7 @@ impl DecryptWorkerShard {
                 );
                 continue;
             }
-            let result = if source.is_worker_open() && crypto_generation != state.fsp_crypto_generation() {
-                FspOrderedCompletion::StaleWorkerOpen { source }
-            } else {
-                result
-            };
-            let drain = match state.complete_ordered_fsp_open(ticket, result, |completion| {
+            let drain = match state.complete_fsp_aead_completion(completion, |completion| {
                 if let Some(output) =
                     Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
                 {

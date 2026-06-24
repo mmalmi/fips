@@ -625,6 +625,8 @@
         };
 
         let mut state = OwnedFspSessionState::from(snapshot(false));
+        let receive_order_id = state.fsp_receive_order_id();
+        let old_crypto_generation = state.fsp_crypto_generation();
         let ticket = state
             .issue_fsp_receive_ticket()
             .expect("owner receive window should admit stale-K worker-open ticket");
@@ -668,17 +670,25 @@
             !refreshed.current_epoch_matches(&header),
             "completion should carry the old K-bit after worker-session refresh"
         );
-        let drain = refreshed
-            .complete_ordered_fsp_open_for_test(
+        let completion = FspAeadCompletion {
+            crypto_ticket: test_fsp_crypto_ticket_for_receive_ticket(
+                source_addr,
+                receive_order_id,
+                old_crypto_generation,
                 ticket,
-                FspOrderedCompletion::AeadFailed {
-                    job,
-                    header,
-                    source: FspAeadCompletionSource::WorkerOpen,
-                    fallback_to_rx_loop: false,
-                    count_failure: true,
-                },
-            )
+            ),
+            source: FspAeadCompletionSource::WorkerOpen,
+            result: FspOrderedCompletion::AeadFailed {
+                job,
+                header,
+                source: FspAeadCompletionSource::WorkerOpen,
+                fallback_to_rx_loop: false,
+                count_failure: true,
+            },
+            completed_at: None,
+        };
+        let drain = refreshed
+            .complete_fsp_aead_completion_for_test(completion)
             .expect("old worker-open completion should remain ordered after refresh");
 
         assert_eq!(drain.ready, 1);
