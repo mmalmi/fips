@@ -41,6 +41,12 @@
             DecryptWorkerEvent::PlaintextBatch(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
+            DecryptWorkerEvent::AuthenticatedLink(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
+            DecryptWorkerEvent::AuthenticatedLinkBatch(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
@@ -84,10 +90,13 @@
             .expect("valid worker job should be handled");
         assert!(
             matches!(
-                return_rx.priority.try_recv().expect("plaintext fallback"),
-                DecryptWorkerEvent::Plaintext(_)
+                return_rx
+                    .priority
+                    .try_recv()
+                    .expect("authenticated link return"),
+                DecryptWorkerEvent::AuthenticatedLink(_)
             ),
-            "valid packet must bounce plaintext after FMP decrypt"
+            "valid packet must return as an authenticated link after FMP decrypt"
         );
         assert_eq!(
             shard.fmp_replay_highest(session_key).unwrap(),
@@ -165,7 +174,9 @@
             DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
                 panic!("timestamp-only receive must not bounce plaintext bytes")
             }
-            DecryptWorkerEvent::AuthenticatedSession(_)
+            DecryptWorkerEvent::AuthenticatedLink(_)
+            | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
@@ -575,7 +586,7 @@
     /// packet sealed with a known cipher, ship a `DecryptJob` with
     /// non-zero flags through, observe the resulting `DecryptFallback`.
     #[test]
-    fn worker_preserves_fmp_flags_through_fallback() {
+    fn worker_preserves_fmp_flags_through_authenticated_link() {
         let key_bytes = [0u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
         // Both the sealing cipher (for building the test packet) and
@@ -638,50 +649,57 @@
 
         shard.handle_job(job).expect("worker job handled");
 
-        let event = return_rx.priority.try_recv().expect("fallback delivered");
-        let fallback = match event {
-            DecryptWorkerEvent::Plaintext(fallback) => fallback,
-            DecryptWorkerEvent::DecryptFailure(_) => panic!("expected plaintext fallback event"),
-            DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected plaintext fallback event"),
+        let event = return_rx
+            .priority
+            .try_recv()
+            .expect("authenticated link delivered");
+        let link = match event {
+            DecryptWorkerEvent::AuthenticatedLink(link) => link,
+            DecryptWorkerEvent::Plaintext(_) => panic!("expected authenticated link event"),
+            DecryptWorkerEvent::DecryptFailure(_) => panic!("expected authenticated link event"),
+            DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected authenticated link event"),
+            DecryptWorkerEvent::AuthenticatedLinkBatch(_) => {
+                panic!("expected authenticated link event")
+            }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
-                panic!("expected plaintext fallback event")
+                panic!("expected authenticated link event")
             }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
-                panic!("expected plaintext fallback event")
+                panic!("expected authenticated link event")
             }
             DecryptWorkerEvent::AuthenticatedSessionBatch(_) => {
-                panic!("expected plaintext fallback event")
+                panic!("expected authenticated link event")
             }
             DecryptWorkerEvent::DirectSessionCommit(_) => {
-                panic!("expected plaintext fallback event")
+                panic!("expected authenticated link event")
             }
             DecryptWorkerEvent::DirectSessionCommitBatch(_) => {
-                panic!("expected plaintext fallback event")
+                panic!("expected authenticated link event")
             }
             DecryptWorkerEvent::DirectSessionData(_) => {
-                panic!("expected plaintext fallback event")
+                panic!("expected authenticated link event")
             }
             DecryptWorkerEvent::DirectSessionDataBatch(_) => {
-                panic!("expected plaintext fallback event")
+                panic!("expected authenticated link event")
             }
             DecryptWorkerEvent::FspDecryptFailure(_) => {
-                panic!("expected plaintext fallback event")
+                panic!("expected authenticated link event")
             }
         };
         assert_eq!(
-            fallback.source_peer, source_peer,
-            "plaintext fallback must carry the worker-registered source peer"
+            link.source_peer, source_peer,
+            "authenticated link must carry the worker-registered source peer"
         );
         assert_eq!(
-            fallback.fmp_flags, flags_byte,
-            "fmp_flags must round-trip from DecryptJob to DecryptFallback"
+            link.fmp_flags, flags_byte,
+            "fmp_flags must round-trip from DecryptJob to DecryptAuthenticatedLink"
         );
         assert!(
-            fallback.fmp_flags & crate::node::wire::FLAG_CE != 0,
+            link.fmp_flags & crate::node::wire::FLAG_CE != 0,
             "FLAG_CE bit lost on worker path"
         );
         assert!(
-            fallback.fmp_flags & crate::node::wire::FLAG_SP != 0,
+            link.fmp_flags & crate::node::wire::FLAG_SP != 0,
             "FLAG_SP bit lost on worker path"
         );
     }
@@ -736,6 +754,12 @@
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("expected decrypt failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected decrypt failure report"),
+            DecryptWorkerEvent::AuthenticatedLink(_) => {
+                panic!("expected decrypt failure report")
+            }
+            DecryptWorkerEvent::AuthenticatedLinkBatch(_) => {
+                panic!("expected decrypt failure report")
+            }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("expected decrypt failure report")
             }

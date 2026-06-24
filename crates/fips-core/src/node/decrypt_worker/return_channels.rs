@@ -161,6 +161,8 @@ impl DecryptWorkerReturnReceivers {
 
 fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
     match event {
+        DecryptWorkerEvent::AuthenticatedLink(link) => link.lane(),
+        DecryptWorkerEvent::AuthenticatedLinkBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => receive.lane,
         DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
         DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
@@ -185,7 +187,9 @@ fn decrypt_worker_event_return_bulk_lane(
     event: &DecryptWorkerEvent,
 ) -> DecryptWorkerReturnBulkLane {
     match event {
-        DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+        DecryptWorkerEvent::AuthenticatedLink(_)
+        | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
+        | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
         | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
@@ -206,7 +210,9 @@ fn decrypt_worker_event_drop_event(
     lane: DecryptWorkerLane,
 ) -> crate::perf_profile::Event {
     match event {
-        DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+        DecryptWorkerEvent::AuthenticatedLink(_)
+        | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
+        | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
         | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)

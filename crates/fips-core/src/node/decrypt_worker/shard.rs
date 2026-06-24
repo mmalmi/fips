@@ -1641,7 +1641,8 @@ impl DecryptWorkerShard {
         // traffic, but they are still session data. Classify them as bulk after
         // FMP decrypt so they cannot flood the priority lane during LAN TCP
         // transfers. Handshakes, coordinate-carrying refreshes, heartbeats,
-        // and other link control messages continue through the fallback path.
+        // and other link control messages continue through authenticated link
+        // dispatch.
         let fsp_meta = local_established_fsp_datagram_meta(
             &packet_data,
             local_node_addr,
@@ -1681,7 +1682,9 @@ impl DecryptWorkerShard {
             return Some(DecryptWorkerJobAction::FspJob(fsp_job));
         }
 
-        let event = DecryptWorkerEvent::Plaintext(fallback);
+        let event = DecryptWorkerEvent::AuthenticatedLink(
+            DecryptAuthenticatedLink::from_opened_fmp(fallback),
+        );
         Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
             event,
             direct_delivery: None,

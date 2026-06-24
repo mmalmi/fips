@@ -57,6 +57,8 @@
             }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::AuthenticatedLink(_)
+            | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
@@ -618,6 +620,12 @@
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("invalid bulk job should fail AEAD"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("invalid bulk job should fail AEAD"),
+            DecryptWorkerEvent::AuthenticatedLink(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
+            DecryptWorkerEvent::AuthenticatedLinkBatch(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }

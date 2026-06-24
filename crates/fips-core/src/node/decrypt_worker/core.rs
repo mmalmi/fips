@@ -2040,6 +2040,61 @@ impl DecryptFallback {
     }
 }
 
+/// Result of a successful FMP decrypt + replay accept whose link-layer message
+/// still needs rx-loop dispatch. This is a typed authenticated output, not a
+/// decrypt fallback: worker ownership already accepted the FMP counter/order.
+pub(crate) struct DecryptAuthenticatedLink {
+    pub source_peer: PeerIdentity,
+    pub transport_id: TransportId,
+    pub remote_addr: TransportAddr,
+    pub timestamp_ms: u64,
+    pub packet_len: usize,
+    lane: DecryptWorkerLane,
+    pub fmp_counter: u64,
+    pub fmp_flags: u8,
+    pub packet_data: PacketBuffer,
+    pub fmp_plaintext_offset: usize,
+    pub fmp_plaintext_len: usize,
+    pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+impl DecryptAuthenticatedLink {
+    fn from_opened_fmp(fallback: DecryptFallback) -> Self {
+        let DecryptFallback {
+            source_peer,
+            transport_id,
+            remote_addr,
+            timestamp_ms,
+            packet_len,
+            lane,
+            fmp_counter,
+            fmp_flags,
+            packet_data,
+            fmp_plaintext_offset,
+            fmp_plaintext_len,
+            trace_enqueued_at,
+        } = fallback;
+        Self {
+            source_peer,
+            transport_id,
+            remote_addr,
+            timestamp_ms,
+            packet_len,
+            lane,
+            fmp_counter,
+            fmp_flags,
+            packet_data,
+            fmp_plaintext_offset,
+            fmp_plaintext_len,
+            trace_enqueued_at,
+        }
+    }
+
+    fn lane(&self) -> DecryptWorkerLane {
+        self.lane
+    }
+}
+
 /// Report from the decrypt worker when a registered FMP session fails
 /// AEAD authentication. Routed back to rx_loop so peer/session recovery
 /// decisions stay in one place instead of being silently dropped inside
@@ -2321,6 +2376,8 @@ pub(crate) struct DecryptFspFailureReport {
 pub(crate) enum DecryptWorkerEvent {
     Plaintext(DecryptFallback),
     PlaintextBatch(Vec<DecryptFallback>),
+    AuthenticatedLink(DecryptAuthenticatedLink),
+    AuthenticatedLinkBatch(Vec<DecryptAuthenticatedLink>),
     AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive),
     AuthenticatedSession(DecryptAuthenticatedSession),
     AuthenticatedSessionBatch(Vec<DecryptAuthenticatedSession>),
@@ -2341,6 +2398,8 @@ impl DecryptWorkerEvent {
     pub(crate) fn packet_count(&self) -> usize {
         match self {
             Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
+            Self::AuthenticatedLink(_) => 1,
+            Self::AuthenticatedLinkBatch(links) => links.len(),
             Self::AuthenticatedFmpReceive(_) => 1,
             Self::AuthenticatedSession(_) => 1,
             Self::AuthenticatedSessionBatch(sessions) => sessions.len(),
@@ -2359,6 +2418,12 @@ impl DecryptWorkerEvent {
             Self::PlaintextBatch(fallbacks) => {
                 for fallback in fallbacks {
                     fallback.trace_enqueued_at = queued_at;
+                }
+            }
+            Self::AuthenticatedLink(link) => link.trace_enqueued_at = queued_at,
+            Self::AuthenticatedLinkBatch(links) => {
+                for link in links {
+                    link.trace_enqueued_at = queued_at;
                 }
             }
             Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at = queued_at,
@@ -2391,6 +2456,10 @@ impl DecryptWorkerEvent {
             Self::PlaintextBatch(fallbacks) => fallbacks
                 .first()
                 .and_then(|fallback| fallback.trace_enqueued_at),
+            Self::AuthenticatedLink(link) => link.trace_enqueued_at,
+            Self::AuthenticatedLinkBatch(links) => {
+                links.first().and_then(|link| link.trace_enqueued_at)
+            }
             Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at,
             Self::AuthenticatedSession(session) => session.trace_enqueued_at,
             Self::AuthenticatedSessionBatch(sessions) => sessions
@@ -2417,7 +2486,9 @@ impl DecryptWorkerEvent {
         crate::perf_profile::Stage,
     ) {
         match self {
-            Self::AuthenticatedFmpReceive(_) => (
+            Self::AuthenticatedLink(_)
+            | Self::AuthenticatedLinkBatch(_)
+            | Self::AuthenticatedFmpReceive(_) => (
                 crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait,

@@ -688,6 +688,14 @@ impl DecryptWorkerOutput {
         )
     }
 
+    fn is_batchable_authenticated_link(&self) -> bool {
+        matches!(
+            (&self.event, &self.direct_delivery),
+            (DecryptWorkerEvent::AuthenticatedLink(link), None)
+                if matches!(link.lane(), DecryptWorkerLane::Bulk)
+        )
+    }
+
     fn is_batchable_authenticated_session(&self) -> bool {
         matches!(
             (&self.event, &self.direct_delivery),

@@ -550,15 +550,15 @@
             fmp_plaintext_offset: 0,
             fmp_plaintext_len: packet_data.len(),
         })
-        .expect("coordinate FSP plaintext should return to rx_loop");
+        .expect("coordinate FSP link packet should return to rx_loop");
 
         match action {
             DecryptWorkerJobAction::Output(output) => match output.event {
-                DecryptWorkerEvent::Plaintext(fallback) => {
-                    assert_eq!(&fallback.packet_data[..], packet_data.as_slice());
+                DecryptWorkerEvent::AuthenticatedLink(link) => {
+                    assert_eq!(&link.packet_data[..], packet_data.as_slice());
                 }
                 other => panic!(
-                    "coordinate FSP should return as plaintext, got {:?}",
+                    "coordinate FSP should return as authenticated link, got {:?}",
                     other.packet_count()
                 ),
             },
@@ -2682,6 +2682,8 @@
             }
             DecryptWorkerEvent::PlaintextBatch(_)
             | DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::AuthenticatedLink(_)
+            | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
@@ -2804,6 +2806,8 @@
             }
             DecryptWorkerEvent::PlaintextBatch(_)
             | DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::AuthenticatedLink(_)
+            | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
@@ -2901,7 +2905,9 @@
             DecryptWorkerEvent::FspDecryptFailure(_) => {
                 panic!("malformed FSP without an encrypted header has no FSP counter to report")
             }
-            DecryptWorkerEvent::AuthenticatedSession(_)
+            DecryptWorkerEvent::AuthenticatedLink(_)
+            | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)

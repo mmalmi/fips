@@ -4,8 +4,8 @@ use crate::control::queries;
 use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
 use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::{
-    DecryptFailureReport, DecryptFallback, DecryptJobBatcher, DecryptWorkerEvent,
-    DecryptWorkerReturnReceivers,
+    DecryptAuthenticatedLink, DecryptFailureReport, DecryptFallback, DecryptJobBatcher,
+    DecryptWorkerEvent, DecryptWorkerReturnReceivers,
 };
 use crate::node::handlers::encrypted::EncryptedFrameFastPath;
 use crate::node::wire::{
@@ -800,6 +800,14 @@ impl Node {
                     self.process_decrypt_plaintext_return(fallback).await;
                 }
             }
+            DecryptWorkerEvent::AuthenticatedLink(link) => {
+                self.process_decrypt_authenticated_link(link).await;
+            }
+            DecryptWorkerEvent::AuthenticatedLinkBatch(links) => {
+                for link in links {
+                    self.process_decrypt_authenticated_link(link).await;
+                }
+            }
             DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => {
                 self.process_authenticated_fmp_receive_from_worker(receive);
             }
@@ -845,6 +853,22 @@ impl Node {
             fallback.packet_len,
             fallback.fmp_counter,
             fallback.fmp_flags,
+            plaintext,
+        ))
+        .await;
+    }
+
+    async fn process_decrypt_authenticated_link(&mut self, link: DecryptAuthenticatedLink) {
+        let plaintext = &link.packet_data
+            [link.fmp_plaintext_offset..link.fmp_plaintext_offset + link.fmp_plaintext_len];
+        self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+            link.source_peer,
+            link.transport_id,
+            &link.remote_addr,
+            link.timestamp_ms,
+            link.packet_len,
+            link.fmp_counter,
+            link.fmp_flags,
             plaintext,
         ))
         .await;

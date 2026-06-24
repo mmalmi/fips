@@ -3,6 +3,7 @@ use crate::packet_mover::{CommitBeforeOutputBatch, CommitBeforeOutputItems};
 struct DecryptWorkerReturnBatch {
     return_tx: DecryptWorkerReturnSender,
     fallbacks: Vec<DecryptFallback>,
+    authenticated_links: Vec<DecryptAuthenticatedLink>,
     authenticated_sessions: Vec<DecryptAuthenticatedSession>,
     endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
     endpoint_outputs: CommitBeforeOutputBatch<DecryptDirectSessionCommit, EndpointDataDelivery>,
@@ -15,6 +16,7 @@ impl DecryptWorkerReturnBatch {
         Self {
             return_tx,
             fallbacks: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            authenticated_links: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             authenticated_sessions: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             endpoint_sink: None,
             endpoint_outputs: CommitBeforeOutputBatch::new(
@@ -48,6 +50,7 @@ impl DecryptWorkerReturnBatch {
 
     fn push_output(&mut self, output: DecryptWorkerOutput) {
         if output.is_batchable_bulk_plaintext() {
+            self.flush_authenticated_links();
             self.flush_authenticated_sessions();
             self.flush_endpoint();
             self.flush_direct();
@@ -67,8 +70,30 @@ impl DecryptWorkerReturnBatch {
             return;
         }
 
+        if output.is_batchable_authenticated_link() {
+            self.flush_plaintext();
+            self.flush_authenticated_sessions();
+            self.flush_endpoint();
+            self.flush_direct();
+            self.flush_direct_data();
+            let DecryptWorkerOutput {
+                event,
+                direct_delivery,
+            } = output;
+            debug_assert!(direct_delivery.is_none());
+            let DecryptWorkerEvent::AuthenticatedLink(link) = event else {
+                unreachable!("checked batchable authenticated link output")
+            };
+            self.authenticated_links.push(link);
+            if self.authenticated_links.len() >= self.batch_max() {
+                self.flush_authenticated_links();
+            }
+            return;
+        }
+
         if output.is_batchable_authenticated_session() {
             self.flush_plaintext();
+            self.flush_authenticated_links();
             self.flush_endpoint();
             self.flush_direct();
             self.flush_direct_data();
@@ -89,6 +114,7 @@ impl DecryptWorkerReturnBatch {
 
         if output.is_batchable_direct_endpoint() {
             self.flush_plaintext();
+            self.flush_authenticated_links();
             self.flush_authenticated_sessions();
             self.flush_direct();
             self.flush_direct_data();
@@ -128,6 +154,7 @@ impl DecryptWorkerReturnBatch {
 
         if output.is_batchable_direct_ipv6() {
             self.flush_plaintext();
+            self.flush_authenticated_links();
             self.flush_authenticated_sessions();
             self.flush_endpoint();
             self.flush_direct_data();
@@ -151,6 +178,7 @@ impl DecryptWorkerReturnBatch {
 
         if output.is_batchable_direct_data() {
             self.flush_plaintext();
+            self.flush_authenticated_links();
             self.flush_authenticated_sessions();
             self.flush_endpoint();
             self.flush_direct();
@@ -175,6 +203,7 @@ impl DecryptWorkerReturnBatch {
 
     fn flush(&mut self) {
         self.flush_plaintext();
+        self.flush_authenticated_links();
         self.flush_authenticated_sessions();
         self.flush_endpoint();
         self.flush_direct();
@@ -217,6 +246,28 @@ impl DecryptWorkerReturnBatch {
                 Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             );
             DecryptWorkerEvent::AuthenticatedSessionBatch(sessions)
+        };
+        let _ = self.return_tx.send(event);
+    }
+
+    fn flush_authenticated_links(&mut self) {
+        if self.authenticated_links.is_empty() {
+            return;
+        }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
+        let event = if self.authenticated_links.len() == 1 {
+            DecryptWorkerEvent::AuthenticatedLink(
+                self.authenticated_links
+                    .pop()
+                    .expect("checked single authenticated link"),
+            )
+        } else {
+            let links = std::mem::replace(
+                &mut self.authenticated_links,
+                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            );
+            DecryptWorkerEvent::AuthenticatedLinkBatch(links)
         };
         let _ = self.return_tx.send(event);
     }

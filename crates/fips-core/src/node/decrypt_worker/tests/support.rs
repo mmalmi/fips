@@ -1771,6 +1771,24 @@
         ))
     }
 
+    fn dummy_authenticated_link_event(packet_len: usize) -> DecryptWorkerEvent {
+        let fallback = DecryptFallback::new(
+            test_source_peer(),
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            1_000,
+            packet_len,
+            1,
+            0,
+            vec![0; packet_len.max(1)],
+            0,
+            1,
+        );
+        DecryptWorkerEvent::AuthenticatedLink(DecryptAuthenticatedLink::from_opened_fmp(
+            fallback,
+        ))
+    }
+
     fn dummy_return_batch_event(count: usize, packet_len: usize) -> DecryptWorkerEvent {
         DecryptWorkerEvent::PlaintextBatch(
             (0..count)
@@ -1844,11 +1862,14 @@
         return_batch.flush();
 
         assert_eq!(processed, 2);
-        let event = return_rx.bulk.try_recv().expect("bulk plaintext batch");
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("bulk authenticated link batch");
         match &event {
-            DecryptWorkerEvent::PlaintextBatch(fallbacks) => assert_eq!(fallbacks.len(), 2),
+            DecryptWorkerEvent::AuthenticatedLinkBatch(links) => assert_eq!(links.len(), 2),
             other => panic!(
-                "bulk FMP batch should coalesce plaintext output, got {} packet(s)",
+                "bulk FMP batch should coalesce authenticated link output, got {} packet(s)",
                 other.packet_count()
             ),
         }

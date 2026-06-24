@@ -412,6 +412,32 @@
     }
 
     #[test]
+    fn authenticated_link_uses_authenticated_bulk_lane() {
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
+        let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+
+        assert!(return_tx.send(dummy_authenticated_link_event(bulk_len)));
+        assert_eq!(
+            return_rx.authenticated_bulk_queued_packets(),
+            1,
+            "opened-FMP link dispatch should reserve authenticated bulk capacity"
+        );
+        assert_eq!(
+            return_rx.bulk_queued_packets(),
+            0,
+            "opened-FMP link dispatch must not use plaintext fallback capacity"
+        );
+
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("authenticated link should use authenticated bulk lane");
+        assert!(matches!(event, DecryptWorkerEvent::AuthenticatedLink(_)));
+        return_rx.release_dequeued_event(&event);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
+    }
+
+    #[test]
     fn decrypt_worker_event_wait_metrics_split_authenticated_sessions_from_fallbacks() {
         let plaintext = dummy_plaintext_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
         assert_eq!(
@@ -423,6 +449,12 @@
         assert_eq!(
             failure.queue_wait_stages().1,
             crate::perf_profile::Stage::DecryptFallbackPriorityWait
+        );
+
+        let link = dummy_authenticated_link_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+        assert_eq!(
+            link.queue_wait_stages().0,
+            crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait
         );
 
         let authenticated = dummy_authenticated_session_event(DecryptWorkerLane::Bulk);
@@ -458,6 +490,8 @@
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("expected failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::AuthenticatedLink(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::AuthenticatedLinkBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedSession(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedSessionBatch(_) => panic!("expected failure report"),
@@ -810,7 +844,7 @@
     }
 
     #[test]
-    fn decrypt_worker_bulk_batch_emits_one_plaintext_return_batch() {
+    fn decrypt_worker_bulk_batch_emits_one_authenticated_link_batch() {
         let session_key = test_session_key(1, 106);
         let source_peer = test_source_peer();
         let cipher = test_chacha_key([0x42; 32]);
@@ -856,32 +890,37 @@
             &mut batch_stats,
         );
         assert!(
-            return_rx.bulk.try_recv().is_err(),
+            return_rx.authenticated_bulk.try_recv().is_err(),
             "shared output batch should wait for an explicit flush"
         );
         return_batch.flush();
 
         assert_eq!(processed, 2);
         assert_eq!(
-            return_rx.bulk_queued_packets(),
+            return_rx.authenticated_bulk_queued_packets(),
             2,
-            "one plaintext return batch should still reserve two bulk packet slots"
+            "one authenticated link batch should reserve two authenticated bulk packet slots"
         );
-        let event = return_rx.bulk.try_recv().expect("bulk return batch");
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("bulk authenticated link batch");
         return_rx.release_dequeued_event(&event);
-        assert_eq!(return_rx.bulk_queued_packets(), 0);
+        assert_eq!(return_rx.authenticated_bulk_queued_packets(), 0);
         match event {
-            DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
-                assert_eq!(fallbacks.len(), 2);
-                assert_eq!(fallbacks[0].source_peer, source_peer);
-                assert_eq!(fallbacks[1].source_peer, source_peer);
-                assert_eq!(fallbacks[0].fmp_counter, 1);
-                assert_eq!(fallbacks[1].fmp_counter, 2);
-                assert!(fallbacks.iter().all(|fallback| {
-                    fallback.packet_len > DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
+            DecryptWorkerEvent::AuthenticatedLinkBatch(links) => {
+                assert_eq!(links.len(), 2);
+                assert_eq!(links[0].source_peer, source_peer);
+                assert_eq!(links[1].source_peer, source_peer);
+                assert_eq!(links[0].fmp_counter, 1);
+                assert_eq!(links[1].fmp_counter, 2);
+                assert!(links.iter().all(|link| {
+                    link.packet_len > DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
                 }));
             }
             DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::AuthenticatedLink(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
@@ -891,7 +930,7 @@
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
-                panic!("expected plaintext return batch")
+                panic!("expected authenticated link batch")
             }
         }
     }
@@ -1100,6 +1139,8 @@
             }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::AuthenticatedLink(_)
+            | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
@@ -1207,6 +1248,8 @@
             }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::AuthenticatedLink(_)
+            | DecryptWorkerEvent::AuthenticatedLinkBatch(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
