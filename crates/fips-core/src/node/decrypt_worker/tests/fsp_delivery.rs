@@ -1092,7 +1092,6 @@
                 job,
                 header,
                 source: FspAeadCompletionSource::WorkerOpen,
-                fallback_to_rx_loop: false,
                 count_failure: true,
             },
             completed_at: None,
@@ -1112,7 +1111,6 @@
             drain.aead_failure_sources,
             FspAeadFailureSources::default()
         );
-        assert_eq!(drain.rx_loop_fallbacks, 0);
         assert!(
             drain.outputs.is_empty(),
             "stale worker-open completion must not emit authenticated output"
@@ -1207,7 +1205,6 @@
                     job,
                     header,
                     source: FspAeadCompletionSource::WorkerOpen,
-                    fallback_to_rx_loop: false,
                     count_failure: true,
                 },
                 completed_at: None,
@@ -1495,7 +1492,6 @@
             .expect("protected failed worker-open completion should fit receive order");
         assert_eq!(protected_drain.ready, 1);
         assert_eq!(protected_drain.aead_failures, 1);
-        assert_eq!(protected_drain.rx_loop_fallbacks, 0);
         assert_eq!(
             protected_drain.aead_failure_sources,
             FspAeadFailureSources {
@@ -1505,12 +1501,7 @@
         );
         assert_eq!(protected_drain.outputs.len(), 1);
         match &protected_drain.outputs[0] {
-            FspReadyCompletion::AeadFailed {
-                fallback_to_rx_loop,
-                ..
-            } => {
-                assert!(!*fallback_to_rx_loop);
-            }
+            FspReadyCompletion::AeadFailed { .. } => {}
             FspReadyCompletion::Opened { .. } => {
                 panic!("corrupted protected worker-open frame must not open")
             }
@@ -1582,7 +1573,6 @@
         assert_eq!(first_drain.ready, 2);
         assert_eq!(first_drain.accepted, 1);
         assert_eq!(first_drain.aead_failures, 1);
-        assert_eq!(first_drain.rx_loop_fallbacks, 0);
         assert_eq!(
             first_drain.aead_failure_sources,
             FspAeadFailureSources {
@@ -1594,13 +1584,9 @@
         match (&first_drain.outputs[0], &first_drain.outputs[1]) {
             (
                 FspReadyCompletion::Opened { opened, .. },
-                FspReadyCompletion::AeadFailed {
-                    fallback_to_rx_loop,
-                    ..
-                },
+                FspReadyCompletion::AeadFailed { .. },
             ) => {
                 assert_eq!(opened.plaintext_len, first_plaintext_len);
-                assert!(!*fallback_to_rx_loop);
             }
             _ => panic!("first packet should open, second packet should fail in owner order"),
         }
@@ -1611,7 +1597,7 @@
     }
 
     #[test]
-    fn fsp_recoverable_local_aead_miss_falls_back_without_hard_failure_count() {
+    fn local_multi_epoch_fsp_aead_miss_reports_owner_failure() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
@@ -1674,29 +1660,28 @@
                     job,
                     header,
                     source: FspAeadCompletionSource::Local,
-                    fallback_to_rx_loop: true,
-                    count_failure: false,
+                    count_failure: true,
                 },
             )
-            .expect("recoverable local AEAD miss should complete its ordered slot");
+            .expect("local AEAD miss should complete its ordered slot");
 
         assert_eq!(drain.ready, 1);
         assert_eq!(drain.accepted, 0);
-        assert_eq!(drain.aead_failures, 0);
-        assert_eq!(drain.rx_loop_fallbacks, 1);
+        assert_eq!(drain.aead_failures, 1);
         assert_eq!(
             drain.aead_failure_sources,
-            FspAeadFailureSources::default()
+            FspAeadFailureSources {
+                local: 1,
+                ..Default::default()
+            }
         );
         assert_eq!(drain.outputs.len(), 1);
         match &drain.outputs[0] {
             FspReadyCompletion::AeadFailed {
                 header: reported,
-                fallback_to_rx_loop,
                 ..
             } => {
                 assert_eq!(reported.counter, 1);
-                assert!(*fallback_to_rx_loop);
             }
             FspReadyCompletion::Opened { .. } => {
                 panic!("recoverable AEAD miss must not authenticate an FSP frame")
@@ -2711,7 +2696,7 @@
     }
 
     #[test]
-    fn worker_falls_back_to_rx_loop_on_multi_epoch_fsp_aead_failure() {
+    fn worker_reports_owner_failure_on_multi_epoch_fsp_aead_failure() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
         let previous_hop = crate::Identity::generate();
@@ -2757,6 +2742,7 @@
         let fmp_counter = 78;
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
+        let wire_len = wire.len();
         let session_key = test_session_key(1, 10);
         let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
         let mut job = DecryptJob::new(
@@ -2803,19 +2789,21 @@
 
         shard.handle_job(job).expect("worker job should not fail");
         let event = return_rx
-            .priority
+            .bulk
             .try_recv()
-            .expect("multi-epoch FSP AEAD failure should fall back to rx_loop");
+            .expect("multi-epoch FSP AEAD failure should report owner failure");
         match event {
-            DecryptWorkerEvent::Plaintext(fallback) => {
-                assert_eq!(fallback.source_peer, previous_hop_peer);
-                assert_eq!(fallback.fmp_counter, fmp_counter);
-                assert_eq!(fallback.fmp_flags, 0);
-                assert_eq!(fallback.timestamp_ms, 1_000);
-                assert_eq!(fallback.packet_len, fallback.packet_data.len());
+            DecryptWorkerEvent::FspDecryptFailure(report) => {
+                assert_eq!(report.fmp.source_peer, previous_hop_peer);
+                assert_eq!(report.fmp.fmp_counter, fmp_counter);
+                assert_eq!(report.fmp.fmp_flags, 0);
+                assert_eq!(report.fmp.packet_timestamp_ms, 1_000);
+                assert_eq!(report.fmp.packet_len, wire_len);
+                assert_eq!(report.source_addr, *source.node_addr());
+                assert_eq!(report.counter, fsp_counter);
             }
             DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
@@ -2824,7 +2812,7 @@
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
-                panic!("expected plaintext fallback")
+                panic!("expected FSP decrypt failure")
             }
         }
     }

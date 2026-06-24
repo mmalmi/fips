@@ -986,7 +986,6 @@ impl DecryptWorkerShard {
                 reservation,
                 job,
                 header,
-                fallback_to_rx_loop,
             } => {
                 debug_assert_eq!(
                     reservation.owner,
@@ -994,11 +993,7 @@ impl DecryptWorkerShard {
                         source_addr: job.source_addr
                     }
                 );
-                Some(Self::output_for_fsp_aead_failure(
-                    job,
-                    &header,
-                    fallback_to_rx_loop,
-                ))
+                Some(Self::output_for_fsp_aead_failure(job, &header))
             }
         }
     }
@@ -1006,7 +1001,6 @@ impl DecryptWorkerShard {
     fn output_for_fsp_aead_failure(
         job: FspDecryptJob,
         header: &FspEncryptedHeader,
-        fallback_to_rx_loop: bool,
     ) -> DecryptWorkerOutput {
         let FspDecryptJob {
             fallback,
@@ -1022,31 +1016,25 @@ impl DecryptWorkerShard {
             trace_enqueued_at: _,
         } = job;
         crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathFallback);
-        if !fallback_to_rx_loop {
-            let fmp = DecryptFmpBookkeeping {
-                source_peer: fallback.source_peer,
-                transport_id: fallback.transport_id,
-                remote_addr: fallback.remote_addr,
-                packet_timestamp_ms: fallback.timestamp_ms,
-                packet_len: fallback.packet_len,
-                fmp_counter: fallback.fmp_counter,
-                inner_timestamp_ms,
-                fmp_flags: fallback.fmp_flags,
-            };
-            return DecryptWorkerOutput {
-                event: DecryptWorkerEvent::FspDecryptFailure(DecryptFspFailureReport {
-                    fmp,
-                    source_addr,
-                    counter: header.counter,
-                    received_k_bit: header.flags & FSP_FLAG_K != 0,
-                    lane,
-                    trace_enqueued_at: None,
-                }),
-                direct_delivery: None,
-            };
-        }
+        let fmp = DecryptFmpBookkeeping {
+            source_peer: fallback.source_peer,
+            transport_id: fallback.transport_id,
+            remote_addr: fallback.remote_addr,
+            packet_timestamp_ms: fallback.timestamp_ms,
+            packet_len: fallback.packet_len,
+            fmp_counter: fallback.fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags: fallback.fmp_flags,
+        };
         DecryptWorkerOutput {
-            event: DecryptWorkerEvent::Plaintext(fallback),
+            event: DecryptWorkerEvent::FspDecryptFailure(DecryptFspFailureReport {
+                fmp,
+                source_addr,
+                counter: header.counter,
+                received_k_bit: header.flags & FSP_FLAG_K != 0,
+                lane,
+                trace_enqueued_at: None,
+            }),
             direct_delivery: None,
         }
     }
@@ -1392,7 +1380,6 @@ impl DecryptWorkerShard {
                 job,
                 header,
                 source: FspAeadCompletionSource::Local,
-                fallback_to_rx_loop: false,
                 count_failure: true,
             },
             LocalFspOpen::MultiEpoch(Ok(FspOpenSuccess {
@@ -1421,8 +1408,7 @@ impl DecryptWorkerShard {
                 job,
                 header,
                 source: FspAeadCompletionSource::Local,
-                fallback_to_rx_loop: true,
-                count_failure: false,
+                count_failure: true,
             },
             LocalFspOpen::EpochMismatch => FspOrderedCompletion::EpochMismatch {
                 job,

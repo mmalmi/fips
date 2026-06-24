@@ -756,7 +756,6 @@ impl OwnedFspSessionState {
                     job,
                     header,
                     source,
-                    fallback_to_rx_loop,
                     count_failure,
                 } => {
                     let reservation = OwnerReservation {
@@ -781,15 +780,12 @@ impl OwnedFspSessionState {
                             drain.aead_failures += 1;
                             drain.aead_failure_sources.add(source);
                         }
-                    } else if fallback_to_rx_loop {
-                        drain.rx_loop_fallbacks += 1;
                     }
                     if emit_failure {
                         on_output(FspReadyCompletion::AeadFailed {
                             reservation,
                             job,
                             header,
-                            fallback_to_rx_loop,
                         });
                     }
                 }
@@ -814,7 +810,6 @@ impl OwnedFspSessionState {
                         reservation,
                         job,
                         header,
-                        fallback_to_rx_loop: true,
                     });
                 }
                 FspOrderedCompletion::Dropped { source } => {
@@ -899,7 +894,6 @@ enum FspOrderedCompletion {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
         source: FspAeadCompletionSource,
-        fallback_to_rx_loop: bool,
         count_failure: bool,
     },
     EpochMismatch {
@@ -932,7 +926,6 @@ enum FspReadyCompletion {
         reservation: OwnerReservation,
         job: FspDecryptJob,
         header: FspEncryptedHeader,
-        fallback_to_rx_loop: bool,
     },
 }
 
@@ -945,7 +938,6 @@ struct FspOrderedDrain {
     stale_epoch_worker_open_failures: usize,
     replay_drops: usize,
     dropped: usize,
-    rx_loop_fallbacks: usize,
     aead_failure_sources: FspAeadFailureSources,
     replay_drop_sources: FspReplayDropSources,
 }
@@ -959,7 +951,6 @@ impl FspOrderedDrain {
         self.stale_epoch_worker_open_failures += other.stale_epoch_worker_open_failures;
         self.replay_drops += other.replay_drops;
         self.dropped += other.dropped;
-        self.rx_loop_fallbacks += other.rx_loop_fallbacks;
         self.aead_failure_sources
             .add_sources(other.aead_failure_sources);
         self.replay_drop_sources
@@ -973,7 +964,6 @@ impl FspOrderedDrain {
             + self.stale_epoch_worker_open_failures
             + self.replay_drops
             + self.dropped
-            + self.rx_loop_fallbacks
     }
 }
 
@@ -1229,7 +1219,6 @@ struct FspAeadOpenWork {
 struct FspAeadOpenReject {
     job: FspDecryptJob,
     header: FspEncryptedHeader,
-    fallback_to_rx_loop: bool,
     count_failure: bool,
 }
 
@@ -1264,7 +1253,6 @@ impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener {
                     value: FspAeadOpenReject {
                         job,
                         header,
-                        fallback_to_rx_loop: false,
                         count_failure: true,
                     },
                 },
@@ -1296,7 +1284,6 @@ impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener {
                     value: FspAeadOpenReject {
                         job,
                         header,
-                        fallback_to_rx_loop: false,
                         count_failure: true,
                     },
                 },
@@ -1365,7 +1352,6 @@ impl FspAeadCompletion {
                 job: value.job,
                 header: value.header,
                 source,
-                fallback_to_rx_loop: value.fallback_to_rx_loop,
                 count_failure: value.count_failure,
             },
             CryptoResult::Rejected(_) | CryptoResult::Dropped => FspOrderedCompletion::Dropped {

@@ -128,7 +128,6 @@
                 reject: CryptoReject::Aead,
                 value,
             } => {
-                assert!(!value.fallback_to_rx_loop);
                 assert!(value.count_failure);
             }
             _ => panic!("expected payload-carrying AEAD rejection"),
@@ -1369,7 +1368,6 @@
                 result:
                     FspOrderedCompletion::AeadFailed {
                         source: FspAeadCompletionSource::WorkerOpen,
-                        fallback_to_rx_loop: false,
                         count_failure: true,
                         ..
                     },
@@ -1676,7 +1674,6 @@
                 job,
                 header,
                 source: FspAeadCompletionSource::WorkerOpen,
-                fallback_to_rx_loop: false,
                 count_failure: true,
             },
             completed_at: None,
