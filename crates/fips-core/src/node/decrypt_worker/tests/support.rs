@@ -446,7 +446,7 @@
         drop(priority_tx);
         let opener_fsp_completion_rx = test_fsp_aead_completion_lane(1);
         let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = bulk_receivers[open_idx]
             .try_recv()
@@ -462,7 +462,7 @@
             &priority_rx,
             &opener_fsp_completion_rx,
             item,
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut batch_stats,
         );
 
@@ -523,7 +523,7 @@
         drop(priority_tx);
         let opener_fsp_completion_rx = test_fsp_aead_completion_lane(1);
         let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         handle_bulk_item(
             open_idx,
@@ -532,7 +532,7 @@
             &priority_rx,
             &opener_fsp_completion_rx,
             item,
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut batch_stats,
         );
 
@@ -629,14 +629,14 @@
         fsp_completion_tx
             .try_send(dummy_fsp_aead_completion_batch(source_addr, 99))
             .expect("test completion lane should have room");
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut completion_interleave_budget = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
 
         drain_aead_completions_for_bulk_item(
             0,
             &mut shard,
             &fsp_aead_completion_rx,
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut completion_interleave_budget,
         );
 
@@ -689,7 +689,7 @@
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = DecryptWorkerBulkItem::FspBatch(vec![
             dummy_bulk_fsp_open_job(source_addr),
@@ -704,7 +704,7 @@
             &priority_rx,
             &fsp_aead_completion_rx,
             item,
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut batch_stats,
         );
 
@@ -756,14 +756,14 @@
         let current_idx = (owner_idx + 1) % 4;
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             current_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
                 source_addr,
             )),
-            &mut plaintext_batch,
+            &mut return_batch,
             None,
             &mut fsp_open_batcher,
         );
@@ -799,11 +799,11 @@
                 );
             }
         }
-        assert!(plaintext_batch.fallbacks.is_empty());
-        assert!(plaintext_batch.authenticated_sessions.is_empty());
-        assert!(plaintext_batch.direct_commits.is_empty());
-        assert!(plaintext_batch.direct_data.is_empty());
-        assert!(plaintext_batch.endpoint_commits.is_empty());
+        assert!(return_batch.fallbacks.is_empty());
+        assert!(return_batch.authenticated_sessions.is_empty());
+        assert!(return_batch.direct_commits.is_empty());
+        assert!(return_batch.direct_data.is_empty());
+        assert!(return_batch.endpoint_commits.is_empty());
     }
 
     #[test]
@@ -832,19 +832,19 @@
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
                 source_addr,
             )),
-            &mut plaintext_batch,
+            &mut return_batch,
             None,
             &mut fsp_open_batcher,
         );
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
-        plaintext_batch.flush();
+        return_batch.flush();
 
         match bulk_receivers[open_idx]
             .try_recv()
@@ -905,7 +905,7 @@
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = DecryptWorkerBulkItem::FspBatch(vec![dummy_bulk_fsp_open_job(source_addr)]);
         batch_stats.add_bulk_item(&item);
@@ -917,7 +917,7 @@
             &priority_rx,
             &fsp_aead_completion_rx,
             item,
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut batch_stats,
         );
 
@@ -1070,14 +1070,14 @@
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
                 source_addr,
             )),
-            &mut plaintext_batch,
+            &mut return_batch,
             None,
             &mut fsp_open_batcher,
         );
@@ -1133,14 +1133,14 @@
             .fsp_receive_order
             .advance_next_ticket_to(bulk_ticket_limit as u64);
 
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
             DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
                 source_addr,
             )),
-            &mut plaintext_batch,
+            &mut return_batch,
             None,
             &mut fsp_open_batcher,
         );
@@ -1190,11 +1190,11 @@
         open_job.completion_source = FspAeadCompletionSource::WorkerOpen;
 
         let mut shard = DecryptWorkerShard::new(pool);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         shard.drop_returned_fsp_aead_open_jobs(
             current_idx,
             std::iter::once(open_job),
-            &mut plaintext_batch,
+            &mut return_batch,
         );
 
         let completion = fsp_completion_receivers[owner_idx]
@@ -1334,8 +1334,8 @@
         ];
 
         let mut shard = DecryptWorkerShard::new(pool);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
-        shard.drop_returned_fsp_aead_open_jobs(current_idx, jobs, &mut plaintext_batch);
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        shard.drop_returned_fsp_aead_open_jobs(current_idx, jobs, &mut return_batch);
 
         let completion = fsp_completion_receivers[owner_idx]
             .try_recv()
@@ -1396,8 +1396,8 @@
             )];
 
         let mut shard = DecryptWorkerShard::new(pool);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
-        shard.drop_returned_fsp_aead_open_jobs(current_idx, jobs, &mut plaintext_batch);
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        shard.drop_returned_fsp_aead_open_jobs(current_idx, jobs, &mut return_batch);
 
         let completion = fsp_completion_receivers[owner_idx]
             .try_recv()
@@ -1449,11 +1449,11 @@
 
         let mut shard = DecryptWorkerShard::new(pool);
         shard.fsp_sessions.insert(source_addr, state);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         shard.drop_returned_fsp_aead_open_jobs(
             0,
             std::iter::once(job),
-            &mut plaintext_batch,
+            &mut return_batch,
         );
 
         let state = shard
@@ -1614,7 +1614,7 @@
         ))
     }
 
-    fn dummy_plaintext_batch_event(count: usize, packet_len: usize) -> DecryptWorkerEvent {
+    fn dummy_return_batch_event(count: usize, packet_len: usize) -> DecryptWorkerEvent {
         DecryptWorkerEvent::PlaintextBatch(
             (0..count)
                 .map(|idx| {
@@ -1636,7 +1636,7 @@
     }
 
     #[test]
-    fn bulk_fmp_batch_retires_same_session_with_plaintext_batch_output() {
+    fn bulk_fmp_batch_retires_same_session_with_return_batch_output() {
         let key_bytes = [0x71; 32];
         let seal_cipher = test_chacha_key(key_bytes);
         let open_cipher = test_chacha_key(key_bytes);
@@ -1672,7 +1672,7 @@
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let fsp_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(fallback_tx);
+        let mut return_batch = DecryptWorkerReturnBatch::new(fallback_tx);
         let mut batch_stats = DecryptWorkerBatchStats::default();
         let processed = handle_bulk_item(
             0,
@@ -1681,10 +1681,10 @@
             &priority_rx,
             &fsp_completion_rx,
             item,
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut batch_stats,
         );
-        plaintext_batch.flush();
+        return_batch.flush();
 
         assert_eq!(processed, 2);
         let event = fallback_rx.bulk.try_recv().expect("bulk plaintext batch");
@@ -1712,7 +1712,7 @@
             fallback_tx: fallback_tx.clone(),
         };
         let mut shard = DecryptWorkerShard::new(pool);
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(fallback_tx);
+        let mut return_batch = DecryptWorkerReturnBatch::new(fallback_tx);
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         let packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
 
@@ -1722,7 +1722,7 @@
                 event: dummy_plaintext_event(packet_len),
                 direct_delivery: None,
             }),
-            &mut plaintext_batch,
+            &mut return_batch,
             None,
             &mut fsp_open_batcher,
         );
@@ -1732,12 +1732,12 @@
                 event: dummy_plaintext_event(packet_len),
                 direct_delivery: None,
             }),
-            &mut plaintext_batch,
+            &mut return_batch,
             None,
             &mut fsp_open_batcher,
         );
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
-        plaintext_batch.flush();
+        return_batch.flush();
 
         let event = fallback_rx.bulk.try_recv().expect("batched plaintext output");
         match &event {

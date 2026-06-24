@@ -53,7 +53,7 @@ include!("decrypt_worker/fallback_channels.rs");
 include!("decrypt_worker/queue.rs");
 include!("decrypt_worker/pool.rs");
 include!("decrypt_worker/runtime.rs");
-include!("decrypt_worker/fallback_batch.rs");
+include!("decrypt_worker/return_batch.rs");
 include!("decrypt_worker/shard.rs");
 
 #[cfg(test)]

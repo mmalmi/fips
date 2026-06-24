@@ -292,20 +292,20 @@
             OwnedFspSessionState::from(fsp_snapshot),
         );
 
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
-        shard.handle_bulk_job_msg(0, first, &mut plaintext_batch);
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        shard.handle_bulk_job_msg(0, first, &mut return_batch);
         assert!(
             fallback_rx.authenticated_bulk.try_recv().is_err(),
             "first local FSP direct-data output should stay in the worker return batch"
         );
-        shard.handle_bulk_job_msg(0, second, &mut plaintext_batch);
+        shard.handle_bulk_job_msg(0, second, &mut return_batch);
         assert!(
             fallback_rx.authenticated_bulk.try_recv().is_err(),
             "second local FSP direct-data output should still wait below the batch cap"
         );
 
-        plaintext_batch.flush();
+        return_batch.flush();
         let event = fallback_rx
             .authenticated_bulk
             .try_recv()
@@ -752,8 +752,8 @@
         let mut shard = DecryptWorkerShard::new(pool);
         shard.pool.fallback_tx = fallback_tx.clone();
         shard.fsp_sessions.insert(source_addr, refreshed);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         shard.handle_fsp_aead_completion_batch_msg(
             0,
             FspAeadCompletionBatch::one(FspAeadCompletion {
@@ -771,7 +771,7 @@
                 },
                 completed_at: None,
             }),
-            &mut plaintext_batch,
+            &mut return_batch,
         );
 
         let state = shard
@@ -783,11 +783,11 @@
         assert!(fallback_rx.priority.try_recv().is_err());
         assert!(fallback_rx.bulk.try_recv().is_err());
         assert!(fallback_rx.authenticated_bulk.try_recv().is_err());
-        assert!(plaintext_batch.fallbacks.is_empty());
-        assert!(plaintext_batch.authenticated_sessions.is_empty());
-        assert!(plaintext_batch.direct_commits.is_empty());
-        assert!(plaintext_batch.direct_data.is_empty());
-        assert!(plaintext_batch.endpoint_commits.is_empty());
+        assert!(return_batch.fallbacks.is_empty());
+        assert!(return_batch.authenticated_sessions.is_empty());
+        assert!(return_batch.direct_commits.is_empty());
+        assert!(return_batch.direct_data.is_empty());
+        assert!(return_batch.endpoint_commits.is_empty());
     }
 
     #[test]
@@ -1307,10 +1307,10 @@
         };
         assert_eq!(job.lane, DecryptWorkerLane::Bulk);
 
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
-        shard.push_current_epoch_fsp_job_outputs(0, job, &mut plaintext_batch);
-        plaintext_batch.flush();
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
+        shard.push_current_epoch_fsp_job_outputs(0, job, &mut return_batch);
+        return_batch.flush();
 
         match fallback_rx
             .bulk
@@ -1646,8 +1646,8 @@
         let pool = DecryptWorkerPool::spawn(1);
         let mut shard = DecryptWorkerShard::new(pool);
         shard.fsp_sessions.insert(source_addr, state);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
 
         shard.handle_fsp_aead_completion_batch_msg(
             0,
@@ -1662,7 +1662,7 @@
                 },
                 completed_at: None,
             }),
-            &mut plaintext_batch,
+            &mut return_batch,
         );
         let state = shard
             .fsp_sessions
@@ -1696,7 +1696,7 @@
                         completed_at: None,
                     },
                 ]),
-            &mut plaintext_batch,
+            &mut return_batch,
         );
         let state = shard
             .fsp_sessions
@@ -1727,8 +1727,8 @@
         let pool = DecryptWorkerPool::spawn(1);
         let mut shard = DecryptWorkerShard::new(pool);
         shard.fsp_sessions.insert(source_addr, state);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
 
         shard.handle_fsp_aead_completion_batch_msg(
             0,
@@ -1767,7 +1767,7 @@
                     completed_at: None,
                 },
             ]),
-            &mut plaintext_batch,
+            &mut return_batch,
         );
 
         let state = shard
@@ -1779,11 +1779,11 @@
             1,
             "mismatched completions must not consume the owner ticket"
         );
-        assert!(plaintext_batch.fallbacks.is_empty());
-        assert!(plaintext_batch.authenticated_sessions.is_empty());
-        assert!(plaintext_batch.direct_commits.is_empty());
-        assert!(plaintext_batch.direct_data.is_empty());
-        assert!(plaintext_batch.endpoint_commits.is_empty());
+        assert!(return_batch.fallbacks.is_empty());
+        assert!(return_batch.authenticated_sessions.is_empty());
+        assert!(return_batch.direct_commits.is_empty());
+        assert!(return_batch.direct_data.is_empty());
+        assert!(return_batch.endpoint_commits.is_empty());
     }
 
     #[test]
@@ -1867,7 +1867,7 @@
         let source_addr = *source_peer.node_addr();
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
-        let mut batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
 
         let mut first = vec![0u8; 48];
         first[0] = 0x60;
@@ -1947,7 +1947,7 @@
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 1);
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
 
-        let mut first_batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
+        let mut first_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
         first_batch.push_output(dummy_direct_tun_output(
             tun_tx.clone(),
             source_peer,
@@ -1961,7 +1961,7 @@
             .try_recv()
             .expect("first accepted direct TUN delivery");
 
-        let mut second_batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
+        let mut second_batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
         second_batch.push_output(dummy_direct_tun_output(
             tun_tx,
             source_peer,

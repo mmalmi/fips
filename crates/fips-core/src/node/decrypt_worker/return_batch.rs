@@ -1,4 +1,4 @@
-struct DecryptPlaintextFallbackBatch {
+struct DecryptWorkerReturnBatch {
     fallback_tx: DecryptWorkerFallbackSender,
     fallbacks: Vec<DecryptFallback>,
     authenticated_sessions: Vec<DecryptAuthenticatedSession>,
@@ -10,7 +10,7 @@ struct DecryptPlaintextFallbackBatch {
     direct_data: Vec<DecryptDirectSessionData>,
 }
 
-impl DecryptPlaintextFallbackBatch {
+impl DecryptWorkerReturnBatch {
     fn new(fallback_tx: DecryptWorkerFallbackSender) -> Self {
         Self {
             fallback_tx,

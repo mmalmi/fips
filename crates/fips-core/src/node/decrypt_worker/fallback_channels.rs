@@ -84,7 +84,7 @@ impl DecryptWorkerFallbackSender {
                 && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
             {
                 let event = match bulk_lane {
-                    DecryptWorkerReturnBulkLane::Fallback => {
+                    DecryptWorkerReturnBulkLane::Plaintext => {
                         crate::perf_profile::Event::DecryptFallbackBacklogHigh
                     }
                     DecryptWorkerReturnBulkLane::Authenticated => {
@@ -97,7 +97,7 @@ impl DecryptWorkerFallbackSender {
         let result = match lane {
             DecryptWorkerLane::Priority => self.priority.try_send(event),
             DecryptWorkerLane::Bulk => match bulk_lane.expect("bulk event has return bulk lane") {
-                DecryptWorkerReturnBulkLane::Fallback => self.bulk.try_send(event),
+                DecryptWorkerReturnBulkLane::Plaintext => self.bulk.try_send(event),
                 DecryptWorkerReturnBulkLane::Authenticated => {
                     self.authenticated_bulk.try_send(event)
                 }
@@ -127,7 +127,7 @@ impl DecryptWorkerFallbackSender {
 
     fn return_bulk_queued_packets(&self, lane: DecryptWorkerReturnBulkLane) -> &Arc<AtomicUsize> {
         match lane {
-            DecryptWorkerReturnBulkLane::Fallback => &self.bulk_queued_packets,
+            DecryptWorkerReturnBulkLane::Plaintext => &self.bulk_queued_packets,
             DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_queued_packets,
         }
     }
@@ -161,7 +161,7 @@ impl DecryptWorkerFallbackReceivers {
 
     fn return_bulk_queued_packets(&self, lane: DecryptWorkerReturnBulkLane) -> &Arc<AtomicUsize> {
         match lane {
-            DecryptWorkerReturnBulkLane::Fallback => &self.bulk_queued_packets,
+            DecryptWorkerReturnBulkLane::Plaintext => &self.bulk_queued_packets,
             DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_queued_packets,
         }
     }
@@ -185,7 +185,7 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerReturnBulkLane {
-    Fallback,
+    Plaintext,
     Authenticated,
 }
 
@@ -205,7 +205,7 @@ fn decrypt_worker_event_return_bulk_lane(
         DecryptWorkerEvent::Plaintext(_)
         | DecryptWorkerEvent::PlaintextBatch(_)
         | DecryptWorkerEvent::FspDecryptFailure(_)
-        | DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerReturnBulkLane::Fallback,
+        | DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerReturnBulkLane::Plaintext,
     }
 }
 

@@ -271,29 +271,29 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         job: DecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) {
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         if let Some(action) = self.collect_job_action(job) {
             self.push_job_action_output(
                 idx,
                 action,
-                plaintext_batch,
+                return_batch,
                 None,
                 &mut fsp_open_batcher,
             );
         }
-        flush_fsp_open_batcher(idx, self, plaintext_batch, &mut fsp_open_batcher);
+        flush_fsp_open_batcher(idx, self, return_batch, &mut fsp_open_batcher);
     }
 
     fn handle_fsp_job_msg(&mut self, idx: usize, job: FspDecryptJob) {
         job.record_queue_wait();
         let _t_service =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
-        self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
-        plaintext_batch.flush();
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(self.pool.fallback_tx.clone());
+        self.push_fsp_job_outputs(idx, job, &mut return_batch);
+        return_batch.flush();
         trace!(worker = idx, "processed FSP decrypt worker job");
     }
 
@@ -303,7 +303,7 @@ impl DecryptWorkerShard {
         jobs: Vec<FspDecryptJob>,
         item_started_at: Option<crate::perf_profile::TraceStamp>,
         trace_enabled: bool,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
         fsp_open_batcher: &mut FspAeadOpenJobBatcher,
     ) {
         let count = jobs.len();
@@ -319,7 +319,7 @@ impl DecryptWorkerShard {
                 let returned =
                     fsp_open_batcher.push_batch(&self.pool, open_idx, owner_idx, open_jobs);
                 if !returned.is_empty() {
-                    self.drop_returned_fsp_aead_open_jobs(idx, returned, plaintext_batch);
+                    self.drop_returned_fsp_aead_open_jobs(idx, returned, return_batch);
                 }
                 trace!(
                     worker = idx,
@@ -339,7 +339,7 @@ impl DecryptWorkerShard {
                     self.push_job_action_output(
                         idx,
                         DecryptWorkerJobAction::FspJob(job),
-                        plaintext_batch,
+                        return_batch,
                         None,
                         &mut *fsp_open_batcher,
                     );
@@ -410,29 +410,29 @@ impl DecryptWorkerShard {
     }
 
     fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
+        let mut return_batch = DecryptWorkerReturnBatch::new(self.pool.fallback_tx.clone());
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         self.push_job_action_output(
             idx,
             action,
-            &mut plaintext_batch,
+            &mut return_batch,
             None,
             &mut fsp_open_batcher,
         );
-        flush_fsp_open_batcher(idx, self, &mut plaintext_batch, &mut fsp_open_batcher);
-        plaintext_batch.flush();
+        flush_fsp_open_batcher(idx, self, &mut return_batch, &mut fsp_open_batcher);
+        return_batch.flush();
     }
 
     fn push_job_action_output(
         &mut self,
         idx: usize,
         action: DecryptWorkerJobAction,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
         mut fsp_batcher: Option<&mut FspDecryptJobBatcher>,
         fsp_open_batcher: &mut FspAeadOpenJobBatcher,
     ) {
         match action {
-            DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
+            DecryptWorkerJobAction::Output(output) => return_batch.push_output(output),
             DecryptWorkerJobAction::FspJob(job) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
                 record_fsp_owner_match(owner_idx == idx);
@@ -445,7 +445,7 @@ impl DecryptWorkerShard {
                             self.drop_returned_fsp_aead_open_jobs(
                                 idx,
                                 returned,
-                                plaintext_batch,
+                                return_batch,
                             );
                         }
                         return;
@@ -463,7 +463,7 @@ impl DecryptWorkerShard {
                 };
                 if owner_idx == idx {
                     record_fsp_path_local(job.lane());
-                    self.push_fsp_job_outputs(idx, job, plaintext_batch);
+                    self.push_fsp_job_outputs(idx, job, return_batch);
                     return;
                 }
                 record_fsp_path_handoff(job.lane());
@@ -757,7 +757,7 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         jobs: I,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) where
         I: IntoIterator<Item = FspAeadOpenJob>,
     {
@@ -777,14 +777,14 @@ impl DecryptWorkerShard {
                 self.flush_dropped_fsp_aead_open_completion_batch(
                     idx,
                     flush,
-                    plaintext_batch,
+                    return_batch,
                 );
             }
         }
 
         record_fsp_open_worker_returned_drop(returned_count);
         if let Some(flush) = batcher.flush() {
-            self.flush_dropped_fsp_aead_open_completion_batch(idx, flush, plaintext_batch);
+            self.flush_dropped_fsp_aead_open_completion_batch(idx, flush, return_batch);
         }
     }
 
@@ -792,10 +792,10 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         flush: FspAeadCompletionBatchFlush,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) {
         if flush.local_completion {
-            self.handle_fsp_aead_completion_batch_msg(idx, flush.batch, plaintext_batch);
+            self.handle_fsp_aead_completion_batch_msg(idx, flush.batch, return_batch);
             return;
         }
         if let Some(owner_idx) = flush.owner_idx {
@@ -811,7 +811,7 @@ impl DecryptWorkerShard {
         completions: I,
         completion_count: usize,
         invalid_order_message: &'static str,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) where
         I: IntoIterator<Item = FspAeadCompletion>,
     {
@@ -880,7 +880,7 @@ impl DecryptWorkerShard {
                 if let Some(output) =
                     Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
                 {
-                    plaintext_batch.push_output(output);
+                    return_batch.push_output(output);
                 }
             }) {
                 Ok(drain) => drain,
@@ -906,7 +906,7 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         completion: FspAeadCompletion,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) {
         let _t_service = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::FspAeadCompletionService,
@@ -920,7 +920,7 @@ impl DecryptWorkerShard {
             std::iter::once(completion),
             1,
             "dropping invalid ordered FSP AEAD completion",
-            plaintext_batch,
+            return_batch,
         );
     }
 
@@ -928,11 +928,11 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         completions: FspAeadCompletionBatch,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) {
         match completions {
             FspAeadCompletionBatch::One(completion) => {
-                self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+                self.handle_fsp_aead_completion_msg(idx, completion, return_batch);
             }
             FspAeadCompletionBatch::Many(completions) => {
                 let completion_count = completions.len();
@@ -951,7 +951,7 @@ impl DecryptWorkerShard {
                     completions,
                     completion_count,
                     "dropping invalid ordered FSP AEAD completion",
-                    plaintext_batch,
+                    return_batch,
                 );
             }
         }
@@ -1155,24 +1155,24 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         job: FspDecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) {
         if self
             .fsp_sessions
             .get(&job.source_addr)
             .is_some_and(OwnedFspSessionState::has_single_current_epoch)
         {
-            self.push_current_epoch_fsp_job_outputs(idx, job, plaintext_batch);
+            self.push_current_epoch_fsp_job_outputs(idx, job, return_batch);
             return;
         }
-        self.push_epoch_churn_fsp_job_outputs(job, plaintext_batch);
+        self.push_epoch_churn_fsp_job_outputs(job, return_batch);
     }
 
     fn push_current_epoch_fsp_job_outputs(
         &mut self,
         idx: usize,
         job: FspDecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) {
         let FspDecryptJob {
             mut fallback,
@@ -1188,7 +1188,7 @@ impl DecryptWorkerShard {
             trace_enqueued_at: _,
         } = job;
         let Some(state) = self.fsp_sessions.get(&source_addr) else {
-            plaintext_batch.push_output(DecryptWorkerOutput {
+            return_batch.push_output(DecryptWorkerOutput {
                 event: DecryptWorkerEvent::Plaintext(fallback),
                 direct_delivery: None,
             });
@@ -1201,7 +1201,7 @@ impl DecryptWorkerShard {
             fsp_payload_offset,
             fsp_payload_len,
         ) else {
-            plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
+            return_batch.push_output(self.output_for_malformed_fsp_drop(
                 fallback,
                 lane,
                 inner_timestamp_ms,
@@ -1300,14 +1300,14 @@ impl DecryptWorkerShard {
             }),
             1,
             "dropping invalid local ordered FSP completion",
-            plaintext_batch,
+            return_batch,
         );
     }
 
     fn push_epoch_churn_fsp_job_outputs(
         &mut self,
         job: FspDecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
     ) {
         let FspDecryptJob {
             fallback,
@@ -1324,7 +1324,7 @@ impl DecryptWorkerShard {
         } = job;
 
         let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
-            plaintext_batch.push_output(DecryptWorkerOutput {
+            return_batch.push_output(DecryptWorkerOutput {
                 event: DecryptWorkerEvent::Plaintext(fallback),
                 direct_delivery: None,
             });
@@ -1335,7 +1335,7 @@ impl DecryptWorkerShard {
             fsp_payload_offset,
             fsp_payload_len,
         ) else {
-            plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
+            return_batch.push_output(self.output_for_malformed_fsp_drop(
                 fallback,
                 lane,
                 inner_timestamp_ms,
@@ -1372,7 +1372,7 @@ impl DecryptWorkerShard {
                     fsp_payload_len,
                     trace_enqueued_at: None,
                 };
-                plaintext_batch.push_output(Self::output_for_fsp_aead_failure(job, &header, true));
+                return_batch.push_output(Self::output_for_fsp_aead_failure(job, &header, true));
                 return;
             }
         };
@@ -1427,7 +1427,7 @@ impl DecryptWorkerShard {
                         sync,
                         lane,
                     );
-                    plaintext_batch.push_output(DecryptWorkerOutput {
+                    return_batch.push_output(DecryptWorkerOutput {
                         event,
                         direct_delivery,
                     });
@@ -1447,7 +1447,7 @@ impl DecryptWorkerShard {
                 }
             };
 
-        plaintext_batch.push_output(DecryptWorkerOutput {
+        return_batch.push_output(DecryptWorkerOutput {
             event,
             direct_delivery: None,
         });
@@ -1467,7 +1467,7 @@ impl DecryptWorkerShard {
         idx: usize,
         session_key: DecryptSessionKey,
         jobs: Vec<DecryptJob>,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        return_batch: &mut DecryptWorkerReturnBatch,
         fsp_batcher: &mut FspDecryptJobBatcher,
         fsp_open_batcher: &mut FspAeadOpenJobBatcher,
     ) {
@@ -1481,7 +1481,7 @@ impl DecryptWorkerShard {
                 self.push_job_action_output(
                     idx,
                     action,
-                    plaintext_batch,
+                    return_batch,
                     Some(&mut *fsp_batcher),
                     fsp_open_batcher,
                 );

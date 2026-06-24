@@ -406,7 +406,7 @@
             decrypt_worker_event_lane(&dummy_failure_event()),
             DecryptWorkerLane::Priority
         );
-        let batch = dummy_plaintext_batch_event(3, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+        let batch = dummy_return_batch_event(3, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert_eq!(decrypt_worker_event_lane(&batch), DecryptWorkerLane::Bulk);
         assert_eq!(batch.packet_count(), 3);
     }
@@ -547,7 +547,7 @@
     fn decrypt_worker_fallback_bulk_capacity_counts_batch_packets() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 2);
 
-        assert!(fallback_tx.send(dummy_plaintext_batch_event(
+        assert!(fallback_tx.send(dummy_return_batch_event(
             2,
             DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
         )));
@@ -831,8 +831,8 @@
         let (packet_two, header_two) =
             sealed_fmp_test_packet_with_link_body(&cipher, 2, 0, bulk_body_len);
 
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::default();
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let processed = handle_bulk_item(
@@ -851,14 +851,14 @@
                 ),
                 decrypt_job_for_test_packet(packet_two, header_two, session_key, 2, 0),
             ]),
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut batch_stats,
         );
         assert!(
             fallback_rx.bulk.try_recv().is_err(),
             "shared output batch should wait for an explicit flush"
         );
-        plaintext_batch.flush();
+        return_batch.flush();
 
         assert_eq!(processed, 2);
         assert_eq!(
@@ -908,8 +908,8 @@
         drop(priority_tx);
 
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = decrypt_worker_bulk_item_from_jobs(vec![
             dummy_bulk_decrypt_job(session_key),
@@ -924,7 +924,7 @@
             &priority_rx,
             &fsp_aead_completion_rx,
             item,
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut batch_stats,
         );
 
@@ -951,8 +951,8 @@
         drop(priority_tx);
 
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut return_batch =
+            DecryptWorkerReturnBatch::new(shard.pool.fallback_tx.clone());
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = DecryptWorkerBulkItem::FspBatch(vec![
             dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
@@ -967,7 +967,7 @@
             &priority_rx,
             &fsp_aead_completion_rx,
             item,
-            &mut plaintext_batch,
+            &mut return_batch,
             &mut batch_stats,
         );
 
@@ -981,10 +981,10 @@
     }
 
     #[test]
-    fn decrypt_worker_plaintext_batch_never_exceeds_fallback_packet_cap() {
+    fn decrypt_worker_return_batch_never_exceeds_fallback_packet_cap() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 2);
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
-        let mut batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
 
         batch.push_output(DecryptWorkerOutput {
             event: dummy_plaintext_event(bulk_len),
@@ -1021,11 +1021,11 @@
     }
 
     #[test]
-    fn decrypt_worker_plaintext_batch_flushes_at_batch_width() {
+    fn decrypt_worker_return_batch_flushes_at_batch_width() {
         let cap = DECRYPT_WORKER_BULK_BATCH_MAX + 1;
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, cap);
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
-        let mut batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
 
         for _ in 0..DECRYPT_WORKER_BULK_BATCH_MAX {
             batch.push_output(DecryptWorkerOutput {
@@ -1057,7 +1057,7 @@
     #[test]
     fn decrypt_worker_authenticated_sessions_batch_authenticated_bulk_returns() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 2);
-        let mut batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
 
         batch.push_output(DecryptWorkerOutput {
             event: dummy_authenticated_session_event(DecryptWorkerLane::Bulk),
@@ -1132,7 +1132,7 @@
     #[test]
     fn decrypt_worker_priority_authenticated_session_bypasses_bulk_batch() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let mut batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
 
         batch.push_output(DecryptWorkerOutput {
             event: dummy_authenticated_session_event(DecryptWorkerLane::Priority),
@@ -1158,7 +1158,7 @@
     fn decrypt_worker_routed_direct_data_batches_authenticated_bulk_returns() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let source_peer = test_source_peer();
-        let mut batch = DecryptPlaintextFallbackBatch::new(fallback_tx.clone());
+        let mut batch = DecryptWorkerReturnBatch::new(fallback_tx.clone());
 
         batch.push_output(dummy_routed_direct_data_output(
             source_peer,
