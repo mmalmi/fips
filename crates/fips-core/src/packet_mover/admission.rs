@@ -1,3 +1,4 @@
+use super::LaneCreditReservation;
 use crate::transport::{TransportAddr, TransportId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,12 +57,88 @@ pub(crate) struct UdpIngress<P> {
     pub(crate) facts: PacketFacts,
 }
 
+impl<P> UdpIngress<P> {
+    pub(crate) fn new(packet: P, facts: PacketFacts) -> Self {
+        Self { packet, facts }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AdmittedPacket<P> {
     pub(crate) packet: P,
     pub(crate) facts: PacketFacts,
     pub(crate) class: AdmissionClass,
     pub(crate) lane: PacketLane,
+    pub(crate) credit: AdmissionCredit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AdmissionCredit {
+    lane: PacketLane,
+    reservation: LaneCreditReservation,
+}
+
+impl AdmissionCredit {
+    pub(crate) fn new(lane: PacketLane, reservation: LaneCreditReservation) -> Self {
+        debug_assert_eq!(lane, reservation.lane());
+        Self { lane, reservation }
+    }
+
+    pub(crate) fn lane(self) -> PacketLane {
+        self.lane
+    }
+
+    pub(crate) fn packet_count(self) -> usize {
+        self.reservation.packet_count()
+    }
+
+    pub(crate) fn into_lane_reservation(self) -> LaneCreditReservation {
+        self.reservation
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AdmissionPrefix {
+    lane: PacketLane,
+    requested_packets: usize,
+    requested_bytes: usize,
+    credit: AdmissionCredit,
+}
+
+impl AdmissionPrefix {
+    pub(crate) fn new(
+        lane: PacketLane,
+        requested_packets: usize,
+        requested_bytes: usize,
+        reservation: LaneCreditReservation,
+    ) -> Self {
+        Self {
+            lane,
+            requested_packets,
+            requested_bytes,
+            credit: AdmissionCredit::new(lane, reservation),
+        }
+    }
+
+    pub(crate) fn lane(self) -> PacketLane {
+        self.lane
+    }
+
+    pub(crate) fn requested_packets(self) -> usize {
+        self.requested_packets
+    }
+
+    pub(crate) fn requested_bytes(self) -> usize {
+        self.requested_bytes
+    }
+
+    pub(crate) fn packet_count(self) -> usize {
+        self.credit.packet_count()
+    }
+
+    pub(crate) fn into_lane_reservation(self) -> LaneCreditReservation {
+        self.credit.into_lane_reservation()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,8 +178,23 @@ pub(crate) enum AdmissionDecision<P> {
     Drop(AdmissionDrop),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AdmissionPrefixDecision {
+    Admit(AdmissionPrefix),
+    Drop(AdmissionDrop),
+}
+
 pub(crate) trait UdpAdmission<P> {
-    fn admit_udp(&mut self, packet: UdpIngress<P>, class: AdmissionClass) -> AdmissionDecision<P>;
+    fn admit_udp(&self, packet: UdpIngress<P>, class: AdmissionClass) -> AdmissionDecision<P>;
+}
+
+pub(crate) trait UdpBatchAdmission {
+    fn reserve_udp_prefix(
+        &self,
+        lane: PacketLane,
+        packet_count: usize,
+        byte_count: usize,
+    ) -> AdmissionPrefixDecision;
 }
 
 #[cfg(test)]
@@ -133,5 +225,18 @@ mod tests {
             AdmissionClass::InteractiveData
         );
         assert_eq!(classify_udp_admission(513, 512), AdmissionClass::BulkData);
+    }
+
+    #[test]
+    fn admission_credit_wraps_lane_reservation() {
+        let gate = super::super::LaneCreditGate::new(PacketLane::Priority, 2);
+        let reservation = gate.reserve(1, 64).expect("credit");
+        let credit = AdmissionCredit::new(PacketLane::Priority, reservation);
+
+        assert_eq!(credit.lane(), PacketLane::Priority);
+        assert_eq!(credit.packet_count(), 1);
+
+        gate.release(credit.into_lane_reservation());
+        assert_eq!(gate.queued_packets(), 0);
     }
 }

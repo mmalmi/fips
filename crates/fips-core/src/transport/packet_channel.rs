@@ -2,8 +2,9 @@
 
 use super::{TransportAddr, TransportId};
 use crate::packet_mover::{
-    AdmissionClass, AdmissionDrop, AdmissionDropReason, LaneCreditGate, LaneCreditReservation,
-    PacketLane, classify_udp_admission,
+    AdmissionClass, AdmissionCredit, AdmissionDecision, AdmissionDrop, AdmissionDropReason,
+    AdmissionPrefixDecision, AdmittedPacket, LaneCreditGate, LaneCreditReservation, PacketFacts,
+    PacketLane, UdpAdmission, UdpBatchAdmission, UdpIngress, classify_udp_admission,
 };
 use std::mem;
 use std::ops::{Deref, DerefMut, Index};
@@ -99,6 +100,17 @@ impl ReceivedPacket {
 
     pub(crate) fn admission_class(&self) -> AdmissionClass {
         classify_udp_admission(self.data.len(), PRIORITY_PACKET_MAX_LEN)
+    }
+}
+
+impl From<&ReceivedPacket> for PacketFacts {
+    fn from(packet: &ReceivedPacket) -> Self {
+        Self {
+            transport_id: packet.transport_id,
+            remote_addr: packet.remote_addr.clone(),
+            packet_len: packet.data.len(),
+            received_at_ms: packet.timestamp_ms,
+        }
     }
 }
 
@@ -654,6 +666,60 @@ impl PendingPackets {
 }
 
 impl PacketTx {
+    fn lane_credit_gate(&self, lane: PacketLane) -> &LaneCreditGate {
+        match lane {
+            PacketLane::Priority => &self.priority_credits,
+            PacketLane::Bulk => &self.bulk_credits,
+        }
+    }
+}
+
+impl UdpAdmission<ReceivedPacket> for PacketTx {
+    fn admit_udp(
+        &self,
+        ingress: UdpIngress<ReceivedPacket>,
+        class: AdmissionClass,
+    ) -> AdmissionDecision<ReceivedPacket> {
+        let lane = class.lane();
+        let byte_count = ingress.facts.packet_len;
+        match self.lane_credit_gate(lane).reserve(1, byte_count) {
+            Ok(reservation) => AdmissionDecision::Admit(AdmittedPacket {
+                packet: ingress.packet,
+                facts: ingress.facts,
+                class,
+                lane,
+                credit: AdmissionCredit::new(lane, reservation),
+            }),
+            Err(drop) => AdmissionDecision::Drop(drop),
+        }
+    }
+}
+
+impl UdpBatchAdmission for PacketTx {
+    fn reserve_udp_prefix(
+        &self,
+        lane: PacketLane,
+        packet_count: usize,
+        byte_count: usize,
+    ) -> AdmissionPrefixDecision {
+        match self.lane_credit_gate(lane).reserve_prefix(packet_count) {
+            Some(reservation) => {
+                AdmissionPrefixDecision::Admit(crate::packet_mover::AdmissionPrefix::new(
+                    lane,
+                    packet_count,
+                    byte_count,
+                    reservation,
+                ))
+            }
+            None => AdmissionPrefixDecision::Drop(
+                self.lane_credit_gate(lane)
+                    .pressure_drop(packet_count, byte_count),
+            ),
+        }
+    }
+}
+
+impl PacketTx {
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     pub(crate) fn packet_batch(&self, capacity: usize) -> PacketBatch {
         self.batch_pool.take(capacity)
@@ -678,12 +744,21 @@ impl PacketTx {
         &self,
         packet: ReceivedPacket,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
-        let tx = PacketQueueTx::from(packet.admission_class().lane());
-        self.send_item(tx, PacketQueueItem::One(packet))
+        let class = packet.admission_class();
+        let facts = PacketFacts::from(&packet);
+        let admitted = match self.admit_udp(UdpIngress::new(packet, facts), class) {
+            AdmissionDecision::Admit(admitted) => admitted,
+            AdmissionDecision::Drop(drop) => {
+                record_admission_drop(&drop);
+                return Ok(());
+            }
+        };
+        let lane = admitted.lane;
+        self.send_admitted_packet(admitted)
             .map_err(|item| match item {
                 PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
                 PacketQueueItem::Batch(_) => {
-                    unreachable!("single packet send cannot fail with a batch item")
+                    unreachable!("single packet send cannot fail with a {lane:?} batch item")
                 }
             })
     }
@@ -730,31 +805,32 @@ impl PacketTx {
 
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     fn send_packet_items(&self, tx: PacketQueueTx, packets: PacketBatch) -> Result<(), ()> {
-        match tx {
-            PacketQueueTx::Priority => self.send_priority_packet_items(packets),
-            PacketQueueTx::Bulk => self.send_bulk_packet_items(packets),
-        }
+        self.send_lane_packet_items(tx.lane(), packets)
     }
 
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
-    fn send_priority_packet_items(&self, mut packets: PacketBatch) -> Result<(), ()> {
+    fn send_lane_packet_items(&self, lane: PacketLane, mut packets: PacketBatch) -> Result<(), ()> {
         let packet_count = packets.len();
         if packet_count == 0 {
             return Ok(());
         }
 
-        let Some(reservation) = self.priority_credits.reserve_prefix(packet_count) else {
-            let drop = self
-                .priority_credits
-                .pressure_drop(packet_count, packets.byte_count());
-            record_admission_drop(&drop);
-            return Ok(());
+        let requested_bytes = packets.byte_count();
+        let admission = match self.reserve_udp_prefix(lane, packet_count, requested_bytes) {
+            AdmissionPrefixDecision::Admit(admission) => admission,
+            AdmissionPrefixDecision::Drop(drop) => {
+                record_admission_drop(&drop);
+                return Ok(());
+            }
         };
-        let granted = reservation.packet_count();
+        debug_assert_eq!(admission.lane(), lane);
+        debug_assert_eq!(admission.requested_packets(), packet_count);
+        debug_assert_eq!(admission.requested_bytes(), requested_bytes);
+        let granted = admission.packet_count();
 
         if granted < packet_count {
             let dropped_tail = packets.packets.split_off(granted);
-            let drop = self.priority_credits.pressure_drop(
+            let drop = self.lane_credit_gate(lane).pressure_drop(
                 dropped_tail.len(),
                 dropped_tail.iter().map(|packet| packet.data.len()).sum(),
             );
@@ -768,71 +844,36 @@ impl PacketTx {
             }
             _ => PacketQueueItem::Batch(packets),
         };
-        self.send_reserved_item(PacketQueueTx::Priority, item, Some(reservation), None)
-            .map_err(|_| ())
-    }
-
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
-    fn send_bulk_packet_items(&self, mut packets: PacketBatch) -> Result<(), ()> {
-        let packet_count = packets.len();
-        if packet_count == 0 {
-            return Ok(());
-        }
-
-        let Some(reservation) = self.bulk_credits.reserve_prefix(packet_count) else {
-            let drop = self
-                .bulk_credits
-                .pressure_drop(packet_count, packets.byte_count());
-            record_admission_drop(&drop);
-            return Ok(());
-        };
-        let granted = reservation.packet_count();
-
-        if granted < packet_count {
-            let dropped_tail = packets.packets.split_off(granted);
-            let drop = self.bulk_credits.pressure_drop(
-                dropped_tail.len(),
-                dropped_tail.iter().map(|packet| packet.data.len()).sum(),
-            );
-            record_admission_drop(&drop);
-        }
-
-        let item = match packets.len() {
-            0 => return Ok(()),
-            1 if !packets.is_pooled() => {
-                PacketQueueItem::One(packets.pop().expect("one packet should be present"))
-            }
-            _ => PacketQueueItem::Batch(packets),
-        };
-        self.send_reserved_item(PacketQueueTx::Bulk, item, None, Some(reservation))
-            .map_err(|_| ())
-    }
-
-    fn send_item(&self, tx: PacketQueueTx, item: PacketQueueItem) -> Result<(), PacketQueueItem> {
-        let packet_count = item.packet_count();
-        let byte_count = item.byte_count();
-        let (priority_reserved, bulk_reserved) = match tx {
-            PacketQueueTx::Priority if packet_count > 0 => {
-                match self.priority_credits.reserve(packet_count, byte_count) {
-                    Ok(reservation) => (Some(reservation), None),
-                    Err(drop) => {
-                        record_admission_drop(&drop);
-                        return Ok(());
-                    }
-                }
-            }
-            PacketQueueTx::Bulk if packet_count > 0 => {
-                match self.bulk_credits.reserve(packet_count, byte_count) {
-                    Ok(reservation) => (None, Some(reservation)),
-                    Err(drop) => {
-                        record_admission_drop(&drop);
-                        return Ok(());
-                    }
-                }
-            }
-            _ => (None, None),
+        let reservation = admission.into_lane_reservation();
+        let tx = PacketQueueTx::from(lane);
+        let (priority_reserved, bulk_reserved) = match lane {
+            PacketLane::Priority => (Some(reservation), None),
+            PacketLane::Bulk => (None, Some(reservation)),
         };
         self.send_reserved_item(tx, item, priority_reserved, bulk_reserved)
+            .map_err(|_| ())
+    }
+
+    fn send_admitted_packet(
+        &self,
+        admitted: AdmittedPacket<ReceivedPacket>,
+    ) -> Result<(), PacketQueueItem> {
+        debug_assert_eq!(admitted.facts.packet_len, admitted.packet.data.len());
+        debug_assert_eq!(admitted.class.lane(), admitted.lane);
+        debug_assert_eq!(admitted.credit.lane(), admitted.lane);
+        debug_assert_eq!(admitted.credit.packet_count(), 1);
+        let tx = PacketQueueTx::from(admitted.lane);
+        let reservation = admitted.credit.into_lane_reservation();
+        let (priority_reserved, bulk_reserved) = match admitted.lane {
+            PacketLane::Priority => (Some(reservation), None),
+            PacketLane::Bulk => (None, Some(reservation)),
+        };
+        self.send_reserved_item(
+            tx,
+            PacketQueueItem::One(admitted.packet),
+            priority_reserved,
+            bulk_reserved,
+        )
     }
 
     fn send_reserved_item(

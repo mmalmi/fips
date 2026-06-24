@@ -83,6 +83,76 @@ async fn test_packet_channel() {
     assert_eq!(received.data, vec![1, 2, 3]);
 }
 
+#[test]
+fn packet_tx_udp_admission_returns_facts_lane_and_credit() {
+    let (tx, _rx) = packet_channel(2);
+    let packet = ReceivedPacket::with_timestamp(
+        TransportId::new(9),
+        TransportAddr::from_string("198.51.100.7:2121"),
+        vec![0x11; 48],
+        77,
+    );
+    let facts = PacketFacts::from(&packet);
+
+    let AdmissionDecision::Admit(admitted) = tx.admit_udp(
+        UdpIngress::new(packet, facts.clone()),
+        AdmissionClass::InteractiveData,
+    ) else {
+        panic!("priority packet should admit")
+    };
+
+    assert_eq!(admitted.facts, facts);
+    assert_eq!(admitted.class, AdmissionClass::InteractiveData);
+    assert_eq!(admitted.lane, PacketLane::Priority);
+    assert_eq!(admitted.credit.lane(), PacketLane::Priority);
+    assert_eq!(admitted.credit.packet_count(), 1);
+    assert_eq!(tx.priority_queued_packets(), 1);
+
+    tx.priority_credits
+        .release(admitted.credit.into_lane_reservation());
+    assert_eq!(tx.priority_queued_packets(), 0);
+}
+
+#[test]
+fn packet_tx_udp_admission_drop_is_explicit_and_attributable() {
+    let (tx, _rx) = packet_channel(1);
+    let addr = TransportAddr::from_string("198.51.100.8:2121");
+    let first = ReceivedPacket::with_timestamp(
+        TransportId::new(9),
+        addr.clone(),
+        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        78,
+    );
+    let second = ReceivedPacket::with_timestamp(
+        TransportId::new(9),
+        addr,
+        vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        79,
+    );
+
+    let AdmissionDecision::Admit(first) = tx.admit_udp(
+        UdpIngress::new(first.clone(), PacketFacts::from(&first)),
+        AdmissionClass::BulkData,
+    ) else {
+        panic!("first bulk packet should admit")
+    };
+    let AdmissionDecision::Drop(drop) = tx.admit_udp(
+        UdpIngress::new(second.clone(), PacketFacts::from(&second)),
+        AdmissionClass::BulkData,
+    ) else {
+        panic!("second bulk packet should drop")
+    };
+
+    assert_eq!(drop.reason, AdmissionDropReason::BulkPressure);
+    assert_eq!(drop.lane, PacketLane::Bulk);
+    assert_eq!(drop.packet_count, 1);
+    assert_eq!(drop.byte_count, PRIORITY_PACKET_MAX_LEN + 2);
+
+    tx.bulk_credits
+        .release(first.credit.into_lane_reservation());
+    assert_eq!(tx.bulk_queued_packets(), 0);
+}
+
 #[tokio::test]
 async fn packet_channel_reserves_priority_progress_ahead_of_bulk_backlog() {
     let (tx, mut rx) = packet_channel(10);
