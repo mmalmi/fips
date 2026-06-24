@@ -31,6 +31,17 @@ impl AdmissionClass {
     }
 }
 
+pub(crate) fn classify_udp_admission(
+    packet_len: usize,
+    priority_packet_max_len: usize,
+) -> AdmissionClass {
+    if packet_len <= priority_packet_max_len {
+        AdmissionClass::InteractiveData
+    } else {
+        AdmissionClass::BulkData
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketFacts {
     pub(crate) transport_id: TransportId,
@@ -98,5 +109,14 @@ mod tests {
 
         assert_eq!(AdmissionClass::BulkData.lane(), PacketLane::Bulk);
         assert!(!AdmissionClass::BulkData.reserves_progress());
+    }
+
+    #[test]
+    fn udp_size_classifier_maps_small_packets_to_reserved_progress() {
+        assert_eq!(
+            classify_udp_admission(512, 512),
+            AdmissionClass::InteractiveData
+        );
+        assert_eq!(classify_udp_admission(513, 512), AdmissionClass::BulkData);
     }
 }

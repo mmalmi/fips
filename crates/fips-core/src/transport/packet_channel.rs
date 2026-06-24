@@ -1,6 +1,7 @@
 //! Priority-aware packet channel for transport receive paths.
 
 use super::{TransportAddr, TransportId};
+use crate::packet_mover::{AdmissionClass, PacketLane, classify_udp_admission};
 use std::mem;
 use std::ops::{Deref, DerefMut, Index};
 use std::sync::{
@@ -90,7 +91,11 @@ impl ReceivedPacket {
     }
 
     pub(crate) fn is_priority_sized(&self) -> bool {
-        self.data.len() <= PRIORITY_PACKET_MAX_LEN
+        self.admission_class().lane() == PacketLane::Priority
+    }
+
+    pub(crate) fn admission_class(&self) -> AdmissionClass {
+        classify_udp_admission(self.data.len(), PRIORITY_PACKET_MAX_LEN)
     }
 }
 
@@ -304,12 +309,6 @@ enum PacketQueueItem {
     One(ReceivedPacket),
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     Batch(PacketBatch),
-}
-
-#[derive(Clone, Copy)]
-enum PacketLane {
-    Priority,
-    Bulk,
 }
 
 #[derive(Clone, Copy)]
