@@ -686,6 +686,30 @@ impl OwnedFspSessionState {
                         }
                     }
                 }
+                FspOrderedCompletion::OpenedOwned {
+                    opened,
+                    slot,
+                    source,
+                } => {
+                    let reservation = OwnerReservation {
+                        owner,
+                        generation,
+                        order: OrderToken {
+                            receive_order_id,
+                            sequence: OrderSequence(ready_ticket.sequence),
+                        },
+                        lane: opened.job.lane.into(),
+                        packet_count: 1,
+                    };
+                    let _ = source;
+                    drain.accepted += 1;
+                    on_output(FspReadyCompletion::OpenedOwned {
+                        reservation,
+                        opened,
+                        slot,
+                        source_peer,
+                    });
+                }
                 FspOrderedCompletion::AeadFailed {
                     job,
                     header,
@@ -810,9 +834,20 @@ struct FspOpenedJob {
     plaintext_len: usize,
 }
 
+struct FspOpenedOwnedJob {
+    job: FspDecryptJob,
+    header: FspEncryptedHeader,
+    plaintext: Vec<u8>,
+}
+
 enum FspOrderedCompletion {
     Opened {
         opened: FspOpenedJob,
+        source: FspAeadCompletionSource,
+    },
+    OpenedOwned {
+        opened: FspOpenedOwnedJob,
+        slot: EpochSlot,
         source: FspAeadCompletionSource,
     },
     AeadFailed {
@@ -839,6 +874,12 @@ enum FspReadyCompletion {
     Opened {
         reservation: OwnerReservation,
         opened: FspOpenedJob,
+        slot: EpochSlot,
+        source_peer: PeerIdentity,
+    },
+    OpenedOwned {
+        reservation: OwnerReservation,
+        opened: FspOpenedOwnedJob,
         slot: EpochSlot,
         source_peer: PeerIdentity,
     },

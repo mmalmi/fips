@@ -238,6 +238,144 @@
     }
 
     #[test]
+    fn worker_directs_pending_epoch_session_datagram_with_owner_reservation() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let previous_hop = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let (_current_sender, current_receiver) = test_xk_session_pair(&source, &local);
+        let (mut pending_sender, pending_receiver) = test_xk_session_pair(&source, &local);
+        let endpoint_body = vec![0x24; DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 128];
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0x01,
+            &endpoint_body,
+        );
+        let fsp_counter = pending_sender.current_send_counter();
+        let fsp_header = crate::node::session_wire::build_fsp_header(
+            fsp_counter,
+            FSP_FLAG_K,
+            inner_plaintext.len() as u16,
+        );
+        let fsp_ciphertext = pending_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .unwrap();
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let datagram = crate::protocol::SessionDatagram::new(
+            *source.node_addr(),
+            *local.node_addr(),
+            fsp_payload,
+        );
+        let inner_timestamp_ms = 0x0a0b_0c0d_u32;
+        let mut fmp_plaintext = Vec::new();
+        fmp_plaintext.extend_from_slice(&inner_timestamp_ms.to_le_bytes());
+        fmp_plaintext.extend_from_slice(&datagram.encode());
+
+        let fmp_key_bytes = [0x34; 32];
+        let fmp_seal = test_chacha_key(fmp_key_bytes);
+        let fmp_open = test_chacha_key(fmp_key_bytes);
+        let fmp_counter = 80;
+        let (wire, fmp_header) =
+            sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
+        let session_key = test_session_key(1, 12);
+        let (return_tx, mut return_rx) = decrypt_worker_return_channels_with_caps(8, 8);
+        let job = DecryptJob::new(
+            wire,
+            session_key,
+            0,
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            *local.node_addr(),
+            1_000,
+            fmp_counter,
+            0,
+            fmp_header,
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
+        );
+
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.pool.return_tx = return_tx.clone();
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
+        );
+        let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: current_receiver.recv_cipher_clone().unwrap(),
+                replay: current_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: Some(crate::node::session::FspRecvEpochSnapshot {
+                cipher: pending_receiver.recv_cipher_clone().unwrap(),
+                replay: pending_receiver.recv_replay_snapshot_owned(),
+            }),
+            previous: None,
+        };
+        let fsp_state = OwnedFspSessionState::from(fsp_snapshot);
+        let expected_fsp_receive_order_id = fsp_state.fsp_receive_order_id();
+        let expected_fsp_generation = fsp_state.fsp_crypto_generation();
+        shard.register_fsp_session(0, *source.node_addr(), fsp_state);
+
+        shard.handle_job(job).expect("worker job should not fail");
+        let event = return_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("pending epoch direct FSP path should emit an event");
+        match event {
+            DecryptWorkerEvent::DirectSessionData(direct) => {
+                assert_eq!(direct.source_addr, *source.node_addr());
+                assert_eq!(direct.previous_hop_peer, previous_hop_peer);
+                assert_eq!(direct.fmp.source_peer, previous_hop_peer);
+                assert_eq!(direct.fmp.fmp_counter, fmp_counter);
+                assert_eq!(direct.receive_sync.counter, fsp_counter);
+                assert_eq!(direct.receive_sync.slot, EpochSlot::Pending);
+                assert_eq!(direct.receive_sync.timestamp, 0x0102_0304);
+                assert_eq!(direct.receive_sync.plaintext_len, inner_plaintext.len());
+                assert_eq!(direct.body_len, endpoint_body.len());
+                let reservation = direct
+                    .owner_reservation
+                    .expect("pending-epoch direct FSP output should carry owner reservation");
+                assert_eq!(
+                    reservation.owner,
+                    OwnerKey::Fsp {
+                        source_addr: *source.node_addr()
+                    }
+                );
+                assert_eq!(
+                    reservation.generation,
+                    OwnerGeneration(expected_fsp_generation)
+                );
+                assert_eq!(
+                    reservation.order.receive_order_id,
+                    expected_fsp_receive_order_id
+                );
+                assert_eq!(reservation.order.sequence.0, 0);
+                assert_eq!(reservation.lane, PacketLane::Bulk);
+                match direct.delivery {
+                    DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                        assert_eq!(delivery.source_peer, source_peer);
+                        assert_eq!(delivery.payload, endpoint_body);
+                    }
+                    DecryptDirectSessionDelivery::Ipv6Packet(_) => {
+                        panic!("endpoint data must not become an IPv6 packet")
+                    }
+                }
+            }
+            other => panic!(
+                "expected direct session data event, got {:?}",
+                other.packet_count()
+            ),
+        }
+    }
+
+    #[test]
     fn bulk_local_fsp_push_path_batches_direct_data_outputs() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
@@ -547,7 +685,10 @@
                 assert_eq!(*got_source_peer, source_peer);
                 assert_eq!(opened.plaintext_len, inner_plaintext.len());
             }
-            FspReadyCompletion::AeadFailed { .. } => panic!("valid worker-open frame must open"),
+            FspReadyCompletion::AeadFailed { .. }
+            | FspReadyCompletion::OpenedOwned { .. } => {
+                panic!("valid worker-open frame must open")
+            }
         }
 
         let duplicate = new_fsp_aead_open_dispatch(
@@ -1127,6 +1268,9 @@
             FspReadyCompletion::Opened { .. } => {
                 panic!("corrupted protected worker-open frame must not open")
             }
+            FspReadyCompletion::OpenedOwned { .. } => {
+                panic!("corrupted protected worker-open frame must not open as owned plaintext")
+            }
         }
 
         let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
@@ -1309,6 +1453,9 @@
             FspReadyCompletion::Opened { .. } => {
                 panic!("recoverable AEAD miss must not authenticate an FSP frame")
             }
+            FspReadyCompletion::OpenedOwned { .. } => {
+                panic!("recoverable AEAD miss must not authenticate owned FSP plaintext")
+            }
         }
     }
 
@@ -1488,6 +1635,9 @@
             }
             FspReadyCompletion::Opened { .. } => {
                 panic!("epoch mismatch must not authenticate an FSP frame")
+            }
+            FspReadyCompletion::OpenedOwned { .. } => {
+                panic!("epoch mismatch must not authenticate owned FSP plaintext")
             }
         }
     }

@@ -967,6 +967,18 @@ impl DecryptWorkerShard {
                 opened,
                 slot,
             ),
+            FspReadyCompletion::OpenedOwned {
+                reservation,
+                opened,
+                slot,
+                source_peer,
+            } => Self::output_for_opened_owned_fsp_job(
+                direct_delivery_sink,
+                reservation,
+                source_peer,
+                opened,
+                slot,
+            ),
             FspReadyCompletion::AeadFailed {
                 reservation,
                 job,
@@ -1162,6 +1174,100 @@ impl DecryptWorkerShard {
         }
     }
 
+    fn output_for_opened_owned_fsp_job(
+        direct_delivery_sink: &DecryptDirectSessionDeliverySink,
+        reservation: OwnerReservation,
+        source_peer: PeerIdentity,
+        opened: FspOpenedOwnedJob,
+        slot: EpochSlot,
+    ) -> Option<DecryptWorkerOutput> {
+        let FspOpenedOwnedJob {
+            job,
+            header,
+            plaintext,
+        } = opened;
+        let FspDecryptJob {
+            fallback,
+            lane,
+            local_node_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu,
+            ce_flag,
+            inner_timestamp_ms,
+            fsp_payload_offset: _,
+            fsp_payload_len: _,
+            trace_enqueued_at: _,
+        } = job;
+        let (timestamp, msg_type, inner_flags_byte, _body) =
+            fsp_strip_inner_header(&plaintext)?;
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        let spin_bit = inner_flags_byte & 0x01 != 0;
+        let fmp = DecryptFmpBookkeeping {
+            source_peer: fallback.source_peer,
+            transport_id: fallback.transport_id,
+            remote_addr: fallback.remote_addr,
+            packet_timestamp_ms: fallback.timestamp_ms,
+            packet_len: fallback.packet_len,
+            fmp_counter: fallback.fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags: fallback.fmp_flags,
+        };
+        let plaintext_len = plaintext.len();
+        let sync = FspReceiveSync {
+            counter: header.counter,
+            slot,
+            received_k_bit,
+            timestamp,
+            plaintext_len,
+            ce_flag,
+            path_mtu,
+            spin_bit,
+        };
+        let message = AuthenticatedSessionMessage::new(
+            source_peer,
+            plaintext,
+            msg_type,
+            inner_flags_byte,
+            timestamp,
+        );
+        let body_len = message.body_len();
+
+        match Self::direct_session_delivery_from_message(source_addr, local_node_addr, message) {
+            Ok(delivery) => {
+                let (event, direct_delivery) = Self::direct_session_event(
+                    direct_delivery_sink,
+                    fmp,
+                    source_addr,
+                    previous_hop_peer,
+                    ce_flag,
+                    body_len,
+                    delivery,
+                    sync,
+                    lane,
+                    Some(reservation),
+                );
+                Some(DecryptWorkerOutput {
+                    event,
+                    direct_delivery,
+                })
+            }
+            Err(message) => Some(DecryptWorkerOutput {
+                event: DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
+                    fmp,
+                    source_addr,
+                    previous_hop_peer,
+                    ce_flag,
+                    message,
+                    receive_sync: sync,
+                    lane,
+                    trace_enqueued_at: None,
+                }),
+                direct_delivery: None,
+            }),
+        }
+    }
+
     fn push_fsp_job_outputs(
         &mut self,
         idx: usize,
@@ -1176,7 +1282,7 @@ impl DecryptWorkerShard {
             self.push_current_epoch_fsp_job_outputs(idx, job, return_batch);
             return;
         }
-        self.push_epoch_churn_fsp_job_outputs(job, return_batch);
+        self.push_epoch_churn_fsp_job_outputs(idx, job, return_batch);
     }
 
     fn push_current_epoch_fsp_job_outputs(
@@ -1309,6 +1415,7 @@ impl DecryptWorkerShard {
 
     fn push_epoch_churn_fsp_job_outputs(
         &mut self,
+        idx: usize,
         job: FspDecryptJob,
         return_batch: &mut DecryptWorkerReturnBatch,
     ) {
@@ -1346,115 +1453,79 @@ impl DecryptWorkerShard {
             ));
             return;
         };
+        let Some(reservation) = state.reserve_local_fsp_open(lane) else {
+            match lane {
+                DecryptWorkerLane::Priority => {
+                    record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
+                }
+                DecryptWorkerLane::Bulk => {
+                    record_decrypt_worker_bulk_drop_count(idx, 1);
+                }
+            }
+            return;
+        };
+        let receive_order_id = reservation.receive_order_id();
+        let crypto_ticket = reservation.crypto_ticket();
         let ciphertext = &fallback.packet_data[ciphertext_offset..payload_end];
-        let received_k_bit = header.flags & FSP_FLAG_K != 0;
         let open_result = {
             let _t_fsp =
                 crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
             state.open_established_frame(&header, ciphertext)
         };
-        let FspOpenSuccess { plaintext, slot } = match open_result {
-            Ok(success) => success,
+        let job = FspDecryptJob {
+            fallback,
+            lane,
+            local_node_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu,
+            ce_flag,
+            inner_timestamp_ms,
+            fsp_payload_offset,
+            fsp_payload_len,
+            trace_enqueued_at: None,
+        };
+        let completion = match open_result {
+            Ok(FspOpenSuccess { plaintext, slot }) => FspOrderedCompletion::OpenedOwned {
+                opened: FspOpenedOwnedJob {
+                    job,
+                    header,
+                    plaintext,
+                },
+                slot,
+                source: FspAeadCompletionSource::Local,
+            },
             Err(FspOpenError::Replay) => {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
                 );
-                return;
+                FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::Local,
+                }
             }
-            Err(FspOpenError::Aead) => {
-                let job = FspDecryptJob {
-                    fallback,
-                    lane,
-                    local_node_addr,
-                    source_addr,
-                    previous_hop_peer,
-                    path_mtu,
-                    ce_flag,
-                    inner_timestamp_ms,
-                    fsp_payload_offset,
-                    fsp_payload_len,
-                    trace_enqueued_at: None,
-                };
-                return_batch.push_output(Self::output_for_fsp_aead_failure(job, &header, true));
-                return;
-            }
+            Err(FspOpenError::Aead) => FspOrderedCompletion::AeadFailed {
+                job,
+                header,
+                source: FspAeadCompletionSource::Local,
+                fallback_to_rx_loop: true,
+                count_failure: false,
+            },
         };
-        let Some((timestamp, msg_type, inner_flags_byte, _body)) =
-            fsp_strip_inner_header(&plaintext)
-        else {
-            return;
-        };
-        let fmp = DecryptFmpBookkeeping {
-            source_peer: fallback.source_peer,
-            transport_id: fallback.transport_id,
-            remote_addr: fallback.remote_addr,
-            packet_timestamp_ms: fallback.timestamp_ms,
-            packet_len: fallback.packet_len,
-            fmp_counter: fallback.fmp_counter,
-            inner_timestamp_ms,
-            fmp_flags: fallback.fmp_flags,
-        };
-        let spin_bit = inner_flags_byte & 0x01 != 0;
-        let plaintext_len = plaintext.len();
-        let sync = FspReceiveSync {
-            counter: header.counter,
-            slot,
-            received_k_bit,
-            timestamp,
-            plaintext_len,
-            ce_flag,
-            path_mtu,
-            spin_bit,
-        };
-        let message = AuthenticatedSessionMessage::new(
-            state.source_peer,
-            plaintext,
-            msg_type,
-            inner_flags_byte,
-            timestamp,
+
+        self.complete_fsp_aead_completions_for_source(
+            idx,
+            source_addr,
+            receive_order_id,
+            std::iter::once(FspAeadCompletion {
+                crypto_ticket,
+                source: FspAeadCompletionSource::Local,
+                result: completion,
+                completed_at: None,
+            }),
+            1,
+            "dropping invalid epoch-churn ordered FSP completion",
+            return_batch,
         );
-        let body_len = message.body_len();
-
-        let event =
-            match Self::direct_session_delivery_from_message(source_addr, local_node_addr, message)
-            {
-                Ok(delivery) => {
-                    let (event, direct_delivery) = Self::direct_session_event(
-                        &self.pool.direct_delivery_sink,
-                        fmp,
-                        source_addr,
-                        previous_hop_peer,
-                        ce_flag,
-                        body_len,
-                        delivery,
-                        sync,
-                        lane,
-                        None,
-                    );
-                    return_batch.push_output(DecryptWorkerOutput {
-                        event,
-                        direct_delivery,
-                    });
-                    return;
-                }
-                Err(message) => {
-                    DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
-                        fmp,
-                        source_addr,
-                        previous_hop_peer,
-                        ce_flag,
-                        message,
-                        receive_sync: sync,
-                        lane,
-                        trace_enqueued_at: None,
-                    })
-                }
-            };
-
-        return_batch.push_output(DecryptWorkerOutput {
-            event,
-            direct_delivery: None,
-        });
     }
 
     fn collect_job_action(&mut self, job: DecryptJob) -> Option<DecryptWorkerJobAction> {
