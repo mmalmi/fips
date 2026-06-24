@@ -315,7 +315,7 @@
         ));
         assert!(matches!(
             bulk_rx.try_recv().expect("bulk item"),
-            DecryptWorkerBulkItem::Batch(_)
+            DecryptWorkerBulkItem::Batch { .. }
         ));
     }
 
@@ -337,9 +337,34 @@
         assert!(
             matches!(
                 bulk_rx.try_recv().expect("single packet bulk item"),
-                DecryptWorkerBulkItem::Batch(_)
+                DecryptWorkerBulkItem::Batch { .. }
             ),
             "single-packet capacity must enqueue a one-packet batch"
+        );
+    }
+
+    #[test]
+    fn decrypt_job_batcher_reuses_pending_buffer_for_single_bulk_flush() {
+        let (pool, _control_rx, _priority_rx, bulk_rx) =
+            test_worker_pool(1, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let session_key = test_session_key(1, 104);
+        let mut batcher = DecryptJobBatcher::new();
+        let pending_buffer = batcher.pending_buffer_ptr();
+
+        batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
+        batcher.flush(&pool);
+
+        assert_eq!(
+            batcher.pending_buffer_ptr(),
+            pending_buffer,
+            "single-job flushes should not allocate a replacement pending buffer"
+        );
+        assert!(
+            matches!(
+                bulk_rx[0].try_recv().expect("single bulk item"),
+                DecryptWorkerBulkItem::Batch { .. }
+            ),
+            "single-job flush should dispatch one canonical bulk batch"
         );
     }
 
@@ -363,13 +388,16 @@
             "worker packet capacity should be consumed by one bounded batch"
         );
         match bulk_rx[0].try_recv().expect("bounded bulk batch") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
                 assert_eq!(
                     jobs.len(),
                     WORKER_PACKET_CAP,
                     "batch width should stop at the worker packet capacity"
                 );
-                assert!(jobs.iter().all(|job| job.session_key() == session_key));
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
                 panic!("expected an eight-packet bulk batch")
@@ -401,22 +429,20 @@
     }
 
     #[test]
-    fn decrypt_worker_bulk_accounting_rejects_partial_capacity() {
+    fn decrypt_worker_bulk_accounting_can_reserve_partial_capacity() {
         let counter = AtomicUsize::new(2);
 
-        assert_eq!(
-            try_reserve_bulk_packets_with_previous(&counter, 4, 4),
-            None,
-            "partial packet capacity should not reserve a prefix"
-        );
-        assert_eq!(counter.load(Ordering::Relaxed), 2);
-        assert!(
-            try_reserve_bulk_packets(&counter, 4, 2),
-            "a whole batch that fits should reserve"
-        );
+        assert_eq!(try_reserve_bulk_packets_partial(&counter, 4, 4), 2);
         assert_eq!(counter.load(Ordering::Relaxed), 4);
-        release_bulk_packets(&counter, 4);
-        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            try_reserve_bulk_packets_partial(&counter, 4, 1),
+            0,
+            "full packet capacity should not over-reserve"
+        );
+        release_bulk_packets(&counter, 3);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        assert_eq!(try_reserve_bulk_packets_partial(&counter, 4, 2), 2);
+        assert_eq!(counter.load(Ordering::Relaxed), 3);
     }
 
     #[test]

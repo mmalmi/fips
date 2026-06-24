@@ -1,17 +1,37 @@
     #[test]
-    fn fsp_owner_handoff_uses_bulk_lane_only() {
+    fn fsp_jobs_keep_original_priority_and_bulk_lanes_to_fsp_owner() {
         let (pool, _control_receivers, priority_receivers, bulk_receivers) =
             test_worker_pool(4, 4);
+
+        let priority_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+        let priority_owner = pool.worker_idx_for_fsp(&priority_job.source_addr);
+        assert!(
+            pool.dispatch_fsp_job_or_return(priority_job).is_ok(),
+            "priority FSP job should queue"
+        );
+        match priority_receivers[priority_owner]
+            .try_recv()
+            .expect("priority FSP job should use priority lane")
+        {
+            WorkerMsg::FspJob(job) => assert_eq!(job.lane(), DecryptWorkerLane::Priority),
+            WorkerMsg::Job(_)
+            | WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::RegisterFspSession { .. }
+            | WorkerMsg::UnregisterSession { .. }
+            | WorkerMsg::UnregisterFspSession { .. } => {
+                panic!("expected priority FSP job")
+            }
+        }
+        assert!(
+            bulk_receivers[priority_owner].is_empty(),
+            "priority FSP jobs must not wait behind bulk work"
+        );
+
         let bulk_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         let bulk_owner = pool.worker_idx_for_fsp(&bulk_job.source_addr);
         assert!(
-            pool.dispatch_bulk_fsp_job_batch_or_return(bulk_owner, vec![bulk_job])
-                .is_ok(),
+            pool.dispatch_fsp_job_or_return(bulk_job).is_ok(),
             "bulk FSP job should queue"
-        );
-        assert!(
-            priority_receivers[bulk_owner].is_empty(),
-            "established FSP owner handoff must not consume the priority lane"
         );
         match bulk_receivers[bulk_owner]
             .try_recv()
@@ -25,31 +45,10 @@
                 );
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::Batch(_) => {
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected bulk FSP job")
             }
         }
-    }
-
-    #[test]
-    fn fsp_job_batcher_drops_impossible_priority_handoff() {
-        let (pool, _control_receivers, priority_receivers, bulk_receivers) =
-            test_worker_pool(4, 4);
-        let priority_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
-        let owner = pool.worker_idx_for_fsp(&priority_job.source_addr);
-        let mut batcher = FspDecryptJobBatcher::new();
-
-        batcher.push_to(&pool, owner, priority_job);
-        batcher.flush(&pool);
-
-        assert!(
-            priority_receivers[owner].is_empty(),
-            "impossible FSP priority handoff should not create a priority lane side path"
-        );
-        assert!(
-            bulk_receivers[owner].is_empty(),
-            "impossible FSP priority handoff should fail closed before bulk enqueue"
-        );
     }
 
     #[test]
@@ -85,7 +84,7 @@
                 assert!(jobs.iter().all(|job| job.source_addr == source_addr));
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::Batch(_) => {
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected a multi-job FSP batch")
             }
         }
@@ -123,19 +122,19 @@
                 assert_eq!(job.source_addr, source_addr);
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::Batch(_) => {
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected a one-job FSP bulk batch")
             }
         }
     }
 
     #[test]
-    fn bulk_fsp_batch_dispatch_returns_whole_batch_when_capacity_is_low() {
+    fn bulk_fsp_batch_dispatch_uses_partial_worker_capacity() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
             test_worker_pool(1, 2);
         let existing_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert!(
-            pool.dispatch_bulk_fsp_job_batch_or_return(0, vec![existing_job])
+            pool.dispatch_bulk_fsp_job_or_return(0, existing_job)
                 .is_ok(),
             "first packet should reserve one of two bulk packet slots"
         );
@@ -150,18 +149,18 @@
 
         assert_eq!(
             returned.len(),
-            2,
-            "insufficient worker capacity should return the whole FSP batch"
+            1,
+            "partial worker capacity should admit one packet and return only overflow"
         );
         assert_eq!(
             bulk_receivers[0].len(),
-            1,
-            "only the existing packet should remain queued"
+            2,
+            "the existing packet plus one batch packet should remain queued"
         );
         assert_eq!(
             pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
-            1,
-            "bulk packet accounting should not reserve returned packets"
+            2,
+            "bulk packet accounting should match the admitted packet count"
         );
         for item in bulk_receivers[0].try_iter() {
             match item {
@@ -173,20 +172,20 @@
                     );
                 }
                 DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-                | DecryptWorkerBulkItem::Batch(_) => {
-                    panic!("expected the existing one-job FSP batch")
+                | DecryptWorkerBulkItem::Batch { .. } => {
+                    panic!("partial-capacity retry should keep one-job FSP batches")
                 }
             }
         }
     }
 
     #[test]
-    fn bulk_fsp_batch_dispatch_does_not_fragment_on_partial_capacity() {
+    fn bulk_fsp_batch_dispatch_keeps_partial_capacity_batched() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
             test_worker_pool(1, 3);
         let existing_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert!(
-            pool.dispatch_bulk_fsp_job_batch_or_return(0, vec![existing_job])
+            pool.dispatch_bulk_fsp_job_or_return(0, existing_job)
                 .is_ok(),
             "first packet should reserve one of three bulk packet slots"
         );
@@ -202,18 +201,18 @@
 
         assert_eq!(
             returned.len(),
-            3,
-            "insufficient worker capacity should return the whole FSP batch"
+            1,
+            "partial worker capacity should return only the overflow tail"
         );
         assert_eq!(
             bulk_receivers[0].len(),
-            1,
-            "only the existing packet should remain queued"
+            2,
+            "the existing packet plus one prefix batch should be queued"
         );
         assert_eq!(
             pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
-            1,
-            "bulk packet accounting should not reserve returned packets"
+            3,
+            "bulk packet accounting should include the admitted prefix batch"
         );
 
         match bulk_receivers[0]
@@ -228,18 +227,30 @@
                 );
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::Batch(_) => {
+            | DecryptWorkerBulkItem::Batch { .. } => {
                 panic!("expected existing one-job FSP batch")
             }
         }
-        assert!(
-            bulk_receivers[0].try_recv().is_err(),
-            "partial-capacity dispatch must not fragment a returned FSP batch"
-        );
+        match bulk_receivers[0]
+            .try_recv()
+            .expect("admitted FSP prefix batch")
+        {
+            DecryptWorkerBulkItem::FspBatch(jobs) => {
+                assert_eq!(jobs.len(), 2);
+                assert!(
+                    jobs.iter()
+                        .all(|job| matches!(job.lane(), DecryptWorkerLane::Bulk))
+                );
+            }
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::Batch { .. } => {
+                panic!("expected an FSP prefix batch")
+            }
+        }
     }
 
     #[test]
-    fn decrypt_worker_bulk_batch_drops_whole_batch_when_packet_capacity_is_low() {
+    fn decrypt_worker_bulk_batch_admits_prefix_when_packet_capacity_is_low() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
             test_worker_pool(1, 3);
         let session_key = test_session_key(1, 123);
@@ -256,27 +267,41 @@
 
         assert_eq!(
             bulk_receivers[0].len(),
-            1,
-            "only the existing packet should remain queued"
+            2,
+            "existing packet plus admitted prefix batch should remain queued"
         );
         assert_eq!(
             pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
-            1,
-            "dropped batch must not consume bulk packet capacity"
+            3,
+            "overflow tail must not consume bulk packet capacity"
         );
 
         match bulk_receivers[0].try_recv().expect("existing bulk job") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
                 assert_eq!(jobs.len(), 1);
                 assert_eq!(jobs[0].session_key, session_key);
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected existing bulk job"),
         }
-        assert!(
-            bulk_receivers[0].try_recv().is_err(),
-            "partial-capacity dispatch must not fragment a dropped bulk batch"
-        );
+        match bulk_receivers[0].try_recv().expect("admitted prefix batch") {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
+                assert_eq!(jobs.len(), 2);
+                assert!(jobs.iter().all(|job| job.session_key == session_key));
+            }
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::FspBatch(_) => {
+                panic!("expected admitted decrypt prefix batch")
+            }
+        }
     }
 
     #[test]
@@ -287,12 +312,22 @@
         pool.dispatch_job(dummy_priority_decrypt_job(session_key));
         assert_eq!(priority_rx.len(), 1, "priority lane should be full");
 
+        let priority_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+        assert!(
+            pool.dispatch_fsp_job_or_return(priority_job).is_err(),
+            "full priority FSP lane should return to caller"
+        );
+        assert_eq!(
+            priority_rx.len(),
+            1,
+            "returned priority FSP job must not overflow the priority lane"
+        );
+
         pool.dispatch_bulk_job(0, dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "bulk lane should be full");
         let bulk_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert!(
-            pool.dispatch_bulk_fsp_job_batch_or_return(0, vec![bulk_job])
-                .is_err(),
+            pool.dispatch_fsp_job_or_return(bulk_job).is_err(),
             "full bulk FSP lane should return to caller"
         );
         assert_eq!(
@@ -655,7 +690,11 @@
         );
 
         match bulk_rx.try_recv().expect("spilled priority packet") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
                 assert_eq!(jobs.len(), 1);
                 let job = &jobs[0];
                 assert_eq!(job.session_key, session_key);
@@ -723,9 +762,12 @@
             "three same-worker bulk packets should consume one channel slot"
         );
         match bulk_rx[0].try_recv().expect("batched bulk item") {
-            DecryptWorkerBulkItem::Batch(jobs) => {
+            DecryptWorkerBulkItem::Batch {
+                session_key: batch_session_key,
+                jobs,
+            } => {
+                assert_eq!(batch_session_key, session_key);
                 assert_eq!(jobs.len(), 3);
-                assert!(jobs.iter().all(|job| job.session_key == session_key));
                 assert!(jobs.iter().all(DecryptJob::is_bulk_lane));
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
@@ -753,14 +795,14 @@
         assert!(
             matches!(
                 bulk_rx[0].try_recv().expect("first session-local bulk item"),
-                DecryptWorkerBulkItem::Batch(_)
+                DecryptWorkerBulkItem::Batch { .. }
             ),
             "a session change should flush the pending singleton before batching resumes"
         );
         assert!(
             matches!(
                 bulk_rx[0].try_recv().expect("second session-local bulk item"),
-                DecryptWorkerBulkItem::Batch(_)
+                DecryptWorkerBulkItem::Batch { .. }
             ),
             "the new session singleton should flush separately at the end"
         );
@@ -896,55 +938,16 @@
     }
 
     #[test]
-    fn decrypt_worker_single_bulk_item_interleaves_priority_work() {
-        let session_key = test_session_key(1, 108);
-        let mut shard = test_shard();
-        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
-        drop(control_tx);
-        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        priority_tx
-            .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
-            .expect("test priority lane should accept one packet");
-        drop(priority_tx);
-
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
-        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
-        let item = decrypt_worker_bulk_item_from_jobs(vec![dummy_bulk_decrypt_job(session_key)]);
-        batch_stats.add_bulk_item(&item);
-
-        let processed = handle_bulk_item(
-            0,
-            &mut shard,
-            &control_rx,
-            &priority_rx,
-            &fsp_aead_completion_rx,
-            item,
-            &mut plaintext_batch,
-            &mut batch_stats,
-        );
-
-        assert_eq!(processed, 1);
-        assert!(
-            priority_rx.is_empty(),
-            "priority packets must not wait behind a singleton bulk item"
-        );
-        assert_eq!(batch_stats.priority_packets, 1);
-        assert_eq!(batch_stats.bulk_packets, 1);
-    }
-
-    #[test]
     fn decrypt_worker_fsp_bulk_batch_interleaves_priority_work() {
         let mut shard = test_shard();
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         drop(control_tx);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         priority_tx
-            .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(
-                test_session_key(1, 932),
+            .try_send(WorkerMsg::FspJob(dummy_fsp_job(
+                DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
             )))
-            .expect("test priority lane should accept one FMP packet");
+            .expect("test priority lane should accept one FSP packet");
         drop(priority_tx);
 
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
@@ -971,68 +974,10 @@
         assert_eq!(processed, 2);
         assert!(
             priority_rx.is_empty(),
-            "priority FMP packets must not wait for the rest of the bulk FSP batch"
+            "priority FSP packets must not wait for the rest of the bulk batch"
         );
         assert_eq!(batch_stats.priority_packets, 1);
         assert_eq!(batch_stats.bulk_packets, 2);
-    }
-
-    #[test]
-    fn decrypt_worker_fsp_open_batch_interleaves_priority_work() {
-        let (pool, _control_receivers, _priority_receivers, _bulk_receivers, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(2, DECRYPT_WORKER_BULK_BATCH_MAX);
-        let source_addr = NodeAddr::from_bytes([0x67; 16]);
-        let owner_idx = 0;
-        let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
-            .expect("two-worker pool should have a sibling opener");
-        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
-        let mut header_packet = header_bytes.to_vec();
-        header_packet.extend_from_slice(&[0u8; 16]);
-        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
-        let mut shard = DecryptWorkerShard::new(pool);
-
-        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
-        drop(control_tx);
-        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        priority_tx
-            .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(
-                test_session_key(1, 109),
-            )))
-            .expect("test priority lane should accept one packet");
-        drop(priority_tx);
-
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        let mut plaintext_batch =
-            DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
-        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
-        let item = DecryptWorkerBulkItem::FspAeadOpenBatch(vec![test_fsp_aead_open_job(
-            source_addr,
-            0,
-            Arc::new(test_chacha_key([0x67; 32])),
-            header,
-            Some(owner_idx),
-        )]);
-        batch_stats.add_bulk_item(&item);
-
-        let processed = handle_bulk_item(
-            open_idx,
-            &mut shard,
-            &control_rx,
-            &priority_rx,
-            &fsp_aead_completion_rx,
-            item,
-            &mut plaintext_batch,
-            &mut batch_stats,
-        );
-
-        assert_eq!(processed, 1);
-        assert!(
-            priority_rx.is_empty(),
-            "priority FMP packets must not wait behind an opener bulk item"
-        );
-        assert_eq!(batch_stats.priority_packets, 1);
-        assert_eq!(batch_stats.bulk_packets, 1);
     }
 
     #[test]

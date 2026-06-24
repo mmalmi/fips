@@ -2463,6 +2463,7 @@
         {
             WorkerMsg::Job(job) => assert_eq!(job.session_key, session_key),
             WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::FspJob(_)
             | WorkerMsg::RegisterFspSession { .. }
             | WorkerMsg::UnregisterSession { .. }
             | WorkerMsg::UnregisterFspSession { .. } => {
@@ -2488,6 +2489,7 @@
                 ..
             } => assert_eq!(queued_key, session_key),
             WorkerMsg::Job(_)
+            | WorkerMsg::FspJob(_)
             | WorkerMsg::RegisterFspSession { .. }
             | WorkerMsg::UnregisterSession { .. }
             | WorkerMsg::UnregisterFspSession { .. } => {
@@ -2500,6 +2502,7 @@
         {
             WorkerMsg::Job(job) => assert_eq!(job.session_key, session_key),
             WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::FspJob(_)
             | WorkerMsg::RegisterFspSession { .. }
             | WorkerMsg::UnregisterSession { .. }
             | WorkerMsg::UnregisterFspSession { .. } => {
@@ -2518,6 +2521,7 @@
             WorkerMsg::RegisterSession { .. }
             | WorkerMsg::RegisterFspSession { .. }
             | WorkerMsg::Job(_)
+            | WorkerMsg::FspJob(_)
             | WorkerMsg::UnregisterFspSession { .. } => {
                 panic!("expected unregister third")
             }
@@ -2532,6 +2536,7 @@
         {
             WorkerMsg::Job(job) => assert_eq!(job.session_key, session_key),
             WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::FspJob(_)
             | WorkerMsg::RegisterFspSession { .. }
             | WorkerMsg::UnregisterSession { .. }
             | WorkerMsg::UnregisterFspSession { .. } => {

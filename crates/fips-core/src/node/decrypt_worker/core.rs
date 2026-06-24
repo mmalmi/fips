@@ -133,20 +133,31 @@ fn mix_decrypt_session_hash(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-fn parse_channel_cap(raw: Option<&str>, default: usize) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+fn parse_channel_cap(primary: Option<&str>, fallback: Option<&str>, default: usize) -> usize {
+    primary
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .or_else(|| fallback.and_then(|raw| raw.trim().parse::<usize>().ok()))
         .unwrap_or(default)
         .clamp(1, default)
 }
 
 fn bulk_channel_cap() -> usize {
     let decrypt_cap = std::env::var("FIPS_DECRYPT_WORKER_CHANNEL_CAP").ok();
-    parse_channel_cap(decrypt_cap.as_deref(), DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP)
+    let shared_cap = std::env::var("FIPS_WORKER_CHANNEL_CAP").ok();
+    parse_channel_cap(
+        decrypt_cap.as_deref(),
+        shared_cap.as_deref(),
+        DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP,
+    )
 }
 
 fn control_channel_cap() -> usize {
     let control_cap = std::env::var("FIPS_DECRYPT_WORKER_CONTROL_CHANNEL_CAP").ok();
-    parse_channel_cap(control_cap.as_deref(), DEFAULT_DECRYPT_WORKER_CONTROL_CHANNEL_CAP)
+    parse_channel_cap(
+        control_cap.as_deref(),
+        None,
+        DEFAULT_DECRYPT_WORKER_CONTROL_CHANNEL_CAP,
+    )
 }
 
 fn fsp_receive_window_from_bulk_cap(bulk_cap: usize) -> usize {
@@ -170,7 +181,11 @@ fn fsp_aead_completion_channel_cap_from_bulk_cap(bulk_cap: usize) -> usize {
 
 fn priority_channel_cap() -> usize {
     let priority_cap = std::env::var("FIPS_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP").ok();
-    parse_channel_cap(priority_cap.as_deref(), DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP)
+    parse_channel_cap(
+        priority_cap.as_deref(),
+        None,
+        DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP,
+    )
 }
 
 fn fallback_bulk_channel_cap() -> usize {
@@ -182,13 +197,14 @@ fn fallback_bulk_channel_cap_from_raw(bulk_cap: Option<&str>) -> usize {
     // Keep the worker input pressure knob from shrinking the worker->rx-loop
     // return lane. Tests can still force this lane small with the explicit
     // fallback cap.
-    parse_channel_cap(bulk_cap, DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP)
+    parse_channel_cap(bulk_cap, None, DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP)
 }
 
 fn fallback_priority_channel_cap() -> usize {
     let priority_cap = std::env::var("FIPS_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP").ok();
     parse_channel_cap(
         priority_cap.as_deref(),
+        None,
         DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP,
     )
 }
@@ -345,6 +361,11 @@ impl OwnedFspSessionState {
 
     fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
         self.fsp_receive_order.issue()
+    }
+
+    fn issue_fsp_worker_open_ticket(&mut self) -> Option<FspReceiveTicket> {
+        self.fsp_receive_order
+            .issue_with_reserve(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
     }
 
     fn issue_fsp_worker_open_ticket_batch(&mut self, count: usize) -> Option<u64> {
