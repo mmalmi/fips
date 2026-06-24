@@ -58,7 +58,6 @@ fn record_fsp_path_worker_open_bulk_count(count: usize) {
 #[derive(Clone, Copy)]
 enum FspOpenWorkerIneligibleReason {
     NotBulk,
-    NotOwner,
     NoOwnerState,
     NoSiblingWorker,
     Malformed,
@@ -71,9 +70,6 @@ impl FspOpenWorkerIneligibleReason {
         match self {
             Self::NotBulk => {
                 crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNotBulk
-            }
-            Self::NotOwner => {
-                crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNotOwner
             }
             Self::NoOwnerState => {
                 crate::perf_profile::Event::DecryptFspOpenWorkerLocalIneligibleNoShared
@@ -427,6 +423,11 @@ impl DecryptWorkerShard {
             DecryptWorkerJobAction::FspJob(job) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
                 record_fsp_owner_match(owner_idx == idx);
+                if owner_idx != idx {
+                    record_fsp_path_handoff(job.lane());
+                    fsp_batcher.push_to(&self.pool, owner_idx, job);
+                    return;
+                }
                 let job = match self.try_prepare_fsp_bulk_open_worker_job(idx, owner_idx, job) {
                     Ok((open_idx, owner_idx, open_job)) => {
                         record_fsp_path_worker_open_bulk();
@@ -442,23 +443,16 @@ impl DecryptWorkerShard {
                         return;
                     }
                     Err(error) => {
-                        if owner_idx == idx {
-                            record_fsp_open_worker_local_ineligible(error.reason);
-                            if matches!(error.reason, FspOpenWorkerIneligibleReason::WindowFull) {
-                                record_decrypt_worker_bulk_drop_count(idx, 1);
-                                return;
-                            }
+                        record_fsp_open_worker_local_ineligible(error.reason);
+                        if matches!(error.reason, FspOpenWorkerIneligibleReason::WindowFull) {
+                            record_decrypt_worker_bulk_drop_count(idx, 1);
+                            return;
                         }
                         error.into_job()
                     }
                 };
-                if owner_idx == idx {
-                    record_fsp_path_local(job.lane());
-                    self.push_fsp_job_outputs(idx, job, plaintext_batch);
-                    return;
-                }
-                record_fsp_path_handoff(job.lane());
-                fsp_batcher.push_to(&self.pool, owner_idx, job);
+                record_fsp_path_local(job.lane());
+                self.push_fsp_job_outputs(idx, job, plaintext_batch);
             }
         }
     }
@@ -486,9 +480,7 @@ impl DecryptWorkerShard {
         owner_idx: usize,
         source_addr: &NodeAddr,
     ) -> Result<FspBulkOpenWorkerTarget<'_>, FspOpenWorkerIneligibleReason> {
-        if owner_idx != idx {
-            return Err(FspOpenWorkerIneligibleReason::NotOwner);
-        }
+        debug_assert_eq!(owner_idx, idx);
         if !self.pool.fsp_bulk_open_worker_enabled() {
             return Err(FspOpenWorkerIneligibleReason::NoSiblingWorker);
         }
