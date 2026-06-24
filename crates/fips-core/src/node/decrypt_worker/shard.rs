@@ -666,9 +666,6 @@ impl DecryptWorkerShard {
         idx: usize,
         jobs: Vec<FspDecryptJob>,
     ) -> Result<(usize, usize, Vec<FspAeadOpenJob>), Vec<FspDecryptJob>> {
-        if jobs.len() < 2 {
-            return Err(jobs);
-        }
         let source_addr = jobs[0].source_addr;
         if !jobs
             .iter()
