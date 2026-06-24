@@ -691,6 +691,7 @@ impl DecryptWorkerShard {
             Arc::clone(&target.state.current.cipher),
             job,
             header,
+            target.state.current.epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,
@@ -738,6 +739,7 @@ impl DecryptWorkerShard {
             return Err(jobs);
         };
         let cipher = Arc::clone(&target.state.current.cipher);
+        let epoch_id = target.state.current.epoch_id;
         let open_jobs = jobs
             .into_iter()
             .zip(headers)
@@ -748,6 +750,7 @@ impl DecryptWorkerShard {
                     Arc::clone(&cipher),
                     job,
                     header,
+                    epoch_id,
                     FspAeadCompletionSource::WorkerOpen,
                     None,
                     None,
@@ -1087,6 +1090,7 @@ impl DecryptWorkerShard {
             job,
             header,
             plaintext_len,
+            ..
         } = opened;
         let FspDecryptJob {
             fallback,
@@ -1274,153 +1278,17 @@ impl DecryptWorkerShard {
         job: FspDecryptJob,
         return_batch: &mut DecryptWorkerReturnBatch,
     ) {
-        if self
-            .fsp_sessions
-            .get(&job.source_addr)
-            .is_some_and(OwnedFspSessionState::has_single_current_epoch)
-        {
-            self.push_current_epoch_fsp_job_outputs(idx, job, return_batch);
-            return;
+        enum LocalFspOpen {
+            Current {
+                epoch_id: FspEpochId,
+                result: Result<usize, FspOpenError>,
+            },
+            MultiEpoch(Result<FspOpenSuccess, FspOpenError>),
+            EpochMismatch,
         }
-        self.push_epoch_churn_fsp_job_outputs(idx, job, return_batch);
-    }
 
-    fn push_current_epoch_fsp_job_outputs(
-        &mut self,
-        idx: usize,
-        job: FspDecryptJob,
-        return_batch: &mut DecryptWorkerReturnBatch,
-    ) {
         let FspDecryptJob {
             mut fallback,
-            lane,
-            local_node_addr,
-            source_addr,
-            previous_hop_peer,
-            path_mtu,
-            ce_flag,
-            inner_timestamp_ms,
-            fsp_payload_offset,
-            fsp_payload_len,
-            trace_enqueued_at: _,
-        } = job;
-        let Some(state) = self.fsp_sessions.get(&source_addr) else {
-            return_batch.push_output(DecryptWorkerOutput {
-                event: DecryptWorkerEvent::Plaintext(fallback),
-                direct_delivery: None,
-            });
-            return;
-        };
-        debug_assert!(state.has_single_current_epoch());
-
-        let Some((header, ciphertext_offset, payload_end)) = Self::parse_fsp_encrypted_payload(
-            &fallback.packet_data,
-            fsp_payload_offset,
-            fsp_payload_len,
-        ) else {
-            return_batch.push_output(self.output_for_malformed_fsp_drop(
-                fallback,
-                lane,
-                inner_timestamp_ms,
-                previous_hop_peer,
-            ));
-            return;
-        };
-        let ciphertext = &mut fallback.packet_data[ciphertext_offset..payload_end];
-        let (reservation, open_result) = {
-            let state = self
-                .fsp_sessions
-                .get_mut(&source_addr)
-                .expect("FSP session was checked before current-epoch local open");
-            let Some(reservation) = state.reserve_local_fsp_open(lane) else {
-                match lane {
-                    DecryptWorkerLane::Priority => {
-                        record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
-                    }
-                    DecryptWorkerLane::Bulk => {
-                        record_decrypt_worker_bulk_drop_count(idx, 1);
-                    }
-                }
-                return;
-            };
-            let open_result = state.current_epoch_matches(&header).then(|| {
-                let _t_fsp =
-                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                state.open_current_established_frame_in_place_deferred_replay(&header, ciphertext)
-            });
-            (reservation, open_result)
-        };
-        let job = FspDecryptJob {
-            fallback,
-            lane,
-            local_node_addr,
-            source_addr,
-            previous_hop_peer,
-            path_mtu,
-            ce_flag,
-            inner_timestamp_ms,
-            fsp_payload_offset,
-            fsp_payload_len,
-            trace_enqueued_at: None,
-        };
-        let completion = match open_result {
-            Some(Ok(plaintext_len)) => FspOrderedCompletion::Opened {
-                opened: FspOpenedJob {
-                    job,
-                    header,
-                    plaintext_len,
-                },
-                source: FspAeadCompletionSource::Local,
-            },
-            Some(Err(FspOpenError::Aead)) => {
-                FspOrderedCompletion::AeadFailed {
-                    job,
-                    header,
-                    source: FspAeadCompletionSource::Local,
-                    fallback_to_rx_loop: false,
-                    count_failure: true,
-                }
-            }
-            Some(Err(FspOpenError::Replay)) => {
-                FspOrderedCompletion::AeadFailed {
-                    job,
-                    header,
-                    source: FspAeadCompletionSource::Local,
-                    fallback_to_rx_loop: false,
-                    count_failure: true,
-                }
-            }
-            None => FspOrderedCompletion::EpochMismatch {
-                job,
-                header,
-                source: FspAeadCompletionSource::Local,
-            },
-        };
-
-        self.complete_fsp_aead_completions_for_source(
-            idx,
-            source_addr,
-            reservation.receive_order_id(),
-            std::iter::once(FspAeadCompletion {
-                crypto_ticket: reservation.crypto_ticket(),
-                source: FspAeadCompletionSource::Local,
-                result: completion,
-                completed_at: None,
-            }),
-            1,
-            "dropping invalid local ordered FSP completion",
-            return_batch,
-        );
-    }
-
-    fn push_epoch_churn_fsp_job_outputs(
-        &mut self,
-        idx: usize,
-        job: FspDecryptJob,
-        return_batch: &mut DecryptWorkerReturnBatch,
-    ) {
-        let FspDecryptJob {
-            fallback,
             lane,
             local_node_addr,
             source_addr,
@@ -1453,6 +1321,7 @@ impl DecryptWorkerShard {
             ));
             return;
         };
+
         let Some(reservation) = state.reserve_local_fsp_open(lane) else {
             match lane {
                 DecryptWorkerLane::Priority => {
@@ -1466,12 +1335,33 @@ impl DecryptWorkerShard {
         };
         let receive_order_id = reservation.receive_order_id();
         let crypto_ticket = reservation.crypto_ticket();
-        let ciphertext = &fallback.packet_data[ciphertext_offset..payload_end];
-        let open_result = {
-            let _t_fsp =
-                crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-            state.open_established_frame_deferred_replay(&header, ciphertext)
+
+        let open = if state.has_single_current_epoch() {
+            let epoch_id = state.current.epoch_id;
+            if state.current_epoch_matches(&header) {
+                let ciphertext = &mut fallback.packet_data[ciphertext_offset..payload_end];
+                let _t_fsp =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+                LocalFspOpen::Current {
+                    epoch_id,
+                    result: state
+                        .open_current_established_frame_in_place_deferred_replay(
+                            &header, ciphertext,
+                        ),
+                }
+            } else {
+                LocalFspOpen::EpochMismatch
+            }
+        } else {
+            let ciphertext = &fallback.packet_data[ciphertext_offset..payload_end];
+            let result = {
+                let _t_fsp =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+                state.open_established_frame_deferred_replay(&header, ciphertext)
+            };
+            LocalFspOpen::MultiEpoch(result)
         };
+
         let job = FspDecryptJob {
             fallback,
             lane,
@@ -1485,12 +1375,31 @@ impl DecryptWorkerShard {
             fsp_payload_len,
             trace_enqueued_at: None,
         };
-        let completion = match open_result {
-            Ok(FspOpenSuccess {
+        let completion = match open {
+            LocalFspOpen::Current {
+                epoch_id,
+                result: Ok(plaintext_len),
+            } => FspOrderedCompletion::Opened {
+                opened: FspOpenedJob {
+                    job,
+                    header,
+                    epoch_id,
+                    plaintext_len,
+                },
+                source: FspAeadCompletionSource::Local,
+            },
+            LocalFspOpen::Current { result: Err(_), .. } => FspOrderedCompletion::AeadFailed {
+                job,
+                header,
+                source: FspAeadCompletionSource::Local,
+                fallback_to_rx_loop: false,
+                count_failure: true,
+            },
+            LocalFspOpen::MultiEpoch(Ok(FspOpenSuccess {
                 plaintext,
                 slot,
                 epoch_id,
-            }) => FspOrderedCompletion::OpenedOwned {
+            })) => FspOrderedCompletion::OpenedOwned {
                 opened: FspOpenedOwnedJob {
                     job,
                     header,
@@ -1500,7 +1409,7 @@ impl DecryptWorkerShard {
                 epoch_id,
                 source: FspAeadCompletionSource::Local,
             },
-            Err(FspOpenError::Replay) => {
+            LocalFspOpen::MultiEpoch(Err(FspOpenError::Replay)) => {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
                 );
@@ -1508,12 +1417,17 @@ impl DecryptWorkerShard {
                     source: FspAeadCompletionSource::Local,
                 }
             }
-            Err(FspOpenError::Aead) => FspOrderedCompletion::AeadFailed {
+            LocalFspOpen::MultiEpoch(Err(FspOpenError::Aead)) => FspOrderedCompletion::AeadFailed {
                 job,
                 header,
                 source: FspAeadCompletionSource::Local,
                 fallback_to_rx_loop: true,
                 count_failure: false,
+            },
+            LocalFspOpen::EpochMismatch => FspOrderedCompletion::EpochMismatch {
+                job,
+                header,
+                source: FspAeadCompletionSource::Local,
             },
         };
 
@@ -1528,7 +1442,7 @@ impl DecryptWorkerShard {
                 completed_at: None,
             }),
             1,
-            "dropping invalid epoch-churn ordered FSP completion",
+            "dropping invalid ordered local FSP completion",
             return_batch,
         );
     }

@@ -611,6 +611,7 @@
         let receive_order_id = state.fsp_receive_order_id();
         let crypto_generation = state.fsp_crypto_generation();
         let cipher = Arc::clone(&state.current.cipher);
+        let epoch_id = state.current.epoch_id;
 
         let make_job = |packet_data: Vec<u8>| {
             let (_return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(4, 4);
@@ -653,6 +654,7 @@
             Arc::clone(&cipher),
             make_job(fsp_payload.clone()),
             header.clone(),
+            epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,
@@ -703,6 +705,7 @@
             cipher,
             make_job(fsp_payload),
             header,
+            epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,
@@ -1251,6 +1254,7 @@
         let receive_order_id = state.fsp_receive_order_id();
         let crypto_generation = state.fsp_crypto_generation();
         let cipher = Arc::clone(&state.current.cipher);
+        let epoch_id = state.current.epoch_id;
 
         let mut make_payload = |body: &'static [u8]| {
             let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
@@ -1317,6 +1321,7 @@
             Arc::clone(&cipher),
             make_job(first_payload, first_payload_len),
             first_header,
+            epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,
@@ -1338,6 +1343,7 @@
             cipher,
             make_job(second_payload, second_payload_len),
             second_header,
+            epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,
@@ -1407,6 +1413,7 @@
         let receive_order_id = state.fsp_receive_order_id();
         let crypto_generation = state.fsp_crypto_generation();
         let cipher = Arc::clone(&state.current.cipher);
+        let epoch_id = state.current.epoch_id;
 
         let mut make_payload = |body: &'static [u8]| {
             let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
@@ -1477,6 +1484,7 @@
             Arc::clone(&cipher),
             make_job(protected_payload, protected_payload_len),
             protected_header,
+            epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,
@@ -1526,6 +1534,7 @@
             Arc::clone(&cipher),
             make_job(first_payload, first_payload_len),
             first_header,
+            epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,
@@ -1550,6 +1559,7 @@
             cipher,
             make_job(second_payload, second_payload_len),
             second_header,
+            epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,
@@ -1756,7 +1766,7 @@
 
         let mut return_batch =
             DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
-        shard.push_current_epoch_fsp_job_outputs(0, job, &mut return_batch);
+        shard.push_fsp_job_outputs(0, job, &mut return_batch);
         return_batch.flush();
 
         match return_rx
@@ -1903,6 +1913,7 @@
         let receive_order_id = state.fsp_receive_order_id();
         let crypto_generation = state.fsp_crypto_generation();
         let cipher = Arc::clone(&state.current.cipher);
+        let epoch_id = state.current.epoch_id;
 
         let mut make_payload = |body: &'static [u8]| {
             let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
@@ -1980,6 +1991,7 @@
             Arc::clone(&cipher),
             make_job(local_payload, local_payload_len),
             local_header,
+            epoch_id,
             FspAeadCompletionSource::Local,
             None,
             None,
@@ -2004,6 +2016,7 @@
             cipher,
             make_job(open_payload, open_payload_len),
             open_header,
+            epoch_id,
             FspAeadCompletionSource::WorkerOpen,
             None,
             None,

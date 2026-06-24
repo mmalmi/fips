@@ -119,6 +119,7 @@
                 cipher: Arc::new(test_chacha_key([0x67; 32])),
                 job,
                 header,
+                epoch_id: 0,
             },
         });
 
@@ -2157,6 +2158,7 @@
             cipher,
             job,
             header,
+            0,
             FspAeadCompletionSource::WorkerOpen,
             completion_owner_idx,
             None,

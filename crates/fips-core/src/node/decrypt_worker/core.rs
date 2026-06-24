@@ -644,26 +644,6 @@ impl OwnedFspSessionState {
             .open_in_place_deferred_replay(ciphertext, header.counter, &header.header_bytes)
     }
 
-    fn accept_opened_current_established_frame_for(
-        current: &mut OwnedFspEpochState,
-        current_k_bit: bool,
-        header: &FspEncryptedHeader,
-    ) -> Result<EpochSlot, FspOpenError> {
-        if header.flags & FSP_FLAG_K != u8::from(current_k_bit) * FSP_FLAG_K {
-            return Err(FspOpenError::Aead);
-        }
-        if let Some(rejection) = current.replay.rejection_reason(header.counter) {
-            let counter_lag = current.replay.highest().saturating_sub(header.counter);
-            crate::perf_profile::record_fsp_aead_completion_replay_drop_reason(
-                rejection,
-                counter_lag,
-            );
-            return Err(FspOpenError::Replay);
-        }
-        current.replay.accept(header.counter);
-        Ok(EpochSlot::Current)
-    }
-
     fn complete_ordered_fsp_open(
         &mut self,
         ticket: FspReceiveTicket,
@@ -693,10 +673,13 @@ impl OwnedFspSessionState {
                         lane: opened.job.lane.into(),
                         packet_count: 1,
                     };
-                    match Self::accept_opened_current_established_frame_for(
+                    match Self::accept_opened_established_frame_for_epoch(
                         current,
-                        *current_k_bit,
+                        pending,
+                        previous,
+                        current_k_bit,
                         &opened.header,
+                        opened.epoch_id,
                     ) {
                         Ok(slot) => {
                             drain.accepted += 1;
@@ -891,6 +874,7 @@ fn new_fsp_receive_order() -> FspReceiveOrder {
 struct FspOpenedJob {
     job: FspDecryptJob,
     header: FspEncryptedHeader,
+    epoch_id: FspEpochId,
     plaintext_len: usize,
 }
 
@@ -1239,6 +1223,7 @@ struct FspAeadOpenWork {
     cipher: Arc<LessSafeKey>,
     job: FspDecryptJob,
     header: FspEncryptedHeader,
+    epoch_id: FspEpochId,
 }
 
 struct FspAeadOpenReject {
@@ -1263,6 +1248,7 @@ impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener {
             cipher,
             mut job,
             header,
+            epoch_id,
         } = work.work;
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
         let ciphertext_offset = job.fsp_payload_offset + FSP_HEADER_SIZE;
@@ -1299,6 +1285,7 @@ impl StatelessCryptoWorker<FspAeadOpenWork> for FspAeadOpener {
                 result: CryptoResult::Opened(FspOpenedJob {
                     job,
                     header,
+                    epoch_id,
                     plaintext_len,
                 }),
             },
@@ -1492,6 +1479,7 @@ fn new_fsp_aead_open_dispatch(
     cipher: Arc<LessSafeKey>,
     job: FspDecryptJob,
     header: FspEncryptedHeader,
+    epoch_id: FspEpochId,
     completion_source: FspAeadCompletionSource,
     completion_owner_idx: Option<usize>,
     open_queued_at: Option<crate::perf_profile::TraceStamp>,
@@ -1503,6 +1491,7 @@ fn new_fsp_aead_open_dispatch(
                 cipher,
                 job,
                 header,
+                epoch_id,
             },
         },
         FspAeadOpenRoute {
