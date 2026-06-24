@@ -657,7 +657,7 @@ impl DecryptWorkerShard {
         idx: usize,
         owner_idx: usize,
         job: FspDecryptJob,
-    ) -> Result<(usize, usize, FspAeadOpenJob), FspOpenWorkerPrepareError> {
+    ) -> Result<(usize, usize, FspAeadOpenDispatch), FspOpenWorkerPrepareError> {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             return Err(FspOpenWorkerPrepareError::ineligible(
                 job,
@@ -685,7 +685,7 @@ impl DecryptWorkerShard {
                 FspOpenWorkerIneligibleReason::WindowFull,
             ));
         };
-        let open_job = FspAeadOpenJob::new(
+        let open_job = new_fsp_aead_open_dispatch(
             reservation.crypto_ticket(),
             Arc::clone(&target.state.current.cipher),
             job,
@@ -701,7 +701,7 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         jobs: Vec<FspDecryptJob>,
-    ) -> Result<(usize, usize, Vec<FspAeadOpenJob>), Vec<FspDecryptJob>> {
+    ) -> Result<(usize, usize, Vec<FspAeadOpenDispatch>), Vec<FspDecryptJob>> {
         if jobs.len() < 2 {
             return Err(jobs);
         }
@@ -742,7 +742,7 @@ impl DecryptWorkerShard {
             .zip(headers)
             .enumerate()
             .map(|(offset, (job, header))| {
-                FspAeadOpenJob::new(
+                new_fsp_aead_open_dispatch(
                     reservation.crypto_ticket_at(offset),
                     Arc::clone(&cipher),
                     job,
@@ -763,7 +763,7 @@ impl DecryptWorkerShard {
         jobs: I,
         return_batch: &mut DecryptWorkerReturnBatch,
     ) where
-        I: IntoIterator<Item = FspAeadOpenJob>,
+        I: IntoIterator<Item = FspAeadOpenDispatch>,
     {
         let mut returned_count = 0usize;
         let mut batcher = FspAeadCompletionBatchBuilder::new();

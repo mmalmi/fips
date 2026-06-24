@@ -364,8 +364,8 @@ impl DecryptWorkerPool {
         &self,
         open_idx: usize,
         owner_idx: usize,
-        mut jobs: Vec<FspAeadOpenJob>,
-    ) -> Result<(), Vec<FspAeadOpenJob>> {
+        mut jobs: Vec<FspAeadOpenDispatch>,
+    ) -> Result<(), Vec<FspAeadOpenDispatch>> {
         debug_assert!(!jobs.is_empty());
         debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
 

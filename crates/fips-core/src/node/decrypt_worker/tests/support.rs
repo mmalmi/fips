@@ -2080,7 +2080,7 @@
         cipher: Arc<LessSafeKey>,
         header: FspEncryptedHeader,
         completion_owner_idx: Option<usize>,
-    ) -> FspAeadOpenJob {
+    ) -> FspAeadOpenDispatch {
         test_fsp_aead_open_job_with_meta(
             source_addr,
             7,
@@ -2100,11 +2100,11 @@
         cipher: Arc<LessSafeKey>,
         header: FspEncryptedHeader,
         completion_owner_idx: Option<usize>,
-    ) -> FspAeadOpenJob {
+    ) -> FspAeadOpenDispatch {
         let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
         job.source_addr = source_addr;
         job.fsp_payload_len = 0;
-        FspAeadOpenJob::new(
+        new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket(
                 source_addr,
                 receive_order_id,

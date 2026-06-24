@@ -484,7 +484,7 @@
             }
         };
 
-        let completion = FspAeadOpenJob::new(
+        let completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
@@ -522,7 +522,7 @@
             FspReadyCompletion::AeadFailed { .. } => panic!("valid worker-open frame must open"),
         }
 
-        let duplicate = FspAeadOpenJob::new(
+        let duplicate = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
@@ -898,7 +898,7 @@
         let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
         let first_payload_len = first_payload.len();
         let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
-        let first_completion = FspAeadOpenJob::new(
+        let first_completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
@@ -919,7 +919,7 @@
         let (second_payload, second_plaintext_len) = make_payload(b"second worker-open");
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
-        let second_completion = FspAeadOpenJob::new(
+        let second_completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
@@ -1059,7 +1059,7 @@
         let protected_payload_len = protected_payload.len();
         let protected_header =
             FspEncryptedHeader::parse(&protected_payload).expect("protected FSP header");
-        let protected_completion = FspAeadOpenJob::new(
+        let protected_completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
@@ -1103,7 +1103,7 @@
         let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
         let first_payload_len = first_payload.len();
         let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
-        let first_completion = FspAeadOpenJob::new(
+        let first_completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
@@ -1128,7 +1128,7 @@
         let second_payload_after_corruption = second_payload.clone();
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
-        let second_completion = FspAeadOpenJob::new(
+        let second_completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
@@ -1556,7 +1556,7 @@
             .expect("local owner open should reserve from the same owner ticket source");
         assert_eq!(local_ticket.sequence, 1);
 
-        let local_completion = FspAeadOpenJob::new(
+        let local_completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,
@@ -1580,7 +1580,7 @@
             "local owner completion must not bypass an older worker-open ticket"
         );
 
-        let open_completion = FspAeadOpenJob::new(
+        let open_completion = new_fsp_aead_open_dispatch(
             test_fsp_crypto_ticket_for_receive_ticket(
                 source_addr,
                 receive_order_id,

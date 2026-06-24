@@ -29,7 +29,7 @@ enum WorkerMsg {
 
 #[allow(clippy::large_enum_variant)]
 enum DecryptWorkerBulkItem {
-    FspAeadOpenBatch(Vec<FspAeadOpenJob>),
+    FspAeadOpenBatch(Vec<FspAeadOpenDispatch>),
     Batch {
         session_key: DecryptSessionKey,
         jobs: Vec<DecryptJob>,
@@ -92,7 +92,7 @@ impl DecryptWorkerBulkItem {
 }
 
 fn decrypt_worker_bulk_item_from_fsp_aead_open_jobs(
-    jobs: Vec<FspAeadOpenJob>,
+    jobs: Vec<FspAeadOpenDispatch>,
 ) -> DecryptWorkerBulkItem {
     debug_assert!(!jobs.is_empty());
     DecryptWorkerBulkItem::FspAeadOpenBatch(jobs)
@@ -123,7 +123,7 @@ fn fsp_jobs_from_decrypt_worker_bulk_item(item: DecryptWorkerBulkItem) -> Vec<Fs
 
 fn fsp_aead_open_jobs_from_decrypt_worker_bulk_item(
     item: DecryptWorkerBulkItem,
-) -> Vec<FspAeadOpenJob> {
+) -> Vec<FspAeadOpenDispatch> {
     match item {
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => jobs,
         DecryptWorkerBulkItem::Batch { .. } | DecryptWorkerBulkItem::FspBatch(_) => {
@@ -412,7 +412,7 @@ struct FspAeadOpenDispatchKey {
     owner_idx: usize,
 }
 
-type FspAeadOpenDispatchBatcher = DispatchBatcher<FspAeadOpenDispatchKey, FspAeadOpenJob>;
+type FspAeadOpenDispatchBatcher = DispatchBatcher<FspAeadOpenDispatchKey, FspAeadOpenDispatch>;
 
 fn new_fsp_aead_open_dispatch_batcher() -> FspAeadOpenDispatchBatcher {
     DispatchBatcher::new(DECRYPT_WORKER_BULK_BATCH_MAX)
@@ -428,8 +428,8 @@ fn fsp_aead_open_dispatch_key(open_idx: usize, owner_idx: usize) -> FspAeadOpenD
 fn dispatch_fsp_aead_open_batch(
     workers: &DecryptWorkerPool,
     key: FspAeadOpenDispatchKey,
-    jobs: Vec<FspAeadOpenJob>,
-) -> Vec<FspAeadOpenJob> {
+    jobs: Vec<FspAeadOpenDispatch>,
+) -> Vec<FspAeadOpenDispatch> {
     workers
         .dispatch_fsp_aead_open_worker_job_batch_or_return(key.open_idx, key.owner_idx, jobs)
         .err()
@@ -441,8 +441,8 @@ fn push_fsp_aead_open_dispatch(
     workers: &DecryptWorkerPool,
     open_idx: usize,
     owner_idx: usize,
-    job: FspAeadOpenJob,
-) -> Vec<FspAeadOpenJob> {
+    job: FspAeadOpenDispatch,
+) -> Vec<FspAeadOpenDispatch> {
     let key = fsp_aead_open_dispatch_key(open_idx, owner_idx);
     let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
     batcher.push(key, batch_max, job, |key, jobs| {
@@ -455,8 +455,8 @@ fn push_fsp_aead_open_dispatch_batch(
     workers: &DecryptWorkerPool,
     open_idx: usize,
     owner_idx: usize,
-    jobs: Vec<FspAeadOpenJob>,
-) -> Vec<FspAeadOpenJob> {
+    jobs: Vec<FspAeadOpenDispatch>,
+) -> Vec<FspAeadOpenDispatch> {
     let key = fsp_aead_open_dispatch_key(open_idx, owner_idx);
     let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
     batcher.push_batch(key, batch_max, jobs, |key, jobs| {
@@ -467,6 +467,6 @@ fn push_fsp_aead_open_dispatch_batch(
 fn flush_fsp_aead_open_dispatch(
     batcher: &mut FspAeadOpenDispatchBatcher,
     workers: &DecryptWorkerPool,
-) -> Vec<FspAeadOpenJob> {
+) -> Vec<FspAeadOpenDispatch> {
     batcher.flush(|key, jobs| dispatch_fsp_aead_open_batch(workers, key, jobs))
 }

@@ -449,7 +449,7 @@ fn send_fsp_aead_open_completion_flush(
 }
 
 #[cfg(test)]
-fn complete_fsp_aead_open_job(idx: usize, pool: &DecryptWorkerPool, job: FspAeadOpenJob) {
+fn complete_fsp_aead_open_job(idx: usize, pool: &DecryptWorkerPool, job: FspAeadOpenDispatch) {
     let mut scratch = FspAeadOpenScratch::default();
     complete_fsp_aead_open_jobs(idx, pool, vec![job], &mut scratch);
 }
@@ -457,7 +457,7 @@ fn complete_fsp_aead_open_job(idx: usize, pool: &DecryptWorkerPool, job: FspAead
 fn complete_fsp_aead_open_jobs(
     idx: usize,
     pool: &DecryptWorkerPool,
-    jobs: Vec<FspAeadOpenJob>,
+    jobs: Vec<FspAeadOpenDispatch>,
     scratch: &mut FspAeadOpenScratch,
 ) {
     let mut batcher = FspAeadCompletionBatchBuilder::new();
