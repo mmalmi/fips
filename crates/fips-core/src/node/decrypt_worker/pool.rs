@@ -392,19 +392,6 @@ impl DecryptWorkerPool {
         )
     }
 
-    #[allow(clippy::result_large_err)]
-    fn dispatch_bulk_fsp_job_or_return(
-        &self,
-        idx: usize,
-        job: FspDecryptJob,
-    ) -> Result<(), FspDecryptJob> {
-        self.dispatch_bulk_fsp_job_batch_or_return(idx, vec![job])
-            .map_err(|mut jobs| {
-                debug_assert_eq!(jobs.len(), 1);
-                jobs.pop().expect("single FSP job dispatch returned empty batch")
-            })
-    }
-
     fn dispatch_bulk_fsp_job_batch_or_return(
         &self,
         idx: usize,

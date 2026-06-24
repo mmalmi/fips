@@ -5,7 +5,7 @@
         let bulk_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         let bulk_owner = pool.worker_idx_for_fsp(&bulk_job.source_addr);
         assert!(
-            pool.dispatch_bulk_fsp_job_or_return(bulk_owner, bulk_job)
+            pool.dispatch_bulk_fsp_job_batch_or_return(bulk_owner, vec![bulk_job])
                 .is_ok(),
             "bulk FSP job should queue"
         );
@@ -135,7 +135,7 @@
             test_worker_pool(1, 2);
         let existing_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert!(
-            pool.dispatch_bulk_fsp_job_or_return(0, existing_job)
+            pool.dispatch_bulk_fsp_job_batch_or_return(0, vec![existing_job])
                 .is_ok(),
             "first packet should reserve one of two bulk packet slots"
         );
@@ -186,7 +186,7 @@
             test_worker_pool(1, 3);
         let existing_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert!(
-            pool.dispatch_bulk_fsp_job_or_return(0, existing_job)
+            pool.dispatch_bulk_fsp_job_batch_or_return(0, vec![existing_job])
                 .is_ok(),
             "first packet should reserve one of three bulk packet slots"
         );
@@ -309,7 +309,8 @@
         assert_eq!(bulk_rx.len(), 1, "bulk lane should be full");
         let bulk_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert!(
-            pool.dispatch_bulk_fsp_job_or_return(0, bulk_job).is_err(),
+            pool.dispatch_bulk_fsp_job_batch_or_return(0, vec![bulk_job])
+                .is_err(),
             "full bulk FSP lane should return to caller"
         );
         assert_eq!(

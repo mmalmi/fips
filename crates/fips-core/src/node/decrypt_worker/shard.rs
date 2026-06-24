@@ -270,16 +270,18 @@ impl DecryptWorkerShard {
         job: DecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
+        let mut fsp_batcher = FspDecryptJobBatcher::new();
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         if let Some(action) = self.collect_job_action(job) {
             self.push_job_action_output(
                 idx,
                 action,
                 plaintext_batch,
-                None,
+                &mut fsp_batcher,
                 &mut fsp_open_batcher,
             );
         }
+        fsp_batcher.flush(&self.pool);
         flush_fsp_open_batcher(idx, self, plaintext_batch, &mut fsp_open_batcher);
     }
 
@@ -290,6 +292,7 @@ impl DecryptWorkerShard {
         item_started_at: Option<crate::perf_profile::TraceStamp>,
         trace_enabled: bool,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        fsp_batcher: &mut FspDecryptJobBatcher,
         fsp_open_batcher: &mut FspAeadOpenJobBatcher,
     ) {
         let count = jobs.len();
@@ -326,7 +329,7 @@ impl DecryptWorkerShard {
                         idx,
                         DecryptWorkerJobAction::FspJob(job),
                         plaintext_batch,
-                        None,
+                        &mut *fsp_batcher,
                         &mut *fsp_open_batcher,
                     );
                     trace!(worker = idx, "processed batched bulk FSP decrypt worker job");
@@ -397,14 +400,16 @@ impl DecryptWorkerShard {
 
     fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(self.pool.fallback_tx.clone());
+        let mut fsp_batcher = FspDecryptJobBatcher::new();
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         self.push_job_action_output(
             idx,
             action,
             &mut plaintext_batch,
-            None,
+            &mut fsp_batcher,
             &mut fsp_open_batcher,
         );
+        fsp_batcher.flush(&self.pool);
         flush_fsp_open_batcher(idx, self, &mut plaintext_batch, &mut fsp_open_batcher);
         plaintext_batch.flush();
     }
@@ -414,7 +419,7 @@ impl DecryptWorkerShard {
         idx: usize,
         action: DecryptWorkerJobAction,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-        mut fsp_batcher: Option<&mut FspDecryptJobBatcher>,
+        fsp_batcher: &mut FspDecryptJobBatcher,
         fsp_open_batcher: &mut FspAeadOpenJobBatcher,
     ) {
         match action {
@@ -453,26 +458,7 @@ impl DecryptWorkerShard {
                     return;
                 }
                 record_fsp_path_handoff(job.lane());
-                if let Some(fsp_batcher) = fsp_batcher.as_deref_mut() {
-                    fsp_batcher.push_to(&self.pool, owner_idx, job);
-                    return;
-                }
-                if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::DecryptFspPathFallback,
-                    );
-                    drop_fsp_owner_handoff_job(job);
-                    return;
-                }
-                match self.pool.dispatch_bulk_fsp_job_or_return(owner_idx, job) {
-                    Ok(()) => {}
-                    Err(job) => {
-                        crate::perf_profile::record_event(
-                            crate::perf_profile::Event::DecryptFspPathFallback,
-                        );
-                        drop_fsp_owner_handoff_job(job);
-                    }
-                }
+                fsp_batcher.push_to(&self.pool, owner_idx, job);
             }
         }
     }
@@ -1479,7 +1465,7 @@ impl DecryptWorkerShard {
                     idx,
                     action,
                     plaintext_batch,
-                    Some(&mut *fsp_batcher),
+                    &mut *fsp_batcher,
                     fsp_open_batcher,
                 );
             }

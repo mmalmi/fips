@@ -720,6 +720,7 @@
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut fsp_batcher = FspDecryptJobBatcher::new();
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             current_idx,
@@ -727,9 +728,10 @@
                 source_addr,
             )),
             &mut plaintext_batch,
-            None,
+            &mut fsp_batcher,
             &mut fsp_open_batcher,
         );
+        fsp_batcher.flush(&shard.pool);
         assert!(
             fsp_open_batcher.flush(&shard.pool).is_empty(),
             "pre-owner handoff must not leave opener work batched locally"
@@ -796,6 +798,7 @@
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut fsp_batcher = FspDecryptJobBatcher::new();
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
@@ -803,9 +806,10 @@
                 source_addr,
             )),
             &mut plaintext_batch,
-            None,
+            &mut fsp_batcher,
             &mut fsp_open_batcher,
         );
+        fsp_batcher.flush(&shard.pool);
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         plaintext_batch.flush();
 
@@ -1034,6 +1038,7 @@
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut fsp_batcher = FspDecryptJobBatcher::new();
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
@@ -1041,9 +1046,10 @@
                 source_addr,
             )),
             &mut plaintext_batch,
-            None,
+            &mut fsp_batcher,
             &mut fsp_open_batcher,
         );
+        fsp_batcher.flush(&shard.pool);
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         assert_eq!(
             bulk_receivers[open_idx].len(),
@@ -1097,6 +1103,7 @@
             .advance_next_ticket_to(bulk_ticket_limit as u64);
 
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(shard.pool.fallback_tx.clone());
+        let mut fsp_batcher = FspDecryptJobBatcher::new();
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         shard.push_job_action_output(
             owner_idx,
@@ -1104,10 +1111,11 @@
                 source_addr,
             )),
             &mut plaintext_batch,
-            None,
+            &mut fsp_batcher,
             &mut fsp_open_batcher,
         );
 
+        fsp_batcher.flush(&shard.pool);
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         assert_eq!(
             bulk_receivers[open_idx].len(),
@@ -1676,6 +1684,7 @@
         };
         let mut shard = DecryptWorkerShard::new(pool);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new(fallback_tx);
+        let mut fsp_batcher = FspDecryptJobBatcher::new();
         let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
         let packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
 
@@ -1686,7 +1695,7 @@
                 direct_delivery: None,
             }),
             &mut plaintext_batch,
-            None,
+            &mut fsp_batcher,
             &mut fsp_open_batcher,
         );
         shard.push_job_action_output(
@@ -1696,9 +1705,10 @@
                 direct_delivery: None,
             }),
             &mut plaintext_batch,
-            None,
+            &mut fsp_batcher,
             &mut fsp_open_batcher,
         );
+        fsp_batcher.flush(&shard.pool);
         assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         plaintext_batch.flush();
 

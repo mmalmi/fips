@@ -708,6 +708,7 @@ fn handle_bulk_item_with_buffers(
                 plaintext_batch,
                 batch_stats,
             );
+            let fsp_batcher = &mut bulk_batchers.fsp_batcher;
             let fsp_open_batcher = &mut bulk_batchers.fsp_open_batcher;
             shard.handle_bulk_fsp_job_batch_with_open_batcher(
                 idx,
@@ -715,8 +716,10 @@ fn handle_bulk_item_with_buffers(
                 item_started_at,
                 trace_enabled,
                 plaintext_batch,
+                &mut *fsp_batcher,
                 &mut *fsp_open_batcher,
             );
+            fsp_batcher.flush(&shard.pool);
             flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut *fsp_open_batcher);
             debug_assert!(bulk_batchers.is_empty());
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
