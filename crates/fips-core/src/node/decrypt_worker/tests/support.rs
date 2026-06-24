@@ -1256,6 +1256,78 @@
     }
 
     #[test]
+    fn fsp_worker_open_batch_window_pressure_drops_without_single_packet_retry() {
+        let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
+        let open_idx = pool
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .expect("three-worker pool should have a sibling opener");
+        let bulk_ticket_limit =
+            fsp_receive_window().saturating_sub(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE);
+        assert!(bulk_ticket_limit > 1);
+
+        let state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x61; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+
+        let mut shard = DecryptWorkerShard::new(pool.clone());
+        shard.register_fsp_session(owner_idx, source_addr, state);
+        shard
+            .fsp_sessions
+            .get_mut(&source_addr)
+            .expect("owner state should stay registered")
+            .fsp_receive_order
+            .advance_next_ticket_to((bulk_ticket_limit - 1) as u64);
+
+        let mut return_batch = DecryptWorkerReturnBatch::new(shard.pool.return_tx.clone());
+        let mut fsp_open_batcher = new_fsp_aead_open_dispatch_batcher();
+        shard.handle_bulk_fsp_job_batch_with_open_batcher(
+            owner_idx,
+            vec![
+                dummy_bulk_fsp_open_job(source_addr),
+                dummy_bulk_fsp_open_job(source_addr),
+            ],
+            None,
+            false,
+            &mut return_batch,
+            &mut fsp_open_batcher,
+        );
+
+        assert!(flush_fsp_aead_open_dispatch(&mut fsp_open_batcher, &shard.pool).is_empty());
+        assert_eq!(
+            bulk_receivers[open_idx].len(),
+            0,
+            "batch pressure must not retry through a smaller opener dispatch"
+        );
+        let state = shard
+            .fsp_sessions
+            .get_mut(&source_addr)
+            .expect("owner state should stay registered");
+        assert_eq!(
+            state.fsp_receive_order.next_ticket(),
+            (bulk_ticket_limit - 1) as u64,
+            "batch pressure must drop without consuming the final bulk ticket"
+        );
+        assert_eq!(
+            state
+                .issue_fsp_receive_ticket()
+                .expect("priority/local owner ticket should keep reserved progress")
+                .sequence,
+            (bulk_ticket_limit - 1) as u64
+        );
+    }
+
+    #[test]
     fn returned_owner_mismatch_fsp_open_job_sends_dropped_completion_to_owner() {
         let (pool, _control, _priority, _bulk, fsp_completion_receivers) =
             test_worker_pool_with_fsp_completion_receivers(3, 4);
