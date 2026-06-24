@@ -256,6 +256,20 @@ pub(crate) struct OwnedFspSessionState {
     fsp_receive_order: FspReceiveOrder,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FspOpenReservation {
+    receive_order_id: u64,
+    crypto_generation: u64,
+    ticket: FspReceiveTicket,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FspOpenReservationBatch {
+    receive_order_id: u64,
+    crypto_generation: u64,
+    first_sequence: u64,
+}
+
 struct FspOpenSuccess {
     plaintext: Vec<u8>,
     slot: EpochSlot,
@@ -359,18 +373,44 @@ impl OwnedFspSessionState {
         (header.flags & FSP_FLAG_K != 0) == self.current_k_bit
     }
 
+    fn reservation_for_ticket(&self, ticket: FspReceiveTicket) -> FspOpenReservation {
+        FspOpenReservation {
+            receive_order_id: self.fsp_receive_order_id(),
+            crypto_generation: self.fsp_crypto_generation(),
+            ticket,
+        }
+    }
+
+    fn reservation_for_ticket_batch(&self, first_sequence: u64) -> FspOpenReservationBatch {
+        FspOpenReservationBatch {
+            receive_order_id: self.fsp_receive_order_id(),
+            crypto_generation: self.fsp_crypto_generation(),
+            first_sequence,
+        }
+    }
+
+    fn reserve_local_fsp_open(&mut self) -> Option<FspOpenReservation> {
+        let ticket = self.fsp_receive_order.issue()?;
+        Some(self.reservation_for_ticket(ticket))
+    }
+
+    fn reserve_worker_fsp_open(&mut self) -> Option<FspOpenReservation> {
+        let ticket = self
+            .fsp_receive_order
+            .issue_with_reserve(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
+        Some(self.reservation_for_ticket(ticket))
+    }
+
+    fn reserve_worker_fsp_open_batch(&mut self, count: usize) -> Option<FspOpenReservationBatch> {
+        let first_sequence = self
+            .fsp_receive_order
+            .issue_batch_with_reserve(count, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
+        Some(self.reservation_for_ticket_batch(first_sequence))
+    }
+
+    #[cfg(test)]
     fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
         self.fsp_receive_order.issue()
-    }
-
-    fn issue_fsp_worker_open_ticket(&mut self) -> Option<FspReceiveTicket> {
-        self.fsp_receive_order
-            .issue_with_reserve(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
-    }
-
-    fn issue_fsp_worker_open_ticket_batch(&mut self, count: usize) -> Option<u64> {
-        self.fsp_receive_order
-            .issue_batch_with_reserve(count, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
     }
 
     fn open_established_frame(

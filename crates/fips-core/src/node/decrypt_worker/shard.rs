@@ -665,7 +665,7 @@ impl DecryptWorkerShard {
             Ok(header) => header,
             Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(job, reason)),
         };
-        let Some(ticket) = target.state.issue_fsp_worker_open_ticket() else {
+        let Some(reservation) = target.state.reserve_worker_fsp_open() else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 1,
@@ -677,9 +677,9 @@ impl DecryptWorkerShard {
         };
         let open_job = FspAeadOpenJob {
             source_addr,
-            receive_order_id: target.state.fsp_receive_order_id(),
-            crypto_generation: target.state.fsp_crypto_generation(),
-            ticket,
+            receive_order_id: reservation.receive_order_id,
+            crypto_generation: reservation.crypto_generation,
+            ticket: reservation.ticket,
             cipher: Arc::clone(&target.state.current.cipher),
             job,
             header,
@@ -721,7 +721,7 @@ impl DecryptWorkerShard {
             }
         }
 
-        let Some(first_sequence) = target.state.issue_fsp_worker_open_ticket_batch(headers.len())
+        let Some(reservation) = target.state.reserve_worker_fsp_open_batch(headers.len())
         else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
@@ -729,8 +729,6 @@ impl DecryptWorkerShard {
             );
             return Err(jobs);
         };
-        let receive_order_id = target.state.fsp_receive_order_id();
-        let crypto_generation = target.state.fsp_crypto_generation();
         let cipher = Arc::clone(&target.state.current.cipher);
         let open_jobs = jobs
             .into_iter()
@@ -738,10 +736,10 @@ impl DecryptWorkerShard {
             .enumerate()
             .map(|(offset, (job, header))| FspAeadOpenJob {
                 source_addr,
-                receive_order_id,
-                crypto_generation,
+                receive_order_id: reservation.receive_order_id,
+                crypto_generation: reservation.crypto_generation,
                 ticket: FspReceiveTicket {
-                    sequence: first_sequence.saturating_add(offset as u64),
+                    sequence: reservation.first_sequence.saturating_add(offset as u64),
                 },
                 cipher: Arc::clone(&cipher),
                 job,
@@ -1213,12 +1211,12 @@ impl DecryptWorkerShard {
         };
         let ciphertext = &mut fallback.packet_data[ciphertext_offset..payload_end];
         self.fsp_open_scratch.preserve_ciphertext_from(ciphertext);
-        let (ticket, open_result, receive_order_id, crypto_generation) = {
+        let (reservation, open_result) = {
             let state = self
                 .fsp_sessions
                 .get_mut(&source_addr)
                 .expect("FSP session was checked before current-epoch local open");
-            let Some(ticket) = state.issue_fsp_receive_ticket() else {
+            let Some(reservation) = state.reserve_local_fsp_open() else {
                 match lane {
                     DecryptWorkerLane::Priority => {
                         record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
@@ -1229,14 +1227,12 @@ impl DecryptWorkerShard {
                 }
                 return;
             };
-            let receive_order_id = state.fsp_receive_order_id();
-            let crypto_generation = state.fsp_crypto_generation();
             let open_result = state.current_epoch_matches(&header).then(|| {
                 let _t_fsp =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
                 state.open_current_established_frame_in_place_deferred_replay(&header, ciphertext)
             });
-            (ticket, open_result, receive_order_id, crypto_generation)
+            (reservation, open_result)
         };
         if matches!(open_result, Some(Err(FspOpenError::Aead))) {
             let restore = &mut fallback.packet_data[ciphertext_offset..payload_end];
@@ -1292,12 +1288,12 @@ impl DecryptWorkerShard {
         self.complete_fsp_aead_completions_for_source(
             idx,
             source_addr,
-            receive_order_id,
+            reservation.receive_order_id,
             std::iter::once(FspAeadCompletion {
                 source_addr,
-                receive_order_id,
-                crypto_generation,
-                ticket,
+                receive_order_id: reservation.receive_order_id,
+                crypto_generation: reservation.crypto_generation,
+                ticket: reservation.ticket,
                 source: FspAeadCompletionSource::Local,
                 result: completion,
                 completed_at: None,

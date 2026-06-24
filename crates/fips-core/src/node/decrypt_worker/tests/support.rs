@@ -165,6 +165,44 @@
     }
 
     #[test]
+    fn fsp_receive_owner_reservations_share_one_order_stream() {
+        let source_peer = test_source_peer();
+        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x72; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+        let receive_order_id = state.fsp_receive_order_id();
+        let crypto_generation = state.fsp_crypto_generation();
+
+        let worker = state
+            .reserve_worker_fsp_open()
+            .expect("worker open should reserve first ticket");
+        assert_eq!(worker.receive_order_id, receive_order_id);
+        assert_eq!(worker.crypto_generation, crypto_generation);
+        assert_eq!(worker.ticket.sequence, 0);
+
+        let worker_batch = state
+            .reserve_worker_fsp_open_batch(2)
+            .expect("worker open batch should reserve adjacent tickets");
+        assert_eq!(worker_batch.receive_order_id, receive_order_id);
+        assert_eq!(worker_batch.crypto_generation, crypto_generation);
+        assert_eq!(worker_batch.first_sequence, 1);
+
+        let local = state
+            .reserve_local_fsp_open()
+            .expect("local owner open should reserve from the same stream");
+        assert_eq!(local.receive_order_id, receive_order_id);
+        assert_eq!(local.crypto_generation, crypto_generation);
+        assert_eq!(local.ticket.sequence, 3);
+    }
+
+    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
