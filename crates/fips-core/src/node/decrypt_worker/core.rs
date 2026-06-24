@@ -12,8 +12,8 @@ use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
 use crate::packet_mover::{
-    CryptoTicket, LaneCreditGate, OrderSequence, OrderToken, OwnerGeneration, OwnerKey,
-    OwnerReservation, PacketLane,
+    CryptoTicket, LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch,
+    OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation, PacketLane,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};
@@ -1018,64 +1018,13 @@ impl FspAeadCompletion {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
-enum FspAeadCompletionBatch {
-    One(FspAeadCompletion),
-    Many(Vec<FspAeadCompletion>),
-}
-
-impl FspAeadCompletionBatch {
-    fn one(completion: FspAeadCompletion) -> Self {
-        Self::One(completion)
-    }
-
-    fn source_order(&self) -> (NodeAddr, u64) {
-        match self {
-            Self::One(completion) => (completion.source_addr(), completion.receive_order_id()),
-            Self::Many(completions) => {
-                let completion = completions
-                    .first()
-                    .expect("FSP AEAD completion batch must not be empty");
-                (completion.source_addr(), completion.receive_order_id())
-            }
-        }
-    }
-
-    fn can_push(&self, source_addr: NodeAddr, receive_order_id: u64, max_len: usize) -> bool {
-        self.len() < max_len && self.source_order() == (source_addr, receive_order_id)
-    }
-
-    fn push(&mut self, completion: FspAeadCompletion) {
-        let (source_addr, receive_order_id) = self.source_order();
-        debug_assert_eq!(completion.source_addr(), source_addr);
-        debug_assert_eq!(completion.receive_order_id(), receive_order_id);
-        match self {
-            Self::One(_) => {
-                let Self::One(existing) = std::mem::replace(
-                    self,
-                    Self::Many(Vec::with_capacity(
-                        DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
-                    )),
-                ) else {
-                    unreachable!("replaced One with Many")
-                };
-                let Self::Many(completions) = self else {
-                    unreachable!("batch was replaced with Many")
-                };
-                completions.push(existing);
-                completions.push(completion);
-            }
-            Self::Many(completions) => completions.push(completion),
-        }
-    }
-
-    fn len(&self) -> usize {
-        match self {
-            Self::One(_) => 1,
-            Self::Many(completions) => completions.len(),
-        }
+impl OwnerOrderedCompletion for FspAeadCompletion {
+    fn owner_reservation(&self) -> OwnerReservation {
+        self.crypto_ticket.reservation
     }
 }
+
+type FspAeadCompletionBatch = OwnerCompletionBatch<FspAeadCompletion>;
 
 struct FspAeadCompletionBatchFlush {
     local_completion: bool,
@@ -1107,12 +1056,17 @@ impl FspAeadCompletionBatchBuilder {
         completion: FspAeadCompletion,
     ) -> Option<FspAeadCompletionBatchFlush> {
         let owner_idx = owner_idx.filter(|_| !local_completion);
-        let source_addr = completion.source_addr();
-        let receive_order_id = completion.receive_order_id();
+        let reservation = completion.owner_reservation();
         let same_batch = self
             .current_batch
             .as_ref()
-            .is_some_and(|batch| batch.can_push(source_addr, receive_order_id, self.max_len))
+            .is_some_and(|batch| {
+                batch.can_push(
+                    reservation.owner,
+                    reservation.order.receive_order_id,
+                    self.max_len,
+                )
+            })
             && self.current_local == local_completion
             && self.current_owner_idx == owner_idx;
 
@@ -1120,7 +1074,7 @@ impl FspAeadCompletionBatchBuilder {
             let Some(batch) = self.current_batch.as_mut() else {
                 unreachable!("same_batch requires an active completion batch")
             };
-            batch.push(completion);
+            batch.push_with_capacity(completion, self.max_len);
             return None;
         }
 

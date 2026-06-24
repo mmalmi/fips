@@ -52,7 +52,7 @@ pub(crate) use admission::{
 };
 pub(crate) use crypto::{
     CryptoCompletion, CryptoReject, CryptoResult, CryptoTicket, CryptoWork, NoopCryptoWorker,
-    StatelessCryptoWorker,
+    OwnerCompletionBatch, OwnerOrderedCompletion, StatelessCryptoWorker,
 };
 pub(crate) use output::{
     OutputDrop, OutputDropReason, OutputTarget, PacketOutput, RetireOutput, RetiredPacket,
