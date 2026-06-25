@@ -14,6 +14,7 @@ use crate::node::wire::{
 use crate::node::{
     AuthenticatedFmpPlaintext, EndpointSendBatchCommand, Node, NodeEndpointCommand, NodeError,
 };
+use crate::packet_mover::{PriorityBulkDrainCursor, SingleLaneDrainCursor};
 use crate::transport::PacketRx;
 use crate::transport::ReceivedPacket;
 use crate::upper::tun::TunOutboundRx;
@@ -872,7 +873,7 @@ impl Node {
         budget: usize,
     ) -> usize {
         self.begin_endpoint_event_batch();
-        let mut drain = DecryptReturnDrainCursor::new(
+        let mut drain = PriorityBulkDrainCursor::new(
             first_priority_event,
             first_authenticated_bulk_event,
             budget,

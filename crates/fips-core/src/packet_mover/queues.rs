@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering::Relaxed},
 };
+use tokio::sync::mpsc::Receiver;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct QueueCaps {
@@ -347,6 +348,113 @@ impl<K: Copy + Eq, T> DispatchBatcher<K, T> {
     }
 }
 
+pub(crate) struct PriorityBulkDrainCursor<T> {
+    first_priority: Option<T>,
+    first_bulk: Option<T>,
+    remaining: usize,
+    drained: usize,
+}
+
+impl<T> PriorityBulkDrainCursor<T> {
+    pub(crate) fn new(first_priority: Option<T>, first_bulk: Option<T>, budget: usize) -> Self {
+        Self {
+            first_priority,
+            first_bulk,
+            remaining: budget,
+            drained: 0,
+        }
+    }
+
+    pub(crate) fn next(
+        &mut self,
+        priority_rx: &mut Receiver<T>,
+        bulk_rx: &mut Receiver<T>,
+    ) -> Option<T> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        let item = if let Some(item) = self.first_priority.take() {
+            Some(item)
+        } else {
+            priority_rx
+                .try_recv()
+                .ok()
+                .or_else(|| self.first_bulk.take())
+                .or_else(|| bulk_rx.try_recv().ok())
+        }?;
+
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(item)
+    }
+
+    pub(crate) fn next_bulk_if_no_priority(
+        &mut self,
+        priority_rx: &mut Receiver<T>,
+        bulk_rx: &mut Receiver<T>,
+    ) -> Option<T> {
+        if self.remaining == 0 || self.first_priority.is_some() || !priority_rx.is_empty() {
+            return None;
+        }
+
+        let item = self.first_bulk.take().or_else(|| bulk_rx.try_recv().ok())?;
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(item)
+    }
+
+    pub(crate) fn defer_bulk(&mut self, item: T) {
+        debug_assert!(
+            self.first_bulk.is_none(),
+            "priority/bulk drain already has a deferred bulk item"
+        );
+        self.first_bulk = Some(item);
+        self.remaining = self.remaining.saturating_add(1);
+        self.drained = self.drained.saturating_sub(1);
+    }
+
+    pub(crate) fn drained(&self) -> usize {
+        self.drained
+    }
+
+    pub(crate) fn charge_extra(&mut self, extra: usize) {
+        self.remaining = self.remaining.saturating_sub(extra);
+        self.drained = self.drained.saturating_add(extra);
+    }
+}
+
+pub(crate) struct SingleLaneDrainCursor<T> {
+    first_item: Option<T>,
+    remaining: usize,
+    drained: usize,
+}
+
+impl<T> SingleLaneDrainCursor<T> {
+    pub(crate) fn new(first_item: Option<T>, budget: usize) -> Self {
+        Self {
+            first_item,
+            remaining: budget,
+            drained: 0,
+        }
+    }
+
+    pub(crate) fn next(&mut self, rx: &mut Receiver<T>) -> Option<T> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        let packet = self.first_item.take().or_else(|| rx.try_recv().ok())?;
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(packet)
+    }
+
+    pub(crate) fn drained(&self) -> usize {
+        self.drained
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +642,108 @@ mod tests {
 
         assert_eq!(dispatched, vec![(7, vec!["a", "b"])]);
         assert!(batcher.is_empty());
+    }
+
+    #[tokio::test]
+    async fn priority_bulk_drain_prefers_ready_priority_over_selected_bulk() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("priority").await.unwrap();
+        bulk_tx.send("bulk-queued").await.unwrap();
+        let mut drain = PriorityBulkDrainCursor::new(None, Some("bulk-selected"), 4);
+
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), Some("priority"));
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("bulk-selected")
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("bulk-queued")
+        );
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn priority_bulk_drain_charges_batch_extra_against_budget() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("queued-priority").await.unwrap();
+        bulk_tx.send("queued-bulk").await.unwrap();
+        let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk"), 4);
+
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("queued-priority")
+        );
+        drain.charge_extra(3);
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+        assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
+        assert_eq!(drain.drained(), 4);
+    }
+
+    #[tokio::test]
+    async fn priority_bulk_drain_bulk_only_stops_for_priority() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("priority").await.unwrap();
+        bulk_tx.send("bulk").await.unwrap();
+        let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk"), 4);
+
+        assert_eq!(
+            drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
+            None,
+            "bulk coalescing must stop when priority work is ready"
+        );
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), Some("priority"));
+        assert_eq!(
+            drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
+            Some("selected-bulk")
+        );
+        assert_eq!(
+            drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
+            Some("bulk")
+        );
+    }
+
+    #[tokio::test]
+    async fn priority_bulk_drain_deferred_bulk_yields_to_later_priority() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (_bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+        let mut drain = PriorityBulkDrainCursor::new(None, None, 4);
+
+        drain.defer_bulk("deferred-bulk");
+        priority_tx.send("priority").await.unwrap();
+
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("priority"),
+            "a non-coalesced bulk command should be put back behind new priority work"
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("deferred-bulk")
+        );
+    }
+
+    #[tokio::test]
+    async fn single_lane_drain_owns_first_item_and_budget() {
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(4);
+
+        tun_tx.send("queued-1").await.unwrap();
+        tun_tx.send("queued-2").await.unwrap();
+        tun_tx.send("queued-3").await.unwrap();
+        let mut drain = SingleLaneDrainCursor::new(Some("selected"), 3);
+
+        assert_eq!(drain.next(&mut tun_rx), Some("selected"));
+        assert_eq!(drain.next(&mut tun_rx), Some("queued-1"));
+        assert_eq!(drain.next(&mut tun_rx), Some("queued-2"));
+        assert_eq!(drain.next(&mut tun_rx), None);
+        assert_eq!(tun_rx.try_recv().ok(), Some("queued-3"));
+        assert_eq!(drain.drained(), 3);
     }
 }

@@ -6,12 +6,12 @@ use super::budget::{
     authenticated_bulk_preempts_packet_rx, non_packet_drain_budget,
 };
 use super::drain::{
-    DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
-    RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, RxLoopSideQueues,
-    SingleLaneDrainCursor, rx_loop_side_queues_have_ready,
+    PacketDrainAction, PacketDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan,
+    RxLoopMaintenanceState, RxLoopSideQueues, rx_loop_side_queues_have_ready,
 };
 use crate::control::protocol::Request;
 use crate::node::decrypt_worker::DecryptWorkerEvent;
+use crate::packet_mover::{PriorityBulkDrainCursor, SingleLaneDrainCursor};
 #[cfg(unix)]
 use crate::{
     Identity,
@@ -514,7 +514,7 @@ async fn decrypt_return_drain_prefers_ready_priority_over_selected_bulk() {
         .send("queued-bulk-return")
         .await
         .unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, Some("selected-bulk-return"), 4);
+    let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk-return"), 4);
 
     assert_eq!(
         drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
@@ -544,7 +544,7 @@ async fn decrypt_return_drain_uses_one_bulk_completion_lane() {
         .send("queued-authenticated-bulk")
         .await
         .unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, Some("selected-bulk"), 4);
+    let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk"), 4);
 
     assert_eq!(
         drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
@@ -571,7 +571,7 @@ async fn decrypt_return_drain_prefers_priority_over_selected_authenticated_bulk(
         .send("queued-authenticated-bulk")
         .await
         .unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, Some("selected-authenticated-bulk"), 4);
+    let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-authenticated-bulk"), 4);
 
     assert_eq!(
         drain.next(&mut priority_rx, &mut authenticated_bulk_rx),
