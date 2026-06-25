@@ -530,6 +530,11 @@ impl<K: Copy + Eq, T> DispatchBatcher<K, T> {
         self.key.is_none() && self.items.is_empty()
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_buffer_ptr(&self) -> *const T {
+        self.items.as_ptr()
+    }
+
     pub(crate) fn push(
         &mut self,
         key: K,
@@ -548,6 +553,29 @@ impl<K: Copy + Eq, T> DispatchBatcher<K, T> {
 
         if self.items.len() >= batch_max {
             returned.extend(self.flush_with(&mut dispatch));
+        }
+        returned
+    }
+
+    pub(crate) fn push_with_single(
+        &mut self,
+        key: K,
+        batch_max: usize,
+        item: T,
+        mut dispatch_single: impl FnMut(K, T) -> Vec<T>,
+        mut dispatch_batch: impl FnMut(K, Vec<T>) -> Vec<T>,
+    ) -> Vec<T> {
+        let mut returned = Vec::new();
+        let batch_max = batch_max.max(1);
+        if self.key != Some(key) || self.items.len() >= batch_max {
+            returned.extend(self.flush_with_single(&mut dispatch_single, &mut dispatch_batch));
+        }
+
+        self.key = Some(key);
+        self.items.push(item);
+
+        if self.items.len() >= batch_max {
+            returned.extend(self.flush_with_single(&mut dispatch_single, &mut dispatch_batch));
         }
         returned
     }
@@ -589,6 +617,14 @@ impl<K: Copy + Eq, T> DispatchBatcher<K, T> {
         self.flush_with(&mut dispatch)
     }
 
+    pub(crate) fn flush_with_single(
+        &mut self,
+        mut dispatch_single: impl FnMut(K, T) -> Vec<T>,
+        mut dispatch_batch: impl FnMut(K, Vec<T>) -> Vec<T>,
+    ) -> Vec<T> {
+        self.flush_with_single_fns(&mut dispatch_single, &mut dispatch_batch)
+    }
+
     fn flush_with(&mut self, dispatch: &mut impl FnMut(K, Vec<T>) -> Vec<T>) -> Vec<T> {
         let Some(key) = self.key.take() else {
             return Vec::new();
@@ -599,6 +635,26 @@ impl<K: Copy + Eq, T> DispatchBatcher<K, T> {
 
         let items = std::mem::replace(&mut self.items, Vec::with_capacity(self.buffer_capacity));
         dispatch(key, items)
+    }
+
+    fn flush_with_single_fns(
+        &mut self,
+        dispatch_single: &mut impl FnMut(K, T) -> Vec<T>,
+        dispatch_batch: &mut impl FnMut(K, Vec<T>) -> Vec<T>,
+    ) -> Vec<T> {
+        let Some(key) = self.key.take() else {
+            return Vec::new();
+        };
+        if self.items.is_empty() {
+            return Vec::new();
+        }
+        if self.items.len() == 1 {
+            let item = self.items.pop().expect("checked single pending item");
+            return dispatch_single(key, item);
+        }
+
+        let items = std::mem::replace(&mut self.items, Vec::with_capacity(self.buffer_capacity));
+        dispatch_batch(key, items)
     }
 }
 
@@ -1571,6 +1627,53 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(dispatched, vec![(2, vec!["b"])]);
+    }
+
+    #[test]
+    fn dispatch_batcher_single_flush_preserves_pending_buffer() {
+        let mut batcher = DispatchBatcher::new(4);
+        let pending_buffer = batcher.pending_buffer_ptr();
+        let mut singles = Vec::new();
+        let mut batches = Vec::new();
+
+        assert!(
+            batcher
+                .push_with_single(
+                    1,
+                    8,
+                    "a",
+                    |key, item| {
+                        singles.push((key, item));
+                        Vec::new()
+                    },
+                    |key, items| {
+                        batches.push((key, items));
+                        Vec::new()
+                    }
+                )
+                .is_empty()
+        );
+        assert!(singles.is_empty());
+        assert!(batches.is_empty());
+
+        assert!(
+            batcher
+                .flush_with_single(
+                    |key, item| {
+                        singles.push((key, item));
+                        Vec::new()
+                    },
+                    |key, items| {
+                        batches.push((key, items));
+                        Vec::new()
+                    }
+                )
+                .is_empty()
+        );
+
+        assert_eq!(singles, vec![(1, "a")]);
+        assert!(batches.is_empty());
+        assert_eq!(batcher.pending_buffer_ptr(), pending_buffer);
     }
 
     #[test]
