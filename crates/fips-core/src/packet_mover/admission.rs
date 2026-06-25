@@ -188,6 +188,12 @@ pub(crate) trait UdpAdmission<P> {
     fn admit_udp(&self, packet: UdpIngress<P>, class: AdmissionClass) -> AdmissionDecision<P>;
 }
 
+pub(crate) trait UdpSocketDrain<P> {
+    fn drain_udp<F>(&mut self, budget: usize, admit: F) -> usize
+    where
+        F: FnMut(UdpIngress<P>, AdmissionClass);
+}
+
 pub(crate) trait UdpBatchAdmission {
     fn reserve_udp_prefix(
         &self,
@@ -200,6 +206,42 @@ pub(crate) trait UdpBatchAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::{TransportAddr, TransportId};
+    use std::collections::VecDeque;
+
+    struct TestDrain {
+        packets: VecDeque<UdpIngress<&'static str>>,
+    }
+
+    impl UdpSocketDrain<&'static str> for TestDrain {
+        fn drain_udp<F>(&mut self, budget: usize, mut admit: F) -> usize
+        where
+            F: FnMut(UdpIngress<&'static str>, AdmissionClass),
+        {
+            let mut drained = 0;
+            while drained < budget {
+                let Some(packet) = self.packets.pop_front() else {
+                    break;
+                };
+                let class = classify_udp_admission(packet.facts.packet_len, 512);
+                admit(packet, class);
+                drained += 1;
+            }
+            drained
+        }
+    }
+
+    fn ingress(packet: &'static str, packet_len: usize) -> UdpIngress<&'static str> {
+        UdpIngress::new(
+            packet,
+            PacketFacts {
+                transport_id: TransportId::new(1),
+                remote_addr: TransportAddr::from_string("udp 127.0.0.1:9"),
+                packet_len,
+                received_at_ms: 7,
+            },
+        )
+    }
 
     #[test]
     fn admission_classes_reserve_progress_for_non_bulk_work() {
@@ -225,6 +267,27 @@ mod tests {
             AdmissionClass::InteractiveData
         );
         assert_eq!(classify_udp_admission(513, 512), AdmissionClass::BulkData);
+    }
+
+    #[test]
+    fn udp_socket_drain_is_the_canonical_admission_front_door() {
+        let mut drain = TestDrain {
+            packets: VecDeque::from([ingress("mmp-ish", 64), ingress("bulk", 1200)]),
+        };
+        let mut admitted = Vec::new();
+
+        assert_eq!(
+            drain.drain_udp(8, |packet, class| admitted.push((packet.packet, class))),
+            2
+        );
+
+        assert_eq!(
+            admitted,
+            vec![
+                ("mmp-ish", AdmissionClass::InteractiveData),
+                ("bulk", AdmissionClass::BulkData),
+            ]
+        );
     }
 
     #[test]

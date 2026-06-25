@@ -50,7 +50,7 @@ mod retire;
 pub(crate) use admission::{
     AdmissionClass, AdmissionCredit, AdmissionDecision, AdmissionDrop, AdmissionDropReason,
     AdmissionPrefix, AdmissionPrefixDecision, AdmittedPacket, PacketFacts, PacketLane,
-    UdpAdmission, UdpBatchAdmission, UdpIngress, classify_udp_admission,
+    UdpAdmission, UdpBatchAdmission, UdpIngress, UdpSocketDrain, classify_udp_admission,
 };
 pub(crate) use crypto::{
     CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
@@ -65,7 +65,8 @@ pub(crate) use owner::{
     OwnerReceiveWindow, OwnerReservation, OwnerReserveError, OwnerSequencer, OwnerWindow,
 };
 pub(crate) use pipeline::{
-    CanonicalOwnerPacketMover, CanonicalOwnerPacketMoverConfig, PacketMoverDispatch,
+    CanonicalOwnerConfig, CanonicalOwnerPacketMover, CanonicalOwnerPacketMoverConfig,
+    CanonicalPacketMover, CanonicalPacketMoverConfig, OwnedUdpIngress, PacketMoverDispatch,
     PacketMoverRetireError,
 };
 pub(crate) use queues::{
