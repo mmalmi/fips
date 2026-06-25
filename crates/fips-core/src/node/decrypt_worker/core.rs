@@ -12,9 +12,9 @@ use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
 use crate::packet_mover::{
-    BulkLanePrefixRejectReason, BulkLanePrefixSendResult, BulkLanePrefixSender,
-    CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
-    DispatchBatcher, LaneCreditGate, OwnerCompletionBatch, OwnerCompletionBatchFlush,
+    BulkLanePrefixRejectReason, BulkLanePrefixReturned, BulkLanePrefixSendResult,
+    BulkLanePrefixSender, CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult,
+    CryptoTicket, CryptoWork, DispatchBatcher, LaneCreditGate, OwnerCompletionBatch, OwnerCompletionBatchFlush,
     OwnerCompletionBatcher, OwnerGeneration, OwnerKey, OwnerOrderedCompletion,
     OwnerReceiveReservationSource, OwnerReceiveSequencer, OwnerReservation, OwnerReservationBatch,
     OwnerReserveError, OwnerRetireOutput, OutputTarget, PacketLane, PacketOutputTarget,

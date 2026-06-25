@@ -475,6 +475,13 @@ pub(crate) enum BulkLanePrefixSendResult<T> {
     Rejected(BulkLanePrefixReject<T>),
 }
 
+#[derive(Debug)]
+pub(crate) struct BulkLanePrefixReturned<R> {
+    pub(crate) reserved_packets: usize,
+    pub(crate) returned: Vec<R>,
+    pub(crate) rejected: Option<BulkLanePrefixRejectReason>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PriorityBulkLaneDropReason {
     CreditPressure,
@@ -645,6 +652,34 @@ impl<T: SplitBulkLaneItem> BulkLanePrefixSender<T> {
                     overflow,
                     reason: BulkLanePrefixRejectReason::ReceiverClosed,
                 })
+            }
+        }
+    }
+
+    pub(crate) fn try_send_prefix_returning<R>(
+        &self,
+        item: T,
+        mut returned_from_item: impl FnMut(T) -> Vec<R>,
+    ) -> BulkLanePrefixReturned<R> {
+        match self.try_send_prefix(item) {
+            BulkLanePrefixSendResult::Sent {
+                reserved_packets,
+                overflow,
+            } => BulkLanePrefixReturned {
+                reserved_packets,
+                returned: overflow.map(returned_from_item).unwrap_or_default(),
+                rejected: None,
+            },
+            BulkLanePrefixSendResult::Rejected(reject) => {
+                let mut returned = returned_from_item(reject.item);
+                if let Some(overflow) = reject.overflow {
+                    returned.extend(returned_from_item(overflow));
+                }
+                BulkLanePrefixReturned {
+                    reserved_packets: 0,
+                    returned,
+                    rejected: Some(reject.reason),
+                }
             }
         }
     }
@@ -1599,6 +1634,49 @@ mod tests {
 
         credits.release_count(reserved_packets);
         assert_eq!(sender.queued_packets(), 0);
+    }
+
+    #[test]
+    fn bulk_lane_prefix_sender_returns_overflow_as_caller_work() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let credits = LaneCreditGate::new(PacketLane::Bulk, 2);
+        let sender = BulkLanePrefixSender::new(tx, credits.clone());
+
+        let outcome = sender.try_send_prefix_returning(TestBulk(vec![1, 2, 3, 4]), |item| item.0);
+
+        assert_eq!(outcome.reserved_packets, 2);
+        assert_eq!(outcome.returned, vec![3, 4]);
+        assert_eq!(outcome.rejected, None);
+        assert_eq!(sender.queued_packets(), 2);
+        assert_eq!(
+            rx.try_recv().expect("admitted prefix"),
+            TestBulk(vec![1, 2])
+        );
+
+        credits.release_count(outcome.reserved_packets);
+        assert_eq!(sender.queued_packets(), 0);
+    }
+
+    #[test]
+    fn bulk_lane_prefix_sender_returns_rejected_prefix_and_overflow_as_caller_work() {
+        let (tx, rx) = crossbeam_channel::bounded(0);
+        let credits = LaneCreditGate::new(PacketLane::Bulk, 2);
+        let sender = BulkLanePrefixSender::new(tx, credits);
+
+        let outcome = sender.try_send_prefix_returning(TestBulk(vec![1, 2, 3]), |item| item.0);
+
+        assert_eq!(outcome.reserved_packets, 0);
+        assert_eq!(outcome.returned, vec![1, 2, 3]);
+        assert_eq!(
+            outcome.rejected,
+            Some(BulkLanePrefixRejectReason::ChannelFull)
+        );
+        assert_eq!(
+            sender.queued_packets(),
+            0,
+            "failed channel handoff must release its prefix reservation"
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

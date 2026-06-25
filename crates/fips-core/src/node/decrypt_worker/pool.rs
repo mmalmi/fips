@@ -281,29 +281,29 @@ impl DecryptWorkerPool {
         let Some(sender) = self.senders.get(idx) else {
             return Err(jobs);
         };
-        match sender.bulk.try_send_prefix(item_from_jobs(jobs)) {
-            BulkLanePrefixSendResult::Sent {
-                reserved_packets,
-                overflow,
-            } => {
-                record_decrypt_worker_bulk_queue_depth(sender, reserved_packets, role);
-                match overflow {
-                    Some(item) => {
-                        let jobs = jobs_from_item(item);
-                        record_decrypt_fsp_bulk_queue_full_fallback_count(jobs.len());
-                        Err(jobs)
-                    }
-                    None => Ok(()),
+        let BulkLanePrefixReturned {
+            reserved_packets,
+            returned,
+            rejected,
+        } = sender
+            .bulk
+            .try_send_prefix_returning(item_from_jobs(jobs), jobs_from_item);
+
+        if reserved_packets > 0 {
+            record_decrypt_worker_bulk_queue_depth(sender, reserved_packets, role);
+        }
+
+        match rejected {
+            None => {
+                if returned.is_empty() {
+                    Ok(())
+                } else {
+                    record_decrypt_fsp_bulk_queue_full_fallback_count(returned.len());
+                    Err(returned)
                 }
             }
-            BulkLanePrefixSendResult::Rejected(err) => {
-                let disconnected =
-                    matches!(err.reason, BulkLanePrefixRejectReason::ReceiverClosed);
-                let mut returned = jobs_from_item(err.item);
-                if let Some(overflow) = err.overflow {
-                    returned.extend(jobs_from_item(overflow));
-                }
-                if disconnected {
+            Some(reason) => {
+                if matches!(reason, BulkLanePrefixRejectReason::ReceiverClosed) {
                     debug!(
                         worker = idx,
                         "DecryptWorker FSP bulk thread gone; returning worker-owned jobs"
