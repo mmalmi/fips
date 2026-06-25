@@ -260,10 +260,9 @@ impl DecryptWorkerPool {
         self.bulk_batch_packet_max_for(idx)
     }
 
-    /// Dispatch a per-packet decrypt job. Priority jobs get a bounded
-    /// fast lane first; if that lane is saturated, fall back to the
-    /// bulk lane rather than dropping already-authenticated liveness
-    /// or small-session traffic during transient ACK-heavy bursts.
+    /// Dispatch a per-packet decrypt job onto its canonical lane. Priority
+    /// pressure is reported as a priority drop instead of borrowing bulk
+    /// capacity behind the owner's back.
     pub fn dispatch_job(&self, mut job: DecryptJob) {
         if self.senders.is_empty() {
             return;
@@ -283,8 +282,8 @@ impl DecryptWorkerPool {
     fn dispatch_priority_job(&self, idx: usize, job: DecryptJob) {
         match self.senders[idx].priority.try_send(WorkerMsg::Job(job)) {
             Ok(()) => {}
-            Err(TrySendError::Full(WorkerMsg::Job(job))) => {
-                self.dispatch_bulk_job(idx, job);
+            Err(TrySendError::Full(WorkerMsg::Job(_job))) => {
+                record_decrypt_worker_priority_drop(idx, "priority-job");
             }
             Err(TrySendError::Full(_)) => unreachable!("priority dispatch only sends jobs"),
             Err(TrySendError::Disconnected(_)) => {

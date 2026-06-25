@@ -704,7 +704,7 @@
     }
 
     #[test]
-    fn decrypt_worker_priority_packet_spills_to_bulk_when_priority_queue_is_full() {
+    fn decrypt_worker_priority_packet_drops_explicitly_when_priority_queue_is_full() {
         let (pool, _control_rx, priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 100);
         pool.dispatch_job(dummy_priority_decrypt_job(session_key));
@@ -718,29 +718,14 @@
         );
         assert_eq!(
             bulk_rx.len(),
-            1,
-            "overflow priority packet should spill to the bulk lane"
+            0,
+            "full priority lane must not try the bulk side path"
         );
         assert_eq!(
             pool.senders[0].bulk_credits.queued_packets(),
-            1,
-            "spilled packet should reserve one bulk packet slot"
+            0,
+            "dropped priority packet must not reserve bulk capacity"
         );
-
-        match bulk_rx.try_recv().expect("spilled priority packet") {
-            DecryptWorkerBulkItem::Batch {
-                session_key: batch_session_key,
-                jobs,
-            } => {
-                assert_eq!(batch_session_key, session_key);
-                assert_eq!(jobs.len(), 1);
-                let job = &jobs[0];
-                assert_eq!(job.session_key, session_key);
-                assert_eq!(decrypt_job_lane(job), DecryptWorkerLane::Priority);
-            }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected spilled priority job"),
-        }
     }
 
     #[test]
