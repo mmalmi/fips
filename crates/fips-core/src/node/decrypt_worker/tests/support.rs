@@ -886,10 +886,7 @@
                 );
             }
         }
-        assert!(return_batch.authenticated_sessions.is_empty());
-        assert!(return_batch.direct_outputs.is_empty());
-        assert!(return_batch.direct_data.is_empty());
-        assert!(return_batch.endpoint_outputs.is_empty());
+        assert!(return_batch.is_empty());
     }
 
     #[test]

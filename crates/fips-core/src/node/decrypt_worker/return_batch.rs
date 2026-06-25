@@ -1,57 +1,38 @@
-use crate::packet_mover::{CommitBeforeOutputBatch, CommitBeforeOutputItems};
+use crate::packet_mover::{
+    CommitBeforeOutputItems, OwnerRetireBatchSink, OwnerRetireBatchTypes, OwnerRetireOutputBatch,
+};
 
 struct DecryptWorkerReturnBatch {
     return_tx: DecryptWorkerReturnSender,
-    authenticated_links: Vec<DecryptAuthenticatedLink>,
-    authenticated_sessions: Vec<DecryptAuthenticatedSession>,
-    endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
-    endpoint_outputs: CommitBeforeOutputBatch<DecryptDirectSessionCommit, EndpointDataDelivery>,
-    direct_outputs: CommitBeforeOutputBatch<DecryptDirectSessionCommit, PendingDirectSessionDelivery>,
-    direct_data: Vec<DecryptDirectSessionData>,
+    output_batch: OwnerRetireOutputBatch<DecryptWorkerRetireBatchTypes>,
 }
 
 impl DecryptWorkerReturnBatch {
     fn new(return_tx: DecryptWorkerReturnSender) -> Self {
+        let authenticated_batch_max = return_tx
+            .authenticated_bulk_credits
+            .capacity()
+            .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let endpoint_batch_max = return_tx
+            .authenticated_bulk_credits
+            .capacity()
+            .clamp(1, DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX);
+        let direct_batch_max = return_tx
+            .authenticated_bulk_credits
+            .capacity()
+            .clamp(1, DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX);
         Self {
             return_tx,
-            authenticated_links: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-            authenticated_sessions: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-            endpoint_sink: None,
-            endpoint_outputs: CommitBeforeOutputBatch::new(
-                DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX,
+            output_batch: OwnerRetireOutputBatch::new(
+                authenticated_batch_max,
+                endpoint_batch_max,
+                direct_batch_max,
             ),
-            direct_outputs: CommitBeforeOutputBatch::new(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
-            direct_data: Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
         }
-    }
-
-    fn batch_max(&self) -> usize {
-        self.return_tx
-            .authenticated_bulk_credits
-            .capacity()
-            .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX)
-    }
-
-    fn endpoint_batch_max(&self) -> usize {
-        self.return_tx
-            .authenticated_bulk_credits
-            .capacity()
-            .clamp(1, DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX)
-    }
-
-    fn direct_batch_max(&self) -> usize {
-        self.return_tx
-            .authenticated_bulk_credits
-            .capacity()
-            .clamp(1, DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX)
     }
 
     fn push_output(&mut self, output: DecryptWorkerOutput) {
         if output.is_batchable_authenticated_link() {
-            self.flush_authenticated_sessions();
-            self.flush_endpoint();
-            self.flush_direct();
-            self.flush_direct_data();
             let DecryptWorkerOutput {
                 event,
                 direct_delivery,
@@ -60,18 +41,14 @@ impl DecryptWorkerReturnBatch {
             let DecryptWorkerEvent::AuthenticatedLink(link) = event else {
                 unreachable!("checked batchable authenticated link output")
             };
-            self.authenticated_links.push(link);
-            if self.authenticated_links.len() >= self.batch_max() {
-                self.flush_authenticated_links();
-            }
+            let sink = DecryptWorkerRetireBatchSink {
+                return_tx: &self.return_tx,
+            };
+            self.output_batch.push_authenticated_link(link, &sink);
             return;
         }
 
         if output.is_batchable_authenticated_session() {
-            self.flush_authenticated_links();
-            self.flush_endpoint();
-            self.flush_direct();
-            self.flush_direct_data();
             let DecryptWorkerOutput {
                 event,
                 direct_delivery,
@@ -80,18 +57,15 @@ impl DecryptWorkerReturnBatch {
             let DecryptWorkerEvent::AuthenticatedSession(session) = event else {
                 unreachable!("checked batchable authenticated session output")
             };
-            self.authenticated_sessions.push(session);
-            if self.authenticated_sessions.len() >= self.batch_max() {
-                self.flush_authenticated_sessions();
-            }
+            let sink = DecryptWorkerRetireBatchSink {
+                return_tx: &self.return_tx,
+            };
+            self.output_batch
+                .push_authenticated_session(session, &sink);
             return;
         }
 
         if output.is_batchable_direct_endpoint() {
-            self.flush_authenticated_links();
-            self.flush_authenticated_sessions();
-            self.flush_direct();
-            self.flush_direct_data();
             let DecryptWorkerOutput {
                 event,
                 direct_delivery,
@@ -105,32 +79,15 @@ impl DecryptWorkerReturnBatch {
             let Ok((sink, delivery)) = direct_delivery.into_endpoint_data() else {
                 unreachable!("checked batchable endpoint delivery")
             };
-
-            if self
-                .endpoint_sink
-                .as_ref()
-                .is_none_or(|current| current.same_endpoint_event_channel(&sink))
-            {
-                if self.endpoint_sink.is_none() {
-                    self.endpoint_sink = Some(sink);
-                }
-            } else {
-                self.flush_endpoint();
-                self.endpoint_sink = Some(sink);
-            }
-
-            self.endpoint_outputs.push(commit, delivery);
-            if self.endpoint_outputs.len() >= self.endpoint_batch_max() {
-                self.flush_endpoint();
-            }
+            let return_sink = DecryptWorkerRetireBatchSink {
+                return_tx: &self.return_tx,
+            };
+            self.output_batch
+                .push_direct_endpoint(sink, commit, delivery, &return_sink);
             return;
         }
 
         if output.is_batchable_direct_ipv6() {
-            self.flush_authenticated_links();
-            self.flush_authenticated_sessions();
-            self.flush_endpoint();
-            self.flush_direct_data();
             let DecryptWorkerOutput {
                 event,
                 direct_delivery,
@@ -142,18 +99,15 @@ impl DecryptWorkerReturnBatch {
                 unreachable!("checked batchable direct IPv6 delivery")
             };
 
-            self.direct_outputs.push(commit, direct_delivery);
-            if self.direct_outputs.len() >= self.direct_batch_max() {
-                self.flush_direct();
-            }
+            let sink = DecryptWorkerRetireBatchSink {
+                return_tx: &self.return_tx,
+            };
+            self.output_batch
+                .push_direct(commit, direct_delivery, &sink);
             return;
         }
 
         if output.is_batchable_direct_data() {
-            self.flush_authenticated_links();
-            self.flush_authenticated_sessions();
-            self.flush_endpoint();
-            self.flush_direct();
             let DecryptWorkerOutput {
                 event,
                 direct_delivery,
@@ -162,10 +116,10 @@ impl DecryptWorkerReturnBatch {
             let DecryptWorkerEvent::DirectSessionData(direct) = event else {
                 unreachable!("checked batchable direct data output")
             };
-            self.direct_data.push(direct);
-            if self.direct_data.len() >= self.direct_batch_max() {
-                self.flush_direct_data();
-            }
+            let sink = DecryptWorkerRetireBatchSink {
+                return_tx: &self.return_tx,
+            };
+            self.output_batch.push_direct_data(direct, &sink);
             return;
         }
 
@@ -174,166 +128,141 @@ impl DecryptWorkerReturnBatch {
     }
 
     fn flush(&mut self) {
-        self.flush_authenticated_links();
-        self.flush_authenticated_sessions();
-        self.flush_endpoint();
-        self.flush_direct();
-        self.flush_direct_data();
+        let sink = DecryptWorkerRetireBatchSink {
+            return_tx: &self.return_tx,
+        };
+        self.output_batch.flush(&sink);
     }
 
-    fn flush_authenticated_sessions(&mut self) {
-        if self.authenticated_sessions.is_empty() {
-            return;
-        }
-        let _t_flush =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
-        let event = if self.authenticated_sessions.len() == 1 {
-            DecryptWorkerEvent::AuthenticatedSession(
-                self.authenticated_sessions
-                    .pop()
-                    .expect("checked single authenticated session"),
-            )
-        } else {
-            let sessions = std::mem::replace(
-                &mut self.authenticated_sessions,
-                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-            );
-            DecryptWorkerEvent::AuthenticatedSessionBatch(sessions)
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.output_batch.is_empty()
+    }
+}
+
+struct DecryptWorkerRetireBatchTypes;
+
+impl OwnerRetireBatchTypes for DecryptWorkerRetireBatchTypes {
+    type AuthenticatedLink = DecryptAuthenticatedLink;
+    type AuthenticatedSession = DecryptAuthenticatedSession;
+    type DirectCommit = DecryptDirectSessionCommit;
+    type EndpointSink = DecryptDirectSessionDeliverySink;
+    type EndpointDelivery = EndpointDataDelivery;
+    type DirectDelivery = PendingDirectSessionDelivery;
+    type DirectData = DecryptDirectSessionData;
+}
+
+struct DecryptWorkerRetireBatchSink<'a> {
+    return_tx: &'a DecryptWorkerReturnSender,
+}
+
+impl OwnerRetireBatchSink<DecryptWorkerRetireBatchTypes> for DecryptWorkerRetireBatchSink<'_> {
+    fn send_authenticated_links(
+        &self,
+        links: CommitBeforeOutputItems<DecryptAuthenticatedLink>,
+    ) -> bool {
+        let event = match links {
+            CommitBeforeOutputItems::One(link) => DecryptWorkerEvent::AuthenticatedLink(link),
+            CommitBeforeOutputItems::Many(links) => DecryptWorkerEvent::AuthenticatedLinkBatch(links),
         };
-        let _ = self.return_tx.send(event);
+        self.return_tx.send(event)
     }
 
-    fn flush_authenticated_links(&mut self) {
-        if self.authenticated_links.is_empty() {
-            return;
-        }
-        let _t_flush =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
-        let event = if self.authenticated_links.len() == 1 {
-            DecryptWorkerEvent::AuthenticatedLink(
-                self.authenticated_links
-                    .pop()
-                    .expect("checked single authenticated link"),
-            )
-        } else {
-            let links = std::mem::replace(
-                &mut self.authenticated_links,
-                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-            );
-            DecryptWorkerEvent::AuthenticatedLinkBatch(links)
+    fn send_authenticated_sessions(
+        &self,
+        sessions: CommitBeforeOutputItems<DecryptAuthenticatedSession>,
+    ) -> bool {
+        let event = match sessions {
+            CommitBeforeOutputItems::One(session) => {
+                DecryptWorkerEvent::AuthenticatedSession(session)
+            }
+            CommitBeforeOutputItems::Many(sessions) => {
+                DecryptWorkerEvent::AuthenticatedSessionBatch(sessions)
+            }
         };
-        let _ = self.return_tx.send(event);
+        self.return_tx.send(event)
     }
 
-    fn flush_endpoint(&mut self) {
-        if self.endpoint_outputs.is_empty() {
-            return;
-        }
-        let _t_flush =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
-        let Some(sink) = self.endpoint_sink.take() else {
-            self.endpoint_outputs.clear();
-            return;
+    fn send_direct_commits(
+        &self,
+        commits: CommitBeforeOutputItems<DecryptDirectSessionCommit>,
+    ) -> bool {
+        let event = match commits {
+            CommitBeforeOutputItems::One(commit) => DecryptWorkerEvent::DirectSessionCommit(commit),
+            CommitBeforeOutputItems::Many(commits) => {
+                DecryptWorkerEvent::DirectSessionCommitBatch(commits)
+            }
         };
+        self.return_tx.send(event)
+    }
+
+    fn send_direct_data(
+        &self,
+        direct_data: CommitBeforeOutputItems<DecryptDirectSessionData>,
+    ) -> bool {
+        let event = match direct_data {
+            CommitBeforeOutputItems::One(direct) => DecryptWorkerEvent::DirectSessionData(direct),
+            CommitBeforeOutputItems::Many(direct_data) => {
+                DecryptWorkerEvent::DirectSessionDataBatch(direct_data)
+            }
+        };
+        self.return_tx.send(event)
+    }
+
+    fn same_endpoint_sink(
+        &self,
+        current: &DecryptDirectSessionDeliverySink,
+        next: &DecryptDirectSessionDeliverySink,
+    ) -> bool {
+        current.same_endpoint_event_channel(next)
+    }
+
+    fn endpoint_sink_ready(&self, sink: &DecryptDirectSessionDeliverySink) -> bool {
+        sink.endpoint_event_sender().is_some()
+    }
+
+    fn deliver_endpoint(
+        &self,
+        sink: &DecryptDirectSessionDeliverySink,
+        deliveries: CommitBeforeOutputItems<EndpointDataDelivery>,
+    ) {
         let Some(endpoint_event_tx) = sink.endpoint_event_sender().cloned() else {
-            self.endpoint_outputs.clear();
             return;
         };
-
-        let return_tx = self.return_tx.clone();
-        let _ = self.endpoint_outputs.flush_commit_then_output(
-            |commits| {
-                let event = match commits {
-                    CommitBeforeOutputItems::One(commit) => {
-                        DecryptWorkerEvent::DirectSessionCommit(commit)
-                    }
-                    CommitBeforeOutputItems::Many(commits) => {
-                        DecryptWorkerEvent::DirectSessionCommitBatch(commits)
-                    }
-                };
-                return_tx.send(event)
+        let count = deliveries.len();
+        if count == 0 {
+            return;
+        }
+        let queued_at = crate::perf_profile::stamp();
+        let endpoint_event = match deliveries {
+            CommitBeforeOutputItems::One(delivery) => NodeEndpointEvent::Data {
+                source_peer: delivery.source_peer,
+                payload: delivery.payload,
+                queued_at,
             },
-            |deliveries| {
-                let count = deliveries.len();
-                if count == 0 {
-                    return;
-                }
-                let queued_at = crate::perf_profile::stamp();
-                let endpoint_event = match deliveries {
-                    CommitBeforeOutputItems::One(delivery) => NodeEndpointEvent::Data {
-                        source_peer: delivery.source_peer,
-                        payload: delivery.payload,
-                        queued_at,
-                    },
-                    CommitBeforeOutputItems::Many(messages) => {
-                        NodeEndpointEvent::DataBatch { messages, queued_at }
-                    }
-                };
-                let _t_deliver =
-                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
-                if let Err(error) = endpoint_event_tx.send(endpoint_event) {
-                    debug!(
-                        error = %error,
-                        messages = count,
-                        "Failed to deliver worker-decoded endpoint data batch"
-                    );
+            CommitBeforeOutputItems::Many(messages) => {
+                NodeEndpointEvent::DataBatch { messages, queued_at }
+            }
+        };
+        let _t_deliver =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
+        if let Err(error) = endpoint_event_tx.send(endpoint_event) {
+            debug!(
+                error = %error,
+                messages = count,
+                "Failed to deliver worker-decoded endpoint data batch"
+            );
+        }
+    }
+
+    fn deliver_direct(&self, deliveries: CommitBeforeOutputItems<PendingDirectSessionDelivery>) {
+        match deliveries {
+            CommitBeforeOutputItems::One(delivery) => delivery.deliver(),
+            CommitBeforeOutputItems::Many(deliveries) => {
+                for delivery in deliveries {
+                    delivery.deliver();
                 }
             }
-        );
-    }
-
-    fn flush_direct(&mut self) {
-        if self.direct_outputs.is_empty() {
-            return;
         }
-        let _t_flush =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
-
-        let return_tx = self.return_tx.clone();
-        let _ = self.direct_outputs.flush_commit_then_output(
-            |commits| {
-                let event = match commits {
-                    CommitBeforeOutputItems::One(commit) => {
-                        DecryptWorkerEvent::DirectSessionCommit(commit)
-                    }
-                    CommitBeforeOutputItems::Many(commits) => {
-                        DecryptWorkerEvent::DirectSessionCommitBatch(commits)
-                    }
-                };
-                return_tx.send(event)
-            },
-            |deliveries| match deliveries {
-                CommitBeforeOutputItems::One(delivery) => delivery.deliver(),
-                CommitBeforeOutputItems::Many(deliveries) => {
-                    for delivery in deliveries {
-                        delivery.deliver();
-                    }
-                }
-            },
-        );
-    }
-
-    fn flush_direct_data(&mut self) {
-        if self.direct_data.is_empty() {
-            return;
-        }
-        let _t_flush =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
-
-        let event = if self.direct_data.len() == 1 {
-            DecryptWorkerEvent::DirectSessionData(
-                self.direct_data
-                    .pop()
-                    .expect("checked single direct data"),
-            )
-        } else {
-            let direct_data = std::mem::replace(
-                &mut self.direct_data,
-                Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
-            );
-            DecryptWorkerEvent::DirectSessionDataBatch(direct_data)
-        };
-
-        let _ = self.return_tx.send(event);
     }
 }

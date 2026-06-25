@@ -60,6 +60,279 @@ impl<T> CommitBeforeOutputItems<T> {
     }
 }
 
+pub(crate) trait OwnerRetireBatchTypes {
+    type AuthenticatedLink;
+    type AuthenticatedSession;
+    type DirectCommit;
+    type EndpointSink;
+    type EndpointDelivery;
+    type DirectDelivery;
+    type DirectData;
+}
+
+pub(crate) trait OwnerRetireBatchSink<T: OwnerRetireBatchTypes> {
+    fn send_authenticated_links(
+        &self,
+        links: CommitBeforeOutputItems<T::AuthenticatedLink>,
+    ) -> bool;
+
+    fn send_authenticated_sessions(
+        &self,
+        sessions: CommitBeforeOutputItems<T::AuthenticatedSession>,
+    ) -> bool;
+
+    fn send_direct_commits(&self, commits: CommitBeforeOutputItems<T::DirectCommit>) -> bool;
+
+    fn send_direct_data(&self, direct_data: CommitBeforeOutputItems<T::DirectData>) -> bool;
+
+    fn same_endpoint_sink(&self, current: &T::EndpointSink, next: &T::EndpointSink) -> bool;
+
+    fn endpoint_sink_ready(&self, _sink: &T::EndpointSink) -> bool {
+        true
+    }
+
+    fn deliver_endpoint(
+        &self,
+        sink: &T::EndpointSink,
+        deliveries: CommitBeforeOutputItems<T::EndpointDelivery>,
+    );
+
+    fn deliver_direct(&self, deliveries: CommitBeforeOutputItems<T::DirectDelivery>);
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct OwnerRetireOutputBatch<T: OwnerRetireBatchTypes> {
+    authenticated_links: Vec<T::AuthenticatedLink>,
+    authenticated_sessions: Vec<T::AuthenticatedSession>,
+    endpoint_sink: Option<T::EndpointSink>,
+    endpoint_outputs: CommitBeforeOutputBatch<T::DirectCommit, T::EndpointDelivery>,
+    direct_outputs: CommitBeforeOutputBatch<T::DirectCommit, T::DirectDelivery>,
+    direct_data: Vec<T::DirectData>,
+    authenticated_batch_capacity: usize,
+    endpoint_batch_capacity: usize,
+    direct_batch_capacity: usize,
+}
+
+impl<T: OwnerRetireBatchTypes> OwnerRetireOutputBatch<T> {
+    pub(crate) fn new(
+        authenticated_batch_capacity: usize,
+        endpoint_batch_capacity: usize,
+        direct_batch_capacity: usize,
+    ) -> Self {
+        let authenticated_batch_capacity = authenticated_batch_capacity.max(1);
+        let endpoint_batch_capacity = endpoint_batch_capacity.max(1);
+        let direct_batch_capacity = direct_batch_capacity.max(1);
+        Self {
+            authenticated_links: Vec::with_capacity(authenticated_batch_capacity),
+            authenticated_sessions: Vec::with_capacity(authenticated_batch_capacity),
+            endpoint_sink: None,
+            endpoint_outputs: CommitBeforeOutputBatch::new(endpoint_batch_capacity),
+            direct_outputs: CommitBeforeOutputBatch::new(direct_batch_capacity),
+            direct_data: Vec::with_capacity(direct_batch_capacity),
+            authenticated_batch_capacity,
+            endpoint_batch_capacity,
+            direct_batch_capacity,
+        }
+    }
+
+    pub(crate) fn push_authenticated_link<S>(&mut self, link: T::AuthenticatedLink, sink: &S)
+    where
+        S: OwnerRetireBatchSink<T>,
+    {
+        self.flush_authenticated_sessions(sink);
+        self.flush_endpoint(sink);
+        self.flush_direct(sink);
+        self.flush_direct_data(sink);
+        self.authenticated_links.push(link);
+        if self.authenticated_links.len() >= self.authenticated_batch_capacity {
+            self.flush_authenticated_links(sink);
+        }
+    }
+
+    pub(crate) fn push_authenticated_session<S>(
+        &mut self,
+        session: T::AuthenticatedSession,
+        sink: &S,
+    ) where
+        S: OwnerRetireBatchSink<T>,
+    {
+        self.flush_authenticated_links(sink);
+        self.flush_endpoint(sink);
+        self.flush_direct(sink);
+        self.flush_direct_data(sink);
+        self.authenticated_sessions.push(session);
+        if self.authenticated_sessions.len() >= self.authenticated_batch_capacity {
+            self.flush_authenticated_sessions(sink);
+        }
+    }
+
+    pub(crate) fn push_direct_endpoint<S>(
+        &mut self,
+        endpoint_sink: T::EndpointSink,
+        commit: T::DirectCommit,
+        delivery: T::EndpointDelivery,
+        sink: &S,
+    ) where
+        S: OwnerRetireBatchSink<T>,
+    {
+        self.flush_authenticated_links(sink);
+        self.flush_authenticated_sessions(sink);
+        self.flush_direct(sink);
+        self.flush_direct_data(sink);
+
+        if self
+            .endpoint_sink
+            .as_ref()
+            .is_some_and(|current| !sink.same_endpoint_sink(current, &endpoint_sink))
+        {
+            self.flush_endpoint(sink);
+        }
+
+        if self.endpoint_sink.is_none() {
+            self.endpoint_sink = Some(endpoint_sink);
+        }
+
+        self.endpoint_outputs.push(commit, delivery);
+        if self.endpoint_outputs.len() >= self.endpoint_batch_capacity {
+            self.flush_endpoint(sink);
+        }
+    }
+
+    pub(crate) fn push_direct<S>(
+        &mut self,
+        commit: T::DirectCommit,
+        delivery: T::DirectDelivery,
+        sink: &S,
+    ) where
+        S: OwnerRetireBatchSink<T>,
+    {
+        self.flush_authenticated_links(sink);
+        self.flush_authenticated_sessions(sink);
+        self.flush_endpoint(sink);
+        self.flush_direct_data(sink);
+        self.direct_outputs.push(commit, delivery);
+        if self.direct_outputs.len() >= self.direct_batch_capacity {
+            self.flush_direct(sink);
+        }
+    }
+
+    pub(crate) fn push_direct_data<S>(&mut self, direct: T::DirectData, sink: &S)
+    where
+        S: OwnerRetireBatchSink<T>,
+    {
+        self.flush_authenticated_links(sink);
+        self.flush_authenticated_sessions(sink);
+        self.flush_endpoint(sink);
+        self.flush_direct(sink);
+        self.direct_data.push(direct);
+        if self.direct_data.len() >= self.direct_batch_capacity {
+            self.flush_direct_data(sink);
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.authenticated_links.is_empty()
+            && self.authenticated_sessions.is_empty()
+            && self.endpoint_outputs.is_empty()
+            && self.direct_outputs.is_empty()
+            && self.direct_data.is_empty()
+    }
+
+    pub(crate) fn flush<S>(&mut self, sink: &S)
+    where
+        S: OwnerRetireBatchSink<T>,
+    {
+        self.flush_authenticated_links(sink);
+        self.flush_authenticated_sessions(sink);
+        self.flush_endpoint(sink);
+        self.flush_direct(sink);
+        self.flush_direct_data(sink);
+    }
+
+    fn flush_authenticated_links<S>(&mut self, sink: &S)
+    where
+        S: OwnerRetireBatchSink<T>,
+    {
+        if self.authenticated_links.is_empty() {
+            return;
+        }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
+        let links = take_items(
+            &mut self.authenticated_links,
+            self.authenticated_batch_capacity,
+        );
+        let _ = sink.send_authenticated_links(links);
+    }
+
+    fn flush_authenticated_sessions<S>(&mut self, sink: &S)
+    where
+        S: OwnerRetireBatchSink<T>,
+    {
+        if self.authenticated_sessions.is_empty() {
+            return;
+        }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
+        let sessions = take_items(
+            &mut self.authenticated_sessions,
+            self.authenticated_batch_capacity,
+        );
+        let _ = sink.send_authenticated_sessions(sessions);
+    }
+
+    fn flush_endpoint<S>(&mut self, sink: &S)
+    where
+        S: OwnerRetireBatchSink<T>,
+    {
+        if self.endpoint_outputs.is_empty() {
+            return;
+        }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
+        let Some(endpoint_sink) = self.endpoint_sink.take() else {
+            self.endpoint_outputs.clear();
+            return;
+        };
+        if !sink.endpoint_sink_ready(&endpoint_sink) {
+            self.endpoint_outputs.clear();
+            return;
+        }
+        let _ = self.endpoint_outputs.flush_commit_then_output(
+            |commits| sink.send_direct_commits(commits),
+            |deliveries| sink.deliver_endpoint(&endpoint_sink, deliveries),
+        );
+    }
+
+    fn flush_direct<S>(&mut self, sink: &S)
+    where
+        S: OwnerRetireBatchSink<T>,
+    {
+        if self.direct_outputs.is_empty() {
+            return;
+        }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
+        let _ = self.direct_outputs.flush_commit_then_output(
+            |commits| sink.send_direct_commits(commits),
+            |deliveries| sink.deliver_direct(deliveries),
+        );
+    }
+
+    fn flush_direct_data<S>(&mut self, sink: &S)
+    where
+        S: OwnerRetireBatchSink<T>,
+    {
+        if self.direct_data.is_empty() {
+            return;
+        }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
+        let direct_data = take_items(&mut self.direct_data, self.direct_batch_capacity);
+        let _ = sink.send_direct_data(direct_data);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CommitBeforeOutputBatch<C, O> {
     commits: Vec<C>,
@@ -212,5 +485,160 @@ mod tests {
 
         assert!(!delivered);
         assert!(batch.is_empty());
+    }
+
+    struct TestBatchTypes;
+
+    impl OwnerRetireBatchTypes for TestBatchTypes {
+        type AuthenticatedLink = &'static str;
+        type AuthenticatedSession = &'static str;
+        type DirectCommit = &'static str;
+        type EndpointSink = u8;
+        type EndpointDelivery = &'static str;
+        type DirectDelivery = &'static str;
+        type DirectData = &'static str;
+    }
+
+    struct TestBatchSink {
+        events: std::cell::RefCell<Vec<String>>,
+        endpoint_ready: bool,
+    }
+
+    impl Default for TestBatchSink {
+        fn default() -> Self {
+            Self {
+                events: std::cell::RefCell::new(Vec::new()),
+                endpoint_ready: true,
+            }
+        }
+    }
+
+    impl OwnerRetireBatchSink<TestBatchTypes> for TestBatchSink {
+        fn send_authenticated_links(&self, links: CommitBeforeOutputItems<&'static str>) -> bool {
+            self.events
+                .borrow_mut()
+                .push(format!("links:{:?}", items_to_vec(links)));
+            true
+        }
+
+        fn send_authenticated_sessions(
+            &self,
+            sessions: CommitBeforeOutputItems<&'static str>,
+        ) -> bool {
+            self.events
+                .borrow_mut()
+                .push(format!("sessions:{:?}", items_to_vec(sessions)));
+            true
+        }
+
+        fn send_direct_commits(&self, commits: CommitBeforeOutputItems<&'static str>) -> bool {
+            self.events
+                .borrow_mut()
+                .push(format!("commits:{:?}", items_to_vec(commits)));
+            true
+        }
+
+        fn send_direct_data(&self, direct_data: CommitBeforeOutputItems<&'static str>) -> bool {
+            self.events
+                .borrow_mut()
+                .push(format!("direct_data:{:?}", items_to_vec(direct_data)));
+            true
+        }
+
+        fn same_endpoint_sink(&self, current: &u8, next: &u8) -> bool {
+            current == next
+        }
+
+        fn endpoint_sink_ready(&self, _sink: &u8) -> bool {
+            self.endpoint_ready
+        }
+
+        fn deliver_endpoint(&self, sink: &u8, deliveries: CommitBeforeOutputItems<&'static str>) {
+            self.events
+                .borrow_mut()
+                .push(format!("endpoint-{sink}:{:?}", items_to_vec(deliveries)));
+        }
+
+        fn deliver_direct(&self, deliveries: CommitBeforeOutputItems<&'static str>) {
+            self.events
+                .borrow_mut()
+                .push(format!("direct:{:?}", items_to_vec(deliveries)));
+        }
+    }
+
+    fn items_to_vec<T>(items: CommitBeforeOutputItems<T>) -> Vec<T> {
+        match items {
+            CommitBeforeOutputItems::One(item) => vec![item],
+            CommitBeforeOutputItems::Many(items) => items,
+        }
+    }
+
+    #[test]
+    fn owner_retire_output_batch_flushes_previous_class_before_next() {
+        let sink = TestBatchSink::default();
+        let mut batch = OwnerRetireOutputBatch::<TestBatchTypes>::new(4, 4, 4);
+
+        batch.push_authenticated_link("link-1", &sink);
+        batch.push_authenticated_session("session-1", &sink);
+        batch.flush(&sink);
+
+        assert_eq!(
+            sink.events.into_inner(),
+            vec![
+                "links:[\"link-1\"]".to_string(),
+                "sessions:[\"session-1\"]".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn owner_retire_output_batch_commits_before_endpoint_delivery() {
+        let sink = TestBatchSink::default();
+        let mut batch = OwnerRetireOutputBatch::<TestBatchTypes>::new(4, 2, 4);
+
+        batch.push_direct_endpoint(7, "commit-1", "endpoint-1", &sink);
+        batch.push_direct_endpoint(7, "commit-2", "endpoint-2", &sink);
+
+        assert_eq!(
+            sink.events.into_inner(),
+            vec![
+                "commits:[\"commit-1\", \"commit-2\"]".to_string(),
+                "endpoint-7:[\"endpoint-1\", \"endpoint-2\"]".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn owner_retire_output_batch_splits_endpoint_sinks() {
+        let sink = TestBatchSink::default();
+        let mut batch = OwnerRetireOutputBatch::<TestBatchTypes>::new(4, 4, 4);
+
+        batch.push_direct_endpoint(1, "commit-1", "endpoint-1", &sink);
+        batch.push_direct_endpoint(2, "commit-2", "endpoint-2", &sink);
+        batch.flush(&sink);
+
+        assert_eq!(
+            sink.events.into_inner(),
+            vec![
+                "commits:[\"commit-1\"]".to_string(),
+                "endpoint-1:[\"endpoint-1\"]".to_string(),
+                "commits:[\"commit-2\"]".to_string(),
+                "endpoint-2:[\"endpoint-2\"]".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn owner_retire_output_batch_skips_commit_when_endpoint_sink_is_not_ready() {
+        let sink = TestBatchSink {
+            endpoint_ready: false,
+            ..TestBatchSink::default()
+        };
+        let mut batch = OwnerRetireOutputBatch::<TestBatchTypes>::new(4, 4, 4);
+
+        batch.push_direct_endpoint(7, "commit-1", "endpoint-1", &sink);
+        batch.flush(&sink);
+
+        assert!(sink.events.into_inner().is_empty());
     }
 }

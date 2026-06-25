@@ -1220,10 +1220,7 @@
         assert_eq!(state.fsp_receive_order.next_ticket(), ticket.sequence + 1);
         assert!(return_rx.priority.try_recv().is_err());
         assert!(return_rx.authenticated_bulk.try_recv().is_err());
-        assert!(return_batch.authenticated_sessions.is_empty());
-        assert!(return_batch.direct_outputs.is_empty());
-        assert!(return_batch.direct_data.is_empty());
-        assert!(return_batch.endpoint_outputs.is_empty());
+        assert!(return_batch.is_empty());
     }
 
     #[test]
@@ -2243,10 +2240,7 @@
             1,
             "mismatched completions must not consume the owner ticket"
         );
-        assert!(return_batch.authenticated_sessions.is_empty());
-        assert!(return_batch.direct_outputs.is_empty());
-        assert!(return_batch.direct_data.is_empty());
-        assert!(return_batch.endpoint_outputs.is_empty());
+        assert!(return_batch.is_empty());
     }
 
     #[test]

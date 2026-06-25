@@ -59,7 +59,8 @@ pub(crate) use crypto::{
 };
 pub(crate) use output::{
     CommitBeforeOutputBatch, CommitBeforeOutputItems, OutputDrop, OutputDropReason, OutputTarget,
-    PacketOutput, PacketOutputTarget, RetireOutput, RetiredPacket, VecOutputSink,
+    OwnerRetireBatchSink, OwnerRetireBatchTypes, OwnerRetireOutputBatch, PacketOutput,
+    PacketOutputTarget, RetireOutput, RetiredPacket, VecOutputSink,
 };
 pub(crate) use owner::{
     OrderSequence, OrderToken, OwnerCompletionError, OwnerGeneration, OwnerKey, OwnerReceiveTicket,
