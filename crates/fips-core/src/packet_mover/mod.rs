@@ -50,7 +50,8 @@ mod retire;
 pub(crate) use admission::{
     AdmissionClass, AdmissionCredit, AdmissionDecision, AdmissionDrop, AdmissionDropReason,
     AdmissionPrefix, AdmissionPrefixDecision, AdmittedPacket, PacketFacts, PacketLane,
-    UdpAdmission, UdpBatchAdmission, UdpIngress, UdpSocketDrain, classify_udp_admission,
+    UdpAdmission, UdpBatchAdmission, UdpBatchAdmissionPlan, UdpIngress, UdpSocketDrain,
+    classify_udp_admission, plan_udp_batch_admission,
 };
 pub(crate) use crypto::{
     CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,

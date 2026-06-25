@@ -43,6 +43,50 @@ pub(crate) fn classify_udp_admission(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UdpBatchAdmissionPlan {
+    Empty,
+    SingleLane {
+        lane: PacketLane,
+        packet_count: usize,
+    },
+    Split {
+        priority_count: usize,
+        bulk_count: usize,
+    },
+}
+
+pub(crate) fn plan_udp_batch_admission<I>(classes: I) -> UdpBatchAdmissionPlan
+where
+    I: IntoIterator<Item = AdmissionClass>,
+{
+    let mut priority_count = 0usize;
+    let mut bulk_count = 0usize;
+
+    for class in classes {
+        match class.lane() {
+            PacketLane::Priority => priority_count = priority_count.saturating_add(1),
+            PacketLane::Bulk => bulk_count = bulk_count.saturating_add(1),
+        }
+    }
+
+    match (priority_count, bulk_count) {
+        (0, 0) => UdpBatchAdmissionPlan::Empty,
+        (0, bulk_count) => UdpBatchAdmissionPlan::SingleLane {
+            lane: PacketLane::Bulk,
+            packet_count: bulk_count,
+        },
+        (priority_count, 0) => UdpBatchAdmissionPlan::SingleLane {
+            lane: PacketLane::Priority,
+            packet_count: priority_count,
+        },
+        (priority_count, bulk_count) => UdpBatchAdmissionPlan::Split {
+            priority_count,
+            bulk_count,
+        },
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketFacts {
     pub(crate) transport_id: TransportId,
@@ -267,6 +311,45 @@ mod tests {
             AdmissionClass::InteractiveData
         );
         assert_eq!(classify_udp_admission(513, 512), AdmissionClass::BulkData);
+    }
+
+    #[test]
+    fn udp_batch_admission_plan_keeps_empty_batches_empty() {
+        assert_eq!(plan_udp_batch_admission([]), UdpBatchAdmissionPlan::Empty);
+    }
+
+    #[test]
+    fn udp_batch_admission_plan_keeps_single_lane_batches_whole() {
+        assert_eq!(
+            plan_udp_batch_admission([AdmissionClass::BulkData, AdmissionClass::BulkData]),
+            UdpBatchAdmissionPlan::SingleLane {
+                lane: PacketLane::Bulk,
+                packet_count: 2,
+            }
+        );
+        assert_eq!(
+            plan_udp_batch_admission([AdmissionClass::Mmp, AdmissionClass::InteractiveData]),
+            UdpBatchAdmissionPlan::SingleLane {
+                lane: PacketLane::Priority,
+                packet_count: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn udp_batch_admission_plan_splits_mixed_priority_and_bulk() {
+        assert_eq!(
+            plan_udp_batch_admission([
+                AdmissionClass::BulkData,
+                AdmissionClass::Control,
+                AdmissionClass::Liveness,
+                AdmissionClass::BulkData,
+            ]),
+            UdpBatchAdmissionPlan::Split {
+                priority_count: 2,
+                bulk_count: 2,
+            }
+        );
     }
 
     #[test]

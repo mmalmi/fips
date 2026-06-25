@@ -4,7 +4,8 @@ use super::{TransportAddr, TransportId};
 use crate::packet_mover::{
     AdmissionClass, AdmissionCredit, AdmissionDecision, AdmissionDrop, AdmissionDropReason,
     AdmissionPrefixDecision, AdmittedPacket, LaneCreditGate, LaneCreditReservation, PacketFacts,
-    PacketLane, UdpAdmission, UdpBatchAdmission, UdpIngress, classify_udp_admission,
+    PacketLane, UdpAdmission, UdpBatchAdmission, UdpBatchAdmissionPlan, UdpIngress,
+    classify_udp_admission, plan_udp_batch_admission,
 };
 use std::mem;
 use std::ops::{Deref, DerefMut, Index};
@@ -770,42 +771,32 @@ impl PacketTx {
 
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     pub(crate) fn send_packet_batch(&self, mut batch: PacketBatch) -> Result<(), ()> {
-        if batch.is_empty() {
-            return Ok(());
-        }
+        match plan_udp_batch_admission(batch.iter().map(ReceivedPacket::admission_class)) {
+            UdpBatchAdmissionPlan::Empty => Ok(()),
+            UdpBatchAdmissionPlan::SingleLane { lane, packet_count } => {
+                debug_assert_eq!(packet_count, batch.len());
+                self.send_lane_packet_items(lane, batch)
+            }
+            UdpBatchAdmissionPlan::Split {
+                priority_count,
+                bulk_count,
+            } => {
+                debug_assert_eq!(priority_count + bulk_count, batch.len());
+                let mut priority_packets = self.packet_batch(priority_count);
+                let mut bulk_packets = self.packet_batch(bulk_count);
+                for packet in batch.drain() {
+                    if packet.is_priority_sized() {
+                        priority_packets.push(packet);
+                    } else {
+                        bulk_packets.push(packet);
+                    }
+                }
 
-        let packet_count = batch.len();
-        let priority_count = batch
-            .iter()
-            .filter(|packet| packet.is_priority_sized())
-            .count();
-        if priority_count == 0 || priority_count == packet_count {
-            let tx = if priority_count == 0 {
-                PacketQueueTx::Bulk
-            } else {
-                PacketQueueTx::Priority
-            };
-            return self.send_packet_items(tx, batch);
-        }
-
-        let mut priority_packets = self.packet_batch(priority_count);
-        let mut bulk_packets = self.packet_batch(packet_count - priority_count);
-        for packet in batch.drain() {
-            if packet.is_priority_sized() {
-                priority_packets.push(packet);
-            } else {
-                bulk_packets.push(packet);
+                self.send_lane_packet_items(PacketLane::Priority, priority_packets)?;
+                self.send_lane_packet_items(PacketLane::Bulk, bulk_packets)?;
+                Ok(())
             }
         }
-
-        self.send_packet_items(PacketQueueTx::Priority, priority_packets)?;
-        self.send_packet_items(PacketQueueTx::Bulk, bulk_packets)?;
-        Ok(())
-    }
-
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
-    fn send_packet_items(&self, tx: PacketQueueTx, packets: PacketBatch) -> Result<(), ()> {
-        self.send_lane_packet_items(tx.lane(), packets)
     }
 
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
