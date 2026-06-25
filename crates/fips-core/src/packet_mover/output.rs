@@ -113,6 +113,22 @@ pub(crate) struct OwnerRetireOutputBatch<T: OwnerRetireBatchTypes> {
     direct_batch_capacity: usize,
 }
 
+pub(crate) enum OwnerRetireOutput<T: OwnerRetireBatchTypes, I> {
+    AuthenticatedLink(T::AuthenticatedLink),
+    AuthenticatedSession(T::AuthenticatedSession),
+    DirectEndpoint {
+        endpoint_sink: T::EndpointSink,
+        commit: T::DirectCommit,
+        delivery: T::EndpointDelivery,
+    },
+    Direct {
+        commit: T::DirectCommit,
+        delivery: T::DirectDelivery,
+    },
+    DirectData(T::DirectData),
+    Immediate(I),
+}
+
 impl<T: OwnerRetireBatchTypes> OwnerRetireOutputBatch<T> {
     pub(crate) fn new(
         authenticated_batch_capacity: usize,
@@ -227,6 +243,41 @@ impl<T: OwnerRetireBatchTypes> OwnerRetireOutputBatch<T> {
         self.direct_data.push(direct);
         if self.direct_data.len() >= self.direct_batch_capacity {
             self.flush_direct_data(sink);
+        }
+    }
+
+    pub(crate) fn push_output<S, I>(
+        &mut self,
+        output: OwnerRetireOutput<T, I>,
+        sink: &S,
+        mut push_immediate: impl FnMut(I, &S),
+    ) where
+        S: OwnerRetireBatchSink<T>,
+    {
+        match output {
+            OwnerRetireOutput::AuthenticatedLink(link) => {
+                self.push_authenticated_link(link, sink);
+            }
+            OwnerRetireOutput::AuthenticatedSession(session) => {
+                self.push_authenticated_session(session, sink);
+            }
+            OwnerRetireOutput::DirectEndpoint {
+                endpoint_sink,
+                commit,
+                delivery,
+            } => {
+                self.push_direct_endpoint(endpoint_sink, commit, delivery, sink);
+            }
+            OwnerRetireOutput::Direct { commit, delivery } => {
+                self.push_direct(commit, delivery, sink);
+            }
+            OwnerRetireOutput::DirectData(direct) => {
+                self.push_direct_data(direct, sink);
+            }
+            OwnerRetireOutput::Immediate(output) => {
+                self.flush(sink);
+                push_immediate(output, sink);
+            }
         }
     }
 
@@ -587,6 +638,39 @@ mod tests {
             vec![
                 "links:[\"link-1\"]".to_string(),
                 "sessions:[\"session-1\"]".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn owner_retire_output_batch_push_output_flushes_before_immediate() {
+        let sink = TestBatchSink::default();
+        let mut batch = OwnerRetireOutputBatch::<TestBatchTypes>::new(4, 4, 4);
+
+        batch.push_output(
+            OwnerRetireOutput::AuthenticatedLink("link-1"),
+            &sink,
+            |immediate: &'static str, sink| {
+                sink.events
+                    .borrow_mut()
+                    .push(format!("immediate:{immediate}"));
+            },
+        );
+        batch.push_output(
+            OwnerRetireOutput::Immediate("fallback"),
+            &sink,
+            |immediate: &'static str, sink| {
+                sink.events
+                    .borrow_mut()
+                    .push(format!("immediate:{immediate}"));
+            },
+        );
+
+        assert_eq!(
+            sink.events.into_inner(),
+            vec![
+                "links:[\"link-1\"]".to_string(),
+                "immediate:fallback".to_string(),
             ]
         );
     }

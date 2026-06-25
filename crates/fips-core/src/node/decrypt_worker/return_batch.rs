@@ -2,6 +2,9 @@ use crate::packet_mover::{
     CommitBeforeOutputItems, OwnerRetireBatchSink, OwnerRetireBatchTypes, OwnerRetireOutputBatch,
 };
 
+type DecryptWorkerRetireOutput =
+    OwnerRetireOutput<DecryptWorkerRetireBatchTypes, DecryptWorkerOutput>;
+
 struct DecryptWorkerReturnBatch {
     return_tx: DecryptWorkerReturnSender,
     output_batch: OwnerRetireOutputBatch<DecryptWorkerRetireBatchTypes>,
@@ -29,99 +32,16 @@ impl DecryptWorkerReturnBatch {
     }
 
     fn push_output(&mut self, output: DecryptWorkerOutput) {
-        if output.is_batchable_authenticated_link() {
-            let DecryptWorkerOutput {
-                event,
-                direct_delivery,
-            } = output;
-            debug_assert!(direct_delivery.is_none());
-            let DecryptWorkerEvent::AuthenticatedLink(link) = event else {
-                unreachable!("checked batchable authenticated link output")
-            };
-            let sink = DecryptWorkerRetireBatchSink {
-                return_tx: &self.return_tx,
-            };
-            self.output_batch.push_authenticated_link(link, &sink);
-            return;
-        }
-
-        if output.is_batchable_authenticated_session() {
-            let DecryptWorkerOutput {
-                event,
-                direct_delivery,
-            } = output;
-            debug_assert!(direct_delivery.is_none());
-            let DecryptWorkerEvent::AuthenticatedSession(session) = event else {
-                unreachable!("checked batchable authenticated session output")
-            };
-            let sink = DecryptWorkerRetireBatchSink {
-                return_tx: &self.return_tx,
-            };
-            self.output_batch
-                .push_authenticated_session(session, &sink);
-            return;
-        }
-
-        if output.is_batchable_direct_endpoint() {
-            let DecryptWorkerOutput {
-                event,
-                direct_delivery,
-            } = output;
-            let DecryptWorkerEvent::DirectSessionCommit(commit) = event else {
-                unreachable!("checked batchable direct endpoint commit output")
-            };
-            let Some(direct_delivery) = direct_delivery else {
-                unreachable!("checked batchable direct endpoint delivery")
-            };
-            let Ok((sink, delivery)) = direct_delivery.into_endpoint_data() else {
-                unreachable!("checked batchable endpoint delivery")
-            };
-            let return_sink = DecryptWorkerRetireBatchSink {
-                return_tx: &self.return_tx,
-            };
-            self.output_batch
-                .push_direct_endpoint(sink, commit, delivery, &return_sink);
-            return;
-        }
-
-        if output.is_batchable_direct_ipv6() {
-            let DecryptWorkerOutput {
-                event,
-                direct_delivery,
-            } = output;
-            let DecryptWorkerEvent::DirectSessionCommit(commit) = event else {
-                unreachable!("checked batchable direct IPv6 commit output")
-            };
-            let Some(direct_delivery) = direct_delivery else {
-                unreachable!("checked batchable direct IPv6 delivery")
-            };
-
-            let sink = DecryptWorkerRetireBatchSink {
-                return_tx: &self.return_tx,
-            };
-            self.output_batch
-                .push_direct(commit, direct_delivery, &sink);
-            return;
-        }
-
-        if output.is_batchable_direct_data() {
-            let DecryptWorkerOutput {
-                event,
-                direct_delivery,
-            } = output;
-            debug_assert!(direct_delivery.is_none());
-            let DecryptWorkerEvent::DirectSessionData(direct) = event else {
-                unreachable!("checked batchable direct data output")
-            };
-            let sink = DecryptWorkerRetireBatchSink {
-                return_tx: &self.return_tx,
-            };
-            self.output_batch.push_direct_data(direct, &sink);
-            return;
-        }
-
-        self.flush();
-        let _ = output.send(&self.return_tx);
+        let sink = DecryptWorkerRetireBatchSink {
+            return_tx: &self.return_tx,
+        };
+        self.output_batch.push_output(
+            output.into_retire_output(),
+            &sink,
+            |output, sink| {
+                let _ = sink.send_immediate(output);
+            },
+        );
     }
 
     fn flush(&mut self) {
@@ -139,6 +59,55 @@ impl DecryptWorkerReturnBatch {
 
 struct DecryptWorkerRetireBatchTypes;
 
+impl DecryptWorkerOutput {
+    fn into_retire_output(self) -> DecryptWorkerRetireOutput {
+        match self {
+            Self {
+                event: DecryptWorkerEvent::AuthenticatedLink(link),
+                direct_delivery: None,
+            } if matches!(link.lane(), DecryptWorkerLane::Bulk) => {
+                OwnerRetireOutput::AuthenticatedLink(link)
+            }
+            Self {
+                event: DecryptWorkerEvent::AuthenticatedSession(session),
+                direct_delivery: None,
+            } if matches!(session.lane, DecryptWorkerLane::Bulk) => {
+                OwnerRetireOutput::AuthenticatedSession(session)
+            }
+            Self {
+                event: DecryptWorkerEvent::DirectSessionCommit(commit),
+                direct_delivery: Some(delivery),
+            } if matches!(commit.lane, DecryptWorkerLane::Bulk)
+                && delivery.output_target() == Some(OutputTarget::Endpoint) =>
+            {
+                let Ok((endpoint_sink, delivery)) = delivery.into_endpoint_data() else {
+                    unreachable!("checked batchable endpoint delivery")
+                };
+                OwnerRetireOutput::DirectEndpoint {
+                    endpoint_sink,
+                    commit,
+                    delivery,
+                }
+            }
+            Self {
+                event: DecryptWorkerEvent::DirectSessionCommit(commit),
+                direct_delivery: Some(delivery),
+            } if matches!(commit.lane, DecryptWorkerLane::Bulk)
+                && delivery.output_target() == Some(OutputTarget::Tun) =>
+            {
+                OwnerRetireOutput::Direct { commit, delivery }
+            }
+            Self {
+                event: DecryptWorkerEvent::DirectSessionData(direct),
+                direct_delivery: None,
+            } if matches!(direct.lane, DecryptWorkerLane::Bulk) => {
+                OwnerRetireOutput::DirectData(direct)
+            }
+            output => OwnerRetireOutput::Immediate(output),
+        }
+    }
+}
+
 impl OwnerRetireBatchTypes for DecryptWorkerRetireBatchTypes {
     type AuthenticatedLink = DecryptAuthenticatedLink;
     type AuthenticatedSession = DecryptAuthenticatedSession;
@@ -151,6 +120,12 @@ impl OwnerRetireBatchTypes for DecryptWorkerRetireBatchTypes {
 
 struct DecryptWorkerRetireBatchSink<'a> {
     return_tx: &'a DecryptWorkerReturnSender,
+}
+
+impl DecryptWorkerRetireBatchSink<'_> {
+    fn send_immediate(&self, output: DecryptWorkerOutput) -> bool {
+        output.send(self.return_tx)
+    }
 }
 
 impl OwnerRetireBatchSink<DecryptWorkerRetireBatchTypes> for DecryptWorkerRetireBatchSink<'_> {

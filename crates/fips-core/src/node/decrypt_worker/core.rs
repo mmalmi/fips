@@ -17,7 +17,7 @@ use crate::packet_mover::{
     DispatchBatcher, LaneCreditGate, OwnerCompletionBatch, OwnerCompletionBatchFlush,
     OwnerCompletionBatcher, OwnerGeneration, OwnerKey, OwnerOrderedCompletion,
     OwnerReceiveReservationSource, OwnerReceiveSequencer, OwnerReservation, OwnerReservationBatch,
-    OwnerReserveError, OutputTarget, PacketLane, PacketOutputTarget,
+    OwnerReserveError, OwnerRetireOutput, OutputTarget, PacketLane, PacketOutputTarget,
     PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
     SplitBulkLaneItem, StatelessCryptoWorker, WorkerDrainAction, WorkerDrainCursor,
     WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
