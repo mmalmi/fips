@@ -65,8 +65,8 @@ pub(crate) use output::{
 };
 pub(crate) use owner::{
     OrderSequence, OrderToken, OwnerCompletionError, OwnerGeneration, OwnerKey,
-    OwnerReceiveReservationSource, OwnerReceiveTicket, OwnerReceiveWindow, OwnerReservation,
-    OwnerReservationBatch, OwnerReserveError, OwnerSequencer, OwnerWindow,
+    OwnerReceiveReservationSource, OwnerReceiveSequencer, OwnerReceiveTicket, OwnerReceiveWindow,
+    OwnerReservation, OwnerReservationBatch, OwnerReserveError, OwnerSequencer, OwnerWindow,
 };
 pub(crate) use pipeline::{
     CanonicalOwnerConfig, CanonicalOwnerPacketMover, CanonicalOwnerPacketMoverConfig,

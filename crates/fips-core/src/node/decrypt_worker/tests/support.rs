@@ -1,5 +1,6 @@
     use super::*;
     use crate::noise::ReplayWindow;
+    use crate::packet_mover::OwnerReceiveWindow;
     use crossbeam_channel::bounded;
     use ring::aead::{LessSafeKey, UnboundKey};
     use std::time::Duration;
@@ -132,7 +133,7 @@
 
     #[test]
     fn ordered_receive_window_buffers_until_oldest_completion_is_ready() {
-        let mut window = OrderedReceiveWindow::new(4);
+        let mut window = OwnerReceiveWindow::new(4);
         let first = window.issue().expect("first ticket");
         let second = window.issue().expect("second ticket");
         let third = window.issue().expect("third ticket");
@@ -172,7 +173,7 @@
 
     #[test]
     fn ordered_receive_window_bounds_inflight_tickets() {
-        let mut window = OrderedReceiveWindow::<&'static str>::new(2);
+        let mut window = OwnerReceiveWindow::<&'static str>::new(2);
         let first = window.issue().expect("first ticket");
         let second = window.issue().expect("second ticket");
         assert!(
@@ -201,7 +202,7 @@
 
     #[test]
     fn ordered_receive_window_bulk_reserve_leaves_unreserved_tickets() {
-        let mut window = OrderedReceiveWindow::<&'static str>::new(4);
+        let mut window = OwnerReceiveWindow::<&'static str>::new(4);
         assert_eq!(
             window
                 .issue_batch_with_reserve(2, 2)

@@ -75,6 +75,12 @@ pub(crate) struct OwnerReceiveWindow<T> {
     completions: OwnerCompletionBuffer<T>,
 }
 
+#[derive(Debug)]
+pub(crate) struct OwnerReceiveSequencer<T> {
+    source: OwnerReceiveReservationSource,
+    window: OwnerReceiveWindow<T>,
+}
+
 pub(crate) trait OwnerSequencer<P, W> {
     fn reserve(&mut self, packet: P) -> Result<W, OwnerReserveError>;
 }
@@ -320,6 +326,78 @@ impl<T> OwnerReceiveWindow<T> {
     }
 }
 
+impl<T> OwnerReceiveSequencer<T> {
+    pub(crate) fn new(source: OwnerReceiveReservationSource, pending_limit: usize) -> Self {
+        Self {
+            source,
+            window: OwnerReceiveWindow::new(pending_limit),
+        }
+    }
+
+    pub(crate) fn source(&self) -> OwnerReceiveReservationSource {
+        self.source
+    }
+
+    pub(crate) fn set_source(&mut self, source: OwnerReceiveReservationSource) {
+        self.source = source;
+    }
+
+    pub(crate) fn receive_order_id(&self) -> u64 {
+        self.source.receive_order_id()
+    }
+
+    pub(crate) fn next_ticket(&self) -> u64 {
+        self.window.next_ticket()
+    }
+
+    pub(crate) fn next_ready(&self) -> u64 {
+        self.window.next_ready()
+    }
+
+    pub(crate) fn advance_next_ticket_to(&mut self, next_ticket: u64) {
+        self.window.advance_next_ticket_to(next_ticket);
+    }
+
+    pub(crate) fn issue_ticket(&mut self) -> Option<OwnerReceiveTicket> {
+        self.window.issue()
+    }
+
+    pub(crate) fn reserve(&mut self, lane: PacketLane) -> Option<OwnerReservation> {
+        self.reserve_with_window(lane, 0)
+    }
+
+    pub(crate) fn reserve_with_window(
+        &mut self,
+        lane: PacketLane,
+        reserve: usize,
+    ) -> Option<OwnerReservation> {
+        let ticket = self.window.issue_with_reserve(reserve)?;
+        Some(self.source.reservation_for_ticket(ticket, lane))
+    }
+
+    pub(crate) fn reserve_batch_with_window(
+        &mut self,
+        count: usize,
+        lane: PacketLane,
+        reserve: usize,
+    ) -> Option<OwnerReservationBatch> {
+        let first_sequence = self.window.issue_batch_with_reserve(count, reserve)?;
+        Some(
+            self.source
+                .reservation_batch_for_sequence(first_sequence, lane, count),
+        )
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        ticket: OwnerReceiveTicket,
+        completion: T,
+        on_ready: impl FnMut(OwnerReceiveTicket, T),
+    ) -> Result<usize, OwnerCompletionError> {
+        self.window.complete(ticket, completion, on_ready)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OwnerWindow {
     owner: OwnerKey,
@@ -405,6 +483,48 @@ mod tests {
         assert_eq!(second.order.sequence, OrderSequence(1));
         assert_eq!(second.packet_count, 2);
         assert_eq!(window.in_flight(), 3);
+    }
+
+    #[test]
+    fn owner_receive_sequencer_reserves_from_ticket_window() {
+        let source = OwnerReceiveReservationSource::new(owner(), OwnerGeneration(5), 99);
+        let mut sequencer = OwnerReceiveSequencer::<&'static str>::new(source, 4);
+
+        let first = sequencer
+            .reserve_with_window(PacketLane::Bulk, 2)
+            .expect("first bulk reservation leaves progress reserve");
+        let second = sequencer
+            .reserve_with_window(PacketLane::Bulk, 2)
+            .expect("second bulk reservation leaves progress reserve");
+
+        assert_eq!(first.order.sequence, OrderSequence(0));
+        assert_eq!(second.order.sequence, OrderSequence(1));
+        assert!(sequencer.reserve_with_window(PacketLane::Bulk, 2).is_none());
+
+        let priority = sequencer
+            .reserve(PacketLane::Priority)
+            .expect("reserved progress can still issue");
+        assert_eq!(priority.order.sequence, OrderSequence(2));
+        assert_eq!(priority.order.receive_order_id, 99);
+    }
+
+    #[test]
+    fn owner_receive_sequencer_reserves_batch_order_token() {
+        let source = OwnerReceiveReservationSource::new(owner(), OwnerGeneration(6), 100);
+        let mut sequencer = OwnerReceiveSequencer::<&'static str>::new(source, 8);
+        let batch = sequencer
+            .reserve_batch_with_window(3, PacketLane::Bulk, 2)
+            .expect("batch reservation");
+
+        assert_eq!(batch.receive_order_id(), 100);
+        assert_eq!(batch.generation(), OwnerGeneration(6));
+        assert_eq!(batch.first_sequence(), 0);
+        assert_eq!(batch.packet_count(), 3);
+
+        let next = sequencer
+            .reserve(PacketLane::Priority)
+            .expect("next reservation");
+        assert_eq!(next.order.sequence, OrderSequence(3));
     }
 
     #[test]

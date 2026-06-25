@@ -16,8 +16,8 @@ use crate::packet_mover::{
     CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
     DispatchBatcher, LaneCreditGate, OwnerCompletionBatch, OwnerCompletionBatchFlush,
     OwnerCompletionBatcher, OwnerGeneration, OwnerKey, OwnerOrderedCompletion,
-    OwnerReceiveReservationSource, OwnerReservation, OwnerReservationBatch, OutputTarget,
-    PacketLane, PacketOutputTarget,
+    OwnerReceiveReservationSource, OwnerReceiveSequencer, OwnerReservation, OwnerReservationBatch,
+    OutputTarget, PacketLane, PacketOutputTarget,
     PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
     SplitBulkLaneItem, StatelessCryptoWorker, WorkerDrainAction, WorkerDrainCursor,
     WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
@@ -261,8 +261,6 @@ fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
 pub(crate) struct OwnedSessionState {
     fmp_cipher: Arc<LessSafeKey>,
     fmp_replay: ReplayWindow,
-    fmp_crypto_generation: u64,
-    fmp_receive_order_id: u64,
     fmp_receive_order: FmpReceiveOrder,
     source_peer: PeerIdentity,
 }
@@ -282,7 +280,6 @@ pub(crate) struct OwnedFspSessionState {
     pending: Option<OwnedFspEpochState>,
     previous: Option<OwnedFspEpochState>,
     fsp_crypto_generation: u64,
-    fsp_receive_order_id: u64,
     fsp_receive_order: FspReceiveOrder,
 }
 
@@ -340,15 +337,21 @@ enum FspOpenError {
 
 impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
     fn from(snapshot: FspRecvSessionSnapshot) -> Self {
+        let source_peer = snapshot.source_peer;
+        let fsp_crypto_generation = NEXT_FSP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let fsp_receive_order_id = NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed);
         Self {
-            source_peer: snapshot.source_peer,
+            source_peer,
             current_k_bit: snapshot.current_k_bit,
             current: OwnedFspEpochState::from(snapshot.current),
             pending: snapshot.pending.map(OwnedFspEpochState::from),
             previous: snapshot.previous.map(OwnedFspEpochState::from),
-            fsp_crypto_generation: NEXT_FSP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed),
-            fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
-            fsp_receive_order: new_fsp_receive_order(),
+            fsp_crypto_generation,
+            fsp_receive_order: new_fsp_receive_order(
+                &source_peer,
+                fsp_crypto_generation,
+                fsp_receive_order_id,
+            ),
         }
     }
 }
@@ -419,13 +422,18 @@ impl OwnedFspSessionState {
 
     fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
         let next_ticket = previous.fsp_receive_order.next_ticket();
-        self.fsp_receive_order_id = previous.fsp_receive_order_id;
+        let source = fsp_receive_reservation_source_for_peer(
+            &self.source_peer,
+            self.fsp_crypto_generation(),
+            previous.fsp_receive_order.receive_order_id(),
+        );
         self.fsp_receive_order = previous.fsp_receive_order;
+        self.fsp_receive_order.set_source(source);
         self.fsp_receive_order.advance_next_ticket_to(next_ticket);
     }
 
     fn fsp_receive_order_id(&self) -> u64 {
-        self.fsp_receive_order_id
+        self.fsp_receive_order.receive_order_id()
     }
 
     fn fsp_crypto_generation(&self) -> u64 {
@@ -441,67 +449,33 @@ impl OwnedFspSessionState {
         (header.flags & FSP_FLAG_K != 0) == self.current_k_bit
     }
 
-    fn fsp_owner_key(&self) -> OwnerKey {
-        OwnerKey::Fsp {
-            source_addr: *self.source_peer.node_addr(),
-        }
-    }
-
     fn fsp_receive_reservation_source(&self) -> OwnerReceiveReservationSource {
-        OwnerReceiveReservationSource::new(
-            self.fsp_owner_key(),
-            OwnerGeneration(self.fsp_crypto_generation()),
-            self.fsp_receive_order_id(),
-        )
-    }
-
-    fn reservation_for_ticket(
-        &self,
-        ticket: FspReceiveTicket,
-        lane: PacketLane,
-    ) -> FspOpenReservation {
-        FspOpenReservation::new(
-            self.fsp_receive_reservation_source()
-                .reservation_for_ticket(ticket, lane),
-        )
-    }
-
-    fn reservation_for_ticket_batch(
-        &self,
-        first_sequence: u64,
-        lane: PacketLane,
-        packet_count: usize,
-    ) -> FspOpenReservationBatch {
-        self.fsp_receive_reservation_source()
-            .reservation_batch_for_sequence(first_sequence, lane, packet_count)
+        self.fsp_receive_order.source()
     }
 
     fn reserve_local_fsp_open(&mut self, lane: DecryptWorkerLane) -> Option<FspOpenReservation> {
-        let ticket = self.fsp_receive_order.issue()?;
-        Some(self.reservation_for_ticket(ticket, lane.into()))
+        let reservation = self.fsp_receive_order.reserve(lane.into())?;
+        Some(FspOpenReservation::new(reservation))
     }
 
     fn reserve_worker_fsp_open(&mut self) -> Option<FspOpenReservation> {
-        let ticket = self
+        let reservation = self
             .fsp_receive_order
-            .issue_with_reserve(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
-        Some(self.reservation_for_ticket(ticket, PacketLane::Bulk))
+            .reserve_with_window(PacketLane::Bulk, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
+        Some(FspOpenReservation::new(reservation))
     }
 
     fn reserve_worker_fsp_open_batch(&mut self, count: usize) -> Option<FspOpenReservationBatch> {
-        let first_sequence = self
-            .fsp_receive_order
-            .issue_batch_with_reserve(count, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
-        Some(self.reservation_for_ticket_batch(
-            first_sequence,
-            PacketLane::Bulk,
+        self.fsp_receive_order.reserve_batch_with_window(
             count,
-        ))
+            PacketLane::Bulk,
+            DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE,
+        )
     }
 
     #[cfg(test)]
     fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
-        self.fsp_receive_order.issue()
+        self.fsp_receive_order.issue_ticket()
     }
 
     fn open_established_frame_deferred_replay(
@@ -773,17 +747,59 @@ type OrderedReceiveTicket = crate::packet_mover::OwnerReceiveTicket;
 type FmpReceiveTicket = OrderedReceiveTicket;
 type FspReceiveTicket = OrderedReceiveTicket;
 type OrderedCompletionError = crate::packet_mover::OwnerCompletionError;
-type OrderedReceiveWindow<T> = crate::packet_mover::OwnerReceiveWindow<T>;
+type OrderedReceiveSequencer<T> = OwnerReceiveSequencer<T>;
 
-type FmpReceiveOrder = OrderedReceiveWindow<FmpOrderedCompletion>;
-type FspReceiveOrder = OrderedReceiveWindow<FspOrderedCompletion>;
+type FmpReceiveOrder = OrderedReceiveSequencer<FmpOrderedCompletion>;
+type FspReceiveOrder = OrderedReceiveSequencer<FspOrderedCompletion>;
 
-fn new_fmp_receive_order() -> FmpReceiveOrder {
-    OrderedReceiveWindow::new(fsp_receive_window())
+fn fmp_receive_reservation_source_for_peer(
+    source_peer: &PeerIdentity,
+    generation: u64,
+    receive_order_id: u64,
+) -> OwnerReceiveReservationSource {
+    OwnerReceiveReservationSource::new(
+        OwnerKey::Fmp {
+            source_addr: *source_peer.node_addr(),
+        },
+        OwnerGeneration(generation),
+        receive_order_id,
+    )
 }
 
-fn new_fsp_receive_order() -> FspReceiveOrder {
-    OrderedReceiveWindow::new(fsp_receive_window())
+fn fsp_receive_reservation_source_for_peer(
+    source_peer: &PeerIdentity,
+    generation: u64,
+    receive_order_id: u64,
+) -> OwnerReceiveReservationSource {
+    OwnerReceiveReservationSource::new(
+        OwnerKey::Fsp {
+            source_addr: *source_peer.node_addr(),
+        },
+        OwnerGeneration(generation),
+        receive_order_id,
+    )
+}
+
+fn new_fmp_receive_order(
+    source_peer: &PeerIdentity,
+    generation: u64,
+    receive_order_id: u64,
+) -> FmpReceiveOrder {
+    OrderedReceiveSequencer::new(
+        fmp_receive_reservation_source_for_peer(source_peer, generation, receive_order_id),
+        fsp_receive_window(),
+    )
+}
+
+fn new_fsp_receive_order(
+    source_peer: &PeerIdentity,
+    generation: u64,
+    receive_order_id: u64,
+) -> FspReceiveOrder {
+    OrderedReceiveSequencer::new(
+        fsp_receive_reservation_source_for_peer(source_peer, generation, receive_order_id),
+        fsp_receive_window(),
+    )
 }
 
 struct FspOpenedJob {
@@ -1519,36 +1535,22 @@ impl OwnedSessionState {
         fmp_replay: ReplayWindow,
         source_peer: PeerIdentity,
     ) -> Self {
+        let fmp_crypto_generation = NEXT_FMP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let fmp_receive_order_id = NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             fmp_cipher: Arc::new(fmp_cipher),
             fmp_replay,
-            fmp_crypto_generation: NEXT_FMP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed),
-            fmp_receive_order_id: NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
-            fmp_receive_order: new_fmp_receive_order(),
+            fmp_receive_order: new_fmp_receive_order(
+                &source_peer,
+                fmp_crypto_generation,
+                fmp_receive_order_id,
+            ),
             source_peer,
         }
     }
 
-    fn fmp_owner_key(&self) -> OwnerKey {
-        OwnerKey::Fmp {
-            source_addr: *self.source_peer.node_addr(),
-        }
-    }
-
-    fn fmp_crypto_generation(&self) -> u64 {
-        self.fmp_crypto_generation
-    }
-
-    fn fmp_receive_order_id(&self) -> u64 {
-        self.fmp_receive_order_id
-    }
-
     fn fmp_receive_reservation_source(&self) -> OwnerReceiveReservationSource {
-        OwnerReceiveReservationSource::new(
-            self.fmp_owner_key(),
-            OwnerGeneration(self.fmp_crypto_generation()),
-            self.fmp_receive_order_id(),
-        )
+        self.fmp_receive_order.source()
     }
 
     fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
@@ -1568,14 +1570,10 @@ impl OwnedSessionState {
         fmp_counter: u64,
     ) -> Result<FmpOpenReservation, FmpOpenError> {
         let replay_precheck = self.precheck_fmp_replay(fmp_counter)?;
-        let Some(ticket) = self.fmp_receive_order.issue() else {
+        let Some(reservation) = self.fmp_receive_order.reserve(lane.into()) else {
             return Err(FmpOpenError::WindowFull);
         };
-        Ok(FmpOpenReservation::new(
-            self.fmp_receive_reservation_source()
-                .reservation_for_ticket(ticket, lane.into()),
-            replay_precheck,
-        ))
+        Ok(FmpOpenReservation::new(reservation, replay_precheck))
     }
 
     fn fmp_open_work(
