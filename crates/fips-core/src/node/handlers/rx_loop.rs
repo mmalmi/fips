@@ -998,8 +998,8 @@ impl Node {
             PHASE_ESTABLISHED => match self.try_prepare_encrypted_frame_for_worker(packet) {
                 EncryptedFrameFastPath::Dispatch(job) => PacketProcessAction::DecryptJob { job },
                 EncryptedFrameFastPath::Dropped => PacketProcessAction::Done,
-                EncryptedFrameFastPath::Slow(packet) => {
-                    PacketProcessAction::EncryptedSlow { packet, timer }
+                EncryptedFrameFastPath::KbitTransition(packet) => {
+                    PacketProcessAction::EncryptedKbitTransition { packet, timer }
                 }
             },
             PHASE_MSG1 => PacketProcessAction::Msg1 { packet, timer },
@@ -1023,11 +1023,11 @@ impl Node {
                     workers.dispatch_job(job);
                 }
             }
-            PacketProcessAction::EncryptedSlow {
+            PacketProcessAction::EncryptedKbitTransition {
                 packet,
                 timer: _timer,
             } => {
-                self.handle_encrypted_frame_slow(packet).await;
+                self.handle_encrypted_frame_kbit_transition(packet).await;
             }
             PacketProcessAction::Msg1 {
                 packet,

@@ -1,5 +1,77 @@
 use super::*;
 
+fn make_worker_prepare_packet(
+    node: &mut Node,
+) -> (
+    ReceivedPacket,
+    crate::node::decrypt_worker::DecryptSessionKey,
+) {
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(77);
+    let link_id = LinkId::new(88);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+    let our_index = SessionIndex::new(11);
+    let their_index = SessionIndex::new(12);
+    let (receiver, mut sender) =
+        make_test_fmp_session_pair(&node.identity, &peer_full, [0x01; 8], [0x02; 8]);
+    let active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        receiver,
+        our_index,
+        their_index,
+        transport_id,
+        remote_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x02; 8]),
+    );
+    let k_bit = active_peer.current_k_bit();
+
+    node.peers.insert(peer_addr, active_peer);
+    node.peers
+        .insert_session_index((transport_id, our_index.as_u32()), peer_addr);
+
+    let packet_data = seal_test_fmp_packet(
+        &mut sender,
+        our_index,
+        &[0, 0, 0, 0, 0x10, b'o', b'k'],
+        k_bit,
+    );
+    let packet = ReceivedPacket::with_timestamp(transport_id, remote_addr, packet_data, 2_000);
+    let session_key =
+        crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32());
+    (packet, session_key)
+}
+
+#[test]
+fn fmp_worker_prepare_drops_when_worker_pool_is_missing() {
+    let mut node = make_node();
+    let (packet, _session_key) = make_worker_prepare_packet(&mut node);
+
+    assert!(matches!(
+        node.try_prepare_encrypted_frame_for_worker(packet),
+        crate::node::handlers::EncryptedFrameFastPath::Dropped
+    ));
+}
+
+#[test]
+fn fmp_worker_prepare_drops_when_owner_registration_is_missing() {
+    let mut node = make_node();
+    node.decrypt_workers = Some(crate::node::decrypt_worker::DecryptWorkerPool::spawn(1));
+    let (packet, session_key) = make_worker_prepare_packet(&mut node);
+    assert_eq!(node.sessions.worker_owner(&session_key), None);
+
+    assert!(matches!(
+        node.try_prepare_encrypted_frame_for_worker(packet),
+        crate::node::handlers::EncryptedFrameFastPath::Dropped
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn fmp_worker_send_reservation_owns_counter_header_and_cipher() {

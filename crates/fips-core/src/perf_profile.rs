@@ -95,7 +95,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 263;
+const N_EVENTS: usize = 265;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -739,6 +739,8 @@ pub enum Event {
     DecryptWorkerFspOpenQueueDepthGe1024 = 260,
     DecryptWorkerFspOpenQueueDepthGe4096 = 261,
     TransportPriorityDropped = 262,
+    DecryptWorkerMissingPoolDropped = 263,
+    DecryptWorkerMissingOwnerDropped = 264,
 }
 
 impl Event {
@@ -766,6 +768,8 @@ impl Event {
                 | Event::TransportChannelBacklogHigh
                 | Event::TransportPriorityDropped
                 | Event::TransportBulkDropped
+                | Event::DecryptWorkerMissingPoolDropped
+                | Event::DecryptWorkerMissingOwnerDropped
                 | Event::EndpointEventBulkDropped
                 | Event::DecryptFallbackBacklogHigh
                 | Event::RxLoopSlowMaintenanceTimeout
@@ -1241,6 +1245,8 @@ impl Event {
             Event::DecryptWorkerFspOpenQueueDepthGe4096 => {
                 "decrypt_worker_fsp_open_queue_depth_ge4096"
             }
+            Event::DecryptWorkerMissingPoolDropped => "decrypt_worker_missing_pool_dropped",
+            Event::DecryptWorkerMissingOwnerDropped => "decrypt_worker_missing_owner_dropped",
         }
     }
 }
@@ -1510,6 +1516,8 @@ fn event_from_index(idx: usize) -> Event {
         260 => Event::DecryptWorkerFspOpenQueueDepthGe1024,
         261 => Event::DecryptWorkerFspOpenQueueDepthGe4096,
         262 => Event::TransportPriorityDropped,
+        263 => Event::DecryptWorkerMissingPoolDropped,
+        264 => Event::DecryptWorkerMissingOwnerDropped,
         _ => unreachable!(),
     }
 }

@@ -11,7 +11,7 @@ pub(super) enum PacketProcessAction {
     DecryptJob {
         job: DecryptJob,
     },
-    EncryptedSlow {
+    EncryptedKbitTransition {
         packet: ReceivedPacket,
         timer: crate::perf_profile::Timer,
     },

@@ -13,6 +13,8 @@ pub(in crate::node) mod session;
 mod timeout;
 
 #[cfg(test)]
+pub(in crate::node) use encrypted::EncryptedFrameFastPath;
+#[cfg(test)]
 pub(in crate::node) use mmp::traversal_path_liveness_timeout;
 #[cfg(test)]
 pub(in crate::node) use mmp::traversal_path_quiet_refresh_timeout;

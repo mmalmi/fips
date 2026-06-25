@@ -34,9 +34,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 263);
+    assert_eq!(N_EVENTS, 265);
     assert!(
-        (Event::DecryptWorkerFspOpenQueueDepthGe4096 as usize) < N_EVENTS,
+        (Event::DecryptWorkerMissingOwnerDropped as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -142,6 +142,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::TransportPriorityDropped as usize).name(),
         "transport_priority_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerMissingPoolDropped as usize).name(),
+        "decrypt_worker_missing_pool_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerMissingOwnerDropped as usize).name(),
+        "decrypt_worker_missing_owner_dropped"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOpenWorkerLocalIneligibleNoShared as usize).name(),
@@ -977,6 +985,8 @@ fn bulk_queue_depth_absolute_thresholds_are_cumulative() {
 fn event_counter_mode_keeps_failures_without_batch_shape_counters() {
     assert!(Event::TransportBulkDropped.recorded_by_event_counter_mode());
     assert!(Event::TransportPriorityDropped.recorded_by_event_counter_mode());
+    assert!(Event::DecryptWorkerMissingPoolDropped.recorded_by_event_counter_mode());
+    assert!(Event::DecryptWorkerMissingOwnerDropped.recorded_by_event_counter_mode());
     assert!(Event::TransportChannelBacklogHigh.recorded_by_event_counter_mode());
     assert!(Event::RxLoopSlowMaintenanceSkipped.recorded_by_event_counter_mode());
     assert!(Event::FspAeadCompletionAeadFailed.recorded_by_event_counter_mode());

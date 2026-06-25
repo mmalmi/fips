@@ -17,6 +17,7 @@
 use crate::node::decrypt_worker::{DecryptFailureReport, DecryptJob, DecryptSessionKey};
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
 use crate::node::{AuthenticatedFmpPlaintext, Node, PeerRuntimeReceive, PeerRuntimeReceiveError};
+#[cfg(test)]
 use crate::noise::NoiseError;
 use crate::transport::ReceivedPacket;
 use std::time::Instant;
@@ -46,7 +47,26 @@ enum DecryptFailureAction {
 pub(in crate::node) enum EncryptedFrameFastPath {
     Dispatch(DecryptJob),
     Dropped,
-    Slow(ReceivedPacket),
+    KbitTransition(ReceivedPacket),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EncryptedWorkerDropReason {
+    MissingWorkerPool,
+    MissingWorkerOwner,
+}
+
+impl EncryptedWorkerDropReason {
+    fn event(self) -> crate::perf_profile::Event {
+        match self {
+            EncryptedWorkerDropReason::MissingWorkerPool => {
+                crate::perf_profile::Event::DecryptWorkerMissingPoolDropped
+            }
+            EncryptedWorkerDropReason::MissingWorkerOwner => {
+                crate::perf_profile::Event::DecryptWorkerMissingOwnerDropped
+            }
+        }
+    }
 }
 
 impl Node {
@@ -83,31 +103,11 @@ impl Node {
             }
         };
         if need_kbit_flip {
-            return EncryptedFrameFastPath::Slow(packet);
+            return EncryptedFrameFastPath::KbitTransition(packet);
         }
 
         let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
-        if self.decrypt_workers.is_none() {
-            return EncryptedFrameFastPath::Slow(packet);
-        }
-        let Some(worker_idx) = self.sessions.worker_owner(&session_key) else {
-            return EncryptedFrameFastPath::Slow(packet);
-        };
-
-        let job = super::super::decrypt_worker::DecryptJob::new(
-            packet.data,
-            session_key,
-            worker_idx,
-            packet.transport_id,
-            packet.remote_addr,
-            *self.node_addr(),
-            packet.timestamp_ms,
-            header.counter,
-            header.flags,
-            header.header_bytes,
-            header.ciphertext_offset(),
-        );
-        EncryptedFrameFastPath::Dispatch(job)
+        self.prepare_current_encrypted_frame_for_worker(packet, header, session_key)
     }
 
     /// Handle an encrypted frame (phase 0x0).
@@ -121,6 +121,15 @@ impl Node {
     /// current session first, then fall back to the previous session.
     #[cfg(test)]
     pub(in crate::node) async fn handle_encrypted_frame(&mut self, packet: ReceivedPacket) {
+        if self.decrypt_workers.is_none() {
+            if self.encrypted_frame_needs_kbit_transition(&packet) {
+                self.handle_encrypted_frame_kbit_transition(packet).await;
+            } else {
+                self.handle_encrypted_frame_inline_for_tests(packet).await;
+            }
+            return;
+        }
+
         match self.try_prepare_encrypted_frame_for_worker(packet) {
             EncryptedFrameFastPath::Dispatch(job) => {
                 if let Some(workers) = self.decrypt_workers.as_ref() {
@@ -128,11 +137,16 @@ impl Node {
                 }
             }
             EncryptedFrameFastPath::Dropped => (),
-            EncryptedFrameFastPath::Slow(packet) => self.handle_encrypted_frame_slow(packet).await,
+            EncryptedFrameFastPath::KbitTransition(packet) => {
+                self.handle_encrypted_frame_kbit_transition(packet).await;
+            }
         }
     }
 
-    pub(in crate::node) async fn handle_encrypted_frame_slow(&mut self, packet: ReceivedPacket) {
+    pub(in crate::node) async fn handle_encrypted_frame_kbit_transition(
+        &mut self,
+        packet: ReceivedPacket,
+    ) {
         // Parse header (fail fast)
         let header = match EncryptedHeader::parse(&packet.data) {
             Some(h) => h,
@@ -156,8 +170,8 @@ impl Node {
         // K-bit flip detection: peer may have cut over to the new session.
         // The bit alone is only a hint: authenticate the frame against the
         // pending session before promotion. The decrypt worker owns the
-        // current FMP recv state in production, so failed pending trials fall
-        // through to the normal worker/inline current-session path.
+        // current FMP recv state, so failed pending trials fall through to
+        // current-session worker dispatch.
         let received_k_bit = header.flags & FLAG_KEY_EPOCH != 0;
         let need_kbit_flip = match self.peers.get(&node_addr) {
             Some(peer) => {
@@ -242,68 +256,120 @@ impl Node {
             );
             // Do not promote. The frame may be stale/mismatched, or it may
             // still authenticate against the current worker-owned session.
-            // Fall through to the normal decrypt path.
+            // Fall through to current worker dispatch.
         }
 
-        // **Worker dispatch is the production path.** Sessions are
+        let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
+        match self.prepare_current_encrypted_frame_for_worker(packet, header, session_key) {
+            EncryptedFrameFastPath::Dispatch(job) => {
+                if let Some(workers) = self.decrypt_workers.as_ref() {
+                    workers.dispatch_job(job);
+                }
+            }
+            EncryptedFrameFastPath::Dropped => {}
+            EncryptedFrameFastPath::KbitTransition(_) => {
+                debug_assert!(false, "K-bit transition handler should not recurse");
+            }
+        }
+    }
+
+    fn prepare_current_encrypted_frame_for_worker(
+        &self,
+        packet: ReceivedPacket,
+        header: EncryptedHeader,
+        session_key: DecryptSessionKey,
+    ) -> EncryptedFrameFastPath {
+        // **Worker dispatch is the canonical decrypt path.** Sessions are
         // registered with the decrypt worker at FMP-establishment
         // (see `register_decrypt_worker_session` invoked from
-        // `promote_connection`), so in production every
-        // `handle_encrypted_frame` for an established session
-        // dispatches the packet to the worker and returns. All
-        // per-peer bookkeeping runs through
-        // `PeerLifecycleRegistry::record_authenticated_fmp_receive`
-        // after the worker returns compact receive metadata or an
-        // authenticated FMP plaintext fallback.
-        //
-        // The in-line decrypt below this is the **synchronous test-
-        // mode path**: unit tests construct `Node` instances directly
-        // (bypassing `lifecycle::start_async`) and step the event
-        // loop by hand, so they need a synchronous decrypt that
-        // updates `Node` state before the test code returns. In
-        // production `self.decrypt_workers` is always `Some` (spawned
-        // at lifecycle start with `num_cpus` workers), so this branch
-        // is taken and the legacy block below never runs.
-        let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
-        // **Worker is the production decrypt path.** The previous
-        // version of this gate also required `endpoint_event_tx` to
-        // be `Some`, but that field is only populated when a caller
-        // attaches the endpoint-data API (`endpoint_data_io()`) — in
-        // pure TUN mode (the common iperf-bench shape) the field is
-        // `None`, so the gate silently bounced every packet to the
-        // legacy in-line decrypt path. The worker can now decode direct
-        // local FSP data when the needed sinks exist, so the only
-        // remaining requirements are: a worker pool exists, and this
-        // session has been handed off
-        // to it.
-        if let Some(workers) = self.decrypt_workers.as_ref()
-            && let Some(worker_idx) = self.sessions.worker_owner(&session_key)
-        {
-            let job = super::super::decrypt_worker::DecryptJob::new(
-                packet.data,
+        // `promote_connection`), so established-session packets either
+        // dispatch to their owner shard or drop with an attributable reason.
+        if self.decrypt_workers.is_none() {
+            self.record_encrypted_worker_drop(
+                &packet,
                 session_key,
-                worker_idx,
-                packet.transport_id,
-                packet.remote_addr,
-                *self.node_addr(),
-                packet.timestamp_ms,
-                header.counter,
-                header.flags,
-                header.header_bytes,
-                header.ciphertext_offset(),
+                EncryptedWorkerDropReason::MissingWorkerPool,
             );
-            workers.dispatch_job(job);
-            return;
+            return EncryptedFrameFastPath::Dropped;
         }
+        let Some(worker_idx) = self.sessions.worker_owner(&session_key) else {
+            self.record_encrypted_worker_drop(
+                &packet,
+                session_key,
+                EncryptedWorkerDropReason::MissingWorkerOwner,
+            );
+            return EncryptedFrameFastPath::Dropped;
+        };
 
-        // === Test-mode synchronous decrypt ===
-        // Production never reaches here. See module-level docs. Does
-        // the FMP AEAD in place against the noise session's own
-        // cipher + replay window (which is the authoritative state
-        // when no worker is registered), then hands the FMP plaintext
-        // to the canonical `process_authentic_fmp_plaintext` — same
-        // path the worker-bounce arm in rx_loop takes, so post-
-        // decrypt bookkeeping + link-layer dispatch don't fork.
+        let job = super::super::decrypt_worker::DecryptJob::new(
+            packet.data,
+            session_key,
+            worker_idx,
+            packet.transport_id,
+            packet.remote_addr,
+            *self.node_addr(),
+            packet.timestamp_ms,
+            header.counter,
+            header.flags,
+            header.header_bytes,
+            header.ciphertext_offset(),
+        );
+        EncryptedFrameFastPath::Dispatch(job)
+    }
+
+    fn record_encrypted_worker_drop(
+        &self,
+        packet: &ReceivedPacket,
+        session_key: DecryptSessionKey,
+        reason: EncryptedWorkerDropReason,
+    ) {
+        crate::perf_profile::record_event(reason.event());
+        trace!(
+            reason = ?reason,
+            session_key = ?session_key,
+            transport_id = %packet.transport_id,
+            remote_addr = %packet.remote_addr,
+            bytes = packet.data.len(),
+            "dropping established FMP packet before worker dispatch"
+        );
+    }
+
+    #[cfg(test)]
+    fn encrypted_frame_needs_kbit_transition(&self, packet: &ReceivedPacket) -> bool {
+        let Some(header) = EncryptedHeader::parse(&packet.data) else {
+            return false;
+        };
+        let Some(node_addr) = self
+            .peers
+            .lookup_session_index((packet.transport_id, header.receiver_idx.as_u32()))
+        else {
+            return false;
+        };
+        let Some(peer) = self.peers.get(&node_addr) else {
+            return false;
+        };
+        let received_k_bit = header.flags & FLAG_KEY_EPOCH != 0;
+        received_k_bit != peer.current_k_bit() && peer.pending_new_session().is_some()
+    }
+
+    /// Synchronous helper for older unit harnesses that instantiate `Node`
+    /// without the lifecycle-owned worker pool. The production receive path
+    /// above does not call this; it either dispatches to the owner worker,
+    /// performs a K-bit transition, or drops with a named perf event.
+    #[cfg(test)]
+    pub(in crate::node) async fn handle_encrypted_frame_inline_for_tests(
+        &mut self,
+        packet: ReceivedPacket,
+    ) {
+        let header = match EncryptedHeader::parse(&packet.data) {
+            Some(h) => h,
+            None => return,
+        };
+        let key = (packet.transport_id, header.receiver_idx.as_u32());
+        let node_addr = match self.peers.lookup_session_index(key) {
+            Some(id) => id,
+            None => return,
+        };
         let ciphertext_offset = header.ciphertext_offset();
         let counter = header.counter;
         let header_bytes = header.header_bytes;
@@ -361,9 +427,8 @@ impl Node {
     }
 
     /// Single canonical site for "the FMP layer authenticated and
-    /// accepted this packet" side-effects. Called both from the
-    /// worker-bounce arm in rx_loop (production fast path) and from
-    /// the in-line synchronous decrypt below (test-mode path).
+    /// accepted this packet" side-effects. Called from decrypt-worker returns
+    /// in rx_loop and from the synchronous test-only helper above.
     ///
     /// Performs the per-peer bookkeeping (last-seen, MMP receiver,
     /// link stats, address-rotation) and then dispatches the
@@ -423,8 +488,7 @@ impl Node {
     /// Register a peer's recv state with the decrypt-worker shard
     /// **eagerly at FSP-session establishment**. After this call the
     /// worker becomes the sole replay-window writer for the session
-    /// and rx_loop's legacy in-line decrypt is no longer used for
-    /// this peer.
+    /// and rx_loop no longer decrypts FMP packets locally for this peer.
     ///
     /// Called from the FSP-session-established sites in
     /// `handlers/session.rs` (both initiator and responder). No-op if
@@ -463,9 +527,10 @@ impl Node {
         // miss the unregistered HashMap entry, and silently drop —
         // permanent black hole until the session rotates. Gating
         // the local "is registered" set on the dispatch result
-        // means we keep using the legacy in-line decrypt path
-        // until a later `register_decrypt_worker_session` succeeds
-        // (the FSP-established / rekey callers retry naturally).
+        // means subsequent packets are explicitly dropped as
+        // `decrypt_worker_missing_owner_dropped` until a later
+        // `register_decrypt_worker_session` succeeds (the
+        // FSP-established / rekey callers retry naturally).
         let owner_idx = workers.register_session(session_key, state);
         self.sessions
             .record_worker_registration(session_key, owner_idx);
@@ -524,6 +589,7 @@ impl Node {
     }
 
     /// Log a decryption failure with replay suppression.
+    #[cfg(test)]
     fn log_decrypt_failure(
         &mut self,
         node_addr: &crate::NodeAddr,
