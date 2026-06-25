@@ -1,37 +1,28 @@
     #[test]
-    fn fsp_jobs_keep_original_priority_and_bulk_lanes_to_fsp_owner() {
+    fn fsp_owner_handoff_is_bulk_only() {
         let (pool, _control_receivers, priority_receivers, bulk_receivers) =
             test_worker_pool(4, 4);
 
         let priority_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
         let priority_owner = pool.worker_idx_for_fsp(&priority_job.source_addr);
+        let mut batcher = FspDecryptJobBatcher::new();
+        batcher.push_to(&pool, priority_owner, priority_job);
+        batcher.flush(&pool);
         assert!(
-            pool.dispatch_fsp_job_or_return(priority_job).is_ok(),
-            "priority FSP job should queue"
+            priority_receivers[priority_owner].is_empty(),
+            "FSP owner handoff must not use the priority worker lane"
         );
-        match priority_receivers[priority_owner]
-            .try_recv()
-            .expect("priority FSP job should use priority lane")
-        {
-            WorkerMsg::FspJob(job) => assert_eq!(job.lane(), DecryptWorkerLane::Priority),
-            WorkerMsg::Job(_)
-            | WorkerMsg::RegisterSession { .. }
-            | WorkerMsg::RegisterFspSession { .. }
-            | WorkerMsg::UnregisterSession { .. }
-            | WorkerMsg::UnregisterFspSession { .. } => {
-                panic!("expected priority FSP job")
-            }
-        }
         assert!(
             bulk_receivers[priority_owner].is_empty(),
-            "priority FSP jobs must not wait behind bulk work"
+            "non-bulk FSP owner handoff should fail closed before worker enqueue"
         );
 
         let bulk_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         let bulk_owner = pool.worker_idx_for_fsp(&bulk_job.source_addr);
         assert!(
-            pool.dispatch_fsp_job_or_return(bulk_job).is_ok(),
-            "bulk FSP job should queue"
+            pool.dispatch_bulk_fsp_job_or_return(bulk_owner, bulk_job)
+                .is_ok(),
+            "bulk FSP owner handoff should queue"
         );
         match bulk_receivers[bulk_owner]
             .try_recv()
@@ -306,28 +297,14 @@
 
     #[test]
     fn full_fsp_owner_queues_return_to_caller_without_waiting() {
-        let (pool, _control_rx, priority_rx, bulk_rx) = one_slot_worker_pool();
+        let (pool, _control_rx, _priority_rx, bulk_rx) = one_slot_worker_pool();
 
         let session_key = test_session_key(1, 88);
-        pool.dispatch_job(dummy_priority_decrypt_job(session_key));
-        assert_eq!(priority_rx.len(), 1, "priority lane should be full");
-
-        let priority_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
-        assert!(
-            pool.dispatch_fsp_job_or_return(priority_job).is_err(),
-            "full priority FSP lane should return to caller"
-        );
-        assert_eq!(
-            priority_rx.len(),
-            1,
-            "returned priority FSP job must not overflow the priority lane"
-        );
-
         pool.dispatch_bulk_job(0, dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "bulk lane should be full");
         let bulk_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert!(
-            pool.dispatch_fsp_job_or_return(bulk_job).is_err(),
+            pool.dispatch_bulk_fsp_job_or_return(0, bulk_job).is_err(),
             "full bulk FSP lane should return to caller"
         );
         assert_eq!(
@@ -970,11 +947,10 @@
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         drop(control_tx);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let session_key = test_session_key(1, 108);
         priority_tx
-            .try_send(WorkerMsg::FspJob(dummy_fsp_job(
-                DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
-            )))
-            .expect("test priority lane should accept one FSP packet");
+            .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
+            .expect("test priority lane should accept one packet");
         drop(priority_tx);
 
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
@@ -1001,7 +977,7 @@
         assert_eq!(processed, 2);
         assert!(
             priority_rx.is_empty(),
-            "priority FSP packets must not wait for the rest of the bulk batch"
+            "priority packets must not wait for the rest of the FSP bulk batch"
         );
         assert_eq!(batch_stats.priority_packets, 1);
         assert_eq!(batch_stats.bulk_packets, 2);
