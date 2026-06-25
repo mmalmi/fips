@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::{Condvar, Mutex};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketMoverSendLane {
@@ -28,6 +29,49 @@ pub(crate) trait PacketMoverBulkSendItem {
     fn bulk_send_target_key(&self) -> Self::Key;
 
     fn is_bulk_send_item(&self) -> bool;
+}
+
+#[derive(Default)]
+pub(crate) struct PacketMoverOrderedSendBatch<T> {
+    state: Mutex<PacketMoverOrderedSendBatchState<T>>,
+    ready_cv: Condvar,
+}
+
+#[derive(Default)]
+struct PacketMoverOrderedSendBatchState<T> {
+    completed: Option<T>,
+}
+
+impl<T> PacketMoverOrderedSendBatch<T> {
+    pub(crate) fn complete(&self, completed: T) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("packet mover ordered send batch state poisoned");
+        debug_assert!(
+            state.completed.is_none(),
+            "packet mover ordered send batch completed twice"
+        );
+        state.completed = Some(completed);
+        drop(state);
+        self.ready_cv.notify_one();
+    }
+
+    pub(crate) fn wait(&self) -> T {
+        let mut state = self
+            .state
+            .lock()
+            .expect("packet mover ordered send batch state poisoned");
+        loop {
+            if let Some(completed) = state.completed.take() {
+                return completed;
+            }
+            state = self
+                .ready_cv
+                .wait(state)
+                .expect("packet mover ordered send batch state poisoned");
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -343,6 +387,7 @@ pub(crate) fn record_packet_mover_send_groups<Target, Packet>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct TestTarget {
@@ -459,6 +504,34 @@ mod tests {
             TestBulkItem { key: 1, bulk: true },
         ];
         assert!(select_packet_mover_bulk_send_targets(&mixed_lane, 3).is_none());
+    }
+
+    #[test]
+    fn ordered_send_batch_returns_completed_items() {
+        let batch = PacketMoverOrderedSendBatch::default();
+        batch.complete(vec![1u8, 2, 3]);
+
+        assert_eq!(batch.wait(), vec![1u8, 2, 3]);
+    }
+
+    #[test]
+    fn ordered_send_batch_waits_for_worker_completion() {
+        let batch = Arc::new(PacketMoverOrderedSendBatch::default());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let waiter_batch = Arc::clone(&batch);
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal waiter started");
+            waiter_batch.wait()
+        });
+
+        started_rx.recv().expect("waiter started");
+        batch.complete(Vec::<u8>::new());
+
+        assert_eq!(
+            waiter.join().expect("waiter thread should complete"),
+            Vec::<u8>::new(),
+            "empty completions still advance the ordered sender"
+        );
     }
 
     #[test]

@@ -3,7 +3,8 @@ use crate::node::session_wire::FSP_HEADER_SIZE;
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 #[cfg(target_os = "linux")]
 use crate::packet_mover::{
-    PacketMoverBulkSendItem, PacketMoverBulkSendTargets, select_packet_mover_bulk_send_targets,
+    PacketMoverBulkSendItem, PacketMoverBulkSendTargets, PacketMoverOrderedSendBatch,
+    select_packet_mover_bulk_send_targets,
 };
 use crate::packet_mover::{
     PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendTarget,

@@ -705,41 +705,7 @@ struct LinuxWgEncryptBatch {
 }
 
 #[cfg(target_os = "linux")]
-#[derive(Default)]
-struct LinuxWgSendBatch {
-    state: Mutex<LinuxWgSendBatchState>,
-    ready_cv: Condvar,
-}
-
-#[cfg(target_os = "linux")]
-#[derive(Default)]
-struct LinuxWgSendBatchState {
-    groups: Option<Vec<SelectedSendBatch>>,
-}
-
-#[cfg(target_os = "linux")]
-impl LinuxWgSendBatch {
-    fn complete(&self, groups: Vec<SelectedSendBatch>) {
-        let mut state = self.state.lock().expect("Linux WG batch state poisoned");
-        debug_assert!(state.groups.is_none());
-        state.groups = Some(groups);
-        drop(state);
-        self.ready_cv.notify_one();
-    }
-
-    fn wait(&self) -> Vec<SelectedSendBatch> {
-        let mut state = self.state.lock().expect("Linux WG batch state poisoned");
-        loop {
-            if let Some(groups) = state.groups.take() {
-                return groups;
-            }
-            state = self
-                .ready_cv
-                .wait(state)
-                .expect("Linux WG batch state poisoned");
-        }
-    }
-}
+type LinuxWgSendBatch = PacketMoverOrderedSendBatch<Vec<SelectedSendBatch>>;
 
 #[cfg(target_os = "linux")]
 type LinuxWgBatchSendFlowKey = SendTargetKey;
