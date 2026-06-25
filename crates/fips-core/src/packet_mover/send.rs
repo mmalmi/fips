@@ -1,5 +1,9 @@
+use crossbeam_channel::{Sender as CrossbeamSender, TrySendError as CrossbeamTrySendError};
 use std::collections::HashMap;
-use std::sync::{Condvar, Mutex};
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketMoverSendLane {
@@ -71,6 +75,93 @@ impl<T> PacketMoverOrderedSendBatch<T> {
                 .wait(state)
                 .expect("packet mover ordered send batch state poisoned");
         }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PacketMoverOrderedSendInflight {
+    queued: Arc<AtomicUsize>,
+}
+
+impl PacketMoverOrderedSendInflight {
+    pub(crate) fn queued(&self) -> usize {
+        self.queued.load(Relaxed)
+    }
+
+    fn reserve_one(&self) {
+        self.queued.fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn complete_one(&self) {
+        self.release_one("completion");
+    }
+
+    fn rollback_one(&self) {
+        self.release_one("rollback");
+    }
+
+    fn release_one(&self, action: &str) {
+        let previous = self.queued.fetch_sub(1, Relaxed);
+        debug_assert!(
+            previous > 0,
+            "packet mover ordered send inflight accounting underflow during {action}"
+        );
+    }
+}
+
+pub(crate) struct PacketMoverOrderedSendFlow<T> {
+    sender: CrossbeamSender<T>,
+    inflight: PacketMoverOrderedSendInflight,
+    last_used_ms: AtomicU64,
+}
+
+impl<T> PacketMoverOrderedSendFlow<T> {
+    pub(crate) fn new(sender: CrossbeamSender<T>, now_ms: u64) -> Self {
+        Self {
+            sender,
+            inflight: PacketMoverOrderedSendInflight::default(),
+            last_used_ms: AtomicU64::new(now_ms),
+        }
+    }
+
+    pub(crate) fn inflight(&self) -> PacketMoverOrderedSendInflight {
+        self.inflight.clone()
+    }
+
+    pub(crate) fn try_enqueue(&self, item: T) -> Result<(), CrossbeamTrySendError<T>> {
+        self.inflight.reserve_one();
+        match self.sender.try_send(item) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.inflight.rollback_one();
+                Err(err)
+            }
+        }
+    }
+
+    pub(crate) fn enqueue_blocking(&self, item: T) -> bool {
+        self.inflight.reserve_one();
+        match self.sender.send(item) {
+            Ok(()) => true,
+            Err(_) => {
+                self.inflight.rollback_one();
+                false
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn complete_one(&self) {
+        self.inflight.complete_one();
+    }
+
+    pub(crate) fn mark_used(&self, now_ms: u64) {
+        self.last_used_ms.store(now_ms, Relaxed);
+    }
+
+    pub(crate) fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
+        let last_used = self.last_used_ms.load(Relaxed);
+        now_ms.saturating_sub(last_used) >= idle_ms && self.inflight.queued() == 0
     }
 }
 
@@ -387,6 +478,7 @@ pub(crate) fn record_packet_mover_send_groups<Target, Packet>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossbeam_channel::bounded;
     use std::sync::Arc;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

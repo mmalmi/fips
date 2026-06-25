@@ -87,7 +87,8 @@ pub(crate) use queues::{
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
 pub(crate) use send::{
     PacketMoverBulkSendItem, PacketMoverBulkSendTargets, PacketMoverOrderedSendBatch,
-    PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendPacket, PacketMoverSendTarget,
+    PacketMoverOrderedSendFlow, PacketMoverOrderedSendInflight, PacketMoverSendBatch,
+    PacketMoverSendLane, PacketMoverSendPacket, PacketMoverSendTarget,
     packet_mover_send_group_stats, push_packet_mover_send_batch_with_lane_and_capacity,
     record_packet_mover_send_groups, select_packet_mover_bulk_send_targets,
 };
@@ -142,6 +143,9 @@ pub(crate) fn canonical_packet_mover_map() -> PacketMoverMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossbeam_channel::bounded;
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn canonical_packet_mover_map_is_one_straight_pipeline() {
@@ -181,5 +185,79 @@ mod tests {
                 .iter()
                 .any(|path| path.contains("queue-full side-path"))
         );
+    }
+
+    #[test]
+    fn ordered_send_flow_tracks_successful_enqueues_and_completion() {
+        let (tx, rx) = bounded(1);
+        let flow = PacketMoverOrderedSendFlow::new(tx, 10);
+        assert!(flow.is_idle(25, 10));
+
+        flow.try_enqueue(1u8).expect("first enqueue should fit");
+        assert_eq!(flow.inflight().queued(), 1);
+        assert!(
+            !flow.is_idle(25, 10),
+            "queued batches keep the flow alive while a sender is waiting"
+        );
+
+        assert!(flow.try_enqueue(2u8).is_err());
+        assert_eq!(
+            flow.inflight().queued(),
+            1,
+            "failed enqueue must roll back reserved in-flight progress"
+        );
+
+        assert_eq!(rx.recv().expect("queued item"), 1u8);
+        flow.complete_one();
+        assert!(flow.is_idle(25, 10));
+    }
+
+    #[test]
+    fn ordered_send_flow_blocking_enqueue_reports_closed_receiver() {
+        let (tx, rx) = bounded(1);
+        let flow = PacketMoverOrderedSendFlow::new(tx, 10);
+        drop(rx);
+
+        assert!(!flow.enqueue_blocking(1u8));
+        assert_eq!(flow.inflight().queued(), 0);
+    }
+
+    #[test]
+    fn ordered_send_flow_reserves_before_blocking_enqueue_handoff() {
+        let (tx, rx) = bounded(0);
+        let flow = Arc::new(PacketMoverOrderedSendFlow::new(tx, 10));
+        let started = Arc::new(Barrier::new(2));
+        let sender_flow = Arc::clone(&flow);
+        let sender_started = Arc::clone(&started);
+        let handle = std::thread::spawn(move || {
+            sender_started.wait();
+            assert!(sender_flow.enqueue_blocking(1u8));
+        });
+
+        started.wait();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while flow.inflight().queued() == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            flow.inflight().queued(),
+            1,
+            "blocking dispatch must reserve in-flight progress before handoff"
+        );
+
+        assert_eq!(rx.recv().expect("handoff item"), 1u8);
+        handle.join().expect("blocking sender thread should finish");
+        flow.complete_one();
+        assert_eq!(flow.inflight().queued(), 0);
+    }
+
+    #[test]
+    fn ordered_send_flow_mark_used_delays_idle_prune() {
+        let (tx, _rx) = bounded::<u8>(1);
+        let flow = PacketMoverOrderedSendFlow::new(tx, 10);
+        assert!(flow.is_idle(25, 10));
+
+        flow.mark_used(24);
+        assert!(!flow.is_idle(25, 10));
     }
 }

@@ -781,9 +781,7 @@ impl LinuxWgBatchSendFlows {
 
 #[cfg(target_os = "linux")]
 struct LinuxWgBatchSendFlow {
-    sender: Sender<Arc<LinuxWgSendBatch>>,
-    inflight: Arc<std::sync::atomic::AtomicUsize>,
-    last_used_ms: std::sync::atomic::AtomicU64,
+    flow: PacketMoverOrderedSendFlow<Arc<LinuxWgSendBatch>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -795,53 +793,32 @@ impl LinuxWgBatchSendFlow {
         cap: usize,
     ) -> Arc<Self> {
         let (sender, receiver) = bounded(cap);
-        let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let thread_inflight = Arc::clone(&inflight);
+        let flow = PacketMoverOrderedSendFlow::new(sender, now_ms);
+        let inflight = flow.inflight();
         std::thread::Builder::new()
             .name(format!("fips-linux-wg-send-{}", key.socket_fd))
-            .spawn(move || run_linux_wg_batch_sender(key, send_target, receiver, thread_inflight))
+            .spawn(move || run_linux_wg_batch_sender(key, send_target, receiver, inflight))
             .expect("failed to spawn fips Linux WG-batch sender thread");
-        Arc::new(Self {
-            sender,
-            inflight,
-            last_used_ms: std::sync::atomic::AtomicU64::new(now_ms),
-        })
+        Arc::new(Self { flow })
     }
 
     fn try_enqueue(
         &self,
         batch: Arc<LinuxWgSendBatch>,
     ) -> Result<(), TrySendError<Arc<LinuxWgSendBatch>>> {
-        match self.sender.try_send(batch) {
-            Ok(()) => {
-                self.inflight
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Ok(())
-            }
-            Err(err) => Err(err),
-        }
+        self.flow.try_enqueue(batch)
     }
 
     fn enqueue_blocking(&self, batch: Arc<LinuxWgSendBatch>) -> bool {
-        match self.sender.send(batch) {
-            Ok(()) => {
-                self.inflight
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                true
-            }
-            Err(_) => false,
-        }
+        self.flow.enqueue_blocking(batch)
     }
 
     fn mark_used(&self, now_ms: u64) {
-        self.last_used_ms
-            .store(now_ms, std::sync::atomic::Ordering::Relaxed);
+        self.flow.mark_used(now_ms);
     }
 
     fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
-        let last_used = self.last_used_ms.load(std::sync::atomic::Ordering::Relaxed);
-        now_ms.saturating_sub(last_used) >= idle_ms
-            && self.inflight.load(std::sync::atomic::Ordering::Relaxed) == 0
+        self.flow.is_idle(now_ms, idle_ms)
     }
 }
 
@@ -850,7 +827,7 @@ fn run_linux_wg_batch_sender(
     key: LinuxWgBatchSendFlowKey,
     send_target: SelectedSendTarget,
     receiver: Receiver<Arc<LinuxWgSendBatch>>,
-    inflight: Arc<std::sync::atomic::AtomicUsize>,
+    inflight: PacketMoverOrderedSendInflight,
 ) {
     trace!(
         socket_fd = key.socket_fd,
@@ -883,7 +860,7 @@ fn run_linux_wg_batch_sender(
                 );
             }
         }
-        inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        inflight.complete_one();
     }
 }
 
