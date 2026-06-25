@@ -144,6 +144,30 @@ impl OwnerReceiveReservationSource {
             packet_count,
         ))
     }
+
+    pub(crate) fn ticket_for_reservation(
+        self,
+        reservation: OwnerReservation,
+    ) -> OwnerReceiveTicket {
+        debug_assert_eq!(reservation.owner, self.owner);
+        debug_assert_eq!(reservation.order.receive_order_id, self.receive_order_id);
+        OwnerReceiveTicket {
+            sequence: reservation.order.sequence.0,
+        }
+    }
+
+    pub(crate) fn ticket_for_current_reservation(
+        self,
+        reservation: OwnerReservation,
+    ) -> OwnerReceiveTicket {
+        let ticket = self.ticket_for_reservation(reservation);
+        debug_assert_eq!(reservation.generation, self.generation);
+        ticket
+    }
+
+    pub(crate) fn is_current_generation(self, reservation: OwnerReservation) -> bool {
+        reservation.generation == self.generation
+    }
 }
 
 impl OwnerReservationBatch {
@@ -396,6 +420,34 @@ impl<T> OwnerReceiveSequencer<T> {
     ) -> Result<usize, OwnerCompletionError> {
         self.window.complete(ticket, completion, on_ready)
     }
+
+    pub(crate) fn ticket_for_reservation(
+        &self,
+        reservation: OwnerReservation,
+    ) -> OwnerReceiveTicket {
+        self.source.ticket_for_reservation(reservation)
+    }
+
+    pub(crate) fn ticket_for_current_reservation(
+        &self,
+        reservation: OwnerReservation,
+    ) -> OwnerReceiveTicket {
+        self.source.ticket_for_current_reservation(reservation)
+    }
+
+    pub(crate) fn is_current_generation(&self, reservation: OwnerReservation) -> bool {
+        self.source.is_current_generation(reservation)
+    }
+
+    pub(crate) fn complete_current_reservation(
+        &mut self,
+        reservation: OwnerReservation,
+        completion: T,
+        on_ready: impl FnMut(OwnerReceiveTicket, T),
+    ) -> Result<usize, OwnerCompletionError> {
+        let ticket = self.ticket_for_current_reservation(reservation);
+        self.complete(ticket, completion, on_ready)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -525,6 +577,47 @@ mod tests {
             .reserve(PacketLane::Priority)
             .expect("next reservation");
         assert_eq!(next.order.sequence, OrderSequence(3));
+    }
+
+    #[test]
+    fn owner_receive_sequencer_derives_completion_ticket_from_reservation() {
+        let source = OwnerReceiveReservationSource::new(owner(), OwnerGeneration(7), 101);
+        let mut sequencer = OwnerReceiveSequencer::new(source, 4);
+        let first = sequencer
+            .reserve(PacketLane::Priority)
+            .expect("reservation");
+        let ticket = sequencer.ticket_for_current_reservation(first);
+
+        assert_eq!(ticket.sequence, 0);
+        assert!(sequencer.is_current_generation(first));
+
+        let mut ready = Vec::new();
+        assert_eq!(
+            sequencer
+                .complete_current_reservation(first, "first", |ticket, completion| {
+                    ready.push((ticket.sequence, completion));
+                })
+                .expect("completion"),
+            1
+        );
+        assert_eq!(ready, vec![(0, "first")]);
+    }
+
+    #[test]
+    fn owner_receive_sequencer_observes_stale_generation_without_rejecting_order() {
+        let source = OwnerReceiveReservationSource::new(owner(), OwnerGeneration(8), 102);
+        let mut sequencer = OwnerReceiveSequencer::<&'static str>::new(source, 4);
+        let reservation = sequencer
+            .reserve(PacketLane::Bulk)
+            .expect("reservation from old generation");
+        sequencer.set_source(OwnerReceiveReservationSource::new(
+            owner(),
+            OwnerGeneration(9),
+            102,
+        ));
+
+        assert!(!sequencer.is_current_generation(reservation));
+        assert_eq!(sequencer.ticket_for_reservation(reservation).sequence, 0);
     }
 
     #[test]

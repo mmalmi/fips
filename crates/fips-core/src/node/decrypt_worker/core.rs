@@ -724,16 +724,10 @@ impl OwnedFspSessionState {
         on_output: impl FnMut(FspReadyCompletion),
     ) -> Result<FspOrderedDrain, OrderedCompletionError> {
         let reservation = completion.owner_reservation();
-        let reservation_source = self.fsp_receive_reservation_source();
-        debug_assert_eq!(reservation.owner, reservation_source.owner());
-        debug_assert_eq!(
-            reservation.order.receive_order_id,
-            reservation_source.receive_order_id()
-        );
-        let ticket = fsp_receive_ticket_from_reservation(reservation);
+        let ticket = self.fsp_receive_order.ticket_for_reservation(reservation);
         let source = completion.source;
         let result = if source.is_worker_open()
-            && reservation.generation != reservation_source.generation()
+            && !self.fsp_receive_order.is_current_generation(reservation)
         {
             FspOrderedCompletion::StaleWorkerOpen { source }
         } else {
@@ -744,7 +738,6 @@ impl OwnedFspSessionState {
 }
 
 type OrderedReceiveTicket = crate::packet_mover::OwnerReceiveTicket;
-type FmpReceiveTicket = OrderedReceiveTicket;
 type FspReceiveTicket = OrderedReceiveTicket;
 type OrderedCompletionError = crate::packet_mover::OwnerCompletionError;
 type OrderedReceiveSequencer<T> = OwnerReceiveSequencer<T>;
@@ -1263,14 +1256,9 @@ fn fsp_reservation_source_addr(reservation: OwnerReservation) -> NodeAddr {
     }
 }
 
+#[cfg(test)]
 fn fsp_receive_ticket_from_reservation(reservation: OwnerReservation) -> FspReceiveTicket {
     FspReceiveTicket {
-        sequence: reservation.order.sequence.0,
-    }
-}
-
-fn fmp_receive_ticket_from_reservation(reservation: OwnerReservation) -> FmpReceiveTicket {
-    FmpReceiveTicket {
         sequence: reservation.order.sequence.0,
     }
 }
@@ -1549,10 +1537,6 @@ impl OwnedSessionState {
         }
     }
 
-    fn fmp_receive_reservation_source(&self) -> OwnerReceiveReservationSource {
-        self.fmp_receive_order.source()
-    }
-
     fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
         let replay_highest = self.fmp_replay.highest();
         if !self.fmp_replay.check(fmp_counter) {
@@ -1625,14 +1609,6 @@ impl OwnedSessionState {
         mut on_ready: impl FnMut(FmpReadyCompletion),
     ) -> Result<usize, OrderedCompletionError> {
         let reservation = completion.owner_reservation();
-        let reservation_source = self.fmp_receive_reservation_source();
-        debug_assert_eq!(reservation.owner, reservation_source.owner());
-        debug_assert_eq!(
-            reservation.order.receive_order_id,
-            reservation_source.receive_order_id()
-        );
-        debug_assert_eq!(reservation.generation, reservation_source.generation());
-        let ticket = fmp_receive_ticket_from_reservation(reservation);
         let replay_precheck = completion.replay_precheck;
         let ordered = match completion.crypto.result {
             CryptoResult::Opened(opened) => FmpOrderedCompletion::Opened {
@@ -1661,7 +1637,7 @@ impl OwnedSessionState {
         };
         let fmp_replay = &mut self.fmp_replay;
         self.fmp_receive_order
-            .complete(ticket, ordered, |_ticket, completion| match completion {
+            .complete_current_reservation(reservation, ordered, |_ticket, completion| match completion {
                 FmpOrderedCompletion::Opened {
                     opened,
                     replay_precheck,
