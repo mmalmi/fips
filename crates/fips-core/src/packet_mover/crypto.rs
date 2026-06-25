@@ -59,6 +59,17 @@ pub(crate) trait OwnerOrderedCompletion {
     fn owner_reservation(&self) -> OwnerReservation;
 }
 
+pub(crate) struct OwnerCompletionBatchFlush<R, C> {
+    pub(crate) route: R,
+    pub(crate) batch: OwnerCompletionBatch<C>,
+}
+
+pub(crate) struct OwnerCompletionBatcher<R, C> {
+    current_route: Option<R>,
+    current_batch: Option<OwnerCompletionBatch<C>>,
+    max_len: usize,
+}
+
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum OwnerCompletionBatch<C> {
     One(C),
@@ -118,6 +129,54 @@ impl<C: OwnerOrderedCompletion> OwnerCompletionBatch<C> {
             }
             Self::Many(completions) => completions.push(completion),
         }
+    }
+}
+
+impl<R: Copy + Eq, C: OwnerOrderedCompletion> OwnerCompletionBatcher<R, C> {
+    pub(crate) fn new(max_len: usize) -> Self {
+        Self {
+            current_route: None,
+            current_batch: None,
+            max_len: max_len.max(1),
+        }
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        route: R,
+        completion: C,
+    ) -> Option<OwnerCompletionBatchFlush<R, C>> {
+        let reservation = completion.owner_reservation();
+        let same_batch = self.current_route == Some(route)
+            && self.current_batch.as_ref().is_some_and(|batch| {
+                batch.can_push(
+                    reservation.owner,
+                    reservation.order.receive_order_id,
+                    self.max_len,
+                )
+            });
+
+        if same_batch {
+            let Some(batch) = self.current_batch.as_mut() else {
+                unreachable!("same_batch requires an active completion batch")
+            };
+            batch.push_with_capacity(completion, self.max_len);
+            return None;
+        }
+
+        let flush = self.flush();
+        self.current_route = Some(route);
+        self.current_batch = Some(OwnerCompletionBatch::one(completion));
+        flush
+    }
+
+    pub(crate) fn flush(&mut self) -> Option<OwnerCompletionBatchFlush<R, C>> {
+        let batch = self.current_batch.take()?;
+        let route = self
+            .current_route
+            .take()
+            .expect("active owner completion batch has a route");
+        Some(OwnerCompletionBatchFlush { route, batch })
     }
 }
 
@@ -371,5 +430,81 @@ mod tests {
             8,
             2
         ));
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum TestRoute {
+        Local,
+        Owner(usize),
+    }
+
+    fn drain_flush(
+        flush: Option<OwnerCompletionBatchFlush<TestRoute, TestCompletion>>,
+        out: &mut Vec<(TestRoute, usize)>,
+    ) {
+        let Some(flush) = flush else {
+            return;
+        };
+        out.push((flush.route, flush.batch.len()));
+    }
+
+    #[test]
+    fn owner_completion_batcher_flushes_on_route_change() {
+        let mut batcher = OwnerCompletionBatcher::new(4);
+        let mut flushed = Vec::new();
+
+        drain_flush(
+            batcher.push(TestRoute::Owner(1), completion(1, 7, 0)),
+            &mut flushed,
+        );
+        drain_flush(
+            batcher.push(TestRoute::Owner(1), completion(1, 7, 1)),
+            &mut flushed,
+        );
+        assert!(flushed.is_empty());
+
+        drain_flush(
+            batcher.push(TestRoute::Local, completion(1, 7, 2)),
+            &mut flushed,
+        );
+        drain_flush(batcher.flush(), &mut flushed);
+
+        assert_eq!(
+            flushed,
+            vec![(TestRoute::Owner(1), 2), (TestRoute::Local, 1)]
+        );
+    }
+
+    #[test]
+    fn owner_completion_batcher_flushes_on_owner_order_or_capacity_change() {
+        let mut batcher = OwnerCompletionBatcher::new(2);
+        let mut flushed = Vec::new();
+
+        drain_flush(
+            batcher.push(TestRoute::Owner(1), completion(1, 7, 0)),
+            &mut flushed,
+        );
+        drain_flush(
+            batcher.push(TestRoute::Owner(1), completion(2, 7, 0)),
+            &mut flushed,
+        );
+        drain_flush(
+            batcher.push(TestRoute::Owner(1), completion(2, 8, 0)),
+            &mut flushed,
+        );
+        drain_flush(
+            batcher.push(TestRoute::Owner(1), completion(2, 8, 1)),
+            &mut flushed,
+        );
+        drain_flush(batcher.flush(), &mut flushed);
+
+        assert_eq!(
+            flushed,
+            vec![
+                (TestRoute::Owner(1), 1),
+                (TestRoute::Owner(1), 1),
+                (TestRoute::Owner(1), 2),
+            ]
+        );
     }
 }

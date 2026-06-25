@@ -14,9 +14,10 @@ use crate::node::{
 use crate::packet_mover::{
     BulkLanePrefixRejectReason, BulkLanePrefixSendResult, BulkLanePrefixSender, CryptoCompletion,
     CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork, DispatchBatcher,
-    LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch, OwnerGeneration, OwnerKey,
-    OwnerOrderedCompletion, OwnerReservation, OutputTarget, PacketLane, PacketOutputTarget,
-    PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
+    LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch, OwnerCompletionBatchFlush,
+    OwnerCompletionBatcher, OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation,
+    OutputTarget, PacketLane, PacketOutputTarget, PriorityBulkLaneDropReason,
+    PriorityBulkLaneSendResult, PriorityBulkLaneSender,
     SplitBulkLaneItem, StatelessCryptoWorker, WorkerDrainAction, WorkerDrainCursor,
     WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
     recv_biased_worker_queue_item, try_recv_reserved_worker_queue_item,
@@ -1396,71 +1397,28 @@ impl OwnerOrderedCompletion for FspAeadCompletion {
 
 type FspAeadCompletionBatch = OwnerCompletionBatch<FspAeadCompletion>;
 
-struct FspAeadCompletionBatchFlush {
-    local_completion: bool,
-    owner_idx: Option<usize>,
-    batch: FspAeadCompletionBatch,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FspAeadCompletionRoute {
+    Local,
+    Owner(usize),
 }
 
-struct FspAeadCompletionBatchBuilder {
-    current_local: bool,
-    current_owner_idx: Option<usize>,
-    current_batch: Option<FspAeadCompletionBatch>,
-    max_len: usize,
+type FspAeadCompletionBatchFlush =
+    OwnerCompletionBatchFlush<FspAeadCompletionRoute, FspAeadCompletion>;
+type FspAeadCompletionBatchBuilder =
+    OwnerCompletionBatcher<FspAeadCompletionRoute, FspAeadCompletion>;
+
+fn new_fsp_aead_completion_batcher() -> FspAeadCompletionBatchBuilder {
+    OwnerCompletionBatcher::new(DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX)
 }
 
-impl FspAeadCompletionBatchBuilder {
-    fn new() -> Self {
-        Self {
-            current_local: false,
-            current_owner_idx: None,
-            current_batch: None,
-            max_len: DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
-        }
-    }
-
-    fn push(
-        &mut self,
-        local_completion: bool,
-        owner_idx: Option<usize>,
-        completion: FspAeadCompletion,
-    ) -> Option<FspAeadCompletionBatchFlush> {
-        let owner_idx = owner_idx.filter(|_| !local_completion);
-        let reservation = completion.owner_reservation();
-        let same_batch = self
-            .current_batch
-            .as_ref()
-            .is_some_and(|batch| {
-                batch.can_push(
-                    reservation.owner,
-                    reservation.order.receive_order_id,
-                    self.max_len,
-                )
-            })
-            && self.current_local == local_completion
-            && self.current_owner_idx == owner_idx;
-
-        if same_batch {
-            let Some(batch) = self.current_batch.as_mut() else {
-                unreachable!("same_batch requires an active completion batch")
-            };
-            batch.push_with_capacity(completion, self.max_len);
-            return None;
-        }
-
-        let flush = self.flush();
-        self.current_local = local_completion;
-        self.current_owner_idx = owner_idx;
-        self.current_batch = Some(FspAeadCompletionBatch::one(completion));
-        flush
-    }
-
-    fn flush(&mut self) -> Option<FspAeadCompletionBatchFlush> {
-        Some(FspAeadCompletionBatchFlush {
-            local_completion: self.current_local,
-            owner_idx: self.current_owner_idx.take(),
-            batch: self.current_batch.take()?,
-        })
+fn fsp_aead_completion_route(
+    current_idx: usize,
+    completion_owner_idx: Option<usize>,
+) -> FspAeadCompletionRoute {
+    match completion_owner_idx {
+        Some(owner_idx) if owner_idx != current_idx => FspAeadCompletionRoute::Owner(owner_idx),
+        Some(_) | None => FspAeadCompletionRoute::Local,
     }
 }
 

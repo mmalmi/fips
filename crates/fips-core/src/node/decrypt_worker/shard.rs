@@ -867,23 +867,14 @@ impl DecryptWorkerShard {
         I: IntoIterator<Item = FspAeadOpenDispatch>,
     {
         let mut returned_count = 0usize;
-        let mut batcher = FspAeadCompletionBatchBuilder::new();
+        let mut batcher = new_fsp_aead_completion_batcher();
         for mut job in jobs {
             returned_count = returned_count.saturating_add(1);
             let completion_owner_idx = job.completion_owner_idx();
-            let local_completion =
-                completion_owner_idx == Some(idx) || completion_owner_idx.is_none();
             job.mark_returned_completion();
-            if let Some(flush) = batcher.push(
-                local_completion,
-                completion_owner_idx,
-                job.into_dropped_completion(),
-            ) {
-                self.flush_dropped_fsp_aead_open_completion_batch(
-                    idx,
-                    flush,
-                    return_batch,
-                );
+            let route = fsp_aead_completion_route(idx, completion_owner_idx);
+            if let Some(flush) = batcher.push(route, job.into_dropped_completion()) {
+                self.flush_dropped_fsp_aead_open_completion_batch(idx, flush, return_batch);
             }
         }
 
@@ -899,12 +890,13 @@ impl DecryptWorkerShard {
         flush: FspAeadCompletionBatchFlush,
         return_batch: &mut DecryptWorkerReturnBatch,
     ) {
-        if flush.local_completion {
-            self.handle_fsp_aead_completion_batch_msg(idx, flush.batch, return_batch);
-            return;
-        }
-        if let Some(owner_idx) = flush.owner_idx {
-            send_fsp_aead_open_completion_batch(idx, &self.pool, owner_idx, flush.batch);
+        match flush.route {
+            FspAeadCompletionRoute::Local => {
+                self.handle_fsp_aead_completion_batch_msg(idx, flush.batch, return_batch);
+            }
+            FspAeadCompletionRoute::Owner(owner_idx) => {
+                send_fsp_aead_open_completion_batch(idx, &self.pool, owner_idx, flush.batch);
+            }
         }
     }
 
