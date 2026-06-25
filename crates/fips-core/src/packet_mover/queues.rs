@@ -1,4 +1,5 @@
 use super::{AdmissionDrop, AdmissionDropReason, PacketLane};
+use crate::transport::{PacketRx, ReceivedPacket};
 use std::collections::VecDeque;
 use std::sync::{
     Arc,
@@ -455,6 +456,121 @@ impl<T> SingleLaneDrainCursor<T> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PacketDrainAction<T> {
+    Packet(T),
+    InterleaveDecryptReturn,
+    InterleaveSideQueues,
+}
+
+pub(crate) struct PacketDrainCursor<T> {
+    first_packet: Option<T>,
+    remaining: usize,
+    drained: usize,
+    decrypt_return_interleave_every: usize,
+    side_queue_interleave_every: usize,
+    packets_until_decrypt_return_interleave: usize,
+    packets_until_side_queue_interleave: usize,
+}
+
+impl<T> PacketDrainCursor<T> {
+    pub(crate) fn new(
+        first_packet: Option<T>,
+        budget: usize,
+        decrypt_return_interleave_every: usize,
+        side_queue_interleave_every: usize,
+    ) -> Self {
+        Self {
+            first_packet,
+            remaining: budget,
+            drained: 0,
+            decrypt_return_interleave_every,
+            side_queue_interleave_every,
+            packets_until_decrypt_return_interleave: decrypt_return_interleave_every,
+            packets_until_side_queue_interleave: side_queue_interleave_every,
+        }
+    }
+
+    pub(crate) fn next<R>(&mut self, packet_rx: &mut R) -> Option<PacketDrainAction<T>>
+    where
+        R: PacketDrainReceiver<T>,
+    {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        if self.decrypt_return_interleave_due() {
+            self.packets_until_decrypt_return_interleave = self.decrypt_return_interleave_every;
+            self.charge_interleave_turn();
+            return Some(PacketDrainAction::InterleaveDecryptReturn);
+        }
+
+        if self.side_queue_interleave_due() {
+            self.packets_until_side_queue_interleave = self.side_queue_interleave_every;
+            self.charge_interleave_turn();
+            return Some(PacketDrainAction::InterleaveSideQueues);
+        }
+
+        let packet = self
+            .first_packet
+            .take()
+            .or_else(|| packet_rx.try_recv_packet())?;
+        self.charge_packet();
+        Some(PacketDrainAction::Packet(packet))
+    }
+
+    pub(crate) fn drained(&self) -> usize {
+        self.drained
+    }
+
+    fn decrypt_return_interleave_due(&self) -> bool {
+        self.drained > 0
+            && self.decrypt_return_interleave_every > 0
+            && self.packets_until_decrypt_return_interleave == 0
+    }
+
+    fn side_queue_interleave_due(&self) -> bool {
+        self.drained > 0
+            && self.side_queue_interleave_every > 0
+            && self.packets_until_side_queue_interleave == 0
+    }
+
+    fn charge_packet(&mut self) {
+        self.remaining -= 1;
+        self.drained += 1;
+        if self.packets_until_decrypt_return_interleave > 0 {
+            self.packets_until_decrypt_return_interleave -= 1;
+        }
+        if self.packets_until_side_queue_interleave > 0 {
+            self.packets_until_side_queue_interleave -= 1;
+        }
+    }
+
+    fn charge_interleave_turn(&mut self) {
+        self.remaining -= 1;
+    }
+
+    pub(crate) fn refund_empty_interleave_turn(&mut self) {
+        self.remaining += 1;
+    }
+}
+
+pub(crate) trait PacketDrainReceiver<T> {
+    fn try_recv_packet(&mut self) -> Option<T>;
+}
+
+impl<T> PacketDrainReceiver<T> for tokio::sync::mpsc::UnboundedReceiver<T> {
+    fn try_recv_packet(&mut self) -> Option<T> {
+        self.try_recv().ok()
+    }
+}
+
+impl PacketDrainReceiver<ReceivedPacket> for PacketRx {
+    fn try_recv_packet(&mut self) -> Option<ReceivedPacket> {
+        self.try_recv().ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,6 +844,152 @@ mod tests {
             drain.next(&mut priority_rx, &mut bulk_rx),
             Some("deferred-bulk")
         );
+    }
+
+    #[tokio::test]
+    async fn packet_drain_cursor_owns_first_packet_budget_and_interleave() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        let mut drain = PacketDrainCursor::new(Some("selected"), 3, 2, 0);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("selected"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveDecryptReturn)
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(packet_rx.try_recv().ok(), Some("queued-2"));
+        assert_eq!(drain.drained(), 2);
+    }
+
+    #[tokio::test]
+    async fn packet_drain_cursor_charges_interleaves_against_budget() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        let mut drain = PacketDrainCursor::new(Some("selected"), 4, 2, 0);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("selected"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveDecryptReturn)
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-2"))
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn packet_drain_cursor_refunds_empty_interleave_turns() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        packet_tx.send("queued-3").unwrap();
+        let mut drain = PacketDrainCursor::new(None, 3, 1, 0);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveDecryptReturn)
+        );
+        drain.refund_empty_interleave_turn();
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-2"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveDecryptReturn)
+        );
+        drain.refund_empty_interleave_turn();
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-3"))
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn packet_drain_cursor_interleaves_side_queues_after_decrypt_return() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        packet_tx.send("queued-3").unwrap();
+        let mut drain = PacketDrainCursor::new(None, 5, 2, 2);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-2"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveDecryptReturn)
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveSideQueues)
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-3"))
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn packet_drain_cursor_can_disable_side_queue_interleaves() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        packet_tx.send("queued-3").unwrap();
+        let mut drain = PacketDrainCursor::new(None, 3, 0, 0);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-2"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-3"))
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(drain.drained(), 3);
     }
 
     #[tokio::test]

@@ -71,8 +71,9 @@ pub(crate) use pipeline::{
     PacketMoverRetireError,
 };
 pub(crate) use queues::{
-    BoundedLaneQueues, DispatchBatcher, LaneCreditGate, LaneCreditReservation,
-    PriorityBulkDrainCursor, QueueAdmission, QueueCaps, QueuedPacket, SingleLaneDrainCursor,
+    BoundedLaneQueues, DispatchBatcher, LaneCreditGate, LaneCreditReservation, PacketDrainAction,
+    PacketDrainCursor, PacketDrainReceiver, PriorityBulkDrainCursor, QueueAdmission, QueueCaps,
+    QueuedPacket, SingleLaneDrainCursor,
 };
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
 

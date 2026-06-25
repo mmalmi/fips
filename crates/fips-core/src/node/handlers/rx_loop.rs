@@ -14,7 +14,9 @@ use crate::node::wire::{
 use crate::node::{
     AuthenticatedFmpPlaintext, EndpointSendBatchCommand, Node, NodeEndpointCommand, NodeError,
 };
-use crate::packet_mover::{PriorityBulkDrainCursor, SingleLaneDrainCursor};
+use crate::packet_mover::{
+    PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor, SingleLaneDrainCursor,
+};
 use crate::transport::PacketRx;
 use crate::transport::ReceivedPacket;
 use crate::upper::tun::TunOutboundRx;
