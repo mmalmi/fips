@@ -46,6 +46,7 @@ mod owner;
 mod pipeline;
 mod queues;
 mod retire;
+mod send;
 
 pub(crate) use admission::{
     AdmissionClass, AdmissionCredit, AdmissionDecision, AdmissionDrop, AdmissionDropReason,
@@ -84,6 +85,11 @@ pub(crate) use queues::{
     recv_biased_worker_queue_item, try_recv_reserved_worker_queue_item,
 };
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
+pub(crate) use send::{
+    PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendPacket, PacketMoverSendTarget,
+    packet_mover_send_group_stats, push_packet_mover_send_batch_with_lane_and_capacity,
+    record_packet_mover_send_groups,
+};
 
 pub(crate) const CANONICAL_PACKET_MOVER_STAGES: &[PacketMoverStage] = &[
     PacketMoverStage::SocketDrain,

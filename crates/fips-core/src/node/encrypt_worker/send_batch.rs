@@ -1,6 +1,11 @@
 
 use crate::node::session_wire::FSP_HEADER_SIZE;
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
+use crate::packet_mover::{
+    PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendTarget,
+    packet_mover_send_group_stats, push_packet_mover_send_batch_with_lane_and_capacity,
+    record_packet_mover_send_groups,
+};
 use crate::transport::udp::socket::AsyncUdpSocket;
 #[cfg(not(target_os = "macos"))]
 use crossbeam_channel::{Receiver, SendError, Sender, TrySendError, bounded};
@@ -175,7 +180,7 @@ impl SelectedSendTarget {
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-struct SendTargetKey {
+pub(crate) struct SendTargetKey {
     #[cfg(unix)]
     socket_fd: RawFd,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -209,180 +214,19 @@ impl FmpSendJob {
 }
 
 #[cfg(unix)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SelectedSendLane {
-    Priority,
-    Bulk,
-}
+impl PacketMoverSendTarget for SelectedSendTarget {
+    type Key = SendTargetKey;
 
-#[cfg(unix)]
-impl SelectedSendLane {
-    fn for_endpoint_data(bulk_endpoint_data: bool) -> Self {
-        if bulk_endpoint_data {
-            Self::Bulk
-        } else {
-            Self::Priority
-        }
+    fn packet_mover_send_key(&self) -> Self::Key {
+        self.key()
     }
 }
 
 #[cfg(unix)]
-#[derive(Clone, Copy)]
-enum SelectedSendGroupSplitReason {
-    Target,
-    Lane,
-    Backpressure,
-}
+type SelectedSendLane = PacketMoverSendLane;
 
 #[cfg(unix)]
-fn record_selected_send_group_split(reason: SelectedSendGroupSplitReason) {
-    match reason {
-        SelectedSendGroupSplitReason::Target => {
-            crate::perf_profile::record_fmp_send_group_split_target()
-        }
-        SelectedSendGroupSplitReason::Lane => crate::perf_profile::record_fmp_send_group_split_lane(),
-        SelectedSendGroupSplitReason::Backpressure => {
-            crate::perf_profile::record_fmp_send_group_split_backpressure()
-        }
-    }
-}
-
-#[cfg(unix)]
-struct SelectedSendBatch {
-    send_target: SelectedSendTarget,
-    target_key: SendTargetKey,
-    lane: SelectedSendLane,
-    wire_packets: Vec<Vec<u8>>,
-    drop_on_backpressure: bool,
-    #[cfg(target_os = "linux")]
-    gso_segment_len: usize,
-    #[cfg(target_os = "linux")]
-    gso_last_len: usize,
-    #[cfg(target_os = "linux")]
-    gso_prefix_uniform: bool,
-    #[cfg(target_os = "linux")]
-    gso_eligible_sizes: bool,
-}
-
-#[cfg(unix)]
-impl SelectedSendBatch {
-    #[cfg(test)]
-    fn new(
-        send_target: SelectedSendTarget,
-        target_key: SendTargetKey,
-        wire_packet: Vec<u8>,
-        drop_on_backpressure: bool,
-    ) -> Self {
-        Self::new_with_capacity(
-            send_target,
-            target_key,
-            SelectedSendLane::Bulk,
-            wire_packet,
-            drop_on_backpressure,
-            1,
-        )
-    }
-
-    fn new_with_capacity(
-        send_target: SelectedSendTarget,
-        target_key: SendTargetKey,
-        lane: SelectedSendLane,
-        wire_packet: Vec<u8>,
-        drop_on_backpressure: bool,
-        packet_capacity: usize,
-    ) -> Self {
-        debug_assert_eq!(
-            send_target.key(),
-            target_key,
-            "selected send batch must keep the queued target key"
-        );
-        #[cfg(target_os = "linux")]
-        let gso_segment_len = wire_packet.len();
-        let mut wire_packets = Vec::with_capacity(packet_capacity.max(1));
-        wire_packets.push(wire_packet);
-        Self {
-            send_target,
-            target_key,
-            lane,
-            wire_packets,
-            drop_on_backpressure,
-            #[cfg(target_os = "linux")]
-            gso_segment_len,
-            #[cfg(target_os = "linux")]
-            gso_last_len: gso_segment_len,
-            #[cfg(target_os = "linux")]
-            gso_prefix_uniform: gso_segment_len > 0,
-            #[cfg(target_os = "linux")]
-            gso_eligible_sizes: false,
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn target_key(&self) -> SendTargetKey {
-        self.target_key
-    }
-
-    #[cfg(test)]
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn lane(&self) -> SelectedSendLane {
-        self.lane
-    }
-
-    fn split_reason_for(
-        &self,
-        target_key: SendTargetKey,
-        lane: SelectedSendLane,
-        drop_on_backpressure: bool,
-    ) -> Option<SelectedSendGroupSplitReason> {
-        if self.target_key != target_key {
-            return Some(SelectedSendGroupSplitReason::Target);
-        }
-        if self.lane != lane {
-            return Some(SelectedSendGroupSplitReason::Lane);
-        }
-        if self.drop_on_backpressure != drop_on_backpressure {
-            return Some(SelectedSendGroupSplitReason::Backpressure);
-        }
-        None
-    }
-
-    fn push(&mut self, wire_packet: Vec<u8>, drop_on_backpressure: bool) {
-        debug_assert_eq!(
-            self.drop_on_backpressure, drop_on_backpressure,
-            "send batches keep one backpressure policy so bulk remains droppable"
-        );
-        #[cfg(target_os = "linux")]
-        {
-            let packet_len = wire_packet.len();
-            self.gso_prefix_uniform &= self.gso_last_len == self.gso_segment_len;
-            self.gso_last_len = packet_len;
-            self.gso_eligible_sizes = self.gso_prefix_uniform && packet_len <= self.gso_segment_len;
-        }
-        self.wire_packets.push(wire_packet);
-    }
-
-    fn packet_count(&self) -> usize {
-        self.wire_packets.len()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn gso_eligible_sizes(&self) -> bool {
-        self.gso_eligible_sizes
-    }
-
-    #[cfg(test)]
-    fn wire_packet_capacity(&self) -> usize {
-        self.wire_packets.capacity()
-    }
-
-    fn into_parts(self) -> (SelectedSendTarget, Vec<Vec<u8>>, bool) {
-        (
-            self.send_target,
-            self.wire_packets,
-            self.drop_on_backpressure,
-        )
-    }
-}
+type SelectedSendBatch = PacketMoverSendBatch<SelectedSendTarget, Vec<u8>>;
 
 #[cfg(target_os = "linux")]
 struct LinuxSendBatchAttempt {
@@ -624,44 +468,24 @@ fn push_selected_send_batch_with_lane_and_capacity(
     drop_on_backpressure: bool,
     packet_capacity: usize,
 ) {
-    if let Some(group) = groups.last_mut() {
-        if let Some(reason) = group.split_reason_for(target_key, lane, drop_on_backpressure) {
-            record_selected_send_group_split(reason);
-        } else {
-            group.push(wire_packet, drop_on_backpressure);
-            return;
-        }
-    }
-
-    groups.push(SelectedSendBatch::new_with_capacity(
+    push_packet_mover_send_batch_with_lane_and_capacity(
+        groups,
         send_target,
         target_key,
         lane,
         wire_packet,
         drop_on_backpressure,
         packet_capacity,
-    ));
+    );
 }
 
 #[cfg(unix)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn selected_send_group_stats(groups: &[SelectedSendBatch]) -> (usize, usize, usize) {
-    let mut packets = 0usize;
-    let mut single_groups = 0usize;
-    for group in groups {
-        let count = group.packet_count();
-        packets = packets.saturating_add(count);
-        if count == 1 {
-            single_groups = single_groups.saturating_add(1);
-        }
-    }
-    (groups.len(), packets, single_groups)
+    packet_mover_send_group_stats(groups)
 }
 
 #[cfg(unix)]
 fn record_selected_send_groups(groups: &[SelectedSendBatch]) {
-    if !crate::perf_profile::enabled() || groups.is_empty() {
-        return;
-    }
-    let (group_count, packets, single_groups) = selected_send_group_stats(groups);
-    crate::perf_profile::record_fmp_send_groups(group_count, packets, single_groups);
+    record_packet_mover_send_groups(groups);
 }
