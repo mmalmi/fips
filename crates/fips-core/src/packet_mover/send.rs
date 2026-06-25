@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketMoverSendLane {
     Priority,
@@ -18,6 +20,87 @@ pub(crate) trait PacketMoverSendTarget: Clone {
     type Key: Copy + Eq + std::fmt::Debug;
 
     fn packet_mover_send_key(&self) -> Self::Key;
+}
+
+pub(crate) trait PacketMoverBulkSendItem {
+    type Key: Copy + Eq + std::hash::Hash + std::fmt::Debug;
+
+    fn bulk_send_target_key(&self) -> Self::Key;
+
+    fn is_bulk_send_item(&self) -> bool;
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum PacketMoverBulkSendTargets<K>
+where
+    K: Copy + Eq + std::hash::Hash + std::fmt::Debug,
+{
+    Single(K),
+    Multiple(HashMap<K, usize>),
+}
+
+impl<K> PacketMoverBulkSendTargets<K>
+where
+    K: Copy + Eq + std::hash::Hash + std::fmt::Debug,
+{
+    pub(crate) fn contains(&self, target: K) -> bool {
+        match self {
+            Self::Single(selected) => *selected == target,
+            Self::Multiple(selected) => selected.contains_key(&target),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get(&self, target: &K) -> Option<&usize> {
+        match self {
+            Self::Single(_) => None,
+            Self::Multiple(selected) => selected.get(target),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_key(&self, target: &K) -> bool {
+        self.contains(*target)
+    }
+}
+
+pub(crate) fn select_packet_mover_bulk_send_targets<T>(
+    items: &[T],
+    min_packets: usize,
+) -> Option<PacketMoverBulkSendTargets<T::Key>>
+where
+    T: PacketMoverBulkSendItem,
+{
+    if items.len() < min_packets {
+        return None;
+    }
+
+    let first = items.first()?;
+    if !first.is_bulk_send_item() {
+        return None;
+    }
+    let first_target = first.bulk_send_target_key();
+    let mut all_same_target = true;
+    for item in &items[1..] {
+        if !item.is_bulk_send_item() {
+            return None;
+        }
+        if item.bulk_send_target_key() != first_target {
+            all_same_target = false;
+        }
+    }
+    if all_same_target {
+        return Some(PacketMoverBulkSendTargets::Single(first_target));
+    }
+
+    let mut targets = HashMap::new();
+    for item in items {
+        let count = targets.entry(item.bulk_send_target_key()).or_insert(0usize);
+        *count = count.saturating_add(1);
+    }
+
+    targets.retain(|_, count| *count >= min_packets);
+    (!targets.is_empty()).then_some(PacketMoverBulkSendTargets::Multiple(targets))
 }
 
 pub(crate) trait PacketMoverSendPacket {
@@ -274,6 +357,24 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct TestBulkItem {
+        key: u8,
+        bulk: bool,
+    }
+
+    impl PacketMoverBulkSendItem for TestBulkItem {
+        type Key = u8;
+
+        fn bulk_send_target_key(&self) -> Self::Key {
+            self.key
+        }
+
+        fn is_bulk_send_item(&self) -> bool {
+            self.bulk
+        }
+    }
+
     fn push_test_group(
         groups: &mut Vec<PacketMoverSendBatch<TestTarget, Vec<u8>>>,
         key: u8,
@@ -307,6 +408,57 @@ mod tests {
         assert_eq!(groups[2].wire_packets, vec![vec![4]]);
         assert_eq!(groups[3].target_key(), 2);
         assert_eq!(packet_mover_send_group_stats(&groups), (4, 5, 3));
+    }
+
+    #[test]
+    fn bulk_send_target_selection_accepts_single_bulk_target_without_map() {
+        let items = vec![
+            TestBulkItem { key: 7, bulk: true },
+            TestBulkItem { key: 7, bulk: true },
+            TestBulkItem { key: 7, bulk: true },
+        ];
+
+        let selected = select_packet_mover_bulk_send_targets(&items, 3)
+            .expect("single bulk target should be selected");
+        assert!(matches!(selected, PacketMoverBulkSendTargets::Single(7)));
+        assert!(selected.contains_key(&7));
+    }
+
+    #[test]
+    fn bulk_send_target_selection_keeps_only_targets_with_enough_packets() {
+        let items = vec![
+            TestBulkItem { key: 1, bulk: true },
+            TestBulkItem { key: 2, bulk: true },
+            TestBulkItem { key: 1, bulk: true },
+            TestBulkItem { key: 3, bulk: true },
+            TestBulkItem { key: 1, bulk: true },
+            TestBulkItem { key: 2, bulk: true },
+        ];
+
+        let selected = select_packet_mover_bulk_send_targets(&items, 3)
+            .expect("target 1 has enough packets across the batch");
+        assert_eq!(selected.get(&1), Some(&3));
+        assert!(!selected.contains_key(&2));
+        assert!(!selected.contains_key(&3));
+    }
+
+    #[test]
+    fn bulk_send_target_selection_rejects_priority_or_underfilled_batches() {
+        let underfilled = vec![
+            TestBulkItem { key: 1, bulk: true },
+            TestBulkItem { key: 1, bulk: true },
+        ];
+        assert!(select_packet_mover_bulk_send_targets(&underfilled, 3).is_none());
+
+        let mixed_lane = vec![
+            TestBulkItem { key: 1, bulk: true },
+            TestBulkItem {
+                key: 1,
+                bulk: false,
+            },
+            TestBulkItem { key: 1, bulk: true },
+        ];
+        assert!(select_packet_mover_bulk_send_targets(&mixed_lane, 3).is_none());
     }
 
     #[test]

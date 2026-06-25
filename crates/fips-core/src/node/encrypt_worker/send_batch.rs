@@ -1,6 +1,10 @@
 
 use crate::node::session_wire::FSP_HEADER_SIZE;
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
+#[cfg(target_os = "linux")]
+use crate::packet_mover::{
+    PacketMoverBulkSendItem, PacketMoverBulkSendTargets, select_packet_mover_bulk_send_targets,
+};
 use crate::packet_mover::{
     PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendTarget,
     packet_mover_send_group_stats, push_packet_mover_send_batch_with_lane_and_capacity,
@@ -210,6 +214,19 @@ impl SendTargetKey {
 impl FmpSendJob {
     fn send_target_key(&self) -> SendTargetKey {
         self.send_target.key()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl PacketMoverBulkSendItem for FmpSendJob {
+    type Key = SendTargetKey;
+
+    fn bulk_send_target_key(&self) -> Self::Key {
+        self.send_target_key()
+    }
+
+    fn is_bulk_send_item(&self) -> bool {
+        self.bulk_endpoint_data
     }
 }
 

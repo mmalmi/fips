@@ -241,7 +241,7 @@ mod tests {
                 .map(|counter| linux_wg_test_job(target.clone(), &cipher, counter as u64, true))
                 .collect();
 
-            let selected = linux_wg_bulk_batch_selected_targets(&jobs, min_packets)
+            let selected = select_packet_mover_bulk_send_targets(&jobs, min_packets)
                 .expect("single target run should use WG batch lane");
             assert!(matches!(
                 selected,
@@ -307,7 +307,7 @@ mod tests {
                 ));
             }
 
-            let selected = linux_wg_bulk_batch_selected_targets(&jobs, min_packets)
+            let selected = select_packet_mover_bulk_send_targets(&jobs, min_packets)
                 .expect("target A has enough packets across adjacent runs");
             assert_eq!(selected.get(&key_a), Some(&min_packets));
             assert!(!selected.contains_key(&key_b));

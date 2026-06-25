@@ -86,9 +86,10 @@ pub(crate) use queues::{
 };
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
 pub(crate) use send::{
-    PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendPacket, PacketMoverSendTarget,
-    packet_mover_send_group_stats, push_packet_mover_send_batch_with_lane_and_capacity,
-    record_packet_mover_send_groups,
+    PacketMoverBulkSendItem, PacketMoverBulkSendTargets, PacketMoverSendBatch, PacketMoverSendLane,
+    PacketMoverSendPacket, PacketMoverSendTarget, packet_mover_send_group_stats,
+    push_packet_mover_send_batch_with_lane_and_capacity, record_packet_mover_send_groups,
+    select_packet_mover_bulk_send_targets,
 };
 
 pub(crate) const CANONICAL_PACKET_MOVER_STAGES: &[PacketMoverStage] = &[

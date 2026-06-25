@@ -353,7 +353,7 @@ impl EncryptWorkerPool {
         }
 
         let Some(selected_targets) =
-            linux_wg_bulk_batch_selected_targets(&jobs, LINUX_WG_BATCH_MIN_PACKETS)
+            select_packet_mover_bulk_send_targets(&jobs, LINUX_WG_BATCH_MIN_PACKETS)
         else {
             crate::perf_profile::record_linux_wg_batch_admission_no_target(packet_count);
             return Err(jobs);
@@ -401,7 +401,7 @@ impl EncryptWorkerPool {
         }
 
         let Some(selected_targets) =
-            linux_wg_bulk_batch_selected_targets(&jobs, LINUX_WG_BATCH_MIN_PACKETS)
+            select_packet_mover_bulk_send_targets(&jobs, LINUX_WG_BATCH_MIN_PACKETS)
         else {
             crate::perf_profile::record_linux_wg_batch_admission_no_target(packet_count);
             return Err(jobs);
@@ -647,70 +647,7 @@ impl EncryptWorkerPool {
 }
 
 #[cfg(target_os = "linux")]
-enum LinuxWgSelectedTargets {
-    Single(SendTargetKey),
-    Multiple(HashMap<SendTargetKey, usize>),
-}
-
-#[cfg(target_os = "linux")]
-impl LinuxWgSelectedTargets {
-    fn contains(&self, target: SendTargetKey) -> bool {
-        match self {
-            Self::Single(selected) => *selected == target,
-            Self::Multiple(selected) => selected.contains_key(&target),
-        }
-    }
-
-    #[cfg(test)]
-    fn get(&self, target: &SendTargetKey) -> Option<&usize> {
-        match self {
-            Self::Single(_) => None,
-            Self::Multiple(selected) => selected.get(target),
-        }
-    }
-
-    #[cfg(test)]
-    fn contains_key(&self, target: &SendTargetKey) -> bool {
-        self.contains(*target)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn linux_wg_bulk_batch_selected_targets(
-    jobs: &[FmpSendJob],
-    min_packets: usize,
-) -> Option<LinuxWgSelectedTargets> {
-    if jobs.len() < min_packets {
-        return None;
-    }
-
-    let first = jobs.first()?;
-    if !first.bulk_endpoint_data {
-        return None;
-    }
-    let first_target = first.send_target_key();
-    let mut all_same_target = true;
-    for job in &jobs[1..] {
-        if !job.bulk_endpoint_data {
-            return None;
-        }
-        if job.send_target_key() != first_target {
-            all_same_target = false;
-        }
-    }
-    if all_same_target {
-        return Some(LinuxWgSelectedTargets::Single(first_target));
-    }
-
-    let mut targets = HashMap::new();
-    for job in jobs {
-        let count = targets.entry(job.send_target_key()).or_insert(0usize);
-        *count = count.saturating_add(1);
-    }
-
-    targets.retain(|_, count| *count >= min_packets);
-    (!targets.is_empty()).then_some(LinuxWgSelectedTargets::Multiple(targets))
-}
+type LinuxWgSelectedTargets = PacketMoverBulkSendTargets<SendTargetKey>;
 
 #[cfg(all(test, not(target_os = "macos")))]
 fn encrypt_worker_pool_for_test(senders: Vec<WorkerSender>) -> EncryptWorkerPool {
