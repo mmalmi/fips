@@ -19,11 +19,6 @@ use std::sync::Arc;
 #[cfg(unix)]
 use tracing::warn;
 
-#[cfg(target_os = "macos")]
-pub(crate) fn macos_connected_udp_enabled(config_enabled: bool) -> bool {
-    config_enabled
-}
-
 /// Maximum number of datagrams a single `recvmmsg` syscall pulls from the
 /// kernel queue. Shared with the higher-level UDP receive loops so all Linux
 /// packet ingress paths use the same batch width.
@@ -84,7 +79,7 @@ mod platform {
                 recv_buf_size,
                 send_buf_size,
                 #[cfg(target_os = "macos")]
-                super::macos_connected_udp_enabled(false),
+                false,
             )
         }
 
@@ -279,7 +274,7 @@ mod platform {
                 recv_buf_size,
                 send_buf_size,
                 #[cfg(target_os = "macos")]
-                super::macos_connected_udp_enabled(false),
+                false,
             )
         }
 

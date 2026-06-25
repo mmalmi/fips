@@ -30,13 +30,11 @@
 //! with a configured static UDP endpoint stay on wildcard UDP because NAT/VM
 //! paths can drift between the configured endpoint and observed source tuples,
 //! and liveness recovery must accept either path. Operators can configure it
-//! through `node.connected_udp.*`; `FIPS_CONNECTED_UDP_FD_RESERVE`,
-//! `FIPS_CONNECTED_UDP_MAX_PEERS`, and the connected-UDP buffer env vars remain
-//! sizing overrides for controlled load tests. `node.connected_udp.max_peers`
-//! caps the one-drain-thread-per-peer socket path for large meshes without
-//! disabling wildcard UDP delivery. Peer-cap and fd-budget skips are reported
-//! as perf events so a large mesh can show why some peers stayed on wildcard
-//! UDP without looking like activation failures.
+//! through `node.connected_udp.*`. `node.connected_udp.max_peers` caps the
+//! one-drain-thread-per-peer socket path for large meshes without disabling
+//! wildcard UDP delivery. Peer-cap and fd-budget skips are reported as perf
+//! events so a large mesh can show why some peers stayed on wildcard UDP
+//! without looking like activation failures.
 
 use crate::NodeAddr;
 use crate::node::Node;
@@ -66,7 +64,7 @@ impl Node {
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            if !connected_udp_enabled(self.config.node.connected_udp.enabled) {
+            if !self.config.node.connected_udp.enabled {
                 return;
             }
 
@@ -76,8 +74,8 @@ impl Node {
                 .peers
                 .connected_udp_activation_plan(&self.configured_peer_cache);
             let candidates = plan.candidates;
-            let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
-            let fd_reserve = connected_udp_fd_reserve(self.config.node.connected_udp.fd_reserve);
+            let peer_cap = self.config.node.connected_udp.max_peers;
+            let fd_reserve = self.config.node.connected_udp.fd_reserve;
             let fd_soft_limit = connected_udp_fd_soft_limit();
             let mut installed_count = plan.installed_count;
             let mut peer_cap_skipped = 0usize;
@@ -210,14 +208,14 @@ impl Node {
                 TransportHandle::Udp(u) => u,
                 _ => return Ok(false), // not a UDP transport — feature N/A
             };
-            let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
+            let peer_cap = self.config.node.connected_udp.max_peers;
             if !connected_udp_peer_budget_allows(installed_count, peer_cap) {
                 return Err(format!(
                     "peer cap exhausted: connected_udp_peers={}, max_peers={}",
                     installed_count, peer_cap
                 ));
             }
-            let fd_reserve = connected_udp_fd_reserve(self.config.node.connected_udp.fd_reserve);
+            let fd_reserve = self.config.node.connected_udp.fd_reserve;
             let fd_soft_limit = connected_udp_fd_soft_limit();
             if !connected_udp_fd_budget_allows(installed_count, fd_soft_limit, fd_reserve) {
                 return Err(match fd_soft_limit {
@@ -238,8 +236,8 @@ impl Node {
             let local = udp
                 .local_addr()
                 .ok_or_else(|| "udp transport not started".to_string())?;
-            let recv_buf = connected_udp_recv_buf(udp.recv_buf_size());
-            let send_buf = connected_udp_send_buf(udp.send_buf_size());
+            let recv_buf = udp.recv_buf_size();
+            let send_buf = udp.send_buf_size();
             let tx = udp.clone_packet_tx();
             (peer_sa, local, recv_buf, send_buf, tx)
         };
@@ -312,57 +310,6 @@ impl Node {
     /// call us unconditionally.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub(in crate::node) fn clear_connected_udp_for_peer(&mut self, _node_addr: &NodeAddr) {}
-}
-
-#[cfg(target_os = "linux")]
-fn connected_udp_enabled(config_enabled: bool) -> bool {
-    config_enabled
-}
-
-#[cfg(target_os = "macos")]
-fn connected_udp_enabled(config_enabled: bool) -> bool {
-    crate::transport::udp::socket::macos_connected_udp_enabled(config_enabled)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_fd_reserve(config_reserve: usize) -> usize {
-    std::env::var("FIPS_CONNECTED_UDP_FD_RESERVE")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(config_reserve)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_peer_cap(config_max_peers: usize) -> usize {
-    std::env::var("FIPS_CONNECTED_UDP_MAX_PEERS")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(config_max_peers)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_recv_buf(config_recv_buf: usize) -> usize {
-    connected_udp_buf_override("FIPS_CONNECTED_UDP_RECV_BUF_BYTES").unwrap_or(config_recv_buf)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_send_buf(config_send_buf: usize) -> usize {
-    connected_udp_buf_override("FIPS_CONNECTED_UDP_SEND_BUF_BYTES").unwrap_or(config_send_buf)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_buf_override(name: &str) -> Option<usize> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| parse_connected_udp_buf_override(&value))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn parse_connected_udp_buf_override(raw: &str) -> Option<usize> {
-    raw.trim()
-        .parse::<usize>()
-        .ok()
-        .map(|value| value.clamp(64 * 1024, 512 * 1024 * 1024))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -502,21 +449,6 @@ mod tests {
             connected_udp_fd_budget_skipped_candidates(0, Some(64), 128, 11),
             11,
             "reserve above the soft limit leaves no connected-UDP fd budget"
-        );
-    }
-
-    #[test]
-    fn connected_udp_buffer_override_parser_is_bounded() {
-        assert_eq!(parse_connected_udp_buf_override(""), None);
-        assert_eq!(parse_connected_udp_buf_override("not-a-number"), None);
-        assert_eq!(parse_connected_udp_buf_override("1"), Some(64 * 1024));
-        assert_eq!(
-            parse_connected_udp_buf_override("67108864"),
-            Some(64 * 1024 * 1024)
-        );
-        assert_eq!(
-            parse_connected_udp_buf_override("9999999999"),
-            Some(512 * 1024 * 1024)
         );
     }
 }

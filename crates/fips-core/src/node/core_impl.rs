@@ -398,9 +398,7 @@ impl Node {
                 name,
                 udp_config,
                 packet_tx.clone(),
-                crate::transport::udp::socket::macos_connected_udp_enabled(
-                    self.config.node.connected_udp.enabled,
-                ),
+                self.config.node.connected_udp.enabled,
             );
             #[cfg(not(target_os = "macos"))]
             let udp = UdpTransport::new(transport_id, name, udp_config, packet_tx.clone());

@@ -19,8 +19,6 @@ mod stats;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
 use crate::discovery::is_punch_packet;
-#[cfg(target_os = "macos")]
-use socket::macos_connected_udp_enabled;
 use socket::{AsyncUdpSocket, UdpRawSocket};
 use stats::UdpStats;
 use std::collections::HashMap;
@@ -163,7 +161,7 @@ impl UdpTransport {
                 name,
                 config,
                 packet_tx,
-                macos_connected_udp_enabled(false),
+                false,
             );
         }
 
