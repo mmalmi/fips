@@ -31,6 +31,11 @@ pub(crate) struct OwnerReservation {
     pub(crate) packet_count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OwnerReservationBatch {
+    reservation: OwnerReservation,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OwnerReserveError {
     WindowFull { owner: OwnerKey, lane: PacketLane },
@@ -65,6 +70,53 @@ pub(crate) struct OwnerReceiveWindow<T> {
 
 pub(crate) trait OwnerSequencer<P, W> {
     fn reserve(&mut self, packet: P) -> Result<W, OwnerReserveError>;
+}
+
+impl OwnerReservationBatch {
+    pub(crate) fn new(reservation: OwnerReservation) -> Self {
+        Self { reservation }
+    }
+
+    pub(crate) fn owner_reservation(self) -> OwnerReservation {
+        self.reservation
+    }
+
+    pub(crate) fn receive_order_id(self) -> u64 {
+        self.reservation.order.receive_order_id
+    }
+
+    pub(crate) fn generation(self) -> OwnerGeneration {
+        self.reservation.generation
+    }
+
+    pub(crate) fn first_sequence(self) -> u64 {
+        self.reservation.order.sequence.0
+    }
+
+    pub(crate) fn packet_count(self) -> usize {
+        self.reservation.packet_count
+    }
+
+    pub(crate) fn ticket_at(self, offset: usize) -> OwnerReceiveTicket {
+        OwnerReceiveTicket {
+            sequence: self.sequence_at(offset),
+        }
+    }
+
+    pub(crate) fn reservation_at(self, offset: usize) -> OwnerReservation {
+        debug_assert!(
+            offset < self.reservation.packet_count,
+            "owner reservation batch offset must stay inside the batch"
+        );
+        let mut reservation = self.reservation;
+        reservation.order.sequence = OrderSequence(self.sequence_at(offset));
+        reservation.packet_count = 1;
+        reservation
+    }
+
+    fn sequence_at(self, offset: usize) -> u64 {
+        self.first_sequence().saturating_add(offset as u64)
+    }
 }
 
 impl<T> OwnerCompletionBuffer<T> {
@@ -285,6 +337,27 @@ mod tests {
         assert_eq!(second.order.sequence, OrderSequence(1));
         assert_eq!(second.packet_count, 2);
         assert_eq!(window.in_flight(), 3);
+    }
+
+    #[test]
+    fn owner_reservation_batch_derives_single_packet_order_tokens() {
+        let mut window = OwnerWindow::new(owner(), OwnerGeneration(3), 44, 8);
+        let reservation = window.reserve(PacketLane::Bulk, 3).expect("batch");
+        let batch = OwnerReservationBatch::new(reservation);
+
+        assert_eq!(batch.receive_order_id(), 44);
+        assert_eq!(batch.generation(), OwnerGeneration(3));
+        assert_eq!(batch.first_sequence(), 0);
+        assert_eq!(batch.packet_count(), 3);
+        assert_eq!(batch.ticket_at(2).sequence, 2);
+
+        let second = batch.reservation_at(2);
+        assert_eq!(second.owner, owner());
+        assert_eq!(second.generation, OwnerGeneration(3));
+        assert_eq!(second.order.receive_order_id, 44);
+        assert_eq!(second.order.sequence, OrderSequence(2));
+        assert_eq!(second.lane, PacketLane::Bulk);
+        assert_eq!(second.packet_count, 1);
     }
 
     #[test]

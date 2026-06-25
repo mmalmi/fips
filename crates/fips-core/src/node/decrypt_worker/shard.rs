@@ -837,7 +837,9 @@ impl DecryptWorkerShard {
                     .enumerate()
                     .map(|(offset, (job, header))| {
                         new_fsp_aead_open_dispatch(
-                            reservation.crypto_ticket_at(offset),
+                            CryptoTicket {
+                                reservation: reservation.reservation_at(offset),
+                            },
                             Arc::clone(&cipher),
                             job,
                             header,

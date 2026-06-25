@@ -16,8 +16,8 @@ use crate::packet_mover::{
     CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork, DispatchBatcher,
     LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch, OwnerCompletionBatchFlush,
     OwnerCompletionBatcher, OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation,
-    OutputTarget, PacketLane, PacketOutputTarget, PriorityBulkLaneDropReason,
-    PriorityBulkLaneSendResult, PriorityBulkLaneSender,
+    OwnerReservationBatch, OutputTarget, PacketLane, PacketOutputTarget,
+    PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
     SplitBulkLaneItem, StatelessCryptoWorker, WorkerDrainAction, WorkerDrainCursor,
     WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
     recv_biased_worker_queue_item, try_recv_reserved_worker_queue_item,
@@ -290,10 +290,7 @@ struct FspOpenReservation {
     crypto_ticket: CryptoTicket,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FspOpenReservationBatch {
-    reservation: OwnerReservation,
-}
+type FspOpenReservationBatch = OwnerReservationBatch;
 
 impl FspOpenReservation {
     fn new(reservation: OwnerReservation) -> Self {
@@ -325,46 +322,6 @@ impl FspOpenReservation {
     #[cfg(test)]
     fn owner_reservation(self) -> OwnerReservation {
         self.crypto_ticket.reservation
-    }
-}
-
-impl FspOpenReservationBatch {
-    fn new(reservation: OwnerReservation) -> Self {
-        Self { reservation }
-    }
-
-    #[cfg(test)]
-    fn receive_order_id(self) -> u64 {
-        self.reservation.order.receive_order_id
-    }
-
-    #[cfg(test)]
-    fn crypto_generation(self) -> u64 {
-        self.reservation.generation.0
-    }
-
-    fn first_sequence(self) -> u64 {
-        self.reservation.order.sequence.0
-    }
-
-    #[cfg(test)]
-    fn ticket_at(self, offset: usize) -> FspReceiveTicket {
-        FspReceiveTicket {
-            sequence: self.first_sequence().saturating_add(offset as u64),
-        }
-    }
-
-    fn crypto_ticket_at(self, offset: usize) -> CryptoTicket {
-        let mut reservation = self.reservation;
-        reservation.order.sequence =
-            OrderSequence(self.first_sequence().saturating_add(offset as u64));
-        reservation.packet_count = 1;
-        CryptoTicket { reservation }
-    }
-
-    #[cfg(test)]
-    fn owner_reservation(self) -> OwnerReservation {
-        self.reservation
     }
 }
 
@@ -521,7 +478,7 @@ impl OwnedFspSessionState {
         lane: PacketLane,
         packet_count: usize,
     ) -> FspOpenReservationBatch {
-        FspOpenReservationBatch::new(self.owner_reservation_for_sequence(
+        OwnerReservationBatch::new(self.owner_reservation_for_sequence(
             first_sequence,
             lane,
             packet_count,

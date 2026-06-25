@@ -269,7 +269,7 @@
             .reserve_worker_fsp_open_batch(2)
             .expect("worker open batch should reserve adjacent tickets");
         assert_eq!(worker_batch.receive_order_id(), receive_order_id);
-        assert_eq!(worker_batch.crypto_generation(), crypto_generation);
+        assert_eq!(worker_batch.generation().0, crypto_generation);
         assert_eq!(worker_batch.first_sequence(), 1);
         assert_eq!(worker_batch.ticket_at(1).sequence, 2);
         let worker_batch_owner = worker_batch.owner_reservation();
