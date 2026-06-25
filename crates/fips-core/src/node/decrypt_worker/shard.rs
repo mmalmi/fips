@@ -879,10 +879,9 @@ impl DecryptWorkerShard {
         let mut batcher = new_fsp_aead_completion_batcher();
         for mut job in jobs {
             returned_count = returned_count.saturating_add(1);
-            let completion_owner_idx = job.completion_owner_idx();
+            let owner_idx = fsp_aead_completion_owner_idx(idx, job.completion_owner_idx());
             job.mark_returned_completion();
-            let route = fsp_aead_completion_route(idx, completion_owner_idx);
-            if let Some(flush) = batcher.push(route, job.into_dropped_completion()) {
+            if let Some(flush) = batcher.push(owner_idx, job.into_dropped_completion()) {
                 self.flush_dropped_fsp_aead_open_completion_batch(idx, flush, return_batch);
             }
         }
@@ -899,13 +898,11 @@ impl DecryptWorkerShard {
         flush: FspAeadCompletionBatchFlush,
         return_batch: &mut DecryptWorkerReturnBatch,
     ) {
-        match flush.route {
-            FspAeadCompletionRoute::Local => {
-                self.handle_fsp_aead_completion_batch_msg(idx, flush.batch, return_batch);
-            }
-            FspAeadCompletionRoute::Owner(owner_idx) => {
-                send_fsp_aead_open_completion_batch(idx, &self.pool, owner_idx, flush.batch);
-            }
+        let owner_idx = flush.route;
+        if owner_idx == idx {
+            self.handle_fsp_aead_completion_batch_msg(idx, flush.batch, return_batch);
+        } else {
+            send_fsp_aead_open_completion_batch(idx, &self.pool, owner_idx, flush.batch);
         }
     }
 

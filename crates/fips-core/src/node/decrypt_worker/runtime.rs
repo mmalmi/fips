@@ -408,17 +408,7 @@ fn send_fsp_aead_open_completion_flush(
     pool: &DecryptWorkerPool,
     flush: FspAeadCompletionBatchFlush,
 ) {
-    match flush.route {
-        FspAeadCompletionRoute::Owner(owner_idx) => {
-            send_fsp_aead_open_completion_batch(idx, pool, owner_idx, flush.batch);
-        }
-        FspAeadCompletionRoute::Local => {
-            debug_assert!(
-                false,
-                "opener worker completions always return to an owner shard"
-            );
-        }
-    }
+    send_fsp_aead_open_completion_batch(idx, pool, flush.route, flush.batch);
 }
 
 #[cfg(test)]
@@ -433,9 +423,7 @@ fn complete_fsp_aead_open_jobs(idx: usize, pool: &DecryptWorkerPool, jobs: Vec<F
         let Some(owner_idx) = job.completion_owner_idx() else {
             continue;
         };
-        if let Some(flush) =
-            batcher.push(FspAeadCompletionRoute::Owner(owner_idx), job.into_completion())
-        {
+        if let Some(flush) = batcher.push(owner_idx, job.into_completion()) {
             send_fsp_aead_open_completion_flush(idx, pool, flush);
         }
     }

@@ -1323,29 +1323,16 @@ impl OwnerOrderedCompletion for FspAeadCompletion {
 
 type FspAeadCompletionBatch = OwnerCompletionBatch<FspAeadCompletion>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FspAeadCompletionRoute {
-    Local,
-    Owner(usize),
-}
-
 type FspAeadCompletionBatchFlush =
-    OwnerCompletionBatchFlush<FspAeadCompletionRoute, FspAeadCompletion>;
-type FspAeadCompletionBatchBuilder =
-    OwnerCompletionBatcher<FspAeadCompletionRoute, FspAeadCompletion>;
+    OwnerCompletionBatchFlush<usize, FspAeadCompletion>;
+type FspAeadCompletionBatchBuilder = OwnerCompletionBatcher<usize, FspAeadCompletion>;
 
 fn new_fsp_aead_completion_batcher() -> FspAeadCompletionBatchBuilder {
     OwnerCompletionBatcher::new(DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX)
 }
 
-fn fsp_aead_completion_route(
-    current_idx: usize,
-    completion_owner_idx: Option<usize>,
-) -> FspAeadCompletionRoute {
-    match completion_owner_idx {
-        Some(owner_idx) if owner_idx != current_idx => FspAeadCompletionRoute::Owner(owner_idx),
-        Some(_) | None => FspAeadCompletionRoute::Local,
-    }
+fn fsp_aead_completion_owner_idx(current_idx: usize, completion_owner_idx: Option<usize>) -> usize {
+    completion_owner_idx.unwrap_or(current_idx)
 }
 
 fn new_fsp_aead_open_dispatch(
