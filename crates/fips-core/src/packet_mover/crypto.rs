@@ -1,4 +1,4 @@
-use super::{OwnerKey, OwnerReservation};
+use super::{OwnerCompletionError, OwnerKey, OwnerReservation};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CryptoTicket {
@@ -76,6 +76,11 @@ pub(crate) enum OwnerCompletionBatch<C> {
     Many(Vec<C>),
 }
 
+pub(crate) enum OwnerCompletionBatchIntoIter<C> {
+    One(std::option::IntoIter<C>),
+    Many(std::vec::IntoIter<C>),
+}
+
 impl<C> OwnerCompletionBatch<C> {
     pub(crate) fn one(completion: C) -> Self {
         Self::One(completion)
@@ -85,6 +90,40 @@ impl<C> OwnerCompletionBatch<C> {
         match self {
             Self::One(_) => 1,
             Self::Many(completions) => completions.len(),
+        }
+    }
+}
+
+impl<C> Iterator for OwnerCompletionBatchIntoIter<C> {
+    type Item = C;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::One(completion) => completion.next(),
+            Self::Many(completions) => completions.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::One(completion) => completion.size_hint(),
+            Self::Many(completions) => completions.size_hint(),
+        }
+    }
+}
+
+impl<C> ExactSizeIterator for OwnerCompletionBatchIntoIter<C> {}
+
+impl<C> IntoIterator for OwnerCompletionBatch<C> {
+    type Item = C;
+    type IntoIter = OwnerCompletionBatchIntoIter<C>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Self::One(completion) => {
+                OwnerCompletionBatchIntoIter::One(Some(completion).into_iter())
+            }
+            Self::Many(completions) => OwnerCompletionBatchIntoIter::Many(completions.into_iter()),
         }
     }
 }
@@ -130,6 +169,51 @@ impl<C: OwnerOrderedCompletion> OwnerCompletionBatch<C> {
             Self::Many(completions) => completions.push(completion),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OwnerCompletionRetireReport {
+    pub(crate) seen: usize,
+    pub(crate) retired: usize,
+    pub(crate) stale_order: usize,
+    pub(crate) order_errors: usize,
+}
+
+pub(crate) fn retire_owner_ordered_completion_batch<C, I>(
+    expected_owner: OwnerKey,
+    expected_receive_order_id: u64,
+    completions: I,
+    mut on_seen: impl FnMut(&C),
+    mut on_stale_order: impl FnMut(&C),
+    mut on_order_error: impl FnMut(OwnerCompletionError),
+    mut retire: impl FnMut(C) -> Result<(), OwnerCompletionError>,
+) -> OwnerCompletionRetireReport
+where
+    C: OwnerOrderedCompletion,
+    I: IntoIterator<Item = C>,
+{
+    let mut report = OwnerCompletionRetireReport::default();
+    for completion in completions {
+        report.seen += 1;
+        on_seen(&completion);
+        let reservation = completion.owner_reservation();
+        if reservation.owner != expected_owner
+            || reservation.order.receive_order_id != expected_receive_order_id
+        {
+            report.stale_order += 1;
+            on_stale_order(&completion);
+            continue;
+        }
+
+        match retire(completion) {
+            Ok(()) => report.retired += 1,
+            Err(error) => {
+                report.order_errors += 1;
+                on_order_error(error);
+            }
+        }
+    }
+    report
 }
 
 impl<R: Copy + Eq, C: OwnerOrderedCompletion> OwnerCompletionBatcher<R, C> {
@@ -430,6 +514,71 @@ mod tests {
             8,
             2
         ));
+    }
+
+    #[test]
+    fn owner_completion_batch_iterates_one_and_many_without_staging() {
+        let one: Vec<_> = OwnerCompletionBatch::one(completion(1, 7, 0))
+            .into_iter()
+            .map(|completion| completion.value)
+            .collect();
+        assert_eq!(one, vec![1]);
+
+        let mut many = OwnerCompletionBatch::one(completion(2, 7, 0));
+        many.push(completion(2, 7, 1));
+        let values: Vec<_> = many
+            .into_iter()
+            .map(|completion| completion.reservation.order.sequence.0)
+            .collect();
+        assert_eq!(values, vec![0, 1]);
+    }
+
+    #[test]
+    fn owner_completion_retire_batch_attributes_stale_order_and_continues_after_errors() {
+        let expected_owner = OwnerKey::Fsp {
+            source_addr: NodeAddr::from_bytes([1; 16]),
+        };
+        let batch = OwnerCompletionBatch::Many(vec![
+            completion(1, 7, 0),
+            completion(2, 7, 0),
+            completion(1, 8, 0),
+            completion(1, 7, 1),
+            completion(1, 7, 2),
+        ]);
+
+        let mut seen = Vec::new();
+        let mut stale = Vec::new();
+        let mut errors = Vec::new();
+        let mut retired = Vec::new();
+        let report = retire_owner_ordered_completion_batch(
+            expected_owner,
+            7,
+            batch,
+            |completion| seen.push(completion.reservation.order.receive_order_id),
+            |completion| stale.push(completion.reservation.owner),
+            |error| errors.push(error),
+            |completion| {
+                if completion.reservation.order.sequence.0 == 1 {
+                    return Err(OwnerCompletionError::Duplicate);
+                }
+                retired.push(completion.reservation.order.sequence.0);
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            report,
+            OwnerCompletionRetireReport {
+                seen: 5,
+                retired: 2,
+                stale_order: 2,
+                order_errors: 1,
+            }
+        );
+        assert_eq!(seen, vec![7, 7, 8, 7, 7]);
+        assert_eq!(stale.len(), 2);
+        assert_eq!(errors, vec![OwnerCompletionError::Duplicate]);
+        assert_eq!(retired, vec![0, 2]);
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

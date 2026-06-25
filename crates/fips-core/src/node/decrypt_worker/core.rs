@@ -21,7 +21,8 @@ use crate::packet_mover::{
     PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
     SplitBulkLaneItem, StatelessCryptoWorker, WorkerDrainAction, WorkerDrainCursor,
     WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
-    recv_biased_worker_queue_item, try_recv_reserved_worker_queue_item,
+    recv_biased_worker_queue_item, retire_owner_ordered_completion_batch,
+    try_recv_reserved_worker_queue_item,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};

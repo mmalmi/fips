@@ -925,7 +925,7 @@ impl DecryptWorkerShard {
             return;
         }
 
-        let mut completions = completions.into_iter();
+        let completions = completions.into_iter();
         let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
             for completion in completions {
                 record_fsp_aead_completion_wait(completion.source, completion.completed_at);
@@ -949,17 +949,20 @@ impl DecryptWorkerShard {
 
         let mut total_drain = FspOrderedDrain::default();
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
-        for completion in completions.by_ref() {
-            record_fsp_aead_completion_wait(completion.source, completion.completed_at);
-            let completion_source_addr = completion.source_addr();
-            let completion_receive_order_id = completion.receive_order_id();
-            if completion_source_addr != source_addr
-                || completion_receive_order_id != receive_order_id
-            {
+        let report = retire_owner_ordered_completion_batch(
+            OwnerKey::Fsp { source_addr },
+            receive_order_id,
+            completions,
+            |completion| {
+                record_fsp_aead_completion_wait(completion.source, completion.completed_at);
+            },
+            |completion| {
                 record_fsp_aead_completion_drop(
                     crate::perf_profile::Event::FspAeadCompletionStaleOrder,
                     1,
                 );
+                let completion_source_addr = completion.source_addr();
+                let completion_receive_order_id = completion.receive_order_id();
                 debug!(
                     worker = idx,
                     expected_source = %source_addr,
@@ -968,31 +971,31 @@ impl DecryptWorkerShard {
                     completion_receive_order = completion_receive_order_id,
                     "dropping mismatched FSP AEAD completion from batch"
                 );
-                continue;
-            }
-            let drain = match state.complete_fsp_aead_completion(completion, |completion| {
-                if let Some(output) =
-                    Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
-                {
-                    return_batch.push_output(output);
-                }
-            }) {
-                Ok(drain) => drain,
-                Err(error) => {
-                    record_fsp_aead_completion_order_error(&error);
-                    debug!(
-                        worker = idx,
-                        ?error,
-                        %source_addr,
-                        "{}",
-                        invalid_order_message
-                    );
-                    continue;
-                }
-            };
-            debug_assert_eq!(drain.ready, drain.accounted_ready());
-            total_drain.add(drain);
-        }
+            },
+            |error| {
+                record_fsp_aead_completion_order_error(&error);
+                debug!(
+                    worker = idx,
+                    ?error,
+                    %source_addr,
+                    "{}",
+                    invalid_order_message
+                );
+            },
+            |completion| {
+                let drain = state.complete_fsp_aead_completion(completion, |completion| {
+                    if let Some(output) =
+                        Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
+                    {
+                        return_batch.push_output(output);
+                    }
+                })?;
+                debug_assert_eq!(drain.ready, drain.accounted_ready());
+                total_drain.add(drain);
+                Ok(())
+            },
+        );
+        debug_assert_eq!(report.seen, completion_count);
         record_fsp_ordered_drain(&total_drain);
     }
 

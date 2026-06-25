@@ -55,8 +55,9 @@ pub(crate) use admission::{
 };
 pub(crate) use crypto::{
     CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
-    NoopCryptoWorker, OwnerCompletionBatch, OwnerCompletionBatchFlush, OwnerCompletionBatcher,
-    OwnerOrderedCompletion, StatelessCryptoWorker,
+    NoopCryptoWorker, OwnerCompletionBatch, OwnerCompletionBatchFlush,
+    OwnerCompletionBatchIntoIter, OwnerCompletionBatcher, OwnerCompletionRetireReport,
+    OwnerOrderedCompletion, StatelessCryptoWorker, retire_owner_ordered_completion_batch,
 };
 pub(crate) use output::{
     CommitBeforeOutputBatch, CommitBeforeOutputItems, OutputDrop, OutputDropReason, OutputTarget,
