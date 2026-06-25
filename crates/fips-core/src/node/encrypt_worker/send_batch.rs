@@ -9,6 +9,8 @@ use crate::packet_mover::{
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::packet_mover::{PacketMoverOrderedSendFlowLifecycle, PacketMoverOrderedSendFlows};
+#[cfg(not(target_os = "macos"))]
+use crate::packet_mover::{FlowCreditClosed, FlowCreditGate, FlowCreditReservation, FlowCreditReserve};
 use crate::packet_mover::{
     PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendTarget, packet_mover_send_group_stats,
     push_packet_mover_send_batch_with_lane_and_capacity, record_packet_mover_send_groups,
@@ -21,8 +23,6 @@ use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::cell::RefCell;
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
-#[cfg(not(target_os = "macos"))]
-use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -30,6 +30,7 @@ use std::net::SocketAddr;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::OnceLock;
+#[cfg(target_os = "macos")]
 use std::sync::{Condvar, Mutex};
 use tracing::{debug, trace, warn};
 

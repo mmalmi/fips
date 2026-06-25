@@ -412,14 +412,12 @@
                 "same destination on different sockets must have different reservations"
             );
 
-            let admission = FairAdmission {
-                state: Mutex::new(FairAdmissionState::default()),
-                not_full: Condvar::new(),
-                reserved_len: std::sync::atomic::AtomicUsize::new(0),
-                total_cap: 2,
-                per_flow_cap: 1,
-                fast_lane_cap: 1,
-            };
+            let admission = FairAdmission::new_with_hasher(
+                2,
+                1,
+                MIN_SEND_WEIGHT as usize,
+                MAX_SEND_WEIGHT as usize,
+            );
             assert!(
                 admission.is_idle(),
                 "fresh admission should let the sender use the lock-free fast lane"
@@ -483,14 +481,12 @@
                 queued_job(socket_a, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).dispatch_key();
             let key_b =
                 queued_job(socket_b, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).dispatch_key();
-            let admission = FairAdmission {
-                state: Mutex::new(FairAdmissionState::default()),
-                not_full: Condvar::new(),
-                reserved_len: std::sync::atomic::AtomicUsize::new(0),
-                total_cap: 2,
-                per_flow_cap: 1,
-                fast_lane_cap: 1,
-            };
+            let admission = FairAdmission::new_with_hasher(
+                2,
+                1,
+                MIN_SEND_WEIGHT as usize,
+                MAX_SEND_WEIGHT as usize,
+            );
 
             let reservation_a = match admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize) {
                 FairReserve::Reserved(reservation) => reservation,

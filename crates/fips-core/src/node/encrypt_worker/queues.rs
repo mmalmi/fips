@@ -278,9 +278,8 @@ impl SendDispatchKey {
 }
 
 #[cfg(not(target_os = "macos"))]
-type FairFlowMap = HashMap<
+type FairAdmission = FlowCreditGate<
     SendDispatchKey,
-    FairFlowQueue,
     std::hash::BuildHasherDefault<SendTargetFastHasher>,
 >;
 
@@ -572,6 +571,7 @@ impl MacWorkerReceiver {
 struct FairWorkerSender {
     bulk_tx: Sender<QueuedFmpSendJob>,
     admission: Arc<FairAdmission>,
+    fast_lane_cap: usize,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -582,59 +582,10 @@ struct FairWorkerReceiver {
 }
 
 #[cfg(not(target_os = "macos"))]
-struct FairAdmission {
-    state: Mutex<FairAdmissionState>,
-    not_full: Condvar,
-    reserved_len: std::sync::atomic::AtomicUsize,
-    total_cap: usize,
-    per_flow_cap: usize,
-    fast_lane_cap: usize,
-}
+type FairAdmissionReservation = FlowCreditReservation<SendDispatchKey>;
 
 #[cfg(not(target_os = "macos"))]
-#[derive(Default)]
-struct FairAdmissionState {
-    flows: FairFlowMap,
-    total_len: usize,
-    full_waiters: usize,
-    closed: bool,
-}
-
-#[cfg(not(target_os = "macos"))]
-struct FairFlowQueue {
-    queued: usize,
-    weight: usize,
-}
-
-#[cfg(not(target_os = "macos"))]
-impl FairFlowQueue {
-    fn new(weight: usize) -> Self {
-        Self { queued: 0, weight }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-struct FairAdmissionReservation {
-    key: SendDispatchKey,
-}
-
-#[cfg(not(target_os = "macos"))]
-impl FairAdmissionReservation {
-    fn new(key: SendDispatchKey) -> Self {
-        Self { key }
-    }
-
-    fn key(&self) -> SendDispatchKey {
-        self.key
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-enum FairReserve {
-    Reserved(FairAdmissionReservation),
-    Full,
-    Closed,
-}
+type FairReserve = FlowCreditReserve<SendDispatchKey>;
 
 #[cfg(not(target_os = "macos"))]
 enum FairWorkerTryPushError {
@@ -664,21 +615,21 @@ fn fair_worker_channel(
     let total_cap = total_cap.max(1);
     let per_flow_cap = per_flow_cap.max(1);
     let (bulk_tx, bulk_rx) = bounded(total_cap);
-    let admission = Arc::new(FairAdmission {
-        state: Mutex::new(FairAdmissionState::default()),
-        not_full: Condvar::new(),
-        reserved_len: std::sync::atomic::AtomicUsize::new(0),
+    let admission = Arc::new(FairAdmission::new_with_hasher(
         total_cap,
         per_flow_cap,
-        // Let a freshly idle worker accept one syscall-sized worker batch
-        // without taking the fairness mutex, but don't let that mutex bypass
-        // hide a whole extra per-flow queue window.
-        fast_lane_cap: worker_fast_lane_cap(total_cap, per_flow_cap),
-    });
+        MIN_SEND_WEIGHT as usize,
+        MAX_SEND_WEIGHT as usize,
+    ));
+    // Let a freshly idle worker accept one syscall-sized worker batch without
+    // taking the fairness mutex, but don't let that mutex bypass hide a whole
+    // extra per-flow queue window.
+    let fast_lane_cap = worker_fast_lane_cap(total_cap, per_flow_cap);
     (
         FairWorkerSender {
             bulk_tx,
             admission: Arc::clone(&admission),
+            fast_lane_cap,
         },
         FairWorkerReceiver {
             bulk_rx,
@@ -696,7 +647,7 @@ impl FairWorkerSender {
             "non-macOS priority FMP sends bypass worker queues"
         );
 
-        let job = if self.admission.is_idle() && self.bulk_tx.len() < self.admission.fast_lane_cap {
+        let job = if self.admission.is_idle() && self.bulk_tx.len() < self.fast_lane_cap {
             match self.bulk_tx.try_send(job) {
                 Ok(()) => return Ok(()),
                 Err(TrySendError::Full(job)) => job,
@@ -749,9 +700,9 @@ impl FairWorkerSender {
         let weight = job.scheduling_weight();
         let reservation = match self.admission.reserve_blocking(key, weight) {
             Ok(reservation) => reservation,
-            Err(err) => {
+            Err(FlowCreditClosed) => {
                 job.discard_without_send();
-                return Err(err);
+                return Err(FairWorkerPushError);
             }
         };
         let mut job = job;
@@ -764,131 +715,6 @@ impl FairWorkerSender {
             return Err(FairWorkerPushError);
         }
         Ok(())
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl FairAdmission {
-    fn try_reserve(&self, key: SendDispatchKey, weight: usize) -> FairReserve {
-        let mut state = self
-            .state
-            .lock()
-            .expect("encrypt worker fair admission poisoned");
-        if state.closed {
-            return FairReserve::Closed;
-        }
-        if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
-            self.reserved_len
-                .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
-            return FairReserve::Reserved(FairAdmissionReservation::new(key));
-        }
-        FairReserve::Full
-    }
-
-    fn reserve_blocking(
-        &self,
-        key: SendDispatchKey,
-        weight: usize,
-    ) -> Result<FairAdmissionReservation, FairWorkerPushError> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("encrypt worker fair admission poisoned");
-        loop {
-            if state.closed {
-                return Err(FairWorkerPushError);
-            }
-            if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
-                self.reserved_len
-                    .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
-                return Ok(FairAdmissionReservation::new(key));
-            }
-            state.full_waiters += 1;
-            state = self
-                .not_full
-                .wait(state)
-                .expect("encrypt worker fair admission poisoned");
-            state.full_waiters = state.full_waiters.saturating_sub(1);
-        }
-    }
-
-    fn is_idle(&self) -> bool {
-        self.reserved_len.load(std::sync::atomic::Ordering::Relaxed) == 0
-    }
-
-    fn release(&self, reservation: FairAdmissionReservation) {
-        self.release_many(std::slice::from_ref(&reservation));
-    }
-
-    fn release_many(&self, reservations: &[FairAdmissionReservation]) {
-        if reservations.is_empty() {
-            return;
-        }
-        let mut state = self
-            .state
-            .lock()
-            .expect("encrypt worker fair admission poisoned");
-        for reservation in reservations {
-            let key = reservation.key();
-            if let Some(flow) = state.flows.get_mut(&key) {
-                flow.queued = flow.queued.saturating_sub(1);
-                if flow.queued == 0 {
-                    state.flows.remove(&key);
-                }
-            }
-            state.total_len = state.total_len.saturating_sub(1);
-        }
-        self.reserved_len
-            .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
-        let should_notify = state.full_waiters > 0;
-        drop(state);
-        if should_notify {
-            self.not_full.notify_all();
-        }
-    }
-
-    fn close(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("encrypt worker fair admission poisoned");
-        state.closed = true;
-        drop(state);
-        self.not_full.notify_all();
-    }
-
-    fn reserve_locked(
-        state: &mut FairAdmissionState,
-        total_cap: usize,
-        per_flow_cap: usize,
-        key: SendDispatchKey,
-        weight: usize,
-    ) -> bool {
-        if state.total_len.saturating_add(1) > total_cap {
-            return false;
-        }
-        let weight = weight.clamp(MIN_SEND_WEIGHT as usize, MAX_SEND_WEIGHT as usize);
-        match state.flows.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                let flow = entry.get_mut();
-                flow.weight = flow.weight.max(weight);
-                let cap = per_flow_cap
-                    .saturating_mul(flow.weight)
-                    .min(total_cap)
-                    .max(1);
-                if flow.queued.saturating_add(1) > cap {
-                    return false;
-                }
-                flow.queued += 1;
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let mut flow = FairFlowQueue::new(weight);
-                flow.queued = 1;
-                entry.insert(flow);
-            }
-        }
-        state.total_len += 1;
-        true
     }
 }
 

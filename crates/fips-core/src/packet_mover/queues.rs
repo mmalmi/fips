@@ -3,9 +3,10 @@ use crate::transport::{PacketRx, ReceivedPacket};
 use crossbeam_channel::{
     Receiver as CrossbeamReceiver, Sender as CrossbeamSender, TrySendError as CrossbeamTrySendError,
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque, hash_map::RandomState};
+use std::hash::{BuildHasher, Hash};
 use std::sync::{
-    Arc,
+    Arc, Condvar, Mutex,
     atomic::{AtomicUsize, Ordering::Relaxed},
 };
 use tokio::sync::mpsc::{
@@ -157,6 +158,232 @@ impl LaneCreditGate {
 
     pub(crate) fn capacity(&self) -> usize {
         self.capacity
+    }
+}
+
+pub(crate) struct FlowCreditGate<K, S = RandomState> {
+    state: Mutex<FlowCreditState<K, S>>,
+    not_full: Condvar,
+    reserved_len: AtomicUsize,
+    total_cap: usize,
+    per_flow_cap: usize,
+    min_weight: usize,
+    max_weight: usize,
+}
+
+struct FlowCreditState<K, S> {
+    flows: HashMap<K, FlowCreditQueue, S>,
+    total_len: usize,
+    full_waiters: usize,
+    closed: bool,
+}
+
+struct FlowCreditQueue {
+    queued: usize,
+    weight: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FlowCreditReservation<K> {
+    key: K,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FlowCreditReserve<K> {
+    Reserved(FlowCreditReservation<K>),
+    Full,
+    Closed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FlowCreditClosed;
+
+impl<K> FlowCreditReservation<K>
+where
+    K: Copy,
+{
+    pub(crate) fn key(&self) -> K {
+        self.key
+    }
+}
+
+impl FlowCreditQueue {
+    fn new(weight: usize) -> Self {
+        Self { queued: 0, weight }
+    }
+}
+
+impl<K, S> FlowCreditState<K, S>
+where
+    S: BuildHasher + Default,
+{
+    fn new() -> Self {
+        Self {
+            flows: HashMap::with_hasher(S::default()),
+            total_len: 0,
+            full_waiters: 0,
+            closed: false,
+        }
+    }
+}
+
+impl<K> FlowCreditGate<K, RandomState>
+where
+    K: Copy + Eq + Hash,
+{
+    pub(crate) fn new(
+        total_cap: usize,
+        per_flow_cap: usize,
+        min_weight: usize,
+        max_weight: usize,
+    ) -> Self {
+        Self::new_with_hasher(total_cap, per_flow_cap, min_weight, max_weight)
+    }
+}
+
+impl<K, S> FlowCreditGate<K, S>
+where
+    K: Copy + Eq + Hash,
+    S: BuildHasher + Default,
+{
+    pub(crate) fn new_with_hasher(
+        total_cap: usize,
+        per_flow_cap: usize,
+        min_weight: usize,
+        max_weight: usize,
+    ) -> Self {
+        let total_cap = total_cap.max(1);
+        let per_flow_cap = per_flow_cap.max(1);
+        let min_weight = min_weight.max(1);
+        let max_weight = max_weight.max(min_weight);
+        Self {
+            state: Mutex::new(FlowCreditState::new()),
+            not_full: Condvar::new(),
+            reserved_len: AtomicUsize::new(0),
+            total_cap,
+            per_flow_cap,
+            min_weight,
+            max_weight,
+        }
+    }
+
+    pub(crate) fn try_reserve(&self, key: K, weight: usize) -> FlowCreditReserve<K> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("packet mover flow credit gate poisoned");
+        if state.closed {
+            return FlowCreditReserve::Closed;
+        }
+        if self.reserve_locked(&mut state, key, weight) {
+            self.reserved_len.store(state.total_len, Relaxed);
+            return FlowCreditReserve::Reserved(FlowCreditReservation { key });
+        }
+        FlowCreditReserve::Full
+    }
+
+    pub(crate) fn reserve_blocking(
+        &self,
+        key: K,
+        weight: usize,
+    ) -> Result<FlowCreditReservation<K>, FlowCreditClosed> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("packet mover flow credit gate poisoned");
+        loop {
+            if state.closed {
+                return Err(FlowCreditClosed);
+            }
+            if self.reserve_locked(&mut state, key, weight) {
+                self.reserved_len.store(state.total_len, Relaxed);
+                return Ok(FlowCreditReservation { key });
+            }
+            state.full_waiters = state.full_waiters.saturating_add(1);
+            state = self
+                .not_full
+                .wait(state)
+                .expect("packet mover flow credit gate poisoned");
+            state.full_waiters = state.full_waiters.saturating_sub(1);
+        }
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        self.reserved_len.load(Relaxed) == 0
+    }
+
+    pub(crate) fn release(&self, reservation: FlowCreditReservation<K>) {
+        self.release_many(std::slice::from_ref(&reservation));
+    }
+
+    pub(crate) fn release_many(&self, reservations: &[FlowCreditReservation<K>]) {
+        if reservations.is_empty() {
+            return;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .expect("packet mover flow credit gate poisoned");
+        for reservation in reservations {
+            let key = reservation.key();
+            if let Some(flow) = state.flows.get_mut(&key) {
+                flow.queued = flow.queued.saturating_sub(1);
+                if flow.queued == 0 {
+                    state.flows.remove(&key);
+                }
+            }
+            state.total_len = state.total_len.saturating_sub(1);
+        }
+        self.reserved_len.store(state.total_len, Relaxed);
+        let should_notify = state.full_waiters > 0;
+        drop(state);
+        if should_notify {
+            self.not_full.notify_all();
+        }
+    }
+
+    pub(crate) fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("packet mover flow credit gate poisoned");
+        state.closed = true;
+        drop(state);
+        self.not_full.notify_all();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued_packets(&self) -> usize {
+        self.reserved_len.load(Relaxed)
+    }
+
+    fn reserve_locked(&self, state: &mut FlowCreditState<K, S>, key: K, weight: usize) -> bool {
+        if state.total_len.saturating_add(1) > self.total_cap {
+            return false;
+        }
+        let weight = weight.clamp(self.min_weight, self.max_weight);
+        match state.flows.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let flow = entry.get_mut();
+                flow.weight = flow.weight.max(weight);
+                let cap = self
+                    .per_flow_cap
+                    .saturating_mul(flow.weight)
+                    .min(self.total_cap)
+                    .max(1);
+                if flow.queued.saturating_add(1) > cap {
+                    return false;
+                }
+                flow.queued = flow.queued.saturating_add(1);
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut flow = FlowCreditQueue::new(weight);
+                flow.queued = 1;
+                entry.insert(flow);
+            }
+        }
+        state.total_len = state.total_len.saturating_add(1);
+        true
     }
 }
 
@@ -1156,6 +1383,73 @@ mod tests {
         assert_eq!(previous, 0);
         assert_eq!(reservation.packet_count(), 0);
         assert_eq!(gate.queued_packets(), 0);
+    }
+
+    #[test]
+    fn flow_credit_gate_bounds_total_and_per_flow_progress() {
+        let gate = FlowCreditGate::new(2, 1, 1, 4);
+        assert!(gate.is_idle());
+
+        let first = match gate.try_reserve(7u8, 1) {
+            FlowCreditReserve::Reserved(reservation) => reservation,
+            FlowCreditReserve::Full => panic!("first flow packet should reserve"),
+            FlowCreditReserve::Closed => panic!("gate should be open"),
+        };
+        assert_eq!(first.key(), 7);
+        assert_eq!(gate.queued_packets(), 1);
+        assert!(!gate.is_idle());
+        assert!(matches!(gate.try_reserve(7u8, 1), FlowCreditReserve::Full));
+
+        let second = match gate.try_reserve(8u8, 1) {
+            FlowCreditReserve::Reserved(reservation) => reservation,
+            FlowCreditReserve::Full => panic!("different flow should reserve"),
+            FlowCreditReserve::Closed => panic!("gate should be open"),
+        };
+        assert!(matches!(gate.try_reserve(9u8, 1), FlowCreditReserve::Full));
+
+        gate.release(first);
+        assert_eq!(gate.queued_packets(), 1);
+        gate.release(second);
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn flow_credit_gate_weight_expands_one_flow_without_exceeding_total_cap() {
+        let gate = FlowCreditGate::new(3, 1, 1, 2);
+
+        let first = match gate.try_reserve(7u8, 2) {
+            FlowCreditReserve::Reserved(reservation) => reservation,
+            FlowCreditReserve::Full => panic!("first weighted packet should reserve"),
+            FlowCreditReserve::Closed => panic!("gate should be open"),
+        };
+        let second = match gate.try_reserve(7u8, 2) {
+            FlowCreditReserve::Reserved(reservation) => reservation,
+            FlowCreditReserve::Full => panic!("weight should allow a second same-flow packet"),
+            FlowCreditReserve::Closed => panic!("gate should be open"),
+        };
+        assert!(matches!(gate.try_reserve(7u8, 2), FlowCreditReserve::Full));
+
+        let third = match gate.try_reserve(8u8, 1) {
+            FlowCreditReserve::Reserved(reservation) => reservation,
+            FlowCreditReserve::Full => panic!("total cap should still leave one slot"),
+            FlowCreditReserve::Closed => panic!("gate should be open"),
+        };
+        assert!(matches!(gate.try_reserve(9u8, 1), FlowCreditReserve::Full));
+
+        gate.release_many(&[first, second, third]);
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn flow_credit_gate_close_rejects_new_reservations() {
+        let gate = FlowCreditGate::new(1, 1, 1, 1);
+        gate.close();
+
+        assert!(matches!(
+            gate.try_reserve(7u8, 1),
+            FlowCreditReserve::Closed
+        ));
+        assert_eq!(gate.reserve_blocking(7u8, 1), Err(FlowCreditClosed));
     }
 
     #[test]
