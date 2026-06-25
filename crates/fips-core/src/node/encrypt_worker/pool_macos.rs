@@ -720,10 +720,17 @@ const LINUX_WG_BATCH_MIN_PACKETS: usize = 16;
 const LINUX_WG_BATCH_FLOW_IDLE_MS: u64 = 120_000;
 
 #[cfg(target_os = "linux")]
-#[derive(Default)]
 struct LinuxWgBatchSendFlows {
-    flows: Mutex<HashMap<LinuxWgBatchSendFlowKey, Arc<LinuxWgBatchSendFlow>>>,
-    last_prune_ms: std::sync::atomic::AtomicU64,
+    flows: PacketMoverOrderedSendFlows<LinuxWgBatchSendFlowKey, LinuxWgBatchSendFlow>,
+}
+
+#[cfg(target_os = "linux")]
+impl Default for LinuxWgBatchSendFlows {
+    fn default() -> Self {
+        Self {
+            flows: PacketMoverOrderedSendFlows::new(10_000, LINUX_WG_BATCH_FLOW_IDLE_MS),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -734,48 +741,14 @@ impl LinuxWgBatchSendFlows {
         send_target: SelectedSendTarget,
     ) -> Arc<LinuxWgBatchSendFlow> {
         let now_ms = linux_wg_batch_now_ms();
-        let mut flows = self.flows.lock().expect("Linux WG flow map poisoned");
-        self.prune_idle_locked(&mut flows, now_ms);
-        if let Some(flow) = flows.get(&key) {
-            flow.mark_used(now_ms);
-            return Arc::clone(flow);
-        }
-
-        let flow = LinuxWgBatchSendFlow::spawn(
-            key,
-            send_target,
-            now_ms,
-            LINUX_WG_BATCH_FLOW_CHANNEL_CAP,
-        );
-        flows.insert(key, Arc::clone(&flow));
-        flow
-    }
-
-    fn prune_idle_locked(
-        &self,
-        flows: &mut HashMap<LinuxWgBatchSendFlowKey, Arc<LinuxWgBatchSendFlow>>,
-        now_ms: u64,
-    ) {
-        let last = self
-            .last_prune_ms
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if now_ms.saturating_sub(last) < 10_000 {
-            return;
-        }
-        if self
-            .last_prune_ms
-            .compare_exchange(
-                last,
+        self.flows.flow_for_with(key, now_ms, move |key, now_ms| {
+            LinuxWgBatchSendFlow::spawn(
+                key,
+                send_target,
                 now_ms,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
+                LINUX_WG_BATCH_FLOW_CHANNEL_CAP,
             )
-            .is_err()
-        {
-            return;
-        }
-
-        flows.retain(|_, flow| !flow.is_idle(now_ms, LINUX_WG_BATCH_FLOW_IDLE_MS));
+        })
     }
 }
 
@@ -819,6 +792,17 @@ impl LinuxWgBatchSendFlow {
 
     fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
         self.flow.is_idle(now_ms, idle_ms)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl PacketMoverOrderedSendFlowLifecycle for LinuxWgBatchSendFlow {
+    fn mark_used(&self, now_ms: u64) {
+        LinuxWgBatchSendFlow::mark_used(self, now_ms);
+    }
+
+    fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
+        LinuxWgBatchSendFlow::is_idle(self, now_ms, idle_ms)
     }
 }
 
@@ -888,10 +872,17 @@ impl MacSendFlowKey {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Default)]
 struct MacSequencedSendFlows {
-    flows: Mutex<HashMap<MacSendFlowKey, Arc<MacSequencedSendFlow>>>,
-    last_prune_ms: std::sync::atomic::AtomicU64,
+    flows: PacketMoverOrderedSendFlows<MacSendFlowKey, MacSequencedSendFlow>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for MacSequencedSendFlows {
+    fn default() -> Self {
+        Self {
+            flows: PacketMoverOrderedSendFlows::new(10_000, MAC_SEND_FLOW_IDLE_MS),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -899,52 +890,11 @@ impl MacSequencedSendFlows {
     fn flow_for(&self, job: &FmpSendJob) -> Arc<MacSequencedSendFlow> {
         let now_ms = mac_now_ms();
         let key = MacSendFlowKey::from_job(job);
-
-        let mut flows = self.flows.lock().expect("mac send flow map poisoned");
-        self.prune_idle_locked(&mut flows, now_ms);
-        if let Some(flow) = flows.get(&key) {
-            flow.mark_used(now_ms);
-            return Arc::clone(flow);
-        }
-
-        let flow = MacSequencedSendFlow::spawn(key, job.send_target.clone(), now_ms);
-        flows.insert(key, Arc::clone(&flow));
-        flow
-    }
-
-    fn prune_idle_locked(
-        &self,
-        flows: &mut HashMap<MacSendFlowKey, Arc<MacSequencedSendFlow>>,
-        now_ms: u64,
-    ) {
-        let last = self
-            .last_prune_ms
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if now_ms.saturating_sub(last) < 10_000 {
-            return;
-        }
-        if self
-            .last_prune_ms
-            .compare_exchange(
-                last,
-                now_ms,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            return;
-        }
-
-        let idle_ms = MAC_SEND_FLOW_IDLE_MS;
-        flows.retain(|_, flow| {
-            if flow.is_idle(now_ms, idle_ms) {
-                flow.close();
-                false
-            } else {
-                true
-            }
-        });
+        let send_target = job.send_target.clone();
+        self.flows
+            .flow_for_with(key, now_ms, move |key, now_ms| {
+                MacSequencedSendFlow::spawn(key, send_target, now_ms)
+            })
     }
 }
 
@@ -1247,6 +1197,21 @@ impl MacSequencedSendFlow {
                 }
             }
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl PacketMoverOrderedSendFlowLifecycle for MacSequencedSendFlow {
+    fn mark_used(&self, now_ms: u64) {
+        MacSequencedSendFlow::mark_used(self, now_ms);
+    }
+
+    fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
+        MacSequencedSendFlow::is_idle(self, now_ms, idle_ms)
+    }
+
+    fn close_for_prune(&self) {
+        self.close();
     }
 }
 

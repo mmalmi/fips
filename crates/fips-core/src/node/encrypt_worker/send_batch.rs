@@ -4,12 +4,14 @@ use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 #[cfg(target_os = "linux")]
 use crate::packet_mover::{
     PacketMoverBulkSendItem, PacketMoverBulkSendTargets, PacketMoverOrderedSendBatch,
-    PacketMoverOrderedSendFlow, PacketMoverOrderedSendInflight, select_packet_mover_bulk_send_targets,
+    PacketMoverOrderedSendFlow, PacketMoverOrderedSendInflight,
+    select_packet_mover_bulk_send_targets,
 };
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::packet_mover::{PacketMoverOrderedSendFlowLifecycle, PacketMoverOrderedSendFlows};
 use crate::packet_mover::{
-    PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendTarget,
-    packet_mover_send_group_stats, push_packet_mover_send_batch_with_lane_and_capacity,
-    record_packet_mover_send_groups,
+    PacketMoverSendBatch, PacketMoverSendLane, PacketMoverSendTarget, packet_mover_send_group_stats,
+    push_packet_mover_send_batch_with_lane_and_capacity, record_packet_mover_send_groups,
 };
 use crate::transport::udp::socket::AsyncUdpSocket;
 #[cfg(not(target_os = "macos"))]
@@ -19,6 +21,7 @@ use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::cell::RefCell;
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
+#[cfg(not(target_os = "macos"))]
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;

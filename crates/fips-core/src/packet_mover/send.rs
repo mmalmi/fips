@@ -1,5 +1,6 @@
 use crossbeam_channel::{Sender as CrossbeamSender, TrySendError as CrossbeamTrySendError};
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
@@ -28,7 +29,7 @@ pub(crate) trait PacketMoverSendTarget: Clone {
 }
 
 pub(crate) trait PacketMoverBulkSendItem {
-    type Key: Copy + Eq + std::hash::Hash + std::fmt::Debug;
+    type Key: Copy + Eq + Hash + std::fmt::Debug;
 
     fn bulk_send_target_key(&self) -> Self::Key;
 
@@ -115,6 +116,14 @@ pub(crate) struct PacketMoverOrderedSendFlow<T> {
     last_used_ms: AtomicU64,
 }
 
+pub(crate) trait PacketMoverOrderedSendFlowLifecycle {
+    fn mark_used(&self, now_ms: u64);
+
+    fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool;
+
+    fn close_for_prune(&self) {}
+}
+
 impl<T> PacketMoverOrderedSendFlow<T> {
     pub(crate) fn new(sender: CrossbeamSender<T>, now_ms: u64) -> Self {
         Self {
@@ -165,10 +174,93 @@ impl<T> PacketMoverOrderedSendFlow<T> {
     }
 }
 
+impl<T> PacketMoverOrderedSendFlowLifecycle for PacketMoverOrderedSendFlow<T> {
+    fn mark_used(&self, now_ms: u64) {
+        PacketMoverOrderedSendFlow::mark_used(self, now_ms);
+    }
+
+    fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
+        PacketMoverOrderedSendFlow::is_idle(self, now_ms, idle_ms)
+    }
+}
+
+pub(crate) struct PacketMoverOrderedSendFlows<K, F> {
+    flows: Mutex<HashMap<K, Arc<F>>>,
+    last_prune_ms: AtomicU64,
+    prune_interval_ms: u64,
+    idle_ms: u64,
+}
+
+impl<K, F> PacketMoverOrderedSendFlows<K, F>
+where
+    K: Copy + Eq + Hash,
+    F: PacketMoverOrderedSendFlowLifecycle,
+{
+    pub(crate) fn new(prune_interval_ms: u64, idle_ms: u64) -> Self {
+        Self {
+            flows: Mutex::new(HashMap::new()),
+            last_prune_ms: AtomicU64::new(0),
+            prune_interval_ms,
+            idle_ms,
+        }
+    }
+
+    pub(crate) fn flow_for_with<Create>(&self, key: K, now_ms: u64, create: Create) -> Arc<F>
+    where
+        Create: FnOnce(K, u64) -> Arc<F>,
+    {
+        let mut flows = self
+            .flows
+            .lock()
+            .expect("packet mover ordered send flow map poisoned");
+        self.prune_idle_locked(&mut flows, now_ms);
+        if let Some(flow) = flows.get(&key) {
+            flow.mark_used(now_ms);
+            return Arc::clone(flow);
+        }
+
+        let flow = create(key, now_ms);
+        flows.insert(key, Arc::clone(&flow));
+        flow
+    }
+
+    fn prune_idle_locked(&self, flows: &mut HashMap<K, Arc<F>>, now_ms: u64) {
+        let last = self.last_prune_ms.load(Relaxed);
+        if now_ms.saturating_sub(last) < self.prune_interval_ms {
+            return;
+        }
+        if self
+            .last_prune_ms
+            .compare_exchange(last, now_ms, Relaxed, Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        let idle_ms = self.idle_ms;
+        flows.retain(|_, flow| {
+            if flow.is_idle(now_ms, idle_ms) {
+                flow.close_for_prune();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.flows
+            .lock()
+            .expect("packet mover ordered send flow map poisoned")
+            .len()
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum PacketMoverBulkSendTargets<K>
 where
-    K: Copy + Eq + std::hash::Hash + std::fmt::Debug,
+    K: Copy + Eq + Hash + std::fmt::Debug,
 {
     Single(K),
     Multiple(HashMap<K, usize>),
@@ -176,7 +268,7 @@ where
 
 impl<K> PacketMoverBulkSendTargets<K>
 where
-    K: Copy + Eq + std::hash::Hash + std::fmt::Debug,
+    K: Copy + Eq + Hash + std::fmt::Debug,
 {
     pub(crate) fn contains(&self, target: K) -> bool {
         match self {

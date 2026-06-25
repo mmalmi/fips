@@ -87,10 +87,11 @@ pub(crate) use queues::{
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
 pub(crate) use send::{
     PacketMoverBulkSendItem, PacketMoverBulkSendTargets, PacketMoverOrderedSendBatch,
-    PacketMoverOrderedSendFlow, PacketMoverOrderedSendInflight, PacketMoverSendBatch,
-    PacketMoverSendLane, PacketMoverSendPacket, PacketMoverSendTarget,
-    packet_mover_send_group_stats, push_packet_mover_send_batch_with_lane_and_capacity,
-    record_packet_mover_send_groups, select_packet_mover_bulk_send_targets,
+    PacketMoverOrderedSendFlow, PacketMoverOrderedSendFlowLifecycle, PacketMoverOrderedSendFlows,
+    PacketMoverOrderedSendInflight, PacketMoverSendBatch, PacketMoverSendLane,
+    PacketMoverSendPacket, PacketMoverSendTarget, packet_mover_send_group_stats,
+    push_packet_mover_send_batch_with_lane_and_capacity, record_packet_mover_send_groups,
+    select_packet_mover_bulk_send_targets,
 };
 
 pub(crate) const CANONICAL_PACKET_MOVER_STAGES: &[PacketMoverStage] = &[
@@ -144,8 +145,48 @@ pub(crate) fn canonical_packet_mover_map() -> PacketMoverMap {
 mod tests {
     use super::*;
     use crossbeam_channel::bounded;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
     use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
+
+    #[derive(Default)]
+    struct TestOrderedSendFlow {
+        last_used_ms: AtomicU64,
+        closed: AtomicUsize,
+        idle_after_ms: u64,
+    }
+
+    impl TestOrderedSendFlow {
+        fn new(now_ms: u64, idle_after_ms: u64) -> Arc<Self> {
+            Arc::new(Self {
+                last_used_ms: AtomicU64::new(now_ms),
+                closed: AtomicUsize::new(0),
+                idle_after_ms,
+            })
+        }
+
+        fn last_used_ms(&self) -> u64 {
+            self.last_used_ms.load(Relaxed)
+        }
+
+        fn closed(&self) -> usize {
+            self.closed.load(Relaxed)
+        }
+    }
+
+    impl PacketMoverOrderedSendFlowLifecycle for TestOrderedSendFlow {
+        fn mark_used(&self, now_ms: u64) {
+            self.last_used_ms.store(now_ms, Relaxed);
+        }
+
+        fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
+            now_ms.saturating_sub(self.last_used_ms()) >= idle_ms && now_ms >= self.idle_after_ms
+        }
+
+        fn close_for_prune(&self) {
+            self.closed.fetch_add(1, Relaxed);
+        }
+    }
 
     #[test]
     fn canonical_packet_mover_map_is_one_straight_pipeline() {
@@ -259,5 +300,46 @@ mod tests {
 
         flow.mark_used(24);
         assert!(!flow.is_idle(25, 10));
+    }
+
+    #[test]
+    fn ordered_send_flow_registry_reuses_existing_flow_and_marks_used() {
+        let flows = PacketMoverOrderedSendFlows::new(10, 100);
+        let spawned = AtomicUsize::new(0);
+
+        let first = flows.flow_for_with(7u8, 10, |_, now_ms| {
+            spawned.fetch_add(1, Relaxed);
+            TestOrderedSendFlow::new(now_ms, u64::MAX)
+        });
+        let second = flows.flow_for_with(7u8, 15, |_, now_ms| {
+            spawned.fetch_add(1, Relaxed);
+            TestOrderedSendFlow::new(now_ms, u64::MAX)
+        });
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(spawned.load(Relaxed), 1);
+        assert_eq!(first.last_used_ms(), 15);
+        assert_eq!(flows.len(), 1);
+    }
+
+    #[test]
+    fn ordered_send_flow_registry_prunes_idle_flows_and_closes_them() {
+        let flows = PacketMoverOrderedSendFlows::new(10, 5);
+        let stale = flows.flow_for_with(1u8, 0, |_, now_ms| TestOrderedSendFlow::new(now_ms, 0));
+        assert_eq!(flows.len(), 1);
+
+        let active = flows.flow_for_with(2u8, 11, |_, now_ms| {
+            TestOrderedSendFlow::new(now_ms, u64::MAX)
+        });
+
+        assert_eq!(stale.closed(), 1);
+        assert_eq!(active.closed(), 0);
+        assert_eq!(flows.len(), 1);
+
+        let replacement = flows.flow_for_with(1u8, 12, |_, now_ms| {
+            TestOrderedSendFlow::new(now_ms, u64::MAX)
+        });
+        assert!(!Arc::ptr_eq(&stale, &replacement));
+        assert_eq!(flows.len(), 2);
     }
 }
