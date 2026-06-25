@@ -10,17 +10,13 @@
         crypto_generation: u64,
         sequence: u64,
     ) -> CryptoTicket {
+        let source = OwnerReceiveReservationSource::new(
+            OwnerKey::Fsp { source_addr },
+            OwnerGeneration(crypto_generation),
+            receive_order_id,
+        );
         CryptoTicket {
-            reservation: OwnerReservation {
-                owner: OwnerKey::Fsp { source_addr },
-                generation: OwnerGeneration(crypto_generation),
-                order: OrderToken {
-                    receive_order_id,
-                    sequence: OrderSequence(sequence),
-                },
-                lane: PacketLane::Bulk,
-                packet_count: 1,
-            },
+            reservation: source.reservation_for_sequence(sequence, PacketLane::Bulk, 1),
         }
     }
 

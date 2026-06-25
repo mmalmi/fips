@@ -12,11 +12,12 @@ use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
 use crate::packet_mover::{
-    BulkLanePrefixRejectReason, BulkLanePrefixSendResult, BulkLanePrefixSender, CryptoCompletion,
-    CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork, DispatchBatcher,
-    LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch, OwnerCompletionBatchFlush,
-    OwnerCompletionBatcher, OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation,
-    OwnerReservationBatch, OutputTarget, PacketLane, PacketOutputTarget,
+    BulkLanePrefixRejectReason, BulkLanePrefixSendResult, BulkLanePrefixSender,
+    CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
+    DispatchBatcher, LaneCreditGate, OwnerCompletionBatch, OwnerCompletionBatchFlush,
+    OwnerCompletionBatcher, OwnerGeneration, OwnerKey, OwnerOrderedCompletion,
+    OwnerReceiveReservationSource, OwnerReservation, OwnerReservationBatch, OutputTarget,
+    PacketLane, PacketOutputTarget,
     PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
     SplitBulkLaneItem, StatelessCryptoWorker, WorkerDrainAction, WorkerDrainCursor,
     WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
@@ -446,22 +447,12 @@ impl OwnedFspSessionState {
         }
     }
 
-    fn owner_reservation_for_sequence(
-        &self,
-        sequence: u64,
-        lane: PacketLane,
-        packet_count: usize,
-    ) -> OwnerReservation {
-        OwnerReservation {
-            owner: self.fsp_owner_key(),
-            generation: OwnerGeneration(self.fsp_crypto_generation()),
-            order: OrderToken {
-                receive_order_id: self.fsp_receive_order_id(),
-                sequence: OrderSequence(sequence),
-            },
-            lane,
-            packet_count,
-        }
+    fn fsp_receive_reservation_source(&self) -> OwnerReceiveReservationSource {
+        OwnerReceiveReservationSource::new(
+            self.fsp_owner_key(),
+            OwnerGeneration(self.fsp_crypto_generation()),
+            self.fsp_receive_order_id(),
+        )
     }
 
     fn reservation_for_ticket(
@@ -469,7 +460,10 @@ impl OwnedFspSessionState {
         ticket: FspReceiveTicket,
         lane: PacketLane,
     ) -> FspOpenReservation {
-        FspOpenReservation::new(self.owner_reservation_for_sequence(ticket.sequence, lane, 1))
+        FspOpenReservation::new(
+            self.fsp_receive_reservation_source()
+                .reservation_for_ticket(ticket, lane),
+        )
     }
 
     fn reservation_for_ticket_batch(
@@ -478,11 +472,8 @@ impl OwnedFspSessionState {
         lane: PacketLane,
         packet_count: usize,
     ) -> FspOpenReservationBatch {
-        OwnerReservationBatch::new(self.owner_reservation_for_sequence(
-            first_sequence,
-            lane,
-            packet_count,
-        ))
+        self.fsp_receive_reservation_source()
+            .reservation_batch_for_sequence(first_sequence, lane, packet_count)
     }
 
     fn reserve_local_fsp_open(&mut self, lane: DecryptWorkerLane) -> Option<FspOpenReservation> {
@@ -612,9 +603,7 @@ impl OwnedFspSessionState {
         completion: FspOrderedCompletion,
         mut on_output: impl FnMut(FspReadyCompletion),
     ) -> Result<FspOrderedDrain, OrderedCompletionError> {
-        let owner = self.fsp_owner_key();
-        let generation = OwnerGeneration(self.fsp_crypto_generation());
-        let receive_order_id = self.fsp_receive_order_id();
+        let reservation_source = self.fsp_receive_reservation_source();
         let current = &mut self.current;
         let pending = &mut self.pending;
         let previous = &mut self.previous;
@@ -625,16 +614,8 @@ impl OwnedFspSessionState {
             .fsp_receive_order
             .complete(ticket, completion, |ready_ticket, completion| match completion {
                 FspOrderedCompletion::Opened { opened, source } => {
-                    let reservation = OwnerReservation {
-                        owner,
-                        generation,
-                        order: OrderToken {
-                            receive_order_id,
-                            sequence: OrderSequence(ready_ticket.sequence),
-                        },
-                        lane: opened.job.lane.into(),
-                        packet_count: 1,
-                    };
+                    let reservation = reservation_source
+                        .reservation_for_ticket(ready_ticket, opened.job.lane.into());
                     match Self::accept_opened_established_frame_for_epoch(
                         current,
                         pending,
@@ -672,16 +653,8 @@ impl OwnedFspSessionState {
                     epoch_id,
                     source,
                 } => {
-                    let reservation = OwnerReservation {
-                        owner,
-                        generation,
-                        order: OrderToken {
-                            receive_order_id,
-                            sequence: OrderSequence(ready_ticket.sequence),
-                        },
-                        lane: opened.job.lane.into(),
-                        packet_count: 1,
-                    };
+                    let reservation = reservation_source
+                        .reservation_for_ticket(ready_ticket, opened.job.lane.into());
                     match Self::accept_opened_established_frame_for_epoch(
                         current,
                         pending,
@@ -720,16 +693,8 @@ impl OwnedFspSessionState {
                     source,
                     count_failure,
                 } => {
-                    let reservation = OwnerReservation {
-                        owner,
-                        generation,
-                        order: OrderToken {
-                            receive_order_id,
-                            sequence: OrderSequence(ready_ticket.sequence),
-                        },
-                        lane: job.lane.into(),
-                        packet_count: 1,
-                    };
+                    let reservation =
+                        reservation_source.reservation_for_ticket(ready_ticket, job.lane.into());
                     let mut emit_failure = true;
                     if count_failure {
                         let stale_worker_open_epoch = source.is_worker_open()
@@ -756,16 +721,8 @@ impl OwnedFspSessionState {
                     header,
                     source,
                 } => {
-                    let reservation = OwnerReservation {
-                        owner,
-                        generation,
-                        order: OrderToken {
-                            receive_order_id,
-                            sequence: OrderSequence(ready_ticket.sequence),
-                        },
-                        lane: job.lane.into(),
-                        packet_count: 1,
-                    };
+                    let reservation =
+                        reservation_source.reservation_for_ticket(ready_ticket, job.lane.into());
                     let _ = source;
                     drain.epoch_mismatches += 1;
                     on_output(FspReadyCompletion::AeadFailed {
@@ -793,15 +750,16 @@ impl OwnedFspSessionState {
         on_output: impl FnMut(FspReadyCompletion),
     ) -> Result<FspOrderedDrain, OrderedCompletionError> {
         let reservation = completion.owner_reservation();
-        debug_assert_eq!(reservation.owner, self.fsp_owner_key());
+        let reservation_source = self.fsp_receive_reservation_source();
+        debug_assert_eq!(reservation.owner, reservation_source.owner());
         debug_assert_eq!(
             reservation.order.receive_order_id,
-            self.fsp_receive_order_id()
+            reservation_source.receive_order_id()
         );
         let ticket = fsp_receive_ticket_from_reservation(reservation);
         let source = completion.source;
         let result = if source.is_worker_open()
-            && reservation.generation.0 != self.fsp_crypto_generation()
+            && reservation.generation != reservation_source.generation()
         {
             FspOrderedCompletion::StaleWorkerOpen { source }
         } else {
@@ -1585,6 +1543,14 @@ impl OwnedSessionState {
         self.fmp_receive_order_id
     }
 
+    fn fmp_receive_reservation_source(&self) -> OwnerReceiveReservationSource {
+        OwnerReceiveReservationSource::new(
+            self.fmp_owner_key(),
+            OwnerGeneration(self.fmp_crypto_generation()),
+            self.fmp_receive_order_id(),
+        )
+    }
+
     fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
         let replay_highest = self.fmp_replay.highest();
         if !self.fmp_replay.check(fmp_counter) {
@@ -1606,16 +1572,8 @@ impl OwnedSessionState {
             return Err(FmpOpenError::WindowFull);
         };
         Ok(FmpOpenReservation::new(
-            OwnerReservation {
-                owner: self.fmp_owner_key(),
-                generation: OwnerGeneration(self.fmp_crypto_generation()),
-                order: OrderToken {
-                    receive_order_id: self.fmp_receive_order_id(),
-                    sequence: OrderSequence(ticket.sequence),
-                },
-                lane: lane.into(),
-                packet_count: 1,
-            },
+            self.fmp_receive_reservation_source()
+                .reservation_for_ticket(ticket, lane.into()),
             replay_precheck,
         ))
     }
@@ -1669,15 +1627,13 @@ impl OwnedSessionState {
         mut on_ready: impl FnMut(FmpReadyCompletion),
     ) -> Result<usize, OrderedCompletionError> {
         let reservation = completion.owner_reservation();
-        debug_assert_eq!(reservation.owner, self.fmp_owner_key());
+        let reservation_source = self.fmp_receive_reservation_source();
+        debug_assert_eq!(reservation.owner, reservation_source.owner());
         debug_assert_eq!(
             reservation.order.receive_order_id,
-            self.fmp_receive_order_id()
+            reservation_source.receive_order_id()
         );
-        debug_assert_eq!(
-            reservation.generation,
-            OwnerGeneration(self.fmp_crypto_generation())
-        );
+        debug_assert_eq!(reservation.generation, reservation_source.generation());
         let ticket = fmp_receive_ticket_from_reservation(reservation);
         let replay_precheck = completion.replay_precheck;
         let ordered = match completion.crypto.result {

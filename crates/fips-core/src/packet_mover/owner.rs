@@ -36,6 +36,13 @@ pub(crate) struct OwnerReservationBatch {
     reservation: OwnerReservation,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OwnerReceiveReservationSource {
+    owner: OwnerKey,
+    generation: OwnerGeneration,
+    receive_order_id: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OwnerReserveError {
     WindowFull { owner: OwnerKey, lane: PacketLane },
@@ -70,6 +77,67 @@ pub(crate) struct OwnerReceiveWindow<T> {
 
 pub(crate) trait OwnerSequencer<P, W> {
     fn reserve(&mut self, packet: P) -> Result<W, OwnerReserveError>;
+}
+
+impl OwnerReceiveReservationSource {
+    pub(crate) fn new(owner: OwnerKey, generation: OwnerGeneration, receive_order_id: u64) -> Self {
+        Self {
+            owner,
+            generation,
+            receive_order_id,
+        }
+    }
+
+    pub(crate) fn owner(self) -> OwnerKey {
+        self.owner
+    }
+
+    pub(crate) fn generation(self) -> OwnerGeneration {
+        self.generation
+    }
+
+    pub(crate) fn receive_order_id(self) -> u64 {
+        self.receive_order_id
+    }
+
+    pub(crate) fn reservation_for_ticket(
+        self,
+        ticket: OwnerReceiveTicket,
+        lane: PacketLane,
+    ) -> OwnerReservation {
+        self.reservation_for_sequence(ticket.sequence, lane, 1)
+    }
+
+    pub(crate) fn reservation_for_sequence(
+        self,
+        sequence: u64,
+        lane: PacketLane,
+        packet_count: usize,
+    ) -> OwnerReservation {
+        OwnerReservation {
+            owner: self.owner,
+            generation: self.generation,
+            order: OrderToken {
+                receive_order_id: self.receive_order_id,
+                sequence: OrderSequence(sequence),
+            },
+            lane,
+            packet_count,
+        }
+    }
+
+    pub(crate) fn reservation_batch_for_sequence(
+        self,
+        first_sequence: u64,
+        lane: PacketLane,
+        packet_count: usize,
+    ) -> OwnerReservationBatch {
+        OwnerReservationBatch::new(self.reservation_for_sequence(
+            first_sequence,
+            lane,
+            packet_count,
+        ))
+    }
 }
 
 impl OwnerReservationBatch {
@@ -337,6 +405,31 @@ mod tests {
         assert_eq!(second.order.sequence, OrderSequence(1));
         assert_eq!(second.packet_count, 2);
         assert_eq!(window.in_flight(), 3);
+    }
+
+    #[test]
+    fn owner_receive_reservation_source_issues_single_and_batch_tokens() {
+        let source = OwnerReceiveReservationSource::new(owner(), OwnerGeneration(9), 77);
+        let ticket = OwnerReceiveTicket { sequence: 4 };
+        let single = source.reservation_for_ticket(ticket, PacketLane::Priority);
+
+        assert_eq!(single.owner, owner());
+        assert_eq!(single.generation, OwnerGeneration(9));
+        assert_eq!(single.order.receive_order_id, 77);
+        assert_eq!(single.order.sequence, OrderSequence(4));
+        assert_eq!(single.lane, PacketLane::Priority);
+        assert_eq!(single.packet_count, 1);
+
+        let batch = source.reservation_batch_for_sequence(8, PacketLane::Bulk, 3);
+        assert_eq!(batch.receive_order_id(), 77);
+        assert_eq!(batch.generation(), OwnerGeneration(9));
+        assert_eq!(batch.first_sequence(), 8);
+        assert_eq!(batch.packet_count(), 3);
+
+        let last = batch.reservation_at(2);
+        assert_eq!(last.owner, owner());
+        assert_eq!(last.order.sequence, OrderSequence(10));
+        assert_eq!(last.packet_count, 1);
     }
 
     #[test]

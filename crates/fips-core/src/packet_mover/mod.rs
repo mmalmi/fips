@@ -64,9 +64,9 @@ pub(crate) use output::{
     PacketOutputTarget, RetireOutput, RetiredPacket, VecOutputSink,
 };
 pub(crate) use owner::{
-    OrderSequence, OrderToken, OwnerCompletionError, OwnerGeneration, OwnerKey, OwnerReceiveTicket,
-    OwnerReceiveWindow, OwnerReservation, OwnerReservationBatch, OwnerReserveError, OwnerSequencer,
-    OwnerWindow,
+    OrderSequence, OrderToken, OwnerCompletionError, OwnerGeneration, OwnerKey,
+    OwnerReceiveReservationSource, OwnerReceiveTicket, OwnerReceiveWindow, OwnerReservation,
+    OwnerReservationBatch, OwnerReserveError, OwnerSequencer, OwnerWindow,
 };
 pub(crate) use pipeline::{
     CanonicalOwnerConfig, CanonicalOwnerPacketMover, CanonicalOwnerPacketMoverConfig,
