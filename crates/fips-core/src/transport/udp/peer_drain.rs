@@ -41,7 +41,6 @@ use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
 
 const CONNECTED_UDP_RECV_BUF_SIZE: usize = 1600; // covers any practical FIPS MTU.
-pub(crate) const CONNECTED_UDP_PRIORITY_MAX_LEN: usize = 512;
 const CONNECTED_UDP_DISPATCH_BATCH_LIMIT: usize = super::UDP_RECV_BATCH_SIZE;
 
 struct ConnectedUdpDrainPacket {
@@ -177,8 +176,7 @@ fn drain_loop(
         .collect();
     let mut lens: [usize; BATCH] = [0; BATCH];
     let packet_addr = TransportAddr::from_socket_addr(peer_addr);
-    let mut priority_packets = Vec::with_capacity(BATCH);
-    let mut bulk_packets = Vec::with_capacity(BATCH);
+    let mut ready_packets = Vec::with_capacity(BATCH);
     #[cfg(target_os = "linux")]
     let mut kernel_drop_sampler = ConnectedUdpKernelDropSampler::new(socket_fd);
 
@@ -265,8 +263,7 @@ fn drain_loop(
 
         let timestamp_ms = received_timestamp_ms();
         let trace_enqueued_at = crate::perf_profile::stamp();
-        priority_packets.clear();
-        bulk_packets.clear();
+        ready_packets.clear();
         for i in 0..count {
             let len = lens[i];
             if len == 0 {
@@ -296,16 +293,12 @@ fn drain_loop(
                 timestamp_ms,
                 enqueued_at: trace_enqueued_at,
             };
-            if packet.data.len() <= CONNECTED_UDP_PRIORITY_MAX_LEN {
-                priority_packets.push(packet);
-            } else {
-                bulk_packets.push(packet);
-            }
+            ready_packets.push(packet);
         }
 
-        if (!priority_packets.is_empty() || !bulk_packets.is_empty())
+        if !ready_packets.is_empty()
             && !dispatch_ready_packets(
-                priority_packets.drain(..).chain(bulk_packets.drain(..)),
+                ready_packets.drain(..),
                 transport_id,
                 &packet_addr,
                 &packet_tx,
@@ -646,20 +639,22 @@ mod tests {
         let (tx, mut rx) = packet_channel(32);
         let packet_addr = TransportAddr::from_socket_addr("127.0.0.1:12345".parse().unwrap());
         let priority_len = 8;
-        let bulk_len = CONNECTED_UDP_PRIORITY_MAX_LEN + 1;
-        let mut priority_packets = vec![ConnectedUdpDrainPacket {
-            data: tx.packet_buffer(vec![0x11; priority_len]),
-            timestamp_ms: 1,
-            enqueued_at: None,
-        }];
-        let mut bulk_packets = vec![ConnectedUdpDrainPacket {
-            data: tx.packet_buffer(vec![0x22; bulk_len]),
-            timestamp_ms: 1,
-            enqueued_at: None,
-        }];
+        let bulk_len = 1024;
+        let packets = vec![
+            ConnectedUdpDrainPacket {
+                data: tx.packet_buffer(vec![0x22; bulk_len]),
+                timestamp_ms: 1,
+                enqueued_at: None,
+            },
+            ConnectedUdpDrainPacket {
+                data: tx.packet_buffer(vec![0x11; priority_len]),
+                timestamp_ms: 1,
+                enqueued_at: None,
+            },
+        ];
 
         assert!(dispatch_ready_packets(
-            priority_packets.drain(..).chain(bulk_packets.drain(..)),
+            packets,
             TransportId::new(42),
             &packet_addr,
             &tx,
