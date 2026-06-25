@@ -449,32 +449,23 @@ fn drop_returned_fsp_decrypt_jobs(jobs: Vec<FspDecryptJob>) {
     drop_fsp_owner_handoff_jobs(jobs);
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FspAeadOpenDispatchKey {
-    open_idx: usize,
-    owner_idx: usize,
-}
-
-type FspAeadOpenDispatchBatcher = DispatchBatcher<FspAeadOpenDispatchKey, FspAeadOpenDispatch>;
+type FspAeadOpenDispatchBatcher = WorkerOpenDispatchBatcher<FspAeadOpenDispatch>;
 
 fn new_fsp_aead_open_dispatch_batcher() -> FspAeadOpenDispatchBatcher {
-    DispatchBatcher::new(DECRYPT_WORKER_BULK_BATCH_MAX)
-}
-
-fn fsp_aead_open_dispatch_key(open_idx: usize, owner_idx: usize) -> FspAeadOpenDispatchKey {
-    FspAeadOpenDispatchKey {
-        open_idx,
-        owner_idx,
-    }
+    WorkerOpenDispatchBatcher::new(DECRYPT_WORKER_BULK_BATCH_MAX)
 }
 
 fn dispatch_fsp_aead_open_batch(
     workers: &DecryptWorkerPool,
-    key: FspAeadOpenDispatchKey,
+    key: WorkerOpenDispatchKey,
     jobs: Vec<FspAeadOpenDispatch>,
 ) -> Vec<FspAeadOpenDispatch> {
     workers
-        .dispatch_fsp_aead_open_worker_job_batch_or_return(key.open_idx, key.owner_idx, jobs)
+        .dispatch_fsp_aead_open_worker_job_batch_or_return(
+            key.worker_idx(),
+            key.owner_idx(),
+            jobs,
+        )
         .err()
         .unwrap_or_default()
 }
@@ -486,7 +477,7 @@ fn push_fsp_aead_open_dispatch(
     owner_idx: usize,
     job: FspAeadOpenDispatch,
 ) -> Vec<FspAeadOpenDispatch> {
-    let key = fsp_aead_open_dispatch_key(open_idx, owner_idx);
+    let key = WorkerOpenDispatchKey::new(open_idx, owner_idx);
     let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
     batcher.push(key, batch_max, job, |key, jobs| {
         dispatch_fsp_aead_open_batch(workers, key, jobs)
@@ -500,7 +491,7 @@ fn push_fsp_aead_open_dispatch_batch(
     owner_idx: usize,
     jobs: Vec<FspAeadOpenDispatch>,
 ) -> Vec<FspAeadOpenDispatch> {
-    let key = fsp_aead_open_dispatch_key(open_idx, owner_idx);
+    let key = WorkerOpenDispatchKey::new(open_idx, owner_idx);
     let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
     batcher.push_batch(key, batch_max, jobs, |key, jobs| {
         dispatch_fsp_aead_open_batch(workers, key, jobs)

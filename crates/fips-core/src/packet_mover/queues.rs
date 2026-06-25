@@ -998,6 +998,78 @@ impl<K: Copy + Eq, T> WorkerBulkHandoffBatcher<K, T> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WorkerOpenDispatchKey {
+    worker_idx: usize,
+    owner_idx: usize,
+}
+
+impl WorkerOpenDispatchKey {
+    pub(crate) fn new(worker_idx: usize, owner_idx: usize) -> Self {
+        Self {
+            worker_idx,
+            owner_idx,
+        }
+    }
+
+    pub(crate) fn worker_idx(self) -> usize {
+        self.worker_idx
+    }
+
+    pub(crate) fn owner_idx(self) -> usize {
+        self.owner_idx
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct WorkerOpenDispatchBatcher<T> {
+    batcher: DispatchBatcher<WorkerOpenDispatchKey, T>,
+}
+
+impl<T> WorkerOpenDispatchBatcher<T> {
+    pub(crate) fn new(buffer_capacity: usize) -> Self {
+        Self {
+            batcher: DispatchBatcher::new(buffer_capacity),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.batcher.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_buffer_ptr(&self) -> *const T {
+        self.batcher.pending_buffer_ptr()
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        key: WorkerOpenDispatchKey,
+        batch_max: usize,
+        item: T,
+        dispatch: impl FnMut(WorkerOpenDispatchKey, Vec<T>) -> Vec<T>,
+    ) -> Vec<T> {
+        self.batcher.push(key, batch_max, item, dispatch)
+    }
+
+    pub(crate) fn push_batch(
+        &mut self,
+        key: WorkerOpenDispatchKey,
+        batch_max: usize,
+        items: Vec<T>,
+        dispatch: impl FnMut(WorkerOpenDispatchKey, Vec<T>) -> Vec<T>,
+    ) -> Vec<T> {
+        self.batcher.push_batch(key, batch_max, items, dispatch)
+    }
+
+    pub(crate) fn flush(
+        &mut self,
+        dispatch: impl FnMut(WorkerOpenDispatchKey, Vec<T>) -> Vec<T>,
+    ) -> Vec<T> {
+        self.batcher.flush(dispatch)
+    }
+}
+
 pub(crate) struct PriorityBulkDrainCursor<T> {
     first_priority: Option<T>,
     first_bulk: Option<T>,
@@ -2272,6 +2344,109 @@ mod tests {
 
         assert_eq!(singles, vec![(1, "a")]);
         assert_eq!(batcher.pending_buffer_ptr(), pending_buffer);
+    }
+
+    #[test]
+    fn worker_open_dispatch_batcher_returns_rejected_open_work() {
+        let mut batcher = WorkerOpenDispatchBatcher::new(4);
+        let key = WorkerOpenDispatchKey::new(2, 7);
+
+        assert!(
+            batcher
+                .push(key, 8, "open-a", |_key, _items| Vec::new())
+                .is_empty()
+        );
+
+        let returned = batcher.flush(|key, items| {
+            assert_eq!(key.worker_idx(), 2);
+            assert_eq!(key.owner_idx(), 7);
+            assert_eq!(items, vec!["open-a"]);
+            vec!["returned-open"]
+        });
+
+        assert_eq!(returned, vec!["returned-open"]);
+        assert!(batcher.is_empty());
+    }
+
+    #[test]
+    fn worker_open_dispatch_batcher_flushes_before_worker_or_owner_change() {
+        let mut batcher = WorkerOpenDispatchBatcher::new(4);
+        let mut dispatched = Vec::new();
+
+        assert!(
+            batcher
+                .push(
+                    WorkerOpenDispatchKey::new(2, 7),
+                    8,
+                    "first",
+                    |_key, _items| Vec::new()
+                )
+                .is_empty()
+        );
+        let returned = batcher.push(
+            WorkerOpenDispatchKey::new(2, 8),
+            8,
+            "second",
+            |key, items| {
+                dispatched.push((key.worker_idx(), key.owner_idx(), items));
+                vec!["returned-first"]
+            },
+        );
+
+        assert_eq!(dispatched, vec![(2, 7, vec!["first"])]);
+        assert_eq!(returned, vec!["returned-first"]);
+
+        assert!(
+            batcher
+                .push(
+                    WorkerOpenDispatchKey::new(3, 8),
+                    8,
+                    "third",
+                    |key, items| {
+                        dispatched.push((key.worker_idx(), key.owner_idx(), items));
+                        Vec::new()
+                    }
+                )
+                .is_empty()
+        );
+
+        assert_eq!(
+            dispatched,
+            vec![(2, 7, vec!["first"]), (2, 8, vec!["second"])]
+        );
+    }
+
+    #[test]
+    fn worker_open_dispatch_batcher_adopts_first_partial_batch_vec_without_copy() {
+        let mut batcher = WorkerOpenDispatchBatcher::new(4);
+        let mut items = Vec::with_capacity(3);
+        items.push("open-a");
+        items.push("open-b");
+        let items_ptr = items.as_ptr();
+
+        assert!(
+            batcher
+                .push_batch(
+                    WorkerOpenDispatchKey::new(4, 9),
+                    4,
+                    items,
+                    |_key, _items| Vec::new()
+                )
+                .is_empty()
+        );
+
+        assert_eq!(batcher.pending_buffer_ptr(), items_ptr);
+
+        let mut dispatched = Vec::new();
+        assert!(
+            batcher
+                .flush(|key, items| {
+                    dispatched.push((key.worker_idx(), key.owner_idx(), items));
+                    Vec::new()
+                })
+                .is_empty()
+        );
+        assert_eq!(dispatched, vec![(4, 9, vec!["open-a", "open-b"])]);
     }
 
     #[tokio::test]
