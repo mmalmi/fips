@@ -359,37 +359,29 @@ impl EncryptWorkerPool {
             return Err(jobs);
         };
 
+        if jobs
+            .iter()
+            .any(|job| !selected_targets.contains(job.send_target_key()))
+        {
+            crate::perf_profile::record_linux_wg_batch_admission_fallback(packet_count);
+            return Err(jobs);
+        }
+
         let mut dispatched_wg_run = false;
-        let mut fallback_jobs = Vec::new();
         let mut run = Vec::new();
         let mut run_target = None;
         for job in jobs {
             let target_key = job.send_target_key();
-            if selected_targets.contains(target_key) {
-                if run_target.is_some_and(|current| current != target_key) {
-                    self.dispatch_pending_linux_wg_bulk_run(&mut run, &mut dispatched_wg_run);
-                }
-                run_target = Some(target_key);
-                run.push(job);
-            } else {
+            if run_target.is_some_and(|current| current != target_key) {
                 self.dispatch_pending_linux_wg_bulk_run(&mut run, &mut dispatched_wg_run);
-                run_target = None;
-                fallback_jobs.push(job);
             }
+            run_target = Some(target_key);
+            run.push(job);
         }
         self.dispatch_pending_linux_wg_bulk_run(&mut run, &mut dispatched_wg_run);
 
-        if dispatched_wg_run {
-            if fallback_jobs.is_empty() {
-                Ok(())
-            } else {
-                crate::perf_profile::record_linux_wg_batch_admission_fallback(fallback_jobs.len());
-                Err(fallback_jobs)
-            }
-        } else {
-            crate::perf_profile::record_linux_wg_batch_admission_no_target(fallback_jobs.len());
-            Err(fallback_jobs)
-        }
+        debug_assert!(dispatched_wg_run);
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
@@ -415,44 +407,35 @@ impl EncryptWorkerPool {
             return Err(jobs);
         };
 
+        if jobs
+            .iter()
+            .any(|job| !selected_targets.contains(job.send_target_key()))
+        {
+            crate::perf_profile::record_linux_wg_batch_admission_fallback(packet_count);
+            return Err(jobs);
+        }
+
         let mut dispatched_wg_run = false;
-        let mut fallback_jobs = Vec::new();
         let mut run = Vec::new();
         let mut run_target = None;
         let mut all_enqueued = true;
 
         for job in jobs {
             let target_key = job.send_target_key();
-            if selected_targets.contains(target_key) {
-                if run_target.is_some_and(|current| current != target_key) {
-                    all_enqueued &= self.dispatch_pending_linux_wg_bulk_run_blocking(
-                        &mut run,
-                        &mut dispatched_wg_run,
-                    );
-                }
-                run_target = Some(target_key);
-                run.push(job);
-            } else {
-                all_enqueued &= self
-                    .dispatch_pending_linux_wg_bulk_run_blocking(&mut run, &mut dispatched_wg_run);
-                run_target = None;
-                fallback_jobs.push(job);
+            if run_target.is_some_and(|current| current != target_key) {
+                all_enqueued &= self.dispatch_pending_linux_wg_bulk_run_blocking(
+                    &mut run,
+                    &mut dispatched_wg_run,
+                );
             }
+            run_target = Some(target_key);
+            run.push(job);
         }
         all_enqueued &=
             self.dispatch_pending_linux_wg_bulk_run_blocking(&mut run, &mut dispatched_wg_run);
 
-        if dispatched_wg_run {
-            if fallback_jobs.is_empty() {
-                Ok(all_enqueued)
-            } else {
-                crate::perf_profile::record_linux_wg_batch_admission_fallback(fallback_jobs.len());
-                Err(fallback_jobs)
-            }
-        } else {
-            crate::perf_profile::record_linux_wg_batch_admission_no_target(fallback_jobs.len());
-            Err(fallback_jobs)
-        }
+        debug_assert!(dispatched_wg_run);
+        Ok(all_enqueued)
     }
 
     #[cfg(target_os = "linux")]

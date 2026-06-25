@@ -252,7 +252,29 @@ mod tests {
     }
 
     #[test]
-    fn linux_wg_bulk_batch_dispatch_keeps_enough_target_runs_on_wg_lane() {
+    fn linux_wg_bulk_batch_dispatch_accepts_whole_single_target_batch() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let pool = EncryptWorkerPool::spawn(1);
+            let cipher = test_cipher();
+            let (target, _key) = test_send_target().await;
+            let min_packets = LINUX_WG_BATCH_MIN_PACKETS;
+            let jobs: Vec<_> = (0..min_packets)
+                .map(|counter| linux_wg_test_job(target.clone(), &cipher, counter as u64, true))
+                .collect();
+
+            assert!(
+                pool.dispatch_linux_wg_bulk_batch_unmeasured(jobs).is_ok(),
+                "whole same-target bulk batch should use WG batch lane"
+            );
+        });
+    }
+
+    #[test]
+    fn linux_wg_bulk_batch_dispatch_rejects_partial_target_mix_as_whole_batch() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .build()
@@ -292,9 +314,9 @@ mod tests {
 
             let returned = pool
                 .dispatch_linux_wg_bulk_batch_unmeasured(jobs)
-                .expect_err("underfilled target B should stay on fallback dispatch");
-            assert_eq!(returned.len(), 1);
-            assert_eq!(returned[0].send_target_key(), key_b);
+                .expect_err("underfilled target B should keep the whole batch on one path");
+            assert_eq!(returned.len(), min_packets + 1);
+            assert_eq!(returned[first_a_run].send_target_key(), key_b);
         });
     }
 
