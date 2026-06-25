@@ -198,33 +198,66 @@ fn record_fsp_ordered_drain(drain: &FspOrderedDrain) {
     drain.replay_drop_sources.record();
 }
 
+enum FspOpenWorkerJobs {
+    One(FspDecryptJob),
+    Batch(Vec<FspDecryptJob>),
+}
+
+enum FspOpenWorkerDispatches {
+    One(FspAeadOpenDispatch),
+    Batch(Vec<FspAeadOpenDispatch>),
+}
+
 struct FspOpenWorkerPrepareError {
-    job: FspDecryptJob,
+    jobs: FspOpenWorkerJobs,
     reason: FspOpenWorkerIneligibleReason,
 }
 
+impl FspOpenWorkerJobs {
+    fn source_addr(&self) -> Option<NodeAddr> {
+        match self {
+            Self::One(job) => Some(job.source_addr),
+            Self::Batch(jobs) => jobs.first().map(|job| job.source_addr),
+        }
+    }
+
+    fn all_bulk_from(&self, source_addr: NodeAddr) -> bool {
+        match self {
+            Self::One(job) => {
+                job.source_addr == source_addr && matches!(job.lane(), DecryptWorkerLane::Bulk)
+            }
+            Self::Batch(jobs) => jobs.iter().all(|job| {
+                job.source_addr == source_addr && matches!(job.lane(), DecryptWorkerLane::Bulk)
+            }),
+        }
+    }
+
+    fn into_one(self) -> FspDecryptJob {
+        match self {
+            Self::One(job) => job,
+            Self::Batch(_) => panic!("expected one FSP opener job"),
+        }
+    }
+
+    fn into_vec(self) -> Vec<FspDecryptJob> {
+        match self {
+            Self::One(job) => vec![job],
+            Self::Batch(jobs) => jobs,
+        }
+    }
+}
+
 impl FspOpenWorkerPrepareError {
-    fn ineligible(job: FspDecryptJob, reason: FspOpenWorkerIneligibleReason) -> Self {
-        Self { job, reason }
+    fn ineligible(jobs: FspOpenWorkerJobs, reason: FspOpenWorkerIneligibleReason) -> Self {
+        Self { jobs, reason }
     }
 
     fn into_job(self) -> FspDecryptJob {
-        self.job
-    }
-}
-
-enum FspOpenWorkerBatchPrepareError {
-    RetryIndividually(Vec<FspDecryptJob>),
-    WindowFull(Vec<FspDecryptJob>),
-}
-
-impl FspOpenWorkerBatchPrepareError {
-    fn retry(jobs: Vec<FspDecryptJob>) -> Self {
-        Self::RetryIndividually(jobs)
+        self.jobs.into_one()
     }
 
-    fn window_full(jobs: Vec<FspDecryptJob>) -> Self {
-        Self::WindowFull(jobs)
+    fn into_jobs(self) -> Vec<FspDecryptJob> {
+        self.jobs.into_vec()
     }
 }
 
@@ -232,6 +265,23 @@ struct FspBulkOpenWorkerTarget<'a> {
     owner_idx: usize,
     open_idx: usize,
     state: &'a mut OwnedFspSessionState,
+}
+
+fn push_fsp_aead_open_dispatches(
+    batcher: &mut FspAeadOpenDispatchBatcher,
+    workers: &DecryptWorkerPool,
+    open_idx: usize,
+    owner_idx: usize,
+    jobs: FspOpenWorkerDispatches,
+) -> Vec<FspAeadOpenDispatch> {
+    match jobs {
+        FspOpenWorkerDispatches::One(job) => {
+            push_fsp_aead_open_dispatch(batcher, workers, open_idx, owner_idx, job)
+        }
+        FspOpenWorkerDispatches::Batch(jobs) => {
+            push_fsp_aead_open_dispatch_batch(batcher, workers, open_idx, owner_idx, jobs)
+        }
+    }
 }
 
 struct DecryptWorkerShard {
@@ -306,7 +356,15 @@ impl DecryptWorkerShard {
         fsp_open_batcher: &mut FspAeadOpenDispatchBatcher,
     ) {
         let count = jobs.len();
-        match self.try_prepare_fsp_bulk_open_worker_job_batch(idx, jobs) {
+        let owner_idx = jobs
+            .first()
+            .map(|job| self.pool.worker_idx_for_fsp(&job.source_addr))
+            .unwrap_or(idx);
+        match self.try_prepare_fsp_bulk_open_worker_jobs(
+            idx,
+            owner_idx,
+            FspOpenWorkerJobs::Batch(jobs),
+        ) {
             Ok((open_idx, owner_idx, open_jobs)) => {
                 if trace_enabled {
                     for _ in 0..count {
@@ -315,7 +373,7 @@ impl DecryptWorkerShard {
                 }
                 record_fsp_owner_match_count(true, count);
                 record_fsp_path_worker_open_bulk_count(count);
-                let returned = push_fsp_aead_open_dispatch_batch(
+                let returned = push_fsp_aead_open_dispatches(
                     fsp_open_batcher,
                     &self.pool,
                     open_idx,
@@ -331,7 +389,8 @@ impl DecryptWorkerShard {
                     "processed batched bulk FSP decrypt worker jobs"
                 );
             }
-            Err(FspOpenWorkerBatchPrepareError::WindowFull(jobs)) => {
+            Err(error) if matches!(error.reason, FspOpenWorkerIneligibleReason::WindowFull) => {
+                let jobs = error.into_jobs();
                 if trace_enabled {
                     for _ in 0..count {
                         record_fsp_worker_bulk_input_tail_wait(item_started_at);
@@ -344,8 +403,8 @@ impl DecryptWorkerShard {
                     "dropped batched bulk FSP decrypt worker jobs at owner receive window pressure"
                 );
             }
-            Err(FspOpenWorkerBatchPrepareError::RetryIndividually(jobs)) => {
-                for job in jobs {
+            Err(error) => {
+                for job in error.into_jobs() {
                     if trace_enabled {
                         record_fsp_worker_bulk_input_tail_wait(item_started_at);
                     }
@@ -453,15 +512,19 @@ impl DecryptWorkerShard {
             DecryptWorkerJobAction::FspJob(job) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
                 record_fsp_owner_match(owner_idx == idx);
-                let job = match self.try_prepare_fsp_bulk_open_worker_job(idx, owner_idx, job) {
-                    Ok((open_idx, owner_idx, open_job)) => {
+                let job = match self.try_prepare_fsp_bulk_open_worker_jobs(
+                    idx,
+                    owner_idx,
+                    FspOpenWorkerJobs::One(job),
+                ) {
+                    Ok((open_idx, owner_idx, open_jobs)) => {
                         record_fsp_path_worker_open_bulk();
-                        let returned = push_fsp_aead_open_dispatch(
+                        let returned = push_fsp_aead_open_dispatches(
                             fsp_open_batcher,
                             &self.pool,
                             open_idx,
                             owner_idx,
-                            open_job,
+                            open_jobs,
                         );
                         if !returned.is_empty() {
                             self.drop_returned_fsp_aead_open_jobs(
@@ -674,115 +737,125 @@ impl DecryptWorkerShard {
     }
 
     #[allow(clippy::result_large_err)]
-    fn try_prepare_fsp_bulk_open_worker_job(
+    fn try_prepare_fsp_bulk_open_worker_jobs(
         &mut self,
         idx: usize,
         owner_idx: usize,
-        job: FspDecryptJob,
-    ) -> Result<(usize, usize, FspAeadOpenDispatch), FspOpenWorkerPrepareError> {
-        if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
+        jobs: FspOpenWorkerJobs,
+    ) -> Result<(usize, usize, FspOpenWorkerDispatches), FspOpenWorkerPrepareError> {
+        if matches!(&jobs, FspOpenWorkerJobs::Batch(batch) if batch.len() < 2) {
             return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
+                jobs,
+                FspOpenWorkerIneligibleReason::NotBulk,
+            ));
+        }
+        let Some(source_addr) = jobs.source_addr() else {
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                jobs,
+                FspOpenWorkerIneligibleReason::NotBulk,
+            ));
+        };
+        if !jobs.all_bulk_from(source_addr) {
+            return Err(FspOpenWorkerPrepareError::ineligible(
+                jobs,
                 FspOpenWorkerIneligibleReason::NotBulk,
             ));
         }
 
-        let source_addr = job.source_addr;
         let target = match self.try_fsp_bulk_open_worker_target(idx, owner_idx, &source_addr) {
             Ok(target) => target,
-            Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(job, reason)),
+            Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(jobs, reason)),
         };
         let current_k_bit = target.state.current_k_bit;
-        let header = match Self::current_fsp_bulk_open_header(&job, current_k_bit) {
-            Ok(header) => header,
-            Err(reason) => return Err(FspOpenWorkerPrepareError::ineligible(job, reason)),
-        };
-        let Some(reservation) = target.state.reserve_worker_fsp_open() else {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
-                1,
-            );
-            return Err(FspOpenWorkerPrepareError::ineligible(
-                job,
-                FspOpenWorkerIneligibleReason::WindowFull,
-            ));
-        };
-        let open_job = new_fsp_aead_open_dispatch(
-            reservation.crypto_ticket(),
-            Arc::clone(&target.state.current.cipher),
-            job,
-            header,
-            target.state.current.epoch_id,
-            FspAeadCompletionSource::WorkerOpen,
-            None,
-            None,
-        );
-        Ok((target.open_idx, target.owner_idx, open_job))
-    }
-
-    fn try_prepare_fsp_bulk_open_worker_job_batch(
-        &mut self,
-        idx: usize,
-        jobs: Vec<FspDecryptJob>,
-    ) -> Result<
-        (usize, usize, Vec<FspAeadOpenDispatch>),
-        FspOpenWorkerBatchPrepareError,
-    > {
-        if jobs.len() < 2 {
-            return Err(FspOpenWorkerBatchPrepareError::retry(jobs));
-        }
-        let source_addr = jobs[0].source_addr;
-        if !jobs
-            .iter()
-            .all(|job| job.source_addr == source_addr && matches!(job.lane(), DecryptWorkerLane::Bulk))
-        {
-            return Err(FspOpenWorkerBatchPrepareError::retry(jobs));
-        }
-
-        let owner_idx = self.pool.worker_idx_for_fsp(&source_addr);
-        let target = match self.try_fsp_bulk_open_worker_target(idx, owner_idx, &source_addr) {
-            Ok(target) => target,
-            Err(_) => return Err(FspOpenWorkerBatchPrepareError::retry(jobs)),
-        };
-
-        let current_k_bit = target.state.current_k_bit;
-        let mut headers = Vec::with_capacity(jobs.len());
-        for job in &jobs {
-            match Self::current_fsp_bulk_open_header(job, current_k_bit) {
-                Ok(header) => headers.push(header),
-                Err(_) => return Err(FspOpenWorkerBatchPrepareError::retry(jobs)),
-            }
-        }
-
-        let Some(reservation) = target.state.reserve_worker_fsp_open_batch(headers.len())
-        else {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
-                headers.len() as u64,
-            );
-            return Err(FspOpenWorkerBatchPrepareError::window_full(jobs));
-        };
-        let cipher = Arc::clone(&target.state.current.cipher);
-        let epoch_id = target.state.current.epoch_id;
-        let open_jobs = jobs
-            .into_iter()
-            .zip(headers)
-            .enumerate()
-            .map(|(offset, (job, header))| {
-                new_fsp_aead_open_dispatch(
-                    reservation.crypto_ticket_at(offset),
-                    Arc::clone(&cipher),
+        match jobs {
+            FspOpenWorkerJobs::One(job) => {
+                let header = match Self::current_fsp_bulk_open_header(&job, current_k_bit) {
+                    Ok(header) => header,
+                    Err(reason) => {
+                        return Err(FspOpenWorkerPrepareError::ineligible(
+                            FspOpenWorkerJobs::One(job),
+                            reason,
+                        ));
+                    }
+                };
+                let Some(reservation) = target.state.reserve_worker_fsp_open() else {
+                    crate::perf_profile::record_event_count(
+                        crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
+                        1,
+                    );
+                    return Err(FspOpenWorkerPrepareError::ineligible(
+                        FspOpenWorkerJobs::One(job),
+                        FspOpenWorkerIneligibleReason::WindowFull,
+                    ));
+                };
+                let open_job = new_fsp_aead_open_dispatch(
+                    reservation.crypto_ticket(),
+                    Arc::clone(&target.state.current.cipher),
                     job,
                     header,
-                    epoch_id,
+                    target.state.current.epoch_id,
                     FspAeadCompletionSource::WorkerOpen,
                     None,
                     None,
-                )
-            })
-            .collect();
+                );
+                Ok((
+                    target.open_idx,
+                    target.owner_idx,
+                    FspOpenWorkerDispatches::One(open_job),
+                ))
+            }
+            FspOpenWorkerJobs::Batch(jobs) => {
+                let mut headers = Vec::with_capacity(jobs.len());
+                for job in &jobs {
+                    match Self::current_fsp_bulk_open_header(job, current_k_bit) {
+                        Ok(header) => headers.push(header),
+                        Err(reason) => {
+                            return Err(FspOpenWorkerPrepareError::ineligible(
+                                FspOpenWorkerJobs::Batch(jobs),
+                                reason,
+                            ));
+                        }
+                    }
+                }
 
-        Ok((target.open_idx, target.owner_idx, open_jobs))
+                let Some(reservation) = target.state.reserve_worker_fsp_open_batch(headers.len())
+                else {
+                    crate::perf_profile::record_event_count(
+                        crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
+                        headers.len() as u64,
+                    );
+                    return Err(FspOpenWorkerPrepareError::ineligible(
+                        FspOpenWorkerJobs::Batch(jobs),
+                        FspOpenWorkerIneligibleReason::WindowFull,
+                    ));
+                };
+                let cipher = Arc::clone(&target.state.current.cipher);
+                let epoch_id = target.state.current.epoch_id;
+                let open_jobs = jobs
+                    .into_iter()
+                    .zip(headers)
+                    .enumerate()
+                    .map(|(offset, (job, header))| {
+                        new_fsp_aead_open_dispatch(
+                            reservation.crypto_ticket_at(offset),
+                            Arc::clone(&cipher),
+                            job,
+                            header,
+                            epoch_id,
+                            FspAeadCompletionSource::WorkerOpen,
+                            None,
+                            None,
+                        )
+                    })
+                    .collect();
+
+                Ok((
+                    target.open_idx,
+                    target.owner_idx,
+                    FspOpenWorkerDispatches::Batch(open_jobs),
+                ))
+            }
+        }
     }
 
     fn drop_returned_fsp_aead_open_jobs<I>(

@@ -1103,7 +1103,11 @@
         let mut job = dummy_bulk_fsp_open_job(source_addr);
         job.fallback.packet_data[2..4].copy_from_slice(&1u16.to_le_bytes());
 
-        let error = match shard.try_prepare_fsp_bulk_open_worker_job(owner_idx, owner_idx, job) {
+        let error = match shard.try_prepare_fsp_bulk_open_worker_jobs(
+            owner_idx,
+            owner_idx,
+            FspOpenWorkerJobs::One(job),
+        ) {
             Ok(_) => panic!("length-inconsistent FSP frame must not enter opener path"),
             Err(error) => error,
         };
@@ -1149,9 +1153,13 @@
 
         assert!(
             shard
-                .try_prepare_fsp_bulk_open_worker_job_batch(
+                .try_prepare_fsp_bulk_open_worker_jobs(
                     owner_idx,
-                    vec![dummy_bulk_fsp_open_job(source_addr), malformed],
+                    owner_idx,
+                    FspOpenWorkerJobs::Batch(vec![
+                        dummy_bulk_fsp_open_job(source_addr),
+                        malformed,
+                    ]),
                 )
                 .is_err(),
             "length-inconsistent FSP batch must not enter opener path"
