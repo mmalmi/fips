@@ -15,7 +15,8 @@ use crate::packet_mover::{
     CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
     DispatchBatcher, LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch,
     OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation, OutputTarget, PacketLane,
-    PacketOutputTarget, StatelessCryptoWorker,
+    PacketOutputTarget, PriorityBulkLaneDropReason, PriorityBulkLaneSendResult,
+    PriorityBulkLaneSender, StatelessCryptoWorker, priority_bulk_lane_channels,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};
@@ -26,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc::{
-    Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
+    Receiver as TokioReceiver, Sender as TokioSender,
 };
 use tracing::{debug, trace, warn};
 

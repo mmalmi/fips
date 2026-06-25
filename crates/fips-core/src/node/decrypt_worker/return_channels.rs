@@ -1,8 +1,6 @@
 #[derive(Clone)]
 pub(crate) struct DecryptWorkerReturnSender {
-    priority: TokioSender<DecryptWorkerEvent>,
-    authenticated_bulk: TokioSender<DecryptWorkerEvent>,
-    authenticated_bulk_credits: LaneCreditGate,
+    lanes: PriorityBulkLaneSender<DecryptWorkerEvent>,
 }
 
 pub(crate) struct DecryptWorkerReturnReceivers {
@@ -23,16 +21,10 @@ fn decrypt_worker_return_channels_with_caps(
     priority_cap: usize,
     bulk_cap: usize,
 ) -> (DecryptWorkerReturnSender, DecryptWorkerReturnReceivers) {
-    let (priority_tx, priority_rx) = tokio::sync::mpsc::channel(priority_cap.max(1));
-    let (authenticated_bulk_tx, authenticated_bulk_rx) =
-        tokio::sync::mpsc::channel(bulk_cap.max(1));
-    let authenticated_bulk_credits = LaneCreditGate::new(PacketLane::Bulk, bulk_cap);
+    let (lanes, receivers) = priority_bulk_lane_channels(priority_cap, bulk_cap);
+    let (priority_rx, authenticated_bulk_rx, authenticated_bulk_credits) = receivers.into_parts();
     (
-        DecryptWorkerReturnSender {
-            priority: priority_tx,
-            authenticated_bulk: authenticated_bulk_tx,
-            authenticated_bulk_credits: authenticated_bulk_credits.clone(),
-        },
+        DecryptWorkerReturnSender { lanes },
         DecryptWorkerReturnReceivers {
             priority: priority_rx,
             authenticated_bulk: authenticated_bulk_rx,
@@ -47,46 +39,36 @@ impl DecryptWorkerReturnSender {
         self.send(event)
     }
 
+    fn authenticated_bulk_capacity(&self) -> usize {
+        self.lanes.bulk_capacity()
+    }
+
     fn send(&self, mut event: DecryptWorkerEvent) -> bool {
         let lane = decrypt_worker_event_lane(&event);
+        let packet_lane = decrypt_worker_return_packet_lane(lane);
         let packet_count = event.packet_count();
         let drop_event = decrypt_worker_event_drop_event(&event, lane);
+        let backlog_high_event = decrypt_worker_event_backlog_high_event(&event);
         event.set_trace_enqueued_at(crate::perf_profile::stamp());
-        let mut bulk_reservation = None;
-        if matches!(lane, DecryptWorkerLane::Bulk) {
-            let Ok((reservation, previous)) = self
-                .authenticated_bulk_credits
-                .reserve_with_previous(packet_count, 0)
-            else {
-                record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
-                return false;
-            };
-            bulk_reservation = Some(reservation);
-            let queued = previous.saturating_add(packet_count);
-            if previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
-                && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
-            {
-                crate::perf_profile::record_event(decrypt_worker_event_backlog_high_event(&event));
+        match self.lanes.try_send(event, packet_lane, packet_count, 0) {
+            PriorityBulkLaneSendResult::Sent {
+                previous_bulk_queued: Some(previous),
+                ..
+            } => {
+                let queued = previous.saturating_add(packet_count);
+                if previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
+                    && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
+                {
+                    crate::perf_profile::record_event(backlog_high_event);
+                }
+                true
             }
-        }
-        let result = match lane {
-            DecryptWorkerLane::Priority => self.priority.try_send(event),
-            DecryptWorkerLane::Bulk => self.authenticated_bulk.try_send(event),
-        };
-        match result {
-            Ok(()) => true,
-            Err(TokioTrySendError::Full(_)) => {
-                if let Some(reservation) = bulk_reservation {
-                    self.authenticated_bulk_credits.release(reservation);
+            PriorityBulkLaneSendResult::Sent { .. } => true,
+            PriorityBulkLaneSendResult::Dropped(drop) => {
+                if matches!(drop.reason, PriorityBulkLaneDropReason::ReceiverClosed) {
+                    debug!(?lane, "decrypt return receiver gone; dropping worker event");
                 }
                 record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
-                false
-            }
-            Err(TokioTrySendError::Closed(_)) => {
-                if let Some(reservation) = bulk_reservation {
-                    self.authenticated_bulk_credits.release(reservation);
-                }
-                debug!(?lane, "decrypt return receiver gone; dropping worker event");
                 false
             }
         }
@@ -114,6 +96,13 @@ impl DecryptWorkerReturnReceivers {
     #[cfg(test)]
     pub(crate) fn authenticated_bulk_queued_packets(&self) -> usize {
         self.authenticated_bulk_credits.queued_packets()
+    }
+}
+
+fn decrypt_worker_return_packet_lane(lane: DecryptWorkerLane) -> PacketLane {
+    match lane {
+        DecryptWorkerLane::Priority => PacketLane::Priority,
+        DecryptWorkerLane::Bulk => PacketLane::Bulk,
     }
 }
 

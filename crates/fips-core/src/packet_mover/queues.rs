@@ -5,7 +5,9 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering::Relaxed},
 };
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{
+    Receiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct QueueCaps {
@@ -178,6 +180,147 @@ pub(crate) struct BoundedLaneQueues<T> {
     bulk: VecDeque<QueuedPacket<T>>,
 }
 
+pub(crate) struct PriorityBulkLaneSender<T> {
+    priority: TokioSender<T>,
+    bulk: TokioSender<T>,
+    bulk_credits: LaneCreditGate,
+}
+
+impl<T> Clone for PriorityBulkLaneSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            priority: self.priority.clone(),
+            bulk: self.bulk.clone(),
+            bulk_credits: self.bulk_credits.clone(),
+        }
+    }
+}
+
+pub(crate) struct PriorityBulkLaneReceivers<T> {
+    priority: Receiver<T>,
+    bulk: Receiver<T>,
+    bulk_credits: LaneCreditGate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PriorityBulkLaneDropReason {
+    CreditPressure,
+    ChannelFull,
+    ReceiverClosed,
+}
+
+#[derive(Debug)]
+pub(crate) struct PriorityBulkLaneDrop<T> {
+    pub(crate) item: T,
+    pub(crate) drop: AdmissionDrop,
+    pub(crate) reason: PriorityBulkLaneDropReason,
+}
+
+#[derive(Debug)]
+pub(crate) enum PriorityBulkLaneSendResult<T> {
+    Sent { previous_bulk_queued: Option<usize> },
+    Dropped(PriorityBulkLaneDrop<T>),
+}
+
+pub(crate) fn priority_bulk_lane_channels<T>(
+    priority_cap: usize,
+    bulk_cap: usize,
+) -> (PriorityBulkLaneSender<T>, PriorityBulkLaneReceivers<T>) {
+    let (priority_tx, priority_rx) = tokio::sync::mpsc::channel(priority_cap.max(1));
+    let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(bulk_cap.max(1));
+    let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, bulk_cap);
+    (
+        PriorityBulkLaneSender {
+            priority: priority_tx,
+            bulk: bulk_tx,
+            bulk_credits: bulk_credits.clone(),
+        },
+        PriorityBulkLaneReceivers {
+            priority: priority_rx,
+            bulk: bulk_rx,
+            bulk_credits,
+        },
+    )
+}
+
+impl<T> PriorityBulkLaneSender<T> {
+    pub(crate) fn try_send(
+        &self,
+        item: T,
+        lane: PacketLane,
+        packet_count: usize,
+        byte_count: usize,
+    ) -> PriorityBulkLaneSendResult<T> {
+        let mut bulk_reservation = None;
+        let mut previous_bulk_queued = None;
+
+        if matches!(lane, PacketLane::Bulk) {
+            match self
+                .bulk_credits
+                .reserve_with_previous(packet_count, byte_count)
+            {
+                Ok((reservation, previous)) => {
+                    bulk_reservation = Some(reservation);
+                    previous_bulk_queued = Some(previous);
+                }
+                Err(drop) => {
+                    return PriorityBulkLaneSendResult::Dropped(PriorityBulkLaneDrop {
+                        item,
+                        drop,
+                        reason: PriorityBulkLaneDropReason::CreditPressure,
+                    });
+                }
+            }
+        }
+
+        let result = match lane {
+            PacketLane::Priority => self.priority.try_send(item),
+            PacketLane::Bulk => self.bulk.try_send(item),
+        };
+
+        match result {
+            Ok(()) => PriorityBulkLaneSendResult::Sent {
+                previous_bulk_queued,
+            },
+            Err(TokioTrySendError::Full(item)) => {
+                if let Some(reservation) = bulk_reservation {
+                    self.bulk_credits.release(reservation);
+                }
+                PriorityBulkLaneSendResult::Dropped(PriorityBulkLaneDrop {
+                    item,
+                    drop: AdmissionDrop::pressure(lane, packet_count, byte_count),
+                    reason: PriorityBulkLaneDropReason::ChannelFull,
+                })
+            }
+            Err(TokioTrySendError::Closed(item)) => {
+                if let Some(reservation) = bulk_reservation {
+                    self.bulk_credits.release(reservation);
+                }
+                PriorityBulkLaneSendResult::Dropped(PriorityBulkLaneDrop {
+                    item,
+                    drop: AdmissionDrop {
+                        reason: AdmissionDropReason::ReceiverClosed,
+                        lane,
+                        packet_count,
+                        byte_count,
+                    },
+                    reason: PriorityBulkLaneDropReason::ReceiverClosed,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn bulk_capacity(&self) -> usize {
+        self.bulk_credits.capacity()
+    }
+}
+
+impl<T> PriorityBulkLaneReceivers<T> {
+    pub(crate) fn into_parts(self) -> (Receiver<T>, Receiver<T>, LaneCreditGate) {
+        (self.priority, self.bulk, self.bulk_credits)
+    }
+}
+
 impl<T> BoundedLaneQueues<T> {
     pub(crate) fn new(caps: QueueCaps) -> Self {
         Self {
@@ -319,9 +462,11 @@ impl<K: Copy + Eq, T> DispatchBatcher<K, T> {
         }
 
         self.key = Some(key);
-        if self.items.is_empty() && items.len() >= batch_max {
+        if self.items.is_empty() {
             self.items = items;
-            returned.extend(self.flush_with(&mut dispatch));
+            if self.items.len() >= batch_max {
+                returned.extend(self.flush_with(&mut dispatch));
+            }
             return returned;
         }
 
@@ -679,6 +824,129 @@ mod tests {
     }
 
     #[test]
+    fn priority_bulk_lane_sender_keeps_priority_independent_of_bulk_pressure() {
+        let (sender, receivers) = priority_bulk_lane_channels(1, 1);
+        let (mut priority_rx, mut bulk_rx, credits) = receivers.into_parts();
+
+        assert!(matches!(
+            sender.try_send("bulk", PacketLane::Bulk, 1, 100),
+            PriorityBulkLaneSendResult::Sent {
+                previous_bulk_queued: Some(0)
+            }
+        ));
+        assert_eq!(credits.queued_packets(), 1);
+
+        assert!(matches!(
+            sender.try_send("priority", PacketLane::Priority, 1, 10),
+            PriorityBulkLaneSendResult::Sent {
+                previous_bulk_queued: None
+            }
+        ));
+
+        assert_eq!(priority_rx.try_recv().expect("priority"), "priority");
+        assert_eq!(bulk_rx.try_recv().expect("bulk"), "bulk");
+        credits.release_count(1);
+        assert_eq!(credits.queued_packets(), 0);
+    }
+
+    #[test]
+    fn priority_bulk_lane_sender_reports_bulk_credit_pressure() {
+        let (sender, receivers) = priority_bulk_lane_channels(1, 1);
+        let (_priority_rx, mut bulk_rx, credits) = receivers.into_parts();
+
+        assert!(matches!(
+            sender.try_send("bulk-1", PacketLane::Bulk, 1, 100),
+            PriorityBulkLaneSendResult::Sent { .. }
+        ));
+
+        let PriorityBulkLaneSendResult::Dropped(drop) =
+            sender.try_send("bulk-2", PacketLane::Bulk, 1, 200)
+        else {
+            panic!("second bulk packet should hit credit pressure");
+        };
+
+        assert_eq!(drop.item, "bulk-2");
+        assert_eq!(drop.reason, PriorityBulkLaneDropReason::CreditPressure);
+        assert_eq!(drop.drop.reason, AdmissionDropReason::BulkPressure);
+        assert_eq!(drop.drop.lane, PacketLane::Bulk);
+        assert_eq!(drop.drop.packet_count, 1);
+        assert_eq!(drop.drop.byte_count, 200);
+        assert_eq!(credits.queued_packets(), 1);
+        assert_eq!(bulk_rx.try_recv().expect("first bulk"), "bulk-1");
+        credits.release_count(1);
+        assert_eq!(credits.queued_packets(), 0);
+    }
+
+    #[test]
+    fn priority_bulk_lane_sender_allows_zero_packet_bulk_event_without_credit() {
+        let (sender, receivers) = priority_bulk_lane_channels(1, 1);
+        let (_priority_rx, mut bulk_rx, credits) = receivers.into_parts();
+
+        assert!(matches!(
+            sender.try_send("empty-bulk", PacketLane::Bulk, 0, 0),
+            PriorityBulkLaneSendResult::Sent {
+                previous_bulk_queued: Some(0)
+            }
+        ));
+
+        assert_eq!(credits.queued_packets(), 0);
+        assert_eq!(bulk_rx.try_recv().expect("empty bulk event"), "empty-bulk");
+    }
+
+    #[test]
+    fn priority_bulk_lane_sender_reports_priority_channel_full() {
+        let (sender, receivers) = priority_bulk_lane_channels(1, 1);
+        let (mut priority_rx, _bulk_rx, credits) = receivers.into_parts();
+
+        assert!(matches!(
+            sender.try_send("priority-1", PacketLane::Priority, 1, 10),
+            PriorityBulkLaneSendResult::Sent {
+                previous_bulk_queued: None
+            }
+        ));
+
+        let PriorityBulkLaneSendResult::Dropped(drop) =
+            sender.try_send("priority-2", PacketLane::Priority, 1, 20)
+        else {
+            panic!("second priority item should hit channel capacity");
+        };
+
+        assert_eq!(drop.item, "priority-2");
+        assert_eq!(drop.reason, PriorityBulkLaneDropReason::ChannelFull);
+        assert_eq!(drop.drop.reason, AdmissionDropReason::PriorityPressure);
+        assert_eq!(drop.drop.lane, PacketLane::Priority);
+        assert_eq!(drop.drop.packet_count, 1);
+        assert_eq!(drop.drop.byte_count, 20);
+        assert_eq!(credits.queued_packets(), 0);
+        assert_eq!(
+            priority_rx.try_recv().expect("first priority"),
+            "priority-1"
+        );
+    }
+
+    #[test]
+    fn priority_bulk_lane_sender_releases_bulk_credit_when_receiver_closed() {
+        let (sender, receivers) = priority_bulk_lane_channels(1, 2);
+        let (_priority_rx, bulk_rx, credits) = receivers.into_parts();
+        drop(bulk_rx);
+
+        let PriorityBulkLaneSendResult::Dropped(drop) =
+            sender.try_send("bulk", PacketLane::Bulk, 1, 100)
+        else {
+            panic!("closed bulk receiver should reject the packet");
+        };
+
+        assert_eq!(drop.item, "bulk");
+        assert_eq!(drop.reason, PriorityBulkLaneDropReason::ReceiverClosed);
+        assert_eq!(drop.drop.reason, AdmissionDropReason::ReceiverClosed);
+        assert_eq!(
+            credits.queued_packets(),
+            0,
+            "bulk credit reservation for the failed send should be released"
+        );
+    }
+
+    #[test]
     fn dispatch_batcher_groups_same_key_until_capacity() {
         let mut batcher = DispatchBatcher::new(4);
         let mut dispatched = Vec::new();
@@ -758,6 +1026,38 @@ mod tests {
 
         assert_eq!(dispatched, vec![(7, vec!["a", "b"])]);
         assert!(batcher.is_empty());
+    }
+
+    #[test]
+    fn dispatch_batcher_adopts_first_partial_batch_vec_without_copy() {
+        let mut batcher = DispatchBatcher::new(4);
+        let mut items = Vec::with_capacity(3);
+        items.push("a");
+        items.push("b");
+        let items_ptr = items.as_ptr();
+        let items_capacity = items.capacity();
+
+        assert!(
+            batcher
+                .push_batch(7, 4, items, |_key, _items| Vec::new())
+                .is_empty()
+        );
+
+        assert_eq!(batcher.key, Some(7));
+        assert_eq!(batcher.items, vec!["a", "b"]);
+        assert_eq!(batcher.items.capacity(), items_capacity);
+        assert_eq!(batcher.items.as_ptr(), items_ptr);
+
+        let mut dispatched = Vec::new();
+        assert!(
+            batcher
+                .flush(|key, items| {
+                    dispatched.push((key, items));
+                    Vec::new()
+                })
+                .is_empty()
+        );
+        assert_eq!(dispatched, vec![(7, vec!["a", "b"])]);
     }
 
     #[tokio::test]

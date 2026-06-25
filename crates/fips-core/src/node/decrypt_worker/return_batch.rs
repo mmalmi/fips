@@ -10,16 +10,13 @@ struct DecryptWorkerReturnBatch {
 impl DecryptWorkerReturnBatch {
     fn new(return_tx: DecryptWorkerReturnSender) -> Self {
         let authenticated_batch_max = return_tx
-            .authenticated_bulk_credits
-            .capacity()
+            .authenticated_bulk_capacity()
             .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX);
         let endpoint_batch_max = return_tx
-            .authenticated_bulk_credits
-            .capacity()
+            .authenticated_bulk_capacity()
             .clamp(1, DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX);
         let direct_batch_max = return_tx
-            .authenticated_bulk_credits
-            .capacity()
+            .authenticated_bulk_capacity()
             .clamp(1, DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX);
         Self {
             return_tx,

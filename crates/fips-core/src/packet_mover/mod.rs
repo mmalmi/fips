@@ -73,8 +73,9 @@ pub(crate) use pipeline::{
 };
 pub(crate) use queues::{
     BoundedLaneQueues, DispatchBatcher, LaneCreditGate, LaneCreditReservation, PacketDrainAction,
-    PacketDrainCursor, PacketDrainReceiver, PriorityBulkDrainCursor, QueueAdmission, QueueCaps,
-    QueuedPacket, SingleLaneDrainCursor,
+    PacketDrainCursor, PacketDrainReceiver, PriorityBulkDrainCursor, PriorityBulkLaneDropReason,
+    PriorityBulkLaneSendResult, PriorityBulkLaneSender, QueueAdmission, QueueCaps, QueuedPacket,
+    SingleLaneDrainCursor, priority_bulk_lane_channels,
 };
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
 
