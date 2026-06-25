@@ -511,7 +511,7 @@
             0,
             Arc::new(test_chacha_key([0x54; 32])),
             header,
-            None,
+            owner_idx,
         );
 
         assert!(
@@ -583,9 +583,9 @@
                 0,
                 Arc::clone(&cipher),
                 header.clone(),
-                None,
+                owner_idx,
             ),
-            test_fsp_aead_open_job(source_addr, 1, cipher, header, None),
+            test_fsp_aead_open_job(source_addr, 1, cipher, header, owner_idx),
         ];
 
         assert!(
@@ -652,7 +652,7 @@
             &pool,
             open_idx,
             owner_idx,
-            test_fsp_aead_open_job(source_addr, 0, cipher, header, None),
+            test_fsp_aead_open_job(source_addr, 0, cipher, header, owner_idx),
         );
         assert!(returned.is_empty(), "single opener job should fit in the batcher");
         assert!(
@@ -667,7 +667,7 @@
             DecryptWorkerBulkItem::FspAeadOpenBatch(mut jobs) => {
                 assert_eq!(jobs.len(), 1);
                 let job = jobs.pop().expect("checked one opener job");
-                assert_eq!(job.completion_owner_idx(), Some(owner_idx));
+                assert_eq!(job.completion_owner_idx(), owner_idx);
             }
             DecryptWorkerBulkItem::Batch { .. }
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a one-job opener batch"),
@@ -701,7 +701,7 @@
                     sequence,
                     Arc::clone(&cipher),
                     header.clone(),
-                    None,
+                    owner_idx,
                 ),
             );
             assert!(
@@ -807,7 +807,7 @@
                 assert_eq!(jobs.len(), 2);
                 assert!(
                     jobs.iter()
-                        .all(|job| job.completion_owner_idx() == Some(owner_idx))
+                        .all(|job| job.completion_owner_idx() == owner_idx)
                 );
                 assert_eq!(
                     jobs.iter()
@@ -985,7 +985,7 @@
                 assert_eq!(jobs.len(), 1);
                 let job = jobs.pop().expect("checked one opener job");
                 assert_eq!(job.source_addr(), source_addr);
-                assert_eq!(job.completion_owner_idx(), Some(owner_idx));
+                assert_eq!(job.completion_owner_idx(), owner_idx);
                 assert_eq!(job.receive_order_id(), receive_order_id);
                 assert_eq!(job.crypto_generation(), crypto_generation);
                 assert_eq!(job.receive_ticket().sequence, 0);
@@ -1061,7 +1061,7 @@
                 assert_eq!(jobs.len(), 1);
                 let job = jobs.pop().expect("checked one opener job");
                 assert_eq!(job.source_addr(), source_addr);
-                assert_eq!(job.completion_owner_idx(), Some(owner_idx));
+                assert_eq!(job.completion_owner_idx(), owner_idx);
                 assert_eq!(job.receive_order_id(), receive_order_id);
                 assert_eq!(job.crypto_generation(), crypto_generation);
                 assert_eq!(job.receive_ticket().sequence, 0);
@@ -1396,7 +1396,7 @@
             0,
             Arc::new(test_chacha_key([0x58; 32])),
             header,
-            Some(owner_idx),
+            owner_idx,
         );
         open_job.set_completion_source(FspAeadCompletionSource::WorkerOpen);
 
@@ -1445,7 +1445,7 @@
             0,
             Arc::new(test_chacha_key([0x61; 32])),
             header,
-            Some(owner_idx),
+            owner_idx,
         );
         open_job.set_completion_source(FspAeadCompletionSource::WorkerOpen);
         open_job.mark_returned_completion();
@@ -1478,7 +1478,7 @@
             0,
             Arc::new(test_chacha_key([0x62; 32])),
             header,
-            Some(owner_idx),
+            owner_idx,
         );
 
         complete_fsp_aead_open_job(current_idx, &pool, open_job);
@@ -1525,7 +1525,7 @@
                     0,
                     Arc::clone(&cipher),
                     header.clone(),
-                    Some(owner_idx),
+                    owner_idx,
                 );
                 job.set_completion_source(FspAeadCompletionSource::WorkerOpen);
                 job
@@ -1536,7 +1536,7 @@
                     1,
                     cipher,
                     header,
-                    Some(owner_idx),
+                    owner_idx,
                 );
                 job.set_completion_source(FspAeadCompletionSource::WorkerOpen);
                 job
@@ -1606,7 +1606,7 @@
                 0,
                 cipher,
                 header,
-                Some(owner_idx),
+                owner_idx,
             )];
 
         let mut shard = DecryptWorkerShard::new(pool);
@@ -1658,7 +1658,7 @@
             ticket.sequence,
             Arc::new(test_chacha_key([0x5c; 32])),
             header,
-            None,
+            0,
         );
 
         let mut shard = DecryptWorkerShard::new(pool);
@@ -2257,7 +2257,7 @@
         ticket_sequence: u64,
         cipher: Arc<LessSafeKey>,
         header: FspEncryptedHeader,
-        completion_owner_idx: Option<usize>,
+        completion_owner_idx: usize,
     ) -> FspAeadOpenDispatch {
         test_fsp_aead_open_job_with_meta(
             source_addr,
@@ -2277,7 +2277,7 @@
         ticket_sequence: u64,
         cipher: Arc<LessSafeKey>,
         header: FspEncryptedHeader,
-        completion_owner_idx: Option<usize>,
+        completion_owner_idx: usize,
     ) -> FspAeadOpenDispatch {
         let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
         job.source_addr = source_addr;

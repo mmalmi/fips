@@ -656,7 +656,7 @@
             header.clone(),
             epoch_id,
             FspAeadCompletionSource::WorkerOpen,
-            None,
+            0,
             None,
         )
         .into_completion();
@@ -707,7 +707,7 @@
             header,
             epoch_id,
             FspAeadCompletionSource::WorkerOpen,
-            None,
+            0,
             None,
         )
         .into_completion();
@@ -1315,7 +1315,7 @@
             first_header,
             epoch_id,
             FspAeadCompletionSource::WorkerOpen,
-            None,
+            0,
             None,
         )
         .into_completion();
@@ -1337,7 +1337,7 @@
             second_header,
             epoch_id,
             FspAeadCompletionSource::WorkerOpen,
-            None,
+            0,
             None,
         )
         .into_completion();
@@ -1478,7 +1478,7 @@
             protected_header,
             epoch_id,
             FspAeadCompletionSource::WorkerOpen,
-            None,
+            0,
             None,
         )
         .into_completion();
@@ -1522,7 +1522,7 @@
             first_header,
             epoch_id,
             FspAeadCompletionSource::WorkerOpen,
-            None,
+            0,
             None,
         )
         .into_completion();
@@ -1547,7 +1547,7 @@
             second_header,
             epoch_id,
             FspAeadCompletionSource::WorkerOpen,
-            None,
+            0,
             None,
         )
         .into_completion();
@@ -1973,7 +1973,7 @@
             local_header,
             epoch_id,
             FspAeadCompletionSource::Local,
-            None,
+            0,
             None,
         )
         .into_completion();
@@ -1998,7 +1998,7 @@
             open_header,
             epoch_id,
             FspAeadCompletionSource::WorkerOpen,
-            None,
+            0,
             None,
         )
         .into_completion();

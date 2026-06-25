@@ -1141,7 +1141,7 @@ type FspAeadOpenDispatch = CryptoDispatch<FspAeadOpenWork, FspAeadOpenRoute>;
 
 struct FspAeadOpenRoute {
     completion_source: FspAeadCompletionSource,
-    completion_owner_idx: Option<usize>,
+    completion_owner_idx: usize,
     open_queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
@@ -1331,10 +1331,6 @@ fn new_fsp_aead_completion_batcher() -> FspAeadCompletionBatchBuilder {
     OwnerCompletionBatcher::new(DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX)
 }
 
-fn fsp_aead_completion_owner_idx(current_idx: usize, completion_owner_idx: Option<usize>) -> usize {
-    completion_owner_idx.unwrap_or(current_idx)
-}
-
 fn new_fsp_aead_open_dispatch(
     crypto_ticket: CryptoTicket,
     cipher: Arc<LessSafeKey>,
@@ -1342,7 +1338,7 @@ fn new_fsp_aead_open_dispatch(
     header: FspEncryptedHeader,
     epoch_id: FspEpochId,
     completion_source: FspAeadCompletionSource,
-    completion_owner_idx: Option<usize>,
+    completion_owner_idx: usize,
     open_queued_at: Option<crate::perf_profile::TraceStamp>,
 ) -> FspAeadOpenDispatch {
     CryptoDispatch::new(
@@ -1367,7 +1363,7 @@ trait FspAeadOpenDispatchExt {
     #[cfg(test)]
     fn crypto_ticket(&self) -> CryptoTicket;
 
-    fn completion_owner_idx(&self) -> Option<usize>;
+    fn completion_owner_idx(&self) -> usize;
 
     fn queue_for_completion_owner(
         &mut self,
@@ -1408,7 +1404,7 @@ impl FspAeadOpenDispatchExt for FspAeadOpenDispatch {
         self.work.ticket
     }
 
-    fn completion_owner_idx(&self) -> Option<usize> {
+    fn completion_owner_idx(&self) -> usize {
         self.route.completion_owner_idx
     }
 
@@ -1417,7 +1413,7 @@ impl FspAeadOpenDispatchExt for FspAeadOpenDispatch {
         owner_idx: usize,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) {
-        self.route.completion_owner_idx = Some(owner_idx);
+        debug_assert_eq!(self.route.completion_owner_idx, owner_idx);
         self.route.open_queued_at = queued_at;
     }
 

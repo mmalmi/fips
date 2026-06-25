@@ -799,7 +799,7 @@ impl DecryptWorkerShard {
                     header,
                     target.state.current.epoch_id,
                     FspAeadCompletionSource::WorkerOpen,
-                    None,
+                    target.owner_idx,
                     None,
                 );
                 Ok((
@@ -852,7 +852,7 @@ impl DecryptWorkerShard {
                             header,
                             epoch_id,
                             FspAeadCompletionSource::WorkerOpen,
-                            None,
+                            target.owner_idx,
                             None,
                         )
                     })
@@ -879,7 +879,7 @@ impl DecryptWorkerShard {
         let mut batcher = new_fsp_aead_completion_batcher();
         for mut job in jobs {
             returned_count = returned_count.saturating_add(1);
-            let owner_idx = fsp_aead_completion_owner_idx(idx, job.completion_owner_idx());
+            let owner_idx = job.completion_owner_idx();
             job.mark_returned_completion();
             if let Some(flush) = batcher.push(owner_idx, job.into_dropped_completion()) {
                 self.flush_dropped_fsp_aead_open_completion_batch(idx, flush, return_batch);

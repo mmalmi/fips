@@ -420,9 +420,7 @@ fn complete_fsp_aead_open_jobs(idx: usize, pool: &DecryptWorkerPool, jobs: Vec<F
     let mut batcher = new_fsp_aead_completion_batcher();
 
     for job in jobs {
-        let Some(owner_idx) = job.completion_owner_idx() else {
-            continue;
-        };
+        let owner_idx = job.completion_owner_idx();
         if let Some(flush) = batcher.push(owner_idx, job.into_completion()) {
             send_fsp_aead_open_completion_flush(idx, pool, flush);
         }
