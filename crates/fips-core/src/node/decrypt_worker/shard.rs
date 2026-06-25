@@ -778,15 +778,19 @@ impl DecryptWorkerShard {
                         ));
                     }
                 };
-                let Some(reservation) = target.state.reserve_worker_fsp_open() else {
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
-                        1,
-                    );
-                    return Err(FspOpenWorkerPrepareError::ineligible(
-                        FspOpenWorkerJobs::One(job),
-                        FspOpenWorkerIneligibleReason::WindowFull,
-                    ));
+                let reservation = match target.state.reserve_worker_fsp_open() {
+                    Ok(reservation) => reservation,
+                    Err(OwnerReserveError::WindowFull { .. }) => {
+                        crate::perf_profile::record_event_count(
+                            crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
+                            1,
+                        );
+                        return Err(FspOpenWorkerPrepareError::ineligible(
+                            FspOpenWorkerJobs::One(job),
+                            FspOpenWorkerIneligibleReason::WindowFull,
+                        ));
+                    }
+                    Err(_) => unreachable!("FSP receive sequencer only reports window pressure"),
                 };
                 let open_job = new_fsp_aead_open_dispatch(
                     reservation.crypto_ticket(),
@@ -818,16 +822,19 @@ impl DecryptWorkerShard {
                     }
                 }
 
-                let Some(reservation) = target.state.reserve_worker_fsp_open_batch(headers.len())
-                else {
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
-                        headers.len() as u64,
-                    );
-                    return Err(FspOpenWorkerPrepareError::ineligible(
-                        FspOpenWorkerJobs::Batch(jobs),
-                        FspOpenWorkerIneligibleReason::WindowFull,
-                    ));
+                let reservation = match target.state.reserve_worker_fsp_open_batch(headers.len()) {
+                    Ok(reservation) => reservation,
+                    Err(OwnerReserveError::WindowFull { .. }) => {
+                        crate::perf_profile::record_event_count(
+                            crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
+                            headers.len() as u64,
+                        );
+                        return Err(FspOpenWorkerPrepareError::ineligible(
+                            FspOpenWorkerJobs::Batch(jobs),
+                            FspOpenWorkerIneligibleReason::WindowFull,
+                        ));
+                    }
+                    Err(_) => unreachable!("FSP receive sequencer only reports window pressure"),
                 };
                 let cipher = Arc::clone(&target.state.current.cipher);
                 let epoch_id = target.state.current.epoch_id;
@@ -1403,16 +1410,20 @@ impl DecryptWorkerShard {
             return;
         };
 
-        let Some(reservation) = state.reserve_local_fsp_open(lane) else {
-            match lane {
-                DecryptWorkerLane::Priority => {
-                    record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
+        let reservation = match state.reserve_local_fsp_open(lane) {
+            Ok(reservation) => reservation,
+            Err(OwnerReserveError::WindowFull { .. }) => {
+                match lane {
+                    DecryptWorkerLane::Priority => {
+                        record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
+                    }
+                    DecryptWorkerLane::Bulk => {
+                        record_decrypt_worker_bulk_drop_count(idx, 1);
+                    }
                 }
-                DecryptWorkerLane::Bulk => {
-                    record_decrypt_worker_bulk_drop_count(idx, 1);
-                }
+                return;
             }
-            return;
+            Err(_) => unreachable!("FSP receive sequencer only reports window pressure"),
         };
         let receive_order_id = reservation.receive_order_id();
         let crypto_ticket = reservation.crypto_ticket();

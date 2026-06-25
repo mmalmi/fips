@@ -17,7 +17,7 @@ use crate::packet_mover::{
     DispatchBatcher, LaneCreditGate, OwnerCompletionBatch, OwnerCompletionBatchFlush,
     OwnerCompletionBatcher, OwnerGeneration, OwnerKey, OwnerOrderedCompletion,
     OwnerReceiveReservationSource, OwnerReceiveSequencer, OwnerReservation, OwnerReservationBatch,
-    OutputTarget, PacketLane, PacketOutputTarget,
+    OwnerReserveError, OutputTarget, PacketLane, PacketOutputTarget,
     PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
     SplitBulkLaneItem, StatelessCryptoWorker, WorkerDrainAction, WorkerDrainCursor,
     WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
@@ -453,20 +453,26 @@ impl OwnedFspSessionState {
         self.fsp_receive_order.source()
     }
 
-    fn reserve_local_fsp_open(&mut self, lane: DecryptWorkerLane) -> Option<FspOpenReservation> {
-        let reservation = self.fsp_receive_order.reserve(lane.into())?;
-        Some(FspOpenReservation::new(reservation))
+    fn reserve_local_fsp_open(
+        &mut self,
+        lane: DecryptWorkerLane,
+    ) -> Result<FspOpenReservation, OwnerReserveError> {
+        let reservation = self.fsp_receive_order.try_reserve(lane.into())?;
+        Ok(FspOpenReservation::new(reservation))
     }
 
-    fn reserve_worker_fsp_open(&mut self) -> Option<FspOpenReservation> {
+    fn reserve_worker_fsp_open(&mut self) -> Result<FspOpenReservation, OwnerReserveError> {
         let reservation = self
             .fsp_receive_order
-            .reserve_with_window(PacketLane::Bulk, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
-        Some(FspOpenReservation::new(reservation))
+            .try_reserve_with_window(PacketLane::Bulk, DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)?;
+        Ok(FspOpenReservation::new(reservation))
     }
 
-    fn reserve_worker_fsp_open_batch(&mut self, count: usize) -> Option<FspOpenReservationBatch> {
-        self.fsp_receive_order.reserve_batch_with_window(
+    fn reserve_worker_fsp_open_batch(
+        &mut self,
+        count: usize,
+    ) -> Result<FspOpenReservationBatch, OwnerReserveError> {
+        self.fsp_receive_order.try_reserve_batch_with_window(
             count,
             PacketLane::Bulk,
             DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE,
@@ -1554,9 +1560,10 @@ impl OwnedSessionState {
         fmp_counter: u64,
     ) -> Result<FmpOpenReservation, FmpOpenError> {
         let replay_precheck = self.precheck_fmp_replay(fmp_counter)?;
-        let Some(reservation) = self.fmp_receive_order.reserve(lane.into()) else {
-            return Err(FmpOpenError::WindowFull);
-        };
+        let reservation = self
+            .fmp_receive_order
+            .try_reserve(lane.into())
+            .map_err(|_| FmpOpenError::WindowFull)?;
         Ok(FmpOpenReservation::new(reservation, replay_precheck))
     }
 
