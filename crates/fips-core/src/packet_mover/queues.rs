@@ -1,5 +1,6 @@
 use super::{AdmissionDrop, AdmissionDropReason, PacketLane};
 use crate::transport::{PacketRx, ReceivedPacket};
+use crossbeam_channel::{Sender as CrossbeamSender, TrySendError as CrossbeamTrySendError};
 use std::collections::VecDeque;
 use std::sync::{
     Arc,
@@ -202,6 +203,49 @@ pub(crate) struct PriorityBulkLaneReceivers<T> {
     bulk_credits: LaneCreditGate,
 }
 
+pub(crate) trait SplitBulkLaneItem: Sized {
+    fn packet_count(&self) -> usize;
+
+    fn split_at_packet_count(self, packet_count: usize) -> (Option<Self>, Option<Self>);
+}
+
+pub(crate) struct BulkLanePrefixSender<T> {
+    tx: CrossbeamSender<T>,
+    credits: LaneCreditGate,
+}
+
+impl<T> Clone for BulkLanePrefixSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            credits: self.credits.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BulkLanePrefixRejectReason {
+    CreditPressure,
+    ChannelFull,
+    ReceiverClosed,
+}
+
+#[derive(Debug)]
+pub(crate) struct BulkLanePrefixReject<T> {
+    pub(crate) item: T,
+    pub(crate) overflow: Option<T>,
+    pub(crate) reason: BulkLanePrefixRejectReason,
+}
+
+#[derive(Debug)]
+pub(crate) enum BulkLanePrefixSendResult<T> {
+    Sent {
+        reserved_packets: usize,
+        overflow: Option<T>,
+    },
+    Rejected(BulkLanePrefixReject<T>),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PriorityBulkLaneDropReason {
     CreditPressure,
@@ -312,6 +356,68 @@ impl<T> PriorityBulkLaneSender<T> {
 
     pub(crate) fn bulk_capacity(&self) -> usize {
         self.bulk_credits.capacity()
+    }
+}
+
+impl<T> BulkLanePrefixSender<T> {
+    pub(crate) fn new(tx: CrossbeamSender<T>, credits: LaneCreditGate) -> Self {
+        Self { tx, credits }
+    }
+
+    pub(crate) fn queued_packets(&self) -> usize {
+        self.credits.queued_packets()
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        self.credits.capacity()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserve_for_test(
+        &self,
+        packet_count: usize,
+    ) -> Result<LaneCreditReservation, AdmissionDrop> {
+        self.credits.reserve(packet_count, 0)
+    }
+}
+
+impl<T: SplitBulkLaneItem> BulkLanePrefixSender<T> {
+    pub(crate) fn try_send_prefix(&self, item: T) -> BulkLanePrefixSendResult<T> {
+        let packet_count = item.packet_count();
+        let Some(reservation) = self.credits.reserve_prefix(packet_count) else {
+            return BulkLanePrefixSendResult::Rejected(BulkLanePrefixReject {
+                item,
+                overflow: None,
+                reason: BulkLanePrefixRejectReason::CreditPressure,
+            });
+        };
+        let reserved_packets = reservation.packet_count();
+
+        let (reserved_item, overflow) = item.split_at_packet_count(reserved_packets);
+        let reserved_item = reserved_item.expect("positive reservation must produce a bulk item");
+
+        match self.tx.try_send(reserved_item) {
+            Ok(()) => BulkLanePrefixSendResult::Sent {
+                reserved_packets,
+                overflow,
+            },
+            Err(CrossbeamTrySendError::Full(item)) => {
+                self.credits.release(reservation);
+                BulkLanePrefixSendResult::Rejected(BulkLanePrefixReject {
+                    item,
+                    overflow,
+                    reason: BulkLanePrefixRejectReason::ChannelFull,
+                })
+            }
+            Err(CrossbeamTrySendError::Disconnected(item)) => {
+                self.credits.release(reservation);
+                BulkLanePrefixSendResult::Rejected(BulkLanePrefixReject {
+                    item,
+                    overflow,
+                    reason: BulkLanePrefixRejectReason::ReceiverClosed,
+                })
+            }
+        }
     }
 }
 
@@ -720,6 +826,30 @@ impl PacketDrainReceiver<ReceivedPacket> for PacketRx {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Eq, PartialEq)]
+    struct TestBulk(Vec<usize>);
+
+    impl SplitBulkLaneItem for TestBulk {
+        fn packet_count(&self) -> usize {
+            self.0.len()
+        }
+
+        fn split_at_packet_count(
+            self,
+            packet_count: usize,
+        ) -> (Option<TestBulk>, Option<TestBulk>) {
+            if packet_count == 0 {
+                return (None, Some(self));
+            }
+            let mut packets = self.0;
+            if packet_count >= packets.len() {
+                return (Some(TestBulk(packets)), None);
+            }
+            let overflow = packets.split_off(packet_count);
+            (Some(TestBulk(packets)), Some(TestBulk(overflow)))
+        }
+    }
+
     #[test]
     fn priority_queue_drains_before_bulk() {
         let mut queues = BoundedLaneQueues::new(QueueCaps::new(2, 2));
@@ -944,6 +1074,104 @@ mod tests {
             0,
             "bulk credit reservation for the failed send should be released"
         );
+    }
+
+    #[test]
+    fn bulk_lane_prefix_sender_admits_prefix_and_returns_overflow() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let credits = LaneCreditGate::new(PacketLane::Bulk, 3);
+        let sender = BulkLanePrefixSender::new(tx, credits.clone());
+
+        let BulkLanePrefixSendResult::Sent {
+            reserved_packets,
+            overflow,
+        } = sender.try_send_prefix(TestBulk(vec![1, 2, 3, 4]))
+        else {
+            panic!("partial capacity should admit a prefix");
+        };
+
+        assert_eq!(reserved_packets, 3);
+        assert_eq!(overflow, Some(TestBulk(vec![4])));
+        assert_eq!(sender.queued_packets(), 3);
+        assert_eq!(
+            rx.try_recv().expect("admitted prefix"),
+            TestBulk(vec![1, 2, 3])
+        );
+
+        credits.release_count(reserved_packets);
+        assert_eq!(sender.queued_packets(), 0);
+    }
+
+    #[test]
+    fn bulk_lane_prefix_sender_reports_credit_pressure_without_sending() {
+        let (tx, rx) = crossbeam_channel::bounded(2);
+        let credits = LaneCreditGate::new(PacketLane::Bulk, 1);
+        let sender = BulkLanePrefixSender::new(tx, credits.clone());
+
+        assert!(matches!(
+            sender.try_send_prefix(TestBulk(vec![1])),
+            BulkLanePrefixSendResult::Sent { .. }
+        ));
+
+        let BulkLanePrefixSendResult::Rejected(reject) = sender.try_send_prefix(TestBulk(vec![2]))
+        else {
+            panic!("full credits should reject without touching the channel");
+        };
+
+        assert_eq!(reject.reason, BulkLanePrefixRejectReason::CreditPressure);
+        assert_eq!(reject.item, TestBulk(vec![2]));
+        assert_eq!(reject.overflow, None);
+        assert_eq!(sender.queued_packets(), 1);
+        assert_eq!(rx.len(), 1);
+
+        drop(rx);
+        credits.release_count(1);
+    }
+
+    #[test]
+    fn bulk_lane_prefix_sender_releases_credit_when_channel_full() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let credits = LaneCreditGate::new(PacketLane::Bulk, 2);
+        let sender = BulkLanePrefixSender::new(tx, credits.clone());
+
+        assert!(matches!(
+            sender.try_send_prefix(TestBulk(vec![1])),
+            BulkLanePrefixSendResult::Sent { .. }
+        ));
+        assert_eq!(sender.queued_packets(), 1);
+
+        let BulkLanePrefixSendResult::Rejected(reject) = sender.try_send_prefix(TestBulk(vec![2]))
+        else {
+            panic!("full channel should reject after releasing its reservation");
+        };
+
+        assert_eq!(reject.reason, BulkLanePrefixRejectReason::ChannelFull);
+        assert_eq!(reject.item, TestBulk(vec![2]));
+        assert_eq!(reject.overflow, None);
+        assert_eq!(sender.queued_packets(), 1);
+
+        assert_eq!(rx.try_recv().expect("existing item"), TestBulk(vec![1]));
+        credits.release_count(1);
+        assert_eq!(sender.queued_packets(), 0);
+    }
+
+    #[test]
+    fn bulk_lane_prefix_sender_releases_credit_when_receiver_closed() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let credits = LaneCreditGate::new(PacketLane::Bulk, 2);
+        let sender = BulkLanePrefixSender::new(tx, credits);
+        drop(rx);
+
+        let BulkLanePrefixSendResult::Rejected(reject) =
+            sender.try_send_prefix(TestBulk(vec![1, 2]))
+        else {
+            panic!("closed receiver should reject");
+        };
+
+        assert_eq!(reject.reason, BulkLanePrefixRejectReason::ReceiverClosed);
+        assert_eq!(reject.item, TestBulk(vec![1, 2]));
+        assert_eq!(reject.overflow, None);
+        assert_eq!(sender.queued_packets(), 0);
     }
 
     #[test]

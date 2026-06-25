@@ -12,11 +12,12 @@ use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
 use crate::packet_mover::{
-    CryptoCompletion, CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork,
-    DispatchBatcher, LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch,
-    OwnerGeneration, OwnerKey, OwnerOrderedCompletion, OwnerReservation, OutputTarget, PacketLane,
-    PacketOutputTarget, PriorityBulkLaneDropReason, PriorityBulkLaneSendResult,
-    PriorityBulkLaneSender, StatelessCryptoWorker, priority_bulk_lane_channels,
+    BulkLanePrefixRejectReason, BulkLanePrefixSendResult, BulkLanePrefixSender, CryptoCompletion,
+    CryptoDispatch, CryptoReject, CryptoResult, CryptoTicket, CryptoWork, DispatchBatcher,
+    LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch, OwnerGeneration, OwnerKey,
+    OwnerOrderedCompletion, OwnerReservation, OutputTarget, PacketLane, PacketOutputTarget,
+    PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
+    SplitBulkLaneItem, StatelessCryptoWorker, priority_bulk_lane_channels,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};
@@ -1894,7 +1895,10 @@ impl DecryptJob {
         fmp_ciphertext_offset: usize,
     ) -> Self {
         let packet_data = packet_data.into();
-        let lane = decrypt_worker_packet_lane(packet_data.len());
+        // The inner message type is encrypted at this boundary. Length-only
+        // priority admission lets tiny TCP ACK-shaped session data flood the
+        // protected lane; prioritize real control/liveness after FMP decrypt.
+        let lane = DecryptWorkerLane::Bulk;
         Self {
             packet_data,
             lane,

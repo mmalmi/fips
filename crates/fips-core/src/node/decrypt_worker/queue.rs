@@ -90,6 +90,19 @@ impl DecryptWorkerBulkItem {
     }
 }
 
+impl SplitBulkLaneItem for DecryptWorkerBulkItem {
+    fn packet_count(&self) -> usize {
+        DecryptWorkerBulkItem::packet_count(self)
+    }
+
+    fn split_at_packet_count(
+        self,
+        packet_count: usize,
+    ) -> (Option<DecryptWorkerBulkItem>, Option<DecryptWorkerBulkItem>) {
+        DecryptWorkerBulkItem::split_at_packet_count(self, packet_count)
+    }
+}
+
 fn decrypt_worker_bulk_item_from_fsp_aead_open_jobs(
     jobs: Vec<FspAeadOpenDispatch>,
 ) -> DecryptWorkerBulkItem {

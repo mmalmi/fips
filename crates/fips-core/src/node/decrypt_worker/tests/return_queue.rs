@@ -149,7 +149,7 @@
             "the existing packet plus one batch packet should remain queued"
         );
         assert_eq!(
-            pool.senders[0].bulk_credits.queued_packets(),
+            pool.senders[0].bulk.queued_packets(),
             2,
             "bulk packet accounting should match the admitted packet count"
         );
@@ -201,7 +201,7 @@
             "the existing packet plus one prefix batch should be queued"
         );
         assert_eq!(
-            pool.senders[0].bulk_credits.queued_packets(),
+            pool.senders[0].bulk.queued_packets(),
             3,
             "bulk packet accounting should include the admitted prefix batch"
         );
@@ -262,7 +262,7 @@
             "existing packet plus admitted prefix batch should remain queued"
         );
         assert_eq!(
-            pool.senders[0].bulk_credits.queued_packets(),
+            pool.senders[0].bulk.queued_packets(),
             3,
             "overflow tail must not consume bulk packet capacity"
         );
@@ -475,8 +475,7 @@
     #[test]
     fn decrypt_job_owns_lane_selected_at_construction() {
         let session_key = test_session_key(1, 55);
-        let mut priority =
-            dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+        let mut priority = dummy_priority_decrypt_job(session_key);
 
         assert_eq!(decrypt_job_lane(&priority), DecryptWorkerLane::Priority);
         priority
@@ -699,7 +698,7 @@
             "full priority lane must not try the bulk side path"
         );
         assert_eq!(
-            pool.senders[0].bulk_credits.queued_packets(),
+            pool.senders[0].bulk.queued_packets(),
             0,
             "dropped priority packet must not reserve bulk capacity"
         );
@@ -730,8 +729,8 @@
     fn fsp_open_worker_backlog_does_not_shed_fmp_bulk_before_worker_boundary() {
         let (pool, _control_rx, _priority_rx, bulk_rx) = one_slot_worker_pool();
         pool.senders[0]
-            .bulk_credits
-            .reserve(1, 0)
+            .bulk
+            .reserve_for_test(1)
             .expect("test should reserve the only worker bulk packet slot");
 
         let session_key = test_session_key(1, 101);

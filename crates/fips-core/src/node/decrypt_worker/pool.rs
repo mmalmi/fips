@@ -13,9 +13,8 @@ pub(crate) struct DecryptWorkerPool {
 struct DecryptWorkerSender {
     control: Sender<WorkerMsg>,
     priority: Sender<WorkerMsg>,
-    bulk: Sender<DecryptWorkerBulkItem>,
+    bulk: BulkLanePrefixSender<DecryptWorkerBulkItem>,
     fsp_aead_completion: Sender<FspAeadCompletionBatch>,
-    bulk_credits: LaneCreditGate,
 }
 
 #[derive(Clone, Copy)]
@@ -23,12 +22,6 @@ enum DecryptWorkerBulkQueueRole {
     FmpBulk,
     FspOwner,
     FspOpen,
-}
-
-struct BulkQueueSendError {
-    item: DecryptWorkerBulkItem,
-    overflow: Option<DecryptWorkerBulkItem>,
-    disconnected: bool,
 }
 
 fn record_decrypt_fsp_bulk_queue_full_fallback_count(count: usize) {
@@ -53,10 +46,10 @@ fn record_decrypt_worker_bulk_queue_depth(
     if !crate::perf_profile::enabled() || packets == 0 {
         return;
     }
-    let depth = sender.bulk_credits.queued_packets();
+    let depth = sender.bulk.queued_packets();
     crate::perf_profile::record_decrypt_worker_bulk_queue_depth(
         depth,
-        sender.bulk_credits.capacity(),
+        sender.bulk.capacity(),
         packets,
     );
     match role {
@@ -77,44 +70,6 @@ fn decrypt_worker_bulk_queue_role(item: &DecryptWorkerBulkItem) -> DecryptWorker
         DecryptWorkerBulkItem::Batch { .. } => DecryptWorkerBulkQueueRole::FmpBulk,
         DecryptWorkerBulkItem::FspBatch(_) => DecryptWorkerBulkQueueRole::FspOwner,
         DecryptWorkerBulkItem::FspAeadOpenBatch(_) => DecryptWorkerBulkQueueRole::FspOpen,
-    }
-}
-
-fn try_send_bulk_item_prefix(
-    sender: &DecryptWorkerSender,
-    item: DecryptWorkerBulkItem,
-) -> Result<(usize, Option<DecryptWorkerBulkItem>), BulkQueueSendError> {
-    let packet_count = item.packet_count();
-    let Some(reservation) = sender.bulk_credits.reserve_prefix(packet_count) else {
-        return Err(BulkQueueSendError {
-            item,
-            overflow: None,
-            disconnected: false,
-        });
-    };
-    let reserved_packets = reservation.packet_count();
-
-    let (reserved_item, overflow) = item.split_at_packet_count(reserved_packets);
-    let reserved_item = reserved_item.expect("positive reservation must produce a bulk item");
-
-    match sender.bulk.try_send(reserved_item) {
-        Ok(()) => Ok((reserved_packets, overflow)),
-        Err(TrySendError::Full(item)) => {
-            sender.bulk_credits.release(reservation);
-            Err(BulkQueueSendError {
-                item,
-                overflow,
-                disconnected: false,
-            })
-        }
-        Err(TrySendError::Disconnected(item)) => {
-            sender.bulk_credits.release(reservation);
-            Err(BulkQueueSendError {
-                item,
-                overflow,
-                disconnected: true,
-            })
-        }
     }
 }
 
@@ -174,9 +129,8 @@ impl DecryptWorkerPool {
             senders.push(DecryptWorkerSender {
                 control: control_tx,
                 priority: priority_tx,
-                bulk: bulk_tx,
+                bulk: BulkLanePrefixSender::new(bulk_tx, bulk_credits),
                 fsp_aead_completion: fsp_aead_completion_tx,
-                bulk_credits,
             });
         }
         let pool = Self {
@@ -251,7 +205,7 @@ impl DecryptWorkerPool {
 
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
         self.senders[idx]
-            .bulk_credits
+            .bulk
             .capacity()
             .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX)
     }
@@ -327,8 +281,11 @@ impl DecryptWorkerPool {
         let Some(sender) = self.senders.get(idx) else {
             return Err(jobs);
         };
-        match try_send_bulk_item_prefix(sender, item_from_jobs(jobs)) {
-            Ok((reserved_packets, overflow)) => {
+        match sender.bulk.try_send_prefix(item_from_jobs(jobs)) {
+            BulkLanePrefixSendResult::Sent {
+                reserved_packets,
+                overflow,
+            } => {
                 record_decrypt_worker_bulk_queue_depth(sender, reserved_packets, role);
                 match overflow {
                     Some(item) => {
@@ -339,8 +296,9 @@ impl DecryptWorkerPool {
                     None => Ok(()),
                 }
             }
-            Err(err) => {
-                let disconnected = err.disconnected;
+            BulkLanePrefixSendResult::Rejected(err) => {
+                let disconnected =
+                    matches!(err.reason, BulkLanePrefixRejectReason::ReceiverClosed);
                 let mut returned = jobs_from_item(err.item);
                 if let Some(overflow) = err.overflow {
                     returned.extend(jobs_from_item(overflow));
@@ -441,8 +399,11 @@ impl DecryptWorkerPool {
         let sender = &self.senders[idx];
         let role =
             crate::perf_profile::enabled().then(|| decrypt_worker_bulk_queue_role(&item));
-        match try_send_bulk_item_prefix(sender, item) {
-            Ok((reserved_packets, overflow_item)) => {
+        match sender.bulk.try_send_prefix(item) {
+            BulkLanePrefixSendResult::Sent {
+                reserved_packets,
+                overflow: overflow_item,
+            } => {
                 if let Some(role) = role {
                     record_decrypt_worker_bulk_queue_depth(sender, reserved_packets, role);
                 }
@@ -450,26 +411,22 @@ impl DecryptWorkerPool {
                     record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
                 }
             }
-            Err(err) => {
-                let BulkQueueSendError {
-                    item,
-                    overflow,
-                    disconnected,
-                } = err;
-                if disconnected {
+            BulkLanePrefixSendResult::Rejected(err) => {
+                if matches!(err.reason, BulkLanePrefixRejectReason::ReceiverClosed) {
                     debug!(worker = idx, "DecryptWorker thread gone; dropping bulk job");
-                    if let Some(overflow_item) = &overflow {
+                    if let Some(overflow_item) = &err.overflow {
                         record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
                     }
-                } else {
-                    record_decrypt_worker_bulk_drop_count(
-                        idx,
-                        item.packet_count()
-                            + overflow
-                                .as_ref()
-                                .map_or(0, DecryptWorkerBulkItem::packet_count),
-                    );
+                    return;
                 }
+                record_decrypt_worker_bulk_drop_count(
+                    idx,
+                    err.item.packet_count()
+                        + err
+                            .overflow
+                            .as_ref()
+                            .map_or(0, DecryptWorkerBulkItem::packet_count),
+                );
             }
         }
     }

@@ -300,6 +300,14 @@
     }
 
     #[test]
+    fn encrypted_fmp_decrypt_jobs_enter_worker_bulk_lane_even_when_small() {
+        let session_key = test_session_key(1, 19);
+        let job = dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+
+        assert_eq!(decrypt_job_lane(&job), DecryptWorkerLane::Bulk);
+    }
+
+    #[test]
     fn decrypt_worker_batch_stats_counts_packet_work_without_control_messages() {
         let session_key = test_session_key(1, 17);
         let mut stats = DecryptWorkerBatchStats::enabled_for_test();
@@ -341,6 +349,7 @@
         let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
             bounded::<FspAeadCompletionBatch>(1);
         let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, 1);
+        let bulk = BulkLanePrefixSender::new(bulk_tx, bulk_credits);
         let (return_tx, _return_rx) = decrypt_worker_return_channels_with_caps(1, 1);
         (
             DecryptWorkerPool {
@@ -348,9 +357,8 @@
                     vec![DecryptWorkerSender {
                         control: control_tx,
                         priority: priority_tx,
-                        bulk: bulk_tx,
+                        bulk,
                         fsp_aead_completion: fsp_aead_completion_tx,
-                        bulk_credits,
                     }]
                     .into_boxed_slice(),
                 ),
@@ -382,12 +390,12 @@
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
             let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(cap);
+            let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, cap);
             senders.push(DecryptWorkerSender {
                 control: control_tx,
                 priority: priority_tx,
-                bulk: bulk_tx,
+                bulk: BulkLanePrefixSender::new(bulk_tx, bulk_credits),
                 fsp_aead_completion: fsp_aead_completion_tx,
-                bulk_credits: LaneCreditGate::new(PacketLane::Bulk, cap),
             });
             control_receivers.push(control_rx);
             priority_receivers.push(priority_rx);
@@ -427,12 +435,12 @@
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
             let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(cap);
+            let bulk_credits = LaneCreditGate::new(PacketLane::Bulk, cap);
             senders.push(DecryptWorkerSender {
                 control: control_tx,
                 priority: priority_tx,
-                bulk: bulk_tx,
+                bulk: BulkLanePrefixSender::new(bulk_tx, bulk_credits),
                 fsp_aead_completion: fsp_aead_completion_tx,
-                bulk_credits: LaneCreditGate::new(PacketLane::Bulk, cap),
             });
             control_receivers.push(control_rx);
             priority_receivers.push(priority_rx);
@@ -1801,7 +1809,9 @@
     }
 
     fn dummy_priority_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
-        dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
+        let mut job = dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+        job.lane = DecryptWorkerLane::Priority;
+        job
     }
 
     fn dummy_authenticated_link_event(packet_len: usize) -> DecryptWorkerEvent {
