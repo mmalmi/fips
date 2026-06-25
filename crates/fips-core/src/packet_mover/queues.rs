@@ -920,6 +920,84 @@ impl<K: Copy + Eq, T> DispatchBatcher<K, T> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct WorkerBulkHandoffBatcher<K, T> {
+    batcher: DispatchBatcher<K, T>,
+}
+
+impl<K: Copy + Eq, T> WorkerBulkHandoffBatcher<K, T> {
+    pub(crate) fn new(buffer_capacity: usize) -> Self {
+        Self {
+            batcher: DispatchBatcher::new(buffer_capacity),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.batcher.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_buffer_ptr(&self) -> *const T {
+        self.batcher.pending_buffer_ptr()
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        key: K,
+        batch_max: usize,
+        item: T,
+        dispatch: impl FnMut(K, Vec<T>) -> Vec<T>,
+        on_returned: impl FnMut(Vec<T>),
+    ) {
+        let returned = self.batcher.push(key, batch_max, item, dispatch);
+        Self::handle_returned(returned, on_returned);
+    }
+
+    pub(crate) fn push_with_single(
+        &mut self,
+        key: K,
+        batch_max: usize,
+        item: T,
+        dispatch_single: impl FnMut(K, T) -> Vec<T>,
+        dispatch_batch: impl FnMut(K, Vec<T>) -> Vec<T>,
+        on_returned: impl FnMut(Vec<T>),
+    ) {
+        let returned =
+            self.batcher
+                .push_with_single(key, batch_max, item, dispatch_single, dispatch_batch);
+        Self::handle_returned(returned, on_returned);
+    }
+
+    pub(crate) fn flush(
+        &mut self,
+        dispatch: impl FnMut(K, Vec<T>) -> Vec<T>,
+        on_returned: impl FnMut(Vec<T>),
+    ) {
+        let returned = self.batcher.flush(dispatch);
+        Self::handle_returned(returned, on_returned);
+    }
+
+    pub(crate) fn flush_with_single(
+        &mut self,
+        dispatch_single: impl FnMut(K, T) -> Vec<T>,
+        dispatch_batch: impl FnMut(K, Vec<T>) -> Vec<T>,
+        on_returned: impl FnMut(Vec<T>),
+    ) {
+        let returned = self
+            .batcher
+            .flush_with_single(dispatch_single, dispatch_batch);
+        Self::handle_returned(returned, on_returned);
+    }
+
+    fn handle_returned(returned: Vec<T>, mut on_returned: impl FnMut(Vec<T>)) {
+        if returned.is_empty() {
+            return;
+        }
+
+        on_returned(returned);
+    }
+}
+
 pub(crate) struct PriorityBulkDrainCursor<T> {
     first_priority: Option<T>,
     first_bulk: Option<T>,
@@ -2096,6 +2174,104 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(dispatched, vec![(7, vec!["a", "b"])]);
+    }
+
+    #[test]
+    fn worker_bulk_handoff_batcher_reports_returned_flush_work() {
+        let mut batcher = WorkerBulkHandoffBatcher::new(4);
+        let mut returned_batches = Vec::new();
+
+        batcher.push(
+            1,
+            8,
+            "a",
+            |_key, _items| Vec::new(),
+            |returned| returned_batches.push(returned),
+        );
+        assert!(returned_batches.is_empty());
+
+        batcher.flush(
+            |key, items| {
+                assert_eq!(key, 1);
+                assert_eq!(items, vec!["a"]);
+                vec!["returned"]
+            },
+            |returned| returned_batches.push(returned),
+        );
+
+        assert_eq!(returned_batches, vec![vec!["returned"]]);
+        assert!(batcher.is_empty());
+    }
+
+    #[test]
+    fn worker_bulk_handoff_batcher_flushes_old_key_before_new_item() {
+        let mut batcher = WorkerBulkHandoffBatcher::new(4);
+        let mut dispatched = Vec::new();
+        let mut returned_batches = Vec::new();
+
+        batcher.push(
+            1,
+            8,
+            "a",
+            |_key, _items| Vec::new(),
+            |_| panic!("first item should only be buffered"),
+        );
+        batcher.push(
+            2,
+            8,
+            "b",
+            |key, items| {
+                dispatched.push((key, items));
+                vec!["returned-a"]
+            },
+            |returned| returned_batches.push(returned),
+        );
+
+        assert_eq!(dispatched, vec![(1, vec!["a"])]);
+        assert_eq!(returned_batches, vec![vec!["returned-a"]]);
+
+        batcher.flush(
+            |key, items| {
+                dispatched.push((key, items));
+                Vec::new()
+            },
+            |returned| returned_batches.push(returned),
+        );
+
+        assert_eq!(dispatched, vec![(1, vec!["a"]), (2, vec!["b"])]);
+        assert_eq!(returned_batches, vec![vec!["returned-a"]]);
+    }
+
+    #[test]
+    fn worker_bulk_handoff_batcher_single_flush_preserves_pending_buffer() {
+        let mut batcher = WorkerBulkHandoffBatcher::new(4);
+        let pending_buffer = batcher.pending_buffer_ptr();
+        let mut singles = Vec::new();
+
+        batcher.push_with_single(
+            1,
+            8,
+            "a",
+            |key, item| {
+                singles.push((key, item));
+                Vec::new()
+            },
+            |_key, _items| panic!("single pending item should not batch-dispatch"),
+            |_| panic!("single flush should not return work"),
+        );
+        assert!(singles.is_empty());
+
+        batcher.flush_with_single(
+            |key, item| {
+                singles.push((key, item));
+                Vec::new()
+            },
+            |_key, _items| panic!("single pending item should not batch-dispatch"),
+            |_| panic!("single flush should not return work"),
+        );
+
+        assert_eq!(singles, vec![(1, "a")]);
+        assert_eq!(batcher.pending_buffer_ptr(), pending_buffer);
     }
 
     #[tokio::test]

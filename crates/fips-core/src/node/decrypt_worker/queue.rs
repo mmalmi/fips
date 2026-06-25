@@ -292,13 +292,13 @@ struct DecryptJobBatchKey {
 }
 
 pub(crate) struct DecryptJobBatcher {
-    batcher: DispatchBatcher<DecryptJobBatchKey, DecryptJob>,
+    batcher: WorkerBulkHandoffBatcher<DecryptJobBatchKey, DecryptJob>,
 }
 
 impl DecryptJobBatcher {
     pub(crate) fn new() -> Self {
         Self {
-            batcher: DispatchBatcher::new(DECRYPT_WORKER_BULK_BATCH_MAX),
+            batcher: WorkerBulkHandoffBatcher::new(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
     }
 
@@ -321,27 +321,31 @@ impl DecryptJobBatcher {
             session_key,
         };
         let batch_max = workers.bulk_batch_packet_max_for(worker_idx);
-        let returned = self.batcher.push_with_single(
+        self.batcher.push_with_single(
             key,
             batch_max,
             job,
             |key, job| dispatch_single_decrypt_job(workers, key, job),
             |key, jobs| dispatch_decrypt_job_batch(workers, key, jobs),
-        );
-        debug_assert!(
-            returned.is_empty(),
-            "FMP decrypt dispatch drops at the worker boundary"
+            |returned| {
+                debug_assert!(
+                    returned.is_empty(),
+                    "FMP decrypt dispatch drops at the worker boundary"
+                );
+            },
         );
     }
 
     pub(crate) fn flush(&mut self, workers: &DecryptWorkerPool) {
-        let returned = self.batcher.flush_with_single(
+        self.batcher.flush_with_single(
             |key, job| dispatch_single_decrypt_job(workers, key, job),
             |key, jobs| dispatch_decrypt_job_batch(workers, key, jobs),
-        );
-        debug_assert!(
-            returned.is_empty(),
-            "FMP decrypt dispatch drops at the worker boundary"
+            |returned| {
+                debug_assert!(
+                    returned.is_empty(),
+                    "FMP decrypt dispatch drops at the worker boundary"
+                );
+            },
         );
     }
 }
@@ -374,13 +378,13 @@ fn dispatch_decrypt_job_batch(
 }
 
 struct FspDecryptJobBatcher {
-    batcher: DispatchBatcher<usize, FspDecryptJob>,
+    batcher: WorkerBulkHandoffBatcher<usize, FspDecryptJob>,
 }
 
 impl FspDecryptJobBatcher {
     fn new() -> Self {
         Self {
-            batcher: DispatchBatcher::new(DECRYPT_WORKER_BULK_BATCH_MAX),
+            batcher: WorkerBulkHandoffBatcher::new(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
     }
 
@@ -397,19 +401,22 @@ impl FspDecryptJobBatcher {
         }
 
         let batch_max = workers.bulk_batch_packet_max_for(worker_idx);
-        let returned = self
-            .batcher
-            .push(worker_idx, batch_max, job, |worker_idx, jobs| {
+        self.batcher.push(
+            worker_idx,
+            batch_max,
+            job,
+            |worker_idx, jobs| {
                 dispatch_fsp_decrypt_job_batch(workers, worker_idx, jobs)
-            });
-        drop_returned_fsp_decrypt_jobs(returned);
+            },
+            drop_returned_fsp_decrypt_jobs,
+        );
     }
 
     fn flush(&mut self, workers: &DecryptWorkerPool) {
-        let returned = self
-            .batcher
-            .flush(|worker_idx, jobs| dispatch_fsp_decrypt_job_batch(workers, worker_idx, jobs));
-        drop_returned_fsp_decrypt_jobs(returned);
+        self.batcher.flush(
+            |worker_idx, jobs| dispatch_fsp_decrypt_job_batch(workers, worker_idx, jobs),
+            drop_returned_fsp_decrypt_jobs,
+        );
     }
 }
 
