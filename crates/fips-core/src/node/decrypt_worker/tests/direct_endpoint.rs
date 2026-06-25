@@ -770,29 +770,29 @@
             .expect("priority packet should enqueue");
 
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        match recv_worker_item_biased(
+        match recv_biased_worker_queue_item(
             &control_rx,
             &priority_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
         ) {
-            DecryptWorkerQueueItem::Control(WorkerMsg::RegisterSession {
+            WorkerQueueItem::Control(WorkerMsg::RegisterSession {
                 session_key: got,
                 ..
             }) => assert_eq!(got, session_key),
-            DecryptWorkerQueueItem::Control(_) => {
+            WorkerQueueItem::Control(_) => {
                 panic!("expected control registration item")
             }
-            DecryptWorkerQueueItem::Priority(_) => {
+            WorkerQueueItem::Priority(_) => {
                 panic!("blocking receive must not select priority while control is ready")
             }
-            DecryptWorkerQueueItem::Bulk(_) => {
+            WorkerQueueItem::Bulk(_) => {
                 panic!("blocking receive must not select bulk while control is ready")
             }
-            DecryptWorkerQueueItem::FspAeadCompletion(_) => {
+            WorkerQueueItem::Completion(_) => {
                 panic!("blocking receive must not select FSP AEAD completion while control is ready")
             }
-            DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
+            WorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
         assert_eq!(priority_rx.len(), 1, "priority work should remain queued");
         assert_eq!(

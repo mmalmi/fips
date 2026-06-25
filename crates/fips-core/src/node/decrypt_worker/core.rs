@@ -17,7 +17,9 @@ use crate::packet_mover::{
     LaneCreditGate, OrderSequence, OrderToken, OwnerCompletionBatch, OwnerGeneration, OwnerKey,
     OwnerOrderedCompletion, OwnerReservation, OutputTarget, PacketLane, PacketOutputTarget,
     PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender,
-    SplitBulkLaneItem, StatelessCryptoWorker, priority_bulk_lane_channels,
+    SplitBulkLaneItem, StatelessCryptoWorker, WorkerDrainAction, WorkerDrainCursor,
+    WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
+    recv_biased_worker_queue_item, try_recv_reserved_worker_queue_item,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{PacketBuffer, TransportAddr, TransportId};

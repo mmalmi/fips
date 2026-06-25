@@ -1,6 +1,8 @@
 use super::{AdmissionDrop, AdmissionDropReason, PacketLane};
 use crate::transport::{PacketRx, ReceivedPacket};
-use crossbeam_channel::{Sender as CrossbeamSender, TrySendError as CrossbeamTrySendError};
+use crossbeam_channel::{
+    Receiver as CrossbeamReceiver, Sender as CrossbeamSender, TrySendError as CrossbeamTrySendError,
+};
 use std::collections::VecDeque;
 use std::sync::{
     Arc,
@@ -822,6 +824,153 @@ impl PacketDrainReceiver<ReceivedPacket> for PacketRx {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum WorkerReservedQueueItem<C, P> {
+    Control(C),
+    Priority(P),
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum WorkerQueueItem<C, P, R, B> {
+    Control(C),
+    Priority(P),
+    Completion(R),
+    Bulk(B),
+    Closed,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum WorkerDrainAction<C, P, R, B> {
+    Control {
+        item: C,
+        flush_completion_outputs: bool,
+    },
+    Priority {
+        item: P,
+        flush_completion_outputs: bool,
+    },
+    Completion(R),
+    FlushCompletionOutputs,
+    Bulk(B),
+}
+
+#[derive(Debug)]
+pub(crate) struct WorkerDrainCursor {
+    remaining_bulk_items: usize,
+    remaining_completion_packets: usize,
+    completion_outputs_need_flush: bool,
+}
+
+pub(crate) fn try_recv_reserved_worker_queue_item<C, P>(
+    control_rx: &CrossbeamReceiver<C>,
+    priority_rx: &CrossbeamReceiver<P>,
+) -> Option<WorkerReservedQueueItem<C, P>> {
+    if let Ok(item) = control_rx.try_recv() {
+        return Some(WorkerReservedQueueItem::Control(item));
+    }
+    if let Ok(item) = priority_rx.try_recv() {
+        return Some(WorkerReservedQueueItem::Priority(item));
+    }
+    None
+}
+
+pub(crate) fn recv_biased_worker_queue_item<C, P, R, B>(
+    control_rx: &CrossbeamReceiver<C>,
+    priority_rx: &CrossbeamReceiver<P>,
+    completion_rx: &CrossbeamReceiver<R>,
+    bulk_rx: &CrossbeamReceiver<B>,
+) -> WorkerQueueItem<C, P, R, B> {
+    if let Some(item) = try_recv_reserved_worker_queue_item(control_rx, priority_rx) {
+        return match item {
+            WorkerReservedQueueItem::Control(item) => WorkerQueueItem::Control(item),
+            WorkerReservedQueueItem::Priority(item) => WorkerQueueItem::Priority(item),
+        };
+    }
+    if let Ok(item) = completion_rx.try_recv() {
+        return WorkerQueueItem::Completion(item);
+    }
+
+    crossbeam_channel::select_biased! {
+        recv(control_rx) -> item => match item {
+            Ok(item) => WorkerQueueItem::Control(item),
+            Err(_) => WorkerQueueItem::Closed,
+        },
+        recv(priority_rx) -> item => match item {
+            Ok(item) => WorkerQueueItem::Priority(item),
+            Err(_) => WorkerQueueItem::Closed,
+        },
+        recv(completion_rx) -> item => match item {
+            Ok(item) => WorkerQueueItem::Completion(item),
+            Err(_) => WorkerQueueItem::Closed,
+        },
+        recv(bulk_rx) -> item => match item {
+            Ok(item) => WorkerQueueItem::Bulk(item),
+            Err(_) => WorkerQueueItem::Closed,
+        },
+    }
+}
+
+impl WorkerDrainCursor {
+    pub(crate) fn new(bulk_item_budget: usize, completion_packet_budget: usize) -> Self {
+        Self {
+            remaining_bulk_items: bulk_item_budget,
+            remaining_completion_packets: completion_packet_budget,
+            completion_outputs_need_flush: false,
+        }
+    }
+
+    pub(crate) fn next<C, P, R, B>(
+        &mut self,
+        control_rx: &CrossbeamReceiver<C>,
+        priority_rx: &CrossbeamReceiver<P>,
+        completion_rx: &CrossbeamReceiver<R>,
+        bulk_rx: &CrossbeamReceiver<B>,
+        mut completion_packet_count: impl FnMut(&R) -> usize,
+    ) -> Option<WorkerDrainAction<C, P, R, B>> {
+        if self.remaining_bulk_items == 0 {
+            return None;
+        }
+
+        if let Some(item) = try_recv_reserved_worker_queue_item(control_rx, priority_rx) {
+            let flush_completion_outputs = std::mem::take(&mut self.completion_outputs_need_flush);
+            return Some(match item {
+                WorkerReservedQueueItem::Control(item) => WorkerDrainAction::Control {
+                    item,
+                    flush_completion_outputs,
+                },
+                WorkerReservedQueueItem::Priority(item) => WorkerDrainAction::Priority {
+                    item,
+                    flush_completion_outputs,
+                },
+            });
+        }
+
+        if self.remaining_completion_packets > 0
+            && let Ok(item) = completion_rx.try_recv()
+        {
+            self.remaining_completion_packets = self
+                .remaining_completion_packets
+                .saturating_sub(completion_packet_count(&item).max(1));
+            self.completion_outputs_need_flush = true;
+            return Some(WorkerDrainAction::Completion(item));
+        }
+
+        if self.completion_outputs_need_flush {
+            self.completion_outputs_need_flush = false;
+            return Some(WorkerDrainAction::FlushCompletionOutputs);
+        }
+
+        bulk_rx.try_recv().ok().map(WorkerDrainAction::Bulk)
+    }
+
+    pub(crate) fn charge_bulk_work(&mut self, count: usize) {
+        self.remaining_bulk_items = self.remaining_bulk_items.saturating_sub(count.max(1));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1172,6 +1321,192 @@ mod tests {
         assert_eq!(reject.item, TestBulk(vec![1, 2]));
         assert_eq!(reject.overflow, None);
         assert_eq!(sender.queued_packets(), 0);
+    }
+
+    #[test]
+    fn worker_reserved_queue_item_prefers_control_before_priority() {
+        let (control_tx, control_rx) = crossbeam_channel::bounded(1);
+        let (priority_tx, priority_rx) = crossbeam_channel::bounded(1);
+        control_tx.send("control").unwrap();
+        priority_tx.send("priority").unwrap();
+
+        assert_eq!(
+            try_recv_reserved_worker_queue_item(&control_rx, &priority_rx),
+            Some(WorkerReservedQueueItem::Control("control"))
+        );
+        assert_eq!(
+            try_recv_reserved_worker_queue_item(&control_rx, &priority_rx),
+            Some(WorkerReservedQueueItem::Priority("priority"))
+        );
+        assert_eq!(
+            try_recv_reserved_worker_queue_item(&control_rx, &priority_rx),
+            None
+        );
+    }
+
+    #[test]
+    fn worker_queue_blocking_receive_prefers_reserved_then_completion_then_bulk() {
+        let (control_tx, control_rx) = crossbeam_channel::bounded(1);
+        let (priority_tx, priority_rx) = crossbeam_channel::bounded(1);
+        let (completion_tx, completion_rx) = crossbeam_channel::bounded(1);
+        let (bulk_tx, bulk_rx) = crossbeam_channel::bounded(1);
+        control_tx.send("control").unwrap();
+        priority_tx.send("priority").unwrap();
+        completion_tx.send("completion").unwrap();
+        bulk_tx.send("bulk").unwrap();
+
+        assert_eq!(
+            recv_biased_worker_queue_item(&control_rx, &priority_rx, &completion_rx, &bulk_rx),
+            WorkerQueueItem::Control("control")
+        );
+        assert_eq!(
+            recv_biased_worker_queue_item(&control_rx, &priority_rx, &completion_rx, &bulk_rx),
+            WorkerQueueItem::Priority("priority")
+        );
+        assert_eq!(
+            recv_biased_worker_queue_item(&control_rx, &priority_rx, &completion_rx, &bulk_rx),
+            WorkerQueueItem::Completion("completion")
+        );
+        assert_eq!(
+            recv_biased_worker_queue_item(&control_rx, &priority_rx, &completion_rx, &bulk_rx),
+            WorkerQueueItem::Bulk("bulk")
+        );
+    }
+
+    #[test]
+    fn worker_drain_cursor_bounds_completion_slice_before_bulk() {
+        let (_control_tx, control_rx) = crossbeam_channel::bounded::<&str>(1);
+        let (_priority_tx, priority_rx) = crossbeam_channel::bounded::<&str>(1);
+        let (completion_tx, completion_rx) = crossbeam_channel::bounded(3);
+        let (bulk_tx, bulk_rx) = crossbeam_channel::bounded(1);
+        completion_tx.send(vec![1]).unwrap();
+        completion_tx.send(vec![2]).unwrap();
+        completion_tx.send(vec![3]).unwrap();
+        bulk_tx.send("bulk").unwrap();
+        let mut cursor = WorkerDrainCursor::new(1, 2);
+
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            Some(WorkerDrainAction::Completion(vec![1]))
+        );
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            Some(WorkerDrainAction::Completion(vec![2]))
+        );
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            Some(WorkerDrainAction::FlushCompletionOutputs)
+        );
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            Some(WorkerDrainAction::Bulk("bulk"))
+        );
+        assert_eq!(completion_rx.len(), 1);
+    }
+
+    #[test]
+    fn worker_drain_cursor_flushes_completion_outputs_before_reserved_work() {
+        let (control_tx, control_rx) = crossbeam_channel::bounded(1);
+        let (_priority_tx, priority_rx) = crossbeam_channel::bounded::<&str>(1);
+        let (completion_tx, completion_rx) = crossbeam_channel::bounded(1);
+        let (_bulk_tx, bulk_rx) = crossbeam_channel::bounded::<&str>(1);
+        completion_tx.send(vec![1]).unwrap();
+        let mut cursor = WorkerDrainCursor::new(1, 1);
+
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            Some(WorkerDrainAction::Completion(vec![1]))
+        );
+        control_tx.send("control").unwrap();
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            Some(WorkerDrainAction::Control {
+                item: "control",
+                flush_completion_outputs: true,
+            })
+        );
+    }
+
+    #[test]
+    fn worker_drain_cursor_charges_bulk_by_handled_work() {
+        let (_control_tx, control_rx) = crossbeam_channel::bounded::<&str>(1);
+        let (_priority_tx, priority_rx) = crossbeam_channel::bounded::<&str>(1);
+        let (_completion_tx, completion_rx) = crossbeam_channel::bounded::<Vec<usize>>(1);
+        let (bulk_tx, bulk_rx) = crossbeam_channel::bounded(3);
+        bulk_tx.send("bulk-1").unwrap();
+        bulk_tx.send("bulk-2").unwrap();
+        bulk_tx.send("bulk-3").unwrap();
+        let mut cursor = WorkerDrainCursor::new(3, 0);
+
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            Some(WorkerDrainAction::Bulk("bulk-1"))
+        );
+        cursor.charge_bulk_work(2);
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            Some(WorkerDrainAction::Bulk("bulk-2"))
+        );
+        cursor.charge_bulk_work(1);
+        assert_eq!(
+            cursor.next(
+                &control_rx,
+                &priority_rx,
+                &completion_rx,
+                &bulk_rx,
+                Vec::len,
+            ),
+            None
+        );
+        assert_eq!(bulk_rx.len(), 1);
     }
 
     #[test]

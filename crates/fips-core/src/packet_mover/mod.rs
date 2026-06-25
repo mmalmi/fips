@@ -76,7 +76,9 @@ pub(crate) use queues::{
     BulkLanePrefixSender, DispatchBatcher, LaneCreditGate, LaneCreditReservation,
     PacketDrainAction, PacketDrainCursor, PacketDrainReceiver, PriorityBulkDrainCursor,
     PriorityBulkLaneDropReason, PriorityBulkLaneSendResult, PriorityBulkLaneSender, QueueAdmission,
-    QueueCaps, QueuedPacket, SingleLaneDrainCursor, SplitBulkLaneItem, priority_bulk_lane_channels,
+    QueueCaps, QueuedPacket, SingleLaneDrainCursor, SplitBulkLaneItem, WorkerDrainAction,
+    WorkerDrainCursor, WorkerQueueItem, WorkerReservedQueueItem, priority_bulk_lane_channels,
+    recv_biased_worker_queue_item, try_recv_reserved_worker_queue_item,
 };
 pub(crate) use retire::{OrderedRetireBuffer, OrderedRetireError};
 
