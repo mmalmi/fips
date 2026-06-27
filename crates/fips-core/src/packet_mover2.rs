@@ -17,13 +17,16 @@
 //! in-flight state before crypto work leaves the owner; workers only copy/open
 //! bytes and return completions; owners retire those completions in order.
 
-use crate::node::{EndpointEventSender, NodeEndpointEvent};
+use crate::node::{
+    EndpointCommandLane, EndpointDataPayload, EndpointDataSend, EndpointEventSender,
+    NodeEndpointCommand, NodeEndpointEvent,
+};
 use crate::transport::{
     PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,
     TransportId,
 };
 use crate::upper::tun::TunOutboundRx;
-use crate::{NodeAddr, PeerIdentity};
+use crate::{NodeAddr, NodeError, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -1721,6 +1724,281 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PacketMover2EndpointCommandPayload<'a> {
+    dest_addr: NodeAddr,
+    dest_pubkey: secp256k1::PublicKey,
+    lane: EndpointCommandLane,
+    payload: &'a [u8],
+}
+
+impl<'a> PacketMover2EndpointCommandPayload<'a> {
+    fn new(send: &'a EndpointDataSend) -> Self {
+        Self {
+            dest_addr: send.dest_addr(),
+            dest_pubkey: send.dest_pubkey(),
+            lane: send.payload().lane(),
+            payload: send.payload().as_slice(),
+        }
+    }
+
+    pub(crate) fn dest_addr(&self) -> NodeAddr {
+        self.dest_addr
+    }
+
+    pub(crate) fn dest_pubkey(&self) -> secp256k1::PublicKey {
+        self.dest_pubkey
+    }
+
+    pub(crate) fn lane(&self) -> EndpointCommandLane {
+        self.lane
+    }
+
+    pub(crate) fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2EndpointCommandDropReason {
+    InvalidPayload,
+    NoRoute,
+    NotEstablished,
+    MtuExceeded,
+    StaleGeneration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2EndpointCommandDrop {
+    dest_addr: NodeAddr,
+    lane: EndpointCommandLane,
+    payload_len: usize,
+    reason: PacketMover2EndpointCommandDropReason,
+}
+
+impl PacketMover2EndpointCommandDrop {
+    fn new(
+        request: &PacketMover2EndpointCommandPayload<'_>,
+        reason: PacketMover2EndpointCommandDropReason,
+    ) -> Self {
+        Self {
+            dest_addr: request.dest_addr(),
+            lane: request.lane(),
+            payload_len: request.payload().len(),
+            reason,
+        }
+    }
+
+    pub(crate) fn dest_addr(&self) -> NodeAddr {
+        self.dest_addr
+    }
+
+    pub(crate) fn lane(&self) -> EndpointCommandLane {
+        self.lane
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn reason(&self) -> PacketMover2EndpointCommandDropReason {
+        self.reason
+    }
+}
+
+pub(crate) trait PacketMover2EndpointCommandRouter {
+    fn route_endpoint_command_payload(
+        &mut self,
+        request: PacketMover2EndpointCommandPayload<'_>,
+    ) -> Result<OutboundPacket, PacketMover2EndpointCommandDropReason>;
+}
+
+impl<F> PacketMover2EndpointCommandRouter for F
+where
+    F: for<'a> FnMut(
+        PacketMover2EndpointCommandPayload<'a>,
+    ) -> Result<OutboundPacket, PacketMover2EndpointCommandDropReason>,
+{
+    fn route_endpoint_command_payload(
+        &mut self,
+        request: PacketMover2EndpointCommandPayload<'_>,
+    ) -> Result<OutboundPacket, PacketMover2EndpointCommandDropReason> {
+        self(request)
+    }
+}
+
+pub(crate) struct PacketMover2EndpointCommandSource<'a, R> {
+    priority_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    bulk_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    router: &'a mut R,
+    drops: Vec<PacketMover2EndpointCommandDrop>,
+    deferred_commands: Vec<NodeEndpointCommand>,
+}
+
+impl<'a, R> PacketMover2EndpointCommandSource<'a, R> {
+    pub(crate) fn new(
+        priority_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        bulk_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        router: &'a mut R,
+    ) -> Self {
+        Self {
+            priority_rx,
+            bulk_rx,
+            router,
+            drops: Vec::new(),
+            deferred_commands: Vec::new(),
+        }
+    }
+
+    pub(crate) fn drops(&self) -> &[PacketMover2EndpointCommandDrop] {
+        &self.drops
+    }
+
+    fn take_drops(&mut self) -> Vec<PacketMover2EndpointCommandDrop> {
+        std::mem::take(&mut self.drops)
+    }
+
+    pub(crate) fn deferred_commands(&self) -> &[NodeEndpointCommand] {
+        &self.deferred_commands
+    }
+
+    fn take_deferred_commands(&mut self) -> Vec<NodeEndpointCommand> {
+        std::mem::take(&mut self.deferred_commands)
+    }
+}
+
+impl<R> PacketMover2EndpointCommandSource<'_, R>
+where
+    R: PacketMover2EndpointCommandRouter,
+{
+    fn route_send<F>(
+        &mut self,
+        send: EndpointDataSend,
+        mut push: F,
+    ) -> Result<(), PacketMover2EndpointCommandDropReason>
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let request = PacketMover2EndpointCommandPayload::new(&send);
+        match self.router.route_endpoint_command_payload(request) {
+            Ok(packet) => {
+                push(packet);
+                Ok(())
+            }
+            Err(reason) => {
+                self.drops
+                    .push(PacketMover2EndpointCommandDrop::new(&request, reason));
+                Err(reason)
+            }
+        }
+    }
+
+    fn route_command<F>(&mut self, command: NodeEndpointCommand, mut push: F)
+    where
+        F: FnMut(OutboundPacket),
+    {
+        match command {
+            NodeEndpointCommand::Send {
+                command,
+                response_tx,
+            } => {
+                let (send, queued_at) = command.into_parts();
+                let _ = queued_at;
+                let dest_addr = send.dest_addr();
+                let result =
+                    self.route_send(send, &mut push)
+                        .map_err(|reason| NodeError::SendFailed {
+                            node_addr: dest_addr,
+                            reason: format!("packet_mover2 endpoint route drop: {reason:?}"),
+                        });
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointCommand::SendOneway { command } => {
+                let (send, queued_at) = command.into_parts();
+                let _ = queued_at;
+                let _ = self.route_send(send, &mut push);
+            }
+            NodeEndpointCommand::SendBatchOneway { command, lane } => {
+                let (remote, payloads, queued_at) = command.into_parts();
+                let _ = (lane, queued_at);
+                for payload in payloads {
+                    let _ = self.route_send(EndpointDataSend::new(remote, payload), &mut push);
+                }
+            }
+            other => self.deferred_commands.push(other),
+        }
+    }
+}
+
+impl<R> PacketMover2OutboundSource for PacketMover2EndpointCommandSource<'_, R>
+where
+    R: PacketMover2EndpointCommandRouter,
+{
+    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let mut drained_cost = 0usize;
+        while drained_cost < limit {
+            let Ok(command) = self.priority_rx.try_recv() else {
+                break;
+            };
+            drained_cost = drained_cost.saturating_add(command.drain_cost());
+            self.route_command(command, &mut push);
+        }
+        while drained_cost < limit {
+            let Ok(command) = self.bulk_rx.try_recv() else {
+                break;
+            };
+            drained_cost = drained_cost.saturating_add(command.drain_cost());
+            self.route_command(command, &mut push);
+        }
+        drained_cost
+    }
+}
+
+pub(crate) struct PacketMover2LiveOutboundSources<'a, Endpoint, Tun> {
+    endpoint: &'a mut Endpoint,
+    endpoint_limit: usize,
+    tun: &'a mut Tun,
+    tun_limit: usize,
+}
+
+impl<'a, Endpoint, Tun> PacketMover2LiveOutboundSources<'a, Endpoint, Tun> {
+    pub(crate) fn new(
+        endpoint: &'a mut Endpoint,
+        endpoint_limit: usize,
+        tun: &'a mut Tun,
+        tun_limit: usize,
+    ) -> Self {
+        Self {
+            endpoint,
+            endpoint_limit,
+            tun,
+            tun_limit,
+        }
+    }
+}
+
+impl<Endpoint, Tun> PacketMover2OutboundSource
+    for PacketMover2LiveOutboundSources<'_, Endpoint, Tun>
+where
+    Endpoint: PacketMover2OutboundSource,
+    Tun: PacketMover2OutboundSource,
+{
+    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let endpoint_limit = self.endpoint_limit.min(limit);
+        let endpoint_drained = self.endpoint.drain_outbound(endpoint_limit, &mut push);
+        let remaining = limit.saturating_sub(endpoint_drained);
+        let tun_limit = self.tun_limit.min(remaining);
+        let tun_drained = self.tun.drain_outbound(tun_limit, push);
+        endpoint_drained.saturating_add(tun_drained)
+    }
+}
+
 impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
     fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
     where
@@ -2325,6 +2603,8 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     summary: PacketMover2RuntimeSummary,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
+    endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
+    endpoint_deferred_commands: usize,
     output_drops: Vec<PacketMover2OutputDrop>,
     drops: Vec<PacketDrop>,
     transport_planned: usize,
@@ -2338,6 +2618,8 @@ impl PacketMover2LiveNodeTurn {
             summary: turn.summary(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
+            endpoint_command_drops: Vec::new(),
+            endpoint_deferred_commands: 0,
             output_drops: turn.output_drops().to_vec(),
             drops: turn.drops().to_vec(),
             transport_planned: 0,
@@ -2360,6 +2642,22 @@ impl PacketMover2LiveNodeTurn {
 
     fn set_tun_outbound_drops(&mut self, drops: Vec<PacketMover2TunOutboundDrop>) {
         self.tun_outbound_drops = drops;
+    }
+
+    pub(crate) fn endpoint_command_drops(&self) -> &[PacketMover2EndpointCommandDrop] {
+        &self.endpoint_command_drops
+    }
+
+    fn set_endpoint_command_drops(&mut self, drops: Vec<PacketMover2EndpointCommandDrop>) {
+        self.endpoint_command_drops = drops;
+    }
+
+    pub(crate) fn endpoint_deferred_commands(&self) -> usize {
+        self.endpoint_deferred_commands
+    }
+
+    fn set_endpoint_deferred_commands(&mut self, count: usize) {
+        self.endpoint_deferred_commands = count;
     }
 
     pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {
@@ -2669,6 +2967,74 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 crypto_limit,
             )
             .await;
+        report.set_tun_outbound_drops(tun_source.take_drops());
+        report
+    }
+
+    pub(crate) async fn pump_aead_live_node_packet_rx_tun_endpoint_turn<
+        IngressRouter,
+        TunRouter,
+        EndpointRouter,
+        Resolver,
+        Transports,
+    >(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        ingress_router: &mut IngressRouter,
+        packet_limit: usize,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_router: &mut EndpointRouter,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_router: &mut TunRouter,
+        tun_limit: usize,
+        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        IngressRouter: PacketMover2IngressRouter,
+        TunRouter: PacketMover2TunOutboundRouter,
+        EndpointRouter: PacketMover2EndpointCommandRouter,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let mut endpoint_source = PacketMover2EndpointCommandSource::new(
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_router,
+        );
+        let mut tun_source = PacketMover2TunOutboundSource::new(tun_outbound_rx, tun_router);
+        let outbound_limit = endpoint_limit.saturating_add(tun_limit);
+        let mut report = {
+            let mut outbound_source = PacketMover2LiveOutboundSources::new(
+                &mut endpoint_source,
+                endpoint_limit,
+                &mut tun_source,
+                tun_limit,
+            );
+            self.pump_aead_live_node_packet_rx_turn(
+                packet_rx,
+                ingress_router,
+                packet_limit,
+                &mut outbound_source,
+                outbound_limit,
+                tun_tx,
+                endpoint_tx,
+                endpoint_resolver,
+                transports,
+                crypto_limit,
+            )
+            .await
+        };
+        report.set_endpoint_command_drops(endpoint_source.take_drops());
+        let deferred = endpoint_source.take_deferred_commands();
+        report.set_endpoint_deferred_commands(deferred.len());
+        deferred_endpoint_commands.extend(deferred);
         report.set_tun_outbound_drops(tun_source.take_drops());
         report
     }
@@ -3549,6 +3915,22 @@ mod tests {
         ciphertext
     }
 
+    fn open_fsp_wire_payload(payload: &[u8], key: u8) -> Vec<u8> {
+        let header = FspWireHeader::parse(payload).unwrap();
+        let aad = header.header_bytes();
+        let mut ciphertext = payload[header.ciphertext_offset()..].to_vec();
+        let plaintext_len = test_cipher(key)
+            .open_in_place(
+                aead_nonce(header.counter()),
+                Aad::from(&aad),
+                &mut ciphertext,
+            )
+            .unwrap()
+            .len();
+        ciphertext.truncate(plaintext_len);
+        ciphertext
+    }
+
     fn outbound_packet(
         owner: OwnerId,
         generation: u64,
@@ -3782,6 +4164,92 @@ mod tests {
         );
 
         assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 0);
+    }
+
+    #[test]
+    fn endpoint_command_source_drains_priority_defers_admin_and_records_route_drops() {
+        let owner = OwnerId::fsp_node(NodeAddr::from_bytes([0x22; 16]));
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(8);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(8);
+        priority_tx
+            .try_send(NodeEndpointCommand::send_oneway(
+                remote,
+                b"priority-endpoint".to_vec(),
+                None,
+            ))
+            .expect("enqueue priority endpoint command");
+        let (snapshot_tx, _snapshot_rx) = tokio::sync::oneshot::channel();
+        priority_tx
+            .try_send(NodeEndpointCommand::PeerSnapshot {
+                response_tx: snapshot_tx,
+            })
+            .expect("enqueue admin command");
+        let batch = vec![
+            EndpointDataPayload::new(b"bulk-good".to_vec()),
+            EndpointDataPayload::new(b"bulk-drop".to_vec()),
+        ];
+        bulk_tx
+            .try_send(
+                NodeEndpointCommand::send_batch_oneway(
+                    remote,
+                    batch,
+                    None,
+                    EndpointCommandLane::Bulk,
+                )
+                .expect("batch command"),
+            )
+            .expect("enqueue bulk endpoint batch");
+
+        let mut router = |request: PacketMover2EndpointCommandPayload<'_>| {
+            assert_eq!(request.dest_addr(), *remote.node_addr());
+            assert_eq!(request.dest_pubkey(), remote.pubkey_full());
+            match request.payload() {
+                b"priority-endpoint" => Ok(OutboundPacket::fsp(
+                    owner,
+                    3,
+                    PacketClass::Control,
+                    0,
+                    b"priority-wire".to_vec(),
+                )),
+                b"bulk-good" => Ok(OutboundPacket::fsp(
+                    owner,
+                    3,
+                    PacketClass::Bulk,
+                    0,
+                    b"bulk-wire".to_vec(),
+                )),
+                b"bulk-drop" => Err(PacketMover2EndpointCommandDropReason::NoRoute),
+                other => panic!("unexpected endpoint payload: {other:?}"),
+            }
+        };
+        let mut source =
+            PacketMover2EndpointCommandSource::new(&mut priority_rx, &mut bulk_rx, &mut router);
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 3);
+
+        assert_eq!(outbound.len(), 2);
+        assert_eq!(outbound[0].owner, owner);
+        assert_eq!(outbound[0].class, PacketClass::Control);
+        assert_eq!(outbound[0].payload.as_ref(), b"priority-wire");
+        assert_eq!(outbound[1].class, PacketClass::Bulk);
+        assert_eq!(outbound[1].payload.as_ref(), b"bulk-wire");
+        assert_eq!(source.deferred_commands().len(), 1);
+        assert!(matches!(
+            &source.deferred_commands()[0],
+            NodeEndpointCommand::PeerSnapshot { .. }
+        ));
+        assert_eq!(source.drops().len(), 1);
+        assert_eq!(source.drops()[0].dest_addr(), *remote.node_addr());
+        assert_eq!(source.drops()[0].lane(), EndpointCommandLane::Bulk);
+        assert_eq!(source.drops()[0].payload_len(), b"bulk-drop".len());
+        assert_eq!(
+            source.drops()[0].reason(),
+            PacketMover2EndpointCommandDropReason::NoRoute
+        );
+        assert!(priority_rx.try_recv().is_err());
+        assert!(bulk_rx.try_recv().is_err());
     }
 
     #[test]
@@ -5963,6 +6431,169 @@ mod tests {
         );
         assert_eq!(
             driver.owner_mut(fmp_owner).unwrap().active_path(),
+            Some(live_path)
+        );
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
+    }
+
+    #[tokio::test]
+    async fn live_node_packet_rx_tun_endpoint_turn_sends_endpoint_command_to_transport() {
+        let send_transport_id = TransportId::new(80);
+        let recv_transport_id = TransportId::new(81);
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let fsp_source = *remote.node_addr();
+        let fsp_owner = OwnerId::fsp_node(fsp_source);
+        let fsp_key = 80;
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(4);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let live_path = TransportPath::live(send_transport_id, remote_addr);
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(8);
+        let (endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(8);
+        let (endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(8);
+        let payload = EndpointDataPayload::new(b"endpoint-to-transport".to_vec());
+        endpoint_bulk_tx
+            .try_send(
+                NodeEndpointCommand::send_batch_oneway(
+                    remote,
+                    vec![payload],
+                    None,
+                    EndpointCommandLane::Bulk,
+                )
+                .expect("endpoint batch command"),
+            )
+            .expect("enqueue endpoint command");
+        drop(endpoint_priority_tx);
+        let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(8);
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(
+            fsp_owner,
+            OwnerConfig::new(1, 8).with_next_send_counter(800),
+        );
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_active_path(live_path.clone());
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+        let mut ingress_routes = PacketMover2LiveIngressRoutes::default();
+        let mut endpoint_router = |request: PacketMover2EndpointCommandPayload<'_>| {
+            assert_eq!(request.dest_addr(), fsp_source);
+            assert_eq!(request.dest_pubkey(), remote.pubkey_full());
+            assert_eq!(request.lane(), EndpointCommandLane::Bulk);
+            assert_eq!(request.payload(), b"endpoint-to-transport");
+            let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+                8_000,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                request.payload(),
+            );
+            Ok(OutboundPacket::fsp(
+                fsp_owner,
+                1,
+                PacketClass::Bulk,
+                0,
+                inner_plaintext,
+            ))
+        };
+        let mut tun_router = |_packet: &[u8]| -> Result<
+            PacketMover2TunOutboundRoute,
+            PacketMover2TunOutboundDropReason,
+        > { Err(PacketMover2TunOutboundDropReason::NoRoute) };
+        let mut deferred_endpoint_commands = Vec::new();
+
+        let turn = driver
+            .pump_aead_live_node_packet_rx_tun_endpoint_turn(
+                &mut packet_rx,
+                &mut ingress_routes,
+                8,
+                &mut endpoint_priority_rx,
+                &mut endpoint_bulk_rx,
+                &mut endpoint_router,
+                8,
+                &mut tun_outbound_rx,
+                &mut tun_router,
+                8,
+                &mut deferred_endpoint_commands,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                8,
+            )
+            .await;
+
+        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
+        assert_eq!(turn.summary().inbound_admitted(), 0);
+        assert_eq!(turn.summary().outbound_admitted(), 1);
+        assert_eq!(turn.summary().outbound_dropped(), 0);
+        assert_eq!(turn.summary().outputs(), 1);
+        assert_eq!(turn.summary().outputs_sent(), 1);
+        assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.endpoint_command_drops().is_empty());
+        assert_eq!(turn.endpoint_deferred_commands(), 0);
+        assert!(deferred_endpoint_commands.is_empty());
+        assert!(turn.tun_outbound_drops().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert!(turn.drops().is_empty());
+        assert_eq!(turn.transport_planned(), 1);
+        assert_eq!(turn.transport_sent(), 1);
+        assert_eq!(turn.transport_dropped(), 0);
+        assert!(packet_rx.try_recv().is_err());
+        assert!(endpoint_priority_rx.try_recv().is_err());
+        assert!(endpoint_bulk_rx.try_recv().is_err());
+        assert!(tun_outbound_rx.try_recv().is_err());
+        assert!(tun_rx.try_recv().is_err());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+
+        let received =
+            tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                .await
+                .expect("receive endpoint transport output")
+                .expect("packet channel open");
+        assert_eq!(received.transport_id, recv_transport_id);
+        let header = FspWireHeader::parse(&received.data).unwrap();
+        assert_eq!(header.counter(), 800);
+        assert_eq!(header.flags(), 0);
+        let plaintext = open_fsp_wire_payload(&received.data, fsp_key);
+        let (timestamp, msg_type, inner_flags, endpoint_payload) =
+            crate::node::session_wire::fsp_strip_inner_header(&plaintext)
+                .expect("endpoint FSP inner header");
+        assert_eq!(timestamp, 8_000);
+        assert_eq!(
+            msg_type,
+            crate::protocol::SessionMessageType::EndpointData.to_byte()
+        );
+        assert_eq!(inner_flags, 0);
+        assert_eq!(endpoint_payload, b"endpoint-to-transport");
+        assert_eq!(
+            driver.owner_mut(fsp_owner).unwrap().active_path(),
             Some(live_path)
         );
 
