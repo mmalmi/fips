@@ -691,3 +691,100 @@
         send_transport.stop().await.expect("stop send udp");
         recv_transport.stop().await.expect("stop recv udp");
     }
+
+    #[tokio::test]
+    async fn live_node_route_table_turn_drains_sourced_fsp_ingress_to_endpoint() {
+        let source_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let fsp_source = *source_peer.node_addr();
+        let fsp_owner = OwnerId::fsp_node(fsp_source);
+        let fsp_key = 84;
+        let transport_id = TransportId::new(84);
+        let remote_addr = TransportAddr::from_string("198.51.100.84:9000");
+        let mut raw_source =
+            PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fsp(
+                ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr,
+                    fsp_encrypted_wire(20, 0, b"route-table-fsp-ingress", fsp_key),
+                    84_000,
+                ),
+                fsp_source,
+            )]));
+
+        let (endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+        drop((endpoint_priority_tx, endpoint_bulk_tx, tun_outbound_tx));
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(1).expect("endpoint io");
+        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+
+        let mut routes = PacketMover2LiveIngressRoutes::default();
+        routes.register_fsp(
+            fsp_source,
+            PacketMover2IngressRoute::new(fsp_owner, 1, OutputTarget::Endpoint)
+                .with_class(PacketClass::Mmp),
+        );
+        let mut deferred_endpoint_commands = Vec::new();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let resolver = |addr: &NodeAddr| {
+            if addr == &fsp_source {
+                Some(source_peer)
+            } else {
+                None
+            }
+        };
+
+        let turn = driver
+            .pump_aead_live_node_route_table_turn(
+                &mut raw_source,
+                &mut routes,
+                8,
+                &mut endpoint_priority_rx,
+                &mut endpoint_bulk_rx,
+                8,
+                &mut tun_outbound_rx,
+                8,
+                &mut deferred_endpoint_commands,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                resolver,
+                &transports,
+                8,
+            )
+            .await;
+
+        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
+        assert_eq!(turn.summary().inbound_admitted(), 1);
+        assert_eq!(turn.summary().outbound_admitted(), 0);
+        assert_eq!(turn.summary().outputs(), 1);
+        assert_eq!(turn.summary().outputs_sent(), 1);
+        assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.endpoint_command_drops().is_empty());
+        assert!(turn.tun_outbound_drops().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert!(turn.drops().is_empty());
+        assert!(deferred_endpoint_commands.is_empty());
+        assert!(raw_source.source_mut().is_empty());
+        assert!(tun_rx.try_recv().is_err());
+
+        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
+            NodeEndpointEvent::Data {
+                source_peer: delivered_source,
+                payload,
+                ..
+            } => {
+                assert_eq!(delivered_source, source_peer);
+                assert_eq!(payload, b"route-table-fsp-ingress");
+            }
+            event => panic!("expected endpoint data, got {event:?}"),
+        }
+    }
