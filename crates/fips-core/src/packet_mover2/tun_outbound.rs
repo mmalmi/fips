@@ -177,50 +177,6 @@ where
     }
 }
 
-pub(crate) struct PacketMover2TunOutboundSource<'a, R> {
-    rx: &'a mut TunOutboundRx,
-    router: &'a mut R,
-    drops: Vec<PacketMover2TunOutboundDrop>,
-}
-
-impl<'a, R> PacketMover2TunOutboundSource<'a, R> {
-    pub(crate) fn new(rx: &'a mut TunOutboundRx, router: &'a mut R) -> Self {
-        Self {
-            rx,
-            router,
-            drops: Vec::new(),
-        }
-    }
-
-    pub(crate) fn drops(&self) -> &[PacketMover2TunOutboundDrop] {
-        &self.drops
-    }
-
-    fn take_drops(&mut self) -> Vec<PacketMover2TunOutboundDrop> {
-        std::mem::take(&mut self.drops)
-    }
-}
-
-impl<R> PacketMover2OutboundSource for PacketMover2TunOutboundSource<'_, R>
-where
-    R: PacketMover2TunOutboundRouter,
-{
-    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
-    where
-        F: FnMut(OutboundPacket),
-    {
-        let mut drained = 0;
-        while drained < limit {
-            let Ok(packet) = self.rx.try_recv() else {
-                break;
-            };
-            route_tun_outbound_packet_with_router(packet, self.router, &mut self.drops, &mut push);
-            drained += 1;
-        }
-        drained
-    }
-}
-
 fn route_tun_outbound_packet_with_router<R, F>(
     packet: Vec<u8>,
     router: &mut R,

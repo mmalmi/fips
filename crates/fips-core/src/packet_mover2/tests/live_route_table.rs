@@ -1,3 +1,5 @@
+    use crate::node::EndpointDataPayload;
+
     fn tun_ipv6_packet(dest_addr: NodeAddr, len: usize) -> Vec<u8> {
         assert!(len >= 40);
         let mut packet = vec![0u8; len];
@@ -49,7 +51,11 @@
         tx.try_send(oversize.clone())
             .expect("enqueue oversized TUN packet");
 
-        let mut source = PacketMover2TunOutboundSource::new(&mut rx, &mut routes);
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
+        drop((priority_tx, bulk_tx));
+        let mut source =
+            PacketMover2RouteTableOutboundSource::new(&mut priority_rx, &mut bulk_rx, 0, &mut rx, 8, &mut routes);
         let mut outbound = Vec::new();
 
         assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 4);
@@ -66,9 +72,9 @@
             }
         );
         assert_eq!(outbound[0].payload.as_ref(), valid.as_slice());
+        let drops = source.take_tun_outbound_drops();
         assert_eq!(
-            source
-                .drops()
+            drops
                 .iter()
                 .map(PacketMover2TunOutboundDrop::reason)
                 .collect::<Vec<_>>(),
@@ -78,9 +84,9 @@
                 PacketMover2TunOutboundDropReason::MtuExceeded,
             ]
         );
-        assert_eq!(source.drops()[0].payload_len(), unknown.len());
-        assert_eq!(source.drops()[1].payload_len(), invalid.len());
-        assert_eq!(source.drops()[2].payload_len(), oversize.len());
+        assert_eq!(drops[0].payload_len(), unknown.len());
+        assert_eq!(drops[1].payload_len(), invalid.len());
+        assert_eq!(drops[2].payload_len(), oversize.len());
     }
 
     #[test]
@@ -131,8 +137,16 @@
             ))
             .expect("enqueue missing endpoint command");
 
-        let mut source =
-            PacketMover2EndpointCommandSource::new(&mut priority_rx, &mut bulk_rx, &mut routes);
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        drop(tun_tx);
+        let mut source = PacketMover2RouteTableOutboundSource::new(
+            &mut priority_rx,
+            &mut bulk_rx,
+            16,
+            &mut tun_rx,
+            0,
+            &mut routes,
+        );
         let mut outbound = Vec::new();
 
         assert_eq!(source.drain_outbound(16, |packet| outbound.push(packet)), 3);
@@ -165,21 +179,23 @@
         );
         assert_eq!(payload, bulk_payload.as_slice());
 
-        assert_eq!(source.drops().len(), 2);
-        assert_eq!(source.drops()[0].dest_addr(), *remote.node_addr());
-        assert_eq!(source.drops()[0].lane(), EndpointCommandLane::Bulk);
-        assert_eq!(source.drops()[0].payload_len(), oversized_payload.len());
+        let drops = source.take_endpoint_command_drops();
+        assert_eq!(drops.len(), 2);
+        assert_eq!(drops[0].dest_addr(), *remote.node_addr());
+        assert_eq!(drops[0].lane(), EndpointCommandLane::Bulk);
+        assert_eq!(drops[0].payload_len(), oversized_payload.len());
         assert_eq!(
-            source.drops()[0].reason(),
+            drops[0].reason(),
             PacketMover2EndpointCommandDropReason::MtuExceeded
         );
-        assert_eq!(source.drops()[1].dest_addr(), *missing_remote.node_addr());
-        assert_eq!(source.drops()[1].lane(), EndpointCommandLane::Bulk);
-        assert_eq!(source.drops()[1].payload_len(), missing_payload.len());
+        assert_eq!(drops[1].dest_addr(), *missing_remote.node_addr());
+        assert_eq!(drops[1].lane(), EndpointCommandLane::Bulk);
+        assert_eq!(drops[1].payload_len(), missing_payload.len());
         assert_eq!(
-            source.drops()[1].reason(),
+            drops[1].reason(),
             PacketMover2EndpointCommandDropReason::NoRoute
         );
+        assert!(source.take_endpoint_deferred_commands().is_empty());
     }
 
     #[test]
