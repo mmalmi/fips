@@ -8,7 +8,7 @@ pub(super) enum PacketProcessAction {
     DecryptJob {
         job: DecryptJob,
     },
-    EncryptedSlow {
+    EncryptedRekeyTrial {
         packet: ReceivedPacket,
         timer: crate::perf_profile::Timer,
     },

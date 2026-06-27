@@ -179,8 +179,8 @@ impl Node {
                 // already does this on initial promotion; the
                 // existing-peer replace branch was missing it, so a
                 // cross-connection winner ended up never registered
-                // with the worker and silently fell back to the
-                // in-line decrypt path for the lifetime of the peer.
+                // with the worker and dropped established packets until a
+                // later session event happened to retry registration.
                 self.register_decrypt_worker_session(&peer_node_addr);
 
                 debug!(
@@ -294,8 +294,7 @@ impl Node {
 
             // Eagerly hand the FMP recv state to the decrypt-worker
             // shard. From this point on the shard is the
-            // authoritative FMP-replay-window writer for this peer;
-            // rx_loop's in-line decrypt path is no longer used.
+            // authoritative FMP-replay-window writer for this peer.
             self.register_decrypt_worker_session(&peer_node_addr);
 
             info!(

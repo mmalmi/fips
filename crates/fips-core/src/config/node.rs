@@ -813,7 +813,10 @@ pub struct NodeConfig {
     #[serde(default = "NodeConfig::default_system_files_enabled")]
     pub system_files_enabled: bool,
 
-    /// Enable off-task Unix encrypt/decrypt worker pools (`node.worker_pools_enabled`).
+    /// Enable the off-task Unix encrypt/send worker pool (`node.worker_pools_enabled`).
+    ///
+    /// Established receive always uses the decrypt-worker owner path; this flag
+    /// no longer selects an in-line decrypt mode.
     /// Embedded/mobile endpoints can disable this to keep crypto/send work inline
     /// with the rx loop when platform extension sandboxes make OS-thread pools
     /// unsuitable.

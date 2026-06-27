@@ -751,7 +751,7 @@ impl Node {
     /// bulk-fallback select arm (after the selected head item) and interleaved
     /// inside the packet_rx drain loop so bounced FMP plaintexts can't
     /// accumulate behind a hot inbound packet turn.
-    async fn drain_decrypt_fallback(
+    pub(in crate::node) async fn drain_decrypt_fallback(
         &mut self,
         rx: &mut DecryptWorkerFallbackReceivers,
         first_priority_event: Option<DecryptWorkerEvent>,

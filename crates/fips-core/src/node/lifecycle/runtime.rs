@@ -66,29 +66,22 @@ impl Node {
             info!(count = self.transports.len(), "Transports initialized");
         }
 
-        // Spawn the off-task FMP-encrypt + UDP-send + FMP-decrypt
-        // worker pools. **Unix only** — both pools issue direct
-        // sendmmsg(2) / sendmsg(2)+UDP_GSO / recvmmsg(2) calls on
-        // raw file descriptors via `AsRawFd`, which is a unix-only
-        // trait. On Windows the rx_loop's tokio-based send/recv
-        // remain the canonical path; the perf overhaul lands its
-        // gains on unix.
+        // Spawn the off-task FMP-encrypt + UDP-send worker pool on Unix.
+        // The decrypt worker pool is mandatory for established receive and
+        // is spawned below even when the send-side worker pool is disabled.
         //
-        // Worker count defaults to the number of CPUs, overridable
-        // via `FIPS_ENCRYPT_WORKERS=N` / `FIPS_DECRYPT_WORKERS=N`
-        // for debug / benchmarking. Hash-by-destination means a
-        // single TCP flow pins to one worker (preserves wire
-        // ordering); additional workers light up under multi-flow
-        // / multi-peer load. See `node::encrypt_worker` /
-        // `node::decrypt_worker` for full rationale.
+        // Worker count defaults to the number of CPUs, overridable via
+        // `FIPS_ENCRYPT_WORKERS=N` / `FIPS_DECRYPT_WORKERS=N` for debug /
+        // benchmarking. A zero decrypt-worker count is clamped to one worker;
+        // it is a sizing knob, not an alternate inline-decrypt mode.
         #[cfg(unix)]
         {
+            let cpu_default = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .max(1);
             if self.config.node.worker_pools_enabled {
                 node_start_debug_log("Node::start worker pools begin");
-                let cpu_default = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1)
-                    .max(1);
                 let encrypt_worker_count: usize = std::env::var("FIPS_ENCRYPT_WORKERS")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -101,39 +94,12 @@ impl Node {
                     workers = encrypt_worker_count,
                     "Spawned FMP-encrypt worker pool"
                 );
-
-                // `FIPS_DECRYPT_WORKERS=0` disables the pool entirely and
-                // falls through to the in-line rx_loop decrypt path (the
-                // "test-mode" branch in `handle_encrypted_frame`, which is
-                // in fact a fully functional synchronous decrypt). Useful
-                // as an A/B against the worker pipeline when chasing
-                // scheduling/queueing regressions on the native macOS
-                // path. Any non-zero value (env or default) spawns the
-                // pool as before.
-                let decrypt_worker_count: usize = std::env::var("FIPS_DECRYPT_WORKERS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(cpu_default);
-                if decrypt_worker_count == 0 {
-                    info!("FIPS_DECRYPT_WORKERS=0 → in-line decrypt in rx_loop (no worker pool)");
-                } else {
-                    let direct_delivery_sink = self.decrypt_direct_session_delivery_sink();
-                    self.decrypt_workers = Some(
-                        crate::node::decrypt_worker::DecryptWorkerPool::spawn_with_direct_delivery_sink(
-                            decrypt_worker_count,
-                            direct_delivery_sink,
-                        ),
-                    );
-                    info!(
-                        workers = decrypt_worker_count,
-                        "Spawned FMP+FSP-decrypt worker pool"
-                    );
-                }
                 node_start_debug_log("Node::start worker pools complete");
             } else {
                 node_start_debug_log("Node::start worker pools disabled");
-                info!("FIPS worker pools disabled; using in-line crypto/send path");
+                info!("FIPS encrypt worker pool disabled; using in-line send path");
             }
+            self.ensure_decrypt_worker_pool(cpu_default);
         }
 
         if self.config.node.discovery.nostr.enabled {

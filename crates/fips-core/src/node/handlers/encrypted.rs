@@ -17,7 +17,6 @@
 use crate::node::decrypt_worker::{DecryptFailureReport, DecryptJob, DecryptSessionKey};
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
 use crate::node::{AuthenticatedFmpPlaintext, Node, PeerRuntimeReceive, PeerRuntimeReceiveError};
-use crate::noise::NoiseError;
 use crate::transport::ReceivedPacket;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
@@ -46,10 +45,42 @@ enum DecryptFailureAction {
 pub(in crate::node) enum EncryptedFrameFastPath {
     Dispatch(DecryptJob),
     Dropped,
-    Slow(ReceivedPacket),
+    RekeyTrial(ReceivedPacket),
 }
 
 impl Node {
+    pub(in crate::node) fn decrypt_worker_count(default: usize) -> usize {
+        std::env::var("FIPS_DECRYPT_WORKERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default.max(1))
+            .max(1)
+    }
+
+    pub(in crate::node) fn ensure_decrypt_worker_pool(
+        &mut self,
+        default_workers: usize,
+    ) -> crate::node::decrypt_worker::DecryptWorkerPool {
+        if self.decrypt_workers.is_none() {
+            let worker_count = Self::decrypt_worker_count(default_workers);
+            let direct_delivery_sink = self.decrypt_direct_session_delivery_sink();
+            self.decrypt_workers = Some(
+                crate::node::decrypt_worker::DecryptWorkerPool::spawn_with_direct_delivery_sink(
+                    worker_count,
+                    direct_delivery_sink,
+                ),
+            );
+            info!(
+                workers = worker_count,
+                "Spawned FMP+FSP-decrypt worker pool"
+            );
+        }
+        self.decrypt_workers
+            .as_ref()
+            .expect("decrypt worker pool was just ensured")
+            .clone()
+    }
+
     pub(in crate::node) fn try_prepare_encrypted_frame_for_worker(
         &mut self,
         packet: ReceivedPacket,
@@ -83,15 +114,27 @@ impl Node {
             }
         };
         if need_kbit_flip {
-            return EncryptedFrameFastPath::Slow(packet);
+            return EncryptedFrameFastPath::RekeyTrial(packet);
         }
 
         let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
         if self.decrypt_workers.is_none() {
-            return EncryptedFrameFastPath::Slow(packet);
+            self.record_decrypt_worker_unowned_packet_drop(
+                &node_addr,
+                &packet,
+                "missing-worker-pool",
+                header.counter,
+            );
+            return EncryptedFrameFastPath::Dropped;
         }
         if !self.sessions.is_worker_registered(&session_key) {
-            return EncryptedFrameFastPath::Slow(packet);
+            self.record_decrypt_worker_unowned_packet_drop(
+                &node_addr,
+                &packet,
+                "unregistered-session",
+                header.counter,
+            );
+            return EncryptedFrameFastPath::Dropped;
         }
 
         let job = super::super::decrypt_worker::DecryptJob::new(
@@ -125,14 +168,39 @@ impl Node {
             EncryptedFrameFastPath::Dispatch(job) => {
                 if let Some(workers) = self.decrypt_workers.as_ref() {
                     workers.dispatch_job(job);
+                    self.drain_decrypt_worker_test_return().await;
                 }
             }
             EncryptedFrameFastPath::Dropped => (),
-            EncryptedFrameFastPath::Slow(packet) => self.handle_encrypted_frame_slow(packet).await,
+            EncryptedFrameFastPath::RekeyTrial(packet) => {
+                self.handle_encrypted_frame_rekey_trial(packet).await;
+                self.drain_decrypt_worker_test_return().await;
+            }
         }
     }
 
-    pub(in crate::node) async fn handle_encrypted_frame_slow(&mut self, packet: ReceivedPacket) {
+    #[cfg(test)]
+    async fn drain_decrypt_worker_test_return(&mut self) {
+        let Some(mut rx) = self.decrypt_fallback_rx.take() else {
+            return;
+        };
+
+        for _ in 0..100 {
+            if !rx.priority.is_empty() || !rx.authenticated_bulk.is_empty() || !rx.bulk.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        self.drain_decrypt_fallback(&mut rx, None, None, None, 64)
+            .await;
+        self.decrypt_fallback_rx = Some(rx);
+    }
+
+    pub(in crate::node) async fn handle_encrypted_frame_rekey_trial(
+        &mut self,
+        packet: ReceivedPacket,
+    ) {
         // Parse header (fail fast)
         let header = match EncryptedHeader::parse(&packet.data) {
             Some(h) => h,
@@ -240,37 +308,10 @@ impl Node {
             // Fall through to the normal decrypt path.
         }
 
-        // **Worker dispatch is the production path.** Sessions are
-        // registered with the decrypt worker at FMP-establishment
-        // (see `register_decrypt_worker_session` invoked from
-        // `promote_connection`), so in production every
-        // `handle_encrypted_frame` for an established session
-        // dispatches the packet to the worker and returns. All
-        // per-peer bookkeeping runs through
-        // `PeerLifecycleRegistry::record_authenticated_fmp_receive`
-        // after the worker returns compact receive metadata or an
-        // authenticated FMP plaintext fallback.
-        //
-        // The in-line decrypt below this is the **synchronous test-
-        // mode path**: unit tests construct `Node` instances directly
-        // (bypassing `lifecycle::start_async`) and step the event
-        // loop by hand, so they need a synchronous decrypt that
-        // updates `Node` state before the test code returns. In
-        // production `self.decrypt_workers` is always `Some` (spawned
-        // at lifecycle start with `num_cpus` workers), so this branch
-        // is taken and the legacy block below never runs.
+        // Pending-session trial did not authenticate. Fall back only to the
+        // owner worker for the current session; missing ownership is a drop,
+        // not an in-node decrypt bypass.
         let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
-        // **Worker is the production decrypt path.** The previous
-        // version of this gate also required `endpoint_event_tx` to
-        // be `Some`, but that field is only populated when a caller
-        // attaches the endpoint-data API (`endpoint_data_io()`) — in
-        // pure TUN mode (the common iperf-bench shape) the field is
-        // `None`, so the gate silently bounced every packet to the
-        // legacy in-line decrypt path. The worker can now decode direct
-        // local FSP data when the needed sinks exist, so the only
-        // remaining requirements are: a worker pool exists, and this
-        // session has been handed off
-        // to it.
         if let Some(workers) = self.decrypt_workers.as_ref()
             && self.sessions.is_worker_registered(&session_key)
         {
@@ -291,74 +332,17 @@ impl Node {
             return;
         }
 
-        // === Test-mode synchronous decrypt ===
-        // Production never reaches here. See module-level docs. Does
-        // the FMP AEAD in place against the noise session's own
-        // cipher + replay window (which is the authoritative state
-        // when no worker is registered), then hands the FMP plaintext
-        // to the canonical `process_authentic_fmp_plaintext` — same
-        // path the worker-bounce arm in rx_loop takes, so post-
-        // decrypt bookkeeping + link-layer dispatch don't fork.
-        let ciphertext_offset = header.ciphertext_offset();
-        let counter = header.counter;
-        let header_bytes = header.header_bytes;
-        let packet_len = packet.data.len();
-        let packet_timestamp_ms = packet.timestamp_ms;
-        let packet_transport_id = packet.transport_id;
-        let packet_remote_addr = packet.remote_addr.clone();
-        let mut packet_data = packet.data;
-
-        let Some(peer) = self.peers.get_mut(&node_addr) else {
-            self.deregister_session_index(key);
-            return;
-        };
-        let source_peer = *peer.identity();
-        let Some(session) = peer.noise_session_mut() else {
-            warn!(
-                peer = %self.peer_display_name(&node_addr),
-                "Peer in index map has no session"
-            );
-            return;
-        };
-        let decrypt_result = {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
-            session.decrypt_with_replay_check_and_aad_in_place(
-                &mut packet_data[ciphertext_offset..],
-                counter,
-                &header_bytes,
-            )
-        };
-        let plaintext_len = match decrypt_result {
-            Ok(len) => len,
-            Err(e) => {
-                self.log_decrypt_failure(&node_addr, &header, &e);
-                self.handle_decrypt_failure(&node_addr).await;
-                return;
-            }
-        };
-        // The FMP plaintext (4-byte ts + link msg) lives at
-        // packet_data[ciphertext_offset..ciphertext_offset + plaintext_len].
-        // Slice + own a copy to hand to the shared helper. The copy
-        // is cheap (test-mode path; not the hot bench path).
-        let fmp_plaintext: Vec<u8> =
-            packet_data[ciphertext_offset..ciphertext_offset + plaintext_len].to_vec();
-        self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
-            source_peer,
-            packet_transport_id,
-            &packet_remote_addr,
-            packet_timestamp_ms,
-            packet_len,
-            counter,
-            header.flags,
-            &fmp_plaintext,
-        ))
-        .await;
+        self.record_decrypt_worker_unowned_packet_drop(
+            &node_addr,
+            &packet,
+            "rekey-trial-unregistered-session",
+            header.counter,
+        );
     }
 
     /// Single canonical site for "the FMP layer authenticated and
-    /// accepted this packet" side-effects. Called both from the
-    /// worker-bounce arm in rx_loop (production fast path) and from
-    /// the in-line synchronous decrypt below (test-mode path).
+    /// accepted this packet" side-effects. Called from the worker-bounce arm
+    /// in rx_loop and the bounded pending-rekey trial above.
     ///
     /// Performs the per-peer bookkeeping (last-seen, MMP receiver,
     /// link stats, address-rotation) and then dispatches the
@@ -412,9 +396,7 @@ impl Node {
     /// overwrites the worker's entry, which is the correct behaviour
     /// for rekey.
     pub(in crate::node) fn register_decrypt_worker_session(&mut self, node_addr: &crate::NodeAddr) {
-        let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
-            return;
-        };
+        let workers = self.ensure_decrypt_worker_pool(1);
         let (session_key, state) = {
             let Some(peer) = self.peers.get(node_addr) else {
                 return;
@@ -431,19 +413,10 @@ impl Node {
             };
             (session_key, state)
         };
-        // **Only mark as registered if the worker actually accepted
-        // the registration message.** When the per-worker channel is
-        // full (sustained ingress + registration burst on the same
-        // shard), `try_send` returns `Full` and the cipher + replay
-        // state are dropped on the floor. If we still inserted into
-        // the session registry's worker-registration mirror, every subsequent
-        // packet for this session would be `dispatch_job`'d to the worker,
-        // miss the unregistered HashMap entry, and silently drop —
-        // permanent black hole until the session rotates. Gating
-        // the local "is registered" set on the dispatch result
-        // means we keep using the legacy in-line decrypt path
-        // until a later `register_decrypt_worker_session` succeeds
-        // (the FSP-established / rekey callers retry naturally).
+        // Only mark as registered if the worker actually accepted the
+        // registration message. If the control lane is full, packets for this
+        // session are explicit worker-drop accounting until a later session
+        // event retries registration.
         let accepted = workers.register_session(session_key, state);
         self.sessions
             .record_worker_registration(session_key, accepted);
@@ -455,9 +428,7 @@ impl Node {
     ) {
         self.sync_packet_mover2_fsp_owner(node_addr);
 
-        let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
-            return;
-        };
+        let workers = self.ensure_decrypt_worker_pool(1);
         let Some(snapshot) = self
             .sessions
             .get(node_addr)
@@ -505,45 +476,28 @@ impl Node {
         ))
     }
 
-    /// Log a decryption failure with replay suppression.
-    fn log_decrypt_failure(
-        &mut self,
+    fn record_decrypt_worker_unowned_packet_drop(
+        &self,
         node_addr: &crate::NodeAddr,
-        header: &EncryptedHeader,
-        error: &NoiseError,
+        packet: &ReceivedPacket,
+        reason: &'static str,
+        counter: u64,
     ) {
-        if matches!(error, NoiseError::ReplayDetected(_)) {
-            if let Some(peer) = self.peers.get_mut(node_addr) {
-                let count = peer.increment_replay_suppressed();
-                if count <= 3 {
-                    debug!(
-                        peer = %self.peer_display_name(node_addr),
-                        counter = header.counter,
-                        error = %error,
-                        "Decryption failed"
-                    );
-                } else if count == 4 {
-                    debug!(
-                        peer = %self.peer_display_name(node_addr),
-                        "Suppressing further replay detection messages"
-                    );
-                }
-            } else {
-                debug!(
-                    peer = %self.peer_display_name(node_addr),
-                    counter = header.counter,
-                    error = %error,
-                    "Decryption failed"
-                );
-            }
+        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
+        crate::perf_profile::record_event(if packet.is_priority_sized() {
+            crate::perf_profile::Event::DecryptWorkerPriorityDropped
         } else {
-            debug!(
-                peer = %self.peer_display_name(node_addr),
-                counter = header.counter,
-                error = %error,
-                "Decryption failed"
-            );
-        }
+            crate::perf_profile::Event::DecryptWorkerBulkDropped
+        });
+        debug!(
+            peer = %self.peer_display_name(node_addr),
+            transport_id = %packet.transport_id,
+            remote_addr = %packet.remote_addr,
+            bytes = packet.data.len(),
+            counter,
+            reason,
+            "Dropping established FMP packet without decrypt-worker ownership"
+        );
     }
 
     /// Increment decrypt failure counter and recover stale FMP sessions.
