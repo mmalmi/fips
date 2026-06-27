@@ -1,0 +1,387 @@
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PacketMover2RuntimeSummary {
+    raw_ingress_dropped: usize,
+    inbound_admitted: usize,
+    inbound_dropped: usize,
+    outbound_admitted: usize,
+    outbound_dropped: usize,
+    dispatched: usize,
+    outputs: usize,
+    outputs_sent: usize,
+    outputs_dropped: usize,
+    drops: usize,
+}
+
+impl PacketMover2RuntimeSummary {
+    pub(crate) fn raw_ingress_dropped(self) -> usize {
+        self.raw_ingress_dropped
+    }
+
+    pub(crate) fn inbound_admitted(self) -> usize {
+        self.inbound_admitted
+    }
+
+    pub(crate) fn inbound_dropped(self) -> usize {
+        self.inbound_dropped
+    }
+
+    pub(crate) fn outbound_admitted(self) -> usize {
+        self.outbound_admitted
+    }
+
+    pub(crate) fn outbound_dropped(self) -> usize {
+        self.outbound_dropped
+    }
+
+    pub(crate) fn dispatched(self) -> usize {
+        self.dispatched
+    }
+
+    pub(crate) fn outputs(self) -> usize {
+        self.outputs
+    }
+
+    pub(crate) fn outputs_sent(self) -> usize {
+        self.outputs_sent
+    }
+
+    pub(crate) fn outputs_dropped(self) -> usize {
+        self.outputs_dropped
+    }
+
+    pub(crate) fn drops(self) -> usize {
+        self.drops
+    }
+
+    pub(crate) fn has_activity(self) -> bool {
+        self.raw_ingress_dropped > 0
+            || self.inbound_admitted > 0
+            || self.inbound_dropped > 0
+            || self.outbound_admitted > 0
+            || self.outbound_dropped > 0
+            || self.dispatched > 0
+            || self.outputs > 0
+            || self.outputs_sent > 0
+            || self.outputs_dropped > 0
+            || self.drops > 0
+    }
+
+    pub(crate) fn has_failures(self) -> bool {
+        self.raw_ingress_dropped > 0
+            || self.inbound_dropped > 0
+            || self.outbound_dropped > 0
+            || self.outputs_dropped > 0
+            || self.drops > 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2RuntimeTurn<'a> {
+    summary: PacketMover2RuntimeSummary,
+    raw_ingress_drops: &'a [PacketMover2RawIngressDrop],
+    output_drops: &'a [PacketMover2OutputDrop],
+    outputs: &'a [PacketOutput],
+    drops: &'a [PacketDrop],
+}
+
+impl PacketMover2RuntimeTurn<'_> {
+    pub(crate) fn summary(&self) -> PacketMover2RuntimeSummary {
+        self.summary
+    }
+
+    pub(crate) fn raw_ingress_drops(&self) -> &[PacketMover2RawIngressDrop] {
+        self.raw_ingress_drops
+    }
+
+    pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {
+        self.output_drops
+    }
+
+    pub(crate) fn outputs(&self) -> &[PacketOutput] {
+        self.outputs
+    }
+
+    pub(crate) fn drops(&self) -> &[PacketDrop] {
+        self.drops
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FmpIngressReceipt {
+    source_addr: NodeAddr,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    packet_timestamp_ms: u64,
+    packet_len: usize,
+    fmp_counter: u64,
+    fmp_flags: u8,
+    inner_timestamp_ms: u32,
+}
+
+impl PacketMover2FmpIngressReceipt {
+    fn from_output(output: &PacketOutput) -> Option<Self> {
+        if output.owner().protocol() != PacketProtocol::Fmp {
+            return None;
+        }
+        let source_addr = output.owner().node_addr()?;
+        let Some(TransportPath::Live {
+            transport_id,
+            remote_addr,
+        }) = output.source_path.clone()
+        else {
+            return None;
+        };
+        let packet_timestamp_ms = output.activity_tick?.get();
+        let packet_len = output.source_wire_len()?;
+        let header = FmpWireHeader::parse(output.payload()).ok()?;
+        let plaintext = output.opened_payload()?;
+        if plaintext.len() < 4 {
+            return None;
+        }
+        let inner_timestamp_ms =
+            u32::from_le_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]);
+        Some(Self {
+            source_addr,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            fmp_counter: header.counter(),
+            fmp_flags: header.flags(),
+            inner_timestamp_ms,
+        })
+    }
+
+    pub(crate) fn source_addr(&self) -> &NodeAddr {
+        &self.source_addr
+    }
+
+    pub(crate) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    pub(crate) fn remote_addr(&self) -> &TransportAddr {
+        &self.remote_addr
+    }
+
+    pub(crate) fn packet_timestamp_ms(&self) -> u64 {
+        self.packet_timestamp_ms
+    }
+
+    pub(crate) fn packet_len(&self) -> usize {
+        self.packet_len
+    }
+
+    pub(crate) fn fmp_counter(&self) -> u64 {
+        self.fmp_counter
+    }
+
+    pub(crate) fn inner_timestamp_ms(&self) -> u32 {
+        self.inner_timestamp_ms
+    }
+
+    pub(crate) fn fmp_flags(&self) -> u8 {
+        self.fmp_flags
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FmpLegacyIngress {
+    receipt: PacketMover2FmpIngressReceipt,
+    output: PacketOutput,
+}
+
+impl PacketMover2FmpLegacyIngress {
+    fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
+        if output.opened_payload().is_none() {
+            return Err(output);
+        }
+        let Some(receipt) = PacketMover2FmpIngressReceipt::from_output(&output) else {
+            return Err(output);
+        };
+        Ok(Self { receipt, output })
+    }
+
+    pub(crate) fn receipt(&self) -> &PacketMover2FmpIngressReceipt {
+        &self.receipt
+    }
+
+    pub(crate) fn plaintext(&self) -> &[u8] {
+        self.output
+            .opened_payload()
+            .expect("legacy ingress is constructed only from opened FMP output")
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PacketMover2LiveNodeTurn {
+    summary: PacketMover2RuntimeSummary,
+    fmp_control_ingress: Vec<PacketMover2FmpControlIngress>,
+    fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
+    fmp_legacy_ingress: Vec<PacketMover2FmpLegacyIngress>,
+    raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
+    tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
+    endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
+    tun_source_drained: usize,
+    endpoint_source_drained: usize,
+    endpoint_deferred_commands: usize,
+    output_drops: Vec<PacketMover2OutputDrop>,
+    drops: Vec<PacketDrop>,
+    transport_planned: usize,
+    transport_sent: usize,
+    transport_dropped: usize,
+}
+
+impl PacketMover2LiveNodeTurn {
+    fn from_runtime_turn(turn: &PacketMover2RuntimeTurn<'_>) -> Self {
+        Self {
+            summary: turn.summary(),
+            fmp_control_ingress: Vec::new(),
+            fmp_ingress_receipts: Vec::new(),
+            fmp_legacy_ingress: Vec::new(),
+            raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
+            tun_outbound_drops: Vec::new(),
+            endpoint_command_drops: Vec::new(),
+            tun_source_drained: 0,
+            endpoint_source_drained: 0,
+            endpoint_deferred_commands: 0,
+            output_drops: turn.output_drops().to_vec(),
+            drops: turn.drops().to_vec(),
+            transport_planned: 0,
+            transport_sent: 0,
+            transport_dropped: 0,
+        }
+    }
+
+    pub(crate) fn summary(&self) -> PacketMover2RuntimeSummary {
+        self.summary
+    }
+
+    pub(crate) fn raw_ingress_drops(&self) -> &[PacketMover2RawIngressDrop] {
+        &self.raw_ingress_drops
+    }
+
+    pub(crate) fn fmp_control_ingress(&self) -> &[PacketMover2FmpControlIngress] {
+        &self.fmp_control_ingress
+    }
+
+    fn set_fmp_control_ingress(&mut self, ingress: Vec<PacketMover2FmpControlIngress>) {
+        self.fmp_control_ingress = ingress;
+    }
+
+    pub(crate) fn take_fmp_control_ingress(&mut self) -> Vec<PacketMover2FmpControlIngress> {
+        std::mem::take(&mut self.fmp_control_ingress)
+    }
+
+    pub(crate) fn fmp_ingress_receipts(&self) -> &[PacketMover2FmpIngressReceipt] {
+        &self.fmp_ingress_receipts
+    }
+
+    fn set_fmp_ingress_receipts(&mut self, receipts: Vec<PacketMover2FmpIngressReceipt>) {
+        self.fmp_ingress_receipts = receipts;
+    }
+
+    pub(crate) fn take_fmp_ingress_receipts(&mut self) -> Vec<PacketMover2FmpIngressReceipt> {
+        std::mem::take(&mut self.fmp_ingress_receipts)
+    }
+
+    pub(crate) fn fmp_legacy_ingress(&self) -> &[PacketMover2FmpLegacyIngress] {
+        &self.fmp_legacy_ingress
+    }
+
+    fn set_fmp_legacy_ingress(&mut self, ingress: Vec<PacketMover2FmpLegacyIngress>) {
+        self.fmp_legacy_ingress = ingress;
+    }
+
+    pub(crate) fn take_fmp_legacy_ingress(&mut self) -> Vec<PacketMover2FmpLegacyIngress> {
+        std::mem::take(&mut self.fmp_legacy_ingress)
+    }
+
+    pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
+        &self.tun_outbound_drops
+    }
+
+    fn set_tun_outbound_drops(&mut self, drops: Vec<PacketMover2TunOutboundDrop>) {
+        self.tun_outbound_drops = drops;
+    }
+
+    pub(crate) fn endpoint_command_drops(&self) -> &[PacketMover2EndpointCommandDrop] {
+        &self.endpoint_command_drops
+    }
+
+    fn set_endpoint_command_drops(&mut self, drops: Vec<PacketMover2EndpointCommandDrop>) {
+        self.endpoint_command_drops = drops;
+    }
+
+    pub(crate) fn tun_source_drained(&self) -> usize {
+        self.tun_source_drained
+    }
+
+    fn set_tun_source_drained(&mut self, count: usize) {
+        self.tun_source_drained = count;
+    }
+
+    pub(crate) fn endpoint_source_drained(&self) -> usize {
+        self.endpoint_source_drained
+    }
+
+    fn set_endpoint_source_drained(&mut self, count: usize) {
+        self.endpoint_source_drained = count;
+    }
+
+    pub(crate) fn endpoint_deferred_commands(&self) -> usize {
+        self.endpoint_deferred_commands
+    }
+
+    fn set_endpoint_deferred_commands(&mut self, count: usize) {
+        self.endpoint_deferred_commands = count;
+    }
+
+    pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {
+        &self.output_drops
+    }
+
+    pub(crate) fn drops(&self) -> &[PacketDrop] {
+        &self.drops
+    }
+
+    pub(crate) fn transport_planned(&self) -> usize {
+        self.transport_planned
+    }
+
+    pub(crate) fn transport_sent(&self) -> usize {
+        self.transport_sent
+    }
+
+    pub(crate) fn transport_dropped(&self) -> usize {
+        self.transport_dropped
+    }
+
+    pub(crate) fn has_activity(&self) -> bool {
+        self.summary.has_activity()
+            || !self.fmp_control_ingress.is_empty()
+            || !self.fmp_ingress_receipts.is_empty()
+            || !self.fmp_legacy_ingress.is_empty()
+            || !self.raw_ingress_drops.is_empty()
+            || !self.tun_outbound_drops.is_empty()
+            || !self.endpoint_command_drops.is_empty()
+            || self.tun_source_drained > 0
+            || self.endpoint_source_drained > 0
+            || self.endpoint_deferred_commands > 0
+            || !self.output_drops.is_empty()
+            || !self.drops.is_empty()
+            || self.transport_planned > 0
+            || self.transport_sent > 0
+            || self.transport_dropped > 0
+    }
+
+    pub(crate) fn has_failures(&self) -> bool {
+        self.summary.has_failures()
+            || !self.raw_ingress_drops.is_empty()
+            || !self.tun_outbound_drops.is_empty()
+            || !self.endpoint_command_drops.is_empty()
+            || !self.output_drops.is_empty()
+            || !self.drops.is_empty()
+            || self.transport_dropped > 0
+    }
+}
