@@ -1,4 +1,5 @@
 include!("helpers_and_edges.rs");
+include!("live_route_table.rs");
 include!("owner_queue_crypto.rs");
 include!("aead_runtime_owner.rs");
 include!("live_routes_and_outputs.rs");

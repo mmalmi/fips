@@ -33,6 +33,80 @@ impl<'a> PacketMover2EndpointCommandPayload<'a> {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2EndpointCommandRoute {
+    owner: OwnerId,
+    generation: u64,
+    flags: u8,
+    timestamp_ms: u32,
+    inner_flags: u8,
+    max_payload_len: Option<usize>,
+}
+
+impl PacketMover2EndpointCommandRoute {
+    pub(crate) fn fsp(
+        owner: OwnerId,
+        generation: u64,
+        flags: u8,
+        timestamp_ms: u32,
+        inner_flags: u8,
+    ) -> Self {
+        Self {
+            owner,
+            generation,
+            flags,
+            timestamp_ms,
+            inner_flags,
+            max_payload_len: None,
+        }
+    }
+
+    pub(crate) fn with_max_payload_len(mut self, max_payload_len: usize) -> Self {
+        self.max_payload_len = Some(max_payload_len);
+        self
+    }
+
+    fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    fn route_request(
+        &self,
+        request: PacketMover2EndpointCommandPayload<'_>,
+    ) -> Result<OutboundPacket, PacketMover2EndpointCommandDropReason> {
+        if self
+            .max_payload_len
+            .is_some_and(|max_payload_len| request.payload().len() > max_payload_len)
+        {
+            return Err(PacketMover2EndpointCommandDropReason::MtuExceeded);
+        }
+        let max_fsp_payload = u16::MAX as usize - crate::node::session_wire::FSP_INNER_HEADER_SIZE;
+        if request.payload().len() > max_fsp_payload {
+            return Err(PacketMover2EndpointCommandDropReason::InvalidPayload);
+        }
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            self.timestamp_ms,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            self.inner_flags,
+            request.payload(),
+        );
+        Ok(OutboundPacket::fsp(
+            self.owner,
+            self.generation,
+            endpoint_packet_class(request.lane()),
+            self.flags,
+            inner_plaintext,
+        ))
+    }
+}
+
+fn endpoint_packet_class(lane: EndpointCommandLane) -> PacketClass {
+    match lane {
+        EndpointCommandLane::Priority => PacketClass::Control,
+        EndpointCommandLane::Bulk => PacketClass::Bulk,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketMover2EndpointCommandDropReason {
     InvalidPayload,

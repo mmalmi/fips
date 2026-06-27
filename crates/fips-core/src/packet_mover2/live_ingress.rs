@@ -131,6 +131,8 @@ impl FmpIngressRouteKey {
 pub(crate) struct PacketMover2LiveIngressRoutes {
     fmp: HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
     fsp: HashMap<NodeAddr, PacketMover2IngressRoute>,
+    tun_outbound: HashMap<FipsTunDestinationPrefix, PacketMover2TunDestinationRoute>,
+    endpoint: HashMap<NodeAddr, PacketMover2EndpointCommandRoute>,
 }
 
 impl PacketMover2LiveIngressRoutes {
@@ -168,11 +170,49 @@ impl PacketMover2LiveIngressRoutes {
         self.fsp.remove(&source_addr)
     }
 
+    pub(crate) fn register_tun_destination(
+        &mut self,
+        dest_addr: NodeAddr,
+        route: PacketMover2TunDestinationRoute,
+    ) -> Option<PacketMover2TunDestinationRoute> {
+        self.tun_outbound
+            .insert(FipsTunDestinationPrefix::from_node_addr(dest_addr), route)
+    }
+
+    pub(crate) fn unregister_tun_destination(
+        &mut self,
+        dest_addr: NodeAddr,
+    ) -> Option<PacketMover2TunDestinationRoute> {
+        self.tun_outbound
+            .remove(&FipsTunDestinationPrefix::from_node_addr(dest_addr))
+    }
+
+    pub(crate) fn register_endpoint_destination(
+        &mut self,
+        dest_addr: NodeAddr,
+        route: PacketMover2EndpointCommandRoute,
+    ) -> Option<PacketMover2EndpointCommandRoute> {
+        self.endpoint.insert(dest_addr, route)
+    }
+
+    pub(crate) fn unregister_endpoint_destination(
+        &mut self,
+        dest_addr: NodeAddr,
+    ) -> Option<PacketMover2EndpointCommandRoute> {
+        self.endpoint.remove(&dest_addr)
+    }
+
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> usize {
-        let before = self.fmp.len() + self.fsp.len();
+        let before =
+            self.fmp.len() + self.fsp.len() + self.tun_outbound.len() + self.endpoint.len();
         self.fmp.retain(|_, route| route.owner != owner);
         self.fsp.retain(|_, route| route.owner != owner);
-        before.saturating_sub(self.fmp.len() + self.fsp.len())
+        self.tun_outbound
+            .retain(|_, route| route.owner() != owner);
+        self.endpoint.retain(|_, route| route.owner() != owner);
+        let after =
+            self.fmp.len() + self.fsp.len() + self.tun_outbound.len() + self.endpoint.len();
+        before.saturating_sub(after)
     }
 }
 
@@ -195,6 +235,31 @@ impl PacketMover2IngressRouter for PacketMover2LiveIngressRoutes {
                 .and_then(|source_addr| self.fsp.get(&source_addr).copied()),
             _ => None,
         }
+    }
+}
+
+impl PacketMover2TunOutboundRouter for PacketMover2LiveIngressRoutes {
+    fn route_tun_outbound(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason> {
+        let dest = FipsTunDestinationPrefix::from_ipv6_packet(packet)?;
+        self.tun_outbound
+            .get(&dest)
+            .ok_or(PacketMover2TunOutboundDropReason::NoRoute)?
+            .route_packet(packet)
+    }
+}
+
+impl PacketMover2EndpointCommandRouter for PacketMover2LiveIngressRoutes {
+    fn route_endpoint_command_payload(
+        &mut self,
+        request: PacketMover2EndpointCommandPayload<'_>,
+    ) -> Result<OutboundPacket, PacketMover2EndpointCommandDropReason> {
+        self.endpoint
+            .get(&request.dest_addr())
+            .ok_or(PacketMover2EndpointCommandDropReason::NoRoute)?
+            .route_request(request)
     }
 }
 
@@ -326,4 +391,3 @@ pub(crate) trait PacketMover2OutboundSource {
     where
         F: FnMut(OutboundPacket);
 }
-
