@@ -50,6 +50,7 @@ include!("tun_outbound.rs");
 include!("endpoint_command.rs");
 include!("live_output.rs");
 include!("runtime.rs");
+include!("live_node.rs");
 include!("crypto.rs");
 include!("engine.rs");
 

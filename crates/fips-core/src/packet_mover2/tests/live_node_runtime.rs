@@ -29,22 +29,21 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
-        driver.register_owner(
+        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        live_node.register_owner(
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(760),
         );
-        driver
+        live_node
             .owner_mut(fmp_owner)
             .unwrap()
             .set_active_path(live_path.clone());
-        driver
+        live_node
             .owner_mut(fmp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
         let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::new());
-        let mut routes = PacketMover2LiveRouteTable::default();
-        routes.register_tun_destination(
+        live_node.routes_mut().register_tun_destination(
             fmp_source,
             PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
                 fmp_owner,
@@ -61,19 +60,16 @@
         tun_outbound_tx
             .try_send(tun_packet.clone())
             .expect("enqueue TUN outbound packet");
-        let mut deferred_endpoint_commands = Vec::new();
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
+        let turn = live_node
+            .pump_turn(
                 &mut raw_source,
-                &mut routes,
                 8,
                 &mut endpoint_priority_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,
                 8,
-                &mut deferred_endpoint_commands,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 missing_endpoint_peer,
@@ -115,7 +111,7 @@
             tun_packet
         );
         assert_eq!(
-            driver.owner_mut(fmp_owner).unwrap().active_path(),
+            live_node.owner_mut(fmp_owner).unwrap().active_path(),
             Some(live_path)
         );
 
