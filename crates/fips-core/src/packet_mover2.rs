@@ -22,6 +22,7 @@ use crate::transport::{
     PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,
     TransportId,
 };
+use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -1566,6 +1567,160 @@ pub(crate) trait PacketMover2OutboundSource {
         F: FnMut(OutboundPacket);
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2TunOutboundRoute {
+    owner: OwnerId,
+    generation: u64,
+    class: PacketClass,
+    wire: OutboundWire,
+}
+
+impl PacketMover2TunOutboundRoute {
+    pub(crate) fn fmp(
+        owner: OwnerId,
+        generation: u64,
+        class: PacketClass,
+        receiver_idx: u32,
+        flags: u8,
+    ) -> Self {
+        Self {
+            owner,
+            generation,
+            class,
+            wire: OutboundWire::Fmp {
+                receiver_idx,
+                flags,
+            },
+        }
+    }
+
+    pub(crate) fn fsp(owner: OwnerId, generation: u64, class: PacketClass, flags: u8) -> Self {
+        Self {
+            owner,
+            generation,
+            class,
+            wire: OutboundWire::Fsp { flags },
+        }
+    }
+
+    fn into_outbound_packet(self, payload: Vec<u8>) -> OutboundPacket {
+        match self.wire {
+            OutboundWire::Fmp {
+                receiver_idx,
+                flags,
+            } => OutboundPacket::fmp(
+                self.owner,
+                self.generation,
+                self.class,
+                receiver_idx,
+                flags,
+                payload,
+            ),
+            OutboundWire::Fsp { flags } => {
+                OutboundPacket::fsp(self.owner, self.generation, self.class, flags, payload)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2TunOutboundDropReason {
+    InvalidPacket,
+    NoRoute,
+    MtuExceeded,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2TunOutboundDrop {
+    payload_len: usize,
+    reason: PacketMover2TunOutboundDropReason,
+}
+
+impl PacketMover2TunOutboundDrop {
+    fn new(payload_len: usize, reason: PacketMover2TunOutboundDropReason) -> Self {
+        Self {
+            payload_len,
+            reason,
+        }
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn reason(&self) -> PacketMover2TunOutboundDropReason {
+        self.reason
+    }
+}
+
+pub(crate) trait PacketMover2TunOutboundRouter {
+    fn route_tun_outbound(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason>;
+}
+
+impl<F> PacketMover2TunOutboundRouter for F
+where
+    F: FnMut(&[u8]) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason>,
+{
+    fn route_tun_outbound(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason> {
+        self(packet)
+    }
+}
+
+pub(crate) struct PacketMover2TunOutboundSource<'a, R> {
+    rx: &'a mut TunOutboundRx,
+    router: &'a mut R,
+    drops: Vec<PacketMover2TunOutboundDrop>,
+}
+
+impl<'a, R> PacketMover2TunOutboundSource<'a, R> {
+    pub(crate) fn new(rx: &'a mut TunOutboundRx, router: &'a mut R) -> Self {
+        Self {
+            rx,
+            router,
+            drops: Vec::new(),
+        }
+    }
+
+    pub(crate) fn drops(&self) -> &[PacketMover2TunOutboundDrop] {
+        &self.drops
+    }
+
+    fn take_drops(&mut self) -> Vec<PacketMover2TunOutboundDrop> {
+        std::mem::take(&mut self.drops)
+    }
+}
+
+impl<R> PacketMover2OutboundSource for PacketMover2TunOutboundSource<'_, R>
+where
+    R: PacketMover2TunOutboundRouter,
+{
+    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Ok(packet) = self.rx.try_recv() else {
+                break;
+            };
+            match self.router.route_tun_outbound(&packet) {
+                Ok(route) => push(route.into_outbound_packet(packet)),
+                Err(reason) => self
+                    .drops
+                    .push(PacketMover2TunOutboundDrop::new(packet.len(), reason)),
+            }
+            drained += 1;
+        }
+        drained
+    }
+}
+
 impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
     fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
     where
@@ -2169,6 +2324,7 @@ impl PacketMover2RuntimeTurn<'_> {
 pub(crate) struct PacketMover2LiveNodeTurn {
     summary: PacketMover2RuntimeSummary,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
+    tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     output_drops: Vec<PacketMover2OutputDrop>,
     drops: Vec<PacketDrop>,
     transport_planned: usize,
@@ -2181,6 +2337,7 @@ impl PacketMover2LiveNodeTurn {
         Self {
             summary: turn.summary(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
+            tun_outbound_drops: Vec::new(),
             output_drops: turn.output_drops().to_vec(),
             drops: turn.drops().to_vec(),
             transport_planned: 0,
@@ -2195,6 +2352,14 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn raw_ingress_drops(&self) -> &[PacketMover2RawIngressDrop] {
         &self.raw_ingress_drops
+    }
+
+    pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
+        &self.tun_outbound_drops
+    }
+
+    fn set_tun_outbound_drops(&mut self, drops: Vec<PacketMover2TunOutboundDrop>) {
+        self.tun_outbound_drops = drops;
     }
 
     pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {
@@ -2462,6 +2627,50 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             crypto_limit,
         )
         .await
+    }
+
+    pub(crate) async fn pump_aead_live_node_packet_rx_tun_turn<
+        IngressRouter,
+        TunRouter,
+        Resolver,
+        Transports,
+    >(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        ingress_router: &mut IngressRouter,
+        packet_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_router: &mut TunRouter,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        IngressRouter: PacketMover2IngressRouter,
+        TunRouter: PacketMover2TunOutboundRouter,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let mut tun_source = PacketMover2TunOutboundSource::new(tun_outbound_rx, tun_router);
+        let mut report = self
+            .pump_aead_live_node_packet_rx_turn(
+                packet_rx,
+                ingress_router,
+                packet_limit,
+                &mut tun_source,
+                tun_limit,
+                tun_tx,
+                endpoint_tx,
+                endpoint_resolver,
+                transports,
+                crypto_limit,
+            )
+            .await;
+        report.set_tun_outbound_drops(tun_source.take_drops());
+        report
     }
 
     fn admit_raw_ingress_turn<I, O, R>(
@@ -3521,6 +3730,58 @@ mod tests {
             source.drain_raw_ingress(8, |packet| drained.push(packet)),
             0
         );
+    }
+
+    #[test]
+    fn tun_outbound_source_drains_and_records_route_drops() {
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x21; 16]));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tx.try_send(b"routed-tun".to_vec())
+            .expect("enqueue routed tun packet");
+        tx.try_send(b"unrouted-tun".to_vec())
+            .expect("enqueue unrouted tun packet");
+        let mut router = |packet: &[u8]| {
+            if packet == b"routed-tun" {
+                Ok(PacketMover2TunOutboundRoute::fmp(
+                    owner,
+                    3,
+                    PacketClass::Bulk,
+                    210,
+                    0,
+                ))
+            } else {
+                Err(PacketMover2TunOutboundDropReason::NoRoute)
+            }
+        };
+        let mut source = PacketMover2TunOutboundSource::new(&mut rx, &mut router);
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(1, |packet| outbound.push(packet)), 1);
+
+        assert_eq!(outbound.len(), 1);
+        assert!(source.drops().is_empty());
+        assert_eq!(outbound[0].owner, owner);
+        assert_eq!(outbound[0].generation, 3);
+        assert_eq!(outbound[0].class, PacketClass::Bulk);
+        assert_eq!(
+            outbound[0].wire,
+            OutboundWire::Fmp {
+                receiver_idx: 210,
+                flags: 0,
+            }
+        );
+        assert_eq!(outbound[0].payload.as_ref(), b"routed-tun");
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 1);
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(source.drops().len(), 1);
+        assert_eq!(source.drops()[0].payload_len(), b"unrouted-tun".len());
+        assert_eq!(
+            source.drops()[0].reason(),
+            PacketMover2TunOutboundDropReason::NoRoute
+        );
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 0);
     }
 
     #[test]
@@ -5586,6 +5847,128 @@ mod tests {
             driver.owner_mut(fmp_owner).unwrap().active_path(),
             Some(live_path)
         );
+    }
+
+    #[tokio::test]
+    async fn live_node_packet_rx_tun_turn_sends_tun_outbound_to_transport() {
+        let send_transport_id = TransportId::new(78);
+        let recv_transport_id = TransportId::new(79);
+        let fmp_source = NodeAddr::from_bytes([0x4e; 16]);
+        let fmp_owner = OwnerId::fmp_node(fmp_source);
+        let fmp_key = 78;
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(4);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let live_path = TransportPath::live(send_transport_id, remote_addr);
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(8);
+        let (tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(8);
+        tun_outbound_tx
+            .try_send(b"tun-to-transport".to_vec())
+            .expect("enqueue tun outbound packet");
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(
+            fmp_owner,
+            OwnerConfig::new(1, 8).with_next_send_counter(780),
+        );
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_active_path(live_path.clone());
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
+        let mut ingress_routes = PacketMover2LiveIngressRoutes::default();
+        let mut tun_router = |packet: &[u8]| {
+            if packet == b"tun-to-transport" {
+                Ok(PacketMover2TunOutboundRoute::fmp(
+                    fmp_owner,
+                    1,
+                    PacketClass::Bulk,
+                    781,
+                    0,
+                ))
+            } else {
+                Err(PacketMover2TunOutboundDropReason::NoRoute)
+            }
+        };
+
+        let turn = driver
+            .pump_aead_live_node_packet_rx_tun_turn(
+                &mut packet_rx,
+                &mut ingress_routes,
+                8,
+                &mut tun_outbound_rx,
+                &mut tun_router,
+                8,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                8,
+            )
+            .await;
+
+        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
+        assert_eq!(turn.summary().inbound_admitted(), 0);
+        assert_eq!(turn.summary().outbound_admitted(), 1);
+        assert_eq!(turn.summary().outbound_dropped(), 0);
+        assert_eq!(turn.summary().outputs(), 1);
+        assert_eq!(turn.summary().outputs_sent(), 1);
+        assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.tun_outbound_drops().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert!(turn.drops().is_empty());
+        assert_eq!(turn.transport_planned(), 1);
+        assert_eq!(turn.transport_sent(), 1);
+        assert_eq!(turn.transport_dropped(), 0);
+        assert!(packet_rx.try_recv().is_err());
+        assert!(tun_outbound_rx.try_recv().is_err());
+        assert!(tun_rx.try_recv().is_err());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+
+        let received =
+            tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                .await
+                .expect("receive tun outbound transport output")
+                .expect("packet channel open");
+        assert_eq!(received.transport_id, recv_transport_id);
+        let header = FmpWireHeader::parse(&received.data).unwrap();
+        assert_eq!(header.receiver_idx(), 781);
+        assert_eq!(header.counter(), 780);
+        assert_eq!(
+            open_fmp_wire_payload(&received.data, fmp_key),
+            b"tun-to-transport"
+        );
+        assert_eq!(
+            driver.owner_mut(fmp_owner).unwrap().active_path(),
+            Some(live_path)
+        );
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
     }
 
     #[tokio::test]
