@@ -17,7 +17,7 @@
 //! in-flight state before crypto work leaves the owner; workers only copy/open
 //! bytes and return completions; owners retire those completions in order.
 
-use crate::transport::PacketBuffer;
+use crate::transport::{PacketBuffer, ReceivedPacket, TransportAddr, TransportId};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -1048,8 +1048,139 @@ impl PacketMoverTurn {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2RawIngress {
+    protocol: PacketProtocol,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    path: TransportPath,
+    activity_tick: Option<ActivityTick>,
+    payload: PacketBuffer,
+}
+
+impl PacketMover2RawIngress {
+    pub(crate) fn from_received(
+        protocol: PacketProtocol,
+        path: TransportPath,
+        packet: ReceivedPacket,
+    ) -> Self {
+        Self {
+            protocol,
+            transport_id: packet.transport_id,
+            remote_addr: packet.remote_addr,
+            path,
+            activity_tick: Some(ActivityTick::new(packet.timestamp_ms)),
+            payload: packet.data,
+        }
+    }
+
+    pub(crate) fn protocol(&self) -> PacketProtocol {
+        self.protocol
+    }
+
+    pub(crate) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    pub(crate) fn remote_addr(&self) -> &TransportAddr {
+        &self.remote_addr
+    }
+
+    pub(crate) fn path(&self) -> TransportPath {
+        self.path
+    }
+
+    pub(crate) fn activity_tick(&self) -> Option<ActivityTick> {
+        self.activity_tick
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2IngressHeader {
+    Fmp(FmpWireHeader),
+    Fsp(FspWireHeader),
+}
+
+impl PacketMover2IngressHeader {
+    pub(crate) fn counter(self) -> u64 {
+        match self {
+            Self::Fmp(header) => header.counter(),
+            Self::Fsp(header) => header.counter(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2IngressRoute {
+    owner: OwnerId,
+    generation: u64,
+    class: PacketClass,
+    output: OutputTarget,
+}
+
+impl PacketMover2IngressRoute {
+    pub(crate) fn new(owner: OwnerId, generation: u64, output: OutputTarget) -> Self {
+        Self {
+            owner,
+            generation,
+            class: PacketClass::Bulk,
+            output,
+        }
+    }
+
+    pub(crate) fn with_class(mut self, class: PacketClass) -> Self {
+        self.class = class;
+        self
+    }
+}
+
+pub(crate) trait PacketMover2IngressRouter {
+    fn route(
+        &mut self,
+        packet: &PacketMover2RawIngress,
+        header: PacketMover2IngressHeader,
+    ) -> Option<PacketMover2IngressRoute>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2RawIngressDropReason {
+    Wire(WirePreflightError),
+    Unrouted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2RawIngressDrop {
+    protocol: PacketProtocol,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    path: TransportPath,
+    payload_len: usize,
+    reason: PacketMover2RawIngressDropReason,
+}
+
+impl PacketMover2RawIngressDrop {
+    fn from_packet(
+        packet: PacketMover2RawIngress,
+        reason: PacketMover2RawIngressDropReason,
+    ) -> Self {
+        Self {
+            protocol: packet.protocol,
+            transport_id: packet.transport_id,
+            remote_addr: packet.remote_addr,
+            path: packet.path,
+            payload_len: packet.payload.len(),
+            reason,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PacketMover2RuntimeSummary {
+    raw_ingress_dropped: usize,
     inbound_admitted: usize,
     inbound_dropped: usize,
     outbound_admitted: usize,
@@ -1060,6 +1191,10 @@ pub(crate) struct PacketMover2RuntimeSummary {
 }
 
 impl PacketMover2RuntimeSummary {
+    pub(crate) fn raw_ingress_dropped(self) -> usize {
+        self.raw_ingress_dropped
+    }
+
     pub(crate) fn inbound_admitted(self) -> usize {
         self.inbound_admitted
     }
@@ -1092,6 +1227,7 @@ impl PacketMover2RuntimeSummary {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2RuntimeTurn<'a> {
     summary: PacketMover2RuntimeSummary,
+    raw_ingress_drops: &'a [PacketMover2RawIngressDrop],
     outputs: &'a [PacketOutput],
     drops: &'a [PacketDrop],
 }
@@ -1099,6 +1235,10 @@ pub(crate) struct PacketMover2RuntimeTurn<'a> {
 impl PacketMover2RuntimeTurn<'_> {
     pub(crate) fn summary(&self) -> PacketMover2RuntimeSummary {
         self.summary
+    }
+
+    pub(crate) fn raw_ingress_drops(&self) -> &[PacketMover2RawIngressDrop] {
+        self.raw_ingress_drops
     }
 
     pub(crate) fn outputs(&self) -> &[PacketOutput] {
@@ -1115,6 +1255,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     mover: PacketMover2<W>,
     open_work: Vec<CryptoWork>,
     seal_work: Vec<OutboundCryptoWork>,
+    raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     outputs: Vec<PacketOutput>,
     drops: Vec<PacketDrop>,
 }
@@ -1125,6 +1266,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             mover: PacketMover2::new(config, worker),
             open_work: Vec::new(),
             seal_work: Vec::new(),
+            raw_ingress_drops: Vec::new(),
             outputs: Vec::new(),
             drops: Vec::new(),
         }
@@ -1154,6 +1296,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     {
         self.outputs.clear();
         self.drops.clear();
+        self.raw_ingress_drops.clear();
 
         let mut summary = PacketMover2RuntimeSummary::default();
         for packet in inbound {
@@ -1169,6 +1312,96 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             }
         }
 
+        self.finish_aead_turn(summary, limit)
+    }
+
+    pub(crate) fn run_aead_raw_ingress_turn<I, O, R>(
+        &mut self,
+        inbound: I,
+        router: &mut R,
+        outbound: O,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        I: IntoIterator<Item = PacketMover2RawIngress>,
+        O: IntoIterator<Item = OutboundPacket>,
+        R: PacketMover2IngressRouter,
+    {
+        self.outputs.clear();
+        self.drops.clear();
+        self.raw_ingress_drops.clear();
+
+        let mut summary = PacketMover2RuntimeSummary::default();
+        for packet in inbound {
+            let header = match packet.protocol {
+                PacketProtocol::Fmp => match FmpWireHeader::parse(&packet.payload) {
+                    Ok(header) => PacketMover2IngressHeader::Fmp(header),
+                    Err(error) => {
+                        summary.raw_ingress_dropped += 1;
+                        self.raw_ingress_drops
+                            .push(PacketMover2RawIngressDrop::from_packet(
+                                packet,
+                                PacketMover2RawIngressDropReason::Wire(error),
+                            ));
+                        continue;
+                    }
+                },
+                PacketProtocol::Fsp => match FspWireHeader::parse(&packet.payload) {
+                    Ok(header) => PacketMover2IngressHeader::Fsp(header),
+                    Err(error) => {
+                        summary.raw_ingress_dropped += 1;
+                        self.raw_ingress_drops
+                            .push(PacketMover2RawIngressDrop::from_packet(
+                                packet,
+                                PacketMover2RawIngressDropReason::Wire(error),
+                            ));
+                        continue;
+                    }
+                },
+            };
+
+            let Some(route) = router.route(&packet, header) else {
+                summary.raw_ingress_dropped += 1;
+                self.raw_ingress_drops
+                    .push(PacketMover2RawIngressDrop::from_packet(
+                        packet,
+                        PacketMover2RawIngressDropReason::Unrouted,
+                    ));
+                continue;
+            };
+
+            let mut socket_packet = SocketPacket::new(
+                route.owner,
+                route.generation,
+                header.counter(),
+                route.class,
+                route.output,
+                packet.payload,
+            )
+            .with_source_path(packet.path);
+            if let Some(tick) = packet.activity_tick {
+                socket_packet = socket_packet.with_activity_tick(tick);
+            }
+            match self.mover.submit_socket_packet(socket_packet) {
+                Ok(_) => summary.inbound_admitted += 1,
+                Err(_) => summary.inbound_dropped += 1,
+            }
+        }
+        for packet in outbound {
+            match self.mover.submit_outbound_packet(packet) {
+                Ok(_) => summary.outbound_admitted += 1,
+                Err(_) => summary.outbound_dropped += 1,
+            }
+        }
+
+        self.finish_aead_turn(summary, limit)
+    }
+
+    fn finish_aead_turn(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_> {
         let PacketMoverTurn {
             dispatched,
             retired,
@@ -1182,9 +1415,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.drops.extend(drops);
 
         for packet in retired {
-            match packet {
-                RetiredPacket::Output(output) => self.outputs.push(output),
-                RetiredPacket::Drop(_) => {}
+            if let RetiredPacket::Output(output) = packet {
+                self.outputs.push(output);
             }
         }
 
@@ -1193,6 +1425,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
 
         PacketMover2RuntimeTurn {
             summary,
+            raw_ingress_drops: &self.raw_ingress_drops,
             outputs: &self.outputs,
             drops: &self.drops,
         }
@@ -1693,6 +1926,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
     use ring::aead::UnboundKey;
 
     fn mover() -> PacketMover2 {
@@ -2879,6 +3113,7 @@ mod tests {
         assert_eq!(
             turn.summary(),
             PacketMover2RuntimeSummary {
+                raw_ingress_dropped: 0,
                 inbound_admitted: 1,
                 inbound_dropped: 0,
                 outbound_admitted: 1,
@@ -2978,6 +3213,7 @@ mod tests {
         let capacities = (
             driver.open_work.capacity(),
             driver.seal_work.capacity(),
+            driver.raw_ingress_drops.capacity(),
             driver.outputs.capacity(),
             driver.drops.capacity(),
         );
@@ -2990,9 +3226,152 @@ mod tests {
             (
                 driver.open_work.capacity(),
                 driver.seal_work.capacity(),
+                driver.raw_ingress_drops.capacity(),
                 driver.outputs.capacity(),
                 driver.drops.capacity(),
             )
         );
+    }
+
+    struct FixedIngressRouter {
+        route: Option<PacketMover2IngressRoute>,
+    }
+
+    impl PacketMover2IngressRouter for FixedIngressRouter {
+        fn route(
+            &mut self,
+            packet: &PacketMover2RawIngress,
+            header: PacketMover2IngressHeader,
+        ) -> Option<PacketMover2IngressRoute> {
+            assert_eq!(packet.transport_id(), TransportId::new(5));
+            assert_eq!(
+                packet.remote_addr(),
+                &TransportAddr::from_string("198.51.100.9:9000")
+            );
+            assert_eq!(packet.path(), TransportPath::new(9005));
+            assert_eq!(packet.activity_tick(), Some(ActivityTick::new(123_456)));
+            assert_eq!(
+                packet.payload_len(),
+                FMP_ESTABLISHED_HEADER_SIZE + b"raw-in".len() + AEAD_TAG_SIZE
+            );
+            assert_eq!(packet.protocol(), PacketProtocol::Fmp);
+            assert!(matches!(header, PacketMover2IngressHeader::Fmp(_)));
+            assert_eq!(header.counter(), 1200);
+            self.route
+        }
+    }
+
+    struct NullIngressRouter;
+
+    impl PacketMover2IngressRouter for NullIngressRouter {
+        fn route(
+            &mut self,
+            _packet: &PacketMover2RawIngress,
+            _header: PacketMover2IngressHeader,
+        ) -> Option<PacketMover2IngressRoute> {
+            None
+        }
+    }
+
+    #[test]
+    fn runtime_raw_ingress_turn_parses_received_packet_before_owner_admission() {
+        let owner = OwnerId::fmp(81);
+        let open_key = 51;
+        let path = TransportPath::new(9005);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(7, 8));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+        let received = ReceivedPacket::with_timestamp(
+            TransportId::new(5),
+            TransportAddr::from_string("198.51.100.9:9000"),
+            fmp_encrypted_wire(81, 1200, 0, b"raw-in", open_key),
+            123_456,
+        );
+        let raw = PacketMover2RawIngress::from_received(PacketProtocol::Fmp, path, received);
+        let mut router = FixedIngressRouter {
+            route: Some(
+                PacketMover2IngressRoute::new(owner, 7, OutputTarget::Tun)
+                    .with_class(PacketClass::Liveness),
+            ),
+        };
+
+        let turn = driver.run_aead_raw_ingress_turn([raw], &mut router, std::iter::empty(), 8);
+        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
+        assert_eq!(turn.summary().inbound_admitted(), 1);
+        assert_eq!(turn.summary().dispatched(), 1);
+        assert_eq!(turn.summary().outputs(), 1);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.drops().is_empty());
+        assert_eq!(turn.outputs()[0].target, OutputTarget::Tun);
+        assert_eq!(turn.outputs()[0].counter, 1200);
+        assert_eq!(
+            &turn.outputs()[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            b"raw-in"
+        );
+
+        let owner_state = driver.owner_mut(owner).unwrap();
+        assert_eq!(owner_state.active_path(), Some(path));
+        assert_eq!(
+            owner_state.last_rx_activity(),
+            Some(ActivityTick::new(123_456))
+        );
+    }
+
+    #[test]
+    fn runtime_raw_ingress_turn_drops_wire_and_unrouted_packets_before_admission() {
+        let owner = OwnerId::fsp(82);
+        let path = TransportPath::new(9105);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+        let bad_wire = PacketMover2RawIngress::from_received(
+            PacketProtocol::Fmp,
+            path,
+            ReceivedPacket::with_timestamp(
+                TransportId::new(5),
+                TransportAddr::from_string("198.51.100.9:9000"),
+                vec![0],
+                1,
+            ),
+        );
+        let unrouted = PacketMover2RawIngress::from_received(
+            PacketProtocol::Fsp,
+            path,
+            ReceivedPacket::with_timestamp(
+                TransportId::new(5),
+                TransportAddr::from_string("198.51.100.9:9000"),
+                fsp_encrypted_wire(44, 0, b"unrouted", 61),
+                2,
+            ),
+        );
+        let mut router = NullIngressRouter;
+
+        let turn = driver.run_aead_raw_ingress_turn(
+            [bad_wire, unrouted],
+            &mut router,
+            std::iter::empty(),
+            8,
+        );
+        assert_eq!(turn.summary().raw_ingress_dropped(), 2);
+        assert_eq!(turn.summary().inbound_admitted(), 0);
+        assert_eq!(turn.summary().dispatched(), 0);
+        assert!(turn.outputs().is_empty());
+        assert!(turn.drops().is_empty());
+        assert_eq!(turn.raw_ingress_drops().len(), 2);
+        assert_eq!(
+            turn.raw_ingress_drops()[0].reason,
+            PacketMover2RawIngressDropReason::Wire(WirePreflightError::TooShort)
+        );
+        assert_eq!(
+            turn.raw_ingress_drops()[1].reason,
+            PacketMover2RawIngressDropReason::Unrouted
+        );
+        assert_eq!(
+            turn.raw_ingress_drops()[1].transport_id,
+            TransportId::new(5)
+        );
+        assert_eq!(turn.raw_ingress_drops()[1].path, path);
     }
 }
