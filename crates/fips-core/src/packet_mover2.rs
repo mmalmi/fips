@@ -908,6 +908,40 @@ pub(crate) struct PacketOutput {
     payload: PacketBuffer,
 }
 
+impl PacketOutput {
+    pub(crate) fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    pub(crate) fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    pub(crate) fn ingress_seq(&self) -> u64 {
+        self.ingress_seq
+    }
+
+    pub(crate) fn target(&self) -> OutputTarget {
+        self.target
+    }
+
+    pub(crate) fn path(&self) -> Option<TransportPath> {
+        self.path
+    }
+
+    pub(crate) fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+
+    pub(crate) fn into_payload(self) -> PacketBuffer {
+        self.payload
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RetiredPacket {
     Output(PacketOutput),
@@ -1197,7 +1231,7 @@ pub(crate) struct PacketMover2OutputDrop {
 }
 
 impl PacketMover2OutputDrop {
-    fn from_output(output: &PacketOutput, reason: PacketMover2OutputError) -> Self {
+    pub(crate) fn from_output(output: &PacketOutput, reason: PacketMover2OutputError) -> Self {
         Self {
             owner: output.owner,
             counter: output.counter,
@@ -1212,6 +1246,25 @@ impl PacketMover2OutputDrop {
 
 pub(crate) trait PacketMover2OutputSink {
     fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError>;
+
+    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
+    where
+        I: IntoIterator<Item = PacketOutput>,
+    {
+        let mut sent = 0;
+        for output in outputs {
+            let mut drop =
+                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+            match self.send(output) {
+                Ok(()) => sent += 1,
+                Err(reason) => {
+                    drop.reason = reason;
+                    drops.push(drop);
+                }
+            }
+        }
+        sent
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1549,18 +1602,10 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         S: PacketMover2OutputSink,
     {
         summary = self.collect_aead_outputs(summary, limit);
-        for output in self.outputs.drain(..) {
-            let mut drop =
-                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
-            match sink.send(output) {
-                Ok(()) => summary.outputs_sent += 1,
-                Err(reason) => {
-                    drop.reason = reason;
-                    self.output_drops.push(drop);
-                    summary.outputs_dropped += 1;
-                }
-            }
-        }
+        let dropped_before = self.output_drops.len();
+        let sent = sink.send_batch(self.outputs.drain(..), &mut self.output_drops);
+        summary.outputs_sent += sent;
+        summary.outputs_dropped += self.output_drops.len().saturating_sub(dropped_before);
 
         PacketMover2RuntimeTurn {
             summary,
@@ -3461,6 +3506,34 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct BatchRecordingOutputSink {
+        batch_calls: usize,
+        outputs: Vec<PacketOutput>,
+    }
+
+    impl PacketMover2OutputSink for BatchRecordingOutputSink {
+        fn send(&mut self, _output: PacketOutput) -> Result<(), PacketMover2OutputError> {
+            panic!("batch sink must not use per-output send")
+        }
+
+        fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
+        where
+            I: IntoIterator<Item = PacketOutput>,
+        {
+            self.batch_calls += 1;
+            let drops_before = drops.len();
+            let mut sent = 0;
+            for output in outputs {
+                assert_eq!(output.payload_len(), output.payload().len());
+                self.outputs.push(output);
+                sent += 1;
+            }
+            assert_eq!(drops.len(), drops_before);
+            sent
+        }
+    }
+
     #[test]
     fn runtime_raw_ingress_turn_parses_received_packet_before_owner_admission() {
         let owner = OwnerId::fmp(81);
@@ -3561,6 +3634,101 @@ mod tests {
             TransportId::new(5)
         );
         assert_eq!(turn.raw_ingress_drops()[1].path, path);
+    }
+
+    #[test]
+    fn runtime_raw_ingress_output_turn_batches_ordered_outputs_once() {
+        let owner = OwnerId::fmp(85);
+        let open_key = 73;
+        let seal_key = 74;
+        let path = TransportPath::new(9005);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(7, 8).with_next_send_counter(500));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+        let received = ReceivedPacket::with_timestamp(
+            TransportId::new(5),
+            TransportAddr::from_string("198.51.100.9:9000"),
+            fmp_encrypted_wire(85, 1200, 0, b"raw-in", open_key),
+            123_456,
+        );
+        let raw = PacketMover2RawIngress::from_received(PacketProtocol::Fmp, path, received);
+        let mut router = FixedIngressRouter {
+            route: Some(
+                PacketMover2IngressRoute::new(owner, 7, OutputTarget::Tun)
+                    .with_class(PacketClass::Liveness),
+            ),
+        };
+        let outbound =
+            OutboundPacket::fmp(owner, 7, PacketClass::Bulk, 850, 0, b"raw-out".to_vec());
+        let mut sink = BatchRecordingOutputSink::default();
+
+        let turn =
+            driver.run_aead_raw_ingress_output_turn([raw], &mut router, [outbound], &mut sink, 8);
+        assert_eq!(
+            turn.summary(),
+            PacketMover2RuntimeSummary {
+                raw_ingress_dropped: 0,
+                inbound_admitted: 1,
+                inbound_dropped: 0,
+                outbound_admitted: 1,
+                outbound_dropped: 0,
+                dispatched: 2,
+                outputs: 2,
+                outputs_sent: 2,
+                outputs_dropped: 0,
+                drops: 0,
+            }
+        );
+        assert!(turn.outputs().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.drops().is_empty());
+
+        assert_eq!(sink.batch_calls, 1);
+        assert_eq!(sink.outputs.len(), 2);
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::owner)
+                .collect::<Vec<_>>(),
+            vec![owner, owner]
+        );
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::counter)
+                .collect::<Vec<_>>(),
+            vec![1200, 500]
+        );
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::target)
+                .collect::<Vec<_>>(),
+            vec![OutputTarget::Tun, OutputTarget::Transport]
+        );
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::path)
+                .collect::<Vec<_>>(),
+            vec![None, Some(path)]
+        );
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::ingress_seq)
+                .collect::<Vec<_>>(),
+            vec![0, 0]
+        );
+        assert_eq!(
+            &sink.outputs[0].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
+            b"raw-in"
+        );
+        assert_eq!(open_sealed_output(&sink.outputs[1], seal_key), b"raw-out");
     }
 
     #[test]
