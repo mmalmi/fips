@@ -505,7 +505,7 @@
     }
 
     #[tokio::test]
-    async fn live_node_packet_rx_route_table_turn_sends_endpoint_and_tun_to_transport() {
+    async fn live_node_owner_routes_send_endpoint_and_tun_to_transport() {
         let send_transport_id = TransportId::new(82);
         let recv_transport_id = TransportId::new(83);
         let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
@@ -562,39 +562,41 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, tun_rx) = std::sync::mpsc::channel();
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(8, 16), CopyCryptoWorker);
-        driver.register_owner(
+        let mut live_node =
+            PacketMover2LiveNode::new(AdmissionConfig::new(8, 16), CopyCryptoWorker);
+        live_node.register_owner(
             fsp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(820),
         );
-        driver.register_owner(
+        live_node.register_owner(
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(830),
         );
-        driver
+        live_node
             .owner_mut(fsp_owner)
             .unwrap()
             .set_active_path(live_path.clone());
-        driver
+        live_node
             .owner_mut(fmp_owner)
             .unwrap()
             .set_active_path(live_path.clone());
-        driver
+        live_node
             .owner_mut(fsp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
-        driver
+        live_node
             .owner_mut(fmp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
 
-        let mut routes = PacketMover2LiveRouteTable::default();
-        routes.register_endpoint_destination(
+        let mut fsp_routes = PacketMover2LiveOwnerRoutes::new();
+        fsp_routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(
             fsp_source,
             PacketMover2EndpointCommandRoute::fsp(fsp_owner, 1, 0, 8_200, 0)
                 .with_max_payload_len(64),
-        );
-        routes.register_tun_destination(
+        ));
+        let mut fmp_routes = PacketMover2LiveOwnerRoutes::new();
+        fmp_routes.push_tun_destination(PacketMover2LiveTunRoute::new(
             tun_dest,
             PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
                 fmp_owner,
@@ -604,21 +606,31 @@
                 0,
             ))
             .with_max_packet_len(64),
+        ));
+        assert_eq!(
+            live_node
+                .replace_owner_routes(fsp_owner, fsp_routes)
+                .expect("install endpoint route")
+                .routes_added(),
+            1
         );
-        let mut deferred_endpoint_commands = Vec::new();
-        let mut raw_ingress = PacketMover2FmpPacketRxSource::new(&mut packet_rx);
+        assert_eq!(
+            live_node
+                .replace_owner_routes(fmp_owner, fmp_routes)
+                .expect("install TUN route")
+                .routes_added(),
+            1
+        );
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
-                &mut raw_ingress,
-                &mut routes,
+        let turn = live_node
+            .pump_packet_rx_turn(
+                &mut packet_rx,
                 8,
                 &mut endpoint_priority_rx,
                 &mut endpoint_bulk_rx,
                 8,
                 &mut tun_outbound_rx,
                 8,
-                &mut deferred_endpoint_commands,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 missing_endpoint_peer,
@@ -637,7 +649,6 @@
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.endpoint_command_drops().is_empty());
         assert_eq!(turn.endpoint_deferred_commands(), 0);
-        assert!(deferred_endpoint_commands.is_empty());
         assert!(turn.tun_outbound_drops().is_empty());
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());
@@ -696,11 +707,11 @@
             tun_packet
         );
         assert_eq!(
-            driver.owner_mut(fsp_owner).unwrap().active_path(),
+            live_node.owner_mut(fsp_owner).unwrap().active_path(),
             Some(live_path.clone())
         );
         assert_eq!(
-            driver.owner_mut(fmp_owner).unwrap().active_path(),
+            live_node.owner_mut(fmp_owner).unwrap().active_path(),
             Some(live_path)
         );
 
