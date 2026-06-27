@@ -1358,6 +1358,89 @@ impl PacketMover2IngressRouter for PacketMover2LiveIngressRoutes {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PacketMover2LiveIngressPacket {
+    protocol: PacketProtocol,
+    fsp_source: Option<NodeAddr>,
+    packet: ReceivedPacket,
+}
+
+impl PacketMover2LiveIngressPacket {
+    pub(crate) fn fmp(packet: ReceivedPacket) -> Self {
+        Self {
+            protocol: PacketProtocol::Fmp,
+            fsp_source: None,
+            packet,
+        }
+    }
+
+    pub(crate) fn fsp(packet: ReceivedPacket, source_addr: NodeAddr) -> Self {
+        Self {
+            protocol: PacketProtocol::Fsp,
+            fsp_source: Some(source_addr),
+            packet,
+        }
+    }
+
+    fn into_raw_ingress(self) -> PacketMover2RawIngress {
+        let raw = PacketMover2RawIngress::from_live_received(self.protocol, self.packet);
+        match self.fsp_source {
+            Some(source_addr) => raw.with_fsp_source(source_addr),
+            None => raw,
+        }
+    }
+}
+
+pub(crate) trait PacketMover2LiveIngressDrain {
+    fn drain_live_ingress<F>(&mut self, limit: usize, push: F) -> usize
+    where
+        F: FnMut(PacketMover2LiveIngressPacket);
+}
+
+impl PacketMover2LiveIngressDrain for VecDeque<PacketMover2LiveIngressPacket> {
+    fn drain_live_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2LiveIngressPacket),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Some(packet) = self.pop_front() else {
+                break;
+            };
+            push(packet);
+            drained += 1;
+        }
+        drained
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PacketMover2LiveRawIngressSource<S> {
+    source: S,
+}
+
+impl<S> PacketMover2LiveRawIngressSource<S> {
+    pub(crate) fn new(source: S) -> Self {
+        Self { source }
+    }
+
+    pub(crate) fn source_mut(&mut self) -> &mut S {
+        &mut self.source
+    }
+}
+
+impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
+    for PacketMover2LiveRawIngressSource<S>
+{
+    fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2RawIngress),
+    {
+        self.source
+            .drain_live_ingress(limit, |packet| push(packet.into_raw_ingress()))
+    }
+}
+
 pub(crate) trait PacketMover2RawIngressSource {
     fn drain_raw_ingress<F>(&mut self, limit: usize, push: F) -> usize
     where
@@ -1434,6 +1517,30 @@ impl PacketMover2RawIngressDrop {
             reason,
         }
     }
+
+    pub(crate) fn protocol(&self) -> PacketProtocol {
+        self.protocol
+    }
+
+    pub(crate) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    pub(crate) fn remote_addr(&self) -> &TransportAddr {
+        &self.remote_addr
+    }
+
+    pub(crate) fn path(&self) -> TransportPath {
+        self.path.clone()
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn reason(&self) -> PacketMover2RawIngressDropReason {
+        self.reason
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1466,6 +1573,43 @@ impl PacketMover2OutputDrop {
             reason,
         }
     }
+
+    pub(crate) fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    pub(crate) fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    pub(crate) fn ingress_seq(&self) -> u64 {
+        self.ingress_seq
+    }
+
+    pub(crate) fn target(&self) -> OutputTarget {
+        self.target
+    }
+
+    pub(crate) fn path(&self) -> Option<TransportPath> {
+        self.path.clone()
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn reason(&self) -> PacketMover2OutputError {
+        self.reason
+    }
+}
+
+impl PacketOutput {
+    pub(crate) fn opened_payload(&self) -> Option<&[u8]> {
+        match self.owner.protocol {
+            PacketProtocol::Fmp => self.payload.get(FMP_ESTABLISHED_HEADER_SIZE..),
+            PacketProtocol::Fsp => self.payload.get(FSP_HEADER_SIZE..),
+        }
+    }
 }
 
 pub(crate) trait PacketMover2OutputSink {
@@ -1488,6 +1632,115 @@ pub(crate) trait PacketMover2OutputSink {
             }
         }
         sent
+    }
+}
+
+pub(crate) trait PacketMover2TunOutput {
+    fn send_tun(
+        &mut self,
+        output: &PacketOutput,
+        payload: &[u8],
+    ) -> Result<(), PacketMover2OutputError>;
+}
+
+impl<T: PacketMover2TunOutput + ?Sized> PacketMover2TunOutput for &mut T {
+    fn send_tun(
+        &mut self,
+        output: &PacketOutput,
+        payload: &[u8],
+    ) -> Result<(), PacketMover2OutputError> {
+        (**self).send_tun(output, payload)
+    }
+}
+
+pub(crate) trait PacketMover2EndpointOutput {
+    fn send_endpoint(
+        &mut self,
+        output: &PacketOutput,
+        payload: &[u8],
+    ) -> Result<(), PacketMover2OutputError>;
+}
+
+impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut T {
+    fn send_endpoint(
+        &mut self,
+        output: &PacketOutput,
+        payload: &[u8],
+    ) -> Result<(), PacketMover2OutputError> {
+        (**self).send_endpoint(output, payload)
+    }
+}
+
+pub(crate) trait PacketMover2TransportOutput {
+    fn send_transport(
+        &mut self,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+        output: &PacketOutput,
+    ) -> Result<(), PacketMover2OutputError>;
+}
+
+impl<T: PacketMover2TransportOutput + ?Sized> PacketMover2TransportOutput for &mut T {
+    fn send_transport(
+        &mut self,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+        output: &PacketOutput,
+    ) -> Result<(), PacketMover2OutputError> {
+        (**self).send_transport(transport_id, remote_addr, output)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2LiveOutputSink<Tun, Endpoint, Transport> {
+    tun: Tun,
+    endpoint: Endpoint,
+    transport: Transport,
+}
+
+impl<Tun, Endpoint, Transport> PacketMover2LiveOutputSink<Tun, Endpoint, Transport> {
+    pub(crate) fn new(tun: Tun, endpoint: Endpoint, transport: Transport) -> Self {
+        Self {
+            tun,
+            endpoint,
+            transport,
+        }
+    }
+}
+
+impl<Tun, Endpoint, Transport> PacketMover2OutputSink
+    for PacketMover2LiveOutputSink<Tun, Endpoint, Transport>
+where
+    Tun: PacketMover2TunOutput,
+    Endpoint: PacketMover2EndpointOutput,
+    Transport: PacketMover2TransportOutput,
+{
+    fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError> {
+        match output.target {
+            OutputTarget::Tun => {
+                let payload = output
+                    .opened_payload()
+                    .ok_or(PacketMover2OutputError::Unavailable)?;
+                self.tun.send_tun(&output, payload)
+            }
+            OutputTarget::Endpoint => {
+                let payload = output
+                    .opened_payload()
+                    .ok_or(PacketMover2OutputError::Unavailable)?;
+                self.endpoint.send_endpoint(&output, payload)
+            }
+            OutputTarget::Transport => {
+                let Some(TransportPath::Live {
+                    transport_id,
+                    remote_addr,
+                }) = output.path.as_ref()
+                else {
+                    return Err(PacketMover2OutputError::NoRoute);
+                };
+                self.transport
+                    .send_transport(*transport_id, remote_addr, &output)
+            }
+        }
     }
 }
 
@@ -2528,6 +2781,22 @@ mod tests {
         }
     }
 
+    fn open_fmp_wire_payload(payload: &[u8], key: u8) -> Vec<u8> {
+        let header = FmpWireHeader::parse(payload).unwrap();
+        let aad = header.header_bytes();
+        let mut ciphertext = payload[header.ciphertext_offset()..].to_vec();
+        let plaintext_len = test_cipher(key)
+            .open_in_place(
+                aead_nonce(header.counter()),
+                Aad::from(&aad),
+                &mut ciphertext,
+            )
+            .unwrap()
+            .len();
+        ciphertext.truncate(plaintext_len);
+        ciphertext
+    }
+
     fn outbound_packet(
         owner: OwnerId,
         generation: u64,
@@ -2607,6 +2876,55 @@ mod tests {
         assert_eq!(raw_path.remote_addr(), Some(&remote_addr));
         assert_eq!(raw.transport_id(), transport_id);
         assert_eq!(raw.remote_addr(), &remote_addr);
+    }
+
+    #[test]
+    fn live_raw_ingress_source_drains_received_packets_by_limit() {
+        let fsp_source = NodeAddr::from_bytes([0x18; 16]);
+        let fmp_addr = TransportAddr::from_string("198.51.100.18:9000");
+        let fsp_addr = TransportAddr::from_string("198.51.100.19:9000");
+        let mut source = PacketMover2LiveRawIngressSource::new(VecDeque::from([
+            PacketMover2LiveIngressPacket::fmp(ReceivedPacket::with_timestamp(
+                TransportId::new(18),
+                fmp_addr.clone(),
+                fmp_wire(180, 1, 0),
+                18_000,
+            )),
+            PacketMover2LiveIngressPacket::fsp(
+                ReceivedPacket::with_timestamp(
+                    TransportId::new(19),
+                    fsp_addr.clone(),
+                    fsp_wire(2, 0),
+                    19_000,
+                ),
+                fsp_source,
+            ),
+        ]));
+        let mut drained = Vec::new();
+
+        assert_eq!(
+            source.drain_raw_ingress(1, |packet| drained.push(packet)),
+            1
+        );
+
+        assert_eq!(drained.len(), 1);
+        assert_eq!(source.source_mut().len(), 1);
+        assert_eq!(drained[0].protocol(), PacketProtocol::Fmp);
+        assert_eq!(drained[0].transport_id(), TransportId::new(18));
+        assert_eq!(drained[0].remote_addr(), &fmp_addr);
+        assert_eq!(drained[0].path().transport_id(), Some(TransportId::new(18)));
+        assert_eq!(drained[0].activity_tick(), Some(ActivityTick::new(18_000)));
+
+        assert_eq!(
+            source.drain_raw_ingress(8, |packet| drained.push(packet)),
+            1
+        );
+        assert!(source.source_mut().is_empty());
+        assert_eq!(drained[1].protocol(), PacketProtocol::Fsp);
+        assert_eq!(drained[1].transport_id(), TransportId::new(19));
+        assert_eq!(drained[1].remote_addr(), &fsp_addr);
+        assert_eq!(drained[1].fsp_source(), Some(fsp_source));
+        assert_eq!(drained[1].path().remote_addr(), Some(&fsp_addr));
     }
 
     #[test]
@@ -3911,6 +4229,93 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct LiveOutputRecord {
+        owner: OwnerId,
+        counter: u64,
+        ingress_seq: u64,
+        payload: Vec<u8>,
+    }
+
+    impl LiveOutputRecord {
+        fn from_opened(output: &PacketOutput, payload: &[u8]) -> Self {
+            Self {
+                owner: output.owner(),
+                counter: output.counter(),
+                ingress_seq: output.ingress_seq(),
+                payload: payload.to_vec(),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct LiveTunRecorder {
+        outputs: Vec<LiveOutputRecord>,
+    }
+
+    impl PacketMover2TunOutput for LiveTunRecorder {
+        fn send_tun(
+            &mut self,
+            output: &PacketOutput,
+            payload: &[u8],
+        ) -> Result<(), PacketMover2OutputError> {
+            self.outputs
+                .push(LiveOutputRecord::from_opened(output, payload));
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct LiveEndpointRecorder {
+        outputs: Vec<LiveOutputRecord>,
+    }
+
+    impl PacketMover2EndpointOutput for LiveEndpointRecorder {
+        fn send_endpoint(
+            &mut self,
+            output: &PacketOutput,
+            payload: &[u8],
+        ) -> Result<(), PacketMover2OutputError> {
+            self.outputs
+                .push(LiveOutputRecord::from_opened(output, payload));
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct LiveTransportRecord {
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        owner: OwnerId,
+        counter: u64,
+        ingress_seq: u64,
+        payload: Vec<u8>,
+    }
+
+    #[derive(Default)]
+    struct LiveTransportRecorder {
+        outputs: Vec<LiveTransportRecord>,
+    }
+
+    impl PacketMover2TransportOutput for LiveTransportRecorder {
+        fn send_transport(
+            &mut self,
+            transport_id: TransportId,
+            remote_addr: &TransportAddr,
+            output: &PacketOutput,
+        ) -> Result<(), PacketMover2OutputError> {
+            self.outputs.push(LiveTransportRecord {
+                transport_id,
+                remote_addr: remote_addr.clone(),
+                owner: output.owner(),
+                counter: output.counter(),
+                ingress_seq: output.ingress_seq(),
+                payload: output.payload().to_vec(),
+            });
+            Ok(())
+        }
+    }
+
     struct SimpleIngressRouter {
         owner: OwnerId,
         generation: u64,
@@ -4127,6 +4532,174 @@ mod tests {
     }
 
     #[test]
+    fn live_output_sink_sends_tun_endpoint_and_transport_once() {
+        let fmp_source = NodeAddr::from_bytes([0x45; 16]);
+        let fsp_source = NodeAddr::from_bytes([0x46; 16]);
+        let fmp_owner = OwnerId::fmp_node(fmp_source);
+        let fsp_owner = OwnerId::fsp_node(fsp_source);
+        let fmp_key = 45;
+        let fsp_key = 46;
+        let transport_id = TransportId::new(45);
+        let remote_addr = TransportAddr::from_string("198.51.100.45:9000");
+
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(
+            fmp_owner,
+            OwnerConfig::new(1, 8).with_next_send_counter(700),
+        );
+        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+
+        let mut routes = PacketMover2LiveIngressRoutes::default();
+        routes.register_fmp(
+            transport_id,
+            450,
+            PacketMover2IngressRoute::new(fmp_owner, 1, OutputTarget::Tun)
+                .with_class(PacketClass::Liveness),
+        );
+        routes.register_fsp(
+            fsp_source,
+            PacketMover2IngressRoute::new(fsp_owner, 1, OutputTarget::Endpoint)
+                .with_class(PacketClass::Mmp),
+        );
+        let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::from([
+            PacketMover2LiveIngressPacket::fmp(ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                fmp_encrypted_wire(450, 1, 0, b"tun-live", fmp_key),
+                450_001,
+            )),
+            PacketMover2LiveIngressPacket::fsp(
+                ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr.clone(),
+                    fsp_encrypted_wire(2, 0, b"endpoint-live", fsp_key),
+                    450_002,
+                ),
+                fsp_source,
+            ),
+        ]));
+        let mut outbound_source = VecDeque::from([OutboundPacket::fmp(
+            fmp_owner,
+            1,
+            PacketClass::Bulk,
+            451,
+            0,
+            b"transport-live".to_vec(),
+        )]);
+        let mut tun = LiveTunRecorder::default();
+        let mut endpoint = LiveEndpointRecorder::default();
+        let mut transport = LiveTransportRecorder::default();
+
+        let turn = {
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
+            driver.pump_aead_output_turn(
+                &mut raw_source,
+                &mut routes,
+                8,
+                &mut outbound_source,
+                8,
+                &mut sink,
+                8,
+            )
+        };
+
+        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
+        assert_eq!(turn.summary().inbound_admitted(), 2);
+        assert_eq!(turn.summary().outbound_admitted(), 1);
+        assert_eq!(turn.summary().outputs(), 3);
+        assert_eq!(turn.summary().outputs_sent(), 3);
+        assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(turn.outputs().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.drops().is_empty());
+        assert!(raw_source.source_mut().is_empty());
+        assert!(outbound_source.is_empty());
+
+        assert_eq!(
+            tun.outputs,
+            vec![LiveOutputRecord {
+                owner: fmp_owner,
+                counter: 1,
+                ingress_seq: 0,
+                payload: b"tun-live".to_vec(),
+            }]
+        );
+        assert_eq!(
+            endpoint.outputs,
+            vec![LiveOutputRecord {
+                owner: fsp_owner,
+                counter: 2,
+                ingress_seq: 1,
+                payload: b"endpoint-live".to_vec(),
+            }]
+        );
+        assert_eq!(transport.outputs.len(), 1);
+        let sent = &transport.outputs[0];
+        assert_eq!(sent.transport_id, transport_id);
+        assert_eq!(sent.remote_addr, remote_addr);
+        assert_eq!(sent.owner, fmp_owner);
+        assert_eq!(sent.counter, 700);
+        assert_eq!(sent.ingress_seq, 0);
+        let header = FmpWireHeader::parse(&sent.payload).unwrap();
+        assert_eq!(header.receiver_idx(), 451);
+        assert_eq!(header.counter(), 700);
+        assert_eq!(
+            open_fmp_wire_payload(&sent.payload, fmp_key),
+            b"transport-live"
+        );
+    }
+
+    #[test]
+    fn live_output_sink_drops_transport_without_live_path() {
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
+        let key = 47;
+        let scratch_path = TransportPath::new(4700);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(470));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_active_path(scratch_path.clone());
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+        let outbound =
+            OutboundPacket::fmp(owner, 1, PacketClass::Bulk, 471, 0, b"no-route".to_vec());
+        let mut tun = LiveTunRecorder::default();
+        let mut endpoint = LiveEndpointRecorder::default();
+        let mut transport = LiveTransportRecorder::default();
+
+        let turn = {
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
+            driver.run_aead_classified_output_turn(std::iter::empty(), [outbound], &mut sink, 8)
+        };
+
+        assert_eq!(turn.summary().outputs(), 1);
+        assert_eq!(turn.summary().outputs_sent(), 0);
+        assert_eq!(turn.summary().outputs_dropped(), 1);
+        assert!(turn.outputs().is_empty());
+        assert_eq!(turn.output_drops().len(), 1);
+        assert_eq!(
+            turn.output_drops()[0].reason(),
+            PacketMover2OutputError::NoRoute
+        );
+        assert_eq!(turn.output_drops()[0].path(), Some(scratch_path));
+        assert!(tun.outputs.is_empty());
+        assert!(endpoint.outputs.is_empty());
+        assert!(transport.outputs.is_empty());
+    }
+
+    #[test]
     fn runtime_raw_ingress_turn_parses_received_packet_before_owner_admission() {
         let owner = OwnerId::fmp(81);
         let open_key = 51;
@@ -4215,18 +4788,18 @@ mod tests {
         assert!(turn.drops().is_empty());
         assert_eq!(turn.raw_ingress_drops().len(), 2);
         assert_eq!(
-            turn.raw_ingress_drops()[0].reason,
+            turn.raw_ingress_drops()[0].reason(),
             PacketMover2RawIngressDropReason::Wire(WirePreflightError::TooShort)
         );
         assert_eq!(
-            turn.raw_ingress_drops()[1].reason,
+            turn.raw_ingress_drops()[1].reason(),
             PacketMover2RawIngressDropReason::Unrouted
         );
         assert_eq!(
-            turn.raw_ingress_drops()[1].transport_id,
+            turn.raw_ingress_drops()[1].transport_id(),
             TransportId::new(5)
         );
-        assert_eq!(&turn.raw_ingress_drops()[1].path, &path);
+        assert_eq!(turn.raw_ingress_drops()[1].path(), path);
     }
 
     #[test]
@@ -4603,11 +5176,11 @@ mod tests {
         );
         assert_eq!(turn.output_drops().len(), 1);
         let drop = &turn.output_drops()[0];
-        assert_eq!(drop.owner, owner);
-        assert_eq!(drop.counter, 21);
-        assert_eq!(drop.ingress_seq, 1);
-        assert_eq!(drop.target, OutputTarget::Endpoint);
-        assert_eq!(drop.reason, PacketMover2OutputError::Backpressure);
-        assert_eq!(drop.payload_len, FSP_HEADER_SIZE + b"second".len());
+        assert_eq!(drop.owner(), owner);
+        assert_eq!(drop.counter(), 21);
+        assert_eq!(drop.ingress_seq(), 1);
+        assert_eq!(drop.target(), OutputTarget::Endpoint);
+        assert_eq!(drop.reason(), PacketMover2OutputError::Backpressure);
+        assert_eq!(drop.payload_len(), FSP_HEADER_SIZE + b"second".len());
     }
 }
