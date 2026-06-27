@@ -28,6 +28,7 @@ const FSP_VERSION: u8 = crate::node::session_wire::FSP_VERSION;
 const FSP_PHASE_ESTABLISHED: u8 = crate::node::session_wire::FSP_PHASE_ESTABLISHED;
 const FSP_HEADER_SIZE: usize = crate::node::session_wire::FSP_HEADER_SIZE;
 const FSP_FLAG_U: u8 = crate::node::session_wire::FSP_FLAG_U;
+const AEAD_TAG_SIZE: usize = crate::noise::TAG_SIZE;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum PacketProtocol {
@@ -98,6 +99,63 @@ pub(crate) struct SocketPacket {
     payload: PacketBuffer,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutboundWire {
+    Fmp { receiver_idx: u32, flags: u8 },
+    Fsp { flags: u8 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OutboundPacket {
+    owner: OwnerId,
+    generation: u64,
+    class: PacketClass,
+    wire: OutboundWire,
+    payload: PacketBuffer,
+}
+
+impl OutboundPacket {
+    pub(crate) fn fmp(
+        owner: OwnerId,
+        generation: u64,
+        class: PacketClass,
+        receiver_idx: u32,
+        flags: u8,
+        payload: impl Into<PacketBuffer>,
+    ) -> Self {
+        Self {
+            owner,
+            generation,
+            class,
+            wire: OutboundWire::Fmp {
+                receiver_idx,
+                flags,
+            },
+            payload: payload.into(),
+        }
+    }
+
+    pub(crate) fn fsp(
+        owner: OwnerId,
+        generation: u64,
+        class: PacketClass,
+        flags: u8,
+        payload: impl Into<PacketBuffer>,
+    ) -> Self {
+        Self {
+            owner,
+            generation,
+            class,
+            wire: OutboundWire::Fsp { flags },
+            payload: payload.into(),
+        }
+    }
+
+    fn lane(&self) -> Lane {
+        self.class.lane()
+    }
+}
+
 impl SocketPacket {
     pub(crate) fn new(
         owner: OwnerId,
@@ -165,6 +223,13 @@ pub(crate) enum WirePreflightError {
     WrongPhase,
     PlaintextFsp,
     CounterMismatch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WireBuildError {
+    PayloadTooLarge,
+    ProtocolMismatch,
+    PlaintextFsp,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +346,38 @@ impl FspWireHeader {
     }
 }
 
+fn build_fmp_established_header(
+    receiver_idx: u32,
+    counter: u64,
+    flags: u8,
+    payload_len: u16,
+) -> [u8; FMP_ESTABLISHED_HEADER_SIZE] {
+    let mut header = [0u8; FMP_ESTABLISHED_HEADER_SIZE];
+    header[0] = (FMP_VERSION << 4) | FMP_PHASE_ESTABLISHED;
+    header[1] = flags;
+    header[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    header[4..8].copy_from_slice(&receiver_idx.to_le_bytes());
+    header[8..16].copy_from_slice(&counter.to_le_bytes());
+    header
+}
+
+fn build_fsp_established_header(
+    counter: u64,
+    flags: u8,
+    payload_len: u16,
+) -> Result<[u8; FSP_HEADER_SIZE], WireBuildError> {
+    if flags & FSP_FLAG_U != 0 {
+        return Err(WireBuildError::PlaintextFsp);
+    }
+
+    let mut header = [0u8; FSP_HEADER_SIZE];
+    header[0] = (FSP_VERSION << 4) | FSP_PHASE_ESTABLISHED;
+    header[1] = flags;
+    header[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    header[4..12].copy_from_slice(&counter.to_le_bytes());
+    Ok(header)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AdmissionConfig {
     priority_capacity: usize,
@@ -316,6 +413,12 @@ pub(crate) struct AdmissionDrop {
 struct QueuedPacket {
     ingress_seq: u64,
     packet: SocketPacket,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QueuedOutboundPacket {
+    ingress_seq: u64,
+    packet: OutboundPacket,
 }
 
 #[derive(Debug)]
@@ -380,10 +483,81 @@ impl AdmissionQueue {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OutboundAdmissionDrop {
+    owner: OwnerId,
+    class: PacketClass,
+    lane: Lane,
+    payload_len: usize,
+    reason: AdmissionDropReason,
+}
+
+#[derive(Debug)]
+pub(crate) struct OutboundAdmissionQueue {
+    config: AdmissionConfig,
+    next_ingress_seq: u64,
+    priority: VecDeque<QueuedOutboundPacket>,
+    bulk: VecDeque<QueuedOutboundPacket>,
+}
+
+impl OutboundAdmissionQueue {
+    pub(crate) fn new(config: AdmissionConfig) -> Self {
+        Self {
+            config,
+            next_ingress_seq: 0,
+            priority: VecDeque::with_capacity(config.priority_capacity),
+            bulk: VecDeque::with_capacity(config.bulk_capacity),
+        }
+    }
+
+    pub(crate) fn admit(&mut self, packet: OutboundPacket) -> Result<u64, OutboundAdmissionDrop> {
+        let lane = packet.lane();
+        let target = match lane {
+            Lane::Priority => &mut self.priority,
+            Lane::Bulk => &mut self.bulk,
+        };
+        let capacity = match lane {
+            Lane::Priority => self.config.priority_capacity,
+            Lane::Bulk => self.config.bulk_capacity,
+        };
+
+        if target.len() >= capacity {
+            return Err(OutboundAdmissionDrop {
+                owner: packet.owner,
+                class: packet.class,
+                lane,
+                payload_len: packet.payload.len(),
+                reason: match lane {
+                    Lane::Priority => AdmissionDropReason::PriorityFull,
+                    Lane::Bulk => AdmissionDropReason::BulkFull,
+                },
+            });
+        }
+
+        let ingress_seq = self.next_ingress_seq;
+        self.next_ingress_seq = self.next_ingress_seq.wrapping_add(1);
+        target.push_back(QueuedOutboundPacket {
+            ingress_seq,
+            packet,
+        });
+        Ok(ingress_seq)
+    }
+
+    fn pop_next(&mut self) -> Option<QueuedOutboundPacket> {
+        self.priority.pop_front().or_else(|| self.bulk.pop_front())
+    }
+
+    #[cfg(test)]
+    fn lens(&self) -> (usize, usize) {
+        (self.priority.len(), self.bulk.len())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct OwnerConfig {
     generation: u64,
     in_flight_limit: usize,
+    next_send_counter: u64,
 }
 
 impl OwnerConfig {
@@ -391,7 +565,13 @@ impl OwnerConfig {
         Self {
             generation,
             in_flight_limit,
+            next_send_counter: 0,
         }
+    }
+
+    pub(crate) fn with_next_send_counter(mut self, next_send_counter: u64) -> Self {
+        self.next_send_counter = next_send_counter;
+        self
     }
 }
 
@@ -423,6 +603,7 @@ pub(crate) struct OwnerState {
     in_flight: usize,
     next_order: u64,
     next_retire: u64,
+    next_send_counter: u64,
     accepted_counters: HashSet<u64>,
     pending: BTreeMap<OrderToken, CryptoCompletion>,
 }
@@ -436,6 +617,7 @@ impl OwnerState {
             in_flight: 0,
             next_order: 0,
             next_retire: 0,
+            next_send_counter: config.next_send_counter,
             accepted_counters: HashSet::new(),
             pending: BTreeMap::new(),
         }
@@ -444,6 +626,7 @@ impl OwnerState {
     pub(crate) fn rekey(&mut self, generation: u64) {
         self.generation = generation;
         self.accepted_counters.clear();
+        self.next_send_counter = 0;
     }
 
     pub(crate) fn reserve(
@@ -475,6 +658,33 @@ impl OwnerState {
         })
     }
 
+    pub(crate) fn reserve_outbound(
+        &mut self,
+        packet: &OutboundPacket,
+        ingress_seq: u64,
+    ) -> Result<OwnerReservation, OwnerReserveError> {
+        if packet.generation != self.generation {
+            return Err(OwnerReserveError::StaleGeneration);
+        }
+        if self.in_flight >= self.in_flight_limit {
+            return Err(OwnerReserveError::InFlightFull);
+        }
+
+        let counter = self.next_send_counter;
+        self.next_send_counter = self.next_send_counter.wrapping_add(1);
+        self.in_flight += 1;
+        let order = OrderToken(self.next_order);
+        self.next_order = self.next_order.wrapping_add(1);
+        Ok(OwnerReservation {
+            owner: self.owner,
+            generation: self.generation,
+            order,
+            ingress_seq,
+            counter,
+            lane: packet.lane(),
+        })
+    }
+
     pub(crate) fn retire(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
         self.pending
             .insert(completion.reservation.order, completion);
@@ -494,6 +704,7 @@ impl OwnerState {
 
             match completion.result {
                 CryptoResult::Opened(output) => retired.push(RetiredPacket::Output(output)),
+                CryptoResult::Sealed(output) => retired.push(RetiredPacket::Output(output)),
                 CryptoResult::Failed => {
                     retired.push(RetiredPacket::Drop(PacketDrop::from_completion(
                         &completion,
@@ -509,6 +720,11 @@ impl OwnerState {
     #[cfg(test)]
     fn in_flight(&self) -> usize {
         self.in_flight
+    }
+
+    #[cfg(test)]
+    fn next_send_counter(&self) -> u64 {
+        self.next_send_counter
     }
 }
 
@@ -526,6 +742,19 @@ impl CryptoWork {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OutboundCryptoWork {
+    reservation: OwnerReservation,
+    packet: OutboundPacket,
+}
+
+impl OutboundCryptoWork {
+    #[cfg(test)]
+    fn order(&self) -> u64 {
+        self.reservation.order.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CryptoCompletion {
     reservation: OwnerReservation,
     result: CryptoResult,
@@ -534,6 +763,7 @@ pub(crate) struct CryptoCompletion {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CryptoResult {
     Opened(PacketOutput),
+    Sealed(PacketOutput),
     Failed,
 }
 
@@ -566,7 +796,7 @@ pub(crate) enum PacketDropReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketDrop {
     owner: OwnerId,
-    counter: u64,
+    counter: Option<u64>,
     ingress_seq: Option<u64>,
     lane: Lane,
     reason: PacketDropReason,
@@ -576,7 +806,17 @@ impl PacketDrop {
     fn from_queued(queued: &QueuedPacket, reason: PacketDropReason) -> Self {
         Self {
             owner: queued.packet.owner,
-            counter: queued.packet.counter,
+            counter: Some(queued.packet.counter),
+            ingress_seq: Some(queued.ingress_seq),
+            lane: queued.packet.lane(),
+            reason,
+        }
+    }
+
+    fn from_queued_outbound(queued: &QueuedOutboundPacket, reason: PacketDropReason) -> Self {
+        Self {
+            owner: queued.packet.owner,
+            counter: None,
             ingress_seq: Some(queued.ingress_seq),
             lane: queued.packet.lane(),
             reason,
@@ -586,7 +826,7 @@ impl PacketDrop {
     fn from_completion(completion: &CryptoCompletion, reason: PacketDropReason) -> Self {
         Self {
             owner: completion.reservation.owner,
-            counter: completion.reservation.counter,
+            counter: Some(completion.reservation.counter),
             ingress_seq: Some(completion.reservation.ingress_seq),
             lane: completion.reservation.lane,
             reason,
@@ -598,7 +838,19 @@ impl From<AdmissionDrop> for PacketDrop {
     fn from(drop: AdmissionDrop) -> Self {
         Self {
             owner: drop.owner,
-            counter: drop.counter,
+            counter: Some(drop.counter),
+            ingress_seq: None,
+            lane: drop.lane,
+            reason: PacketDropReason::Admission(drop.reason),
+        }
+    }
+}
+
+impl From<OutboundAdmissionDrop> for PacketDrop {
+    fn from(drop: OutboundAdmissionDrop) -> Self {
+        Self {
+            owner: drop.owner,
+            counter: None,
             ingress_seq: None,
             lane: drop.lane,
             reason: PacketDropReason::Admission(drop.reason),
@@ -788,6 +1040,92 @@ impl StatelessAeadOpenWorker {
     }
 }
 
+pub(crate) struct AeadSealWork {
+    work: OutboundCryptoWork,
+    cipher: LessSafeKey,
+    ciphertext_offset: usize,
+}
+
+impl AeadSealWork {
+    pub(crate) fn from_outbound_work(
+        mut work: OutboundCryptoWork,
+        cipher: LessSafeKey,
+    ) -> Result<Self, WireBuildError> {
+        let payload_len = u16::try_from(work.packet.payload.len())
+            .map_err(|_| WireBuildError::PayloadTooLarge)?;
+        let counter = work.reservation.counter;
+        let (header, ciphertext_offset) = match (work.packet.owner.protocol, work.packet.wire) {
+            (
+                PacketProtocol::Fmp,
+                OutboundWire::Fmp {
+                    receiver_idx,
+                    flags,
+                },
+            ) => (
+                build_fmp_established_header(receiver_idx, counter, flags, payload_len).to_vec(),
+                FMP_ESTABLISHED_HEADER_SIZE,
+            ),
+            (PacketProtocol::Fsp, OutboundWire::Fsp { flags }) => (
+                build_fsp_established_header(counter, flags, payload_len)?.to_vec(),
+                FSP_HEADER_SIZE,
+            ),
+            _ => return Err(WireBuildError::ProtocolMismatch),
+        };
+
+        let mut wire = Vec::with_capacity(header.len() + work.packet.payload.len() + AEAD_TAG_SIZE);
+        wire.extend_from_slice(&header);
+        wire.extend_from_slice(&work.packet.payload);
+        work.packet.payload = wire.into();
+
+        Ok(Self {
+            work,
+            cipher,
+            ciphertext_offset,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StatelessAeadSealWorker;
+
+impl StatelessAeadSealWorker {
+    pub(crate) fn execute(&self, mut work: AeadSealWork) -> CryptoCompletion {
+        let reservation = work.work.reservation;
+        let tag = if work.ciphertext_offset <= work.work.packet.payload.len() {
+            let nonce = aead_nonce(reservation.counter);
+            let (aad, plaintext) = work
+                .work
+                .packet
+                .payload
+                .split_at_mut(work.ciphertext_offset);
+            work.cipher
+                .seal_in_place_separate_tag(nonce, Aad::from(&*aad), plaintext)
+                .ok()
+        } else {
+            None
+        };
+
+        let result = match tag {
+            Some(tag) => {
+                work.work.packet.payload.extend_from_slice(tag.as_ref());
+                CryptoResult::Sealed(PacketOutput {
+                    owner: reservation.owner,
+                    counter: reservation.counter,
+                    ingress_seq: reservation.ingress_seq,
+                    target: OutputTarget::Transport,
+                    payload: work.work.packet.payload,
+                })
+            }
+            None => CryptoResult::Failed,
+        };
+
+        CryptoCompletion {
+            reservation,
+            result,
+        }
+    }
+}
+
 fn aead_nonce(counter: u64) -> Nonce {
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
@@ -797,6 +1135,7 @@ fn aead_nonce(counter: u64) -> Nonce {
 #[derive(Debug)]
 pub(crate) struct PacketMover2<W = CopyCryptoWorker> {
     admission: AdmissionQueue,
+    outbound_admission: OutboundAdmissionQueue,
     owners: HashMap<OwnerId, OwnerState>,
     worker: W,
     drops: Vec<PacketDrop>,
@@ -806,6 +1145,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
     pub(crate) fn new(config: AdmissionConfig, worker: W) -> Self {
         Self {
             admission: AdmissionQueue::new(config),
+            outbound_admission: OutboundAdmissionQueue::new(config),
             owners: HashMap::new(),
             worker,
             drops: Vec::new(),
@@ -847,6 +1187,19 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         summary
     }
 
+    pub(crate) fn submit_outbound_packet(
+        &mut self,
+        packet: OutboundPacket,
+    ) -> Result<u64, OutboundAdmissionDrop> {
+        match self.outbound_admission.admit(packet) {
+            Ok(seq) => Ok(seq),
+            Err(drop) => {
+                self.drops.push(drop.clone().into());
+                Err(drop)
+            }
+        }
+    }
+
     pub(crate) fn dispatch_available(&mut self, limit: usize) -> Vec<CryptoWork> {
         let mut work = Vec::new();
         self.dispatch_available_into(limit, &mut work);
@@ -885,6 +1238,36 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         }
 
         work.len()
+    }
+
+    pub(crate) fn dispatch_outbound_available(&mut self, limit: usize) -> Vec<OutboundCryptoWork> {
+        let mut work = Vec::new();
+
+        while work.len() < limit {
+            let Some(queued) = self.outbound_admission.pop_next() else {
+                break;
+            };
+
+            let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
+                self.drops.push(PacketDrop::from_queued_outbound(
+                    &queued,
+                    PacketDropReason::UnknownOwner,
+                ));
+                continue;
+            };
+
+            match owner.reserve_outbound(&queued.packet, queued.ingress_seq) {
+                Ok(reservation) => work.push(OutboundCryptoWork {
+                    reservation,
+                    packet: queued.packet,
+                }),
+                Err(error) => self
+                    .drops
+                    .push(PacketDrop::from_queued_outbound(&queued, error.into())),
+            }
+        }
+
+        work
     }
 
     pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
@@ -937,6 +1320,11 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
     #[cfg(test)]
     fn queue_lens(&self) -> (usize, usize) {
         self.admission.lens()
+    }
+
+    #[cfg(test)]
+    fn outbound_queue_lens(&self) -> (usize, usize) {
+        self.outbound_admission.lens()
     }
 }
 
@@ -1023,6 +1411,62 @@ mod tests {
             .unwrap();
         data.extend_from_slice(&ciphertext);
         data
+    }
+
+    fn open_sealed_output(output: &PacketOutput, key: u8) -> Vec<u8> {
+        match output.owner.protocol {
+            PacketProtocol::Fmp => {
+                let header = FmpWireHeader::parse(&output.payload).unwrap();
+                let aad = header.header_bytes();
+                let mut ciphertext = output.payload[header.ciphertext_offset()..].to_vec();
+                let plaintext_len = test_cipher(key)
+                    .open_in_place(
+                        aead_nonce(header.counter()),
+                        Aad::from(&aad),
+                        &mut ciphertext,
+                    )
+                    .unwrap()
+                    .len();
+                ciphertext.truncate(plaintext_len);
+                ciphertext
+            }
+            PacketProtocol::Fsp => {
+                let header = FspWireHeader::parse(&output.payload).unwrap();
+                let aad = header.header_bytes();
+                let mut ciphertext = output.payload[header.ciphertext_offset()..].to_vec();
+                let plaintext_len = test_cipher(key)
+                    .open_in_place(
+                        aead_nonce(header.counter()),
+                        Aad::from(&aad),
+                        &mut ciphertext,
+                    )
+                    .unwrap()
+                    .len();
+                ciphertext.truncate(plaintext_len);
+                ciphertext
+            }
+        }
+    }
+
+    fn outbound_packet(
+        owner: OwnerId,
+        generation: u64,
+        class: PacketClass,
+        payload: &[u8],
+    ) -> OutboundPacket {
+        match owner.protocol {
+            PacketProtocol::Fmp => OutboundPacket::fmp(
+                owner,
+                generation,
+                class,
+                owner.peer as u32,
+                0,
+                payload.to_vec(),
+            ),
+            PacketProtocol::Fsp => {
+                OutboundPacket::fsp(owner, generation, class, 0, payload.to_vec())
+            }
+        }
     }
 
     fn outputs(items: Vec<RetiredPacket>) -> Vec<PacketOutput> {
@@ -1155,7 +1599,7 @@ mod tests {
             drops[0].reason,
             PacketDropReason::Admission(AdmissionDropReason::BulkFull)
         );
-        assert_eq!(drops[0].counter, 2);
+        assert_eq!(drops[0].counter, Some(2));
     }
 
     #[test]
@@ -1267,9 +1711,9 @@ mod tests {
 
         let drops = mover.drain_drops();
         assert_eq!(drops[0].reason, PacketDropReason::OwnerInFlightFull);
-        assert_eq!(drops[0].counter, 9);
+        assert_eq!(drops[0].counter, Some(9));
         assert_eq!(drops[1].reason, PacketDropReason::Replay);
-        assert_eq!(drops[1].counter, 8);
+        assert_eq!(drops[1].counter, Some(8));
 
         let completion = mover.execute_work(work[0].clone());
         assert_eq!(outputs(mover.retire_completion(completion)).len(), 1);
@@ -1324,11 +1768,9 @@ mod tests {
         assert_eq!(work[0].packet.counter, 3);
 
         let drops = mover.drain_drops();
-        assert!(
-            drops
-                .iter()
-                .any(|drop| drop.reason == PacketDropReason::StaleGeneration && drop.counter == 2)
-        );
+        assert!(drops.iter().any(
+            |drop| drop.reason == PacketDropReason::StaleGeneration && drop.counter == Some(2)
+        ));
     }
 
     #[test]
@@ -1468,7 +1910,7 @@ mod tests {
         assert_eq!(retired.len(), 2);
         match &retired[0] {
             RetiredPacket::Drop(drop) => {
-                assert_eq!(drop.counter, 1);
+                assert_eq!(drop.counter, Some(1));
                 assert_eq!(drop.reason, PacketDropReason::CryptoFailed);
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
@@ -1480,5 +1922,200 @@ mod tests {
             }
             RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
         }
+    }
+
+    #[test]
+    fn outbound_seal_worker_builds_fmp_and_fsp_wire_from_owner_reserved_counters() {
+        let fmp = OwnerId::fmp(77);
+        let fsp = OwnerId::fsp(88);
+        let key = 6;
+        let mut mover = mover();
+        mover.register_owner(fmp, OwnerConfig::new(1, 8).with_next_send_counter(10));
+        mover.register_owner(fsp, OwnerConfig::new(1, 8).with_next_send_counter(20));
+
+        mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                fmp,
+                1,
+                PacketClass::Bulk,
+                777,
+                0x02,
+                b"fmp outbound".to_vec(),
+            ))
+            .unwrap();
+        mover
+            .submit_outbound_packet(OutboundPacket::fsp(
+                fsp,
+                1,
+                PacketClass::Bulk,
+                0,
+                b"fsp outbound".to_vec(),
+            ))
+            .unwrap();
+
+        let worker = StatelessAeadSealWorker;
+        let mut retired = Vec::new();
+        for work in mover.dispatch_outbound_available(8) {
+            let work = AeadSealWork::from_outbound_work(work, test_cipher(key)).unwrap();
+            retired.extend(mover.retire_completion(worker.execute(work)));
+        }
+
+        let outputs = outputs(retired);
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].owner, fmp);
+        assert_eq!(outputs[0].counter, 10);
+        assert_eq!(outputs[0].target, OutputTarget::Transport);
+        let fmp_header = FmpWireHeader::parse(&outputs[0].payload).unwrap();
+        assert_eq!(fmp_header.receiver_idx(), 777);
+        assert_eq!(fmp_header.counter(), 10);
+        assert_eq!(fmp_header.flags(), 0x02);
+        assert_eq!(
+            u16::from_le_bytes([outputs[0].payload[2], outputs[0].payload[3]]) as usize,
+            b"fmp outbound".len()
+        );
+        assert_eq!(open_sealed_output(&outputs[0], key), b"fmp outbound");
+        assert_eq!(
+            outputs[0].payload.len(),
+            FMP_ESTABLISHED_HEADER_SIZE + b"fmp outbound".len() + AEAD_TAG_SIZE
+        );
+
+        assert_eq!(outputs[1].owner, fsp);
+        assert_eq!(outputs[1].counter, 20);
+        assert_eq!(outputs[1].target, OutputTarget::Transport);
+        let fsp_header = FspWireHeader::parse(&outputs[1].payload).unwrap();
+        assert_eq!(fsp_header.counter(), 20);
+        assert_eq!(fsp_header.flags(), 0);
+        assert_eq!(
+            u16::from_le_bytes([outputs[1].payload[2], outputs[1].payload[3]]) as usize,
+            b"fsp outbound".len()
+        );
+        assert_eq!(open_sealed_output(&outputs[1], key), b"fsp outbound");
+        assert_eq!(
+            outputs[1].payload.len(),
+            FSP_HEADER_SIZE + b"fsp outbound".len() + AEAD_TAG_SIZE
+        );
+    }
+
+    #[test]
+    fn outbound_owner_reserves_counters_after_priority_overtakes_bulk() {
+        let owner = OwnerId::fsp(33);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1), CopyCryptoWorker);
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(40));
+
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-a"))
+            .unwrap();
+        let bulk_drop = mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-b"))
+            .unwrap_err();
+        mover
+            .submit_outbound_packet(outbound_packet(
+                owner,
+                1,
+                PacketClass::Liveness,
+                b"priority",
+            ))
+            .unwrap();
+
+        assert_eq!(bulk_drop.reason, AdmissionDropReason::BulkFull);
+        assert_eq!(mover.outbound_queue_lens(), (1, 1));
+
+        let work = mover.dispatch_outbound_available(8);
+        assert_eq!(work.len(), 2);
+        assert_eq!(work[0].packet.class, PacketClass::Liveness);
+        assert_eq!(work[0].reservation.counter, 40);
+        assert_eq!(work[1].packet.class, PacketClass::Bulk);
+        assert_eq!(work[1].reservation.counter, 41);
+        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter(), 42);
+
+        let drops = mover.drain_drops();
+        assert_eq!(
+            drops[0].reason,
+            PacketDropReason::Admission(AdmissionDropReason::BulkFull)
+        );
+        assert_eq!(drops[0].counter, None);
+        assert_eq!(drops[0].lane, Lane::Bulk);
+    }
+
+    #[test]
+    fn outbound_completions_retire_in_owner_order() {
+        let owner = OwnerId::fmp(44);
+        let key = 7;
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(5));
+        for payload in [
+            b"first".as_slice(),
+            b"second".as_slice(),
+            b"third".as_slice(),
+        ] {
+            mover
+                .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, payload))
+                .unwrap();
+        }
+
+        let work = mover.dispatch_outbound_available(8);
+        assert_eq!(
+            work.iter()
+                .map(OutboundCryptoWork::order)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+
+        let worker = StatelessAeadSealWorker;
+        let third = AeadSealWork::from_outbound_work(work[2].clone(), test_cipher(key)).unwrap();
+        assert!(mover.retire_completion(worker.execute(third)).is_empty());
+
+        let first = AeadSealWork::from_outbound_work(work[0].clone(), test_cipher(key)).unwrap();
+        let retired = outputs(mover.retire_completion(worker.execute(first)));
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].counter, 5);
+        assert_eq!(open_sealed_output(&retired[0], key), b"first");
+
+        let second = AeadSealWork::from_outbound_work(work[1].clone(), test_cipher(key)).unwrap();
+        let retired = outputs(mover.retire_completion(worker.execute(second)));
+        assert_eq!(
+            retired
+                .iter()
+                .map(|output| output.counter)
+                .collect::<Vec<_>>(),
+            vec![6, 7]
+        );
+        assert_eq!(open_sealed_output(&retired[0], key), b"second");
+        assert_eq!(open_sealed_output(&retired[1], key), b"third");
+    }
+
+    #[test]
+    fn outbound_wire_build_rejects_mismatched_protocol_and_plaintext_fsp() {
+        let fmp_owner = OwnerId::fmp(12);
+        let fsp_owner = OwnerId::fsp(12);
+        let mut fmp_state =
+            OwnerState::new(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(1));
+        let mismatch = OutboundPacket::fsp(fmp_owner, 1, PacketClass::Bulk, 0, b"body".to_vec());
+        let mismatch_work = OutboundCryptoWork {
+            reservation: fmp_state.reserve_outbound(&mismatch, 0).unwrap(),
+            packet: mismatch,
+        };
+        assert_eq!(
+            AeadSealWork::from_outbound_work(mismatch_work, test_cipher(1)).err(),
+            Some(WireBuildError::ProtocolMismatch)
+        );
+
+        let mut fsp_state =
+            OwnerState::new(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(1));
+        let plaintext_fsp = OutboundPacket::fsp(
+            fsp_owner,
+            1,
+            PacketClass::Bulk,
+            FSP_FLAG_U,
+            b"body".to_vec(),
+        );
+        let plaintext_work = OutboundCryptoWork {
+            reservation: fsp_state.reserve_outbound(&plaintext_fsp, 0).unwrap(),
+            packet: plaintext_fsp,
+        };
+        assert_eq!(
+            AeadSealWork::from_outbound_work(plaintext_work, test_cipher(1)).err(),
+            Some(WireBuildError::PlaintextFsp)
+        );
     }
 }
