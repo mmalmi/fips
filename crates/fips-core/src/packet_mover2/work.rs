@@ -47,6 +47,7 @@ pub(crate) struct PacketOutput {
     source_path: Option<TransportPath>,
     path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
+    source_wire_len: Option<usize>,
     payload: PacketBuffer,
 }
 
@@ -77,6 +78,10 @@ impl PacketOutput {
 
     pub(crate) fn payload_len(&self) -> usize {
         self.payload.len()
+    }
+
+    pub(crate) fn source_wire_len(&self) -> Option<usize> {
+        self.source_wire_len
     }
 
     pub(crate) fn into_payload(self) -> PacketBuffer {

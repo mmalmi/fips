@@ -284,6 +284,14 @@ impl OutboundPacket {
         }
     }
 
+    fn prepend_fmp_inner_timestamp(&mut self, timestamp_ms: u32) {
+        let payload = std::mem::take(&mut self.payload).into_vec();
+        let mut inner = Vec::with_capacity(4 + payload.len());
+        inner.extend_from_slice(&timestamp_ms.to_le_bytes());
+        inner.extend_from_slice(&payload);
+        self.payload = inner.into();
+    }
+
     pub(crate) fn with_activity_tick(mut self, tick: ActivityTick) -> Self {
         self.activity_tick = Some(tick);
         self

@@ -70,6 +70,7 @@
             source_path: None,
             path: None,
             activity_tick: None,
+            source_wire_len: None,
             payload: payload.into(),
         }
     }
@@ -90,6 +91,7 @@
             source_path: None,
             path: Some(TransportPath::live(transport_id, remote_addr)),
             activity_tick: None,
+            source_wire_len: None,
             payload: payload.into(),
         }
     }

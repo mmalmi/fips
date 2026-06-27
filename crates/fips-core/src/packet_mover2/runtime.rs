@@ -106,10 +106,115 @@ impl PacketMover2RuntimeTurn<'_> {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FmpIngressReceipt {
+    source_addr: NodeAddr,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    packet_timestamp_ms: u64,
+    packet_len: usize,
+    fmp_counter: u64,
+    fmp_flags: u8,
+    inner_timestamp_ms: u32,
+}
+
+impl PacketMover2FmpIngressReceipt {
+    fn from_output(output: &PacketOutput) -> Option<Self> {
+        if output.owner().protocol() != PacketProtocol::Fmp {
+            return None;
+        }
+        let source_addr = output.owner().node_addr()?;
+        let Some(TransportPath::Live {
+            transport_id,
+            remote_addr,
+        }) = output.source_path.clone()
+        else {
+            return None;
+        };
+        let packet_timestamp_ms = output.activity_tick?.get();
+        let packet_len = output.source_wire_len()?;
+        let header = FmpWireHeader::parse(output.payload()).ok()?;
+        let plaintext = output.opened_payload()?;
+        if plaintext.len() < 4 {
+            return None;
+        }
+        let inner_timestamp_ms =
+            u32::from_le_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]);
+        Some(Self {
+            source_addr,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            fmp_counter: header.counter(),
+            fmp_flags: header.flags(),
+            inner_timestamp_ms,
+        })
+    }
+
+    pub(crate) fn source_addr(&self) -> &NodeAddr {
+        &self.source_addr
+    }
+
+    pub(crate) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    pub(crate) fn remote_addr(&self) -> &TransportAddr {
+        &self.remote_addr
+    }
+
+    pub(crate) fn packet_timestamp_ms(&self) -> u64 {
+        self.packet_timestamp_ms
+    }
+
+    pub(crate) fn packet_len(&self) -> usize {
+        self.packet_len
+    }
+
+    pub(crate) fn fmp_counter(&self) -> u64 {
+        self.fmp_counter
+    }
+
+    pub(crate) fn inner_timestamp_ms(&self) -> u32 {
+        self.inner_timestamp_ms
+    }
+
+    pub(crate) fn fmp_flags(&self) -> u8 {
+        self.fmp_flags
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FmpLegacyIngress {
+    receipt: PacketMover2FmpIngressReceipt,
+    plaintext: PacketBuffer,
+}
+
+impl PacketMover2FmpLegacyIngress {
+    fn from_output(output: &PacketOutput) -> Option<Self> {
+        let receipt = PacketMover2FmpIngressReceipt::from_output(output)?;
+        Some(Self {
+            receipt,
+            plaintext: output.opened_payload()?.to_vec().into(),
+        })
+    }
+
+    pub(crate) fn receipt(&self) -> &PacketMover2FmpIngressReceipt {
+        &self.receipt
+    }
+
+    pub(crate) fn plaintext(&self) -> &[u8] {
+        &self.plaintext
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PacketMover2LiveNodeTurn {
     summary: PacketMover2RuntimeSummary,
     fmp_control_ingress: Vec<PacketMover2FmpControlIngress>,
+    fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
+    fmp_legacy_ingress: Vec<PacketMover2FmpLegacyIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
@@ -128,6 +233,8 @@ impl PacketMover2LiveNodeTurn {
         Self {
             summary: turn.summary(),
             fmp_control_ingress: Vec::new(),
+            fmp_ingress_receipts: Vec::new(),
+            fmp_legacy_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
             endpoint_command_drops: Vec::new(),
@@ -160,6 +267,30 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn take_fmp_control_ingress(&mut self) -> Vec<PacketMover2FmpControlIngress> {
         std::mem::take(&mut self.fmp_control_ingress)
+    }
+
+    pub(crate) fn fmp_ingress_receipts(&self) -> &[PacketMover2FmpIngressReceipt] {
+        &self.fmp_ingress_receipts
+    }
+
+    fn set_fmp_ingress_receipts(&mut self, receipts: Vec<PacketMover2FmpIngressReceipt>) {
+        self.fmp_ingress_receipts = receipts;
+    }
+
+    pub(crate) fn take_fmp_ingress_receipts(&mut self) -> Vec<PacketMover2FmpIngressReceipt> {
+        std::mem::take(&mut self.fmp_ingress_receipts)
+    }
+
+    pub(crate) fn fmp_legacy_ingress(&self) -> &[PacketMover2FmpLegacyIngress] {
+        &self.fmp_legacy_ingress
+    }
+
+    fn set_fmp_legacy_ingress(&mut self, ingress: Vec<PacketMover2FmpLegacyIngress>) {
+        self.fmp_legacy_ingress = ingress;
+    }
+
+    pub(crate) fn take_fmp_legacy_ingress(&mut self) -> Vec<PacketMover2FmpLegacyIngress> {
+        std::mem::take(&mut self.fmp_legacy_ingress)
     }
 
     pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
@@ -225,6 +356,8 @@ impl PacketMover2LiveNodeTurn {
     pub(crate) fn has_activity(&self) -> bool {
         self.summary.has_activity()
             || !self.fmp_control_ingress.is_empty()
+            || !self.fmp_ingress_receipts.is_empty()
+            || !self.fmp_legacy_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_command_drops.is_empty()
@@ -258,6 +391,8 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
     drops: Vec<PacketDrop>,
+    fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
+    fmp_legacy_ingress: Vec<PacketMover2FmpLegacyIngress>,
 }
 
 impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
@@ -270,6 +405,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             output_drops: Vec::new(),
             outputs: Vec::new(),
             drops: Vec::new(),
+            fmp_ingress_receipts: Vec::new(),
+            fmp_legacy_ingress: Vec::new(),
         }
     }
 
@@ -437,6 +574,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             let turn = self.send_collected_outputs(summary, &mut sink);
             PacketMover2LiveNodeTurn::from_runtime_turn(&turn)
         };
+        report.set_fmp_ingress_receipts(std::mem::take(&mut self.fmp_ingress_receipts));
+        report.set_fmp_legacy_ingress(std::mem::take(&mut self.fmp_legacy_ingress));
 
         let plans = transport_output.take_plans();
         report.transport_planned = plans.len();
@@ -600,6 +739,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.drops.clear();
         self.raw_ingress_drops.clear();
         self.output_drops.clear();
+        self.fmp_ingress_receipts.clear();
+        self.fmp_legacy_ingress.clear();
     }
 
     fn admit_raw_ingress_packet<R>(
@@ -751,7 +892,24 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             match output.target {
                 OutputTarget::SessionIngress { local_addr } => {
                     match packet_mover2_session_ingress_from_output(&output, local_addr) {
-                        Ok(raw) => self.admit_raw_ingress_packet(raw, router, summary),
+                        Ok(raw) => {
+                            if let Some(receipt) = PacketMover2FmpIngressReceipt::from_output(&output)
+                            {
+                                self.fmp_ingress_receipts.push(receipt);
+                            }
+                            self.admit_raw_ingress_packet(raw, router, summary);
+                        }
+                        Err(PacketMover2SessionHandoffError::NoRoute) => {
+                            if let Some(ingress) = PacketMover2FmpLegacyIngress::from_output(&output)
+                            {
+                                self.fmp_legacy_ingress.push(ingress);
+                            } else {
+                                self.output_drops.push(PacketMover2OutputDrop::from_output(
+                                    &output,
+                                    PacketMover2OutputError::NoRoute,
+                                ));
+                            }
+                        }
                         Err(error) => self.output_drops.push(PacketMover2OutputDrop::from_output(
                             &output,
                             packet_mover2_output_error_from_session_handoff(error),

@@ -3,6 +3,7 @@ pub(crate) struct OwnerConfig {
     generation: u64,
     in_flight_limit: usize,
     next_send_counter: u64,
+    fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
 }
 
@@ -12,12 +13,18 @@ impl OwnerConfig {
             generation,
             in_flight_limit,
             next_send_counter: 0,
+            fmp_session_start_ms: None,
             fsp_session_start_ms: None,
         }
     }
 
     pub(crate) fn with_next_send_counter(mut self, next_send_counter: u64) -> Self {
         self.next_send_counter = next_send_counter;
+        self
+    }
+
+    pub(crate) fn with_fmp_session_start_ms(mut self, session_start_ms: u64) -> Self {
+        self.fmp_session_start_ms = Some(session_start_ms);
         self
     }
 
@@ -59,6 +66,7 @@ pub(crate) struct OwnerReservation {
     source_path: Option<TransportPath>,
     output_path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
+    fmp_timestamp_ms: Option<u32>,
     fsp_timestamp_ms: Option<u32>,
 }
 
@@ -80,6 +88,7 @@ pub(crate) struct OwnerState {
     next_send_counter: u64,
     crypto_keys: Option<OwnerCryptoKeys>,
     active_path: Option<TransportPath>,
+    fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
     last_rx_activity: Option<ActivityTick>,
     last_tx_activity: Option<ActivityTick>,
@@ -101,6 +110,7 @@ impl OwnerState {
             next_send_counter: config.next_send_counter,
             crypto_keys: None,
             active_path: None,
+            fmp_session_start_ms: config.fmp_session_start_ms,
             fsp_session_start_ms: config.fsp_session_start_ms,
             last_rx_activity: None,
             last_tx_activity: None,
@@ -116,6 +126,7 @@ impl OwnerState {
         self.accepted_counters.clear();
         self.next_send_counter = 0;
         self.crypto_keys = None;
+        self.fmp_session_start_ms = None;
         self.fsp_session_start_ms = None;
     }
 
@@ -125,6 +136,10 @@ impl OwnerState {
 
     pub(crate) fn set_fsp_session_start_ms(&mut self, session_start_ms: u64) {
         self.fsp_session_start_ms = Some(session_start_ms);
+    }
+
+    pub(crate) fn set_fmp_session_start_ms(&mut self, session_start_ms: u64) {
+        self.fmp_session_start_ms = Some(session_start_ms);
     }
 
     fn crypto_keys(&self) -> Option<OwnerCryptoKeys> {
@@ -195,6 +210,7 @@ impl OwnerState {
             source_path: packet.source_path.clone(),
             output_path: None,
             activity_tick: packet.activity_tick,
+            fmp_timestamp_ms: None,
             fsp_timestamp_ms: None,
         })
     }
@@ -213,6 +229,7 @@ impl OwnerState {
 
         let counter = self.next_send_counter;
         let output_path = self.active_path.clone();
+        let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
         let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_tx_activity, tick);
@@ -231,8 +248,18 @@ impl OwnerState {
             source_path: None,
             output_path,
             activity_tick: packet.activity_tick,
+            fmp_timestamp_ms,
             fsp_timestamp_ms,
         })
+    }
+
+    fn reserve_fmp_timestamp(&self, activity_tick: Option<ActivityTick>) -> Option<u32> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return None;
+        }
+        let session_start_ms = self.fmp_session_start_ms?;
+        let activity_ms = activity_tick?.get();
+        Some(activity_ms.wrapping_sub(session_start_ms) as u32)
     }
 
     fn reserve_fsp_timestamp(&self, activity_tick: Option<ActivityTick>) -> Option<u32> {

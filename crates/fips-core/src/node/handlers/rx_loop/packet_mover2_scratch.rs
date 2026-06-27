@@ -1,3 +1,4 @@
+use crate::node::{AuthenticatedFmpPlaintext, decrypt_worker::DecryptFmpBookkeeping};
 use crate::node::{EndpointEventSender, Node, NodeEndpointCommand};
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
@@ -112,11 +113,72 @@ impl Node {
         turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) -> usize {
         let mut processed = 0usize;
+        for receipt in turn.take_fmp_ingress_receipts() {
+            if self.record_packet_mover2_fmp_ingress_receipt(&receipt) {
+                processed += 1;
+            }
+        }
+        for ingress in turn.take_fmp_legacy_ingress() {
+            if self.process_packet_mover2_fmp_legacy_ingress(ingress).await {
+                processed += 1;
+            }
+        }
         for control in turn.take_fmp_control_ingress() {
             self.process_packet(control.into_packet()).await;
             processed += 1;
         }
         processed
+    }
+
+    fn record_packet_mover2_fmp_ingress_receipt(
+        &mut self,
+        receipt: &crate::packet_mover2::PacketMover2FmpIngressReceipt,
+    ) -> bool {
+        let Some(source_peer) = self
+            .peers
+            .get(receipt.source_addr())
+            .map(|peer| *peer.identity())
+        else {
+            return false;
+        };
+        let fmp = DecryptFmpBookkeeping {
+            source_peer,
+            transport_id: receipt.transport_id(),
+            remote_addr: receipt.remote_addr().clone(),
+            packet_timestamp_ms: receipt.packet_timestamp_ms(),
+            packet_len: receipt.packet_len(),
+            fmp_counter: receipt.fmp_counter(),
+            inner_timestamp_ms: receipt.inner_timestamp_ms(),
+            fmp_flags: receipt.fmp_flags(),
+        };
+        self.record_worker_authenticated_fmp_receive(&fmp, Some(receipt.source_addr()));
+        true
+    }
+
+    async fn process_packet_mover2_fmp_legacy_ingress(
+        &mut self,
+        ingress: crate::packet_mover2::PacketMover2FmpLegacyIngress,
+    ) -> bool {
+        let receipt = ingress.receipt();
+        let Some(source_peer) = self
+            .peers
+            .get(receipt.source_addr())
+            .map(|peer| *peer.identity())
+        else {
+            return false;
+        };
+        self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+            source_peer,
+            receipt.transport_id(),
+            receipt.remote_addr(),
+            receipt.packet_timestamp_ms(),
+            receipt.packet_len(),
+            receipt.fmp_counter(),
+            receipt.fmp_flags(),
+            ingress.plaintext(),
+        ))
+        .await;
+        true
     }
 
     pub(super) fn packet_mover2_scratch_packet_activity(

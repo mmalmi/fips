@@ -21,6 +21,10 @@ fn packet_mover2_session_ingress_from_output(
     let link_payload = output
         .opened_payload()
         .ok_or(PacketMover2SessionHandoffError::InvalidPacket)?;
+    if link_payload.len() < 4 {
+        return Err(PacketMover2SessionHandoffError::InvalidPacket);
+    }
+    let link_payload = &link_payload[4..];
     let Some((&msg_type, datagram_payload)) = link_payload.split_first() else {
         return Err(PacketMover2SessionHandoffError::InvalidPacket);
     };

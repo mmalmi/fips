@@ -15,6 +15,7 @@ impl StatelessCryptoWorker for CopyCryptoWorker {
             source_path: work.reservation.source_path.clone(),
             path: work.reservation.output_path.clone(),
             activity_tick: work.reservation.activity_tick,
+            source_wire_len: Some(work.packet.payload.len()),
             payload: work.packet.payload,
         };
         CryptoCompletion {
@@ -90,6 +91,7 @@ impl StatelessAeadOpenWorker {
         let reservation = work.work.reservation;
         let target = work.work.packet.output;
         let header = work.header;
+        let source_wire_len = work.work.packet.payload.len();
         let opened_len = match work.work.packet.payload.get_mut(work.ciphertext_offset..) {
             Some(ciphertext) => {
                 let nonce = aead_nonce(reservation.counter);
@@ -115,6 +117,7 @@ impl StatelessAeadOpenWorker {
                     source_path: reservation.source_path.clone(),
                     path: reservation.output_path.clone(),
                     activity_tick: reservation.activity_tick,
+                    source_wire_len: Some(source_wire_len),
                     payload: work.work.packet.payload,
                 })
             }
@@ -142,6 +145,11 @@ impl AeadSealWork {
     ) -> Result<Self, WireBuildError> {
         work.packet
             .apply_payload_transform(work.reservation.fsp_timestamp_ms)?;
+        if work.packet.owner.protocol == PacketProtocol::Fmp
+            && let Some(timestamp_ms) = work.reservation.fmp_timestamp_ms
+        {
+            work.packet.prepend_fmp_inner_timestamp(timestamp_ms);
+        }
         let payload_len = u16::try_from(work.packet.payload.len())
             .map_err(|_| WireBuildError::PayloadTooLarge)?;
         let counter = work.reservation.counter;
@@ -209,12 +217,16 @@ impl StatelessAeadSealWorker {
                         source_path: reservation.source_path.clone(),
                         path: reservation.output_path.clone(),
                         activity_tick: reservation.activity_tick,
+                        source_wire_len: None,
                         payload: work.work.packet.payload,
                     }),
                     OutboundPostSeal::FmpWrap(route) => {
-                        CryptoResult::Outbound(
-                            route.into_fmp_outbound(work.work.packet.class, work.work.packet.payload),
-                        )
+                        let mut packet =
+                            route.into_fmp_outbound(work.work.packet.class, work.work.packet.payload);
+                        if let Some(tick) = reservation.activity_tick {
+                            packet = packet.with_activity_tick(tick);
+                        }
+                        CryptoResult::Outbound(packet)
                     }
                 }
             }

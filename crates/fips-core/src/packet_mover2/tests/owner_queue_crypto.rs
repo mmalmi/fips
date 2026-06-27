@@ -93,6 +93,7 @@
                 .encode();
         let mut payload = fmp_wire(4100, 41, 0);
         payload.truncate(FMP_ESTABLISHED_HEADER_SIZE);
+        payload.extend_from_slice(&41_000_u32.to_le_bytes());
         payload.extend_from_slice(&datagram);
         let output = PacketOutput {
             owner: OwnerId::fmp_node(next_hop),
@@ -102,6 +103,7 @@
             source_path: Some(source_path.clone()),
             path: None,
             activity_tick: Some(activity_tick),
+            source_wire_len: Some(payload.len()),
             payload: payload.into(),
         };
 
@@ -139,6 +141,7 @@
             source_path: None,
             path: None,
             activity_tick: Some(ActivityTick::new(51_000)),
+            source_wire_len: Some(payload.len()),
             payload: payload.into(),
         };
 

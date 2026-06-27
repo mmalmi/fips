@@ -93,6 +93,7 @@ impl Node {
         let transport_id = peer.transport_id()?;
         let remote_addr = peer.current_addr()?.clone();
         let receiver_idx = peer.their_index()?.as_u32();
+        let session_start_ms = Self::now_ms().wrapping_sub(u64::from(peer.session_elapsed_ms()));
         let open = Arc::new(session.recv_cipher_clone()?);
         let seal = Arc::new(session.send_cipher_clone()?);
         let mut routes = PacketMover2LiveOwnerRoutes::new();
@@ -115,7 +116,8 @@ impl Node {
                 INITIAL_FMP_GENERATION,
                 self.packet_mover2_owner_in_flight_limit(),
             )
-            .with_next_send_counter(session.current_send_counter()),
+            .with_next_send_counter(session.current_send_counter())
+            .with_fmp_session_start_ms(session_start_ms),
             keys: OwnerCryptoKeys::new(open, seal),
             path: TransportPath::live(transport_id, remote_addr),
             routes,

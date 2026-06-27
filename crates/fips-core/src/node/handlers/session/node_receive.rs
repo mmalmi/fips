@@ -226,7 +226,7 @@ impl Node {
         dispatch.dispatch(self).await;
     }
 
-    fn record_worker_authenticated_fmp_receive(
+    pub(in crate::node) fn record_worker_authenticated_fmp_receive(
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
         previous_hop: Option<&NodeAddr>,
