@@ -101,6 +101,15 @@ impl TransportPath {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ActivityTick(u64);
+
+impl ActivityTick {
+    pub(crate) fn new(tick: u64) -> Self {
+        Self(tick)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SocketPacket {
     owner: OwnerId,
@@ -109,6 +118,7 @@ pub(crate) struct SocketPacket {
     class: PacketClass,
     output: OutputTarget,
     source_path: Option<TransportPath>,
+    activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
 
@@ -124,6 +134,7 @@ pub(crate) struct OutboundPacket {
     generation: u64,
     class: PacketClass,
     wire: OutboundWire,
+    activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
 
@@ -144,6 +155,7 @@ impl OutboundPacket {
                 receiver_idx,
                 flags,
             },
+            activity_tick: None,
             payload: payload.into(),
         }
     }
@@ -160,8 +172,14 @@ impl OutboundPacket {
             generation,
             class,
             wire: OutboundWire::Fsp { flags },
+            activity_tick: None,
             payload: payload.into(),
         }
+    }
+
+    pub(crate) fn with_activity_tick(mut self, tick: ActivityTick) -> Self {
+        self.activity_tick = Some(tick);
+        self
     }
 
     fn lane(&self) -> Lane {
@@ -185,12 +203,18 @@ impl SocketPacket {
             class,
             output,
             source_path: None,
+            activity_tick: None,
             payload: payload.into(),
         }
     }
 
     pub(crate) fn with_source_path(mut self, path: TransportPath) -> Self {
         self.source_path = Some(path);
+        self
+    }
+
+    pub(crate) fn with_activity_tick(mut self, tick: ActivityTick) -> Self {
+        self.activity_tick = Some(tick);
         self
     }
 
@@ -644,6 +668,10 @@ pub(crate) struct OwnerState {
     next_send_counter: u64,
     crypto_keys: Option<OwnerCryptoKeys>,
     active_path: Option<TransportPath>,
+    last_rx_activity: Option<ActivityTick>,
+    last_tx_activity: Option<ActivityTick>,
+    last_hard_event: Option<ActivityTick>,
+    hard_events: u64,
     accepted_counters: HashSet<u64>,
     pending: BTreeMap<OrderToken, CryptoCompletion>,
 }
@@ -660,6 +688,10 @@ impl OwnerState {
             next_send_counter: config.next_send_counter,
             crypto_keys: None,
             active_path: None,
+            last_rx_activity: None,
+            last_tx_activity: None,
+            last_hard_event: None,
+            hard_events: 0,
             accepted_counters: HashSet::new(),
             pending: BTreeMap::new(),
         }
@@ -688,6 +720,27 @@ impl OwnerState {
         self.active_path
     }
 
+    pub(crate) fn last_rx_activity(&self) -> Option<ActivityTick> {
+        self.last_rx_activity
+    }
+
+    pub(crate) fn last_tx_activity(&self) -> Option<ActivityTick> {
+        self.last_tx_activity
+    }
+
+    pub(crate) fn last_hard_event(&self) -> Option<ActivityTick> {
+        self.last_hard_event
+    }
+
+    pub(crate) fn hard_events(&self) -> u64 {
+        self.hard_events
+    }
+
+    pub(crate) fn record_hard_event(&mut self, tick: ActivityTick) {
+        self.hard_events = self.hard_events.saturating_add(1);
+        note_activity(&mut self.last_hard_event, tick);
+    }
+
     pub(crate) fn reserve(
         &mut self,
         packet: &SocketPacket,
@@ -706,6 +759,9 @@ impl OwnerState {
         self.accepted_counters.insert(packet.counter);
         if let Some(path) = packet.source_path {
             self.active_path = Some(path);
+        }
+        if let Some(tick) = packet.activity_tick {
+            note_activity(&mut self.last_rx_activity, tick);
         }
         self.in_flight += 1;
         let order = OrderToken(self.next_order);
@@ -735,6 +791,9 @@ impl OwnerState {
 
         let counter = self.next_send_counter;
         let output_path = self.active_path;
+        if let Some(tick) = packet.activity_tick {
+            note_activity(&mut self.last_tx_activity, tick);
+        }
         self.next_send_counter = self.next_send_counter.wrapping_add(1);
         self.in_flight += 1;
         let order = OrderToken(self.next_order);
@@ -790,6 +849,13 @@ impl OwnerState {
     #[cfg(test)]
     fn next_send_counter(&self) -> u64 {
         self.next_send_counter
+    }
+}
+
+fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) {
+    match slot {
+        Some(current) if *current >= tick => {}
+        _ => *slot = Some(tick),
     }
 }
 
@@ -2501,5 +2567,128 @@ mod tests {
             mover.owner_mut(owner).unwrap().active_path(),
             Some(old_path)
         );
+    }
+
+    #[test]
+    fn owner_tracks_inbound_activity_only_for_reserved_packets() {
+        let owner = OwnerId::fsp(75);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8));
+
+        mover
+            .submit_socket_packet(
+                packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun)
+                    .with_activity_tick(ActivityTick::new(10)),
+            )
+            .unwrap();
+        assert_eq!(mover.dispatch_available(8).len(), 1);
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().last_rx_activity(),
+            Some(ActivityTick::new(10))
+        );
+
+        mover
+            .submit_socket_packet(
+                packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun)
+                    .with_activity_tick(ActivityTick::new(20)),
+            )
+            .unwrap();
+        assert!(mover.dispatch_available(8).is_empty());
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().last_rx_activity(),
+            Some(ActivityTick::new(10))
+        );
+
+        mover
+            .submit_socket_packet(
+                packet(owner, 0, 2, PacketClass::Bulk, OutputTarget::Tun)
+                    .with_activity_tick(ActivityTick::new(30)),
+            )
+            .unwrap();
+        assert!(mover.dispatch_available(8).is_empty());
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().last_rx_activity(),
+            Some(ActivityTick::new(10))
+        );
+
+        let drops = mover.drain_drops();
+        assert!(
+            drops
+                .iter()
+                .any(|drop| drop.reason == PacketDropReason::Replay && drop.counter == Some(1))
+        );
+        assert!(drops.iter().any(
+            |drop| drop.reason == PacketDropReason::StaleGeneration && drop.counter == Some(2)
+        ));
+    }
+
+    #[test]
+    fn owner_tracks_outbound_activity_only_for_reserved_packets() {
+        let owner = OwnerId::fmp(76);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(7));
+
+        mover
+            .submit_outbound_packet(
+                outbound_packet(owner, 1, PacketClass::Bulk, b"newer")
+                    .with_activity_tick(ActivityTick::new(50)),
+            )
+            .unwrap();
+        let work = mover.dispatch_outbound_available(8);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].reservation.counter, 7);
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().last_tx_activity(),
+            Some(ActivityTick::new(50))
+        );
+
+        mover
+            .submit_outbound_packet(
+                outbound_packet(owner, 1, PacketClass::Liveness, b"older")
+                    .with_activity_tick(ActivityTick::new(40)),
+            )
+            .unwrap();
+        assert_eq!(mover.dispatch_outbound_available(8).len(), 1);
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().last_tx_activity(),
+            Some(ActivityTick::new(50))
+        );
+
+        mover
+            .submit_outbound_packet(
+                outbound_packet(owner, 0, PacketClass::Liveness, b"stale")
+                    .with_activity_tick(ActivityTick::new(60)),
+            )
+            .unwrap();
+        assert!(mover.dispatch_outbound_available(8).is_empty());
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().last_tx_activity(),
+            Some(ActivityTick::new(50))
+        );
+
+        let drops = mover.drain_drops();
+        assert!(
+            drops
+                .iter()
+                .any(|drop| drop.reason == PacketDropReason::StaleGeneration
+                    && drop.counter.is_none())
+        );
+    }
+
+    #[test]
+    fn hard_event_liveness_state_stays_owner_owned_across_rekey() {
+        let owner = OwnerId::fmp(77);
+        let mut state = OwnerState::new(owner, OwnerConfig::new(1, 8));
+
+        state.record_hard_event(ActivityTick::new(100));
+        state.record_hard_event(ActivityTick::new(90));
+        assert_eq!(state.hard_events(), 2);
+        assert_eq!(state.last_hard_event(), Some(ActivityTick::new(100)));
+
+        state.rekey(2);
+        assert_eq!(state.hard_events(), 2);
+        assert_eq!(state.last_hard_event(), Some(ActivityTick::new(100)));
+        assert_eq!(state.last_rx_activity(), None);
+        assert_eq!(state.last_tx_activity(), None);
     }
 }
