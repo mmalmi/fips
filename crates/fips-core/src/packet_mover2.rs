@@ -2429,6 +2429,41 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         report
     }
 
+    pub(crate) async fn pump_aead_live_node_packet_rx_turn<O, R, Resolver, Transports>(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        router: &mut R,
+        packet_limit: usize,
+        outbound: &mut O,
+        outbound_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        O: PacketMover2OutboundSource,
+        R: PacketMover2IngressRouter,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let mut raw_ingress = PacketMover2FmpPacketRxSource::new(packet_rx);
+        self.pump_aead_live_node_turn(
+            &mut raw_ingress,
+            router,
+            packet_limit,
+            outbound,
+            outbound_limit,
+            tun_tx,
+            endpoint_tx,
+            endpoint_resolver,
+            transports,
+            crypto_limit,
+        )
+        .await
+    }
+
     fn admit_raw_ingress_turn<I, O, R>(
         &mut self,
         inbound: I,
@@ -5472,6 +5507,81 @@ mod tests {
             }
             event => panic!("expected single endpoint event, got {event:?}"),
         }
+        assert_eq!(
+            driver.owner_mut(fmp_owner).unwrap().active_path(),
+            Some(live_path)
+        );
+    }
+
+    #[tokio::test]
+    async fn live_node_packet_rx_turn_drains_transport_channel_to_tun() {
+        let fmp_source = NodeAddr::from_bytes([0x4b; 16]);
+        let fmp_owner = OwnerId::fmp_node(fmp_source);
+        let fmp_key = 75;
+        let transport_id = TransportId::new(75);
+        let remote_addr = TransportAddr::from_string("198.51.100.75:9000");
+        let live_path = TransportPath::live(transport_id, remote_addr.clone());
+        let (packet_tx, mut packet_rx) = crate::transport::packet_channel(8);
+        packet_tx
+            .send(ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                fmp_encrypted_wire(750, 1, 0, b"packet-rx-tun", fmp_key),
+                750_001,
+            ))
+            .expect("enqueue packet rx input");
+
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
+
+        let mut routes = PacketMover2LiveIngressRoutes::default();
+        routes.register_fmp(
+            transport_id,
+            750,
+            PacketMover2IngressRoute::new(fmp_owner, 1, OutputTarget::Tun)
+                .with_class(PacketClass::Liveness),
+        );
+        let mut outbound_source = VecDeque::new();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+
+        let turn = driver
+            .pump_aead_live_node_packet_rx_turn(
+                &mut packet_rx,
+                &mut routes,
+                8,
+                &mut outbound_source,
+                8,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                8,
+            )
+            .await;
+
+        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
+        assert_eq!(turn.summary().inbound_admitted(), 1);
+        assert_eq!(turn.summary().outbound_admitted(), 0);
+        assert_eq!(turn.summary().outputs(), 1);
+        assert_eq!(turn.summary().outputs_sent(), 1);
+        assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert_eq!(turn.transport_planned(), 0);
+        assert_eq!(turn.transport_sent(), 0);
+        assert_eq!(turn.transport_dropped(), 0);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert!(turn.drops().is_empty());
+        assert!(outbound_source.is_empty());
+        assert!(packet_rx.try_recv().is_err());
+        assert_eq!(tun_rx.try_recv().unwrap(), b"packet-rx-tun".to_vec());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
         assert_eq!(
             driver.owner_mut(fmp_owner).unwrap().active_path(),
             Some(live_path)
