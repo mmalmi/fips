@@ -1,13 +1,18 @@
+use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::DecryptFmpBookkeeping;
+use crate::node::wire::{
+    COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
+};
 use crate::node::{
-    AuthenticatedLinkMessage, EndpointEventSender, FLAG_CE, Node, NodeEndpointCommand,
+    AuthenticatedLinkMessage, EndpointEventSender, FLAG_CE, LocalSessionPayload, Node,
+    NodeEndpointCommand,
 };
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
 use std::collections::HashMap;
 use tokio::sync::mpsc::Receiver;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 impl Node {
     pub(in crate::node) async fn drain_packet_mover2_scratch_turn(
@@ -125,6 +130,14 @@ impl Node {
                 processed += 1;
             }
         }
+        for ingress in turn.take_fsp_local_session_ingress() {
+            if self
+                .process_packet_mover2_local_session_ingress(ingress)
+                .await
+            {
+                processed += 1;
+            }
+        }
         for ingress in turn.take_fsp_session_ingress() {
             if self
                 .process_packet_mover2_authenticated_session(ingress)
@@ -134,14 +147,118 @@ impl Node {
             }
         }
         for control in turn.take_fmp_control_ingress() {
-            self.process_packet(control.into_packet()).await;
-            processed += 1;
+            if self
+                .process_packet_mover2_fmp_control_ingress(control)
+                .await
+            {
+                processed += 1;
+            }
         }
         for command in self.packet_mover2.take_deferred_endpoint_commands() {
             self.handle_endpoint_data_command(command).await;
             processed += 1;
         }
         processed
+    }
+
+    async fn process_packet_mover2_local_session_ingress(
+        &mut self,
+        ingress: crate::packet_mover2::PacketMover2FspLocalSessionIngress,
+    ) -> bool {
+        let (source_addr, previous_hop_addr, ce_flag, path_mtu, payload) = ingress.into_parts();
+        let Some(previous_hop_peer) = self.packet_mover2_peer_identity(&previous_hop_addr) else {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                previous_hop = %self.peer_display_name(&previous_hop_addr),
+                payload_len = payload.len(),
+                "Dropping packet-mover2 local session payload for unknown previous hop identity"
+            );
+            return false;
+        };
+
+        let delivery =
+            LocalSessionPayload::new(source_addr, previous_hop_peer, &payload, path_mtu, ce_flag);
+        self.handle_session_payload(delivery).await;
+        true
+    }
+
+    async fn process_packet_mover2_fmp_control_ingress(
+        &mut self,
+        control: crate::packet_mover2::PacketMover2FmpControlIngress,
+    ) -> bool {
+        let packet = control.into_packet();
+        if is_punch_packet(&packet.data) {
+            trace!(
+                transport_id = %packet.transport_id,
+                remote_addr = %packet.remote_addr,
+                bytes = packet.data.len(),
+                "Dropping stray punch probe/ack from packet mover2 control ingress"
+            );
+            return false;
+        }
+        if packet.data.len() < COMMON_PREFIX_SIZE {
+            return false;
+        }
+
+        let Some(prefix) = CommonPrefix::parse(&packet.data) else {
+            return false;
+        };
+        if prefix.version != FMP_VERSION {
+            self.record_packet_mover2_fmp_protocol_mismatch(&packet, prefix.version, prefix.phase);
+            return false;
+        }
+
+        match prefix.phase {
+            PHASE_MSG1 => {
+                self.handle_msg1(packet).await;
+                true
+            }
+            PHASE_MSG2 => {
+                self.handle_msg2(packet).await;
+                true
+            }
+            _ => {
+                debug!(
+                    phase = prefix.phase,
+                    transport_id = %packet.transport_id,
+                    "Unknown packet mover2 FMP control phase, dropping"
+                );
+                false
+            }
+        }
+    }
+
+    fn record_packet_mover2_fmp_protocol_mismatch(
+        &mut self,
+        packet: &ReceivedPacket,
+        version: u8,
+        phase: u8,
+    ) {
+        debug!(
+            version,
+            transport_id = %packet.transport_id,
+            "Unknown packet mover2 FMP version, dropping"
+        );
+
+        let looks_like_fmp_phase = matches!(phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2);
+        if looks_like_fmp_phase
+            && self.bootstrap_transports.contains(&packet.transport_id)
+            && let Some(npub) = self.bootstrap_transports.peer_npub(&packet.transport_id)
+            && let Some(handle) = self.nostr_discovery_handle()
+        {
+            let now_ms = Self::now_ms();
+            let cooldown_secs = handle.protocol_mismatch_cooldown_secs();
+            if handle.record_protocol_mismatch(npub, now_ms) {
+                warn!(
+                    peer_npub = %npub,
+                    transport_id = %packet.transport_id,
+                    peer_version = version,
+                    our_version = FMP_VERSION,
+                    cooldown_secs,
+                    "Nostr-discovered peer speaks a different FMP version; suppressing retraversal"
+                );
+            }
+        }
     }
 
     fn record_packet_mover2_fmp_ingress_receipt(
@@ -205,6 +322,17 @@ impl Node {
         true
     }
 
+    fn packet_mover2_peer_identity(&self, addr: &NodeAddr) -> Option<PeerIdentity> {
+        if let Some(identity) = self.peers.get(addr).map(|peer| *peer.identity()) {
+            return Some(identity);
+        }
+        self.identity_cache
+            .iter()
+            .find_map(|(cached_addr, pubkey, _)| {
+                (cached_addr == addr).then(|| PeerIdentity::from_pubkey_full(*pubkey))
+            })
+    }
+
     pub(super) fn packet_mover2_scratch_packet_activity(
         turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) -> usize {
@@ -215,6 +343,7 @@ impl Node {
             .saturating_add(summary.inbound_dropped())
             .saturating_add(turn.fmp_control_ingress().len())
             .saturating_add(turn.fmp_link_ingress().len())
+            .saturating_add(turn.fsp_local_session_ingress().len())
             .saturating_add(turn.fsp_session_ingress().len())
             .saturating_add(turn.endpoint_deferred_commands())
     }
@@ -247,6 +376,7 @@ impl Node {
                 outbound_dropped = summary.outbound_dropped(),
                 output_drops = turn.output_drops().len(),
                 fmp_control_ingress = turn.fmp_control_ingress().len(),
+                fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
                 fsp_session_ingress = turn.fsp_session_ingress().len(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
                 tun_outbound_drops = turn.tun_outbound_drops().len(),
@@ -285,6 +415,7 @@ impl Node {
             endpoint_deferred = turn.endpoint_deferred_commands(),
             fmp_control_ingress = turn.fmp_control_ingress().len(),
             fmp_link_ingress = turn.fmp_link_ingress().len(),
+            fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
             fsp_session_ingress = turn.fsp_session_ingress().len(),
             "packet mover2 scratch turn completed"
         );

@@ -126,8 +126,11 @@
             payload: payload.into(),
         };
 
-        let raw = packet_mover2_session_ingress_from_output(&output, local_addr)
+        let handoff = packet_mover2_session_ingress_from_output(&output, local_addr)
             .expect("session datagram should route to sourced FSP ingress");
+        let PacketMover2SessionIngressHandoff::Raw(raw) = handoff else {
+            panic!("established encrypted FSP should use raw fast path");
+        };
 
         assert_eq!(raw.protocol, PacketProtocol::Fsp);
         assert_eq!(raw.transport_id, transport_id);
@@ -136,6 +139,58 @@
         assert_eq!(raw.fsp_source, Some(source_addr));
         assert_eq!(raw.activity_tick, Some(activity_tick));
         assert_eq!(raw.payload.as_ref(), fsp_wire.as_slice());
+    }
+
+    #[test]
+    fn session_handoff_routes_fsp_handshake_datagram_to_local_session_ingress() {
+        let local_addr = NodeAddr::from_bytes([0x51; 16]);
+        let source_addr = NodeAddr::from_bytes([0x52; 16]);
+        let next_hop = NodeAddr::from_bytes([0x53; 16]);
+        let transport_id = TransportId::new(5100);
+        let remote_addr = TransportAddr::from_string("198.51.100.51:5100");
+        let source_path = TransportPath::live(transport_id, remote_addr);
+        let path_mtu = 1330;
+        let mut fsp_handshake =
+            crate::node::session_wire::build_fsp_handshake_prefix(
+                crate::node::session_wire::FSP_PHASE_MSG1,
+                4,
+            )
+            .to_vec();
+        fsp_handshake.extend_from_slice(b"msg1");
+        let datagram =
+            crate::protocol::SessionDatagram::new(source_addr, local_addr, fsp_handshake.clone())
+                .with_ttl(42)
+                .with_path_mtu(path_mtu)
+                .encode();
+        let mut payload = fmp_wire(5100, 51, crate::node::wire::FLAG_CE);
+        payload.truncate(FMP_ESTABLISHED_HEADER_SIZE);
+        payload.extend_from_slice(&51_000_u32.to_le_bytes());
+        payload.extend_from_slice(&datagram);
+        let output = PacketOutput {
+            owner: OwnerId::fmp_node(next_hop),
+            counter: 51,
+            ingress_seq: 510,
+            target: OutputTarget::SessionIngress { local_addr },
+            source_path: Some(source_path),
+            previous_hop: None,
+            ce_flag: false,
+            path: None,
+            activity_tick: None,
+            source_wire_len: Some(payload.len()),
+            payload: payload.into(),
+        };
+
+        let handoff = packet_mover2_session_ingress_from_output(&output, local_addr)
+            .expect("session datagram should route to local session ingress");
+        let PacketMover2SessionIngressHandoff::Local(local) = handoff else {
+            panic!("FSP handshake should stay on local session path");
+        };
+
+        assert_eq!(local.source_addr(), source_addr);
+        assert_eq!(local.previous_hop_addr(), next_hop);
+        assert!(local.ce_flag());
+        assert_eq!(local.path_mtu(), path_mtu);
+        assert_eq!(local.payload(), fsp_handshake.as_slice());
     }
 
     #[test]

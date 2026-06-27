@@ -230,6 +230,63 @@ impl PacketMover2FmpLinkIngress {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspLocalSessionIngress {
+    source_addr: NodeAddr,
+    previous_hop_addr: NodeAddr,
+    ce_flag: bool,
+    path_mtu: u16,
+    payload: PacketBuffer,
+}
+
+impl PacketMover2FspLocalSessionIngress {
+    fn new(
+        source_addr: NodeAddr,
+        previous_hop_addr: NodeAddr,
+        ce_flag: bool,
+        path_mtu: u16,
+        payload: PacketBuffer,
+    ) -> Self {
+        Self {
+            source_addr,
+            previous_hop_addr,
+            ce_flag,
+            path_mtu,
+            payload,
+        }
+    }
+
+    pub(crate) fn source_addr(&self) -> NodeAddr {
+        self.source_addr
+    }
+
+    pub(crate) fn previous_hop_addr(&self) -> NodeAddr {
+        self.previous_hop_addr
+    }
+
+    pub(crate) fn ce_flag(&self) -> bool {
+        self.ce_flag
+    }
+
+    pub(crate) fn path_mtu(&self) -> u16 {
+        self.path_mtu
+    }
+
+    pub(crate) fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    pub(crate) fn into_parts(self) -> (NodeAddr, NodeAddr, bool, u16, PacketBuffer) {
+        (
+            self.source_addr,
+            self.previous_hop_addr,
+            self.ce_flag,
+            self.path_mtu,
+            self.payload,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2FspSessionIngress {
     source_addr: NodeAddr,
     previous_hop_addr: NodeAddr,
@@ -320,6 +377,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fmp_control_ingress: Vec<PacketMover2FmpControlIngress>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
+    fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
@@ -341,6 +399,7 @@ impl PacketMover2LiveNodeTurn {
             fmp_control_ingress: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
+            fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
@@ -398,6 +457,23 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn take_fmp_link_ingress(&mut self) -> Vec<PacketMover2FmpLinkIngress> {
         std::mem::take(&mut self.fmp_link_ingress)
+    }
+
+    pub(crate) fn fsp_local_session_ingress(&self) -> &[PacketMover2FspLocalSessionIngress] {
+        &self.fsp_local_session_ingress
+    }
+
+    fn set_fsp_local_session_ingress(
+        &mut self,
+        ingress: Vec<PacketMover2FspLocalSessionIngress>,
+    ) {
+        self.fsp_local_session_ingress = ingress;
+    }
+
+    pub(crate) fn take_fsp_local_session_ingress(
+        &mut self,
+    ) -> Vec<PacketMover2FspLocalSessionIngress> {
+        std::mem::take(&mut self.fsp_local_session_ingress)
     }
 
     pub(crate) fn fsp_session_ingress(&self) -> &[PacketMover2FspSessionIngress] {
@@ -477,6 +553,7 @@ impl PacketMover2LiveNodeTurn {
             || !self.fmp_control_ingress.is_empty()
             || !self.fmp_ingress_receipts.is_empty()
             || !self.fmp_link_ingress.is_empty()
+            || !self.fsp_local_session_ingress.is_empty()
             || !self.fsp_session_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()

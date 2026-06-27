@@ -9,6 +9,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
+    fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
 }
 
@@ -24,6 +25,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
+            fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
         }
     }
@@ -195,6 +197,9 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         };
         report.set_fmp_ingress_receipts(std::mem::take(&mut self.fmp_ingress_receipts));
         report.set_fmp_link_ingress(std::mem::take(&mut self.fmp_link_ingress));
+        report.set_fsp_local_session_ingress(std::mem::take(
+            &mut self.fsp_local_session_ingress,
+        ));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
 
         let plans = transport_output.take_plans();
@@ -361,6 +366,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.output_drops.clear();
         self.fmp_ingress_receipts.clear();
         self.fmp_link_ingress.clear();
+        self.fsp_local_session_ingress.clear();
         self.fsp_session_ingress.clear();
     }
 
@@ -519,12 +525,19 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             match output.target {
                 OutputTarget::SessionIngress { local_addr } => {
                     match packet_mover2_session_ingress_from_output(&output, local_addr) {
-                        Ok(raw) => {
+                        Ok(PacketMover2SessionIngressHandoff::Raw(raw)) => {
                             if let Some(receipt) = PacketMover2FmpIngressReceipt::from_output(&output)
                             {
                                 self.fmp_ingress_receipts.push(receipt);
                             }
                             self.admit_raw_ingress_packet(raw, router, summary);
+                        }
+                        Ok(PacketMover2SessionIngressHandoff::Local(ingress)) => {
+                            if let Some(receipt) = PacketMover2FmpIngressReceipt::from_output(&output)
+                            {
+                                self.fmp_ingress_receipts.push(receipt);
+                            }
+                            self.fsp_local_session_ingress.push(ingress);
                         }
                         Err(PacketMover2SessionHandoffError::NoRoute) => {
                             match PacketMover2FmpLinkIngress::from_output(output) {
