@@ -18,6 +18,7 @@
 //! bytes and return completions; owners retire those completions in order.
 
 use crate::transport::PacketBuffer;
+use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
@@ -163,6 +164,7 @@ pub(crate) enum WirePreflightError {
     WrongVersion,
     WrongPhase,
     PlaintextFsp,
+    CounterMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,6 +172,7 @@ pub(crate) struct FmpWireHeader {
     receiver_idx: u32,
     counter: u64,
     flags: u8,
+    header_bytes: [u8; FMP_ESTABLISHED_HEADER_SIZE],
     ciphertext_offset: usize,
 }
 
@@ -187,12 +190,16 @@ impl FmpWireHeader {
             return Err(WirePreflightError::WrongPhase);
         }
 
+        let mut header_bytes = [0u8; FMP_ESTABLISHED_HEADER_SIZE];
+        header_bytes.copy_from_slice(&data[..FMP_ESTABLISHED_HEADER_SIZE]);
+
         Ok(Self {
             receiver_idx: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
             counter: u64::from_le_bytes([
                 data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
             ]),
             flags: data[1],
+            header_bytes,
             ciphertext_offset: FMP_ESTABLISHED_HEADER_SIZE,
         })
     }
@@ -209,6 +216,10 @@ impl FmpWireHeader {
         self.flags
     }
 
+    pub(crate) fn header_bytes(self) -> [u8; FMP_ESTABLISHED_HEADER_SIZE] {
+        self.header_bytes
+    }
+
     pub(crate) fn ciphertext_offset(self) -> usize {
         self.ciphertext_offset
     }
@@ -218,6 +229,7 @@ impl FmpWireHeader {
 pub(crate) struct FspWireHeader {
     counter: u64,
     flags: u8,
+    header_bytes: [u8; FSP_HEADER_SIZE],
     ciphertext_offset: usize,
 }
 
@@ -239,11 +251,15 @@ impl FspWireHeader {
             return Err(WirePreflightError::PlaintextFsp);
         }
 
+        let mut header_bytes = [0u8; FSP_HEADER_SIZE];
+        header_bytes.copy_from_slice(&data[..FSP_HEADER_SIZE]);
+
         Ok(Self {
             counter: u64::from_le_bytes([
                 data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
             ]),
             flags,
+            header_bytes,
             ciphertext_offset: FSP_HEADER_SIZE,
         })
     }
@@ -254,6 +270,10 @@ impl FspWireHeader {
 
     pub(crate) fn flags(self) -> u8 {
         self.flags
+    }
+
+    pub(crate) fn header_bytes(self) -> [u8; FSP_HEADER_SIZE] {
+        self.header_bytes
     }
 
     pub(crate) fn ciphertext_offset(self) -> usize {
@@ -667,6 +687,113 @@ impl StatelessCryptoWorker for CopyCryptoWorker {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AeadHeader {
+    Fmp([u8; FMP_ESTABLISHED_HEADER_SIZE]),
+    Fsp([u8; FSP_HEADER_SIZE]),
+}
+
+impl AeadHeader {
+    fn as_aad(&self) -> &[u8] {
+        match self {
+            Self::Fmp(header) => header,
+            Self::Fsp(header) => header,
+        }
+    }
+}
+
+pub(crate) struct AeadOpenWork {
+    work: CryptoWork,
+    cipher: LessSafeKey,
+    header: AeadHeader,
+    ciphertext_offset: usize,
+}
+
+impl AeadOpenWork {
+    pub(crate) fn from_crypto_work(
+        work: CryptoWork,
+        cipher: LessSafeKey,
+    ) -> Result<Self, WirePreflightError> {
+        let (header, ciphertext_offset, counter) = match work.packet.owner.protocol {
+            PacketProtocol::Fmp => {
+                let header = FmpWireHeader::parse(&work.packet.payload)?;
+                (
+                    AeadHeader::Fmp(header.header_bytes()),
+                    header.ciphertext_offset(),
+                    header.counter(),
+                )
+            }
+            PacketProtocol::Fsp => {
+                let header = FspWireHeader::parse(&work.packet.payload)?;
+                (
+                    AeadHeader::Fsp(header.header_bytes()),
+                    header.ciphertext_offset(),
+                    header.counter(),
+                )
+            }
+        };
+        if counter != work.packet.counter {
+            return Err(WirePreflightError::CounterMismatch);
+        }
+
+        Ok(Self {
+            work,
+            cipher,
+            header,
+            ciphertext_offset,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StatelessAeadOpenWorker;
+
+impl StatelessAeadOpenWorker {
+    pub(crate) fn execute(&self, mut work: AeadOpenWork) -> CryptoCompletion {
+        let reservation = work.work.reservation;
+        let target = work.work.packet.output;
+        let header = work.header;
+        let opened_len = match work.work.packet.payload.get_mut(work.ciphertext_offset..) {
+            Some(ciphertext) => {
+                let nonce = aead_nonce(reservation.counter);
+                work.cipher
+                    .open_in_place(nonce, Aad::from(header.as_aad()), ciphertext)
+                    .map(|plaintext| plaintext.len())
+                    .ok()
+            }
+            None => None,
+        };
+
+        let result = match opened_len {
+            Some(plaintext_len) => {
+                work.work
+                    .packet
+                    .payload
+                    .truncate(work.ciphertext_offset + plaintext_len);
+                CryptoResult::Opened(PacketOutput {
+                    owner: reservation.owner,
+                    counter: reservation.counter,
+                    ingress_seq: reservation.ingress_seq,
+                    target,
+                    payload: work.work.packet.payload,
+                })
+            }
+            None => CryptoResult::Failed,
+        };
+
+        CryptoCompletion {
+            reservation,
+            result,
+        }
+    }
+}
+
+fn aead_nonce(counter: u64) -> Nonce {
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
+    Nonce::assume_unique_for_key(nonce_bytes)
+}
+
 #[derive(Debug)]
 pub(crate) struct PacketMover2<W = CopyCryptoWorker> {
     admission: AdmissionQueue,
@@ -816,6 +943,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::aead::UnboundKey;
 
     fn mover() -> PacketMover2 {
         PacketMover2::new(AdmissionConfig::new(4, 8), CopyCryptoWorker)
@@ -852,6 +980,48 @@ mod tests {
         data[0] = (FSP_VERSION << 4) | FSP_PHASE_ESTABLISHED;
         data[1] = flags;
         data[4..12].copy_from_slice(&counter.to_le_bytes());
+        data
+    }
+
+    fn test_cipher(byte: u8) -> LessSafeKey {
+        let key = [byte; 32];
+        let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key).unwrap();
+        LessSafeKey::new(unbound)
+    }
+
+    fn fmp_encrypted_wire(
+        receiver_idx: u32,
+        counter: u64,
+        flags: u8,
+        plaintext: &[u8],
+        key: u8,
+    ) -> Vec<u8> {
+        let mut data = fmp_wire(receiver_idx, counter, flags);
+        data.truncate(FMP_ESTABLISHED_HEADER_SIZE);
+        let mut ciphertext = plaintext.to_vec();
+        test_cipher(key)
+            .seal_in_place_append_tag(
+                aead_nonce(counter),
+                Aad::from(&data[..FMP_ESTABLISHED_HEADER_SIZE]),
+                &mut ciphertext,
+            )
+            .unwrap();
+        data.extend_from_slice(&ciphertext);
+        data
+    }
+
+    fn fsp_encrypted_wire(counter: u64, flags: u8, plaintext: &[u8], key: u8) -> Vec<u8> {
+        let mut data = fsp_wire(counter, flags);
+        data.truncate(FSP_HEADER_SIZE);
+        let mut ciphertext = plaintext.to_vec();
+        test_cipher(key)
+            .seal_in_place_append_tag(
+                aead_nonce(counter),
+                Aad::from(&data[..FSP_HEADER_SIZE]),
+                &mut ciphertext,
+            )
+            .unwrap();
+        data.extend_from_slice(&ciphertext);
         data
     }
 
@@ -1201,5 +1371,114 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    #[test]
+    fn stateless_aead_worker_opens_fmp_and_fsp_packets() {
+        let fmp = OwnerId::fmp(77);
+        let fsp = OwnerId::fsp(88);
+        let key = 9;
+        let mut mover = mover();
+        mover.register_owner(fmp, OwnerConfig::new(1, 8));
+        mover.register_owner(fsp, OwnerConfig::new(1, 8));
+
+        let fmp_plaintext = b"fmp inner packet";
+        let fsp_plaintext = b"fsp inner packet";
+        let fmp_wire = fmp_encrypted_wire(77, 100, 0x02, fmp_plaintext, key);
+        let fsp_wire = fsp_encrypted_wire(101, 0, fsp_plaintext, key);
+
+        mover
+            .submit_socket_packet(
+                SocketPacket::from_fmp_established_wire(fmp, 1, OutputTarget::Transport, fmp_wire)
+                    .unwrap(),
+            )
+            .unwrap();
+        mover
+            .submit_socket_packet(
+                SocketPacket::from_fsp_established_wire(fsp, 1, OutputTarget::Tun, fsp_wire)
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let worker = StatelessAeadOpenWorker;
+        let mut retired = Vec::new();
+        for work in mover.dispatch_available(8) {
+            let work = AeadOpenWork::from_crypto_work(work, test_cipher(key)).unwrap();
+            retired.extend(mover.retire_completion(worker.execute(work)));
+        }
+
+        let outputs = outputs(retired);
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].counter, 100);
+        assert_eq!(outputs[0].target, OutputTarget::Transport);
+        assert_eq!(
+            &outputs[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            fmp_plaintext
+        );
+        assert_eq!(
+            outputs[0].payload.len(),
+            FMP_ESTABLISHED_HEADER_SIZE + fmp_plaintext.len()
+        );
+        assert_eq!(outputs[1].counter, 101);
+        assert_eq!(outputs[1].target, OutputTarget::Tun);
+        assert_eq!(&outputs[1].payload[FSP_HEADER_SIZE..], fsp_plaintext);
+        assert_eq!(
+            outputs[1].payload.len(),
+            FSP_HEADER_SIZE + fsp_plaintext.len()
+        );
+    }
+
+    #[test]
+    fn stateless_aead_worker_crypto_failure_retires_in_owner_order() {
+        let owner = OwnerId::fmp(91);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8));
+        mover
+            .submit_socket_packet(
+                SocketPacket::from_fmp_established_wire(
+                    owner,
+                    1,
+                    OutputTarget::Transport,
+                    fmp_encrypted_wire(91, 1, 0, b"first", 1),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        mover
+            .submit_socket_packet(
+                SocketPacket::from_fmp_established_wire(
+                    owner,
+                    1,
+                    OutputTarget::Transport,
+                    fmp_encrypted_wire(91, 2, 0, b"second", 1),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let worker = StatelessAeadOpenWorker;
+        let work = mover.dispatch_available(8);
+        assert_eq!(work.len(), 2);
+
+        let second = AeadOpenWork::from_crypto_work(work[1].clone(), test_cipher(1)).unwrap();
+        assert!(mover.retire_completion(worker.execute(second)).is_empty());
+
+        let first = AeadOpenWork::from_crypto_work(work[0].clone(), test_cipher(2)).unwrap();
+        let retired = mover.retire_completion(worker.execute(first));
+        assert_eq!(retired.len(), 2);
+        match &retired[0] {
+            RetiredPacket::Drop(drop) => {
+                assert_eq!(drop.counter, 1);
+                assert_eq!(drop.reason, PacketDropReason::CryptoFailed);
+            }
+            RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
+        }
+        match &retired[1] {
+            RetiredPacket::Output(output) => {
+                assert_eq!(output.counter, 2);
+                assert_eq!(&output.payload[FMP_ESTABLISHED_HEADER_SIZE..], b"second");
+            }
+            RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
+        }
     }
 }
