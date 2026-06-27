@@ -1180,6 +1180,52 @@ pub(crate) trait PacketMover2IngressRouter {
     ) -> Option<PacketMover2IngressRoute>;
 }
 
+pub(crate) trait PacketMover2RawIngressSource {
+    fn drain_raw_ingress<F>(&mut self, limit: usize, push: F) -> usize
+    where
+        F: FnMut(PacketMover2RawIngress);
+}
+
+pub(crate) trait PacketMover2OutboundSource {
+    fn drain_outbound<F>(&mut self, limit: usize, push: F) -> usize
+    where
+        F: FnMut(OutboundPacket);
+}
+
+impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
+    fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2RawIngress),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Some(packet) = self.pop_front() else {
+                break;
+            };
+            push(packet);
+            drained += 1;
+        }
+        drained
+    }
+}
+
+impl PacketMover2OutboundSource for VecDeque<OutboundPacket> {
+    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Some(packet) = self.pop_front() else {
+                break;
+            };
+            push(packet);
+            drained += 1;
+        }
+        drained
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketMover2RawIngressDropReason {
     Wire(WirePreflightError),
@@ -1400,23 +1446,14 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         I: IntoIterator<Item = SocketPacket>,
         O: IntoIterator<Item = OutboundPacket>,
     {
-        self.outputs.clear();
-        self.drops.clear();
-        self.raw_ingress_drops.clear();
-        self.output_drops.clear();
+        self.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
         for packet in inbound {
-            match self.mover.submit_socket_packet(packet) {
-                Ok(_) => summary.inbound_admitted += 1,
-                Err(_) => summary.inbound_dropped += 1,
-            }
+            self.admit_socket_packet(packet, &mut summary);
         }
         for packet in outbound {
-            match self.mover.submit_outbound_packet(packet) {
-                Ok(_) => summary.outbound_admitted += 1,
-                Err(_) => summary.outbound_dropped += 1,
-            }
+            self.admit_outbound_packet(packet, &mut summary);
         }
 
         self.finish_aead_turn(summary, limit)
@@ -1434,23 +1471,14 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         O: IntoIterator<Item = OutboundPacket>,
         S: PacketMover2OutputSink,
     {
-        self.outputs.clear();
-        self.drops.clear();
-        self.raw_ingress_drops.clear();
-        self.output_drops.clear();
+        self.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
         for packet in inbound {
-            match self.mover.submit_socket_packet(packet) {
-                Ok(_) => summary.inbound_admitted += 1,
-                Err(_) => summary.inbound_dropped += 1,
-            }
+            self.admit_socket_packet(packet, &mut summary);
         }
         for packet in outbound {
-            match self.mover.submit_outbound_packet(packet) {
-                Ok(_) => summary.outbound_admitted += 1,
-                Err(_) => summary.outbound_dropped += 1,
-            }
+            self.admit_outbound_packet(packet, &mut summary);
         }
 
         self.finish_aead_output_turn(summary, sink, limit)
@@ -1468,10 +1496,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         O: IntoIterator<Item = OutboundPacket>,
         R: PacketMover2IngressRouter,
     {
-        self.outputs.clear();
-        self.drops.clear();
-        self.raw_ingress_drops.clear();
-        self.output_drops.clear();
+        self.reset_turn_buffers();
 
         let summary = self.admit_raw_ingress_turn(inbound, router, outbound);
         self.finish_aead_turn(summary, limit)
@@ -1491,13 +1516,39 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         R: PacketMover2IngressRouter,
         S: PacketMover2OutputSink,
     {
-        self.outputs.clear();
-        self.drops.clear();
-        self.raw_ingress_drops.clear();
-        self.output_drops.clear();
+        self.reset_turn_buffers();
 
         let summary = self.admit_raw_ingress_turn(inbound, router, outbound);
         self.finish_aead_output_turn(summary, sink, limit)
+    }
+
+    pub(crate) fn pump_aead_output_turn<RI, O, R, S>(
+        &mut self,
+        raw_ingress: &mut RI,
+        router: &mut R,
+        raw_ingress_limit: usize,
+        outbound: &mut O,
+        outbound_limit: usize,
+        sink: &mut S,
+        crypto_limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        RI: PacketMover2RawIngressSource,
+        O: PacketMover2OutboundSource,
+        R: PacketMover2IngressRouter,
+        S: PacketMover2OutputSink,
+    {
+        self.reset_turn_buffers();
+
+        let mut summary = PacketMover2RuntimeSummary::default();
+        raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
+            self.admit_raw_ingress_packet(packet, router, &mut summary);
+        });
+        outbound.drain_outbound(outbound_limit, |packet| {
+            self.admit_outbound_packet(packet, &mut summary);
+        });
+
+        self.finish_aead_output_turn(summary, sink, crypto_limit)
     }
 
     fn admit_raw_ingress_turn<I, O, R>(
@@ -1513,67 +1564,101 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     {
         let mut summary = PacketMover2RuntimeSummary::default();
         for packet in inbound {
-            let header = match packet.protocol {
-                PacketProtocol::Fmp => match FmpWireHeader::parse(&packet.payload) {
-                    Ok(header) => PacketMover2IngressHeader::Fmp(header),
-                    Err(error) => {
-                        summary.raw_ingress_dropped += 1;
-                        self.raw_ingress_drops
-                            .push(PacketMover2RawIngressDrop::from_packet(
-                                packet,
-                                PacketMover2RawIngressDropReason::Wire(error),
-                            ));
-                        continue;
-                    }
-                },
-                PacketProtocol::Fsp => match FspWireHeader::parse(&packet.payload) {
-                    Ok(header) => PacketMover2IngressHeader::Fsp(header),
-                    Err(error) => {
-                        summary.raw_ingress_dropped += 1;
-                        self.raw_ingress_drops
-                            .push(PacketMover2RawIngressDrop::from_packet(
-                                packet,
-                                PacketMover2RawIngressDropReason::Wire(error),
-                            ));
-                        continue;
-                    }
-                },
-            };
-
-            let Some(route) = router.route(&packet, header) else {
-                summary.raw_ingress_dropped += 1;
-                self.raw_ingress_drops
-                    .push(PacketMover2RawIngressDrop::from_packet(
-                        packet,
-                        PacketMover2RawIngressDropReason::Unrouted,
-                    ));
-                continue;
-            };
-
-            let mut socket_packet = SocketPacket::new(
-                route.owner,
-                route.generation,
-                header.counter(),
-                route.class,
-                route.output,
-                packet.payload,
-            )
-            .with_source_path(packet.path);
-            if let Some(tick) = packet.activity_tick {
-                socket_packet = socket_packet.with_activity_tick(tick);
-            }
-            match self.mover.submit_socket_packet(socket_packet) {
-                Ok(_) => summary.inbound_admitted += 1,
-                Err(_) => summary.inbound_dropped += 1,
-            }
+            self.admit_raw_ingress_packet(packet, router, &mut summary);
         }
         for packet in outbound {
-            match self.mover.submit_outbound_packet(packet) {
-                Ok(_) => summary.outbound_admitted += 1,
-                Err(_) => summary.outbound_dropped += 1,
-            }
+            self.admit_outbound_packet(packet, &mut summary);
         }
         summary
+    }
+
+    fn reset_turn_buffers(&mut self) {
+        self.outputs.clear();
+        self.drops.clear();
+        self.raw_ingress_drops.clear();
+        self.output_drops.clear();
+    }
+
+    fn admit_raw_ingress_packet<R>(
+        &mut self,
+        packet: PacketMover2RawIngress,
+        router: &mut R,
+        summary: &mut PacketMover2RuntimeSummary,
+    ) where
+        R: PacketMover2IngressRouter,
+    {
+        let header = match packet.protocol {
+            PacketProtocol::Fmp => match FmpWireHeader::parse(&packet.payload) {
+                Ok(header) => PacketMover2IngressHeader::Fmp(header),
+                Err(error) => {
+                    summary.raw_ingress_dropped += 1;
+                    self.raw_ingress_drops
+                        .push(PacketMover2RawIngressDrop::from_packet(
+                            packet,
+                            PacketMover2RawIngressDropReason::Wire(error),
+                        ));
+                    return;
+                }
+            },
+            PacketProtocol::Fsp => match FspWireHeader::parse(&packet.payload) {
+                Ok(header) => PacketMover2IngressHeader::Fsp(header),
+                Err(error) => {
+                    summary.raw_ingress_dropped += 1;
+                    self.raw_ingress_drops
+                        .push(PacketMover2RawIngressDrop::from_packet(
+                            packet,
+                            PacketMover2RawIngressDropReason::Wire(error),
+                        ));
+                    return;
+                }
+            },
+        };
+
+        let Some(route) = router.route(&packet, header) else {
+            summary.raw_ingress_dropped += 1;
+            self.raw_ingress_drops
+                .push(PacketMover2RawIngressDrop::from_packet(
+                    packet,
+                    PacketMover2RawIngressDropReason::Unrouted,
+                ));
+            return;
+        };
+
+        let mut socket_packet = SocketPacket::new(
+            route.owner,
+            route.generation,
+            header.counter(),
+            route.class,
+            route.output,
+            packet.payload,
+        )
+        .with_source_path(packet.path);
+        if let Some(tick) = packet.activity_tick {
+            socket_packet = socket_packet.with_activity_tick(tick);
+        }
+        self.admit_socket_packet(socket_packet, summary);
+    }
+
+    fn admit_socket_packet(
+        &mut self,
+        packet: SocketPacket,
+        summary: &mut PacketMover2RuntimeSummary,
+    ) {
+        match self.mover.submit_socket_packet(packet) {
+            Ok(_) => summary.inbound_admitted += 1,
+            Err(_) => summary.inbound_dropped += 1,
+        }
+    }
+
+    fn admit_outbound_packet(
+        &mut self,
+        packet: OutboundPacket,
+        summary: &mut PacketMover2RuntimeSummary,
+    ) {
+        match self.mover.submit_outbound_packet(packet) {
+            Ok(_) => summary.outbound_admitted += 1,
+            Err(_) => summary.outbound_dropped += 1,
+        }
     }
 
     fn finish_aead_turn(
@@ -3534,6 +3619,26 @@ mod tests {
         }
     }
 
+    struct SimpleIngressRouter {
+        owner: OwnerId,
+        generation: u64,
+        class: PacketClass,
+        output: OutputTarget,
+    }
+
+    impl PacketMover2IngressRouter for SimpleIngressRouter {
+        fn route(
+            &mut self,
+            _packet: &PacketMover2RawIngress,
+            _header: PacketMover2IngressHeader,
+        ) -> Option<PacketMover2IngressRoute> {
+            Some(
+                PacketMover2IngressRoute::new(self.owner, self.generation, self.output)
+                    .with_class(self.class),
+            )
+        }
+    }
+
     #[test]
     fn runtime_raw_ingress_turn_parses_received_packet_before_owner_admission() {
         let owner = OwnerId::fmp(81);
@@ -3729,6 +3834,123 @@ mod tests {
             b"raw-in"
         );
         assert_eq!(open_sealed_output(&sink.outputs[1], seal_key), b"raw-out");
+    }
+
+    #[test]
+    fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
+        let owner = OwnerId::fmp(86);
+        let open_key = 75;
+        let seal_key = 76;
+        let path = TransportPath::new(8600);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(3, 8).with_next_send_counter(700));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+
+        let mut raw_source = VecDeque::from([
+            PacketMover2RawIngress::from_received(
+                PacketProtocol::Fmp,
+                path,
+                ReceivedPacket::with_timestamp(
+                    TransportId::new(6),
+                    TransportAddr::from_string("198.51.100.10:9000"),
+                    fmp_encrypted_wire(86, 1300, 0, b"raw-a", open_key),
+                    1,
+                ),
+            ),
+            PacketMover2RawIngress::from_received(
+                PacketProtocol::Fmp,
+                path,
+                ReceivedPacket::with_timestamp(
+                    TransportId::new(6),
+                    TransportAddr::from_string("198.51.100.10:9000"),
+                    fmp_encrypted_wire(86, 1301, 0, b"raw-b", open_key),
+                    2,
+                ),
+            ),
+        ]);
+
+        let mut outbound_source = VecDeque::from([
+            OutboundPacket::fmp(owner, 3, PacketClass::Bulk, 860, 0, b"out-a".to_vec()),
+            OutboundPacket::fmp(owner, 3, PacketClass::Bulk, 860, 0, b"out-b".to_vec()),
+        ]);
+
+        let mut router = SimpleIngressRouter {
+            owner,
+            generation: 3,
+            class: PacketClass::Liveness,
+            output: OutputTarget::Tun,
+        };
+        let mut sink = BatchRecordingOutputSink::default();
+
+        let first = driver.pump_aead_output_turn(
+            &mut raw_source,
+            &mut router,
+            1,
+            &mut outbound_source,
+            1,
+            &mut sink,
+            8,
+        );
+        assert_eq!(first.summary().raw_ingress_dropped(), 0);
+        assert_eq!(first.summary().inbound_admitted(), 1);
+        assert_eq!(first.summary().outbound_admitted(), 1);
+        assert_eq!(first.summary().dispatched(), 2);
+        assert_eq!(first.summary().outputs(), 2);
+        assert_eq!(first.summary().outputs_sent(), 2);
+        assert!(first.outputs().is_empty());
+        assert!(first.output_drops().is_empty());
+        assert_eq!(raw_source.len(), 1);
+        assert_eq!(outbound_source.len(), 1);
+        assert_eq!(sink.batch_calls, 1);
+
+        let second = driver.pump_aead_output_turn(
+            &mut raw_source,
+            &mut router,
+            1,
+            &mut outbound_source,
+            1,
+            &mut sink,
+            8,
+        );
+        assert_eq!(second.summary().inbound_admitted(), 1);
+        assert_eq!(second.summary().outbound_admitted(), 1);
+        assert_eq!(second.summary().outputs_sent(), 2);
+        assert!(second.outputs().is_empty());
+        assert!(second.output_drops().is_empty());
+        assert_eq!(raw_source.len(), 0);
+        assert_eq!(outbound_source.len(), 0);
+        assert_eq!(sink.batch_calls, 2);
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::counter)
+                .collect::<Vec<_>>(),
+            vec![1300, 700, 1301, 701]
+        );
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::target)
+                .collect::<Vec<_>>(),
+            vec![
+                OutputTarget::Tun,
+                OutputTarget::Transport,
+                OutputTarget::Tun,
+                OutputTarget::Transport,
+            ]
+        );
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::path)
+                .collect::<Vec<_>>(),
+            vec![None, Some(path), None, Some(path)]
+        );
+        assert_eq!(open_sealed_output(&sink.outputs[1], seal_key), b"out-a");
+        assert_eq!(open_sealed_output(&sink.outputs[3], seal_key), b"out-b");
     }
 
     #[test]
