@@ -1178,6 +1178,42 @@ impl PacketMover2RawIngressDrop {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2OutputError {
+    Unavailable,
+    Backpressure,
+    NoRoute,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2OutputDrop {
+    owner: OwnerId,
+    counter: u64,
+    ingress_seq: u64,
+    target: OutputTarget,
+    path: Option<TransportPath>,
+    payload_len: usize,
+    reason: PacketMover2OutputError,
+}
+
+impl PacketMover2OutputDrop {
+    fn from_output(output: &PacketOutput, reason: PacketMover2OutputError) -> Self {
+        Self {
+            owner: output.owner,
+            counter: output.counter,
+            ingress_seq: output.ingress_seq,
+            target: output.target,
+            path: output.path,
+            payload_len: output.payload.len(),
+            reason,
+        }
+    }
+}
+
+pub(crate) trait PacketMover2OutputSink {
+    fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError>;
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PacketMover2RuntimeSummary {
     raw_ingress_dropped: usize,
@@ -1187,6 +1223,8 @@ pub(crate) struct PacketMover2RuntimeSummary {
     outbound_dropped: usize,
     dispatched: usize,
     outputs: usize,
+    outputs_sent: usize,
+    outputs_dropped: usize,
     drops: usize,
 }
 
@@ -1219,6 +1257,14 @@ impl PacketMover2RuntimeSummary {
         self.outputs
     }
 
+    pub(crate) fn outputs_sent(self) -> usize {
+        self.outputs_sent
+    }
+
+    pub(crate) fn outputs_dropped(self) -> usize {
+        self.outputs_dropped
+    }
+
     pub(crate) fn drops(self) -> usize {
         self.drops
     }
@@ -1228,6 +1274,7 @@ impl PacketMover2RuntimeSummary {
 pub(crate) struct PacketMover2RuntimeTurn<'a> {
     summary: PacketMover2RuntimeSummary,
     raw_ingress_drops: &'a [PacketMover2RawIngressDrop],
+    output_drops: &'a [PacketMover2OutputDrop],
     outputs: &'a [PacketOutput],
     drops: &'a [PacketDrop],
 }
@@ -1239,6 +1286,10 @@ impl PacketMover2RuntimeTurn<'_> {
 
     pub(crate) fn raw_ingress_drops(&self) -> &[PacketMover2RawIngressDrop] {
         self.raw_ingress_drops
+    }
+
+    pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {
+        self.output_drops
     }
 
     pub(crate) fn outputs(&self) -> &[PacketOutput] {
@@ -1256,6 +1307,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     open_work: Vec<CryptoWork>,
     seal_work: Vec<OutboundCryptoWork>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
+    output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
     drops: Vec<PacketDrop>,
 }
@@ -1267,6 +1319,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             open_work: Vec::new(),
             seal_work: Vec::new(),
             raw_ingress_drops: Vec::new(),
+            output_drops: Vec::new(),
             outputs: Vec::new(),
             drops: Vec::new(),
         }
@@ -1297,6 +1350,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.outputs.clear();
         self.drops.clear();
         self.raw_ingress_drops.clear();
+        self.output_drops.clear();
 
         let mut summary = PacketMover2RuntimeSummary::default();
         for packet in inbound {
@@ -1315,6 +1369,40 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.finish_aead_turn(summary, limit)
     }
 
+    pub(crate) fn run_aead_classified_output_turn<I, O, S>(
+        &mut self,
+        inbound: I,
+        outbound: O,
+        sink: &mut S,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        I: IntoIterator<Item = SocketPacket>,
+        O: IntoIterator<Item = OutboundPacket>,
+        S: PacketMover2OutputSink,
+    {
+        self.outputs.clear();
+        self.drops.clear();
+        self.raw_ingress_drops.clear();
+        self.output_drops.clear();
+
+        let mut summary = PacketMover2RuntimeSummary::default();
+        for packet in inbound {
+            match self.mover.submit_socket_packet(packet) {
+                Ok(_) => summary.inbound_admitted += 1,
+                Err(_) => summary.inbound_dropped += 1,
+            }
+        }
+        for packet in outbound {
+            match self.mover.submit_outbound_packet(packet) {
+                Ok(_) => summary.outbound_admitted += 1,
+                Err(_) => summary.outbound_dropped += 1,
+            }
+        }
+
+        self.finish_aead_output_turn(summary, sink, limit)
+    }
+
     pub(crate) fn run_aead_raw_ingress_turn<I, O, R>(
         &mut self,
         inbound: I,
@@ -1330,7 +1418,46 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.outputs.clear();
         self.drops.clear();
         self.raw_ingress_drops.clear();
+        self.output_drops.clear();
 
+        let summary = self.admit_raw_ingress_turn(inbound, router, outbound);
+        self.finish_aead_turn(summary, limit)
+    }
+
+    pub(crate) fn run_aead_raw_ingress_output_turn<I, O, R, S>(
+        &mut self,
+        inbound: I,
+        router: &mut R,
+        outbound: O,
+        sink: &mut S,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        I: IntoIterator<Item = PacketMover2RawIngress>,
+        O: IntoIterator<Item = OutboundPacket>,
+        R: PacketMover2IngressRouter,
+        S: PacketMover2OutputSink,
+    {
+        self.outputs.clear();
+        self.drops.clear();
+        self.raw_ingress_drops.clear();
+        self.output_drops.clear();
+
+        let summary = self.admit_raw_ingress_turn(inbound, router, outbound);
+        self.finish_aead_output_turn(summary, sink, limit)
+    }
+
+    fn admit_raw_ingress_turn<I, O, R>(
+        &mut self,
+        inbound: I,
+        router: &mut R,
+        outbound: O,
+    ) -> PacketMover2RuntimeSummary
+    where
+        I: IntoIterator<Item = PacketMover2RawIngress>,
+        O: IntoIterator<Item = OutboundPacket>,
+        R: PacketMover2IngressRouter,
+    {
         let mut summary = PacketMover2RuntimeSummary::default();
         for packet in inbound {
             let header = match packet.protocol {
@@ -1393,15 +1520,62 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 Err(_) => summary.outbound_dropped += 1,
             }
         }
-
-        self.finish_aead_turn(summary, limit)
+        summary
     }
 
     fn finish_aead_turn(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
+        summary: PacketMover2RuntimeSummary,
         limit: usize,
     ) -> PacketMover2RuntimeTurn<'_> {
+        let summary = self.collect_aead_outputs(summary, limit);
+
+        PacketMover2RuntimeTurn {
+            summary,
+            raw_ingress_drops: &self.raw_ingress_drops,
+            output_drops: &self.output_drops,
+            outputs: &self.outputs,
+            drops: &self.drops,
+        }
+    }
+
+    fn finish_aead_output_turn<S>(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        sink: &mut S,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        S: PacketMover2OutputSink,
+    {
+        summary = self.collect_aead_outputs(summary, limit);
+        for output in self.outputs.drain(..) {
+            let mut drop =
+                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+            match sink.send(output) {
+                Ok(()) => summary.outputs_sent += 1,
+                Err(reason) => {
+                    drop.reason = reason;
+                    self.output_drops.push(drop);
+                    summary.outputs_dropped += 1;
+                }
+            }
+        }
+
+        PacketMover2RuntimeTurn {
+            summary,
+            raw_ingress_drops: &self.raw_ingress_drops,
+            output_drops: &self.output_drops,
+            outputs: &self.outputs,
+            drops: &self.drops,
+        }
+    }
+
+    fn collect_aead_outputs(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        limit: usize,
+    ) -> PacketMover2RuntimeSummary {
         let PacketMoverTurn {
             dispatched,
             retired,
@@ -1422,13 +1596,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
 
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
-
-        PacketMover2RuntimeTurn {
-            summary,
-            raw_ingress_drops: &self.raw_ingress_drops,
-            outputs: &self.outputs,
-            drops: &self.drops,
-        }
+        summary
     }
 }
 
@@ -3120,6 +3288,8 @@ mod tests {
                 outbound_dropped: 0,
                 dispatched: 2,
                 outputs: 2,
+                outputs_sent: 0,
+                outputs_dropped: 0,
                 drops: 0,
             }
         );
@@ -3214,6 +3384,7 @@ mod tests {
             driver.open_work.capacity(),
             driver.seal_work.capacity(),
             driver.raw_ingress_drops.capacity(),
+            driver.output_drops.capacity(),
             driver.outputs.capacity(),
             driver.drops.capacity(),
         );
@@ -3227,6 +3398,7 @@ mod tests {
                 driver.open_work.capacity(),
                 driver.seal_work.capacity(),
                 driver.raw_ingress_drops.capacity(),
+                driver.output_drops.capacity(),
                 driver.outputs.capacity(),
                 driver.drops.capacity(),
             )
@@ -3270,6 +3442,22 @@ mod tests {
             _header: PacketMover2IngressHeader,
         ) -> Option<PacketMover2IngressRoute> {
             None
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingOutputSink {
+        outputs: Vec<PacketOutput>,
+        fail_counter: Option<u64>,
+    }
+
+    impl PacketMover2OutputSink for RecordingOutputSink {
+        fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError> {
+            if Some(output.counter) == self.fail_counter {
+                return Err(PacketMover2OutputError::Backpressure);
+            }
+            self.outputs.push(output);
+            Ok(())
         }
     }
 
@@ -3373,5 +3561,130 @@ mod tests {
             TransportId::new(5)
         );
         assert_eq!(turn.raw_ingress_drops()[1].path, path);
+    }
+
+    #[test]
+    fn runtime_output_sink_sends_ordered_outputs_once() {
+        let owner = OwnerId::fmp(83);
+        let key = 71;
+        let path = TransportPath::new(8300);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(400));
+        driver.owner_mut(owner).unwrap().set_active_path(path);
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let inbound_tun = SocketPacket::from_fmp_established_wire(
+            owner,
+            1,
+            OutputTarget::Tun,
+            fmp_encrypted_wire(83, 10, 0, b"tun", key),
+        )
+        .unwrap();
+        let inbound_endpoint = SocketPacket::from_fmp_established_wire(
+            owner,
+            1,
+            OutputTarget::Endpoint,
+            fmp_encrypted_wire(83, 11, 0, b"endpoint", key),
+        )
+        .unwrap();
+        let outbound =
+            OutboundPacket::fmp(owner, 1, PacketClass::Bulk, 830, 0, b"transport".to_vec());
+        let mut sink = RecordingOutputSink::default();
+
+        let turn = driver.run_aead_classified_output_turn(
+            [inbound_tun, inbound_endpoint],
+            [outbound],
+            &mut sink,
+            8,
+        );
+        assert_eq!(turn.summary().outputs(), 3);
+        assert_eq!(turn.summary().outputs_sent(), 3);
+        assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(turn.outputs().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(|output| output.target)
+                .collect::<Vec<_>>(),
+            vec![
+                OutputTarget::Tun,
+                OutputTarget::Endpoint,
+                OutputTarget::Transport,
+            ]
+        );
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(|output| output.counter)
+                .collect::<Vec<_>>(),
+            vec![10, 11, 400]
+        );
+        assert_eq!(sink.outputs[2].path, Some(path));
+        assert_eq!(open_sealed_output(&sink.outputs[2], key), b"transport");
+    }
+
+    #[test]
+    fn runtime_output_sink_reports_failures_without_retrying() {
+        let owner = OwnerId::fsp(84);
+        let key = 72;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+        let packets = [
+            SocketPacket::from_fsp_established_wire(
+                owner,
+                1,
+                OutputTarget::Tun,
+                fsp_encrypted_wire(20, 0, b"first", key),
+            )
+            .unwrap(),
+            SocketPacket::from_fsp_established_wire(
+                owner,
+                1,
+                OutputTarget::Endpoint,
+                fsp_encrypted_wire(21, 0, b"second", key),
+            )
+            .unwrap(),
+            SocketPacket::from_fsp_established_wire(
+                owner,
+                1,
+                OutputTarget::Transport,
+                fsp_encrypted_wire(22, 0, b"third", key),
+            )
+            .unwrap(),
+        ];
+        let mut sink = RecordingOutputSink {
+            outputs: Vec::new(),
+            fail_counter: Some(21),
+        };
+
+        let turn =
+            driver.run_aead_classified_output_turn(packets, std::iter::empty(), &mut sink, 8);
+        assert_eq!(turn.summary().outputs(), 3);
+        assert_eq!(turn.summary().outputs_sent(), 2);
+        assert_eq!(turn.summary().outputs_dropped(), 1);
+        assert!(turn.outputs().is_empty());
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(|output| output.counter)
+                .collect::<Vec<_>>(),
+            vec![20, 22]
+        );
+        assert_eq!(turn.output_drops().len(), 1);
+        let drop = &turn.output_drops()[0];
+        assert_eq!(drop.owner, owner);
+        assert_eq!(drop.counter, 21);
+        assert_eq!(drop.ingress_seq, 1);
+        assert_eq!(drop.target, OutputTarget::Endpoint);
+        assert_eq!(drop.reason, PacketMover2OutputError::Backpressure);
+        assert_eq!(drop.payload_len, FSP_HEADER_SIZE + b"second".len());
     }
 }
