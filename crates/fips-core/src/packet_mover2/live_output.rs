@@ -41,6 +41,129 @@ where
     }
 }
 
+pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
+    endpoint_priority_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    endpoint_bulk_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    endpoint_limit: usize,
+    tun_outbound_rx: &'a mut TunOutboundRx,
+    tun_limit: usize,
+    routes: &'a mut Routes,
+    endpoint_drops: Vec<PacketMover2EndpointCommandDrop>,
+    endpoint_deferred_commands: Vec<NodeEndpointCommand>,
+    tun_drops: Vec<PacketMover2TunOutboundDrop>,
+}
+
+impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
+    pub(crate) fn new(
+        endpoint_priority_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &'a mut TunOutboundRx,
+        tun_limit: usize,
+        routes: &'a mut Routes,
+    ) -> Self {
+        Self {
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            routes,
+            endpoint_drops: Vec::new(),
+            endpoint_deferred_commands: Vec::new(),
+            tun_drops: Vec::new(),
+        }
+    }
+
+    fn take_endpoint_command_drops(&mut self) -> Vec<PacketMover2EndpointCommandDrop> {
+        std::mem::take(&mut self.endpoint_drops)
+    }
+
+    fn take_endpoint_deferred_commands(&mut self) -> Vec<NodeEndpointCommand> {
+        std::mem::take(&mut self.endpoint_deferred_commands)
+    }
+
+    fn take_tun_outbound_drops(&mut self) -> Vec<PacketMover2TunOutboundDrop> {
+        std::mem::take(&mut self.tun_drops)
+    }
+}
+
+impl<Routes> PacketMover2RouteTableOutboundSource<'_, Routes>
+where
+    Routes: PacketMover2EndpointCommandRouter + PacketMover2TunOutboundRouter,
+{
+    fn drain_endpoint<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let mut drained_cost = 0usize;
+        while drained_cost < limit {
+            let Ok(command) = self.endpoint_priority_rx.try_recv() else {
+                break;
+            };
+            drained_cost = drained_cost.saturating_add(command.drain_cost());
+            route_endpoint_command_with_router(
+                command,
+                self.routes,
+                &mut self.endpoint_drops,
+                &mut self.endpoint_deferred_commands,
+                &mut push,
+            );
+        }
+        while drained_cost < limit {
+            let Ok(command) = self.endpoint_bulk_rx.try_recv() else {
+                break;
+            };
+            drained_cost = drained_cost.saturating_add(command.drain_cost());
+            route_endpoint_command_with_router(
+                command,
+                self.routes,
+                &mut self.endpoint_drops,
+                &mut self.endpoint_deferred_commands,
+                &mut push,
+            );
+        }
+        drained_cost
+    }
+
+    fn drain_tun<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Ok(packet) = self.tun_outbound_rx.try_recv() else {
+                break;
+            };
+            route_tun_outbound_packet_with_router(
+                packet,
+                self.routes,
+                &mut self.tun_drops,
+                &mut push,
+            );
+            drained += 1;
+        }
+        drained
+    }
+}
+
+impl<Routes> PacketMover2OutboundSource for PacketMover2RouteTableOutboundSource<'_, Routes>
+where
+    Routes: PacketMover2EndpointCommandRouter + PacketMover2TunOutboundRouter,
+{
+    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let endpoint_limit = self.endpoint_limit.min(limit);
+        let endpoint_drained = self.drain_endpoint(endpoint_limit, &mut push);
+        let remaining = limit.saturating_sub(endpoint_drained.min(endpoint_limit));
+        let tun_limit = self.tun_limit.min(remaining);
+        let tun_drained = self.drain_tun(tun_limit, push);
+        endpoint_drained.saturating_add(tun_drained)
+    }
+}
+
 impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
     fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
     where
@@ -552,4 +675,3 @@ where
         }
     }
 }
-
