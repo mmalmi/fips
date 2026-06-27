@@ -17,6 +17,7 @@
 //! in-flight state before crypto work leaves the owner; workers only copy/open
 //! bytes and return completions; owners retire those completions in order.
 
+use crate::NodeAddr;
 use crate::transport::{PacketBuffer, ReceivedPacket, TransportAddr, TransportId};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -41,22 +42,65 @@ pub(crate) enum PacketProtocol {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct OwnerId {
-    peer: u64,
+    peer: OwnerPeerId,
     protocol: PacketProtocol,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum OwnerPeerId {
+    Scratch(u64),
+    Node(NodeAddr),
 }
 
 impl OwnerId {
     pub(crate) fn fmp(peer: u64) -> Self {
         Self {
-            peer,
+            peer: OwnerPeerId::Scratch(peer),
             protocol: PacketProtocol::Fmp,
         }
     }
 
     pub(crate) fn fsp(peer: u64) -> Self {
         Self {
-            peer,
+            peer: OwnerPeerId::Scratch(peer),
             protocol: PacketProtocol::Fsp,
+        }
+    }
+
+    pub(crate) fn fmp_node(node_addr: NodeAddr) -> Self {
+        Self {
+            peer: OwnerPeerId::Node(node_addr),
+            protocol: PacketProtocol::Fmp,
+        }
+    }
+
+    pub(crate) fn fsp_node(node_addr: NodeAddr) -> Self {
+        Self {
+            peer: OwnerPeerId::Node(node_addr),
+            protocol: PacketProtocol::Fsp,
+        }
+    }
+
+    pub(crate) fn peer_id(self) -> OwnerPeerId {
+        self.peer
+    }
+
+    pub(crate) fn protocol(self) -> PacketProtocol {
+        self.protocol
+    }
+
+    pub(crate) fn node_addr(self) -> Option<NodeAddr> {
+        match self.peer {
+            OwnerPeerId::Scratch(_) => None,
+            OwnerPeerId::Node(node_addr) => Some(node_addr),
+        }
+    }
+
+    #[cfg(test)]
+    fn scratch_peer(self) -> Option<u64> {
+        match self.peer {
+            OwnerPeerId::Scratch(peer) => Some(peer),
+            OwnerPeerId::Node(_) => None,
         }
     }
 }
@@ -588,6 +632,10 @@ impl OutboundAdmissionQueue {
 
     fn pop_next(&mut self) -> Option<QueuedOutboundPacket> {
         self.priority.pop_front().or_else(|| self.bulk.pop_front())
+    }
+
+    fn has_priority_pending(&self) -> bool {
+        !self.priority.is_empty()
     }
 
     #[cfg(test)]
@@ -2158,7 +2206,10 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
     ) -> PacketMoverTurn {
         let opened = StatelessAeadOpenWorker;
         let sealed = StatelessAeadSealWorker;
-        let inbound_dispatched = self.dispatch_available_into(limit, open_work);
+        let outbound_priority_reserve =
+            usize::from(limit > 1 && self.outbound_admission.has_priority_pending());
+        let inbound_dispatched = self
+            .dispatch_available_into(limit.saturating_sub(outbound_priority_reserve), open_work);
         let outbound_dispatched = self
             .dispatch_outbound_available_into(limit.saturating_sub(inbound_dispatched), seal_work);
         let mut retired = Vec::new();
@@ -2357,7 +2408,10 @@ mod tests {
                 owner,
                 generation,
                 class,
-                owner.peer as u32,
+                owner
+                    .scratch_peer()
+                    .expect("test outbound FMP helper requires scratch owner")
+                    as u32,
                 0,
                 payload.to_vec(),
             ),
@@ -2385,6 +2439,22 @@ mod tests {
                 RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn owner_id_supports_real_node_addr_owners() {
+        let node_addr = NodeAddr::from_bytes([0x42; 16]);
+        let fmp = OwnerId::fmp_node(node_addr);
+        let fsp = OwnerId::fsp_node(node_addr);
+
+        assert_eq!(fmp.peer_id(), OwnerPeerId::Node(node_addr));
+        assert_eq!(fmp.node_addr(), Some(node_addr));
+        assert_eq!(fmp.protocol(), PacketProtocol::Fmp);
+        assert_eq!(fsp.protocol(), PacketProtocol::Fsp);
+        assert_ne!(fmp, fsp);
+        assert_ne!(fmp, OwnerId::fmp(0x42));
+        assert_eq!(OwnerId::fmp(0x42).scratch_peer(), Some(0x42));
+        assert_eq!(OwnerId::fmp(0x42).node_addr(), None);
     }
 
     #[test]
@@ -3075,6 +3145,64 @@ mod tests {
         assert_eq!(open_sealed_output(outputs[1], seal_key), b"outbound");
         assert_eq!(open_scratch.capacity(), 4);
         assert_eq!(seal_scratch.capacity(), 4);
+    }
+
+    #[test]
+    fn aead_turn_runner_reserves_progress_for_outbound_priority_under_inbound_bulk() {
+        let owner = OwnerId::fmp(701);
+        let open_key = 13;
+        let seal_key = 14;
+        let path = TransportPath::new(7010);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(900));
+        mover.owner_mut(owner).unwrap().set_active_path(path);
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+
+        for counter in 100..104 {
+            mover
+                .submit_socket_packet(
+                    SocketPacket::from_fmp_established_wire(
+                        owner,
+                        1,
+                        OutputTarget::Tun,
+                        fmp_encrypted_wire(70, counter, 0, b"inbound-bulk", open_key),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Liveness,
+                701,
+                0,
+                b"outbound-liveness".to_vec(),
+            ))
+            .unwrap();
+
+        let mut open_scratch = Vec::new();
+        let mut seal_scratch = Vec::new();
+        let turn = mover.run_aead_available_with_scratch(2, &mut open_scratch, &mut seal_scratch);
+
+        assert_eq!(turn.dispatched(), 2);
+        let outputs = turn.outputs();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].target, OutputTarget::Tun);
+        assert_eq!(outputs[0].counter, 100);
+        assert_eq!(outputs[1].target, OutputTarget::Transport);
+        assert_eq!(outputs[1].counter, 900);
+        assert_eq!(outputs[1].path, Some(path));
+        assert_eq!(
+            open_sealed_output(outputs[1], seal_key),
+            b"outbound-liveness"
+        );
+        assert_eq!(mover.queue_lens(), (0, 3));
+        assert_eq!(mover.outbound_queue_lens(), (0, 0));
     }
 
     #[test]
