@@ -1048,6 +1048,157 @@ impl PacketMoverTurn {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PacketMover2RuntimeSummary {
+    inbound_admitted: usize,
+    inbound_dropped: usize,
+    outbound_admitted: usize,
+    outbound_dropped: usize,
+    dispatched: usize,
+    outputs: usize,
+    drops: usize,
+}
+
+impl PacketMover2RuntimeSummary {
+    pub(crate) fn inbound_admitted(self) -> usize {
+        self.inbound_admitted
+    }
+
+    pub(crate) fn inbound_dropped(self) -> usize {
+        self.inbound_dropped
+    }
+
+    pub(crate) fn outbound_admitted(self) -> usize {
+        self.outbound_admitted
+    }
+
+    pub(crate) fn outbound_dropped(self) -> usize {
+        self.outbound_dropped
+    }
+
+    pub(crate) fn dispatched(self) -> usize {
+        self.dispatched
+    }
+
+    pub(crate) fn outputs(self) -> usize {
+        self.outputs
+    }
+
+    pub(crate) fn drops(self) -> usize {
+        self.drops
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2RuntimeTurn<'a> {
+    summary: PacketMover2RuntimeSummary,
+    outputs: &'a [PacketOutput],
+    drops: &'a [PacketDrop],
+}
+
+impl PacketMover2RuntimeTurn<'_> {
+    pub(crate) fn summary(&self) -> PacketMover2RuntimeSummary {
+        self.summary
+    }
+
+    pub(crate) fn outputs(&self) -> &[PacketOutput] {
+        self.outputs
+    }
+
+    pub(crate) fn drops(&self) -> &[PacketDrop] {
+        self.drops
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
+    mover: PacketMover2<W>,
+    open_work: Vec<CryptoWork>,
+    seal_work: Vec<OutboundCryptoWork>,
+    outputs: Vec<PacketOutput>,
+    drops: Vec<PacketDrop>,
+}
+
+impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
+    pub(crate) fn new(config: AdmissionConfig, worker: W) -> Self {
+        Self {
+            mover: PacketMover2::new(config, worker),
+            open_work: Vec::new(),
+            seal_work: Vec::new(),
+            outputs: Vec::new(),
+            drops: Vec::new(),
+        }
+    }
+
+    pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
+        self.mover.register_owner(owner, config);
+    }
+
+    pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
+        self.mover.owner_mut(owner)
+    }
+
+    pub(crate) fn mover_mut(&mut self) -> &mut PacketMover2<W> {
+        &mut self.mover
+    }
+
+    pub(crate) fn run_aead_classified_turn<I, O>(
+        &mut self,
+        inbound: I,
+        outbound: O,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        I: IntoIterator<Item = SocketPacket>,
+        O: IntoIterator<Item = OutboundPacket>,
+    {
+        self.outputs.clear();
+        self.drops.clear();
+
+        let mut summary = PacketMover2RuntimeSummary::default();
+        for packet in inbound {
+            match self.mover.submit_socket_packet(packet) {
+                Ok(_) => summary.inbound_admitted += 1,
+                Err(_) => summary.inbound_dropped += 1,
+            }
+        }
+        for packet in outbound {
+            match self.mover.submit_outbound_packet(packet) {
+                Ok(_) => summary.outbound_admitted += 1,
+                Err(_) => summary.outbound_dropped += 1,
+            }
+        }
+
+        let PacketMoverTurn {
+            dispatched,
+            retired,
+            drops,
+        } = self.mover.run_aead_available_with_scratch(
+            limit,
+            &mut self.open_work,
+            &mut self.seal_work,
+        );
+        summary.dispatched = dispatched;
+        self.drops.extend(drops);
+
+        for packet in retired {
+            match packet {
+                RetiredPacket::Output(output) => self.outputs.push(output),
+                RetiredPacket::Drop(_) => {}
+            }
+        }
+
+        summary.outputs = self.outputs.len();
+        summary.drops = self.drops.len();
+
+        PacketMover2RuntimeTurn {
+            summary,
+            outputs: &self.outputs,
+            drops: &self.drops,
+        }
+    }
+}
+
 pub(crate) trait StatelessCryptoWorker {
     fn execute(&self, work: CryptoWork) -> CryptoCompletion;
 }
@@ -2690,5 +2841,158 @@ mod tests {
         assert_eq!(state.last_hard_event(), Some(ActivityTick::new(100)));
         assert_eq!(state.last_rx_activity(), None);
         assert_eq!(state.last_tx_activity(), None);
+    }
+
+    #[test]
+    fn runtime_turn_driver_runs_classified_inbound_and_outbound_once() {
+        let owner = OwnerId::fmp(78);
+        let open_key = 31;
+        let seal_key = 32;
+        let path = TransportPath::new(7800);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(300));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+
+        let inbound = SocketPacket::from_fmp_established_wire(
+            owner,
+            1,
+            OutputTarget::Tun,
+            fmp_encrypted_wire(78, 100, 0, b"inbound", open_key),
+        )
+        .unwrap()
+        .with_source_path(path)
+        .with_activity_tick(ActivityTick::new(10));
+        let outbound = OutboundPacket::fmp(
+            owner,
+            1,
+            PacketClass::Liveness,
+            780,
+            0,
+            b"outbound".to_vec(),
+        )
+        .with_activity_tick(ActivityTick::new(11));
+
+        let turn = driver.run_aead_classified_turn([inbound], [outbound], 8);
+        assert_eq!(
+            turn.summary(),
+            PacketMover2RuntimeSummary {
+                inbound_admitted: 1,
+                inbound_dropped: 0,
+                outbound_admitted: 1,
+                outbound_dropped: 0,
+                dispatched: 2,
+                outputs: 2,
+                drops: 0,
+            }
+        );
+        assert!(turn.drops().is_empty());
+
+        let outputs = turn.outputs();
+        assert_eq!(outputs[0].target, OutputTarget::Tun);
+        assert_eq!(outputs[0].counter, 100);
+        assert_eq!(
+            &outputs[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            b"inbound"
+        );
+        assert_eq!(outputs[0].path, None);
+
+        assert_eq!(outputs[1].target, OutputTarget::Transport);
+        assert_eq!(outputs[1].counter, 300);
+        assert_eq!(outputs[1].path, Some(path));
+        assert_eq!(open_sealed_output(&outputs[1], seal_key), b"outbound");
+
+        let owner_state = driver.owner_mut(owner).unwrap();
+        assert_eq!(owner_state.active_path(), Some(path));
+        assert_eq!(owner_state.last_rx_activity(), Some(ActivityTick::new(10)));
+        assert_eq!(owner_state.last_tx_activity(), Some(ActivityTick::new(11)));
+    }
+
+    #[test]
+    fn runtime_turn_driver_reports_admission_and_crypto_drops() {
+        let owner = OwnerId::fsp(79);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(1, 1), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+
+        let first = SocketPacket::from_fsp_established_wire(
+            owner,
+            1,
+            OutputTarget::Tun,
+            fsp_encrypted_wire(10, 0, b"first", 40),
+        )
+        .unwrap();
+        let second = SocketPacket::from_fsp_established_wire(
+            owner,
+            1,
+            OutputTarget::Tun,
+            fsp_encrypted_wire(11, 0, b"second", 40),
+        )
+        .unwrap();
+
+        let turn = driver.run_aead_classified_turn([first, second], std::iter::empty(), 8);
+        assert_eq!(turn.summary().inbound_admitted(), 1);
+        assert_eq!(turn.summary().inbound_dropped(), 1);
+        assert_eq!(turn.summary().outbound_admitted(), 0);
+        assert_eq!(turn.summary().outbound_dropped(), 0);
+        assert_eq!(turn.summary().dispatched(), 1);
+        assert_eq!(turn.summary().outputs(), 0);
+        assert_eq!(turn.summary().drops(), 2);
+        assert!(turn.outputs().is_empty());
+
+        assert!(turn.drops().iter().any(|drop| {
+            drop.reason == PacketDropReason::Admission(AdmissionDropReason::BulkFull)
+                && drop.counter == Some(11)
+        }));
+        assert!(turn.drops().iter().any(|drop| {
+            drop.reason == PacketDropReason::CryptoFailed && drop.counter == Some(10)
+        }));
+    }
+
+    #[test]
+    fn runtime_turn_driver_reuses_scratch_and_output_buffers() {
+        let owner = OwnerId::fsp(80);
+        let key = 41;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(20));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let inbound = SocketPacket::from_fsp_established_wire(
+            owner,
+            1,
+            OutputTarget::Endpoint,
+            fsp_encrypted_wire(50, 0, b"in", key),
+        )
+        .unwrap();
+        let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"out".to_vec());
+        {
+            let turn = driver.run_aead_classified_turn([inbound], [outbound], 8);
+            assert_eq!(turn.outputs().len(), 2);
+            assert!(turn.drops().is_empty());
+        }
+
+        let capacities = (
+            driver.open_work.capacity(),
+            driver.seal_work.capacity(),
+            driver.outputs.capacity(),
+            driver.drops.capacity(),
+        );
+        let turn = driver.run_aead_classified_turn(std::iter::empty(), std::iter::empty(), 8);
+        assert_eq!(turn.summary(), PacketMover2RuntimeSummary::default());
+        assert!(turn.outputs().is_empty());
+        assert!(turn.drops().is_empty());
+        assert_eq!(
+            capacities,
+            (
+                driver.open_work.capacity(),
+                driver.seal_work.capacity(),
+                driver.outputs.capacity(),
+                driver.drops.capacity(),
+            )
+        );
     }
 }
