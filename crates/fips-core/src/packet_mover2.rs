@@ -1402,6 +1402,13 @@ impl PacketMover2LiveIngressRoutes {
     ) -> Option<PacketMover2IngressRoute> {
         self.fsp.remove(&source_addr)
     }
+
+    pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> usize {
+        let before = self.fmp.len() + self.fsp.len();
+        self.fmp.retain(|_, route| route.owner != owner);
+        self.fsp.retain(|_, route| route.owner != owner);
+        before.saturating_sub(self.fmp.len() + self.fsp.len())
+    }
 }
 
 impl PacketMover2IngressRouter for PacketMover2LiveIngressRoutes {
@@ -4531,6 +4538,98 @@ mod tests {
         let header =
             PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
         assert_eq!(routes.route(&sourced_raw, header), None);
+    }
+
+    #[test]
+    fn live_ingress_routes_unregister_owner_prunes_stale_fmp_and_fsp_routes() {
+        let stale_source = NodeAddr::from_bytes([0x4a; 16]);
+        let keep_source = NodeAddr::from_bytes([0x4b; 16]);
+        let stale_fmp_owner = OwnerId::fmp_node(stale_source);
+        let stale_fsp_owner = OwnerId::fsp_node(stale_source);
+        let keep_owner = OwnerId::fmp_node(keep_source);
+        let transport_a = TransportId::new(50);
+        let transport_b = TransportId::new(51);
+        let transport_keep = TransportId::new(52);
+        let remote_addr = TransportAddr::from_string("198.51.100.50:9000");
+        let mut routes = PacketMover2LiveIngressRoutes::default();
+
+        routes.register_fmp(
+            transport_a,
+            500,
+            PacketMover2IngressRoute::new(stale_fmp_owner, 1, OutputTarget::Endpoint)
+                .with_class(PacketClass::Liveness),
+        );
+        routes.register_fmp(
+            transport_b,
+            501,
+            PacketMover2IngressRoute::new(stale_fmp_owner, 2, OutputTarget::Tun)
+                .with_class(PacketClass::Rekey),
+        );
+        routes.register_fsp(
+            stale_source,
+            PacketMover2IngressRoute::new(stale_fsp_owner, 3, OutputTarget::Endpoint)
+                .with_class(PacketClass::Mmp),
+        );
+        let keep_route = PacketMover2IngressRoute::new(keep_owner, 4, OutputTarget::Endpoint)
+            .with_class(PacketClass::Control);
+        routes.register_fmp(transport_keep, 502, keep_route);
+
+        assert_eq!(routes.unregister_owner(stale_fmp_owner), 2);
+        assert_eq!(routes.unregister_owner(stale_fsp_owner), 1);
+        assert_eq!(routes.unregister_owner(stale_fmp_owner), 0);
+
+        let stale_a = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fmp,
+            ReceivedPacket::with_timestamp(
+                transport_a,
+                remote_addr.clone(),
+                fmp_wire(500, 10, 0),
+                50_000,
+            ),
+        );
+        let header =
+            PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&stale_a.payload).unwrap());
+        assert_eq!(routes.route(&stale_a, header), None);
+
+        let stale_b = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fmp,
+            ReceivedPacket::with_timestamp(
+                transport_b,
+                remote_addr.clone(),
+                fmp_wire(501, 11, 0),
+                50_001,
+            ),
+        );
+        let header =
+            PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&stale_b.payload).unwrap());
+        assert_eq!(routes.route(&stale_b, header), None);
+
+        let stale_fsp = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(
+                transport_a,
+                remote_addr.clone(),
+                fsp_wire(12, 0),
+                50_002,
+            ),
+        )
+        .with_fsp_source(stale_source);
+        let header =
+            PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&stale_fsp.payload).unwrap());
+        assert_eq!(routes.route(&stale_fsp, header), None);
+
+        let keep_raw = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fmp,
+            ReceivedPacket::with_timestamp(
+                transport_keep,
+                remote_addr,
+                fmp_wire(502, 13, 0),
+                50_003,
+            ),
+        );
+        let header =
+            PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&keep_raw.payload).unwrap());
+        assert_eq!(routes.route(&keep_raw, header), Some(keep_route));
     }
 
     #[test]
