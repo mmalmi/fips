@@ -50,15 +50,46 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
+        self.drain_packet_mover2_scratch_turn_with_firsts(
+            packet_rx,
+            crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
+                .with_raw_packet(first_packet),
+            packet_limit,
+            endpoint_priority_command_rx,
+            endpoint_command_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            tun_tx,
+            endpoint_tx,
+            crypto_limit,
+        )
+        .await
+    }
+
+    pub(in crate::node) async fn drain_packet_mover2_scratch_turn_with_firsts(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        firsts: crate::packet_mover2::PacketMover2LiveTurnFirsts,
+        packet_limit: usize,
+        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        crypto_limit: usize,
+    ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
         let endpoint_identities = self.packet_mover2_endpoint_identity_snapshot();
         let endpoint_resolver =
             |source_addr: &NodeAddr| endpoint_identities.get(source_addr).copied();
 
         let turn = self
             .packet_mover2
-            .pump_packet_rx_turn_with_first(
+            .pump_packet_rx_turn_with_firsts(
                 packet_rx,
-                first_packet,
+                firsts,
                 packet_limit,
                 endpoint_priority_command_rx,
                 endpoint_command_rx,

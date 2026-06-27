@@ -459,6 +459,49 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        self.pump_aead_live_node_route_table_turn_with_firsts(
+            raw_ingress,
+            routes,
+            raw_ingress_limit,
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            PacketMover2LiveOutboundFirsts::default(),
+            deferred_endpoint_commands,
+            tun_tx,
+            endpoint_tx,
+            endpoint_resolver,
+            transports,
+            crypto_limit,
+        )
+        .await
+    }
+
+    async fn pump_aead_live_node_route_table_turn_with_firsts<RI, Resolver, Transports>(
+        &mut self,
+        raw_ingress: &mut RI,
+        routes: &mut PacketMover2LiveRouteTable,
+        raw_ingress_limit: usize,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        RI: PacketMover2RawIngressSource,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
         self.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
@@ -475,7 +518,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 tun_outbound_rx,
                 tun_limit,
                 routes,
-            );
+            )
+            .with_firsts(outbound_firsts);
             outbound_source.drain_outbound(outbound_limit, |packet| {
                 self.admit_outbound_packet(packet, &mut summary);
             });

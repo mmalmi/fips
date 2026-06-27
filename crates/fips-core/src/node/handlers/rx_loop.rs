@@ -298,14 +298,25 @@ impl Node {
                 // receive. Bulk endpoint commands intentionally remain below
                 // packet_rx.
                 Some(command) = endpoint_priority_command_rx.recv() => {
-                    let drained = self.drain_endpoint_commands(
+                    let mut turn = self.drain_packet_mover2_scratch_turn_with_firsts(
+                        &mut packet_rx,
+                        crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
+                            .with_endpoint_priority(Some(command)),
+                        0,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        Some(command),
-                        None,
                         NON_PACKET_DRAIN_BUDGET,
+                        &mut tun_outbound_rx,
+                        0,
+                        &scratch_tun_tx,
+                        &scratch_endpoint_tx,
+                        PACKET_DRAIN_BUDGET,
                     ).await;
-                    if drained > 0 {
+                    let had_activity = turn.has_activity();
+                    let control_drained = self
+                        .process_packet_mover2_scratch_control_ingress(&mut turn)
+                        .await;
+                    if had_activity || control_drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
@@ -368,12 +379,25 @@ impl Node {
                     }
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
-                    let drained = self.drain_tun_outbound(
+                    let mut turn = self.drain_packet_mover2_scratch_turn_with_firsts(
+                        &mut packet_rx,
+                        crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
+                            .with_tun_packet(Some(ipv6_packet)),
+                        0,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        0,
                         &mut tun_outbound_rx,
-                        Some(ipv6_packet),
                         NON_PACKET_DRAIN_BUDGET,
+                        &scratch_tun_tx,
+                        &scratch_endpoint_tx,
+                        PACKET_DRAIN_BUDGET,
                     ).await;
-                    if drained > 0 {
+                    let had_activity = turn.has_activity();
+                    let control_drained = self
+                        .process_packet_mover2_scratch_control_ingress(&mut turn)
+                        .await;
+                    if had_activity || control_drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
@@ -385,14 +409,25 @@ impl Node {
                     self.register_identity(identity.node_addr, identity.pubkey);
                 }
                 Some(command) = endpoint_command_rx.recv() => {
-                    let drained = self.drain_endpoint_commands(
+                    let mut turn = self.drain_packet_mover2_scratch_turn_with_firsts(
+                        &mut packet_rx,
+                        crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
+                            .with_endpoint_bulk(Some(command)),
+                        0,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        None,
-                        Some(command),
                         NON_PACKET_DRAIN_BUDGET,
+                        &mut tun_outbound_rx,
+                        0,
+                        &scratch_tun_tx,
+                        &scratch_endpoint_tx,
+                        PACKET_DRAIN_BUDGET,
                     ).await;
-                    if drained > 0 {
+                    let had_activity = turn.has_activity();
+                    let control_drained = self
+                        .process_packet_mover2_scratch_control_ingress(&mut turn)
+                        .await;
+                    if had_activity || control_drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }

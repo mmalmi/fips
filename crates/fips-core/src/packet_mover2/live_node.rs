@@ -163,6 +163,36 @@ impl PacketMover2LiveOwnerRouteSummary {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct PacketMover2LiveTurnFirsts {
+    raw_packet: Option<ReceivedPacket>,
+    endpoint_priority: Option<NodeEndpointCommand>,
+    endpoint_bulk: Option<NodeEndpointCommand>,
+    tun_packet: Option<Vec<u8>>,
+}
+
+impl PacketMover2LiveTurnFirsts {
+    pub(crate) fn with_raw_packet(mut self, packet: Option<ReceivedPacket>) -> Self {
+        self.raw_packet = packet;
+        self
+    }
+
+    pub(crate) fn with_endpoint_priority(mut self, command: Option<NodeEndpointCommand>) -> Self {
+        self.endpoint_priority = command;
+        self
+    }
+
+    pub(crate) fn with_endpoint_bulk(mut self, command: Option<NodeEndpointCommand>) -> Self {
+        self.endpoint_bulk = command;
+        self
+    }
+
+    pub(crate) fn with_tun_packet(mut self, packet: Option<Vec<u8>>) -> Self {
+        self.tun_packet = packet;
+        self
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct PacketMover2LiveNode<W = CopyCryptoWorker> {
     driver: PacketMover2TurnDriver<W>,
@@ -322,8 +352,47 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        self.pump_turn_with_firsts(
+            raw_ingress,
+            raw_ingress_limit,
+            PacketMover2LiveOutboundFirsts::default(),
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            tun_tx,
+            endpoint_tx,
+            endpoint_resolver,
+            transports,
+            crypto_limit,
+        )
+        .await
+    }
+
+    pub(crate) async fn pump_turn_with_firsts<RI, Resolver, Transports>(
+        &mut self,
+        raw_ingress: &mut RI,
+        raw_ingress_limit: usize,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        RI: PacketMover2RawIngressSource,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
         self.driver
-            .pump_aead_live_node_route_table_turn(
+            .pump_aead_live_node_route_table_turn_with_firsts(
                 raw_ingress,
                 &mut self.routes,
                 raw_ingress_limit,
@@ -332,6 +401,7 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
                 endpoint_limit,
                 tun_outbound_rx,
                 tun_limit,
+                outbound_firsts,
                 &mut self.deferred_endpoint_commands,
                 tun_tx,
                 endpoint_tx,
@@ -361,9 +431,9 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        self.pump_packet_rx_turn_with_first(
+        self.pump_packet_rx_turn_with_firsts(
             packet_rx,
-            None,
+            PacketMover2LiveTurnFirsts::default(),
             packet_limit,
             endpoint_priority_rx,
             endpoint_bulk_rx,
@@ -399,11 +469,60 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, first_packet);
+        self.pump_packet_rx_turn_with_firsts(
+            packet_rx,
+            PacketMover2LiveTurnFirsts::default().with_raw_packet(first_packet),
+            packet_limit,
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            tun_tx,
+            endpoint_tx,
+            endpoint_resolver,
+            transports,
+            crypto_limit,
+        )
+        .await
+    }
+
+    pub(crate) async fn pump_packet_rx_turn_with_firsts<Resolver, Transports>(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        firsts: PacketMover2LiveTurnFirsts,
+        packet_limit: usize,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let PacketMover2LiveTurnFirsts {
+            raw_packet,
+            endpoint_priority,
+            endpoint_bulk,
+            tun_packet,
+        } = firsts;
+        let outbound_firsts = PacketMover2LiveOutboundFirsts::default()
+            .with_endpoint_priority(endpoint_priority)
+            .with_endpoint_bulk(endpoint_bulk)
+            .with_tun_packet(tun_packet);
+        let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, raw_packet);
         let mut turn = self
-            .pump_turn(
+            .pump_turn_with_firsts(
             &mut raw_ingress,
             packet_limit,
+            outbound_firsts,
             endpoint_priority_rx,
             endpoint_bulk_rx,
             endpoint_limit,

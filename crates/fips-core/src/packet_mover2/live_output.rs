@@ -1,5 +1,32 @@
 
+#[derive(Debug, Default)]
+pub(crate) struct PacketMover2LiveOutboundFirsts {
+    endpoint_priority: Option<NodeEndpointCommand>,
+    endpoint_bulk: Option<NodeEndpointCommand>,
+    tun_packet: Option<Vec<u8>>,
+}
+
+impl PacketMover2LiveOutboundFirsts {
+    pub(crate) fn with_endpoint_priority(mut self, command: Option<NodeEndpointCommand>) -> Self {
+        self.endpoint_priority = command;
+        self
+    }
+
+    pub(crate) fn with_endpoint_bulk(mut self, command: Option<NodeEndpointCommand>) -> Self {
+        self.endpoint_bulk = command;
+        self
+    }
+
+    pub(crate) fn with_tun_packet(mut self, packet: Option<Vec<u8>>) -> Self {
+        self.tun_packet = packet;
+        self
+    }
+}
+
 pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
+    first_endpoint_priority: Option<NodeEndpointCommand>,
+    first_endpoint_bulk: Option<NodeEndpointCommand>,
+    first_tun_packet: Option<Vec<u8>>,
     endpoint_priority_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
     endpoint_bulk_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
     endpoint_limit: usize,
@@ -21,6 +48,9 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         routes: &'a mut Routes,
     ) -> Self {
         Self {
+            first_endpoint_priority: None,
+            first_endpoint_bulk: None,
+            first_tun_packet: None,
             endpoint_priority_rx,
             endpoint_bulk_rx,
             endpoint_limit,
@@ -31,6 +61,13 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
             endpoint_deferred_commands: Vec::new(),
             tun_drops: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_firsts(mut self, firsts: PacketMover2LiveOutboundFirsts) -> Self {
+        self.first_endpoint_priority = firsts.endpoint_priority;
+        self.first_endpoint_bulk = firsts.endpoint_bulk;
+        self.first_tun_packet = firsts.tun_packet;
+        self
     }
 
     fn take_endpoint_command_drops(&mut self) -> Vec<PacketMover2EndpointCommandDrop> {
@@ -55,6 +92,18 @@ where
         F: FnMut(OutboundPacket),
     {
         let mut drained_cost = 0usize;
+        if drained_cost < limit {
+            if let Some(command) = self.first_endpoint_priority.take() {
+                drained_cost = drained_cost.saturating_add(command.drain_cost());
+                route_endpoint_command_with_router(
+                    command,
+                    self.routes,
+                    &mut self.endpoint_drops,
+                    &mut self.endpoint_deferred_commands,
+                    &mut push,
+                );
+            }
+        }
         while drained_cost < limit {
             let Ok(command) = self.endpoint_priority_rx.try_recv() else {
                 break;
@@ -67,6 +116,18 @@ where
                 &mut self.endpoint_deferred_commands,
                 &mut push,
             );
+        }
+        if drained_cost < limit {
+            if let Some(command) = self.first_endpoint_bulk.take() {
+                drained_cost = drained_cost.saturating_add(command.drain_cost());
+                route_endpoint_command_with_router(
+                    command,
+                    self.routes,
+                    &mut self.endpoint_drops,
+                    &mut self.endpoint_deferred_commands,
+                    &mut push,
+                );
+            }
         }
         while drained_cost < limit {
             let Ok(command) = self.endpoint_bulk_rx.try_recv() else {
@@ -89,6 +150,17 @@ where
         F: FnMut(OutboundPacket),
     {
         let mut drained = 0;
+        if drained < limit {
+            if let Some(packet) = self.first_tun_packet.take() {
+                route_tun_outbound_packet_with_router(
+                    packet,
+                    self.routes,
+                    &mut self.tun_drops,
+                    &mut push,
+                );
+                drained += 1;
+            }
+        }
         while drained < limit {
             let Ok(packet) = self.tun_outbound_rx.try_recv() else {
                 break;
