@@ -101,23 +101,21 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        self.driver
-            .pump_aead_live_node_packet_rx_route_table_turn(
-                packet_rx,
-                &mut self.routes,
-                packet_limit,
-                endpoint_priority_rx,
-                endpoint_bulk_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                &mut self.deferred_endpoint_commands,
-                tun_tx,
-                endpoint_tx,
-                endpoint_resolver,
-                transports,
-                crypto_limit,
-            )
+        let mut raw_ingress = PacketMover2FmpPacketRxSource::new(packet_rx);
+        self.pump_turn(
+            &mut raw_ingress,
+            packet_limit,
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            tun_tx,
+            endpoint_tx,
+            endpoint_resolver,
+            transports,
+            crypto_limit,
+        )
             .await
     }
 }

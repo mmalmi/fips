@@ -606,10 +606,11 @@
             .with_max_packet_len(64),
         );
         let mut deferred_endpoint_commands = Vec::new();
+        let mut raw_ingress = PacketMover2FmpPacketRxSource::new(&mut packet_rx);
 
         let turn = driver
-            .pump_aead_live_node_packet_rx_route_table_turn(
-                &mut packet_rx,
+            .pump_aead_live_node_route_table_turn(
+                &mut raw_ingress,
                 &mut routes,
                 8,
                 &mut endpoint_priority_rx,
