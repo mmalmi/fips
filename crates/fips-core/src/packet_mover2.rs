@@ -136,12 +136,47 @@ pub(crate) enum OutputTarget {
     Transport,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct TransportPath(u64);
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum TransportPath {
+    Scratch(u64),
+    Live {
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+    },
+}
 
 impl TransportPath {
     pub(crate) fn new(id: u64) -> Self {
-        Self(id)
+        Self::Scratch(id)
+    }
+
+    pub(crate) fn live(transport_id: TransportId, remote_addr: TransportAddr) -> Self {
+        Self::Live {
+            transport_id,
+            remote_addr,
+        }
+    }
+
+    pub(crate) fn transport_id(&self) -> Option<TransportId> {
+        match self {
+            Self::Scratch(_) => None,
+            Self::Live { transport_id, .. } => Some(*transport_id),
+        }
+    }
+
+    pub(crate) fn remote_addr(&self) -> Option<&TransportAddr> {
+        match self {
+            Self::Scratch(_) => None,
+            Self::Live { remote_addr, .. } => Some(remote_addr),
+        }
+    }
+
+    #[cfg(test)]
+    fn scratch_id(&self) -> Option<u64> {
+        match self {
+            Self::Scratch(id) => Some(*id),
+            Self::Live { .. } => None,
+        }
     }
 }
 
@@ -687,7 +722,7 @@ impl std::fmt::Debug for OwnerCryptoKeys {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct OrderToken(u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OwnerReservation {
     owner: OwnerId,
     generation: u64,
@@ -765,7 +800,7 @@ impl OwnerState {
     }
 
     pub(crate) fn active_path(&self) -> Option<TransportPath> {
-        self.active_path
+        self.active_path.clone()
     }
 
     pub(crate) fn last_rx_activity(&self) -> Option<ActivityTick> {
@@ -805,7 +840,7 @@ impl OwnerState {
         }
 
         self.accepted_counters.insert(packet.counter);
-        if let Some(path) = packet.source_path {
+        if let Some(path) = packet.source_path.clone() {
             self.active_path = Some(path);
         }
         if let Some(tick) = packet.activity_tick {
@@ -838,7 +873,7 @@ impl OwnerState {
         }
 
         let counter = self.next_send_counter;
-        let output_path = self.active_path;
+        let output_path = self.active_path.clone();
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_tx_activity, tick);
         }
@@ -974,7 +1009,7 @@ impl PacketOutput {
     }
 
     pub(crate) fn path(&self) -> Option<TransportPath> {
-        self.path
+        self.path.clone()
     }
 
     pub(crate) fn payload(&self) -> &[u8] {
@@ -1136,6 +1171,7 @@ pub(crate) struct PacketMover2RawIngress {
     transport_id: TransportId,
     remote_addr: TransportAddr,
     path: TransportPath,
+    fsp_source: Option<NodeAddr>,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -1151,9 +1187,20 @@ impl PacketMover2RawIngress {
             transport_id: packet.transport_id,
             remote_addr: packet.remote_addr,
             path,
+            fsp_source: None,
             activity_tick: Some(ActivityTick::new(packet.timestamp_ms)),
             payload: packet.data,
         }
+    }
+
+    pub(crate) fn from_live_received(protocol: PacketProtocol, packet: ReceivedPacket) -> Self {
+        let path = TransportPath::live(packet.transport_id, packet.remote_addr.clone());
+        Self::from_received(protocol, path, packet)
+    }
+
+    pub(crate) fn with_fsp_source(mut self, source_addr: NodeAddr) -> Self {
+        self.fsp_source = Some(source_addr);
+        self
     }
 
     pub(crate) fn protocol(&self) -> PacketProtocol {
@@ -1169,7 +1216,11 @@ impl PacketMover2RawIngress {
     }
 
     pub(crate) fn path(&self) -> TransportPath {
-        self.path
+        self.path.clone()
+    }
+
+    pub(crate) fn fsp_source(&self) -> Option<NodeAddr> {
+        self.fsp_source
     }
 
     pub(crate) fn activity_tick(&self) -> Option<ActivityTick> {
@@ -1226,6 +1277,85 @@ pub(crate) trait PacketMover2IngressRouter {
         packet: &PacketMover2RawIngress,
         header: PacketMover2IngressHeader,
     ) -> Option<PacketMover2IngressRoute>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct FmpIngressRouteKey {
+    transport_id: TransportId,
+    receiver_idx: u32,
+}
+
+impl FmpIngressRouteKey {
+    fn new(transport_id: TransportId, receiver_idx: u32) -> Self {
+        Self {
+            transport_id,
+            receiver_idx,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PacketMover2LiveIngressRoutes {
+    fmp: HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
+    fsp: HashMap<NodeAddr, PacketMover2IngressRoute>,
+}
+
+impl PacketMover2LiveIngressRoutes {
+    pub(crate) fn register_fmp(
+        &mut self,
+        transport_id: TransportId,
+        receiver_idx: u32,
+        route: PacketMover2IngressRoute,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fmp
+            .insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route)
+    }
+
+    pub(crate) fn unregister_fmp(
+        &mut self,
+        transport_id: TransportId,
+        receiver_idx: u32,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fmp
+            .remove(&FmpIngressRouteKey::new(transport_id, receiver_idx))
+    }
+
+    pub(crate) fn register_fsp(
+        &mut self,
+        source_addr: NodeAddr,
+        route: PacketMover2IngressRoute,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fsp.insert(source_addr, route)
+    }
+
+    pub(crate) fn unregister_fsp(
+        &mut self,
+        source_addr: NodeAddr,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fsp.remove(&source_addr)
+    }
+}
+
+impl PacketMover2IngressRouter for PacketMover2LiveIngressRoutes {
+    fn route(
+        &mut self,
+        packet: &PacketMover2RawIngress,
+        header: PacketMover2IngressHeader,
+    ) -> Option<PacketMover2IngressRoute> {
+        match (packet.protocol, header) {
+            (PacketProtocol::Fmp, PacketMover2IngressHeader::Fmp(header)) => self
+                .fmp
+                .get(&FmpIngressRouteKey::new(
+                    packet.transport_id,
+                    header.receiver_idx(),
+                ))
+                .copied(),
+            (PacketProtocol::Fsp, PacketMover2IngressHeader::Fsp(_)) => packet
+                .fsp_source
+                .and_then(|source_addr| self.fsp.get(&source_addr).copied()),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) trait PacketMover2RawIngressSource {
@@ -1331,7 +1461,7 @@ impl PacketMover2OutputDrop {
             counter: output.counter,
             ingress_seq: output.ingress_seq,
             target: output.target,
-            path: output.path,
+            path: output.path.clone(),
             payload_len: output.payload.len(),
             reason,
         }
@@ -1672,6 +1802,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             return;
         };
 
+        let source_path = packet.path.clone();
         let mut socket_packet = SocketPacket::new(
             route.owner,
             route.generation,
@@ -1680,7 +1811,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             route.output,
             packet.payload,
         )
-        .with_source_path(packet.path);
+        .with_source_path(source_path);
         if let Some(tick) = packet.activity_tick {
             socket_packet = socket_packet.with_activity_tick(tick);
         }
@@ -1792,7 +1923,7 @@ impl StatelessCryptoWorker for CopyCryptoWorker {
             counter: work.packet.counter,
             ingress_seq: work.reservation.ingress_seq,
             target: work.packet.output,
-            path: work.reservation.output_path,
+            path: work.reservation.output_path.clone(),
             payload: work.packet.payload,
         };
         CryptoCompletion {
@@ -1890,7 +2021,7 @@ impl StatelessAeadOpenWorker {
                     counter: reservation.counter,
                     ingress_seq: reservation.ingress_seq,
                     target,
-                    path: reservation.output_path,
+                    path: reservation.output_path.clone(),
                     payload: work.work.packet.payload,
                 })
             }
@@ -1977,7 +2108,7 @@ impl StatelessAeadSealWorker {
                     counter: reservation.counter,
                     ingress_seq: reservation.ingress_seq,
                     target: OutputTarget::Transport,
-                    path: reservation.output_path,
+                    path: reservation.output_path.clone(),
                     payload: work.work.packet.payload,
                 })
             }
@@ -2215,7 +2346,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         let mut retired = Vec::new();
 
         for work in open_work.drain(..) {
-            let reservation = work.reservation;
+            let reservation = work.reservation.clone();
             let completion = match self.owner_crypto_keys(reservation.owner) {
                 Some(keys) => match AeadOpenWork::from_crypto_work(work, keys.open) {
                     Ok(work) => opened.execute(work),
@@ -2233,7 +2364,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         }
 
         for work in seal_work.drain(..) {
-            let reservation = work.reservation;
+            let reservation = work.reservation.clone();
             let completion = match self.owner_crypto_keys(reservation.owner) {
                 Some(keys) => match AeadSealWork::from_outbound_work(work, keys.seal) {
                     Ok(work) => sealed.execute(work),
@@ -2455,6 +2586,27 @@ mod tests {
         assert_ne!(fmp, OwnerId::fmp(0x42));
         assert_eq!(OwnerId::fmp(0x42).scratch_peer(), Some(0x42));
         assert_eq!(OwnerId::fmp(0x42).node_addr(), None);
+    }
+
+    #[test]
+    fn transport_path_supports_live_transport_targets() {
+        let transport_id = TransportId::new(17);
+        let remote_addr = TransportAddr::from_string("198.51.100.17:9000");
+        let path = TransportPath::live(transport_id, remote_addr.clone());
+
+        assert_eq!(path.transport_id(), Some(transport_id));
+        assert_eq!(path.remote_addr(), Some(&remote_addr));
+        assert_eq!(path.scratch_id(), None);
+
+        let raw = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fmp,
+            ReceivedPacket::with_timestamp(transport_id, remote_addr.clone(), vec![0xaa], 42),
+        );
+        let raw_path = raw.path();
+        assert_eq!(raw_path.transport_id(), Some(transport_id));
+        assert_eq!(raw_path.remote_addr(), Some(&remote_addr));
+        assert_eq!(raw.transport_id(), transport_id);
+        assert_eq!(raw.remote_addr(), &remote_addr);
     }
 
     #[test]
@@ -3155,7 +3307,10 @@ mod tests {
         let path = TransportPath::new(7010);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(900));
-        mover.owner_mut(owner).unwrap().set_active_path(path);
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_active_path(path.clone());
         mover
             .owner_mut(owner)
             .unwrap()
@@ -3196,7 +3351,7 @@ mod tests {
         assert_eq!(outputs[0].counter, 100);
         assert_eq!(outputs[1].target, OutputTarget::Transport);
         assert_eq!(outputs[1].counter, 900);
-        assert_eq!(outputs[1].path, Some(path));
+        assert_eq!(outputs[1].path(), Some(path));
         assert_eq!(
             open_sealed_output(outputs[1], seal_key),
             b"outbound-liveness"
@@ -3292,12 +3447,15 @@ mod tests {
             fmp_encrypted_wire(73, 1000, 0, b"in-a", open_key),
         )
         .unwrap()
-        .with_source_path(path_a);
+        .with_source_path(path_a.clone());
         mover.submit_socket_packet(inbound_a).unwrap();
         let turn = mover.run_aead_available(8);
         assert!(turn.drops().is_empty());
-        assert_eq!(turn.outputs()[0].path, None);
-        assert_eq!(mover.owner_mut(owner).unwrap().active_path(), Some(path_a));
+        assert_eq!(turn.outputs()[0].path(), None);
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().active_path(),
+            Some(path_a.clone())
+        );
 
         mover
             .submit_outbound_packet(OutboundPacket::fmp(
@@ -3313,7 +3471,7 @@ mod tests {
         let output = turn.outputs()[0];
         assert_eq!(output.counter, 500);
         assert_eq!(output.target, OutputTarget::Transport);
-        assert_eq!(output.path, Some(path_a));
+        assert_eq!(output.path(), Some(path_a));
         assert_eq!(open_sealed_output(output, seal_key), b"out-a");
 
         let inbound_b = SocketPacket::from_fmp_established_wire(
@@ -3323,12 +3481,15 @@ mod tests {
             fmp_encrypted_wire(73, 1001, 0, b"in-b", open_key),
         )
         .unwrap()
-        .with_source_path(path_b);
+        .with_source_path(path_b.clone());
         mover.submit_socket_packet(inbound_b).unwrap();
         let turn = mover.run_aead_available(8);
         assert!(turn.drops().is_empty());
-        assert_eq!(turn.outputs()[0].path, None);
-        assert_eq!(mover.owner_mut(owner).unwrap().active_path(), Some(path_b));
+        assert_eq!(turn.outputs()[0].path(), None);
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().active_path(),
+            Some(path_b.clone())
+        );
 
         mover
             .submit_outbound_packet(OutboundPacket::fmp(
@@ -3343,7 +3504,7 @@ mod tests {
         let turn = mover.run_aead_available(8);
         let output = turn.outputs()[0];
         assert_eq!(output.counter, 501);
-        assert_eq!(output.path, Some(path_b));
+        assert_eq!(output.path(), Some(path_b));
         assert_eq!(open_sealed_output(output, seal_key), b"out-b");
     }
 
@@ -3354,7 +3515,10 @@ mod tests {
         let stale_path = TransportPath::new(11);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(2, 8));
-        mover.owner_mut(owner).unwrap().set_active_path(old_path);
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_active_path(old_path.clone());
         mover
             .submit_socket_packet(
                 SocketPacket::new(
@@ -3523,7 +3687,7 @@ mod tests {
             fmp_encrypted_wire(78, 100, 0, b"inbound", open_key),
         )
         .unwrap()
-        .with_source_path(path)
+        .with_source_path(path.clone())
         .with_activity_tick(ActivityTick::new(10));
         let outbound = OutboundPacket::fmp(
             owner,
@@ -3560,11 +3724,11 @@ mod tests {
             &outputs[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
             b"inbound"
         );
-        assert_eq!(outputs[0].path, None);
+        assert_eq!(outputs[0].path(), None);
 
         assert_eq!(outputs[1].target, OutputTarget::Transport);
         assert_eq!(outputs[1].counter, 300);
-        assert_eq!(outputs[1].path, Some(path));
+        assert_eq!(outputs[1].path(), Some(path.clone()));
         assert_eq!(open_sealed_output(&outputs[1], seal_key), b"outbound");
 
         let owner_state = driver.owner_mut(owner).unwrap();
@@ -3768,6 +3932,201 @@ mod tests {
     }
 
     #[test]
+    fn live_ingress_routes_fmp_by_transport_and_receiver_idx() {
+        let transport_id = TransportId::new(40);
+        let remote_addr = TransportAddr::from_string("198.51.100.40:9000");
+        let source_a = NodeAddr::from_bytes([0x40; 16]);
+        let source_b = NodeAddr::from_bytes([0x41; 16]);
+        let owner_a = OwnerId::fmp_node(source_a);
+        let owner_b = OwnerId::fmp_node(source_b);
+        let route_a = PacketMover2IngressRoute::new(owner_a, 7, OutputTarget::Endpoint)
+            .with_class(PacketClass::Liveness);
+        let route_b = PacketMover2IngressRoute::new(owner_b, 8, OutputTarget::Endpoint)
+            .with_class(PacketClass::Rekey);
+        let mut routes = PacketMover2LiveIngressRoutes::default();
+        assert_eq!(routes.register_fmp(transport_id, 404, route_a), None);
+
+        let raw = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fmp,
+            ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                fmp_wire(404, 9, 0),
+                9_000,
+            ),
+        );
+        let header = PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
+        assert_eq!(raw.path().transport_id(), Some(transport_id));
+        assert_eq!(raw.path().remote_addr(), Some(&remote_addr));
+        assert_eq!(raw.activity_tick(), Some(ActivityTick::new(9_000)));
+        assert_eq!(routes.route(&raw, header), Some(route_a));
+
+        let wrong_transport = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fmp,
+            ReceivedPacket::with_timestamp(
+                TransportId::new(41),
+                remote_addr.clone(),
+                fmp_wire(404, 10, 0),
+                9_001,
+            ),
+        );
+        let header =
+            PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&wrong_transport.payload).unwrap());
+        assert_eq!(routes.route(&wrong_transport, header), None);
+
+        assert_eq!(
+            routes.register_fmp(transport_id, 404, route_b),
+            Some(route_a)
+        );
+        let header = PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
+        assert_eq!(routes.route(&raw, header), Some(route_b));
+        assert_eq!(routes.unregister_fmp(transport_id, 404), Some(route_b));
+        let header = PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
+        assert_eq!(routes.route(&raw, header), None);
+    }
+
+    #[test]
+    fn live_ingress_routes_fsp_require_source_context_and_refresh_cleanly() {
+        let source = NodeAddr::from_bytes([0x42; 16]);
+        let owner = OwnerId::fsp_node(source);
+        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let old_route = PacketMover2IngressRoute::new(owner, 3, OutputTarget::Tun)
+            .with_class(PacketClass::Bulk);
+        let new_route = PacketMover2IngressRoute::new(owner, 4, OutputTarget::Endpoint)
+            .with_class(PacketClass::Mmp);
+        assert_eq!(routes.register_fsp(source, old_route), None);
+
+        let bare_raw = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(
+                TransportId::new(42),
+                TransportAddr::from_string("198.51.100.42:9000"),
+                fsp_wire(77, 0),
+                1,
+            ),
+        );
+        let header =
+            PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&bare_raw.payload).unwrap());
+        assert_eq!(bare_raw.fsp_source(), None);
+        assert_eq!(routes.route(&bare_raw, header), None);
+
+        let sourced_raw = bare_raw.clone().with_fsp_source(source);
+        let header =
+            PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
+        assert_eq!(sourced_raw.fsp_source(), Some(source));
+        assert_eq!(routes.route(&sourced_raw, header), Some(old_route));
+
+        assert_eq!(routes.register_fsp(source, new_route), Some(old_route));
+        let header =
+            PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
+        assert_eq!(routes.route(&sourced_raw, header), Some(new_route));
+        assert_eq!(routes.unregister_fsp(source), Some(new_route));
+        let header =
+            PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
+        assert_eq!(routes.route(&sourced_raw, header), None);
+    }
+
+    #[test]
+    fn runtime_raw_ingress_turn_uses_live_ingress_routes() {
+        let fmp_source = NodeAddr::from_bytes([0x43; 16]);
+        let fsp_source = NodeAddr::from_bytes([0x44; 16]);
+        let fmp_owner = OwnerId::fmp_node(fmp_source);
+        let fsp_owner = OwnerId::fsp_node(fsp_source);
+        let fmp_key = 43;
+        let fsp_key = 44;
+        let transport_id = TransportId::new(43);
+        let remote_addr = TransportAddr::from_string("198.51.100.43:9000");
+
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(fmp_owner, OwnerConfig::new(11, 8));
+        driver.register_owner(fsp_owner, OwnerConfig::new(12, 8));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+
+        let mut routes = PacketMover2LiveIngressRoutes::default();
+        routes.register_fmp(
+            transport_id,
+            430,
+            PacketMover2IngressRoute::new(fmp_owner, 11, OutputTarget::Endpoint)
+                .with_class(PacketClass::Liveness),
+        );
+        routes.register_fsp(
+            fsp_source,
+            PacketMover2IngressRoute::new(fsp_owner, 12, OutputTarget::Tun)
+                .with_class(PacketClass::Mmp),
+        );
+
+        let fmp_raw = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fmp,
+            ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                fmp_encrypted_wire(430, 1, 0, b"fmp-live", fmp_key),
+                100,
+            ),
+        );
+        let fsp_raw = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                fsp_encrypted_wire(2, 0, b"fsp-live", fsp_key),
+                101,
+            ),
+        )
+        .with_fsp_source(fsp_source);
+
+        let turn = driver.run_aead_raw_ingress_turn(
+            [fmp_raw, fsp_raw],
+            &mut routes,
+            std::iter::empty(),
+            8,
+        );
+
+        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
+        assert_eq!(turn.summary().inbound_admitted(), 2);
+        assert_eq!(turn.summary().dispatched(), 2);
+        assert_eq!(turn.summary().outputs(), 2);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.drops().is_empty());
+        assert_eq!(
+            turn.outputs()
+                .iter()
+                .map(PacketOutput::owner)
+                .collect::<Vec<_>>(),
+            vec![fmp_owner, fsp_owner]
+        );
+        assert_eq!(
+            turn.outputs()
+                .iter()
+                .map(PacketOutput::target)
+                .collect::<Vec<_>>(),
+            vec![OutputTarget::Endpoint, OutputTarget::Tun]
+        );
+        assert_eq!(
+            &turn.outputs()[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            b"fmp-live"
+        );
+        assert_eq!(&turn.outputs()[1].payload[FSP_HEADER_SIZE..], b"fsp-live");
+
+        let live_path = Some(TransportPath::live(transport_id, remote_addr));
+        assert_eq!(
+            driver.owner_mut(fmp_owner).unwrap().active_path(),
+            live_path.clone()
+        );
+        assert_eq!(
+            driver.owner_mut(fsp_owner).unwrap().active_path(),
+            live_path
+        );
+    }
+
+    #[test]
     fn runtime_raw_ingress_turn_parses_received_packet_before_owner_admission() {
         let owner = OwnerId::fmp(81);
         let open_key = 51;
@@ -3784,7 +4143,8 @@ mod tests {
             fmp_encrypted_wire(81, 1200, 0, b"raw-in", open_key),
             123_456,
         );
-        let raw = PacketMover2RawIngress::from_received(PacketProtocol::Fmp, path, received);
+        let raw =
+            PacketMover2RawIngress::from_received(PacketProtocol::Fmp, path.clone(), received);
         let mut router = FixedIngressRouter {
             route: Some(
                 PacketMover2IngressRoute::new(owner, 7, OutputTarget::Tun)
@@ -3822,7 +4182,7 @@ mod tests {
         driver.register_owner(owner, OwnerConfig::new(1, 8));
         let bad_wire = PacketMover2RawIngress::from_received(
             PacketProtocol::Fmp,
-            path,
+            path.clone(),
             ReceivedPacket::with_timestamp(
                 TransportId::new(5),
                 TransportAddr::from_string("198.51.100.9:9000"),
@@ -3832,7 +4192,7 @@ mod tests {
         );
         let unrouted = PacketMover2RawIngress::from_received(
             PacketProtocol::Fsp,
-            path,
+            path.clone(),
             ReceivedPacket::with_timestamp(
                 TransportId::new(5),
                 TransportAddr::from_string("198.51.100.9:9000"),
@@ -3866,7 +4226,7 @@ mod tests {
             turn.raw_ingress_drops()[1].transport_id,
             TransportId::new(5)
         );
-        assert_eq!(turn.raw_ingress_drops()[1].path, path);
+        assert_eq!(&turn.raw_ingress_drops()[1].path, &path);
     }
 
     #[test]
@@ -3887,7 +4247,8 @@ mod tests {
             fmp_encrypted_wire(85, 1200, 0, b"raw-in", open_key),
             123_456,
         );
-        let raw = PacketMover2RawIngress::from_received(PacketProtocol::Fmp, path, received);
+        let raw =
+            PacketMover2RawIngress::from_received(PacketProtocol::Fmp, path.clone(), received);
         let mut router = FixedIngressRouter {
             route: Some(
                 PacketMover2IngressRoute::new(owner, 7, OutputTarget::Tun)
@@ -3980,7 +4341,7 @@ mod tests {
         let mut raw_source = VecDeque::from([
             PacketMover2RawIngress::from_received(
                 PacketProtocol::Fmp,
-                path,
+                path.clone(),
                 ReceivedPacket::with_timestamp(
                     TransportId::new(6),
                     TransportAddr::from_string("198.51.100.10:9000"),
@@ -3990,7 +4351,7 @@ mod tests {
             ),
             PacketMover2RawIngress::from_received(
                 PacketProtocol::Fmp,
-                path,
+                path.clone(),
                 ReceivedPacket::with_timestamp(
                     TransportId::new(6),
                     TransportAddr::from_string("198.51.100.10:9000"),
@@ -4075,10 +4436,51 @@ mod tests {
                 .iter()
                 .map(PacketOutput::path)
                 .collect::<Vec<_>>(),
-            vec![None, Some(path), None, Some(path)]
+            vec![None, Some(path.clone()), None, Some(path)]
         );
         assert_eq!(open_sealed_output(&sink.outputs[1], seal_key), b"out-a");
         assert_eq!(open_sealed_output(&sink.outputs[3], seal_key), b"out-b");
+    }
+
+    #[test]
+    fn runtime_output_sink_preserves_live_transport_path() {
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x87; 16]));
+        let key = 87;
+        let transport_id = TransportId::new(87);
+        let remote_addr = TransportAddr::from_string("198.51.100.87:9000");
+        let path = TransportPath::live(transport_id, remote_addr.clone());
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(8700));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_active_path(path.clone());
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+        let outbound = OutboundPacket::fmp(
+            owner,
+            1,
+            PacketClass::Liveness,
+            870,
+            0,
+            b"live-path".to_vec(),
+        );
+        let mut sink = RecordingOutputSink::default();
+
+        let turn =
+            driver.run_aead_classified_output_turn(std::iter::empty(), [outbound], &mut sink, 8);
+
+        assert_eq!(turn.summary().outputs(), 1);
+        assert_eq!(turn.summary().outputs_sent(), 1);
+        assert!(turn.outputs().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert_eq!(sink.outputs.len(), 1);
+        let output_path = sink.outputs[0].path().expect("transport output path");
+        assert_eq!(output_path.transport_id(), Some(transport_id));
+        assert_eq!(output_path.remote_addr(), Some(&remote_addr));
+        assert_eq!(open_sealed_output(&sink.outputs[0], key), b"live-path");
     }
 
     #[test]
@@ -4088,7 +4490,10 @@ mod tests {
         let path = TransportPath::new(8300);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(400));
-        driver.owner_mut(owner).unwrap().set_active_path(path);
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_active_path(path.clone());
         driver
             .owner_mut(owner)
             .unwrap()
@@ -4141,7 +4546,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![10, 11, 400]
         );
-        assert_eq!(sink.outputs[2].path, Some(path));
+        assert_eq!(sink.outputs[2].path(), Some(path));
         assert_eq!(open_sealed_output(&sink.outputs[2], key), b"transport");
     }
 
