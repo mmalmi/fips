@@ -137,7 +137,7 @@ impl PacketMover2LiveOwnerRoutes {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PacketMover2LiveOwnerRouteError {
+pub(crate) enum PacketMover2LiveOwnerError {
     UnknownOwner,
     OwnerMismatch,
 }
@@ -183,6 +183,40 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         self.driver.register_owner(owner, config);
     }
 
+    pub(crate) fn set_owner_crypto_keys(
+        &mut self,
+        owner: OwnerId,
+        keys: OwnerCryptoKeys,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        owner_state.set_crypto_keys(keys);
+        Ok(())
+    }
+
+    pub(crate) fn set_owner_active_path(
+        &mut self,
+        owner: OwnerId,
+        path: TransportPath,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        owner_state.set_active_path(path);
+        Ok(())
+    }
+
+    pub(crate) fn owner_active_path(
+        &self,
+        owner: OwnerId,
+    ) -> Result<Option<TransportPath>, PacketMover2LiveOwnerError> {
+        if !self.driver.has_owner(owner) {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        }
+        Ok(self.driver.owner_active_path(owner))
+    }
+
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> PacketMover2LiveOwnerRouteSummary {
         PacketMover2LiveOwnerRouteSummary {
             owner_removed: self.driver.unregister_owner(owner),
@@ -195,12 +229,12 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         &mut self,
         owner: OwnerId,
         routes: PacketMover2LiveOwnerRoutes,
-    ) -> Result<PacketMover2LiveOwnerRouteSummary, PacketMover2LiveOwnerRouteError> {
-        if self.owner_mut(owner).is_none() {
-            return Err(PacketMover2LiveOwnerRouteError::UnknownOwner);
+    ) -> Result<PacketMover2LiveOwnerRouteSummary, PacketMover2LiveOwnerError> {
+        if !self.driver.has_owner(owner) {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
         }
         if routes.has_owner_mismatch(owner) {
-            return Err(PacketMover2LiveOwnerRouteError::OwnerMismatch);
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
         }
 
         let routes_added = routes.len();
@@ -218,14 +252,15 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         &mut self,
         owner: OwnerId,
         generation: u64,
-    ) -> Result<usize, PacketMover2LiveOwnerRouteError> {
-        let Some(owner_state) = self.owner_mut(owner) else {
-            return Err(PacketMover2LiveOwnerRouteError::UnknownOwner);
+    ) -> Result<usize, PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
         };
         owner_state.rekey(generation);
         Ok(self.routes.refresh_owner_generation(owner, generation))
     }
 
+    #[cfg(test)]
     pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.driver.owner_mut(owner)
     }

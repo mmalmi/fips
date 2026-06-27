@@ -200,6 +200,14 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.mover.unregister_owner(owner)
     }
 
+    pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
+        self.mover.has_owner(owner)
+    }
+
+    pub(crate) fn owner_active_path(&self, owner: OwnerId) -> Option<TransportPath> {
+        self.mover.owner_active_path(owner)
+    }
+
     pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.mover.owner_mut(owner)
     }

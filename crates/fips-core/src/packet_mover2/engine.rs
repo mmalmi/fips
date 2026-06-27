@@ -26,6 +26,16 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         self.owners.remove(&owner).is_some()
     }
 
+    pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
+        self.owners.contains_key(&owner)
+    }
+
+    pub(crate) fn owner_active_path(&self, owner: OwnerId) -> Option<TransportPath> {
+        self.owners
+            .get(&owner)
+            .and_then(OwnerState::active_path)
+    }
+
     pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.owners.get_mut(&owner)
     }

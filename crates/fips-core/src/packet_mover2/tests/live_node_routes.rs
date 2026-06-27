@@ -11,7 +11,22 @@
 
         assert_eq!(
             live_node.replace_owner_routes(owner, PacketMover2LiveOwnerRoutes::new()),
-            Err(PacketMover2LiveOwnerRouteError::UnknownOwner)
+            Err(PacketMover2LiveOwnerError::UnknownOwner)
+        );
+        assert_eq!(
+            live_node.set_owner_active_path(owner, TransportPath::new(91)),
+            Err(PacketMover2LiveOwnerError::UnknownOwner)
+        );
+        assert_eq!(
+            live_node.set_owner_crypto_keys(
+                owner,
+                OwnerCryptoKeys::new(test_key(91), test_key(91)),
+            ),
+            Err(PacketMover2LiveOwnerError::UnknownOwner)
+        );
+        assert_eq!(
+            live_node.owner_active_path(owner),
+            Err(PacketMover2LiveOwnerError::UnknownOwner)
         );
 
         live_node.register_owner(owner, OwnerConfig::new(1, 8));
@@ -65,7 +80,7 @@
         ));
         assert_eq!(
             live_node.replace_owner_routes(owner, mismatched),
-            Err(PacketMover2LiveOwnerRouteError::OwnerMismatch)
+            Err(PacketMover2LiveOwnerError::OwnerMismatch)
         );
 
         let mut replacement = PacketMover2LiveOwnerRoutes::new();
@@ -117,7 +132,7 @@
         assert_eq!(summary.routes_added(), 0);
         assert_eq!(
             live_node.rekey_owner(owner, 10),
-            Err(PacketMover2LiveOwnerRouteError::UnknownOwner)
+            Err(PacketMover2LiveOwnerError::UnknownOwner)
         );
     }
 
@@ -161,14 +176,17 @@
             owner,
             OwnerConfig::new(1, 8).with_next_send_counter(93_000),
         );
-        live_node
-            .owner_mut(owner)
-            .unwrap()
-            .set_active_path(live_path.clone());
-        live_node
-            .owner_mut(owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(old_key), test_key(old_key)));
+        assert_eq!(
+            live_node.set_owner_active_path(owner, live_path.clone()),
+            Ok(())
+        );
+        assert_eq!(
+            live_node.set_owner_crypto_keys(
+                owner,
+                OwnerCryptoKeys::new(test_key(old_key), test_key(old_key)),
+            ),
+            Ok(())
+        );
 
         let mut routes = PacketMover2LiveOwnerRoutes::new();
         routes.push_fmp_ingress(PacketMover2LiveFmpIngressRoute::new(
@@ -196,10 +214,13 @@
         );
 
         assert_eq!(live_node.rekey_owner(owner, 2), Ok(2));
-        live_node
-            .owner_mut(owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(new_key), test_key(new_key)));
+        assert_eq!(
+            live_node.set_owner_crypto_keys(
+                owner,
+                OwnerCryptoKeys::new(test_key(new_key), test_key(new_key)),
+            ),
+            Ok(())
+        );
 
         let mut raw_source =
             PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fmp(
@@ -261,7 +282,7 @@
         assert_eq!(header.receiver_idx(), 931);
         assert_eq!(header.counter(), 0);
         assert_eq!(open_fmp_wire_payload(&received.data, new_key), tun_packet);
-        assert_eq!(live_node.owner_mut(owner).unwrap().active_path(), Some(live_path));
+        assert_eq!(live_node.owner_active_path(owner), Ok(Some(live_path)));
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");

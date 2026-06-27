@@ -1,6 +1,10 @@
 use super::*;
 
 impl Node {
+    fn new_packet_mover2_scratch_node() -> PacketMover2ScratchNode {
+        PacketMover2LiveNode::new(AdmissionConfig::new(1024, 4096), CopyCryptoWorker)
+    }
+
     /// Create a new node from configuration.
     pub fn new(config: Config) -> Result<Self, NodeError> {
         config.validate()?;
@@ -83,6 +87,7 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
+            packet_mover2: Self::new_packet_mover2_scratch_node(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
@@ -231,6 +236,7 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
+            packet_mover2: Self::new_packet_mover2_scratch_node(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
