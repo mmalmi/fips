@@ -4,6 +4,7 @@ pub(crate) enum WirePreflightError {
     WrongVersion,
     WrongPhase,
     PlaintextFsp,
+    BadFspCoords,
     CounterMismatch,
 }
 
@@ -12,6 +13,7 @@ pub(crate) enum WireBuildError {
     PayloadTooLarge,
     ProtocolMismatch,
     PlaintextFsp,
+    BadFspCoords,
     MissingFspTimestamp,
 }
 
@@ -102,13 +104,21 @@ impl FspWireHeader {
         let mut header_bytes = [0u8; FSP_HEADER_SIZE];
         header_bytes.copy_from_slice(&data[..FSP_HEADER_SIZE]);
 
+        let mut ciphertext_offset = FSP_HEADER_SIZE;
+        if flags & crate::node::session_wire::FSP_FLAG_CP != 0 {
+            let (_source_coords, _dest_coords, coords_len) =
+                crate::node::session_wire::parse_encrypted_coords(&data[FSP_HEADER_SIZE..])
+                    .map_err(|_| WirePreflightError::BadFspCoords)?;
+            ciphertext_offset = ciphertext_offset.saturating_add(coords_len);
+        }
+
         Ok(Self {
             counter: u64::from_le_bytes([
                 data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
             ]),
             flags,
             header_bytes,
-            ciphertext_offset: FSP_HEADER_SIZE,
+            ciphertext_offset,
         })
     }
 

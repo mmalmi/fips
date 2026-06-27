@@ -102,6 +102,7 @@
             0x03,
             b"session-body".to_vec(),
         )
+        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
         .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
         let queued_bulk = OutboundPacket::fmp(
             fmp_owner,

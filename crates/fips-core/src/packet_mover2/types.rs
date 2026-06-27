@@ -201,6 +201,7 @@ pub(crate) struct OutboundPacket {
     wire: OutboundWire,
     post_seal: OutboundPostSeal,
     payload_transform: OutboundPayloadTransform,
+    fsp_cleartext_prefix: Vec<u8>,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -224,6 +225,7 @@ impl OutboundPacket {
             },
             post_seal: OutboundPostSeal::Transport,
             payload_transform: OutboundPayloadTransform::None,
+            fsp_cleartext_prefix: Vec::new(),
             activity_tick: None,
             payload: payload.into(),
         }
@@ -243,6 +245,7 @@ impl OutboundPacket {
             wire: OutboundWire::Fsp { flags },
             post_seal: OutboundPostSeal::Transport,
             payload_transform: OutboundPayloadTransform::None,
+            fsp_cleartext_prefix: Vec::new(),
             activity_tick: None,
             payload: payload.into(),
         }
@@ -258,6 +261,11 @@ impl OutboundPacket {
 
     pub(crate) fn with_post_seal(mut self, post_seal: OutboundPostSeal) -> Self {
         self.post_seal = post_seal;
+        self
+    }
+
+    pub(crate) fn with_fsp_cleartext_prefix(mut self, prefix: Vec<u8>) -> Self {
+        self.fsp_cleartext_prefix = prefix;
         self
     }
 

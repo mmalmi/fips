@@ -159,8 +159,18 @@
                 &mut ciphertext,
             )
             .unwrap();
+        if flags & crate::node::session_wire::FSP_FLAG_CP != 0 {
+            data.extend_from_slice(&empty_fsp_coords_prefix());
+        }
         data.extend_from_slice(&ciphertext);
         data
+    }
+
+    fn empty_fsp_coords_prefix() -> Vec<u8> {
+        let mut prefix = Vec::with_capacity(2 * std::mem::size_of::<u16>());
+        prefix.extend_from_slice(&0u16.to_le_bytes());
+        prefix.extend_from_slice(&0u16.to_le_bytes());
+        prefix
     }
 
     fn open_sealed_output(output: &PacketOutput, key: u8) -> Vec<u8> {

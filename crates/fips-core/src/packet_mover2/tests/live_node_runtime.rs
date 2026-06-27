@@ -729,7 +729,12 @@
             fsp_inner_flags,
             endpoint_payload,
         );
-        let fsp_wire = fsp_encrypted_wire(fsp_counter, 0, &fsp_inner, fsp_key);
+        let fsp_wire = fsp_encrypted_wire(
+            fsp_counter,
+            crate::node::session_wire::FSP_FLAG_CP,
+            &fsp_inner,
+            fsp_key,
+        );
         let datagram = crate::protocol::SessionDatagram::new(source_addr, local_addr, fsp_wire)
             .with_ttl(8)
             .with_path_mtu(1280)

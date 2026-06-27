@@ -139,6 +139,7 @@ pub(crate) struct AeadSealWork {
     work: OutboundCryptoWork,
     cipher: AeadKey,
     post_seal: OutboundPostSeal,
+    aad_len: usize,
     ciphertext_offset: usize,
 }
 
@@ -157,7 +158,8 @@ impl AeadSealWork {
         let payload_len = u16::try_from(work.packet.payload.len())
             .map_err(|_| WireBuildError::PayloadTooLarge)?;
         let counter = work.reservation.counter;
-        let (header, ciphertext_offset) = match (work.packet.owner.protocol, work.packet.wire) {
+        let (header, coord_prefix, ciphertext_offset) =
+            match (work.packet.owner.protocol, work.packet.wire) {
             (
                 PacketProtocol::Fmp,
                 OutboundWire::Fmp {
@@ -166,17 +168,28 @@ impl AeadSealWork {
                 },
             ) => (
                 build_fmp_established_header(receiver_idx, counter, flags, payload_len).to_vec(),
+                Vec::new(),
                 FMP_ESTABLISHED_HEADER_SIZE,
             ),
-            (PacketProtocol::Fsp, OutboundWire::Fsp { flags }) => (
-                build_fsp_established_header(counter, flags, payload_len)?.to_vec(),
-                FSP_HEADER_SIZE,
-            ),
+            (PacketProtocol::Fsp, OutboundWire::Fsp { flags }) => {
+                let coord_prefix = std::mem::take(&mut work.packet.fsp_cleartext_prefix);
+                validate_fsp_cleartext_prefix(flags, &coord_prefix)?;
+                let ciphertext_offset = FSP_HEADER_SIZE + coord_prefix.len();
+                (
+                    build_fsp_established_header(counter, flags, payload_len)?.to_vec(),
+                    coord_prefix,
+                    ciphertext_offset,
+                )
+            }
             _ => return Err(WireBuildError::ProtocolMismatch),
         };
 
-        let mut wire = Vec::with_capacity(header.len() + work.packet.payload.len() + AEAD_TAG_SIZE);
+        let aad_len = header.len();
+        let mut wire = Vec::with_capacity(
+            header.len() + coord_prefix.len() + work.packet.payload.len() + AEAD_TAG_SIZE,
+        );
         wire.extend_from_slice(&header);
+        wire.extend_from_slice(&coord_prefix);
         wire.extend_from_slice(&work.packet.payload);
         work.packet.payload = wire.into();
 
@@ -184,6 +197,7 @@ impl AeadSealWork {
             post_seal: work.packet.post_seal,
             work,
             cipher,
+            aad_len,
             ciphertext_offset,
         })
     }
@@ -195,15 +209,23 @@ pub(crate) struct StatelessAeadSealWorker;
 impl StatelessAeadSealWorker {
     pub(crate) fn execute(&self, mut work: AeadSealWork) -> CryptoCompletion {
         let reservation = work.work.reservation;
-        let tag = if work.ciphertext_offset <= work.work.packet.payload.len() {
+        let tag = if work.aad_len <= work.ciphertext_offset
+            && work.ciphertext_offset <= work.work.packet.payload.len()
+        {
             let nonce = aead_nonce(reservation.counter);
-            let (aad, plaintext) = work
+            let (prefix, plaintext) = work
                 .work
                 .packet
                 .payload
                 .split_at_mut(work.ciphertext_offset);
+            let Some(aad) = prefix.get(..work.aad_len) else {
+                return CryptoCompletion {
+                    reservation,
+                    result: CryptoResult::Failed,
+                };
+            };
             work.cipher
-                .seal_in_place_separate_tag(nonce, Aad::from(&*aad), plaintext)
+                .seal_in_place_separate_tag(nonce, Aad::from(aad), plaintext)
                 .ok()
         } else {
             None
@@ -244,6 +266,20 @@ impl StatelessAeadSealWorker {
             result,
         }
     }
+}
+
+fn validate_fsp_cleartext_prefix(flags: u8, prefix: &[u8]) -> Result<(), WireBuildError> {
+    if flags & crate::node::session_wire::FSP_FLAG_CP == 0 {
+        return if prefix.is_empty() {
+            Ok(())
+        } else {
+            Err(WireBuildError::BadFspCoords)
+        };
+    }
+
+    crate::node::session_wire::parse_encrypted_coords(prefix)
+        .map(|_| ())
+        .map_err(|_| WireBuildError::BadFspCoords)
 }
 
 fn aead_nonce(counter: u64) -> Nonce {

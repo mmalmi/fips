@@ -4,12 +4,6 @@ enum PacketMover2SessionHandoffError {
     NoRoute,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum PacketMover2FspPayloadDelivery {
-    Tun(Vec<u8>),
-    Endpoint(Vec<u8>),
-}
-
 fn packet_mover2_session_ingress_from_output(
     output: &PacketOutput,
     local_addr: NodeAddr,
@@ -67,63 +61,4 @@ fn packet_mover2_session_ingress_from_output(
         activity_tick: output.activity_tick,
         payload: datagram.payload.to_vec().into(),
     })
-}
-
-fn packet_mover2_fsp_payload_delivery(
-    output: &PacketOutput,
-    local_addr: NodeAddr,
-) -> Result<PacketMover2FspPayloadDelivery, PacketMover2SessionHandoffError> {
-    if output.owner.protocol() != PacketProtocol::Fsp {
-        return Err(PacketMover2SessionHandoffError::InvalidPacket);
-    }
-    let source_addr = output
-        .owner
-        .node_addr()
-        .ok_or(PacketMover2SessionHandoffError::NoRoute)?;
-    let plaintext = output
-        .opened_payload()
-        .ok_or(PacketMover2SessionHandoffError::InvalidPacket)?;
-    let Some((_timestamp, msg_type, _inner_flags, body)) =
-        crate::node::session_wire::fsp_strip_inner_header(plaintext)
-    else {
-        return Err(PacketMover2SessionHandoffError::InvalidPacket);
-    };
-
-    match crate::protocol::SessionMessageType::from_byte(msg_type) {
-        Some(crate::protocol::SessionMessageType::EndpointData) => {
-            Ok(PacketMover2FspPayloadDelivery::Endpoint(body.to_vec()))
-        }
-        Some(crate::protocol::SessionMessageType::DataPacket) => {
-            packet_mover2_ipv6_shim_payload(source_addr, local_addr, body)
-                .map(PacketMover2FspPayloadDelivery::Tun)
-        }
-        _ => Err(PacketMover2SessionHandoffError::NoRoute),
-    }
-}
-
-fn packet_mover2_ipv6_shim_payload(
-    source_addr: NodeAddr,
-    local_addr: NodeAddr,
-    body: &[u8],
-) -> Result<Vec<u8>, PacketMover2SessionHandoffError> {
-    if body.len() < crate::node::session_wire::FSP_PORT_HEADER_SIZE {
-        return Err(PacketMover2SessionHandoffError::InvalidPacket);
-    }
-    let dst_port = u16::from_le_bytes([body[2], body[3]]);
-    if dst_port != crate::node::session_wire::FSP_PORT_IPV6_SHIM {
-        return Err(PacketMover2SessionHandoffError::NoRoute);
-    }
-
-    let src_ipv6 = crate::FipsAddress::from_node_addr(&source_addr)
-        .to_ipv6()
-        .octets();
-    let dst_ipv6 = crate::FipsAddress::from_node_addr(&local_addr)
-        .to_ipv6()
-        .octets();
-    crate::upper::ipv6_shim::decompress_ipv6(
-        &body[crate::node::session_wire::FSP_PORT_HEADER_SIZE..],
-        src_ipv6,
-        dst_ipv6,
-    )
-    .ok_or(PacketMover2SessionHandoffError::InvalidPacket)
 }

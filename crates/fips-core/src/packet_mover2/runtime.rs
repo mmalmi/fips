@@ -524,18 +524,6 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                             {
                                 self.fmp_ingress_receipts.push(receipt);
                             }
-                            if fsp_raw_needs_node_session_dispatch(&raw) {
-                                match PacketMover2FmpLinkIngress::from_output(output) {
-                                    Ok(ingress) => self.fmp_link_ingress.push(ingress),
-                                    Err(output) => {
-                                        self.output_drops.push(PacketMover2OutputDrop::from_output(
-                                            &output,
-                                            PacketMover2OutputError::NoRoute,
-                                        ));
-                                    }
-                                }
-                                continue;
-                            }
                             self.admit_raw_ingress_packet(raw, router, summary);
                         }
                         Err(PacketMover2SessionHandoffError::NoRoute) => {
@@ -650,14 +638,4 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         summary.drops = self.drops.len();
         summary
     }
-}
-
-fn fsp_raw_needs_node_session_dispatch(raw: &PacketMover2RawIngress) -> bool {
-    if raw.protocol() != PacketProtocol::Fsp {
-        return false;
-    }
-    let Ok(header) = FspWireHeader::parse(&raw.payload) else {
-        return false;
-    };
-    header.flags() & crate::node::session_wire::FSP_FLAG_CP != 0
 }

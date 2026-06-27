@@ -49,6 +49,16 @@
         assert_eq!(fsp.flags(), 0x02);
         assert_eq!(fsp.ciphertext_offset(), FSP_HEADER_SIZE);
 
+        let cp_fsp = FspWireHeader::parse(&fsp_wire(
+            901,
+            crate::node::session_wire::FSP_FLAG_CP,
+        ))
+        .unwrap();
+        assert_eq!(
+            cp_fsp.ciphertext_offset(),
+            FSP_HEADER_SIZE + 2 * std::mem::size_of::<u16>()
+        );
+
         let owner = OwnerId::fmp(77);
         let packet = SocketPacket::from_fmp_established_wire(
             owner,
@@ -73,6 +83,13 @@
         assert_eq!(
             FspWireHeader::parse(&plaintext_fsp).unwrap_err(),
             WirePreflightError::PlaintextFsp
+        );
+
+        let mut missing_coords = fsp_wire(905, crate::node::session_wire::FSP_FLAG_CP);
+        missing_coords.truncate(FSP_HEADER_SIZE);
+        assert_eq!(
+            FspWireHeader::parse(&missing_coords).unwrap_err(),
+            WirePreflightError::BadFspCoords
         );
     }
 
@@ -119,42 +136,6 @@
         assert_eq!(raw.fsp_source, Some(source_addr));
         assert_eq!(raw.activity_tick, Some(activity_tick));
         assert_eq!(raw.payload.as_ref(), fsp_wire.as_slice());
-    }
-
-    #[test]
-    fn session_handoff_delivers_opened_fsp_endpoint_payload() {
-        let local_addr = NodeAddr::from_bytes([0x51; 16]);
-        let source_addr = NodeAddr::from_bytes([0x52; 16]);
-        let endpoint_payload = b"endpoint-body";
-        let inner = crate::node::session_wire::fsp_prepend_inner_header(
-            51_000,
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            0x03,
-            endpoint_payload,
-        );
-        let mut payload = fsp_wire(510, 0);
-        payload.truncate(FSP_HEADER_SIZE);
-        payload.extend_from_slice(&inner);
-        let output = PacketOutput {
-            owner: OwnerId::fsp_node(source_addr),
-            counter: 510,
-            ingress_seq: 51,
-            target: OutputTarget::SessionPayload { local_addr },
-            source_path: None,
-            previous_hop: None,
-            ce_flag: false,
-            path: None,
-            activity_tick: Some(ActivityTick::new(51_000)),
-            source_wire_len: Some(payload.len()),
-            payload: payload.into(),
-        };
-
-        assert_eq!(
-            packet_mover2_fsp_payload_delivery(&output, local_addr),
-            Ok(PacketMover2FspPayloadDelivery::Endpoint(
-                endpoint_payload.to_vec(),
-            ))
-        );
     }
 
     #[test]

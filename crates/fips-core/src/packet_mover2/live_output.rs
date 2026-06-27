@@ -365,14 +365,20 @@ impl PacketOutput {
     pub(crate) fn opened_payload(&self) -> Option<&[u8]> {
         match self.owner.protocol {
             PacketProtocol::Fmp => self.payload.get(FMP_ESTABLISHED_HEADER_SIZE..),
-            PacketProtocol::Fsp => self.payload.get(FSP_HEADER_SIZE..),
+            PacketProtocol::Fsp => {
+                let header = FspWireHeader::parse(&self.payload).ok()?;
+                self.payload.get(header.ciphertext_offset()..)
+            }
         }
     }
 
     pub(crate) fn into_opened_payload(mut self) -> Result<PacketBuffer, Self> {
         let header_len = match self.owner.protocol {
             PacketProtocol::Fmp => FMP_ESTABLISHED_HEADER_SIZE,
-            PacketProtocol::Fsp => FSP_HEADER_SIZE,
+            PacketProtocol::Fsp => match FspWireHeader::parse(&self.payload) {
+                Ok(header) => header.ciphertext_offset(),
+                Err(_) => return Err(self),
+            },
         };
         if self.payload.len() < header_len {
             return Err(self);
@@ -729,16 +735,8 @@ where
                 self.transport
                     .send_transport(transport_id, remote_addr, output)
             }
-            OutputTarget::SessionIngress { .. } => Err(PacketMover2OutputError::NoRoute),
-            OutputTarget::SessionPayload { local_addr } => {
-                match packet_mover2_fsp_payload_delivery(&output, local_addr)
-                    .map_err(packet_mover2_output_error_from_session_handoff)?
-                {
-                    PacketMover2FspPayloadDelivery::Tun(packet) => self.tun.send_tun(&output, &packet),
-                    PacketMover2FspPayloadDelivery::Endpoint(payload) => {
-                        self.endpoint.send_endpoint(&output, &payload)
-                    }
-                }
+            OutputTarget::SessionIngress { .. } | OutputTarget::SessionPayload { .. } => {
+                Err(PacketMover2OutputError::NoRoute)
             }
         }
     }

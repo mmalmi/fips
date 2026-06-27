@@ -39,6 +39,7 @@ pub(crate) struct PacketMover2EndpointCommandRoute {
     generation: u64,
     flags: u8,
     inner_flags: u8,
+    fsp_cleartext_prefix: Vec<u8>,
     post_seal: OutboundPostSeal,
     max_payload_len: Option<usize>,
 }
@@ -50,6 +51,7 @@ impl PacketMover2EndpointCommandRoute {
             generation,
             flags,
             inner_flags,
+            fsp_cleartext_prefix: Vec::new(),
             post_seal: OutboundPostSeal::Transport,
             max_payload_len: None,
         }
@@ -57,6 +59,11 @@ impl PacketMover2EndpointCommandRoute {
 
     pub(crate) fn with_fmp_wrap(mut self, route: PacketMover2FspWrapRoute) -> Self {
         self.post_seal = OutboundPostSeal::FmpWrap(route);
+        self
+    }
+
+    pub(crate) fn with_fsp_cleartext_prefix(mut self, prefix: Vec<u8>) -> Self {
+        self.fsp_cleartext_prefix = prefix;
         self
     }
 
@@ -98,6 +105,7 @@ impl PacketMover2EndpointCommandRoute {
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
             self.inner_flags,
         )
+        .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone())
         .with_post_seal(self.post_seal);
         Ok(packet)
     }

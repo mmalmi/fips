@@ -29,6 +29,7 @@ pub(crate) struct PacketMover2TunOutboundRoute {
     generation: u64,
     class: PacketClass,
     wire: OutboundWire,
+    fsp_cleartext_prefix: Vec<u8>,
     post_seal: OutboundPostSeal,
     payload: PacketMover2TunPayload,
 }
@@ -55,6 +56,7 @@ impl PacketMover2TunOutboundRoute {
                 receiver_idx,
                 flags,
             },
+            fsp_cleartext_prefix: Vec::new(),
             post_seal: OutboundPostSeal::Transport,
             payload: PacketMover2TunPayload::Raw,
         }
@@ -66,6 +68,7 @@ impl PacketMover2TunOutboundRoute {
             generation,
             class,
             wire: OutboundWire::Fsp { flags },
+            fsp_cleartext_prefix: Vec::new(),
             post_seal: OutboundPostSeal::Transport,
             payload: PacketMover2TunPayload::Raw,
         }
@@ -83,9 +86,15 @@ impl PacketMover2TunOutboundRoute {
             generation,
             class,
             wire: OutboundWire::Fsp { flags },
+            fsp_cleartext_prefix: Vec::new(),
             post_seal: OutboundPostSeal::Transport,
             payload: PacketMover2TunPayload::Ipv6Shim { inner_flags },
         }
+    }
+
+    pub(crate) fn with_fsp_cleartext_prefix(mut self, prefix: Vec<u8>) -> Self {
+        self.fsp_cleartext_prefix = prefix;
+        self
     }
 
     pub(crate) fn with_fmp_wrap(mut self, route: PacketMover2FspWrapRoute) -> Self {
@@ -126,6 +135,7 @@ impl PacketMover2TunOutboundRoute {
                 flags,
                 payload,
             )
+            .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone())
             .with_post_seal(self.post_seal),
         };
         Ok(self.apply_payload_transform(packet))
