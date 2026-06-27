@@ -183,6 +183,18 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         self.driver.register_owner(owner, config);
     }
 
+    pub(crate) fn register_owner_if_missing(
+        &mut self,
+        owner: OwnerId,
+        config: OwnerConfig,
+    ) -> bool {
+        if self.driver.has_owner(owner) {
+            return false;
+        }
+        self.driver.register_owner(owner, config);
+        true
+    }
+
     pub(crate) fn set_owner_crypto_keys(
         &mut self,
         owner: OwnerId,

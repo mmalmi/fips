@@ -650,6 +650,12 @@ impl SessionEntry {
         })
     }
 
+    /// Snapshot the current established-FSP open/seal keys for scratch owner state.
+    pub(crate) fn fsp_crypto_keys(&self) -> Option<(LessSafeKey, LessSafeKey)> {
+        let session = self.current_noise_session()?;
+        Some((session.recv_cipher_clone()?, session.send_cipher_clone()?))
+    }
+
     /// Whether we initiated the current rekey.
     pub(crate) fn is_rekey_initiator(&self) -> bool {
         self.rekey_initiator

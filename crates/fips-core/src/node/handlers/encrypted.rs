@@ -475,6 +475,8 @@ impl Node {
         &mut self,
         node_addr: &crate::NodeAddr,
     ) {
+        self.sync_packet_mover2_fsp_owner(node_addr);
+
         let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
             return;
         };
@@ -492,6 +494,8 @@ impl Node {
         &mut self,
         node_addr: &crate::NodeAddr,
     ) {
+        self.remove_packet_mover2_fsp_owner(node_addr);
+
         if let Some(workers) = self.decrypt_workers.as_ref() {
             let _ = workers.unregister_fsp_session(*node_addr);
         }
