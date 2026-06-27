@@ -298,6 +298,109 @@ async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
     );
 }
 
+#[tokio::test]
+async fn packet_mover2_scratch_turn_uses_rx_loop_owned_channels() {
+    let mut node =
+        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
+    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
+    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let mut endpoint_io = node
+        .attach_endpoint_data_io(1)
+        .expect("endpoint io should attach before start");
+
+    let turn = node
+        .drain_packet_mover2_scratch_turn(
+            &mut packet_rx,
+            4,
+            &mut endpoint_priority_rx,
+            &mut endpoint_rx,
+            4,
+            &mut tun_outbound_rx,
+            4,
+            &tun_tx,
+            &endpoint_io.event_tx,
+            4,
+        )
+        .await;
+
+    assert_eq!(
+        turn.summary(),
+        crate::packet_mover2::PacketMover2RuntimeSummary::default()
+    );
+    assert!(!turn.has_activity());
+    assert!(!turn.has_failures());
+    assert!(turn.raw_ingress_drops().is_empty());
+    assert!(turn.output_drops().is_empty());
+    assert!(turn.drops().is_empty());
+    assert!(turn.endpoint_command_drops().is_empty());
+    assert!(turn.tun_outbound_drops().is_empty());
+    assert!(tun_rx.try_recv().is_err());
+    assert!(endpoint_io.event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn packet_mover2_scratch_turn_reports_raw_ingress_failures() {
+    let mut node =
+        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
+    let (packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
+    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let mut endpoint_io = node
+        .attach_endpoint_data_io(1)
+        .expect("endpoint io should attach before start");
+
+    packet_tx
+        .send(crate::transport::ReceivedPacket::with_timestamp(
+            crate::transport::TransportId::new(7),
+            crate::transport::TransportAddr::from_string("198.51.100.7:9000"),
+            vec![0],
+            123_456,
+        ))
+        .expect("malformed packet queued");
+
+    let turn = node
+        .drain_packet_mover2_scratch_turn(
+            &mut packet_rx,
+            4,
+            &mut endpoint_priority_rx,
+            &mut endpoint_rx,
+            4,
+            &mut tun_outbound_rx,
+            4,
+            &tun_tx,
+            &endpoint_io.event_tx,
+            4,
+        )
+        .await;
+
+    assert!(turn.has_activity());
+    assert!(turn.has_failures());
+    assert_eq!(turn.summary().raw_ingress_dropped(), 1);
+    assert_eq!(turn.raw_ingress_drops().len(), 1);
+    assert_eq!(
+        turn.raw_ingress_drops()[0].reason(),
+        crate::packet_mover2::PacketMover2RawIngressDropReason::Wire(
+            crate::packet_mover2::WirePreflightError::TooShort
+        )
+    );
+    assert_eq!(
+        turn.raw_ingress_drops()[0].transport_id(),
+        crate::transport::TransportId::new(7)
+    );
+    assert!(turn.output_drops().is_empty());
+    assert!(turn.drops().is_empty());
+    assert!(turn.endpoint_command_drops().is_empty());
+    assert!(turn.tun_outbound_drops().is_empty());
+    assert!(packet_rx.try_recv().is_err());
+    assert!(tun_rx.try_recv().is_err());
+    assert!(endpoint_io.event_rx.try_recv().is_err());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_liveness() {

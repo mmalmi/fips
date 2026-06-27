@@ -52,6 +52,27 @@ impl PacketMover2RuntimeSummary {
     pub(crate) fn drops(self) -> usize {
         self.drops
     }
+
+    pub(crate) fn has_activity(self) -> bool {
+        self.raw_ingress_dropped > 0
+            || self.inbound_admitted > 0
+            || self.inbound_dropped > 0
+            || self.outbound_admitted > 0
+            || self.outbound_dropped > 0
+            || self.dispatched > 0
+            || self.outputs > 0
+            || self.outputs_sent > 0
+            || self.outputs_dropped > 0
+            || self.drops > 0
+    }
+
+    pub(crate) fn has_failures(self) -> bool {
+        self.raw_ingress_dropped > 0
+            || self.inbound_dropped > 0
+            || self.outbound_dropped > 0
+            || self.outputs_dropped > 0
+            || self.drops > 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -165,6 +186,29 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn transport_dropped(&self) -> usize {
         self.transport_dropped
+    }
+
+    pub(crate) fn has_activity(&self) -> bool {
+        self.summary.has_activity()
+            || !self.raw_ingress_drops.is_empty()
+            || !self.tun_outbound_drops.is_empty()
+            || !self.endpoint_command_drops.is_empty()
+            || self.endpoint_deferred_commands > 0
+            || !self.output_drops.is_empty()
+            || !self.drops.is_empty()
+            || self.transport_planned > 0
+            || self.transport_sent > 0
+            || self.transport_dropped > 0
+    }
+
+    pub(crate) fn has_failures(&self) -> bool {
+        self.summary.has_failures()
+            || !self.raw_ingress_drops.is_empty()
+            || !self.tun_outbound_drops.is_empty()
+            || !self.endpoint_command_drops.is_empty()
+            || !self.output_drops.is_empty()
+            || !self.drops.is_empty()
+            || self.transport_dropped > 0
     }
 }
 
