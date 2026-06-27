@@ -531,6 +531,32 @@ pub(crate) struct AdmissionDrop {
     reason: AdmissionDropReason,
 }
 
+impl AdmissionDrop {
+    pub(crate) fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    pub(crate) fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    pub(crate) fn class(&self) -> PacketClass {
+        self.class
+    }
+
+    pub(crate) fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn reason(&self) -> AdmissionDropReason {
+        self.reason
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct QueuedPacket {
     ingress_seq: u64,
@@ -612,6 +638,28 @@ pub(crate) struct OutboundAdmissionDrop {
     lane: Lane,
     payload_len: usize,
     reason: AdmissionDropReason,
+}
+
+impl OutboundAdmissionDrop {
+    pub(crate) fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    pub(crate) fn class(&self) -> PacketClass {
+        self.class
+    }
+
+    pub(crate) fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn reason(&self) -> AdmissionDropReason {
+        self.reason
+    }
 }
 
 #[derive(Debug)]
@@ -1080,6 +1128,26 @@ impl PacketDrop {
             lane: completion.reservation.lane,
             reason,
         }
+    }
+
+    pub(crate) fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    pub(crate) fn counter(&self) -> Option<u64> {
+        self.counter
+    }
+
+    pub(crate) fn ingress_seq(&self) -> Option<u64> {
+        self.ingress_seq
+    }
+
+    pub(crate) fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    pub(crate) fn reason(&self) -> PacketDropReason {
+        self.reason
     }
 }
 
@@ -3027,17 +3095,25 @@ mod tests {
             ))
             .unwrap();
 
-        assert_eq!(bulk_drop.reason, AdmissionDropReason::BulkFull);
+        assert_eq!(bulk_drop.owner(), owner);
+        assert_eq!(bulk_drop.counter(), 2);
+        assert_eq!(bulk_drop.class(), PacketClass::Bulk);
+        assert_eq!(bulk_drop.lane(), Lane::Bulk);
+        assert_eq!(bulk_drop.payload_len(), 1);
+        assert_eq!(bulk_drop.reason(), AdmissionDropReason::BulkFull);
         assert_eq!(mover.queue_lens(), (1, 1));
         let work = mover.dispatch_available(1);
         assert_eq!(work[0].packet.counter, 3);
 
         let drops = mover.drain_drops();
         assert_eq!(
-            drops[0].reason,
+            drops[0].reason(),
             PacketDropReason::Admission(AdmissionDropReason::BulkFull)
         );
-        assert_eq!(drops[0].counter, Some(2));
+        assert_eq!(drops[0].owner(), owner);
+        assert_eq!(drops[0].counter(), Some(2));
+        assert_eq!(drops[0].ingress_seq(), None);
+        assert_eq!(drops[0].lane(), Lane::Bulk);
     }
 
     #[test]
@@ -3148,10 +3224,16 @@ mod tests {
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 1);
 
         let drops = mover.drain_drops();
-        assert_eq!(drops[0].reason, PacketDropReason::OwnerInFlightFull);
-        assert_eq!(drops[0].counter, Some(9));
-        assert_eq!(drops[1].reason, PacketDropReason::Replay);
-        assert_eq!(drops[1].counter, Some(8));
+        assert_eq!(drops[0].owner(), owner);
+        assert_eq!(drops[0].reason(), PacketDropReason::OwnerInFlightFull);
+        assert_eq!(drops[0].counter(), Some(9));
+        assert_eq!(drops[0].ingress_seq(), Some(1));
+        assert_eq!(drops[0].lane(), Lane::Bulk);
+        assert_eq!(drops[1].owner(), owner);
+        assert_eq!(drops[1].reason(), PacketDropReason::Replay);
+        assert_eq!(drops[1].counter(), Some(8));
+        assert_eq!(drops[1].ingress_seq(), Some(2));
+        assert_eq!(drops[1].lane(), Lane::Bulk);
 
         let completion = mover.execute_work(work[0].clone());
         assert_eq!(outputs(mover.retire_completion(completion)).len(), 1);
@@ -3455,7 +3537,11 @@ mod tests {
             ))
             .unwrap();
 
-        assert_eq!(bulk_drop.reason, AdmissionDropReason::BulkFull);
+        assert_eq!(bulk_drop.owner(), owner);
+        assert_eq!(bulk_drop.class(), PacketClass::Bulk);
+        assert_eq!(bulk_drop.lane(), Lane::Bulk);
+        assert_eq!(bulk_drop.payload_len(), b"bulk-b".len());
+        assert_eq!(bulk_drop.reason(), AdmissionDropReason::BulkFull);
         assert_eq!(mover.outbound_queue_lens(), (1, 1));
 
         let work = mover.dispatch_outbound_available(8);
@@ -3468,11 +3554,13 @@ mod tests {
 
         let drops = mover.drain_drops();
         assert_eq!(
-            drops[0].reason,
+            drops[0].reason(),
             PacketDropReason::Admission(AdmissionDropReason::BulkFull)
         );
-        assert_eq!(drops[0].counter, None);
-        assert_eq!(drops[0].lane, Lane::Bulk);
+        assert_eq!(drops[0].owner(), owner);
+        assert_eq!(drops[0].counter(), None);
+        assert_eq!(drops[0].ingress_seq(), None);
+        assert_eq!(drops[0].lane(), Lane::Bulk);
     }
 
     #[test]
@@ -4086,13 +4174,27 @@ mod tests {
         assert_eq!(turn.summary().drops(), 2);
         assert!(turn.outputs().is_empty());
 
-        assert!(turn.drops().iter().any(|drop| {
-            drop.reason == PacketDropReason::Admission(AdmissionDropReason::BulkFull)
-                && drop.counter == Some(11)
-        }));
-        assert!(turn.drops().iter().any(|drop| {
-            drop.reason == PacketDropReason::CryptoFailed && drop.counter == Some(10)
-        }));
+        let admission_drop = turn
+            .drops()
+            .iter()
+            .find(|drop| {
+                drop.reason() == PacketDropReason::Admission(AdmissionDropReason::BulkFull)
+            })
+            .expect("admission drop");
+        assert_eq!(admission_drop.owner(), owner);
+        assert_eq!(admission_drop.counter(), Some(11));
+        assert_eq!(admission_drop.ingress_seq(), None);
+        assert_eq!(admission_drop.lane(), Lane::Bulk);
+
+        let crypto_drop = turn
+            .drops()
+            .iter()
+            .find(|drop| drop.reason() == PacketDropReason::CryptoFailed)
+            .expect("crypto drop");
+        assert_eq!(crypto_drop.owner(), owner);
+        assert_eq!(crypto_drop.counter(), Some(10));
+        assert_eq!(crypto_drop.ingress_seq(), Some(0));
+        assert_eq!(crypto_drop.lane(), Lane::Bulk);
     }
 
     #[test]
