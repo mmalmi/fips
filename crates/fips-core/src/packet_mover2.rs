@@ -20,6 +20,7 @@
 use crate::transport::PacketBuffer;
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
 const FMP_PHASE_ESTABLISHED: u8 = crate::node::wire::PHASE_ESTABLISHED;
@@ -29,6 +30,8 @@ const FSP_PHASE_ESTABLISHED: u8 = crate::node::session_wire::FSP_PHASE_ESTABLISH
 const FSP_HEADER_SIZE: usize = crate::node::session_wire::FSP_HEADER_SIZE;
 const FSP_FLAG_U: u8 = crate::node::session_wire::FSP_FLAG_U;
 const AEAD_TAG_SIZE: usize = crate::noise::TAG_SIZE;
+
+pub(crate) type AeadKey = Arc<LessSafeKey>;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum PacketProtocol {
@@ -575,6 +578,24 @@ impl OwnerConfig {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct OwnerCryptoKeys {
+    open: AeadKey,
+    seal: AeadKey,
+}
+
+impl OwnerCryptoKeys {
+    pub(crate) fn new(open: AeadKey, seal: AeadKey) -> Self {
+        Self { open, seal }
+    }
+}
+
+impl std::fmt::Debug for OwnerCryptoKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnerCryptoKeys").finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct OrderToken(u64);
 
@@ -604,6 +625,7 @@ pub(crate) struct OwnerState {
     next_order: u64,
     next_retire: u64,
     next_send_counter: u64,
+    crypto_keys: Option<OwnerCryptoKeys>,
     accepted_counters: HashSet<u64>,
     pending: BTreeMap<OrderToken, CryptoCompletion>,
 }
@@ -618,6 +640,7 @@ impl OwnerState {
             next_order: 0,
             next_retire: 0,
             next_send_counter: config.next_send_counter,
+            crypto_keys: None,
             accepted_counters: HashSet::new(),
             pending: BTreeMap::new(),
         }
@@ -627,6 +650,15 @@ impl OwnerState {
         self.generation = generation;
         self.accepted_counters.clear();
         self.next_send_counter = 0;
+        self.crypto_keys = None;
+    }
+
+    pub(crate) fn set_crypto_keys(&mut self, keys: OwnerCryptoKeys) {
+        self.crypto_keys = Some(keys);
+    }
+
+    fn crypto_keys(&self) -> Option<OwnerCryptoKeys> {
+        self.crypto_keys.clone()
     }
 
     pub(crate) fn reserve(
@@ -956,7 +988,7 @@ impl AeadHeader {
 
 pub(crate) struct AeadOpenWork {
     work: CryptoWork,
-    cipher: LessSafeKey,
+    cipher: AeadKey,
     header: AeadHeader,
     ciphertext_offset: usize,
 }
@@ -964,7 +996,7 @@ pub(crate) struct AeadOpenWork {
 impl AeadOpenWork {
     pub(crate) fn from_crypto_work(
         work: CryptoWork,
-        cipher: LessSafeKey,
+        cipher: AeadKey,
     ) -> Result<Self, WirePreflightError> {
         let (header, ciphertext_offset, counter) = match work.packet.owner.protocol {
             PacketProtocol::Fmp => {
@@ -1042,14 +1074,14 @@ impl StatelessAeadOpenWorker {
 
 pub(crate) struct AeadSealWork {
     work: OutboundCryptoWork,
-    cipher: LessSafeKey,
+    cipher: AeadKey,
     ciphertext_offset: usize,
 }
 
 impl AeadSealWork {
     pub(crate) fn from_outbound_work(
         mut work: OutboundCryptoWork,
-        cipher: LessSafeKey,
+        cipher: AeadKey,
     ) -> Result<Self, WireBuildError> {
         let payload_len = u16::try_from(work.packet.payload.len())
             .map_err(|_| WireBuildError::PayloadTooLarge)?;
@@ -1160,6 +1192,10 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         self.owners.get_mut(&owner)
     }
 
+    fn owner_crypto_keys(&self, owner: OwnerId) -> Option<OwnerCryptoKeys> {
+        self.owners.get(&owner).and_then(OwnerState::crypto_keys)
+    }
+
     pub(crate) fn submit_socket_packet(
         &mut self,
         packet: SocketPacket,
@@ -1242,6 +1278,16 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
 
     pub(crate) fn dispatch_outbound_available(&mut self, limit: usize) -> Vec<OutboundCryptoWork> {
         let mut work = Vec::new();
+        self.dispatch_outbound_available_into(limit, &mut work);
+        work
+    }
+
+    pub(crate) fn dispatch_outbound_available_into(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<OutboundCryptoWork>,
+    ) -> usize {
+        work.clear();
 
         while work.len() < limit {
             let Some(queued) = self.outbound_admission.pop_next() else {
@@ -1267,7 +1313,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             }
         }
 
-        work
+        work.len()
     }
 
     pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
@@ -1308,6 +1354,68 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         }
         PacketMoverTurn {
             dispatched,
+            retired,
+            drops: self.drain_drops(),
+        }
+    }
+
+    pub(crate) fn run_aead_available(&mut self, limit: usize) -> PacketMoverTurn {
+        let mut open_work = Vec::new();
+        let mut seal_work = Vec::new();
+        self.run_aead_available_with_scratch(limit, &mut open_work, &mut seal_work)
+    }
+
+    pub(crate) fn run_aead_available_with_scratch(
+        &mut self,
+        limit: usize,
+        open_work: &mut Vec<CryptoWork>,
+        seal_work: &mut Vec<OutboundCryptoWork>,
+    ) -> PacketMoverTurn {
+        let opened = StatelessAeadOpenWorker;
+        let sealed = StatelessAeadSealWorker;
+        let inbound_dispatched = self.dispatch_available_into(limit, open_work);
+        let outbound_dispatched = self
+            .dispatch_outbound_available_into(limit.saturating_sub(inbound_dispatched), seal_work);
+        let mut retired = Vec::new();
+
+        for work in open_work.drain(..) {
+            let reservation = work.reservation;
+            let completion = match self.owner_crypto_keys(reservation.owner) {
+                Some(keys) => match AeadOpenWork::from_crypto_work(work, keys.open) {
+                    Ok(work) => opened.execute(work),
+                    Err(_) => CryptoCompletion {
+                        reservation,
+                        result: CryptoResult::Failed,
+                    },
+                },
+                None => CryptoCompletion {
+                    reservation,
+                    result: CryptoResult::Failed,
+                },
+            };
+            retired.extend(self.retire_completion(completion));
+        }
+
+        for work in seal_work.drain(..) {
+            let reservation = work.reservation;
+            let completion = match self.owner_crypto_keys(reservation.owner) {
+                Some(keys) => match AeadSealWork::from_outbound_work(work, keys.seal) {
+                    Ok(work) => sealed.execute(work),
+                    Err(_) => CryptoCompletion {
+                        reservation,
+                        result: CryptoResult::Failed,
+                    },
+                },
+                None => CryptoCompletion {
+                    reservation,
+                    result: CryptoResult::Failed,
+                },
+            };
+            retired.extend(self.retire_completion(completion));
+        }
+
+        PacketMoverTurn {
+            dispatched: inbound_dispatched + outbound_dispatched,
             retired,
             drops: self.drain_drops(),
         }
@@ -1375,6 +1483,10 @@ mod tests {
         let key = [byte; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key).unwrap();
         LessSafeKey::new(unbound)
+    }
+
+    fn test_key(byte: u8) -> AeadKey {
+        Arc::new(test_cipher(byte))
     }
 
     fn fmp_encrypted_wire(
@@ -1845,7 +1957,7 @@ mod tests {
         let worker = StatelessAeadOpenWorker;
         let mut retired = Vec::new();
         for work in mover.dispatch_available(8) {
-            let work = AeadOpenWork::from_crypto_work(work, test_cipher(key)).unwrap();
+            let work = AeadOpenWork::from_crypto_work(work, test_key(key)).unwrap();
             retired.extend(mover.retire_completion(worker.execute(work)));
         }
 
@@ -1902,10 +2014,10 @@ mod tests {
         let work = mover.dispatch_available(8);
         assert_eq!(work.len(), 2);
 
-        let second = AeadOpenWork::from_crypto_work(work[1].clone(), test_cipher(1)).unwrap();
+        let second = AeadOpenWork::from_crypto_work(work[1].clone(), test_key(1)).unwrap();
         assert!(mover.retire_completion(worker.execute(second)).is_empty());
 
-        let first = AeadOpenWork::from_crypto_work(work[0].clone(), test_cipher(2)).unwrap();
+        let first = AeadOpenWork::from_crypto_work(work[0].clone(), test_key(2)).unwrap();
         let retired = mover.retire_completion(worker.execute(first));
         assert_eq!(retired.len(), 2);
         match &retired[0] {
@@ -1956,7 +2068,7 @@ mod tests {
         let worker = StatelessAeadSealWorker;
         let mut retired = Vec::new();
         for work in mover.dispatch_outbound_available(8) {
-            let work = AeadSealWork::from_outbound_work(work, test_cipher(key)).unwrap();
+            let work = AeadSealWork::from_outbound_work(work, test_key(key)).unwrap();
             retired.extend(mover.retire_completion(worker.execute(work)));
         }
 
@@ -2062,16 +2174,16 @@ mod tests {
         );
 
         let worker = StatelessAeadSealWorker;
-        let third = AeadSealWork::from_outbound_work(work[2].clone(), test_cipher(key)).unwrap();
+        let third = AeadSealWork::from_outbound_work(work[2].clone(), test_key(key)).unwrap();
         assert!(mover.retire_completion(worker.execute(third)).is_empty());
 
-        let first = AeadSealWork::from_outbound_work(work[0].clone(), test_cipher(key)).unwrap();
+        let first = AeadSealWork::from_outbound_work(work[0].clone(), test_key(key)).unwrap();
         let retired = outputs(mover.retire_completion(worker.execute(first)));
         assert_eq!(retired.len(), 1);
         assert_eq!(retired[0].counter, 5);
         assert_eq!(open_sealed_output(&retired[0], key), b"first");
 
-        let second = AeadSealWork::from_outbound_work(work[1].clone(), test_cipher(key)).unwrap();
+        let second = AeadSealWork::from_outbound_work(work[1].clone(), test_key(key)).unwrap();
         let retired = outputs(mover.retire_completion(worker.execute(second)));
         assert_eq!(
             retired
@@ -2096,7 +2208,7 @@ mod tests {
             packet: mismatch,
         };
         assert_eq!(
-            AeadSealWork::from_outbound_work(mismatch_work, test_cipher(1)).err(),
+            AeadSealWork::from_outbound_work(mismatch_work, test_key(1)).err(),
             Some(WireBuildError::ProtocolMismatch)
         );
 
@@ -2114,8 +2226,134 @@ mod tests {
             packet: plaintext_fsp,
         };
         assert_eq!(
-            AeadSealWork::from_outbound_work(plaintext_work, test_cipher(1)).err(),
+            AeadSealWork::from_outbound_work(plaintext_work, test_key(1)).err(),
             Some(WireBuildError::PlaintextFsp)
         );
+    }
+
+    #[test]
+    fn aead_turn_runner_uses_owner_keys_for_inbound_and_outbound_work() {
+        let owner = OwnerId::fmp(70);
+        let open_key = 11;
+        let seal_key = 12;
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(200));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+
+        mover
+            .submit_socket_packet(
+                SocketPacket::from_fmp_established_wire(
+                    owner,
+                    1,
+                    OutputTarget::Tun,
+                    fmp_encrypted_wire(70, 100, 0, b"inbound", open_key),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                700,
+                0,
+                b"outbound".to_vec(),
+            ))
+            .unwrap();
+
+        let mut open_scratch = Vec::with_capacity(4);
+        let mut seal_scratch = Vec::with_capacity(4);
+        let turn = mover.run_aead_available_with_scratch(8, &mut open_scratch, &mut seal_scratch);
+        assert_eq!(turn.dispatched(), 2);
+        assert!(turn.drops().is_empty());
+        assert!(open_scratch.is_empty());
+        assert!(seal_scratch.is_empty());
+
+        let outputs = turn.outputs();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].counter, 100);
+        assert_eq!(outputs[0].target, OutputTarget::Tun);
+        assert_eq!(
+            &outputs[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            b"inbound"
+        );
+        assert_eq!(outputs[1].counter, 200);
+        assert_eq!(outputs[1].target, OutputTarget::Transport);
+        let sealed_header = FmpWireHeader::parse(&outputs[1].payload).unwrap();
+        assert_eq!(sealed_header.receiver_idx(), 700);
+        assert_eq!(sealed_header.counter(), 200);
+        assert_eq!(open_sealed_output(outputs[1], seal_key), b"outbound");
+        assert_eq!(open_scratch.capacity(), 4);
+        assert_eq!(seal_scratch.capacity(), 4);
+    }
+
+    #[test]
+    fn aead_turn_runner_missing_keys_retires_failed_work_and_releases_in_flight() {
+        let owner = OwnerId::fsp(71);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8));
+        mover
+            .submit_outbound_packet(OutboundPacket::fsp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                0,
+                b"needs key".to_vec(),
+            ))
+            .unwrap();
+
+        let turn = mover.run_aead_available(8);
+        assert_eq!(turn.dispatched(), 1);
+        assert_eq!(turn.retired().len(), 1);
+        match &turn.retired()[0] {
+            RetiredPacket::Drop(drop) => {
+                assert_eq!(drop.reason, PacketDropReason::CryptoFailed);
+                assert_eq!(drop.counter, Some(0));
+                assert_eq!(drop.lane, Lane::Bulk);
+            }
+            RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
+        }
+        assert_eq!(turn.drops().len(), 1);
+        assert_eq!(turn.drops()[0].reason, PacketDropReason::CryptoFailed);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 0);
+    }
+
+    #[test]
+    fn rekey_clears_owner_crypto_keys_and_restarts_send_counter() {
+        let owner = OwnerId::fmp(72);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(99));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(1), test_key(1)));
+        mover.owner_mut(owner).unwrap().rekey(2);
+        mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                2,
+                PacketClass::Bulk,
+                720,
+                0,
+                b"after rekey".to_vec(),
+            ))
+            .unwrap();
+
+        let turn = mover.run_aead_available(8);
+        assert_eq!(turn.dispatched(), 1);
+        match &turn.retired()[0] {
+            RetiredPacket::Drop(drop) => {
+                assert_eq!(drop.reason, PacketDropReason::CryptoFailed);
+                assert_eq!(drop.counter, Some(0));
+            }
+            RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
+        }
+        let owner = mover.owner_mut(owner).unwrap();
+        assert_eq!(owner.next_send_counter(), 1);
+        assert_eq!(owner.in_flight(), 0);
     }
 }
