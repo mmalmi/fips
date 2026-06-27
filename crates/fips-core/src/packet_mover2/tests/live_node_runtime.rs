@@ -811,7 +811,7 @@
         assert_eq!(turn.summary().inbound_admitted(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 0);
         assert_eq!(turn.fmp_ingress_receipts().len(), 1);
-        assert!(turn.fmp_legacy_ingress().is_empty());
+        assert!(turn.fmp_link_ingress().is_empty());
         let receipt = &turn.fmp_ingress_receipts()[0];
         assert_eq!(receipt.source_addr(), &next_hop);
         assert_eq!(receipt.transport_id(), transport_id);
@@ -828,7 +828,7 @@
     }
 
     #[tokio::test]
-    async fn live_node_session_ingress_hands_non_local_fmp_plaintext_to_legacy_dispatch() {
+    async fn live_node_session_ingress_reports_non_local_fmp_link_message() {
         let local_addr = NodeAddr::from_bytes([0xb1; 16]);
         let next_hop = NodeAddr::from_bytes([0xb2; 16]);
         let fmp_owner = OwnerId::fmp_node(next_hop);
@@ -903,9 +903,13 @@
         assert_eq!(turn.summary().outputs(), 0);
         assert_eq!(turn.summary().outputs_dropped(), 0);
         assert!(turn.fmp_ingress_receipts().is_empty());
-        assert_eq!(turn.fmp_legacy_ingress().len(), 1);
-        let ingress = &turn.fmp_legacy_ingress()[0];
-        assert_eq!(ingress.plaintext(), fmp_plaintext);
+        assert_eq!(turn.fmp_link_ingress().len(), 1);
+        let ingress = &turn.fmp_link_ingress()[0];
+        assert_eq!(
+            ingress.msg_type(),
+            Some(crate::protocol::LinkMessageType::Heartbeat.to_byte())
+        );
+        assert_eq!(ingress.payload(), &[] as &[u8]);
         let receipt = ingress.receipt();
         assert_eq!(receipt.source_addr(), &next_hop);
         assert_eq!(receipt.transport_id(), transport_id);

@@ -186,30 +186,46 @@ impl PacketMover2FmpIngressReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FmpLegacyIngress {
+pub(crate) struct PacketMover2FmpLinkIngress {
     receipt: PacketMover2FmpIngressReceipt,
     output: PacketOutput,
+    msg_type: Option<u8>,
 }
 
-impl PacketMover2FmpLegacyIngress {
+impl PacketMover2FmpLinkIngress {
     fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
-        if output.opened_payload().is_none() {
+        let Some(plaintext) = output.opened_payload() else {
             return Err(output);
-        }
+        };
         let Some(receipt) = PacketMover2FmpIngressReceipt::from_output(&output) else {
             return Err(output);
         };
-        Ok(Self { receipt, output })
+        let msg_type = plaintext.get(4).copied();
+        Ok(Self {
+            receipt,
+            output,
+            msg_type,
+        })
     }
 
     pub(crate) fn receipt(&self) -> &PacketMover2FmpIngressReceipt {
         &self.receipt
     }
 
-    pub(crate) fn plaintext(&self) -> &[u8] {
-        self.output
+    pub(crate) fn msg_type(&self) -> Option<u8> {
+        self.msg_type
+    }
+
+    pub(crate) fn payload(&self) -> &[u8] {
+        let plaintext = self
+            .output
             .opened_payload()
-            .expect("legacy ingress is constructed only from opened FMP output")
+            .expect("link ingress is constructed only from opened FMP output");
+        if self.msg_type.is_some() {
+            &plaintext[5..]
+        } else {
+            &[]
+        }
     }
 }
 
@@ -218,7 +234,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     summary: PacketMover2RuntimeSummary,
     fmp_control_ingress: Vec<PacketMover2FmpControlIngress>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
-    fmp_legacy_ingress: Vec<PacketMover2FmpLegacyIngress>,
+    fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
@@ -238,7 +254,7 @@ impl PacketMover2LiveNodeTurn {
             summary: turn.summary(),
             fmp_control_ingress: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
-            fmp_legacy_ingress: Vec::new(),
+            fmp_link_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
             endpoint_command_drops: Vec::new(),
@@ -285,16 +301,16 @@ impl PacketMover2LiveNodeTurn {
         std::mem::take(&mut self.fmp_ingress_receipts)
     }
 
-    pub(crate) fn fmp_legacy_ingress(&self) -> &[PacketMover2FmpLegacyIngress] {
-        &self.fmp_legacy_ingress
+    pub(crate) fn fmp_link_ingress(&self) -> &[PacketMover2FmpLinkIngress] {
+        &self.fmp_link_ingress
     }
 
-    fn set_fmp_legacy_ingress(&mut self, ingress: Vec<PacketMover2FmpLegacyIngress>) {
-        self.fmp_legacy_ingress = ingress;
+    fn set_fmp_link_ingress(&mut self, ingress: Vec<PacketMover2FmpLinkIngress>) {
+        self.fmp_link_ingress = ingress;
     }
 
-    pub(crate) fn take_fmp_legacy_ingress(&mut self) -> Vec<PacketMover2FmpLegacyIngress> {
-        std::mem::take(&mut self.fmp_legacy_ingress)
+    pub(crate) fn take_fmp_link_ingress(&mut self) -> Vec<PacketMover2FmpLinkIngress> {
+        std::mem::take(&mut self.fmp_link_ingress)
     }
 
     pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
@@ -361,7 +377,7 @@ impl PacketMover2LiveNodeTurn {
         self.summary.has_activity()
             || !self.fmp_control_ingress.is_empty()
             || !self.fmp_ingress_receipts.is_empty()
-            || !self.fmp_legacy_ingress.is_empty()
+            || !self.fmp_link_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_command_drops.is_empty()

@@ -8,7 +8,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     outputs: Vec<PacketOutput>,
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
-    fmp_legacy_ingress: Vec<PacketMover2FmpLegacyIngress>,
+    fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
 }
 
 impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
@@ -22,7 +22,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             outputs: Vec::new(),
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
-            fmp_legacy_ingress: Vec::new(),
+            fmp_link_ingress: Vec::new(),
         }
     }
 
@@ -191,7 +191,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             PacketMover2LiveNodeTurn::from_runtime_turn(&turn)
         };
         report.set_fmp_ingress_receipts(std::mem::take(&mut self.fmp_ingress_receipts));
-        report.set_fmp_legacy_ingress(std::mem::take(&mut self.fmp_legacy_ingress));
+        report.set_fmp_link_ingress(std::mem::take(&mut self.fmp_link_ingress));
 
         let plans = transport_output.take_plans();
         report.transport_planned = plans.len();
@@ -356,7 +356,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.raw_ingress_drops.clear();
         self.output_drops.clear();
         self.fmp_ingress_receipts.clear();
-        self.fmp_legacy_ingress.clear();
+        self.fmp_link_ingress.clear();
     }
 
     fn admit_raw_ingress_packet<R>(
@@ -516,8 +516,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                             self.admit_raw_ingress_packet(raw, router, summary);
                         }
                         Err(PacketMover2SessionHandoffError::NoRoute) => {
-                            match PacketMover2FmpLegacyIngress::from_output(output) {
-                                Ok(ingress) => self.fmp_legacy_ingress.push(ingress),
+                            match PacketMover2FmpLinkIngress::from_output(output) {
+                                Ok(ingress) => self.fmp_link_ingress.push(ingress),
                                 Err(output) => {
                                     self.output_drops.push(PacketMover2OutputDrop::from_output(
                                         &output,

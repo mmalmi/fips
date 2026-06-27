@@ -1,5 +1,7 @@
-use crate::node::{AuthenticatedFmpPlaintext, decrypt_worker::DecryptFmpBookkeeping};
-use crate::node::{EndpointEventSender, Node, NodeEndpointCommand};
+use crate::node::decrypt_worker::DecryptFmpBookkeeping;
+use crate::node::{
+    AuthenticatedLinkMessage, EndpointEventSender, FLAG_CE, Node, NodeEndpointCommand,
+};
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
@@ -118,8 +120,8 @@ impl Node {
                 processed += 1;
             }
         }
-        for ingress in turn.take_fmp_legacy_ingress() {
-            if self.process_packet_mover2_fmp_legacy_ingress(ingress).await {
+        for ingress in turn.take_fmp_link_ingress() {
+            if self.process_packet_mover2_fmp_link_ingress(ingress).await {
                 processed += 1;
             }
         }
@@ -155,9 +157,9 @@ impl Node {
         true
     }
 
-    async fn process_packet_mover2_fmp_legacy_ingress(
+    async fn process_packet_mover2_fmp_link_ingress(
         &mut self,
-        ingress: crate::packet_mover2::PacketMover2FmpLegacyIngress,
+        ingress: crate::packet_mover2::PacketMover2FmpLinkIngress,
     ) -> bool {
         let receipt = ingress.receipt();
         let Some(source_peer) = self
@@ -167,15 +169,25 @@ impl Node {
         else {
             return false;
         };
-        self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+        let fmp = DecryptFmpBookkeeping {
             source_peer,
-            receipt.transport_id(),
-            receipt.remote_addr(),
-            receipt.packet_timestamp_ms(),
-            receipt.packet_len(),
-            receipt.fmp_counter(),
-            receipt.fmp_flags(),
-            ingress.plaintext(),
+            transport_id: receipt.transport_id(),
+            remote_addr: receipt.remote_addr().clone(),
+            packet_timestamp_ms: receipt.packet_timestamp_ms(),
+            packet_len: receipt.packet_len(),
+            fmp_counter: receipt.fmp_counter(),
+            inner_timestamp_ms: receipt.inner_timestamp_ms(),
+            fmp_flags: receipt.fmp_flags(),
+        };
+        self.record_worker_authenticated_fmp_receive(&fmp, Some(receipt.source_addr()));
+        let Some(msg_type) = ingress.msg_type() else {
+            return true;
+        };
+        self.dispatch_link_message(AuthenticatedLinkMessage::new(
+            source_peer,
+            msg_type,
+            ingress.payload(),
+            receipt.fmp_flags() & FLAG_CE != 0,
         ))
         .await;
         true
@@ -190,6 +202,7 @@ impl Node {
             .saturating_add(summary.inbound_admitted())
             .saturating_add(summary.inbound_dropped())
             .saturating_add(turn.fmp_control_ingress().len())
+            .saturating_add(turn.fmp_link_ingress().len())
     }
 
     fn packet_mover2_endpoint_identity_snapshot(&self) -> HashMap<NodeAddr, PeerIdentity> {
@@ -237,6 +250,7 @@ impl Node {
             transport_sent = turn.transport_sent(),
             endpoint_deferred = turn.endpoint_deferred_commands(),
             fmp_control_ingress = turn.fmp_control_ingress().len(),
+            fmp_link_ingress = turn.fmp_link_ingress().len(),
             "packet mover2 scratch turn completed"
         );
     }

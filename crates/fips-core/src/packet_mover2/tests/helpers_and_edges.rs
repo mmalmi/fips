@@ -426,7 +426,7 @@
     }
 
     #[test]
-    fn fmp_packet_rx_source_defers_control_and_version_mismatch_to_legacy() {
+    fn fmp_packet_rx_source_reports_control_and_version_mismatch() {
         let (tx, mut rx) = crate::transport::packet_channel(8);
         let transport_id = TransportId::new(21);
         let msg1_addr = TransportAddr::from_string("198.51.100.22:9000");
