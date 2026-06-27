@@ -404,10 +404,6 @@
             ),
             DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected an eight-packet bulk batch"),
-            DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected an eight-packet bulk batch"),
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
-                panic!("expected an eight-packet bulk batch")
-            }
             DecryptWorkerBulkItem::FspBatch(_) => panic!("expected an eight-packet bulk batch"),
         }
         assert!(

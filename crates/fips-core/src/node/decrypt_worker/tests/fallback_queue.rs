@@ -39,8 +39,6 @@
         {
             DecryptWorkerBulkItem::FspJob(job) => assert_eq!(job.lane(), DecryptWorkerLane::Bulk),
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspAeadOpen(_)
-            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => {
                 panic!("expected bulk FSP job")
@@ -82,8 +80,6 @@
             }
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected a multi-job FSP batch"),
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspAeadOpen(_)
-            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_) => {
                 panic!("expected a multi-job FSP batch")
             }
@@ -138,8 +134,6 @@
                     assert_eq!(job.lane(), DecryptWorkerLane::Bulk);
                 }
                 DecryptWorkerBulkItem::Job(_)
-                | DecryptWorkerBulkItem::FspAeadOpen(_)
-                | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
                 | DecryptWorkerBulkItem::Batch(_)
                 | DecryptWorkerBulkItem::FspBatch(_) => {
                     panic!("partial-capacity retry should fall back to single FSP jobs")
@@ -192,8 +186,6 @@
                 assert_eq!(job.lane(), DecryptWorkerLane::Bulk);
             }
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspAeadOpen(_)
-            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected existing single FSP job"),
         }
@@ -212,8 +204,6 @@
                 panic!("two available slots should stay grouped as one FSP batch")
             }
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspAeadOpen(_)
-            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_) => {
                 panic!("expected an FSP prefix batch")
             }
@@ -252,8 +242,6 @@
                 assert_eq!(job.session_key, session_key);
             }
             DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::FspAeadOpen(_)
-            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected existing bulk job"),
         }
@@ -266,8 +254,6 @@
                 panic!("two available slots should stay grouped as one decrypt batch")
             }
             DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::FspAeadOpen(_)
-            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => {
                 panic!("expected admitted decrypt prefix batch")
             }
@@ -665,8 +651,6 @@
                 assert_eq!(decrypt_job_lane(&job), DecryptWorkerLane::Priority);
             }
             DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::FspAeadOpen(_)
-            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected spilled priority job"),
         }
@@ -694,25 +678,6 @@
     }
 
     #[test]
-    fn fsp_open_worker_backlog_does_not_shed_fmp_bulk_before_worker_boundary() {
-        let (mut pool, _control_rx, _priority_rx, bulk_rx) = one_slot_worker_pool();
-        pool.fsp_remote_bulk_open_worker = true;
-        pool.senders[0]
-            .bulk_queued_packets
-            .store(1, Ordering::Relaxed);
-
-        let session_key = test_session_key(1, 101);
-        let mut batcher = DecryptJobBatcher::new();
-        batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
-        batcher.flush(&pool);
-        assert_eq!(
-            bulk_rx.len(),
-            0,
-            "bulk reservation accounting, not opener pressure probes, decides whether the worker queue accepts"
-        );
-    }
-
-    #[test]
     fn decrypt_job_batcher_groups_consecutive_bulk_jobs_for_one_worker() {
         let (pool, _control_rx, _priority_rx, bulk_rx) =
             test_worker_pool(1, DECRYPT_WORKER_BULK_BATCH_MAX);
@@ -736,10 +701,6 @@
             }
             DecryptWorkerBulkItem::Job(_) => panic!("expected a multi-job bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected a multi-job bulk batch"),
-            DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected a multi-job bulk batch"),
-            DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
-                panic!("expected a multi-job bulk batch")
-            }
             DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a multi-job bulk batch"),
         }
     }

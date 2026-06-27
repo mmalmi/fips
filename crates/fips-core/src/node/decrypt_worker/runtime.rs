@@ -409,75 +409,6 @@ fn record_decrypt_worker_bulk_item_service(
     );
 }
 
-fn send_fsp_aead_open_completion_batch(
-    idx: usize,
-    completion_tx: Sender<FspAeadCompletionBatch>,
-    batch: FspAeadCompletionBatch,
-) {
-    if completion_tx.send(batch).is_err() {
-        debug!(
-            worker = idx,
-            "FSP AEAD opener completion owner gone; dropping completion"
-        );
-    }
-}
-
-fn complete_fsp_aead_open_jobs(idx: usize, jobs: Vec<FspAeadOpenJob>) {
-    let completion_batch_max = fsp_aead_completion_batch_max();
-    let mut current_tx: Option<Sender<FspAeadCompletionBatch>> = None;
-    let mut current_source_addr = None;
-    let mut current_receive_order_id = None;
-    let mut current_batch: Option<FspAeadCompletionBatch> = None;
-
-    for mut job in jobs {
-        let Some(completion_tx) = job.completion_tx.take() else {
-            continue;
-        };
-        let source_addr = job.source_addr;
-        let receive_order_id = job.receive_order_id;
-        let same_batch = current_tx
-            .as_ref()
-            .is_some_and(|tx| tx.same_channel(&completion_tx))
-            && current_source_addr == Some(source_addr)
-            && current_receive_order_id == Some(receive_order_id)
-            && current_batch
-                .as_ref()
-                .is_some_and(|batch| batch.len() < completion_batch_max);
-
-        if !same_batch {
-            if let (Some(tx), Some(batch)) = (current_tx.take(), current_batch.take()) {
-                send_fsp_aead_open_completion_batch(idx, tx, batch);
-            }
-            current_tx = Some(completion_tx);
-            current_source_addr = Some(source_addr);
-            current_receive_order_id = Some(receive_order_id);
-            current_batch = Some(FspAeadCompletionBatch::one(job.into_completion()));
-            continue;
-        }
-
-        let Some(batch) = current_batch.as_mut() else {
-            unreachable!("same_batch requires an active completion batch")
-        };
-        batch.push(job.into_completion());
-    }
-
-    if let (Some(tx), Some(batch)) = (current_tx, current_batch) {
-        send_fsp_aead_open_completion_batch(idx, tx, batch);
-    }
-}
-
-fn flush_fsp_open_batcher(
-    idx: usize,
-    shard: &mut DecryptWorkerShard,
-    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    fsp_open_batcher: &mut FspAeadOpenJobBatcher,
-) {
-    let returned = fsp_open_batcher.flush(&shard.pool);
-    if !returned.is_empty() {
-        shard.drop_returned_fsp_aead_open_jobs(idx, returned, plaintext_batch);
-    }
-}
-
 fn handle_bulk_item(
     idx: usize,
     shard: &mut DecryptWorkerShard,
@@ -505,19 +436,6 @@ fn handle_bulk_item(
             shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
             1
         }
-        DecryptWorkerBulkItem::FspAeadOpen(job) => {
-            let item_service_started_at = crate::perf_profile::stamp();
-            complete_fsp_aead_open_jobs(idx, vec![job]);
-            record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
-            1
-        }
-        DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
-            let item_service_started_at = crate::perf_profile::stamp();
-            let count = jobs.len();
-            complete_fsp_aead_open_jobs(idx, jobs);
-            record_decrypt_worker_bulk_item_service(item_service_started_at, count);
-            count
-        }
         DecryptWorkerBulkItem::Batch(jobs) => {
             let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();
@@ -526,16 +444,9 @@ fn handle_bulk_item(
                 record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, count);
             }
             let mut fsp_batcher = FspDecryptJobBatcher::new();
-            let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
             for job in jobs {
                 while let Ok(msg) = control_rx.try_recv() {
                     fsp_batcher.flush(&shard.pool);
-                    flush_fsp_open_batcher(
-                        idx,
-                        shard,
-                        plaintext_batch,
-                        &mut fsp_open_batcher,
-                    );
                     plaintext_batch.flush();
                     crate::perf_profile::record_decrypt_worker_drain_control();
                     batch_stats.add_msg(&msg);
@@ -543,12 +454,6 @@ fn handle_bulk_item(
                 }
                 while let Ok(msg) = priority_rx.try_recv() {
                     fsp_batcher.flush(&shard.pool);
-                    flush_fsp_open_batcher(
-                        idx,
-                        shard,
-                        plaintext_batch,
-                        &mut fsp_open_batcher,
-                    );
                     plaintext_batch.flush();
                     crate::perf_profile::record_decrypt_worker_drain_priority();
                     batch_stats.add_msg(&msg);
@@ -571,7 +476,6 @@ fn handle_bulk_item(
                             actions,
                             plaintext_batch,
                             Some(&mut fsp_batcher),
-                            Some(&mut fsp_open_batcher),
                         );
                     }
                     Err(err) => {
@@ -580,7 +484,6 @@ fn handle_bulk_item(
                 }
             }
             fsp_batcher.flush(&shard.pool);
-            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut fsp_open_batcher);
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count
         }
@@ -636,7 +539,6 @@ enum DecryptWorkerJobAction {
 enum DecryptWorkerJobActions {
     None,
     One(DecryptWorkerJobAction),
-    Many(Vec<DecryptWorkerJobAction>),
 }
 
 impl DecryptWorkerJobActions {
@@ -644,30 +546,10 @@ impl DecryptWorkerJobActions {
         Self::One(action)
     }
 
-    fn push(&mut self, action: DecryptWorkerJobAction) {
-        match std::mem::replace(self, Self::None) {
-            Self::None => {
-                *self = Self::One(action);
-            }
-            Self::One(existing) => {
-                *self = Self::Many(vec![existing, action]);
-            }
-            Self::Many(mut actions) => {
-                actions.push(action);
-                *self = Self::Many(actions);
-            }
-        }
-    }
-
     fn for_each(self, mut on_action: impl FnMut(DecryptWorkerJobAction)) {
         match self {
             Self::None => {}
             Self::One(action) => on_action(action),
-            Self::Many(actions) => {
-                for action in actions {
-                    on_action(action);
-                }
-            }
         }
     }
 }

@@ -49,17 +49,6 @@ const DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET: usize = DECRYPT_WORKER_B
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
-const DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG: usize = 128;
-/// Keep the common same-owner FSP bulk path on the session owner by default.
-/// The opener worker remains available as an explicit experiment, but local
-/// bulk traffic can otherwise bounce through an ordered completion lane and
-/// build receive-side queue residence under ordinary LAN TCP transfers.
-const DEFAULT_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER: bool = false;
-/// Remote FSP bulk packets commonly arrive on an FMP owner that is not the FSP
-/// session owner. Keep the default on the owner handoff lane so pressure cannot
-/// create a second completion/backlog path; the remote open worker remains an
-/// explicit throughput experiment that preserves the FIPS wire protocol.
-const DEFAULT_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER: bool = false;
 /// Keep FMP receive sessions on the same peer-derived owner as FSP receive
 /// sessions by default. This removes the direct-peer hash lottery between
 /// local and handoff FSP lanes while preserving the wire protocol.
@@ -67,7 +56,6 @@ const DEFAULT_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER: bool = true;
 const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
     DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
-static NEXT_FSP_CRYPTO_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -119,11 +107,6 @@ fn decrypt_fsp_session_fast_hash(source_addr: &NodeAddr) -> u64 {
     mix_decrypt_session_hash(
         u64::from_le_bytes(lo) ^ u64::from_le_bytes(hi).rotate_left(17) ^ 0xa24b_aed4_963e_e407,
     )
-}
-
-#[inline]
-fn decrypt_fsp_open_worker_fast_hash(source_addr: &NodeAddr) -> u64 {
-    mix_decrypt_session_hash(decrypt_fsp_session_fast_hash(source_addr) ^ 0xd1b5_4a32_d192_ed03)
 }
 
 #[inline]
@@ -187,17 +170,6 @@ fn fsp_aead_completion_batch_max_from_raw(raw: Option<&str>) -> usize {
         .clamp(1, 64)
 }
 
-fn fsp_aead_completion_batch_max() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| {
-        fsp_aead_completion_batch_max_from_raw(
-            std::env::var("FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
 fn priority_channel_cap() -> usize {
     let priority_cap = std::env::var("FIPS_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP").ok();
     parse_channel_cap(
@@ -228,27 +200,6 @@ fn fallback_priority_channel_cap() -> usize {
     )
 }
 
-fn fsp_open_worker_max_completion_backlog_from_raw(
-    raw: Option<&str>,
-    completion_cap: usize,
-) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG)
-        .min(completion_cap)
-}
-
-fn fsp_open_worker_max_completion_backlog() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| {
-        fsp_open_worker_max_completion_backlog_from_raw(
-            std::env::var("FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG")
-                .ok()
-                .as_deref(),
-            fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap()),
-        )
-    })
-}
-
 fn enabled_from_raw_with_default(raw: Option<&str>, default: bool) -> bool {
     raw.map(|raw| {
         !matches!(
@@ -257,30 +208,6 @@ fn enabled_from_raw_with_default(raw: Option<&str>, default: bool) -> bool {
         )
     })
     .unwrap_or(default)
-}
-
-fn fsp_local_bulk_open_worker_enabled_from_raw(raw: Option<&str>) -> bool {
-    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER)
-}
-
-fn fsp_local_bulk_open_worker_enabled() -> bool {
-    fsp_local_bulk_open_worker_enabled_from_raw(
-        std::env::var("FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn fsp_remote_bulk_open_worker_enabled_from_raw(raw: Option<&str>) -> bool {
-    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER)
-}
-
-fn fsp_remote_bulk_open_worker_enabled() -> bool {
-    fsp_remote_bulk_open_worker_enabled_from_raw(
-        std::env::var("FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER")
-            .ok()
-            .as_deref(),
-    )
 }
 
 fn fmp_source_affine_session_owner_enabled_from_raw(raw: Option<&str>) -> bool {
@@ -337,16 +264,8 @@ pub(crate) struct OwnedFspSessionState {
     current: OwnedFspEpochState,
     pending: Option<OwnedFspEpochState>,
     previous: Option<OwnedFspEpochState>,
-    fsp_crypto_generation: u64,
     fsp_receive_order_id: u64,
     fsp_receive_order: FspReceiveOrder,
-    fsp_shared_crypto: Option<Arc<FspSharedCryptoSession>>,
-}
-
-#[derive(Clone, Copy)]
-struct FspReceiveProgress {
-    next_ticket: u64,
-    next_ready: u64,
 }
 
 struct FspOpenSuccess {
@@ -376,98 +295,8 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
                 cipher: Arc::new(epoch.cipher),
                 replay: epoch.replay,
             }),
-            fsp_crypto_generation: NEXT_FSP_CRYPTO_GENERATION.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order: FspReceiveOrder::new(),
-            fsp_shared_crypto: None,
-        }
-    }
-}
-
-struct FspSharedCryptoSession {
-    owner_idx: usize,
-    crypto_generation: u64,
-    receive_order_id: u64,
-    current_k_bit: bool,
-    cipher: Arc<LessSafeKey>,
-    next_ticket: AtomicU64,
-    next_ready: AtomicU64,
-}
-
-impl FspSharedCryptoSession {
-    #[cfg(test)]
-    fn new(
-        owner_idx: usize,
-        receive_order_id: u64,
-        crypto_generation: u64,
-        current_k_bit: bool,
-        cipher: Arc<LessSafeKey>,
-    ) -> Self {
-        Self::new_with_progress(
-            owner_idx,
-            receive_order_id,
-            crypto_generation,
-            current_k_bit,
-            cipher,
-            FspReceiveProgress {
-                next_ticket: 0,
-                next_ready: 0,
-            },
-        )
-    }
-
-    fn new_with_progress(
-        owner_idx: usize,
-        receive_order_id: u64,
-        crypto_generation: u64,
-        current_k_bit: bool,
-        cipher: Arc<LessSafeKey>,
-        progress: FspReceiveProgress,
-    ) -> Self {
-        Self {
-            owner_idx,
-            crypto_generation,
-            receive_order_id,
-            current_k_bit,
-            cipher,
-            next_ticket: AtomicU64::new(progress.next_ticket),
-            next_ready: AtomicU64::new(progress.next_ready),
-        }
-    }
-
-    #[cfg(test)]
-    fn can_issue_ticket(&self) -> bool {
-        self.next_ticket
-            .load(Ordering::Relaxed)
-            .saturating_sub(self.next_ready.load(Ordering::Relaxed))
-            < fsp_receive_window() as u64
-    }
-
-    fn try_issue_ticket(&self) -> Option<FspReceiveTicket> {
-        self
-            .next_ticket
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                let in_flight = current.saturating_sub(self.next_ready.load(Ordering::Relaxed));
-                (in_flight < fsp_receive_window() as u64).then(|| current.saturating_add(1))
-            })
-            .ok()
-            .map(|sequence| FspReceiveTicket { sequence })
-    }
-
-    #[cfg(test)]
-    fn issue_ticket(&self) -> FspReceiveTicket {
-        self.try_issue_ticket()
-            .expect("FSP receive-order test ticket window is full")
-    }
-
-    fn mark_next_ready(&self, next_ready: u64) {
-        self.next_ready.store(next_ready, Ordering::Relaxed);
-    }
-
-    fn progress(&self) -> FspReceiveProgress {
-        FspReceiveProgress {
-            next_ticket: self.next_ticket.load(Ordering::Relaxed),
-            next_ready: self.next_ready.load(Ordering::Relaxed),
         }
     }
 }
@@ -517,53 +346,13 @@ impl OwnedFspSessionState {
         self.pending.is_none() && self.previous.is_none()
     }
 
-    fn receive_progress(&self) -> FspReceiveProgress {
-        self.fsp_shared_crypto
-            .as_ref()
-            .map(|shared| shared.progress())
-            .unwrap_or_else(|| FspReceiveProgress {
-                next_ticket: self.fsp_receive_order.next_ticket(),
-                next_ready: self.fsp_receive_order_next_ready(),
-            })
-    }
-
-    fn shared_crypto_session(&self, owner_idx: usize) -> Option<FspSharedCryptoSession> {
-        self.has_single_current_epoch().then(|| {
-            FspSharedCryptoSession::new_with_progress(
-                owner_idx,
-                self.fsp_receive_order_id,
-                self.fsp_crypto_generation,
-                self.current_k_bit,
-                Arc::clone(&self.current.cipher),
-                self.receive_progress(),
-            )
-        })
-    }
-
-    fn attach_shared_crypto_session(&mut self, shared: Arc<FspSharedCryptoSession>) {
-        self.fsp_crypto_generation = shared.crypto_generation;
-        self.fsp_shared_crypto = Some(shared);
-    }
-
     fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
-        let progress = previous.receive_progress();
         self.fsp_receive_order_id = previous.fsp_receive_order_id;
         self.fsp_receive_order = previous.fsp_receive_order;
-        self.fsp_receive_order
-            .advance_next_ticket_to(progress.next_ticket);
-        self.fsp_shared_crypto = None;
     }
 
     fn fsp_receive_order_id(&self) -> u64 {
         self.fsp_receive_order_id
-    }
-
-    fn fsp_crypto_generation(&self) -> u64 {
-        self.fsp_crypto_generation
-    }
-
-    fn fsp_receive_order_next_ready(&self) -> u64 {
-        self.fsp_receive_order.completions.next_ready()
     }
 
     #[cfg(test)]
@@ -572,9 +361,6 @@ impl OwnedFspSessionState {
     }
 
     fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
-        if let Some(shared) = &self.fsp_shared_crypto {
-            return shared.try_issue_ticket();
-        }
         self.fsp_receive_order.issue()
     }
 
@@ -716,17 +502,11 @@ impl OwnedFspSessionState {
                     header,
                     source,
                 } => {
-                    let stale_worker_open_epoch = source.is_worker_open()
-                        && (header.flags & FSP_FLAG_K != 0) != self.current_k_bit;
-                    if stale_worker_open_epoch {
-                        drain.stale_epoch_worker_open_failures += 1;
-                    } else {
-                        drain.aead_failures += 1;
-                        drain.aead_failure_sources.add(source);
-                        drain
-                            .outputs
-                            .push(FspReadyCompletion::AeadFailed { job, header });
-                    }
+                    drain.aead_failures += 1;
+                    drain.aead_failure_sources.add(source);
+                    drain
+                        .outputs
+                        .push(FspReadyCompletion::AeadFailed { job, header });
                 }
                 #[cfg(test)]
                 FspOrderedCompletion::EpochMismatch {
@@ -739,14 +519,6 @@ impl OwnedFspSessionState {
                     drain
                         .outputs
                         .push(FspReadyCompletion::AeadFailed { job, header });
-                }
-                FspOrderedCompletion::Dropped { source } => {
-                    let _ = source;
-                    drain.dropped += 1;
-                }
-                FspOrderedCompletion::StaleWorkerOpen { source } => {
-                    debug_assert!(source.is_worker_open());
-                    drain.stale_epoch_worker_open_failures += 1;
                 }
             }
         }
@@ -865,14 +637,6 @@ impl FspReceiveOrder {
         Some(ticket)
     }
 
-    fn next_ticket(&self) -> u64 {
-        self.next_ticket
-    }
-
-    fn advance_next_ticket_to(&mut self, next_ticket: u64) {
-        self.next_ticket = self.next_ticket.max(next_ticket);
-    }
-
     fn complete(
         &mut self,
         ticket: FspReceiveTicket,
@@ -903,12 +667,6 @@ enum FspOrderedCompletion {
     EpochMismatch {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
-        source: FspAeadCompletionSource,
-    },
-    Dropped {
-        source: FspAeadCompletionSource,
-    },
-    StaleWorkerOpen {
         source: FspAeadCompletionSource,
     },
 }
@@ -950,8 +708,6 @@ impl FspAeadFailureSources {
     fn add(&mut self, source: FspAeadCompletionSource) {
         match source {
             FspAeadCompletionSource::Local => self.local += 1,
-            FspAeadCompletionSource::WorkerOpen => self.worker_open += 1,
-            FspAeadCompletionSource::WorkerOpenReturned => self.worker_open_returned += 1,
         }
     }
 
@@ -982,8 +738,6 @@ impl FspReplayDropSources {
     fn add(&mut self, source: FspAeadCompletionSource) {
         match source {
             FspAeadCompletionSource::Local => {}
-            FspAeadCompletionSource::WorkerOpen => self.worker_open += 1,
-            FspAeadCompletionSource::WorkerOpenReturned => self.worker_open_returned += 1,
         }
     }
 
@@ -1051,53 +805,20 @@ fn local_established_fsp_datagram_meta(
     })
 }
 
-struct FspAeadOpenJob {
-    source_addr: NodeAddr,
-    receive_order_id: u64,
-    crypto_generation: u64,
-    ticket: FspReceiveTicket,
-    cipher: Arc<LessSafeKey>,
-    job: FspDecryptJob,
-    header: FspEncryptedHeader,
-    completion_source: FspAeadCompletionSource,
-    completion_tx: Option<Sender<FspAeadCompletionBatch>>,
-    open_queued_at: Option<crate::perf_profile::TraceStamp>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FspAeadCompletionSource {
     Local,
-    WorkerOpen,
-    WorkerOpenReturned,
-}
-
-impl FspAeadCompletionSource {
-    fn returned(self) -> Self {
-        match self {
-            Self::Local => Self::Local,
-            Self::WorkerOpen => Self::WorkerOpenReturned,
-            already_returned => already_returned,
-        }
-    }
-
-    fn is_worker_open(self) -> bool {
-        matches!(self, Self::WorkerOpen | Self::WorkerOpenReturned)
-    }
 }
 
 struct FspAeadCompletion {
     source_addr: NodeAddr,
     receive_order_id: u64,
-    crypto_generation: u64,
     ticket: FspReceiveTicket,
-    source: FspAeadCompletionSource,
     result: FspOrderedCompletion,
-    completed_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 enum FspAeadCompletionBatch {
     One(FspAeadCompletion),
-    Many(Vec<FspAeadCompletion>),
 }
 
 impl FspAeadCompletionBatch {
@@ -1108,160 +829,25 @@ impl FspAeadCompletionBatch {
     fn common_source_order(&self) -> Option<(NodeAddr, u64)> {
         let first = match self {
             Self::One(completion) => completion,
-            Self::Many(completions) => completions.first()?,
         };
-        let source_addr = first.source_addr;
-        let receive_order_id = first.receive_order_id;
-        let all_same = match self {
-            Self::One(_) => true,
-            Self::Many(completions) => completions.iter().all(|completion| {
-                completion.source_addr == source_addr
-                    && completion.receive_order_id == receive_order_id
-            }),
-        };
-        all_same.then_some((source_addr, receive_order_id))
-    }
-
-    fn push(&mut self, completion: FspAeadCompletion) {
-        match self {
-            Self::One(_) => {
-                let Self::One(existing) = std::mem::replace(
-                    self,
-                    Self::Many(Vec::with_capacity(fsp_aead_completion_batch_max())),
-                ) else {
-                    unreachable!("replaced One with Many")
-                };
-                let Self::Many(completions) = self else {
-                    unreachable!("batch was replaced with Many")
-                };
-                completions.push(existing);
-                completions.push(completion);
-            }
-            Self::Many(completions) => completions.push(completion),
-        }
+        Some((first.source_addr, first.receive_order_id))
     }
 
     fn len(&self) -> usize {
         match self {
             Self::One(_) => 1,
-            Self::Many(completions) => completions.len(),
         }
     }
 
     fn into_vec(self) -> Vec<FspAeadCompletion> {
         match self {
             Self::One(completion) => vec![completion],
-            Self::Many(completions) => completions,
         }
     }
 
     fn for_each(self, mut on_completion: impl FnMut(FspAeadCompletion)) {
         match self {
             Self::One(completion) => on_completion(completion),
-            Self::Many(completions) => {
-                for completion in completions {
-                    on_completion(completion);
-                }
-            }
-        }
-    }
-}
-
-impl FspAeadOpenJob {
-    fn mark_returned_completion(&mut self) {
-        match self.completion_source {
-            FspAeadCompletionSource::WorkerOpen => crate::perf_profile::record_event(
-                crate::perf_profile::Event::FspAeadCompletionReturnedWorkerOpen,
-            ),
-            FspAeadCompletionSource::Local | FspAeadCompletionSource::WorkerOpenReturned => {}
-        }
-        self.completion_source = self.completion_source.returned();
-    }
-
-    fn into_completion(mut self) -> FspAeadCompletion {
-        let source = self.completion_source;
-        if source.is_worker_open() {
-            crate::perf_profile::record_since_count(
-                crate::perf_profile::Stage::FspAeadWorkerOpenQueueWait,
-                self.open_queued_at,
-                1,
-            );
-        }
-        let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
-        let payload_end = self
-            .job
-            .fsp_payload_offset
-            .saturating_add(self.job.fsp_payload_len);
-        let ciphertext_offset = self.job.fsp_payload_offset + FSP_HEADER_SIZE;
-        let result = match self
-            .job
-            .fallback
-            .packet_data
-            .get_mut(ciphertext_offset..payload_end)
-        {
-            Some(ciphertext) => {
-                let _t_fsp =
-                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                let mut nonce_bytes = [0u8; 12];
-                nonce_bytes[4..12].copy_from_slice(&self.header.counter.to_le_bytes());
-                let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-                match self
-                    .cipher
-                    .open_in_place(nonce, Aad::from(&self.header.header_bytes), ciphertext)
-                {
-                    Ok(plaintext) => {
-                        let plaintext_len = plaintext.len();
-                        FspOrderedCompletion::Opened {
-                            opened: FspOpenedJob {
-                                job: self.job,
-                                header: self.header,
-                                plaintext_len,
-                            },
-                            source,
-                        }
-                    }
-                    Err(_) => FspOrderedCompletion::AeadFailed {
-                        job: self.job,
-                        header: self.header,
-                        source,
-                    },
-                }
-            }
-            None => FspOrderedCompletion::AeadFailed {
-                job: self.job,
-                header: self.header,
-                source,
-            },
-        };
-        FspAeadCompletion {
-            source_addr: self.source_addr,
-            receive_order_id: self.receive_order_id,
-            crypto_generation: self.crypto_generation,
-            ticket: self.ticket,
-            source,
-            result,
-            completed_at,
-        }
-    }
-
-    fn into_dropped_completion(self) -> FspAeadCompletion {
-        let source = self.completion_source;
-        if source.is_worker_open() {
-            crate::perf_profile::record_since_count(
-                crate::perf_profile::Stage::FspAeadWorkerOpenQueueWait,
-                self.open_queued_at,
-                1,
-            );
-        }
-        let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
-        FspAeadCompletion {
-            source_addr: self.source_addr,
-            receive_order_id: self.receive_order_id,
-            crypto_generation: self.crypto_generation,
-            ticket: self.ticket,
-            source,
-            result: FspOrderedCompletion::Dropped { source },
-            completed_at,
         }
     }
 }
