@@ -368,7 +368,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         report
     }
 
-    pub(crate) async fn pump_aead_live_node_route_table_turn<RI, Resolver, Transports>(
+    async fn pump_aead_live_node_route_table_turn<RI, Resolver, Transports>(
         &mut self,
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,

@@ -230,16 +230,9 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         self.driver.owner_mut(owner)
     }
 
-    pub(crate) fn routes(&self) -> &PacketMover2LiveRouteTable {
-        &self.routes
-    }
-
+    #[cfg(test)]
     pub(crate) fn routes_mut(&mut self) -> &mut PacketMover2LiveRouteTable {
         &mut self.routes
-    }
-
-    pub(crate) fn driver_mut(&mut self) -> &mut PacketMover2TurnDriver<W> {
-        &mut self.driver
     }
 
     pub(crate) fn deferred_endpoint_commands(&self) -> &[NodeEndpointCommand] {
