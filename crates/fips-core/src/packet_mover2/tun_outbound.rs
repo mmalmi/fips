@@ -206,24 +206,14 @@ where
             let Ok(packet) = self.rx.try_recv() else {
                 break;
             };
-            route_tun_outbound_packet_with_router(packet, self.router, &mut self.drops, &mut push);
+            match self.router.route_tun_outbound(&packet) {
+                Ok(route) => push(route.into_outbound_packet(packet)),
+                Err(reason) => self
+                    .drops
+                    .push(PacketMover2TunOutboundDrop::new(packet.len(), reason)),
+            }
             drained += 1;
         }
         drained
-    }
-}
-
-fn route_tun_outbound_packet_with_router<R, F>(
-    packet: Vec<u8>,
-    router: &mut R,
-    drops: &mut Vec<PacketMover2TunOutboundDrop>,
-    mut push: F,
-) where
-    R: PacketMover2TunOutboundRouter,
-    F: FnMut(OutboundPacket),
-{
-    match router.route_tun_outbound(&packet) {
-        Ok(route) => push(route.into_outbound_packet(packet)),
-        Err(reason) => drops.push(PacketMover2TunOutboundDrop::new(packet.len(), reason)),
     }
 }

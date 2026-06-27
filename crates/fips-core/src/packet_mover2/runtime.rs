@@ -339,40 +339,6 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        self.reset_turn_buffers();
-
-        let mut summary = PacketMover2RuntimeSummary::default();
-        raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
-            self.admit_raw_ingress_packet(packet, router, &mut summary);
-        });
-        outbound.drain_outbound(outbound_limit, |packet| {
-            self.admit_outbound_packet(packet, &mut summary);
-        });
-
-        self.finish_aead_live_node_output_turn(
-            summary,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-        )
-        .await
-    }
-
-    async fn finish_aead_live_node_output_turn<Resolver, Transports>(
-        &mut self,
-        summary: PacketMover2RuntimeSummary,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
         let mut transport_output = PacketMover2TransportSendPlanOutput::new();
         let mut report = {
             let tun_output = PacketMover2TunTxOutput::new(tun_tx);
@@ -380,7 +346,15 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 PacketMover2EndpointEventOutput::new(endpoint_tx, endpoint_resolver);
             let mut sink =
                 PacketMover2LiveOutputSink::new(tun_output, endpoint_output, &mut transport_output);
-            let turn = self.finish_aead_output_turn(summary, &mut sink, crypto_limit);
+            let turn = self.pump_aead_output_turn(
+                raw_ingress,
+                router,
+                raw_ingress_limit,
+                outbound,
+                outbound_limit,
+                &mut sink,
+                crypto_limit,
+            );
             PacketMover2LiveNodeTurn::from_runtime_turn(&turn)
         };
 
@@ -549,72 +523,6 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         report.set_endpoint_deferred_commands(deferred.len());
         deferred_endpoint_commands.extend(deferred);
         report.set_tun_outbound_drops(tun_source.take_drops());
-        report
-    }
-
-    pub(crate) async fn pump_aead_live_node_packet_rx_route_table_turn<Resolver, Transports>(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        routes: &mut PacketMover2LiveIngressRoutes,
-        packet_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.reset_turn_buffers();
-
-        let mut summary = PacketMover2RuntimeSummary::default();
-        let mut raw_ingress = PacketMover2FmpPacketRxSource::new(packet_rx);
-        raw_ingress.drain_raw_ingress(packet_limit, |packet| {
-            self.admit_raw_ingress_packet(packet, routes, &mut summary);
-        });
-
-        let outbound_limit = endpoint_limit.saturating_add(tun_limit);
-        let (endpoint_drops, deferred, tun_drops) = {
-            let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
-                endpoint_priority_rx,
-                endpoint_bulk_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                routes,
-            );
-            outbound_source.drain_outbound(outbound_limit, |packet| {
-                self.admit_outbound_packet(packet, &mut summary);
-            });
-            (
-                outbound_source.take_endpoint_command_drops(),
-                outbound_source.take_endpoint_deferred_commands(),
-                outbound_source.take_tun_outbound_drops(),
-            )
-        };
-
-        let mut report = self
-            .finish_aead_live_node_output_turn(
-                summary,
-                tun_tx,
-                endpoint_tx,
-                endpoint_resolver,
-                transports,
-                crypto_limit,
-            )
-            .await;
-        report.set_endpoint_command_drops(endpoint_drops);
-        report.set_endpoint_deferred_commands(deferred.len());
-        deferred_endpoint_commands.extend(deferred);
-        report.set_tun_outbound_drops(tun_drops);
         report
     }
 
@@ -797,3 +705,4 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         summary
     }
 }
+

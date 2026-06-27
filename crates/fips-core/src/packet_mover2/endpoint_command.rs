@@ -219,17 +219,62 @@ impl<R> PacketMover2EndpointCommandSource<'_, R>
 where
     R: PacketMover2EndpointCommandRouter,
 {
+    fn route_send<F>(
+        &mut self,
+        send: EndpointDataSend,
+        mut push: F,
+    ) -> Result<(), PacketMover2EndpointCommandDropReason>
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let request = PacketMover2EndpointCommandPayload::new(&send);
+        match self.router.route_endpoint_command_payload(request) {
+            Ok(packet) => {
+                push(packet);
+                Ok(())
+            }
+            Err(reason) => {
+                self.drops
+                    .push(PacketMover2EndpointCommandDrop::new(&request, reason));
+                Err(reason)
+            }
+        }
+    }
+
     fn route_command<F>(&mut self, command: NodeEndpointCommand, mut push: F)
     where
         F: FnMut(OutboundPacket),
     {
-        route_endpoint_command_with_router(
-            command,
-            self.router,
-            &mut self.drops,
-            &mut self.deferred_commands,
-            &mut push,
-        );
+        match command {
+            NodeEndpointCommand::Send {
+                command,
+                response_tx,
+            } => {
+                let (send, queued_at) = command.into_parts();
+                let _ = queued_at;
+                let dest_addr = send.dest_addr();
+                let result =
+                    self.route_send(send, &mut push)
+                        .map_err(|reason| NodeError::SendFailed {
+                            node_addr: dest_addr,
+                            reason: format!("packet_mover2 endpoint route drop: {reason:?}"),
+                        });
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointCommand::SendOneway { command } => {
+                let (send, queued_at) = command.into_parts();
+                let _ = queued_at;
+                let _ = self.route_send(send, &mut push);
+            }
+            NodeEndpointCommand::SendBatchOneway { command, lane } => {
+                let (remote, payloads, queued_at) = command.into_parts();
+                let _ = (lane, queued_at);
+                for payload in payloads {
+                    let _ = self.route_send(EndpointDataSend::new(remote, payload), &mut push);
+                }
+            }
+            other => self.deferred_commands.push(other),
+        }
     }
 }
 
@@ -257,76 +302,5 @@ where
             self.route_command(command, &mut push);
         }
         drained_cost
-    }
-}
-
-fn route_endpoint_send_with_router<R, F>(
-    send: EndpointDataSend,
-    router: &mut R,
-    drops: &mut Vec<PacketMover2EndpointCommandDrop>,
-    mut push: F,
-) -> Result<(), PacketMover2EndpointCommandDropReason>
-where
-    R: PacketMover2EndpointCommandRouter,
-    F: FnMut(OutboundPacket),
-{
-    let request = PacketMover2EndpointCommandPayload::new(&send);
-    match router.route_endpoint_command_payload(request) {
-        Ok(packet) => {
-            push(packet);
-            Ok(())
-        }
-        Err(reason) => {
-            drops.push(PacketMover2EndpointCommandDrop::new(&request, reason));
-            Err(reason)
-        }
-    }
-}
-
-fn route_endpoint_command_with_router<R, F>(
-    command: NodeEndpointCommand,
-    router: &mut R,
-    drops: &mut Vec<PacketMover2EndpointCommandDrop>,
-    deferred_commands: &mut Vec<NodeEndpointCommand>,
-    mut push: F,
-) where
-    R: PacketMover2EndpointCommandRouter,
-    F: FnMut(OutboundPacket),
-{
-    match command {
-        NodeEndpointCommand::Send {
-            command,
-            response_tx,
-        } => {
-            let (send, queued_at) = command.into_parts();
-            let _ = queued_at;
-            let dest_addr = send.dest_addr();
-            let result =
-                route_endpoint_send_with_router(send, router, drops, &mut push).map_err(
-                    |reason| NodeError::SendFailed {
-                        node_addr: dest_addr,
-                        reason: format!("packet_mover2 endpoint route drop: {reason:?}"),
-                    },
-                );
-            let _ = response_tx.send(result);
-        }
-        NodeEndpointCommand::SendOneway { command } => {
-            let (send, queued_at) = command.into_parts();
-            let _ = queued_at;
-            let _ = route_endpoint_send_with_router(send, router, drops, &mut push);
-        }
-        NodeEndpointCommand::SendBatchOneway { command, lane } => {
-            let (remote, payloads, queued_at) = command.into_parts();
-            let _ = (lane, queued_at);
-            for payload in payloads {
-                let _ = route_endpoint_send_with_router(
-                    EndpointDataSend::new(remote, payload),
-                    router,
-                    drops,
-                    &mut push,
-                );
-            }
-        }
-        other => deferred_commands.push(other),
     }
 }
