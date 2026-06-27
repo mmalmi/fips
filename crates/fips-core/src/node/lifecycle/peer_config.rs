@@ -192,6 +192,21 @@ impl Node {
             let node_addr = *peer_identity.node_addr();
 
             if self.peers.contains_key(&node_addr) {
+                if let Some(stale_addr) =
+                    self.active_peer_uses_pruned_scoped_udp_endpoint(&node_addr, &peer_config)
+                {
+                    let peer_name = self.peer_display_name(&node_addr);
+                    let degraded = self.peers.mark_link_dead_direct_path(&node_addr);
+                    if degraded.is_some() {
+                        self.mark_session_direct_path_degraded(node_addr, Self::now_ms());
+                        self.schedule_link_dead_reprobe(node_addr, Self::now_ms());
+                        info!(
+                            peer = %peer_name,
+                            stale_addr = %stale_addr,
+                            "Active scoped UDP endpoint was pruned by peer refresh; marking direct path stale"
+                        );
+                    }
+                }
                 match self
                     .initiate_active_peer_alternative_connection(&peer_config)
                     .await
@@ -252,6 +267,34 @@ impl Node {
         self.warm_auto_connect_graph_sessions().await;
 
         Ok(outcome)
+    }
+
+    fn active_peer_uses_pruned_scoped_udp_endpoint(
+        &self,
+        peer_node_addr: &crate::identity::NodeAddr,
+        peer_config: &crate::config::PeerConfig,
+    ) -> Option<crate::transport::TransportAddr> {
+        let peer = self.peers.get(peer_node_addr)?;
+        let transport_id = peer.transport_id()?;
+        let transport = self.transports.get(&transport_id)?;
+        if transport.transport_type().name != "udp" {
+            return None;
+        }
+
+        let current_addr = peer.current_addr()?.clone();
+        let socket_addr = current_addr
+            .as_str()?
+            .parse::<std::net::SocketAddr>()
+            .ok()?;
+        if !udp_endpoint_is_roaming_scoped(socket_addr.ip()) {
+            return None;
+        }
+
+        let still_configured = peer_config
+            .addresses
+            .iter()
+            .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate));
+        (!still_configured).then_some(current_addr)
     }
 
     pub(in crate::node) async fn refresh_peer_paths(
@@ -555,5 +598,16 @@ impl Node {
 
         self.try_peer_addresses(peer_config, peer_identity, true)
             .await
+    }
+}
+
+fn udp_endpoint_is_roaming_scoped(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_link_local()
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+        }
+        std::net::IpAddr::V6(v6) => v6.is_unique_local() || (v6.segments()[0] & 0xffc0) == 0xfe80,
     }
 }

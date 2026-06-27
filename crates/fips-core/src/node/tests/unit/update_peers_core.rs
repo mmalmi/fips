@@ -461,6 +461,137 @@ async fn refresh_peer_paths_redials_active_peer_on_same_known_candidate() {
     }
 }
 
+#[tokio::test]
+async fn update_peers_marks_pruned_private_active_endpoint_stale() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let stale_private_addr = TransportAddr::from_string("192.168.50.57:51820");
+    let old_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
+    active_peer.set_current_addr(transport_id, &stale_private_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            stale_private_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+
+    let original = auto_connect_peer(peer_full.npub(), "192.168.50.57:51820");
+    node.config.peers = vec![original];
+    let refreshed = auto_connect_peer(peer_full.npub(), "198.51.100.9:51820");
+
+    let outcome = node.update_peers(vec![refreshed]).await.unwrap();
+
+    assert_eq!(outcome.updated, 1);
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.current_addr(), Some(&stale_private_addr));
+    assert!(
+        active.can_send(),
+        "stale direct path should preserve session continuity for probes/fallback"
+    );
+    assert!(
+        !active.is_healthy(),
+        "pruned private underlay endpoint must stop looking healthy immediately"
+    );
+    assert!(
+        node.session_direct_path_blocks_direct_payload(&peer_node_addr, Node::now_ms()),
+        "payload routing must not keep blackholing into the pruned private endpoint"
+    );
+    assert!(
+        node.retry_pending.contains_key(&peer_node_addr),
+        "existing quick direct re-probe path should be scheduled"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn update_peers_keeps_public_active_endpoint_when_hint_changes() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let current_addr = TransportAddr::from_string("198.51.100.20:51820");
+    let old_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
+    active_peer.set_current_addr(transport_id, &current_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            current_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+
+    let original = auto_connect_peer(peer_full.npub(), "198.51.100.20:51820");
+    node.config.peers = vec![original];
+    let refreshed = auto_connect_peer(peer_full.npub(), "198.51.100.21:51820");
+
+    let outcome = node.update_peers(vec![refreshed]).await.unwrap();
+
+    assert_eq!(outcome.updated, 1);
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.current_addr(), Some(&current_addr));
+    assert!(
+        active.is_healthy(),
+        "public active endpoints may be learned paths and should not be pruned by config refresh alone"
+    );
+    assert!(!node.retry_pending.contains_key(&peer_node_addr));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 #[test]
 fn active_peer_same_path_discovery_skips_fresh_peer() {
     let mut node = make_node();
