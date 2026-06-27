@@ -45,6 +45,8 @@ pub(crate) struct PacketOutput {
     ingress_seq: u64,
     target: OutputTarget,
     source_path: Option<TransportPath>,
+    previous_hop: Option<NodeAddr>,
+    ce_flag: bool,
     path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
     source_wire_len: Option<usize>,
@@ -70,6 +72,14 @@ impl PacketOutput {
 
     pub(crate) fn path(&self) -> Option<TransportPath> {
         self.path.clone()
+    }
+
+    pub(crate) fn previous_hop(&self) -> Option<NodeAddr> {
+        self.previous_hop
+    }
+
+    pub(crate) fn ce_flag(&self) -> bool {
+        self.ce_flag
     }
 
     pub(crate) fn payload(&self) -> &[u8] {
@@ -103,6 +113,7 @@ pub(crate) enum PacketDropReason {
     Replay,
     OwnerInFlightFull,
     StaleGeneration,
+    CounterExhausted,
     StaleCompletionGeneration,
     CryptoFailed,
 }
@@ -198,6 +209,7 @@ impl From<OwnerReserveError> for PacketDropReason {
             OwnerReserveError::Replay => Self::Replay,
             OwnerReserveError::InFlightFull => Self::OwnerInFlightFull,
             OwnerReserveError::StaleGeneration => Self::StaleGeneration,
+            OwnerReserveError::CounterExhausted => Self::CounterExhausted,
         }
     }
 }

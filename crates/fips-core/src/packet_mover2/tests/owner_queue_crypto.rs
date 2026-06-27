@@ -101,6 +101,8 @@
             ingress_seq: 410,
             target: OutputTarget::SessionIngress { local_addr },
             source_path: Some(source_path.clone()),
+            previous_hop: None,
+            ce_flag: false,
             path: None,
             activity_tick: Some(activity_tick),
             source_wire_len: Some(payload.len()),
@@ -139,6 +141,8 @@
             ingress_seq: 51,
             target: OutputTarget::SessionPayload { local_addr },
             source_path: None,
+            previous_hop: None,
+            ce_flag: false,
             path: None,
             activity_tick: Some(ActivityTick::new(51_000)),
             source_wire_len: Some(payload.len()),
@@ -643,6 +647,39 @@
         assert_eq!(drops[0].counter(), None);
         assert_eq!(drops[0].ingress_seq(), None);
         assert_eq!(drops[0].lane(), Lane::Bulk);
+    }
+
+    #[test]
+    fn outbound_owner_uses_shared_send_counter_authority() {
+        let owner = OwnerId::fsp(34);
+        let authority = crate::noise::SendCounterAuthority::new_for_test(90);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4), CopyCryptoWorker);
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_send_counter_authority(authority.clone()),
+        );
+
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"first"))
+            .unwrap();
+        assert_eq!(authority.reserve().unwrap(), 90);
+        mover
+            .submit_outbound_packet(outbound_packet(
+                owner,
+                1,
+                PacketClass::Liveness,
+                b"priority",
+            ))
+            .unwrap();
+
+        let work = mover.dispatch_outbound_available(8);
+        assert_eq!(work.len(), 2);
+        assert_eq!(work[0].packet.class, PacketClass::Liveness);
+        assert_eq!(work[0].reservation.counter, 91);
+        assert_eq!(work[1].packet.class, PacketClass::Bulk);
+        assert_eq!(work[1].reservation.counter, 92);
+        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter(), 93);
+        assert_eq!(authority.reserve().unwrap(), 93);
     }
 
     #[test]

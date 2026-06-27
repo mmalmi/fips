@@ -1,8 +1,9 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct OwnerConfig {
     generation: u64,
     in_flight_limit: usize,
     next_send_counter: u64,
+    send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
 }
@@ -13,6 +14,7 @@ impl OwnerConfig {
             generation,
             in_flight_limit,
             next_send_counter: 0,
+            send_counter_authority: None,
             fmp_session_start_ms: None,
             fsp_session_start_ms: None,
         }
@@ -20,6 +22,15 @@ impl OwnerConfig {
 
     pub(crate) fn with_next_send_counter(mut self, next_send_counter: u64) -> Self {
         self.next_send_counter = next_send_counter;
+        self
+    }
+
+    pub(crate) fn with_send_counter_authority(
+        mut self,
+        authority: crate::noise::SendCounterAuthority,
+    ) -> Self {
+        self.next_send_counter = authority.current();
+        self.send_counter_authority = Some(authority);
         self
     }
 
@@ -64,6 +75,8 @@ pub(crate) struct OwnerReservation {
     counter: u64,
     lane: Lane,
     source_path: Option<TransportPath>,
+    previous_hop: Option<NodeAddr>,
+    ce_flag: bool,
     output_path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
@@ -75,6 +88,7 @@ pub(crate) enum OwnerReserveError {
     Replay,
     InFlightFull,
     StaleGeneration,
+    CounterExhausted,
 }
 
 #[derive(Debug)]
@@ -86,6 +100,7 @@ pub(crate) struct OwnerState {
     next_order: u64,
     next_retire: u64,
     next_send_counter: u64,
+    send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     crypto_keys: Option<OwnerCryptoKeys>,
     active_path: Option<TransportPath>,
     fmp_session_start_ms: Option<u64>,
@@ -108,6 +123,7 @@ impl OwnerState {
             next_order: 0,
             next_retire: 0,
             next_send_counter: config.next_send_counter,
+            send_counter_authority: config.send_counter_authority,
             crypto_keys: None,
             active_path: None,
             fmp_session_start_ms: config.fmp_session_start_ms,
@@ -125,6 +141,7 @@ impl OwnerState {
         self.generation = generation;
         self.accepted_counters.clear();
         self.next_send_counter = 0;
+        self.send_counter_authority = None;
         self.crypto_keys = None;
         self.fmp_session_start_ms = None;
         self.fsp_session_start_ms = None;
@@ -132,6 +149,14 @@ impl OwnerState {
 
     pub(crate) fn set_crypto_keys(&mut self, keys: OwnerCryptoKeys) {
         self.crypto_keys = Some(keys);
+    }
+
+    pub(crate) fn set_send_counter_authority(
+        &mut self,
+        authority: crate::noise::SendCounterAuthority,
+    ) {
+        self.next_send_counter = authority.current();
+        self.send_counter_authority = Some(authority);
     }
 
     pub(crate) fn set_fsp_session_start_ms(&mut self, session_start_ms: u64) {
@@ -208,6 +233,8 @@ impl OwnerState {
             counter: packet.counter,
             lane: packet.lane(),
             source_path: packet.source_path.clone(),
+            previous_hop: packet.previous_hop,
+            ce_flag: packet.ce_flag,
             output_path: None,
             activity_tick: packet.activity_tick,
             fmp_timestamp_ms: None,
@@ -227,14 +254,13 @@ impl OwnerState {
             return Err(OwnerReserveError::InFlightFull);
         }
 
-        let counter = self.next_send_counter;
+        let counter = self.reserve_send_counter()?;
         let output_path = self.active_path.clone();
         let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
         let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_tx_activity, tick);
         }
-        self.next_send_counter = self.next_send_counter.wrapping_add(1);
         self.in_flight += 1;
         let order = OrderToken(self.next_order);
         self.next_order = self.next_order.wrapping_add(1);
@@ -246,11 +272,27 @@ impl OwnerState {
             counter,
             lane: packet.lane(),
             source_path: None,
+            previous_hop: None,
+            ce_flag: false,
             output_path,
             activity_tick: packet.activity_tick,
             fmp_timestamp_ms,
             fsp_timestamp_ms,
         })
+    }
+
+    fn reserve_send_counter(&mut self) -> Result<u64, OwnerReserveError> {
+        if let Some(authority) = &self.send_counter_authority {
+            let counter = authority
+                .reserve()
+                .map_err(|_| OwnerReserveError::CounterExhausted)?;
+            self.next_send_counter = authority.current();
+            return Ok(counter);
+        }
+
+        let counter = self.next_send_counter;
+        self.next_send_counter = self.next_send_counter.wrapping_add(1);
+        Ok(counter)
     }
 
     fn reserve_fmp_timestamp(&self, activity_tick: Option<ActivityTick>) -> Option<u32> {

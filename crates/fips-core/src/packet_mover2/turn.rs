@@ -229,12 +229,98 @@ impl PacketMover2FmpLinkIngress {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspSessionIngress {
+    source_addr: NodeAddr,
+    previous_hop_addr: NodeAddr,
+    ce_flag: bool,
+    timestamp_ms: u32,
+    msg_type: u8,
+    inner_flags: u8,
+    plaintext: PacketBuffer,
+}
+
+impl PacketMover2FspSessionIngress {
+    fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
+        let Some(source_addr) = output.owner().node_addr() else {
+            return Err(output);
+        };
+        let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
+        let ce_flag = output.ce_flag();
+        let (timestamp_ms, msg_type, inner_flags) = {
+            let Some(plaintext) = output.opened_payload() else {
+                return Err(output);
+            };
+            let Some((timestamp_ms, msg_type, inner_flags, _body)) =
+                crate::node::session_wire::fsp_strip_inner_header(plaintext)
+            else {
+                return Err(output);
+            };
+            (timestamp_ms, msg_type, inner_flags)
+        };
+        let plaintext = match output.into_opened_payload() {
+            Ok(plaintext) => plaintext,
+            Err(output) => return Err(output),
+        };
+        Ok(Self {
+            source_addr,
+            previous_hop_addr,
+            ce_flag,
+            timestamp_ms,
+            msg_type,
+            inner_flags,
+            plaintext,
+        })
+    }
+
+    pub(crate) fn source_addr(&self) -> NodeAddr {
+        self.source_addr
+    }
+
+    pub(crate) fn previous_hop_addr(&self) -> NodeAddr {
+        self.previous_hop_addr
+    }
+
+    pub(crate) fn ce_flag(&self) -> bool {
+        self.ce_flag
+    }
+
+    pub(crate) fn timestamp_ms(&self) -> u32 {
+        self.timestamp_ms
+    }
+
+    pub(crate) fn msg_type(&self) -> u8 {
+        self.msg_type
+    }
+
+    pub(crate) fn inner_flags(&self) -> u8 {
+        self.inner_flags
+    }
+
+    pub(crate) fn plaintext(&self) -> &[u8] {
+        &self.plaintext
+    }
+
+    pub(crate) fn into_parts(self) -> (NodeAddr, NodeAddr, bool, u32, u8, u8, PacketBuffer) {
+        (
+            self.source_addr,
+            self.previous_hop_addr,
+            self.ce_flag,
+            self.timestamp_ms,
+            self.msg_type,
+            self.inner_flags,
+            self.plaintext,
+        )
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PacketMover2LiveNodeTurn {
     summary: PacketMover2RuntimeSummary,
     fmp_control_ingress: Vec<PacketMover2FmpControlIngress>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
+    fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
@@ -255,6 +341,7 @@ impl PacketMover2LiveNodeTurn {
             fmp_control_ingress: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
+            fsp_session_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
             endpoint_command_drops: Vec::new(),
@@ -311,6 +398,18 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn take_fmp_link_ingress(&mut self) -> Vec<PacketMover2FmpLinkIngress> {
         std::mem::take(&mut self.fmp_link_ingress)
+    }
+
+    pub(crate) fn fsp_session_ingress(&self) -> &[PacketMover2FspSessionIngress] {
+        &self.fsp_session_ingress
+    }
+
+    fn set_fsp_session_ingress(&mut self, ingress: Vec<PacketMover2FspSessionIngress>) {
+        self.fsp_session_ingress = ingress;
+    }
+
+    pub(crate) fn take_fsp_session_ingress(&mut self) -> Vec<PacketMover2FspSessionIngress> {
+        std::mem::take(&mut self.fsp_session_ingress)
     }
 
     pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
@@ -378,6 +477,7 @@ impl PacketMover2LiveNodeTurn {
             || !self.fmp_control_ingress.is_empty()
             || !self.fmp_ingress_receipts.is_empty()
             || !self.fmp_link_ingress.is_empty()
+            || !self.fsp_session_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_command_drops.is_empty()

@@ -368,6 +368,18 @@ impl PacketOutput {
             PacketProtocol::Fsp => self.payload.get(FSP_HEADER_SIZE..),
         }
     }
+
+    pub(crate) fn into_opened_payload(mut self) -> Result<PacketBuffer, Self> {
+        let header_len = match self.owner.protocol {
+            PacketProtocol::Fmp => FMP_ESTABLISHED_HEADER_SIZE,
+            PacketProtocol::Fsp => FSP_HEADER_SIZE,
+        };
+        if self.payload.len() < header_len {
+            return Err(self);
+        }
+        self.payload.drain(..header_len);
+        Ok(self.payload)
+    }
 }
 
 pub(crate) trait PacketMover2OutputSink {

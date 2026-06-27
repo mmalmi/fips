@@ -15,7 +15,7 @@ use std::{
 /// AEAD keys can be rebuilt for worker threads, but nonce uniqueness must stay
 /// single-owner. This authority is the small clonable object that lets a future
 /// packet mover reserve counters without borrowing the whole `NoiseSession`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct SendCounterAuthority {
     next: Arc<AtomicU64>,
 }
@@ -25,6 +25,11 @@ impl SendCounterAuthority {
         Self {
             next: Arc::new(AtomicU64::new(next)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(next: u64) -> Self {
+        Self::new(next)
     }
 
     pub(crate) fn current(&self) -> u64 {

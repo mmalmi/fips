@@ -226,6 +226,67 @@ impl Node {
         dispatch.dispatch(self).await;
     }
 
+    pub(in crate::node) async fn process_packet_mover2_authenticated_session(
+        &mut self,
+        ingress: crate::packet_mover2::PacketMover2FspSessionIngress,
+    ) -> bool {
+        let (source_addr, previous_hop_addr, ce_flag, timestamp_ms, msg_type, inner_flags, plaintext) =
+            ingress.into_parts();
+        let Some(source_peer) = self.packet_mover2_session_source_peer(&source_addr) else {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                "Dropping packet-mover2 authenticated session message for unknown source identity"
+            );
+            return false;
+        };
+
+        let body_len = plaintext
+            .len()
+            .saturating_sub(crate::node::session_wire::FSP_INNER_HEADER_SIZE);
+        debug!(
+            src = %self.peer_display_name(&source_addr),
+            previous_hop = %self.peer_display_name(&previous_hop_addr),
+            msg_type,
+            msg_kind = ?SessionMessageType::from_byte(msg_type),
+            plaintext_len = plaintext.len(),
+            body_len,
+            endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte(),
+            "Dispatching packet mover2 authenticated session"
+        );
+
+        let message =
+            AuthenticatedSessionMessage::new(source_peer, plaintext, msg_type, inner_flags, timestamp_ms);
+        let dispatch =
+            AuthenticatedSessionDispatch::new(source_addr, previous_hop_addr, ce_flag, message);
+        if dispatch.is_endpoint_data() {
+            let finish = dispatch.dispatch_endpoint_data_fast(self);
+            if let Some(dest_addr) = finish.pending_flush_dest() {
+                self.flush_pending_packets(&dest_addr).await;
+            }
+            return true;
+        }
+        dispatch.dispatch(self).await;
+        true
+    }
+
+    fn packet_mover2_session_source_peer(&self, source_addr: &NodeAddr) -> Option<PeerIdentity> {
+        if let Some(identity) = self
+            .sessions
+            .get(source_addr)
+            .and_then(|entry| entry.remote_identity())
+        {
+            return Some(identity);
+        }
+        if let Some(identity) = self.peers.get(source_addr).map(|peer| *peer.identity()) {
+            return Some(identity);
+        }
+        self.identity_cache
+            .iter()
+            .find_map(|(addr, pubkey, _)| {
+                (addr == source_addr).then(|| PeerIdentity::from_pubkey_full(*pubkey))
+            })
+    }
+
     pub(in crate::node) fn record_worker_authenticated_fmp_receive(
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,

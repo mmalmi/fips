@@ -717,14 +717,16 @@
         let remote_addr = TransportAddr::from_string("198.51.100.166:9000");
         let fmp_timestamp = 166_001;
         let fmp_inner_timestamp = 166_002_u32;
+        let fsp_inner_timestamp = 166_003_u32;
+        let fsp_inner_flags = 0x05;
         let fmp_counter = 166;
         let fsp_counter = 167;
         let fmp_flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
         let endpoint_payload = b"fast-endpoint";
         let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
-            166_003,
+            fsp_inner_timestamp,
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            0,
+            fsp_inner_flags,
             endpoint_payload,
         );
         let fsp_wire = fsp_encrypted_wire(fsp_counter, 0, &fsp_inner, fsp_key);
@@ -821,10 +823,23 @@
         assert_eq!(receipt.fmp_counter(), fmp_counter);
         assert_eq!(receipt.inner_timestamp_ms(), fmp_inner_timestamp);
         assert_eq!(receipt.fmp_flags(), fmp_flags);
-        match endpoint_io.event_rx.try_recv().expect("endpoint delivery") {
-            NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, endpoint_payload),
-            event => panic!("expected endpoint data, got {event:?}"),
-        }
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+        assert_eq!(turn.fsp_session_ingress().len(), 1);
+        let session_ingress = &turn.fsp_session_ingress()[0];
+        assert_eq!(session_ingress.source_addr(), source_addr);
+        assert_eq!(session_ingress.previous_hop_addr(), next_hop);
+        assert!(session_ingress.ce_flag());
+        assert_eq!(session_ingress.timestamp_ms(), fsp_inner_timestamp);
+        assert_eq!(
+            session_ingress.msg_type(),
+            crate::protocol::SessionMessageType::EndpointData.to_byte()
+        );
+        assert_eq!(session_ingress.inner_flags(), fsp_inner_flags);
+        assert_eq!(session_ingress.plaintext(), fsp_inner.as_slice());
+        assert_eq!(
+            &session_ingress.plaintext()[crate::node::session_wire::FSP_INNER_HEADER_SIZE..],
+            endpoint_payload
+        );
     }
 
     #[tokio::test]

@@ -31,6 +31,12 @@ fn packet_mover2_session_ingress_from_output(
     if msg_type != crate::protocol::LinkMessageType::SessionDatagram.to_byte() {
         return Err(PacketMover2SessionHandoffError::NoRoute);
     }
+    let previous_hop = output
+        .owner
+        .node_addr()
+        .ok_or(PacketMover2SessionHandoffError::NoRoute)?;
+    let fmp_header = FmpWireHeader::parse(output.payload())
+        .map_err(|_| PacketMover2SessionHandoffError::InvalidPacket)?;
 
     let datagram = crate::protocol::SessionDatagramRef::decode(datagram_payload)
         .map_err(|_| PacketMover2SessionHandoffError::InvalidPacket)?;
@@ -56,6 +62,8 @@ fn packet_mover2_session_ingress_from_output(
         remote_addr,
         path,
         fsp_source: Some(datagram.src_addr),
+        previous_hop: Some(previous_hop),
+        ce_flag: fmp_header.flags() & crate::node::wire::FLAG_CE != 0,
         activity_tick: output.activity_tick,
         payload: datagram.payload.to_vec().into(),
     })

@@ -14,6 +14,8 @@ struct PacketMover2FmpOwnerSeed {
     owner: OwnerId,
     config: OwnerConfig,
     keys: OwnerCryptoKeys,
+    counter_authority: crate::noise::SendCounterAuthority,
+    session_start_ms: u64,
     path: TransportPath,
     routes: PacketMover2LiveOwnerRoutes,
 }
@@ -22,6 +24,7 @@ struct PacketMover2FspOwnerSeed {
     owner: OwnerId,
     config: OwnerConfig,
     keys: OwnerCryptoKeys,
+    counter_authority: crate::noise::SendCounterAuthority,
     session_start_ms: u64,
     routes: PacketMover2LiveOwnerRoutes,
     next_hop: Option<NodeAddr>,
@@ -39,6 +42,14 @@ impl Node {
         self.packet_mover2
             .set_owner_crypto_keys(seed.owner, seed.keys)
             .is_ok()
+            && self
+                .packet_mover2
+                .set_owner_send_counter_authority(seed.owner, seed.counter_authority)
+                .is_ok()
+            && self
+                .packet_mover2
+                .set_owner_fmp_session_start_ms(seed.owner, seed.session_start_ms)
+                .is_ok()
             && self
                 .packet_mover2
                 .set_owner_active_path(seed.owner, seed.path)
@@ -70,6 +81,10 @@ impl Node {
             .is_ok()
             && self
                 .packet_mover2
+                .set_owner_send_counter_authority(seed.owner, seed.counter_authority)
+                .is_ok()
+            && self
+                .packet_mover2
                 .set_owner_fsp_session_start_ms(seed.owner, seed.session_start_ms)
                 .is_ok()
             && self
@@ -92,10 +107,11 @@ impl Node {
         let session = peer.noise_session()?;
         let transport_id = peer.transport_id()?;
         let remote_addr = peer.current_addr()?.clone();
-        let receiver_idx = peer.their_index()?.as_u32();
+        let receiver_idx = peer.our_index()?.as_u32();
         let session_start_ms = Self::now_ms().wrapping_sub(u64::from(peer.session_elapsed_ms()));
         let open = Arc::new(session.recv_cipher_clone()?);
         let seal = Arc::new(session.send_cipher_clone()?);
+        let counter_authority = session.send_counter_authority();
         let mut routes = PacketMover2LiveOwnerRoutes::new();
         routes.push_fmp_ingress(PacketMover2LiveFmpIngressRoute::new(
             transport_id,
@@ -116,9 +132,11 @@ impl Node {
                 INITIAL_FMP_GENERATION,
                 self.packet_mover2_owner_in_flight_limit(),
             )
-            .with_next_send_counter(session.current_send_counter())
+            .with_send_counter_authority(counter_authority.clone())
             .with_fmp_session_start_ms(session_start_ms),
             keys: OwnerCryptoKeys::new(open, seal),
+            counter_authority,
+            session_start_ms,
             path: TransportPath::live(transport_id, remote_addr),
             routes,
         })
@@ -128,9 +146,10 @@ impl Node {
         &mut self,
         node_addr: &NodeAddr,
     ) -> Option<PacketMover2FspOwnerSeed> {
-        let (open, seal, next_send_counter, session_start_ms, fsp_flags, inner_flags) = {
+        let (open, seal, counter_authority, session_start_ms, fsp_flags, inner_flags) = {
             let session = self.sessions.get(node_addr)?;
             let (open, seal) = session.fsp_crypto_keys()?;
+            let counter_authority = session.send_counter_authority()?;
             let mut fsp_flags = 0;
             if session.current_k_bit() {
                 fsp_flags |= crate::node::session_wire::FSP_FLAG_K;
@@ -142,7 +161,7 @@ impl Node {
             (
                 open,
                 seal,
-                session.send_counter(),
+                counter_authority,
                 session.session_start_ms(),
                 fsp_flags,
                 inner_flags,
@@ -157,9 +176,10 @@ impl Node {
                 INITIAL_FSP_GENERATION,
                 self.packet_mover2_owner_in_flight_limit(),
             )
-            .with_next_send_counter(next_send_counter)
+            .with_send_counter_authority(counter_authority.clone())
             .with_fsp_session_start_ms(session_start_ms),
             keys: OwnerCryptoKeys::new(Arc::new(open), Arc::new(seal)),
+            counter_authority,
             session_start_ms,
             routes,
             next_hop,

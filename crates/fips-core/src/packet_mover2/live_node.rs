@@ -237,6 +237,18 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         Ok(())
     }
 
+    pub(crate) fn set_owner_send_counter_authority(
+        &mut self,
+        owner: OwnerId,
+        authority: crate::noise::SendCounterAuthority,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        owner_state.set_send_counter_authority(authority);
+        Ok(())
+    }
+
     pub(crate) fn set_owner_active_path(
         &mut self,
         owner: OwnerId,
@@ -246,6 +258,18 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
             return Err(PacketMover2LiveOwnerError::UnknownOwner);
         };
         owner_state.set_active_path(path);
+        Ok(())
+    }
+
+    pub(crate) fn set_owner_fmp_session_start_ms(
+        &mut self,
+        owner: OwnerId,
+        session_start_ms: u64,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        owner_state.set_fmp_session_start_ms(session_start_ms);
         Ok(())
     }
 

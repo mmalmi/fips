@@ -125,6 +125,14 @@ impl Node {
                 processed += 1;
             }
         }
+        for ingress in turn.take_fsp_session_ingress() {
+            if self
+                .process_packet_mover2_authenticated_session(ingress)
+                .await
+            {
+                processed += 1;
+            }
+        }
         for control in turn.take_fmp_control_ingress() {
             self.process_packet(control.into_packet()).await;
             processed += 1;
@@ -203,6 +211,7 @@ impl Node {
             .saturating_add(summary.inbound_dropped())
             .saturating_add(turn.fmp_control_ingress().len())
             .saturating_add(turn.fmp_link_ingress().len())
+            .saturating_add(turn.fsp_session_ingress().len())
     }
 
     fn packet_mover2_endpoint_identity_snapshot(&self) -> HashMap<NodeAddr, PeerIdentity> {
@@ -233,6 +242,7 @@ impl Node {
                 outbound_dropped = summary.outbound_dropped(),
                 output_drops = turn.output_drops().len(),
                 fmp_control_ingress = turn.fmp_control_ingress().len(),
+                fsp_session_ingress = turn.fsp_session_ingress().len(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
                 tun_outbound_drops = turn.tun_outbound_drops().len(),
                 endpoint_command_drops = turn.endpoint_command_drops().len(),
@@ -251,6 +261,7 @@ impl Node {
             endpoint_deferred = turn.endpoint_deferred_commands(),
             fmp_control_ingress = turn.fmp_control_ingress().len(),
             fmp_link_ingress = turn.fmp_link_ingress().len(),
+            fsp_session_ingress = turn.fsp_session_ingress().len(),
             "packet mover2 scratch turn completed"
         );
     }

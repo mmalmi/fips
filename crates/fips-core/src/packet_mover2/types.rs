@@ -169,6 +169,8 @@ pub(crate) struct SocketPacket {
     class: PacketClass,
     output: OutputTarget,
     source_path: Option<TransportPath>,
+    previous_hop: Option<NodeAddr>,
+    ce_flag: bool,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -318,6 +320,8 @@ impl SocketPacket {
             class,
             output,
             source_path: None,
+            previous_hop: None,
+            ce_flag: false,
             activity_tick: None,
             payload: payload.into(),
         }
@@ -325,6 +329,16 @@ impl SocketPacket {
 
     pub(crate) fn with_source_path(mut self, path: TransportPath) -> Self {
         self.source_path = Some(path);
+        self
+    }
+
+    pub(crate) fn with_previous_hop(mut self, previous_hop: NodeAddr) -> Self {
+        self.previous_hop = Some(previous_hop);
+        self
+    }
+
+    pub(crate) fn with_ce_flag(mut self, ce_flag: bool) -> Self {
+        self.ce_flag = ce_flag;
         self
     }
 

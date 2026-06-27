@@ -687,6 +687,11 @@ impl SessionEntry {
         }
     }
 
+    /// Clone the established FSP send-counter authority for off-task packet movers.
+    pub(crate) fn send_counter_authority(&self) -> Option<crate::noise::SendCounterAuthority> {
+        Some(self.current_noise_session()?.send_counter_authority())
+    }
+
     /// Snapshot send-side FSP material for a short-lived endpoint bulk lease.
     ///
     /// The lease receives cloned AEAD state plus the shared counter authority;
