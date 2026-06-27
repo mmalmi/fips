@@ -44,8 +44,6 @@ pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 16;
-const DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
-const DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
@@ -53,8 +51,6 @@ const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_
 /// sessions by default. This removes the direct-peer hash lottery between
 /// local and handoff FSP lanes while preserving the wire protocol.
 const DEFAULT_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER: bool = true;
-const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
-    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,20 +150,6 @@ fn fsp_receive_window_from_bulk_cap(bulk_cap: usize) -> usize {
 fn fsp_receive_window() -> usize {
     static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| fsp_receive_window_from_bulk_cap(bulk_channel_cap()))
-}
-
-fn fsp_aead_completion_channel_cap_from_bulk_cap(bulk_cap: usize) -> usize {
-    // The channel stores completion batches, but pressure safety has to hold
-    // when completions arrive singly. Match the ordered ticket window so a
-    // helper/open worker cannot block merely because it used the advertised
-    // FSP receive headroom.
-    fsp_receive_window_from_bulk_cap(bulk_cap)
-}
-
-fn fsp_aead_completion_batch_max_from_raw(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX)
-        .clamp(1, 64)
 }
 
 fn priority_channel_cap() -> usize {
@@ -349,10 +331,6 @@ impl OwnedFspSessionState {
     fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
         self.fsp_receive_order_id = previous.fsp_receive_order_id;
         self.fsp_receive_order = previous.fsp_receive_order;
-    }
-
-    fn fsp_receive_order_id(&self) -> u64 {
-        self.fsp_receive_order_id
     }
 
     #[cfg(test)]
@@ -711,12 +689,6 @@ impl FspAeadFailureSources {
         }
     }
 
-    fn add_sources(&mut self, other: Self) {
-        self.local += other.local;
-        self.worker_open += other.worker_open;
-        self.worker_open_returned += other.worker_open_returned;
-    }
-
     fn record(self) {
         crate::perf_profile::record_fsp_aead_completion_source_aead_failures(
             self.local,
@@ -739,11 +711,6 @@ impl FspReplayDropSources {
         match source {
             FspAeadCompletionSource::Local => {}
         }
-    }
-
-    fn add_sources(&mut self, other: Self) {
-        self.worker_open += other.worker_open;
-        self.worker_open_returned += other.worker_open_returned;
     }
 
     fn record(self) {
@@ -808,48 +775,6 @@ fn local_established_fsp_datagram_meta(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FspAeadCompletionSource {
     Local,
-}
-
-struct FspAeadCompletion {
-    source_addr: NodeAddr,
-    receive_order_id: u64,
-    ticket: FspReceiveTicket,
-    result: FspOrderedCompletion,
-}
-
-enum FspAeadCompletionBatch {
-    One(FspAeadCompletion),
-}
-
-impl FspAeadCompletionBatch {
-    fn one(completion: FspAeadCompletion) -> Self {
-        Self::One(completion)
-    }
-
-    fn common_source_order(&self) -> Option<(NodeAddr, u64)> {
-        let first = match self {
-            Self::One(completion) => completion,
-        };
-        Some((first.source_addr, first.receive_order_id))
-    }
-
-    fn len(&self) -> usize {
-        match self {
-            Self::One(_) => 1,
-        }
-    }
-
-    fn into_vec(self) -> Vec<FspAeadCompletion> {
-        match self {
-            Self::One(completion) => vec![completion],
-        }
-    }
-
-    fn for_each(self, mut on_completion: impl FnMut(FspAeadCompletion)) {
-        match self {
-            Self::One(completion) => on_completion(completion),
-        }
-    }
 }
 
 #[derive(Debug)]

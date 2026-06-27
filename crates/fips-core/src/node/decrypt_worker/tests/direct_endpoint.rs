@@ -579,14 +579,12 @@
         );
 
         let mut shard = test_shard();
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
             &mut plaintext_batch,
@@ -661,14 +659,12 @@
 
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
             &mut plaintext_batch,
@@ -715,13 +711,7 @@
             .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
             .expect("priority packet should enqueue");
 
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        match recv_worker_item_biased(
-            &control_rx,
-            &priority_rx,
-            &fsp_aead_completion_rx,
-            &bulk_rx,
-        ) {
+        match recv_worker_item_biased(&control_rx, &priority_rx, &bulk_rx) {
             DecryptWorkerQueueItem::Control(WorkerMsg::RegisterSession {
                 session_key: got,
                 ..
@@ -734,9 +724,6 @@
             }
             DecryptWorkerQueueItem::Bulk(_) => {
                 panic!("blocking receive must not select bulk while control is ready")
-            }
-            DecryptWorkerQueueItem::FspAeadCompletion(_) => {
-                panic!("blocking receive must not select FSP AEAD completion while control is ready")
             }
             DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
@@ -775,17 +762,6 @@
             DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX, DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX,
             "direct endpoint delivery should use the same bounded delivery slice as direct TUN delivery"
         );
-        assert_eq!(
-            DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET,
-            DECRYPT_WORKER_BULK_BATCH_MAX,
-            "completion backlog should get one reserved owner slice before bulk, not consume the whole bulk turn"
-        );
-        assert_eq!(
-            DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET,
-            DECRYPT_WORKER_BULK_BATCH_MAX,
-            "completion interleave should be bounded to one bulk item width"
-        );
-
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) =
@@ -800,14 +776,12 @@
         }
 
         let mut shard = test_shard();
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
             &mut plaintext_batch,
@@ -874,146 +848,4 @@
             }
             DecryptWorkerJobAction::Output(_) => panic!("expected established FSP worker job"),
         }
-    }
-
-    #[test]
-    fn decrypt_worker_completion_drain_budget_does_not_spend_bulk_turn() {
-        let session_key = test_session_key(1, 80);
-        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
-        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let (bulk_tx, bulk_rx, bulk_queued_packets) =
-            test_bulk_lane(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
-        for _ in 0..=DECRYPT_WORKER_BULK_BURST_BUDGET {
-            queue_bulk_item_for_test(
-                &bulk_tx,
-                &bulk_queued_packets,
-                DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
-            );
-        }
-
-        let completion_count = DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET + 3;
-        let (fsp_completion_tx, fsp_aead_completion_rx) =
-            bounded::<FspAeadCompletionBatch>(completion_count);
-        let source_addr = *test_source_peer().node_addr();
-        for sequence in 0..completion_count {
-            fsp_completion_tx
-                .try_send(dummy_fsp_aead_completion_batch(
-                    source_addr,
-                    sequence as u64,
-                ))
-                .expect("completion lane should have room");
-        }
-
-        let mut shard = test_shard();
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        drain_worker_queues(
-            0,
-            &mut shard,
-            &control_rx,
-            &priority_rx,
-            &fsp_aead_completion_rx,
-            &bulk_rx,
-            &bulk_queued_packets,
-            &mut plaintext_batch,
-        );
-
-        assert_eq!(
-            fsp_aead_completion_rx.len(),
-            completion_count - DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET,
-            "one drain turn should reserve only one bounded completion slice before bulk"
-        );
-        assert_eq!(
-            bulk_rx.len(),
-            1,
-            "completion backlog must not spend the bounded bulk drain turn"
-        );
-    }
-
-    #[test]
-    fn decrypt_worker_bulk_packet_steps_bound_aead_completion_interleave() {
-        let session_key = test_session_key(1, 81);
-        let mut shard = test_shard();
-        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
-        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let bulk_packets = 2;
-        let completion_count =
-            (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 3;
-        let (fsp_completion_tx, fsp_aead_completion_rx) =
-            bounded::<FspAeadCompletionBatch>(completion_count);
-        let source_addr = *test_source_peer().node_addr();
-        for sequence in 0..completion_count {
-            fsp_completion_tx
-                .try_send(dummy_fsp_aead_completion_batch(
-                    source_addr,
-                    sequence as u64,
-                ))
-                .expect("completion lane should have room");
-        }
-
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
-        let processed = handle_bulk_item(
-            0,
-            &mut shard,
-            &control_rx,
-            &priority_rx,
-            &fsp_aead_completion_rx,
-            DecryptWorkerBulkItem::Batch(vec![
-                dummy_bulk_decrypt_job(session_key),
-                dummy_bulk_decrypt_job(session_key),
-            ]),
-            &mut plaintext_batch,
-            &mut batch_stats,
-        );
-
-        assert_eq!(processed, 2);
-        assert_eq!(
-            fsp_aead_completion_rx.len(),
-            3,
-            "a saturated completion lane should drain one bounded slice per bulk packet"
-        );
-    }
-
-    #[test]
-    fn decrypt_worker_fsp_bulk_packet_steps_bound_aead_completion_interleave() {
-        let mut shard = test_shard();
-        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
-        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let bulk_packets = 2;
-        let completion_count =
-            (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 5;
-        let (fsp_completion_tx, fsp_aead_completion_rx) =
-            bounded::<FspAeadCompletionBatch>(completion_count);
-        let source_addr = *test_source_peer().node_addr();
-        for sequence in 0..completion_count {
-            fsp_completion_tx
-                .try_send(dummy_fsp_aead_completion_batch(
-                    source_addr,
-                    sequence as u64,
-                ))
-                .expect("completion lane should have room");
-        }
-
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
-        let processed = handle_bulk_item(
-            0,
-            &mut shard,
-            &control_rx,
-            &priority_rx,
-            &fsp_aead_completion_rx,
-            DecryptWorkerBulkItem::FspBatch(vec![
-                dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
-                dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
-            ]),
-            &mut plaintext_batch,
-            &mut batch_stats,
-        );
-
-        assert_eq!(processed, 2);
-        assert_eq!(
-            fsp_aead_completion_rx.len(),
-            5,
-            "FSP owner bulk service should drain one bounded completion slice per bulk packet"
-        );
     }

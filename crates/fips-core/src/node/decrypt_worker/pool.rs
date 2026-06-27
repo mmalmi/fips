@@ -15,7 +15,6 @@ struct DecryptWorkerSender {
     control: Sender<WorkerMsg>,
     priority: Sender<WorkerMsg>,
     bulk: Sender<DecryptWorkerBulkItem>,
-    _fsp_aead_completion: Sender<FspAeadCompletionBatch>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_cap: usize,
 }
@@ -69,15 +68,10 @@ impl DecryptWorkerPool {
             let (control_tx, control_rx) = bounded::<WorkerMsg>(control_channel_cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_channel_cap);
-            let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
-                bounded::<FspAeadCompletionBatch>(
-                    fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
-                );
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             receivers.push((
                 control_rx,
                 priority_rx,
-                fsp_aead_completion_rx,
                 bulk_rx,
                 Arc::clone(&bulk_queued_packets),
             ));
@@ -85,7 +79,6 @@ impl DecryptWorkerPool {
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                _fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: bulk_channel_cap,
             });
@@ -96,16 +89,8 @@ impl DecryptWorkerPool {
             fmp_source_affine_session_owner: fmp_source_affine_session_owner_enabled(),
             fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
         };
-        for (
-            i,
-            (
-                control_rx,
-                priority_rx,
-                fsp_aead_completion_rx,
-                bulk_rx,
-                worker_bulk_queued_packets,
-            ),
-        ) in receivers.into_iter().enumerate()
+        for (i, (control_rx, priority_rx, bulk_rx, worker_bulk_queued_packets)) in
+            receivers.into_iter().enumerate()
         {
             let worker_pool = pool.clone();
             std::thread::Builder::new()
@@ -116,7 +101,6 @@ impl DecryptWorkerPool {
                         worker_pool,
                         control_rx,
                         priority_rx,
-                        fsp_aead_completion_rx,
                         bulk_rx,
                         worker_bulk_queued_packets,
                     )

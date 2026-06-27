@@ -655,12 +655,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_worker_select_fmp_completion"
     );
     assert_eq!(
-        event_from_index(Event::DecryptWorkerSelectFspCompletionPackets as usize).name(),
-        "decrypt_worker_select_fsp_completion_packets"
-    );
-    assert_eq!(
-        event_from_index(Event::DecryptWorkerSelectFspCompletionBatch as usize).name(),
-        "decrypt_worker_select_fsp_completion_batch"
+        event_from_index(Event::ReservedEvent130 as usize).name(),
+        "reserved_event_130"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerSelectBulkPackets as usize).name(),
@@ -675,28 +671,32 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_worker_drain_control"
     );
     assert_eq!(
-        event_from_index(Event::DecryptWorkerDrainAeadCompletionPackets as usize).name(),
-        "decrypt_worker_drain_aead_completion_packets"
-    );
-    assert_eq!(
-        event_from_index(Event::DecryptWorkerDrainAeadCompletionBatch as usize).name(),
-        "decrypt_worker_drain_aead_completion_batch"
+        event_from_index(Event::ReservedEvent133 as usize).name(),
+        "reserved_event_133"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerDrainBulkPackets as usize).name(),
         "decrypt_worker_drain_bulk_packets"
     );
     assert_eq!(
-        event_from_index(Event::DecryptWorkerBulkInterleaveAeadCompletionPackets as usize).name(),
-        "decrypt_worker_bulk_interleave_aead_completion_packets"
+        event_from_index(Event::ReservedEvent135 as usize).name(),
+        "reserved_event_135"
     );
     assert_eq!(
-        event_from_index(Event::DecryptWorkerBulkInterleaveAeadCompletionBatch as usize).name(),
-        "decrypt_worker_bulk_interleave_aead_completion_batch"
+        event_from_index(Event::ReservedEvent136 as usize).name(),
+        "reserved_event_136"
     );
     assert_eq!(
-        event_from_index(Event::DecryptWorkerBulkInterleaveBudgetExhausted as usize).name(),
-        "decrypt_worker_bulk_interleave_budget_exhausted"
+        event_from_index(Event::ReservedEvent208 as usize).name(),
+        "reserved_event_208"
+    );
+    assert_eq!(
+        event_from_index(Event::ReservedEvent209 as usize).name(),
+        "reserved_event_209"
+    );
+    assert_eq!(
+        event_from_index(Event::ReservedEvent210 as usize).name(),
+        "reserved_event_210"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspHelperCompletionBacklogFallback as usize).name(),

@@ -729,13 +729,11 @@
 
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let mut batch_stats = DecryptWorkerBatchStats::default();
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let processed = handle_bulk_item(
             0,
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::Batch(vec![
                 decrypt_job_for_test_packet(
                     packet_one,
@@ -803,7 +801,6 @@
             .expect("test priority lane should accept one packet");
         drop(priority_tx);
 
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = DecryptWorkerBulkItem::Batch(vec![
@@ -817,7 +814,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fsp_aead_completion_rx,
             item,
             &mut plaintext_batch,
             &mut batch_stats,
@@ -845,7 +841,6 @@
             .expect("test priority lane should accept one FSP packet");
         drop(priority_tx);
 
-        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
         let item = DecryptWorkerBulkItem::FspBatch(vec![
@@ -859,7 +854,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fsp_aead_completion_rx,
             item,
             &mut plaintext_batch,
             &mut batch_stats,

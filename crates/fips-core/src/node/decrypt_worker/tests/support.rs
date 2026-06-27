@@ -36,41 +36,6 @@
     }
 
     #[test]
-    fn fsp_aead_completion_batch_max_defaults_to_benchmarked_width_and_caps_override() {
-        assert_eq!(
-            DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
-            DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET
-        );
-        assert_eq!(
-            fsp_aead_completion_batch_max_from_raw(None),
-            DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX
-        );
-        assert_eq!(fsp_aead_completion_batch_max_from_raw(Some("0")), 1);
-        assert_eq!(fsp_aead_completion_batch_max_from_raw(Some("16")), 16);
-        assert_eq!(fsp_aead_completion_batch_max_from_raw(Some("999")), 64);
-        assert_eq!(
-            fsp_aead_completion_batch_max_from_raw(Some("bad")),
-            DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX
-        );
-    }
-
-    #[test]
-    fn fsp_aead_completion_channel_covers_ordered_receive_window() {
-        assert_eq!(
-            fsp_aead_completion_channel_cap_from_bulk_cap(0),
-            fsp_receive_window_from_bulk_cap(0)
-        );
-        assert_eq!(
-            fsp_aead_completion_channel_cap_from_bulk_cap(1),
-            1 + DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE
-        );
-        assert_eq!(
-            fsp_aead_completion_channel_cap_from_bulk_cap(DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP),
-            fsp_receive_window_from_bulk_cap(DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP)
-        );
-    }
-
-    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
@@ -120,8 +85,6 @@
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
-        let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
-            bounded::<FspAeadCompletionBatch>(1);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (
             DecryptWorkerPool {
@@ -130,7 +93,6 @@
                         control: control_tx,
                         priority: priority_tx,
                         bulk: bulk_tx,
-                        _fsp_aead_completion: fsp_aead_completion_tx,
                         bulk_queued_packets,
                         bulk_packet_cap: 1,
                     }]
@@ -163,14 +125,11 @@
             let (control_tx, control_rx) = bounded::<WorkerMsg>(cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
-            let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
-                bounded::<FspAeadCompletionBatch>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             senders.push(DecryptWorkerSender {
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                _fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
             });
@@ -201,11 +160,6 @@
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (bulk_tx, bulk_rx, bulk_queued_packets)
-    }
-
-    fn test_fsp_aead_completion_lane(cap: usize) -> Receiver<FspAeadCompletionBatch> {
-        let (_completion_tx, completion_rx) = bounded::<FspAeadCompletionBatch>(cap);
-        completion_rx
     }
 
     fn queue_bulk_item_for_test(
@@ -271,28 +225,6 @@
 
     fn dummy_bulk_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1)
-    }
-
-    fn dummy_fsp_aead_completion_batch(
-        source_addr: NodeAddr,
-        sequence: u64,
-    ) -> FspAeadCompletionBatch {
-        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
-        let mut header_packet = header_bytes.to_vec();
-        header_packet.extend_from_slice(&[0u8; 16]);
-        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
-        let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
-        job.source_addr = source_addr;
-        FspAeadCompletionBatch::one(FspAeadCompletion {
-            source_addr,
-            receive_order_id: 7,
-            ticket: FspReceiveTicket { sequence },
-            result: FspOrderedCompletion::AeadFailed {
-                job,
-                header,
-                source: FspAeadCompletionSource::Local,
-            },
-        })
     }
 
     fn dummy_priority_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {

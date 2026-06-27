@@ -575,13 +575,13 @@ pub enum Event {
     DecryptFspOpenWorkerWindowFallback = 127,
     DecryptWorkerSelectPriority = 128,
     DecryptWorkerSelectFmpCompletion = 129,
-    DecryptWorkerSelectFspCompletionPackets = 130,
+    ReservedEvent130 = 130,
     DecryptWorkerSelectBulkPackets = 131,
     DecryptWorkerDrainPriority = 132,
-    DecryptWorkerDrainAeadCompletionPackets = 133,
+    ReservedEvent133 = 133,
     DecryptWorkerDrainBulkPackets = 134,
-    DecryptWorkerBulkInterleaveAeadCompletionPackets = 135,
-    DecryptWorkerBulkInterleaveBudgetExhausted = 136,
+    ReservedEvent135 = 135,
+    ReservedEvent136 = 136,
     DecryptFspPathWorkerOpen = 137,
     DecryptWorkerControlDropped = 138,
     DecryptWorkerSelectControl = 139,
@@ -657,9 +657,9 @@ pub enum Event {
     FspAeadCompletionEpochMismatch = 205,
     FspAeadCompletionAeadFailedLocalOpen = 206,
     FspAeadCompletionAeadFailedAcceptKbitMismatch = 207,
-    DecryptWorkerSelectFspCompletionBatch = 208,
-    DecryptWorkerDrainAeadCompletionBatch = 209,
-    DecryptWorkerBulkInterleaveAeadCompletionBatch = 210,
+    ReservedEvent208 = 208,
+    ReservedEvent209 = 209,
+    ReservedEvent210 = 210,
     DecryptWorkerBatchWorker0 = 211,
     DecryptWorkerBatchWorker1 = 212,
     DecryptWorkerBatchWorker2 = 213,
@@ -817,21 +817,13 @@ impl Event {
             Event::DecryptFspOpenWorkerWindowFallback => "decrypt_fsp_open_worker_window_fallback",
             Event::DecryptWorkerSelectPriority => "decrypt_worker_select_priority",
             Event::DecryptWorkerSelectFmpCompletion => "decrypt_worker_select_fmp_completion",
-            Event::DecryptWorkerSelectFspCompletionPackets => {
-                "decrypt_worker_select_fsp_completion_packets"
-            }
+            Event::ReservedEvent130 => "reserved_event_130",
             Event::DecryptWorkerSelectBulkPackets => "decrypt_worker_select_bulk_packets",
             Event::DecryptWorkerDrainPriority => "decrypt_worker_drain_priority",
-            Event::DecryptWorkerDrainAeadCompletionPackets => {
-                "decrypt_worker_drain_aead_completion_packets"
-            }
+            Event::ReservedEvent133 => "reserved_event_133",
             Event::DecryptWorkerDrainBulkPackets => "decrypt_worker_drain_bulk_packets",
-            Event::DecryptWorkerBulkInterleaveAeadCompletionPackets => {
-                "decrypt_worker_bulk_interleave_aead_completion_packets"
-            }
-            Event::DecryptWorkerBulkInterleaveBudgetExhausted => {
-                "decrypt_worker_bulk_interleave_budget_exhausted"
-            }
+            Event::ReservedEvent135 => "reserved_event_135",
+            Event::ReservedEvent136 => "reserved_event_136",
             Event::DecryptFspPathWorkerOpen => "decrypt_fsp_path_worker_open",
             Event::DecryptFspPathWorkerOpenStriped => "decrypt_fsp_path_worker_open_striped",
             Event::DecryptWorkerControlDropped => "decrypt_worker_control_dropped",
@@ -973,15 +965,9 @@ impl Event {
             Event::FspAeadCompletionAeadFailedAcceptKbitMismatch => {
                 "fsp_aead_completion_aead_failed_accept_kbit_mismatch"
             }
-            Event::DecryptWorkerSelectFspCompletionBatch => {
-                "decrypt_worker_select_fsp_completion_batch"
-            }
-            Event::DecryptWorkerDrainAeadCompletionBatch => {
-                "decrypt_worker_drain_aead_completion_batch"
-            }
-            Event::DecryptWorkerBulkInterleaveAeadCompletionBatch => {
-                "decrypt_worker_bulk_interleave_aead_completion_batch"
-            }
+            Event::ReservedEvent208 => "reserved_event_208",
+            Event::ReservedEvent209 => "reserved_event_209",
+            Event::ReservedEvent210 => "reserved_event_210",
             Event::DecryptWorkerBatchWorker0 => "decrypt_worker_batch_worker0",
             Event::DecryptWorkerBatchWorker1 => "decrypt_worker_batch_worker1",
             Event::DecryptWorkerBatchWorker2 => "decrypt_worker_batch_worker2",
@@ -1130,13 +1116,13 @@ fn event_from_index(idx: usize) -> Event {
         127 => Event::DecryptFspOpenWorkerWindowFallback,
         128 => Event::DecryptWorkerSelectPriority,
         129 => Event::DecryptWorkerSelectFmpCompletion,
-        130 => Event::DecryptWorkerSelectFspCompletionPackets,
+        130 => Event::ReservedEvent130,
         131 => Event::DecryptWorkerSelectBulkPackets,
         132 => Event::DecryptWorkerDrainPriority,
-        133 => Event::DecryptWorkerDrainAeadCompletionPackets,
+        133 => Event::ReservedEvent133,
         134 => Event::DecryptWorkerDrainBulkPackets,
-        135 => Event::DecryptWorkerBulkInterleaveAeadCompletionPackets,
-        136 => Event::DecryptWorkerBulkInterleaveBudgetExhausted,
+        135 => Event::ReservedEvent135,
+        136 => Event::ReservedEvent136,
         137 => Event::DecryptFspPathWorkerOpen,
         138 => Event::DecryptWorkerControlDropped,
         139 => Event::DecryptWorkerSelectControl,
@@ -1208,9 +1194,9 @@ fn event_from_index(idx: usize) -> Event {
         205 => Event::FspAeadCompletionEpochMismatch,
         206 => Event::FspAeadCompletionAeadFailedLocalOpen,
         207 => Event::FspAeadCompletionAeadFailedAcceptKbitMismatch,
-        208 => Event::DecryptWorkerSelectFspCompletionBatch,
-        209 => Event::DecryptWorkerDrainAeadCompletionBatch,
-        210 => Event::DecryptWorkerBulkInterleaveAeadCompletionBatch,
+        208 => Event::ReservedEvent208,
+        209 => Event::ReservedEvent209,
+        210 => Event::ReservedEvent210,
         211 => Event::DecryptWorkerBatchWorker0,
         212 => Event::DecryptWorkerBatchWorker1,
         213 => Event::DecryptWorkerBatchWorker2,
@@ -1726,15 +1712,6 @@ pub(crate) fn record_decrypt_worker_select_control() {
 }
 
 #[inline]
-pub(crate) fn record_decrypt_worker_select_fsp_completion(packets: usize) {
-    record_event(Event::DecryptWorkerSelectFspCompletionBatch);
-    record_event_count(
-        Event::DecryptWorkerSelectFspCompletionPackets,
-        packets as u64,
-    );
-}
-
-#[inline]
 pub(crate) fn record_decrypt_worker_select_bulk(packets: usize) {
     record_event_count(Event::DecryptWorkerSelectBulkPackets, packets as u64);
 }
@@ -1750,40 +1727,8 @@ pub(crate) fn record_decrypt_worker_drain_control() {
 }
 
 #[inline]
-pub(crate) fn record_decrypt_worker_drain_aead_completion(messages: usize, packets: usize) {
-    record_event_count(
-        Event::DecryptWorkerDrainAeadCompletionBatch,
-        messages as u64,
-    );
-    record_event_count(
-        Event::DecryptWorkerDrainAeadCompletionPackets,
-        packets as u64,
-    );
-}
-
-#[inline]
 pub(crate) fn record_decrypt_worker_drain_bulk(packets: usize) {
     record_event_count(Event::DecryptWorkerDrainBulkPackets, packets as u64);
-}
-
-#[inline]
-pub(crate) fn record_decrypt_worker_bulk_interleave_aead_completion(
-    messages: usize,
-    packets: usize,
-) {
-    record_event_count(
-        Event::DecryptWorkerBulkInterleaveAeadCompletionBatch,
-        messages as u64,
-    );
-    record_event_count(
-        Event::DecryptWorkerBulkInterleaveAeadCompletionPackets,
-        packets as u64,
-    );
-}
-
-#[inline]
-pub(crate) fn record_decrypt_worker_bulk_interleave_budget_exhausted() {
-    record_event(Event::DecryptWorkerBulkInterleaveBudgetExhausted);
 }
 
 #[inline]
