@@ -1,5 +1,5 @@
     #[tokio::test]
-    async fn live_node_turn_flushes_planned_transport_output() {
+    async fn live_node_route_table_turn_flushes_planned_transport_output() {
         let send_transport_id = TransportId::new(76);
         let recv_transport_id = TransportId::new(77);
         let fmp_source = NodeAddr::from_bytes([0x4c; 16]);
@@ -43,23 +43,37 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
         let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::new());
-        let mut outbound_source = VecDeque::from([OutboundPacket::fmp(
-            fmp_owner,
-            1,
-            PacketClass::Bulk,
-            761,
-            0,
-            b"live-node-transport".to_vec(),
-        )]);
-        let mut router = NullIngressRouter;
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_tun_destination(
+            fmp_source,
+            PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
+                fmp_owner,
+                1,
+                PacketClass::Bulk,
+                761,
+                0,
+            )),
+        );
+        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+        let tun_packet = tun_ipv6_packet(fmp_source, 48);
+        tun_outbound_tx
+            .try_send(tun_packet.clone())
+            .expect("enqueue TUN outbound packet");
+        let mut deferred_endpoint_commands = Vec::new();
 
         let turn = driver
-            .pump_aead_live_node_turn(
+            .pump_aead_live_node_route_table_turn(
                 &mut raw_source,
-                &mut router,
+                &mut routes,
                 8,
-                &mut outbound_source,
+                &mut endpoint_priority_rx,
+                &mut endpoint_bulk_rx,
+                0,
+                &mut tun_outbound_rx,
                 8,
+                &mut deferred_endpoint_commands,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 missing_endpoint_peer,
@@ -81,7 +95,9 @@
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());
         assert!(raw_source.source_mut().is_empty());
-        assert!(outbound_source.is_empty());
+        assert!(turn.endpoint_command_drops().is_empty());
+        assert!(turn.tun_outbound_drops().is_empty());
+        assert!(tun_outbound_rx.try_recv().is_err());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint_io.event_rx.try_recv().is_err());
 
@@ -96,7 +112,7 @@
         assert_eq!(header.counter(), 760);
         assert_eq!(
             open_fmp_wire_payload(&received.data, fmp_key),
-            b"live-node-transport"
+            tun_packet
         );
         assert_eq!(
             driver.owner_mut(fmp_owner).unwrap().active_path(),

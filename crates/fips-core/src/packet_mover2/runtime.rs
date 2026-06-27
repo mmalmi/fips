@@ -319,47 +319,6 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.finish_aead_output_turn(summary, sink, crypto_limit)
     }
 
-    pub(crate) async fn pump_aead_live_node_turn<RI, O, R, Resolver, Transports>(
-        &mut self,
-        raw_ingress: &mut RI,
-        router: &mut R,
-        raw_ingress_limit: usize,
-        outbound: &mut O,
-        outbound_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        RI: PacketMover2RawIngressSource,
-        O: PacketMover2OutboundSource,
-        R: PacketMover2IngressRouter,
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.reset_turn_buffers();
-
-        let mut summary = PacketMover2RuntimeSummary::default();
-        raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
-            self.admit_raw_ingress_packet(packet, router, &mut summary);
-        });
-        outbound.drain_outbound(outbound_limit, |packet| {
-            self.admit_outbound_packet(packet, &mut summary);
-        });
-
-        self.finish_aead_live_node_output_turn(
-            summary,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-        )
-        .await
-    }
-
     async fn finish_aead_live_node_output_turn<Resolver, Transports>(
         &mut self,
         summary: PacketMover2RuntimeSummary,
@@ -403,41 +362,6 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             .outputs_dropped
             .saturating_add(report.transport_dropped);
         report
-    }
-
-    pub(crate) async fn pump_aead_live_node_packet_rx_turn<O, R, Resolver, Transports>(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        router: &mut R,
-        packet_limit: usize,
-        outbound: &mut O,
-        outbound_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        O: PacketMover2OutboundSource,
-        R: PacketMover2IngressRouter,
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        let mut raw_ingress = PacketMover2FmpPacketRxSource::new(packet_rx);
-        self.pump_aead_live_node_turn(
-            &mut raw_ingress,
-            router,
-            packet_limit,
-            outbound,
-            outbound_limit,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-        )
-        .await
     }
 
     pub(crate) async fn pump_aead_live_node_route_table_turn<RI, Resolver, Transports>(

@@ -455,6 +455,16 @@
             PacketMover2IngressRoute::new(fsp_owner, 1, OutputTarget::Endpoint)
                 .with_class(PacketClass::Mmp),
         );
+        routes.register_tun_destination(
+            fmp_source,
+            PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
+                fmp_owner,
+                1,
+                PacketClass::Bulk,
+                741,
+                0,
+            )),
+        );
         let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::from([
             PacketMover2LiveIngressPacket::fmp(ReceivedPacket::with_timestamp(
                 transport_id,
@@ -472,14 +482,13 @@
                 fsp_source,
             ),
         ]));
-        let mut outbound_source = VecDeque::from([OutboundPacket::fmp(
-            fmp_owner,
-            1,
-            PacketClass::Bulk,
-            741,
-            0,
-            b"transport-live-node".to_vec(),
-        )]);
+        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+        tun_outbound_tx
+            .try_send(tun_ipv6_packet(fmp_source, 48))
+            .expect("enqueue TUN outbound packet");
+        let mut deferred_endpoint_commands = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let resolver = |addr: &NodeAddr| {
             if addr == &fsp_source {
@@ -490,12 +499,16 @@
         };
 
         let turn = driver
-            .pump_aead_live_node_turn(
+            .pump_aead_live_node_route_table_turn(
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut outbound_source,
+                &mut endpoint_priority_rx,
+                &mut endpoint_bulk_rx,
+                0,
+                &mut tun_outbound_rx,
                 8,
+                &mut deferred_endpoint_commands,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 resolver,
@@ -524,8 +537,10 @@
             turn.output_drops()[0].reason(),
             PacketMover2OutputError::NoRoute
         );
+        assert!(turn.endpoint_command_drops().is_empty());
+        assert!(turn.tun_outbound_drops().is_empty());
         assert!(raw_source.source_mut().is_empty());
-        assert!(outbound_source.is_empty());
+        assert!(tun_outbound_rx.try_recv().is_err());
 
         assert_eq!(tun_rx.try_recv().unwrap(), b"tun-live-node".to_vec());
         match endpoint_io.event_rx.try_recv().expect("endpoint event") {
@@ -580,16 +595,23 @@
             PacketMover2IngressRoute::new(fmp_owner, 1, OutputTarget::Tun)
                 .with_class(PacketClass::Liveness),
         );
-        let mut outbound_source = VecDeque::new();
+        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+        let mut deferred_endpoint_commands = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
         let turn = driver
-            .pump_aead_live_node_packet_rx_turn(
+            .pump_aead_live_node_packet_rx_route_table_turn(
                 &mut packet_rx,
                 &mut routes,
                 8,
-                &mut outbound_source,
+                &mut endpoint_priority_rx,
+                &mut endpoint_bulk_rx,
+                0,
+                &mut tun_outbound_rx,
                 8,
+                &mut deferred_endpoint_commands,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 missing_endpoint_peer,
@@ -610,7 +632,8 @@
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());
-        assert!(outbound_source.is_empty());
+        assert!(turn.endpoint_command_drops().is_empty());
+        assert!(turn.tun_outbound_drops().is_empty());
         assert!(packet_rx.try_recv().is_err());
         assert_eq!(tun_rx.try_recv().unwrap(), b"packet-rx-tun".to_vec());
         assert!(endpoint_io.event_rx.try_recv().is_err());
