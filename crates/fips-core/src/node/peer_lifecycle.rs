@@ -37,11 +37,6 @@ impl ActivePeerRegistry {
         self.peers.len()
     }
 
-    #[cfg(test)]
-    pub(in crate::node) fn is_empty(&self) -> bool {
-        self.peers.is_empty()
-    }
-
     pub(in crate::node) fn values(&self) -> impl Iterator<Item = &ActivePeer> {
         self.peers.values()
     }
@@ -169,21 +164,6 @@ impl PeerLifecycleRegistry {
         push_index(PeerSessionIndexKind::Pending, peer.pending_our_index());
         push_index(PeerSessionIndexKind::Previous, peer.previous_our_index());
         indices
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(in crate::node) fn connected_udp_activation_candidate(peer: &ActivePeer) -> bool {
-        peer.is_healthy()
-            && peer.noise_session().is_some()
-            && peer.transport_id().is_some()
-            && peer.current_addr().is_some()
-            && peer.connected_udp().is_none()
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn connected_udp_activation_order(mut candidates: Vec<(NodeAddr, bool)>) -> Vec<NodeAddr> {
-        candidates.sort_by_key(|(addr, is_configured)| (!*is_configured, *addr));
-        candidates.into_iter().map(|(addr, _)| addr).collect()
     }
 
     pub(in crate::node) fn insert_connection(
@@ -549,8 +529,6 @@ impl PeerLifecycleRegistry {
             their_index,
             transport_id,
             remote_addr,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            peer.connected_udp(),
             timestamp_ms,
             base_flags,
             noise_session.has_send_cipher(),
@@ -781,64 +759,6 @@ impl PeerLifecycleRegistry {
         })
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(in crate::node) fn connected_udp_activation_plan(
-        &self,
-        configured_peers: &ConfiguredPeerSendWeights,
-    ) -> ConnectedUdpActivationPlan {
-        let candidates = self
-            .active
-            .iter()
-            .filter_map(|(addr, peer)| {
-                Self::connected_udp_activation_candidate(peer)
-                    .then_some((*addr, configured_peers.contains(addr)))
-            })
-            .collect();
-        let candidates = Self::connected_udp_activation_order(candidates);
-        let installed_count = self
-            .active
-            .values()
-            .filter(|peer| peer.connected_udp().is_some())
-            .count();
-
-        ConnectedUdpActivationPlan {
-            candidates,
-            installed_count,
-        }
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(in crate::node) fn install_connected_udp_if_eligible(
-        &mut self,
-        node_addr: &NodeAddr,
-        socket: std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-        drain: crate::transport::udp::peer_drain::PeerRecvDrain,
-    ) -> ConnectedUdpInstallResult {
-        let Some(peer) = self.active.get_mut(node_addr) else {
-            return ConnectedUdpInstallResult::MissingPeer;
-        };
-        if !Self::connected_udp_activation_candidate(peer) {
-            return ConnectedUdpInstallResult::NotEligible;
-        }
-        peer.set_connected_udp(socket, drain);
-        ConnectedUdpInstallResult::Installed
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(in crate::node) fn clear_connected_udp_for_peer(
-        &mut self,
-        node_addr: &NodeAddr,
-    ) -> ConnectedUdpClearResult {
-        let Some(peer) = self.active.get_mut(node_addr) else {
-            return ConnectedUdpClearResult::MissingPeer;
-        };
-        if peer.connected_udp().is_none() {
-            return ConnectedUdpClearResult::AlreadyClear;
-        }
-        peer.clear_connected_udp();
-        ConnectedUdpClearResult::Cleared
-    }
-
     pub(in crate::node) fn mark_link_dead_direct_path(
         &mut self,
         node_addr: &NodeAddr,
@@ -846,23 +766,8 @@ impl PeerLifecycleRegistry {
         let peer = self.active.get_mut(node_addr)?;
         let link_id = peer.link_id();
         peer.mark_stale();
-        let connected_udp_cleared = {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            {
-                let had_connected_udp = peer.connected_udp().is_some();
-                peer.clear_connected_udp();
-                had_connected_udp
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            {
-                false
-            }
-        };
 
-        Some(LinkDeadDirectPathDegradation {
-            link_id,
-            connected_udp_cleared,
-        })
+        Some(LinkDeadDirectPathDegradation { link_id })
     }
 
     pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
@@ -895,11 +800,6 @@ impl PeerLifecycleRegistry {
 
     pub(in crate::node) fn len(&self) -> usize {
         self.active.len()
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn is_empty(&self) -> bool {
-        self.active.is_empty()
     }
 
     pub(in crate::node) fn values(&self) -> impl Iterator<Item = &ActivePeer> {

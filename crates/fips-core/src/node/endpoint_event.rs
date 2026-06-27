@@ -1569,8 +1569,6 @@ mod endpoint_committed_bulk_tests {
             fsp_seal: None,
             send_target: crate::node::encrypt_worker::SelectedSendTarget::new(
                 socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_addr.parse().expect("socket addr"),
             ),
             endpoint_flow_dispatch_key: None,

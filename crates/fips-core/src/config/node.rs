@@ -56,37 +56,22 @@ impl LimitsConfig {
     }
 }
 
-/// Connected UDP fast-path configuration (`node.connected_udp.*`).
+/// Legacy connected UDP configuration (`node.connected_udp.*`).
+///
+/// Retained only so existing config files continue to parse. The scratch
+/// dataplane no longer has a connected-UDP runtime path or env-selected
+/// opener mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectedUdpConfig {
-    /// Enable per-peer connected UDP sockets (`node.connected_udp.enabled`).
-    ///
-    /// `FIPS_CONNECTED_UDP` remains honored for operational A/B tests.
-    /// Connected UDP stays default-on for Linux and default-off for macOS,
-    /// where live mobile/NAT testing has shown the `SO_REUSEPORT` listener
-    /// group can destabilize the wildcard receive path. The old macOS-specific
-    /// `FIPS_MACOS_CONNECTED_UDP=1` is still accepted as an enable-only legacy
-    /// override.
+    /// Legacy parse-only flag (`node.connected_udp.enabled`).
     #[serde(default = "ConnectedUdpConfig::default_enabled")]
     pub enabled: bool,
 
-    /// Maximum peers that may have connected UDP sockets installed
-    /// (`node.connected_udp.max_peers`).
-    ///
-    /// This is an explicit escape hatch for large meshes while connected UDP
-    /// still uses one receive-drain thread per installed peer. Set to `0` to
-    /// disable the explicit cap and rely only on the fd budget and
-    /// `node.limits.max_peers`.
+    /// Legacy parse-only peer cap (`node.connected_udp.max_peers`).
     #[serde(default = "ConnectedUdpConfig::default_max_peers")]
     pub max_peers: usize,
 
-    /// Number of process file descriptors to leave for non-connected-UDP use
-    /// (`node.connected_udp.fd_reserve`).
-    ///
-    /// This is headroom, not a peer cap. Connected UDP uses three FDs per
-    /// installed peer, so the effective fast-path peer budget is roughly
-    /// `(RLIMIT_NOFILE - fd_reserve) / 3`, also bounded by `max_peers` when
-    /// non-zero and by `node.limits.max_peers`.
+    /// Legacy parse-only fd reserve (`node.connected_udp.fd_reserve`).
     #[serde(default = "ConnectedUdpConfig::default_fd_reserve")]
     pub fd_reserve: usize,
 }
@@ -103,13 +88,7 @@ impl Default for ConnectedUdpConfig {
 
 impl ConnectedUdpConfig {
     fn default_enabled() -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            return false;
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        true
+        false
     }
 
     fn default_max_peers() -> usize {
@@ -769,7 +748,7 @@ pub struct NodeConfig {
     #[serde(default)]
     pub limits: LimitsConfig,
 
-    /// Connected UDP fast path (`node.connected_udp.*`).
+    /// Legacy connected UDP config (`node.connected_udp.*`, parse-only).
     #[serde(default)]
     pub connected_udp: ConnectedUdpConfig,
 

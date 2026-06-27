@@ -671,21 +671,16 @@ fn run_worker_macos(idx: usize, rx: MacWorkerReceiver) {
 /// pins one peer's flow to one worker (FIFO order preserved for TCP), but
 /// it does NOT mean every job in a worker's drained batch shares a target.
 /// Two different peers can hash to the same worker. The previous
-/// implementation cloned `batch[0].socket` /
-/// `batch[0].connected_socket` and used them for the entire batch,
+/// implementation reused `batch[0]` target data for the entire batch,
 /// silently misdirecting packets:
 ///
-/// - **Connected-socket path:** `sendmsg(.., msg_name=NULL)` delivers
-///   to the peer cached at `connect(2)` time. Mixing jobs across
-///   peers sent all of them to the first peer's connected socket.
 /// - **UDP_GSO path:** the super-skb has one `msg_name` + one
 ///   `UDP_SEGMENT` cmsg. Mixing destinations sent the segmented
 ///   payload to `packets[0].dest_addr` regardless of each job's
 ///   intended target.
 /// - **Plain `sendmmsg` path:** the kernel honours per-message
-///   `msg_name`, so the non-connected fallback was actually safe —
-///   but we group anyway for code symmetry and to keep GSO
-///   eligibility checks simple.
+///   `msg_name`; grouping keeps code symmetry and GSO eligibility
+///   checks simple.
 ///
 /// **Order preservation:** adjacent packets for the same target keep
 /// channel-drain order inside one group, and interleaved targets stay

@@ -254,8 +254,6 @@ async fn session_direct_path_trust_changes_invalidate_endpoint_bulk_lease() {
     udp.start_async().await.expect("start UDP transport");
     let send_target = crate::node::encrypt_worker::SelectedSendTarget::new(
         udp.async_socket().expect("started UDP socket"),
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        None,
         "127.0.0.1:9".parse().expect("socket addr"),
     );
     let workers = crate::node::encrypt_worker::EncryptWorkerPool::spawn(1);

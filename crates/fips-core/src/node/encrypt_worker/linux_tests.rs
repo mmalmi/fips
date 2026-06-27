@@ -20,7 +20,7 @@ mod tests {
         .expect("open send socket");
         let socket = raw.into_async().expect("into_async");
         let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
-        let target = SelectedSendTarget::new(socket, None, dest);
+        let target = SelectedSendTarget::new(socket, dest);
         let target_key = target.key();
         (target, target_key)
     }
@@ -182,7 +182,7 @@ mod tests {
             )
             .expect("open send socket");
             let socket = raw.into_async().expect("into_async");
-            let target = SelectedSendTarget::new(socket, None, recv.local_addr().unwrap());
+            let target = SelectedSendTarget::new(socket, recv.local_addr().unwrap());
             let target_key = target.key();
             let flow = LinuxWgBatchSendFlow::spawn(
                 target_key,
@@ -227,7 +227,7 @@ mod tests {
             )
             .expect("open send socket");
             let socket = raw.into_async().expect("into_async");
-            let target = SelectedSendTarget::new(socket, None, recv.local_addr().unwrap());
+            let target = SelectedSendTarget::new(socket, recv.local_addr().unwrap());
             let target_key = target.key();
             let flow = LinuxWgBatchSendFlow::spawn(
                 target_key,
@@ -560,7 +560,7 @@ mod tests {
             .expect("open send socket");
             let socket = raw.into_async().expect("into_async");
             let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
-            let target = SelectedSendTarget::new(socket, None, dest);
+            let target = SelectedSendTarget::new(socket, dest);
             let target_key = target.key();
 
             let mut batch = SelectedSendBatch::new(target, target_key, pkt(1500), true);
@@ -617,7 +617,7 @@ mod tests {
             .expect("open send socket");
             let socket = raw.into_async().expect("into_async");
             let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
-            let target = SelectedSendTarget::new(socket, None, dest);
+            let target = SelectedSendTarget::new(socket, dest);
             let target_key = target.key();
             let mut groups = Vec::new();
 
@@ -675,7 +675,7 @@ mod tests {
             .expect("open send socket");
             let socket = raw.into_async().expect("into_async");
             let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
-            let target = SelectedSendTarget::new(socket, None, dest);
+            let target = SelectedSendTarget::new(socket, dest);
             let target_key = target.key();
 
             let groups = vec![
@@ -929,16 +929,15 @@ mod tests {
     }
 
     /// Mixed-destination batch dispatched to a single worker. The
-    /// pre-fix bug used `batch[0].socket` / `batch[0].connected_socket`
-    /// / `packets[0].dest_addr` for the whole drained batch, so a
+    /// pre-fix bug used `batch[0]` target data for the whole drained batch, so a
     /// hash-collision (two peers hashing to the same worker) silently
     /// misdirected the second peer's packets to the first peer's
-    /// destination. The fix groups jobs by `(socket_fd, connected_fd,
-    /// dest_addr)` before flushing.
+    /// destination. The fix groups jobs by `(socket_fd, dest_addr)`
+    /// before flushing.
     ///
     /// This test goes through `flush_batch_sync` directly: it constructs
     /// three `FmpSendJob`s split across two distinct receiver sockaddrs
-    /// (A, B, A) on a shared send socket with no connected socket, then
+    /// (A, B, A) on a shared send socket, then
     /// asserts that recv_a gets the two A-stamped packets and recv_b
     /// gets exactly the one B-stamped packet.
     ///
@@ -1012,8 +1011,6 @@ mod tests {
                     fsp_seal: None,
                     send_target: SelectedSendTarget::new(
                         socket,
-                        #[cfg(any(target_os = "linux", target_os = "macos"))]
-                        None,
                         dest,
                     ),
                     endpoint_flow_dispatch_key: None,

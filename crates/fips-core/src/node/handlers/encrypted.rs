@@ -210,11 +210,6 @@ impl Node {
                 if did_flip {
                     self.ensure_current_session_index_registered(&node_addr, "peer K-bit flip");
                     self.register_decrypt_worker_session(&node_addr);
-                    // The connected-UDP fast path snapshots session key + K-bit
-                    // at activation. Refresh it after cutover so normal traffic
-                    // returns to the direct worker path instead of permanent
-                    // rx_loop misses.
-                    self.clear_connected_udp_for_peer(&node_addr);
                 }
                 let Some(source_peer) = self.peers.get(&node_addr).map(|peer| *peer.identity())
                 else {
@@ -396,24 +391,7 @@ impl Node {
         let dispatch =
             runtime_receive.record_bookkeeping(&mut self.peers, now, path_bookkeeping_allowed);
         let action = dispatch.into_action();
-        // Address rotation invalidates the per-peer connected UDP
-        // socket: it's `connect(2)`-ed to the old kernel 5-tuple
-        // (cached route + neighbour entry), and continuing to
-        // `sendmsg(.., msg_name=NULL)` on it would push outbound
-        // packets at the now-stale address. Drop the connected socket
-        // + paired drain thread; the wildcard listen socket takes
-        // over until the peer's new 5-tuple is observed long enough
-        // to re-`connect()`. Done after the `peer.get_mut` block so
-        // the borrow on `self.peers` is released — `clear_connected_
-        // udp_for_peer` may need to traverse other peer state.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if action.address_changed() {
-            self.clear_connected_udp_for_peer(action.node_addr());
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            let _ = action.address_changed();
-        }
+        let _ = action.address_changed();
         let Some(link_message) = action.into_link_message() else {
             return;
         };

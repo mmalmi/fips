@@ -70,7 +70,7 @@ mod mac_queue_tests {
             counter: 0,
             wire_buf,
             fsp_seal: None,
-            send_target: SelectedSendTarget::new(socket, None, dest_addr),
+            send_target: SelectedSendTarget::new(socket, dest_addr),
             endpoint_flow_dispatch_key,
             bulk_endpoint_data,
             drop_on_backpressure,
@@ -83,7 +83,7 @@ mod mac_queue_tests {
         socket: AsyncUdpSocket,
         dest_addr: SocketAddr,
     ) -> Arc<MacSequencedSendFlow> {
-        let send_target = SelectedSendTarget::new(socket, None, dest_addr);
+        let send_target = SelectedSendTarget::new(socket, dest_addr);
         let key = MacSendFlowKey {
             target: send_target.key(),
         };
@@ -595,7 +595,7 @@ mod mac_queue_tests {
     fn direct_send_batch_attempt_owns_cursor_and_backpressure_policy() {
         with_test_socket(|socket, _cipher| {
             let dest: SocketAddr = "127.0.0.1:10032".parse().unwrap();
-            let target = SelectedSendTarget::new(socket.clone(), None, dest);
+            let target = SelectedSendTarget::new(socket.clone(), dest);
             let target_key = target.key();
             let mut batch = SelectedSendBatch::new(target, target_key, vec![1], true);
             batch.push(vec![2], true);
@@ -616,7 +616,7 @@ mod mac_queue_tests {
                 "droppable backpressure advances exactly one current packet"
             );
 
-            let target = SelectedSendTarget::new(socket, None, dest);
+            let target = SelectedSendTarget::new(socket, dest);
             let retry_target_key = target.key();
             let mut retry_batch = SelectedSendBatch::new(target, retry_target_key, vec![3], false);
             retry_batch.push(vec![4], false);

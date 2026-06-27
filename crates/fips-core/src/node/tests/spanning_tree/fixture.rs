@@ -25,7 +25,6 @@ pub(in crate::node::tests) async fn make_test_node_with_mtu(mtu: u16) -> TestNod
     config.node.rate_limit.handshake_resend_backoff = 1.5;
     config.node.rate_limit.handshake_max_resends = 12;
     config.node.bloom.update_debounce_ms = 50;
-    config.node.connected_udp.enabled = false;
     let mut node = Node::new(config).unwrap();
     let transport_id = TransportId::new(1);
 

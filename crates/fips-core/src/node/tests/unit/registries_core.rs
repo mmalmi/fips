@@ -768,7 +768,7 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
 
     assert!(
         update.address_changed,
-        "path update should report that connected UDP must be cleared"
+        "path update should report address drift for owner bookkeeping"
     );
     assert!(update.path_bookkeeping_recorded);
     assert!(update.mmp_recorded);

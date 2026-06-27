@@ -8,10 +8,8 @@ use crate::peer::{ActivePeer, PromotionResult};
 use crate::transport::ReceivedPacket;
 use crate::transport::udp::UdpTransport;
 use crate::transport::{TransportHandle, packet_channel};
-use std::sync::Arc;
 
 mod config_capacity_classifiers;
-mod connected_udp_lifecycle;
 mod endpoint_events;
 mod fmp_worker;
 mod link_registry_rx;
@@ -111,36 +109,6 @@ fn arm_test_fmp_rekey(peer: &mut ActivePeer, rekey_our_index: SessionIndex) {
     let handshake =
         crate::noise::HandshakeState::new_initiator(local.keypair(), remote.pubkey_full());
     peer.set_rekey_state(handshake, rekey_our_index, vec![0xAB; 64], 0);
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn make_test_connected_udp_pair(
-    transport_id: TransportId,
-) -> (
-    Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-    crate::transport::udp::peer_drain::PeerRecvDrain,
-) {
-    let peer_udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind peer udp");
-    let peer_socket_addr = peer_udp.local_addr().expect("peer udp local addr");
-    let socket = Arc::new(
-        crate::transport::udp::connected_peer::ConnectedPeerSocket::open(
-            "127.0.0.1:0".parse().unwrap(),
-            peer_socket_addr,
-            1 << 20,
-            1 << 20,
-        )
-        .expect("connected peer socket"),
-    );
-    let (packet_tx, _packet_rx) = packet_channel(16);
-    let drain = crate::transport::udp::peer_drain::PeerRecvDrain::spawn(
-        socket.clone(),
-        transport_id,
-        peer_socket_addr,
-        packet_tx,
-        None,
-    )
-    .expect("connected peer drain");
-    (socket, drain)
 }
 
 /// Helper: spawn a UdpTransport with the given mtu, started and operational.

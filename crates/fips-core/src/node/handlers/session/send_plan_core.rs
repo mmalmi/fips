@@ -89,24 +89,10 @@ impl PipelinedEndpointSendTarget {
         udp: &crate::transport::udp::UdpTransport,
         prepared: &crate::node::FmpSendPreparation,
     ) -> Option<Self> {
-        let socket_addr = {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            {
-                match prepared.connected_socket.as_ref() {
-                    Some(socket) => Some(socket.peer_addr()),
-                    None => udp.resolve_for_off_task(&prepared.remote_addr).await.ok(),
-                }
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            {
-                udp.resolve_for_off_task(&prepared.remote_addr).await.ok()
-            }
-        }?;
+        let socket_addr = udp.resolve_for_off_task(&prepared.remote_addr).await.ok()?;
         let socket = udp.async_socket()?;
         Some(Self {
             socket,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket: prepared.connected_socket.clone(),
             socket_addr,
         })
     }
@@ -114,8 +100,6 @@ impl PipelinedEndpointSendTarget {
     fn into_selected_send_target(self) -> crate::node::encrypt_worker::SelectedSendTarget {
         crate::node::encrypt_worker::SelectedSendTarget::new(
             self.socket,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            self.connected_socket,
             self.socket_addr,
         )
     }

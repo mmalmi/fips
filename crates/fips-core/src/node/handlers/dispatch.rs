@@ -137,7 +137,6 @@ impl Node {
             peer = %peer_name,
             link_id = %degraded.link_id,
             preserve_queued_packets,
-            connected_udp_cleared = degraded.connected_udp_cleared,
             "Peer direct path marked stale after link-dead timeout"
         );
     }

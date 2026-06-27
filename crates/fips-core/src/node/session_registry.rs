@@ -327,11 +327,6 @@ impl ConfiguredPeerSendWeights {
             .filter(|(_, peer)| peer.is_auto_connect())
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(in crate::node) fn contains(&self, peer_addr: &NodeAddr) -> bool {
-        self.peer_configs.contains_key(peer_addr)
-    }
-
     #[cfg(test)]
     pub(in crate::node) fn len(&self) -> usize {
         self.peer_configs.len()

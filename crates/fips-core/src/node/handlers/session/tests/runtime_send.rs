@@ -191,8 +191,6 @@
             their_index: SessionIndex::new(0x2020),
             transport_id,
             remote_addr: TransportAddr::from_string("127.0.0.1:9"),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket: None,
             timestamp_ms: 0,
             flags: 0,
             payload_len: 0,
@@ -407,8 +405,6 @@
             SessionIndex::new(0x2020),
             TransportId::new(0x99),
             TransportAddr::from_string(&fallback_addr.to_string()),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            None,
             0x0102_0304,
             0,
             true,
@@ -665,8 +661,6 @@
             SessionIndex::new(0x2020),
             TransportId::new(0x99),
             TransportAddr::from_string(&fallback_addr.to_string()),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            None,
             0x0102_0304,
             0,
             true,
@@ -920,8 +914,6 @@
             SessionIndex::new(0x2020),
             transport_id,
             TransportAddr::from_string(&fallback_addr.to_string()),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            None,
             0x0102_0304,
             0,
             false,
@@ -982,8 +974,6 @@
             SessionIndex::new(0x2020),
             transport_id,
             TransportAddr::from_string(&fallback_addr.to_string()),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            None,
             0x0102_0304,
             0,
             false,
@@ -1075,8 +1065,6 @@
             their_index: SessionIndex::new(0xA0B0_C0D0),
             transport_id,
             remote_addr: TransportAddr::from_string(&fallback_addr.to_string()),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket: None,
             timestamp_ms: 0x0102_0304,
             flags: FLAG_SP,
             payload_len: plan.fmp_payload_len(),

@@ -29,8 +29,6 @@ mod unix_tests {
             fsp_seal: None,
             send_target: SelectedSendTarget::new(
                 socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_addr,
             ),
             endpoint_flow_dispatch_key: None,
@@ -186,8 +184,6 @@ mod unix_tests {
             let dest: SocketAddr = "127.0.0.1:10035".parse().unwrap();
             let target = SelectedSendTarget::new(
                 socket.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest,
             );
             let target_key = target.key();
@@ -232,8 +228,6 @@ mod unix_tests {
 
             let invalid_target = SelectedSendTarget::new(
                 socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest,
             );
             let invalid = SealedSendPacket::from_job(FmpSendJob {
@@ -353,8 +347,6 @@ mod unix_tests {
                     fsp_seal: None,
                     send_target: SelectedSendTarget::new(
                         socket,
-                        #[cfg(any(target_os = "linux", target_os = "macos"))]
-                        None,
                         dest,
                     ),
                     endpoint_flow_dispatch_key: None,
@@ -367,8 +359,6 @@ mod unix_tests {
 
             let priority_target = SelectedSendTarget::new(
                 socket.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest,
             );
             let priority_key = priority_target.key();
@@ -408,8 +398,6 @@ mod unix_tests {
             let dest: SocketAddr = "127.0.0.1:10037".parse().unwrap();
             let target = SelectedSendTarget::new(
                 socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest,
             );
             let target_key = target.key();
@@ -525,8 +513,6 @@ mod unix_tests {
                 }),
                 send_target: SelectedSendTarget::new(
                     send_sock,
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    None,
                     recv_addr,
                 ),
                 endpoint_flow_dispatch_key: None,
@@ -581,38 +567,26 @@ mod unix_tests {
 
             let target_a = SelectedSendTarget::new(
                 socket_a.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_a,
             );
             let same_target_a = SelectedSendTarget::new(
                 socket_a.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_a,
             );
             let same_target_a_droppable_again = SelectedSendTarget::new(
                 socket_a.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_a,
             );
             let same_target_a_droppable_after_control = SelectedSendTarget::new(
                 socket_a.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_a,
             );
             let same_dest_different_socket = SelectedSendTarget::new(
                 socket_b,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_a,
             );
             let same_socket_different_dest = SelectedSendTarget::new(
                 socket_a,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_b,
             );
 
@@ -709,14 +683,10 @@ mod unix_tests {
             let dest: SocketAddr = "127.0.0.1:10039".parse().unwrap();
             let target = SelectedSendTarget::new(
                 socket.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest,
             );
             let same_target = SelectedSendTarget::new(
                 socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest,
             );
             let key = target.key();
@@ -766,8 +736,6 @@ mod unix_tests {
 
             let target = SelectedSendTarget::new(
                 socket.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest,
             );
             let target_key = target.key();
@@ -792,8 +760,6 @@ mod unix_tests {
 
             let target = SelectedSendTarget::new(
                 socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest,
             );
             let retry_target_key = target.key();

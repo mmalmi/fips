@@ -79,8 +79,6 @@
             fsp_seal: None,
             send_target: SelectedSendTarget::new(
                 socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
                 dest_addr,
             ),
             endpoint_flow_dispatch_key,

@@ -8,19 +8,13 @@ use super::{
     DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
 };
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) mod connected_peer;
 #[cfg(target_os = "macos")]
 pub(crate) mod darwin_sockopts;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) mod peer_drain;
 pub(crate) mod socket;
 mod stats;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
 use crate::discovery::is_punch_packet;
-#[cfg(target_os = "macos")]
-use socket::macos_connected_udp_enabled;
 use socket::{AsyncUdpSocket, UdpRawSocket};
 use stats::UdpStats;
 use std::collections::HashMap;
@@ -33,14 +27,12 @@ use tracing::{debug, info, trace, warn};
 /// DNS cache TTL for hostname resolution (60 seconds).
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
-/// Datagrams drained per UDP receive syscall / connected-peer poll cycle.
+/// Datagrams drained per UDP receive syscall.
 ///
-/// Keep one receive-batch width across the wildcard socket, connected peer
-/// drain threads, and Linux recvmmsg wrapper. WireGuard-go and Tailscale use
-/// 128 as their ideal userspace packet batch, and the current measured
-/// bottleneck is pre-`PacketRx` dequeue backlog, so a wider receive batch
-/// reduces syscall/channel-item churn without changing the priority/bulk lane
-/// contract at the packet channel boundary.
+/// WireGuard-go and Tailscale use 128 as their ideal userspace packet batch,
+/// and the current measured bottleneck is pre-`PacketRx` dequeue backlog, so a
+/// wider receive batch reduces syscall/channel-item churn without changing the
+/// priority/bulk lane contract at the packet channel boundary.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 
@@ -48,9 +40,6 @@ pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 pub(crate) fn reset_recv_buffer(buffer: &mut Vec<u8>) {
     buffer.clear();
 }
-
-#[cfg(target_os = "macos")]
-pub(crate) fn reset_recv_buffer(_buffer: &mut Vec<u8>) {}
 
 #[cfg(target_os = "linux")]
 fn linux_udp_rcvbuf_errors() -> Option<u64> {
@@ -129,10 +118,6 @@ pub struct UdpTransport {
     packet_tx: PacketTx,
     /// Receive loop task handle.
     recv_task: Option<JoinHandle<()>>,
-    /// Whether macOS should put the wildcard listener in the connected-UDP
-    /// `SO_REUSEPORT` group.
-    #[cfg(target_os = "macos")]
-    connected_udp_listener_enabled: bool,
     /// Local bound address (after start).
     local_addr: Option<SocketAddr>,
     /// Transport statistics.
@@ -156,18 +141,6 @@ impl UdpTransport {
         config: UdpConfig,
         packet_tx: PacketTx,
     ) -> Self {
-        #[cfg(target_os = "macos")]
-        {
-            return Self::new_with_connected_udp_listener(
-                transport_id,
-                name,
-                config,
-                packet_tx,
-                macos_connected_udp_enabled(false),
-            );
-        }
-
-        #[cfg(not(target_os = "macos"))]
         Self {
             transport_id,
             name,
@@ -184,29 +157,6 @@ impl UdpTransport {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    pub(crate) fn new_with_connected_udp_listener(
-        transport_id: TransportId,
-        name: Option<String>,
-        config: UdpConfig,
-        packet_tx: PacketTx,
-        connected_udp_listener_enabled: bool,
-    ) -> Self {
-        Self {
-            transport_id,
-            name,
-            config,
-            state: TransportState::Configured,
-            socket: None,
-            packet_tx,
-            recv_task: None,
-            connected_udp_listener_enabled,
-            local_addr: None,
-            stats: Arc::new(UdpStats::new()),
-            dns_cache: StdMutex::new(HashMap::new()),
-        }
-    }
-
     /// Get the instance name (if configured as a named instance).
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
@@ -217,23 +167,14 @@ impl UdpTransport {
         self.local_addr
     }
 
-    /// Configured recv buffer size — used when opening per-peer
-    /// `ConnectedPeerSocket`s so they get the same buffer ceiling as
-    /// the wildcard listen socket.
+    /// Configured recv buffer size.
     pub fn recv_buf_size(&self) -> usize {
         self.config.recv_buf_size()
     }
 
-    /// Configured send buffer size — companion to `recv_buf_size`.
+    /// Configured send buffer size.
     pub fn send_buf_size(&self) -> usize {
         self.config.send_buf_size()
-    }
-
-    /// Clone the `PacketTx` end of the packet channel for off-task
-    /// receive paths (per-peer connected-socket drains, future shard
-    /// recv loops). The clone is just a refcount bump.
-    pub fn clone_packet_tx(&self) -> PacketTx {
-        self.packet_tx.clone()
     }
 
     /// Get the transport statistics.
@@ -354,14 +295,6 @@ impl UdpTransport {
             .map_err(|e| TransportError::StartFailed(format!("invalid bind address: {}", e)))?;
 
         // Create, bind, and configure UDP socket
-        #[cfg(target_os = "macos")]
-        let raw_socket = UdpRawSocket::open_with_connected_udp_listener(
-            bind_addr,
-            self.config.recv_buf_size(),
-            self.config.send_buf_size(),
-            self.connected_udp_listener_enabled,
-        )?;
-        #[cfg(not(target_os = "macos"))]
         let raw_socket = UdpRawSocket::open(
             bind_addr,
             self.config.recv_buf_size(),
@@ -423,14 +356,6 @@ impl UdpTransport {
 
         self.state = TransportState::Starting;
 
-        #[cfg(target_os = "macos")]
-        let raw_socket = UdpRawSocket::adopt_with_connected_udp_listener(
-            socket,
-            self.config.recv_buf_size(),
-            self.config.send_buf_size(),
-            self.connected_udp_listener_enabled,
-        )?;
-        #[cfg(not(target_os = "macos"))]
         let raw_socket = UdpRawSocket::adopt(
             socket,
             self.config.recv_buf_size(),

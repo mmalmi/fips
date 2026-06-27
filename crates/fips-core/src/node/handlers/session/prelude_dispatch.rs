@@ -711,9 +711,6 @@ struct PipelinedEndpointWorkerWire {
 #[derive(Clone)]
 struct PipelinedEndpointSendTarget {
     socket: crate::transport::udp::socket::AsyncUdpSocket,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    connected_socket:
-        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     socket_addr: std::net::SocketAddr,
 }
 

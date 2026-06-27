@@ -256,10 +256,6 @@ impl Node {
         if bookkeeping.is_some_and(|update| update.path_bookkeeping_recorded) {
             self.clear_retry_unless_direct_refresh_needed(source_addr);
         }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if bookkeeping.is_some_and(|update| update.address_changed) {
-            self.clear_connected_udp_for_peer(source_addr);
-        }
     }
 
     pub(in crate::node) fn process_authenticated_fmp_receive_from_worker(

@@ -27,8 +27,6 @@
             SessionIndex::new(0xA0B0_C0D0),
             transport_id,
             TransportAddr::from_string("127.0.0.1:9"),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            None,
             0x0102_0304,
             FLAG_SP,
             true,
@@ -78,8 +76,6 @@
             SessionIndex::new(0xA0B0_C0D0),
             transport_id,
             TransportAddr::from_string("127.0.0.1:9"),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            None,
             0x0102_0304,
             FLAG_SP,
             true,

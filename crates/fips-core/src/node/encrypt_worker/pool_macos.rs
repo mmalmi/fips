@@ -871,7 +871,6 @@ fn run_linux_wg_batch_sender(
 ) {
     trace!(
         socket_fd = key.socket_fd,
-        connected_fd = ?key.connected_fd,
         dest = %send_target.dest_addr(),
         "Linux WG-batch UDP sender starting"
     );
@@ -929,7 +928,6 @@ fn run_linux_wg_batch_sender(
             {
                 debug!(
                     socket_fd = key.socket_fd,
-                    connected_fd = ?key.connected_fd,
                     dest = %send_target.dest_addr(),
                     error = %err,
                     "Linux WG-batch UDP send failed"
@@ -1415,7 +1413,6 @@ impl MacSequencedSendFlow {
     fn run(self: Arc<Self>) {
         trace!(
             socket_fd = self.key.target.socket_fd,
-            connected_fd = ?self.key.target.connected_fd,
             dest = %self.send_target.dest_addr(),
             "macOS ordered UDP sender starting"
         );
@@ -1445,7 +1442,6 @@ impl MacSequencedSendFlow {
                         ) {
                             debug!(
                                 socket_fd = self.key.target.socket_fd,
-                                connected_fd = ?self.key.target.connected_fd,
                                 dest = %self.send_target.dest_addr(),
                                 error = %err,
                                 "macOS ordered UDP send failed"

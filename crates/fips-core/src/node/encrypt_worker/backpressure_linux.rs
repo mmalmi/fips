@@ -537,10 +537,8 @@ fn send_batch_gso(
         iovs[i].iov_len = data.len();
     }
 
-    // Storage for the destination address. Only populated + linked
-    // into `msghdr.msg_name` when sending via the wildcard listen
-    // socket — the connected socket has the destination cached
-    // kernel-side via `connect()`.
+    // Storage for the destination address. Populated + linked into
+    // `msghdr.msg_name` for the normal UDP send path.
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let sa_len = sa.len();
     if !connected {

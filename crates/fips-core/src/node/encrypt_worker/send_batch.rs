@@ -107,49 +107,21 @@ pub(crate) struct FspSealJob {
 #[derive(Clone)]
 pub(crate) struct SelectedSendTarget {
     /// AsyncUdpSocket clone (internally `Arc<AsyncFd<UdpRawSocket>>`,
-    /// so the clone is just a refcount bump). Used as the **fallback**
-    /// send fd when no per-peer connected socket is available — i.e.
-    /// the wildcard listen socket. Kernel serialises concurrent
-    /// `sendto` calls so multiple workers sharing this handle is safe.
+    /// so the clone is just a refcount bump). Kernel serialises
+    /// concurrent `sendto` calls so multiple workers sharing this
+    /// handle is safe.
     socket: AsyncUdpSocket,
-    /// **Unix connected-UDP fast path:** when set, the worker sends
-    /// on this socket's fd without a destination sockaddr instead of
-    /// the wildcard listen socket. The kernel skips per-packet
-    /// sockaddr handling, route lookup, and neighbor resolution
-    /// because they're cached from the `connect()` call. The `Arc`
-    /// keeps the kernel fd alive for the lifetime of this target; once
-    /// the job completes and the worker drops it, only the peer's
-    /// strong ref remains.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    connected_socket:
-        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     /// Destination kernel `SocketAddr` — resolved on rx_loop side so
-    /// the worker can skip the per-packet DNS / address parse. Used
-    /// when sending via the listen socket (msg_name field of mmsghdr).
-    /// Ignored when `connected_socket` is `Some` (the kernel knows
-    /// the destination already).
+    /// the worker can skip the per-packet DNS / address parse.
     dest_addr: SocketAddr,
     key: SendTargetKey,
 }
 
 impl SelectedSendTarget {
-    pub(crate) fn new(
-        socket: AsyncUdpSocket,
-        #[cfg(any(target_os = "linux", target_os = "macos"))] connected_socket: Option<
-            std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-        >,
-        dest_addr: SocketAddr,
-    ) -> Self {
-        let key = SendTargetKey::from_parts(
-            &socket,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket.as_ref(),
-            dest_addr,
-        );
+    pub(crate) fn new(socket: AsyncUdpSocket, dest_addr: SocketAddr) -> Self {
+        let key = SendTargetKey::from_parts(&socket, dest_addr);
         Self {
             socket,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket,
             dest_addr,
             key,
         }
@@ -166,10 +138,6 @@ impl SelectedSendTarget {
 
     #[cfg(unix)]
     fn fd_and_connected(&self) -> (RawFd, bool) {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(socket) = self.connected_socket.as_ref() {
-            return (socket.as_raw_fd(), true);
-        }
         (self.socket.as_raw_fd(), false)
     }
 }
@@ -178,8 +146,6 @@ impl SelectedSendTarget {
 struct SendTargetKey {
     #[cfg(unix)]
     socket_fd: RawFd,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    connected_fd: Option<RawFd>,
     dest_addr: SocketAddr,
 }
 
@@ -187,16 +153,11 @@ impl SendTargetKey {
     fn from_parts(
         #[cfg_attr(not(unix), allow(unused_variables))]
         socket: &AsyncUdpSocket,
-        #[cfg(any(target_os = "linux", target_os = "macos"))] connected_socket: Option<
-            &std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-        >,
         dest_addr: SocketAddr,
     ) -> Self {
         Self {
             #[cfg(unix)]
             socket_fd: socket.as_raw_fd(),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_fd: connected_socket.map(|socket| socket.as_raw_fd()),
             dest_addr,
         }
     }

@@ -604,7 +604,6 @@ impl Node {
         self.poll_pending_connects().await;
         self.process_pending_retries(now_ms).await;
         self.poll_transport_discovery().await;
-        self.activate_connected_udp_sessions().await;
         self.sample_transport_congestion();
 
         let Some(slow_timeout) = plan.slow_timeout() else {

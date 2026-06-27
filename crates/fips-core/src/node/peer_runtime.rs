@@ -176,9 +176,6 @@ pub(in crate::node) struct FmpSendPreparation {
     pub(in crate::node) their_index: SessionIndex,
     pub(in crate::node) transport_id: TransportId,
     pub(in crate::node) remote_addr: TransportAddr,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(in crate::node) connected_socket:
-        Option<Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     pub(in crate::node) timestamp_ms: u32,
     pub(in crate::node) flags: u8,
     pub(in crate::node) payload_len: u16,
@@ -190,8 +187,6 @@ pub(in crate::node) struct PeerRuntimeRouteSnapshot {
     their_index: SessionIndex,
     transport_id: TransportId,
     remote_addr: TransportAddr,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    connected_socket: Option<Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     timestamp_ms: u32,
     base_flags: u8,
     fmp_worker_send_available: bool,
@@ -512,9 +507,6 @@ impl PeerRuntimeRouteSnapshot {
         their_index: SessionIndex,
         transport_id: TransportId,
         remote_addr: TransportAddr,
-        #[cfg(any(target_os = "linux", target_os = "macos"))] connected_socket: Option<
-            Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-        >,
         timestamp_ms: u32,
         base_flags: u8,
         fmp_worker_send_available: bool,
@@ -524,8 +516,6 @@ impl PeerRuntimeRouteSnapshot {
             their_index,
             transport_id,
             remote_addr,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket,
             timestamp_ms,
             base_flags,
             fmp_worker_send_available,
@@ -566,8 +556,6 @@ impl PeerRuntimeRouteSnapshot {
                 their_index: self.their_index,
                 transport_id: self.transport_id,
                 remote_addr: self.remote_addr.clone(),
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                connected_socket: self.connected_socket.clone(),
                 timestamp_ms: self.timestamp_ms,
                 flags,
                 payload_len,
@@ -687,164 +675,9 @@ pub(in crate::node) struct PreparedFmpWorkerSend {
     pub(in crate::node) predicted_bytes: usize,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[derive(Clone)]
-pub(crate) struct ConnectedUdpDecryptFastPath {
-    // Connected UDP owns established FMP receive for this peer by routing
-    // matching packets straight to the decrypt worker owner/batcher. Misses
-    // (handshake, stale index, wrong transport, rekey epoch transition) return
-    // untouched to the normal packet path, where rx_loop owns session lookup
-    // and pending-session promotion.
-    session_key: decrypt_worker::DecryptSessionKey,
-    expected_k_bit: bool,
-    local_node_addr: NodeAddr,
-    workers: decrypt_worker::DecryptWorkerPool,
-    fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-struct ConnectedUdpDecryptFastPathBatcher {
-    fast_path: ConnectedUdpDecryptFastPath,
-    jobs: decrypt_worker::DecryptJobBatcher,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl ConnectedUdpDecryptFastPathBatcher {
-    fn new(fast_path: ConnectedUdpDecryptFastPath) -> Self {
-        Self {
-            fast_path,
-            jobs: decrypt_worker::DecryptJobBatcher::new(),
-        }
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl ConnectedUdpDecryptFastPath {
-    pub(in crate::node) fn new(
-        session_key: decrypt_worker::DecryptSessionKey,
-        expected_k_bit: bool,
-        local_node_addr: NodeAddr,
-        workers: decrypt_worker::DecryptWorkerPool,
-        fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
-    ) -> Self {
-        Self {
-            session_key,
-            expected_k_bit,
-            local_node_addr,
-            workers,
-            fallback_tx,
-        }
-    }
-
-    pub(in crate::node) fn prepare_job(
-        &self,
-        transport_id: TransportId,
-        remote_addr: TransportAddr,
-        packet_data: impl Into<crate::transport::PacketBuffer>,
-        timestamp_ms: u64,
-    ) -> Result<decrypt_worker::DecryptJob, crate::transport::PacketBuffer> {
-        let packet_data = packet_data.into();
-        let Some(header) = wire::EncryptedHeader::parse(&packet_data) else {
-            return Err(packet_data);
-        };
-        let packet_session_key =
-            decrypt_worker::DecryptSessionKey::new(transport_id, header.receiver_idx.as_u32());
-        if packet_session_key != self.session_key {
-            return Err(packet_data);
-        }
-        let received_k_bit = header.flags & wire::FLAG_KEY_EPOCH != 0;
-        if received_k_bit != self.expected_k_bit {
-            return Err(packet_data);
-        }
-
-        Ok(decrypt_worker::DecryptJob::new(
-            packet_data,
-            self.session_key,
-            transport_id,
-            remote_addr,
-            self.local_node_addr,
-            timestamp_ms,
-            header.counter,
-            header.flags,
-            header.header_bytes,
-            header.ciphertext_offset(),
-            self.fallback_tx.clone(),
-        ))
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl crate::transport::udp::peer_drain::ConnectedUdpPacketFastPath for ConnectedUdpDecryptFastPath {
-    fn batcher(
-        &self,
-    ) -> Box<dyn crate::transport::udp::peer_drain::ConnectedUdpPacketFastPathBatcher> {
-        Box::new(ConnectedUdpDecryptFastPathBatcher::new(self.clone()))
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl crate::transport::udp::peer_drain::ConnectedUdpPacketFastPathBatcher
-    for ConnectedUdpDecryptFastPathBatcher
-{
-    fn try_dispatch(
-        &mut self,
-        transport_id: TransportId,
-        remote_addr: TransportAddr,
-        packet_data: crate::transport::PacketBuffer,
-        timestamp_ms: u64,
-    ) -> Result<(), crate::transport::PacketBuffer> {
-        match self
-            .fast_path
-            .prepare_job(transport_id, remote_addr, packet_data, timestamp_ms)
-        {
-            Ok(job) => {
-                self.jobs.push(&self.fast_path.workers, job);
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::ConnectedUdpDirectDecrypt,
-                );
-                Ok(())
-            }
-            Err(packet_data) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::ConnectedUdpDirectDecryptMiss,
-                );
-                Err(packet_data)
-            }
-        }
-    }
-
-    fn flush(&mut self) {
-        self.jobs.flush(&self.fast_path.workers);
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::node) struct ConnectedUdpActivationPlan {
-    pub(in crate::node) candidates: Vec<NodeAddr>,
-    pub(in crate::node) installed_count: usize,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::node) enum ConnectedUdpInstallResult {
-    MissingPeer,
-    NotEligible,
-    Installed,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::node) enum ConnectedUdpClearResult {
-    MissingPeer,
-    AlreadyClear,
-    Cleared,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct LinkDeadDirectPathDegradation {
     pub(in crate::node) link_id: LinkId,
-    pub(in crate::node) connected_udp_cleared: bool,
 }
 
 impl SessionIndexRegistry {

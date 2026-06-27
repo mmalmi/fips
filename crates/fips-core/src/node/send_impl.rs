@@ -148,29 +148,10 @@ impl Node {
                 && is_udp
             {
                 let transport = transport_for_send;
-                // Snapshot the per-peer connected UDP socket before
-                // resolving the fallback address. On the established
-                // steady-state path this socket already carries the
-                // kernel peer address, so re-parsing the configured
-                // transport address and touching the DNS cache on every
-                // packet is pure overhead on the sender hot path.
                 let send_target = {
                     if let TransportHandle::Udp(udp) = transport {
-                        let socket_addr = {
-                            #[cfg(any(target_os = "linux", target_os = "macos"))]
-                            {
-                                match prepared.connected_socket.as_ref() {
-                                    Some(socket) => Some(socket.peer_addr()),
-                                    None => {
-                                        udp.resolve_for_off_task(&prepared.remote_addr).await.ok()
-                                    }
-                                }
-                            }
-                            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                            {
-                                udp.resolve_for_off_task(&prepared.remote_addr).await.ok()
-                            }
-                        };
+                        let socket_addr =
+                            udp.resolve_for_off_task(&prepared.remote_addr).await.ok();
                         match (udp.async_socket(), socket_addr) {
                             (Some(socket), Some(socket_addr)) => Some((socket, socket_addr)),
                             _ => None,
@@ -193,10 +174,7 @@ impl Node {
                         let predicted_bytes = worker_send.predicted_bytes;
                         // Lifecycle send bookkeeping uses the predicted
                         // wire size, exact for ChaCha20-Poly1305 because the
-                        // tag is constant 16 bytes. When `connected_socket`
-                        // is `Some`, the worker sends on it without a
-                        // destination sockaddr, so the kernel skips the
-                        // per-packet sockaddr + route + neighbor resolve.
+                        // tag is constant 16 bytes.
                         let _ = self.peers.record_fmp_send_bookkeeping(
                             node_addr,
                             reserved_counter,
@@ -212,8 +190,6 @@ impl Node {
                             fsp_seal: None,
                             send_target: self::encrypt_worker::SelectedSendTarget::new(
                                 socket,
-                                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                                prepared.connected_socket.clone(),
                                 socket_addr,
                             ),
                             endpoint_flow_dispatch_key: None,

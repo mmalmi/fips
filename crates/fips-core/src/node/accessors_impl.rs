@@ -50,10 +50,10 @@ impl Node {
     ///
     /// Use this instead of a bare session-index removal at every
     /// session-lifecycle teardown site (rekey cross-connection swap, peer
-    /// disconnect, dispatch session-rotation) so the peer index, connected UDP
-    /// state, and decrypt-worker state remain coherent. The
-    /// follow-up `RegisterSession` for the NEW key (if any) will then
-    /// install the fresh state on the same shard.
+    /// disconnect, dispatch session-rotation) so the peer index and
+    /// decrypt-worker state remain coherent. The follow-up
+    /// `RegisterSession` for the NEW key (if any) will then install the
+    /// fresh state on the same shard.
     pub(in crate::node) fn deregister_session_index(&mut self, cache_key: (TransportId, u32)) {
         // Remove the index and ask the peer registry for the remaining-owner
         // state in one step. Rekey drain depends on seeing the NEW index that
@@ -67,21 +67,7 @@ impl Node {
         {
             workers.unregister_session(session_key);
         }
-        // Tear down the per-peer connected UDP socket *only* if no
-        // other receiver-index entry still resolves to this peer.
-        // Rekey drain calls into this helper with the OLD session
-        // index while the NEW index is already installed and points
-        // at the same peer — there the connect()-ed 5-tuple is
-        // still valid for the new session and we must not close it.
-        // Peer-teardown sites (CrossConnection swap, stale-index
-        // fall-through in encrypted.rs, disconnect handler) call
-        // here when this is the peer's last index, so the connected
-        // socket goes away with the peer.
-        if let Some(removed_index) = removed_index
-            && !removed_index.owner_has_remaining_index
-        {
-            self.clear_connected_udp_for_peer(&removed_index.owner);
-        }
+        let _ = removed_index;
     }
 
     /// Ensure the current FMP receive index resolves to this peer.

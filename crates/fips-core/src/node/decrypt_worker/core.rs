@@ -74,7 +74,7 @@ const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
     DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
 /// Keep FMP opens on the session owner by default. The helper lane remains an
 /// explicit experiment, but the simpler owner path avoids a second ordered
-/// completion queue and has been more reliable under connected UDP pressure.
+/// completion queue and keeps receive ordering easier to reason about.
 const DEFAULT_DECRYPT_FMP_AEAD_HELPERS: usize = 0;
 static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);

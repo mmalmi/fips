@@ -475,20 +475,20 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
     );
     assert_eq!(
-        event_from_index(Event::ConnectedUdpDirectDecryptBulkShed as usize).name(),
-        "connected_udp_direct_decrypt_bulk_shed"
+        event_from_index(Event::ReservedEvent156 as usize).name(),
+        "reserved_event_156"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOpenPoolQueueFullFallback as usize).name(),
         "decrypt_fsp_open_pool_queue_full_fallback"
     );
     assert_eq!(
-        event_from_index(Event::ConnectedUdpKernelDropped as usize).name(),
-        "connected_udp_kernel_dropped"
+        event_from_index(Event::ReservedEvent158 as usize).name(),
+        "reserved_event_158"
     );
     assert_eq!(
-        event_from_index(Event::ConnectedUdpPeerKernelDropped as usize).name(),
-        "connected_udp_peer_kernel_dropped"
+        event_from_index(Event::ReservedEvent159 as usize).name(),
+        "reserved_event_159"
     );
     assert_eq!(
         event_from_index(Event::UdpKernelDropped as usize).name(),
@@ -503,8 +503,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "udp_namespace_rcvbuf_errors"
     );
     assert_eq!(
-        event_from_index(Event::ConnectedUdpDrainBulkDropped as usize).name(),
-        "connected_udp_drain_bulk_dropped"
+        event_from_index(Event::ReservedEvent175 as usize).name(),
+        "reserved_event_175"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspWorkerReplayDroppedDuplicate as usize).name(),
@@ -790,7 +790,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 74);
+    assert_eq!(N_STAGES, 69);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -946,26 +946,6 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::DecryptDirectSessionDataWait as usize).name(),
         "decrypt_direct_session_data_wait"
-    );
-    assert_eq!(
-        stage_from_index(Stage::ConnectedUdpDrainRecv as usize).name(),
-        "connected_udp_drain_recv"
-    );
-    assert_eq!(
-        stage_from_index(Stage::ConnectedUdpFastPathDispatch as usize).name(),
-        "connected_udp_fast_path_dispatch"
-    );
-    assert_eq!(
-        stage_from_index(Stage::ConnectedUdpDrainRingWait as usize).name(),
-        "connected_udp_drain_ring_wait"
-    );
-    assert_eq!(
-        stage_from_index(Stage::ConnectedUdpDrainPriorityRingWait as usize).name(),
-        "connected_udp_drain_priority_ring_wait"
-    );
-    assert_eq!(
-        stage_from_index(Stage::ConnectedUdpDrainBulkRingWait as usize).name(),
-        "connected_udp_drain_bulk_ring_wait"
     );
 }
 
@@ -1357,7 +1337,7 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
 
 #[test]
 fn wait_threshold_events_only_count_samples_at_or_above_threshold() {
-    let event = Event::ConnectedUdpActivationFailed;
+    let event = Event::EndpointEventBacklogHigh;
     let before = EVENTS[event as usize].load(Relaxed);
 
     record_wait_threshold(event, 499_999, 3, 500_000);
