@@ -359,6 +359,7 @@ impl Node {
                     &replacement,
                     "outbound_alternate_path_refresh",
                 );
+                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
 
                 if let Some(old_index) = replacement.old_session_index {
                     self.deregister_session_index(old_index.key);
@@ -468,6 +469,7 @@ impl Node {
                     &replacement,
                     "outbound_cross_connection_swap",
                 );
+                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
                 if let Some(old_index) = replacement.old_session_index {
                     self.deregister_session_index(old_index.key);
                     let _ = self.index_allocator.free(old_index.index);

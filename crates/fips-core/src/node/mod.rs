@@ -19,6 +19,7 @@ mod identity_cache;
 mod io_impl;
 mod lifecycle;
 mod link_registry;
+mod packet_mover2_bridge;
 mod peer_lifecycle;
 mod peer_runtime;
 mod rate_limit;

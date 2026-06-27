@@ -162,6 +162,7 @@ impl Node {
                     &inserted,
                     "cross_connection_won",
                 );
+                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
                 self.clear_session_direct_path_degraded_after_promotion(
                     &peer_node_addr,
                     current_time_ms,
@@ -279,6 +280,7 @@ impl Node {
                 .peers
                 .insert_with_current_session_index(peer_node_addr, new_peer);
             self.log_active_peer_insert_result(&peer_node_addr, &inserted, "promoted");
+            self.sync_packet_mover2_fmp_owner(&peer_node_addr);
             self.clear_session_direct_path_degraded_after_promotion(
                 &peer_node_addr,
                 current_time_ms,

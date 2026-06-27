@@ -151,6 +151,7 @@ impl Node {
             }
         };
         let peer = removed_peer.peer;
+        self.remove_packet_mover2_fmp_owner(node_addr);
 
         // Log suppressed replay detection summary before teardown
         let suppressed = peer.replay_suppressed_count();
