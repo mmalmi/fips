@@ -1,7 +1,6 @@
 use super::drain::PacketProcessAction;
 use crate::discovery::is_punch_packet;
 use crate::node::Node;
-use crate::node::decrypt_worker::DecryptJobBatcher;
 use crate::node::handlers::encrypted::EncryptedFrameFastPath;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
@@ -13,7 +12,6 @@ impl Node {
     /// Process a single received packet.
     ///
     /// Dispatches based on the phase field in the 4-byte common prefix.
-    #[cfg(test)]
     pub(in crate::node) async fn process_packet(&mut self, packet: ReceivedPacket) {
         let action = self.begin_process_packet(packet);
         self.finish_packet_process(action).await;
@@ -160,12 +158,6 @@ impl Node {
             } => {
                 self.handle_msg2(packet).await;
             }
-        }
-    }
-
-    pub(super) fn flush_decrypt_job_batcher(&self, batcher: &mut DecryptJobBatcher) {
-        if let Some(workers) = self.decrypt_workers.as_ref() {
-            batcher.flush(workers);
         }
     }
 }

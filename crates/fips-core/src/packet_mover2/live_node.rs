@@ -400,7 +400,8 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         Transports: PacketMover2TransportResolver + ?Sized,
     {
         let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, first_packet);
-        self.pump_turn(
+        let mut turn = self
+            .pump_turn(
             &mut raw_ingress,
             packet_limit,
             endpoint_priority_rx,
@@ -414,6 +415,8 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
             transports,
             crypto_limit,
         )
-            .await
+            .await;
+        turn.set_fmp_control_ingress(raw_ingress.take_control_ingress());
+        turn
     }
 }

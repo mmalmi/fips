@@ -3,13 +3,13 @@
 use crate::control::queries;
 use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
 use crate::node::decrypt_worker::{
-    DecryptFailureReport, DecryptFallback, DecryptJobBatcher, DecryptWorkerEvent,
-    DecryptWorkerFallbackReceivers,
+    DecryptFailureReport, DecryptFallback, DecryptWorkerEvent, DecryptWorkerFallbackReceivers,
 };
 use crate::node::{
-    AuthenticatedFmpPlaintext, EndpointSendBatchCommand, Node, NodeEndpointCommand, NodeError,
+    AuthenticatedFmpPlaintext, EndpointEventSender, EndpointSendBatchCommand, Node,
+    NodeEndpointCommand, NodeError,
 };
-use crate::transport::{PacketRx, ReceivedPacket};
+use crate::transport::PacketRx;
 use crate::upper::tun::TunOutboundRx;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
@@ -140,6 +140,17 @@ impl Node {
         drop(control_query_tx);
         drop(control_command_tx);
 
+        let scratch_tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            drop(rx);
+            tx
+        });
+        let scratch_endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
+            let (tx, rx) = EndpointEventSender::channel(1);
+            drop(rx);
+            tx
+        });
+
         info!("RX event loop started");
         // Optional perf profiler (FIPS_PERF=1). No-op otherwise.
         crate::perf_profile::maybe_spawn_reporter();
@@ -151,16 +162,11 @@ impl Node {
         loop {
             tokio::select! {
                 biased;
-                // Priority decrypt-worker fallback drains first. The
-                // previous packet-first ordering could hold small ACK,
-                // heartbeat, and failure-report plaintexts behind a hot
-                // raw-packet drain long enough to collapse TCP. Bulk
-                // fallback is intentionally below `packet_rx`: bulk
-                // plaintext must keep making bounded progress, but it
-                // should not stop fresh transport priority packets from
-                // being dequeued. `drain_packet_rx` interleaves fallback
-                // turns every few dozen packets to keep that progress
-                // reserve while avoiding a bulk-fallback convoy.
+                // Priority decrypt-worker fallback drains first while legacy
+                // worker completions still exist. Fresh raw transport packets
+                // enter packet_mover2 below; bulk fallback remains below
+                // `packet_rx` so old bulk completions cannot convoy ahead of
+                // the straight receive path.
                 Some(event) = decrypt_fallback_rx.priority.recv() => {
                     let fallback_drained = self.drain_decrypt_priority_fallback(
                         &mut decrypt_fallback_rx.priority,
@@ -192,6 +198,8 @@ impl Node {
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
+                        &scratch_tun_tx,
+                        &scratch_endpoint_tx,
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained.has_drained() {
@@ -228,6 +236,8 @@ impl Node {
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
+                        &scratch_tun_tx,
+                        &scratch_endpoint_tx,
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     if post_drained.has_drained() {
@@ -302,20 +312,34 @@ impl Node {
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => {
-                            let drained = self.drain_packet_rx(
+                            let mut turn = self.drain_packet_mover2_scratch_turn_with_first(
                                 &mut packet_rx,
-                                &mut decrypt_fallback_rx,
-                                Some(RxLoopSideQueues {
-                                    control_query_rx: &mut control_query_rx,
-                                    endpoint_bulk_feedback_rx: &mut endpoint_bulk_feedback_rx,
-                                    tun_outbound_rx: &mut tun_outbound_rx,
-                                    endpoint_priority_command_rx: &mut endpoint_priority_command_rx,
-                                    endpoint_command_rx: &mut endpoint_command_rx,
-                                }),
                                 Some(p),
                                 PACKET_DRAIN_BUDGET,
+                                &mut endpoint_priority_command_rx,
+                                &mut endpoint_command_rx,
+                                NON_PACKET_DRAIN_BUDGET,
+                                &mut tun_outbound_rx,
+                                NON_PACKET_DRAIN_BUDGET,
+                                &scratch_tun_tx,
+                                &scratch_endpoint_tx,
+                                PACKET_DRAIN_BUDGET,
                             ).await;
-                            if drained > 0 {
+                            let had_activity = turn.has_activity();
+                            let control_drained = self
+                                .process_packet_mover2_scratch_control_ingress(&mut turn)
+                                .await;
+                            let feedback_drained = self.drain_endpoint_bulk_send_feedback(
+                                &mut endpoint_bulk_feedback_rx,
+                                None,
+                                SIDE_QUEUE_INTERLEAVE_BUDGET,
+                            );
+                            self.drain_control_queries(
+                                &mut control_query_rx,
+                                None,
+                                CONTROL_QUERY_INTERLEAVE_BUDGET,
+                            ).await;
+                            if had_activity || control_drained > 0 || feedback_drained > 0 {
                                 maintenance_state.record_data_activity(Instant::now());
                             }
                         }
@@ -395,12 +419,28 @@ impl Node {
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
         budget: usize,
     ) -> RxLoopDataDrainStats {
-        let drained_packets = self
-            .drain_packet_rx(packet_rx, decrypt_fallback_rx, None, None, budget)
-            .await;
         let non_packet_budget = non_packet_drain_budget(budget);
+        let mut turn = self
+            .drain_packet_mover2_scratch_turn(
+                packet_rx,
+                budget,
+                endpoint_priority_command_rx,
+                endpoint_command_rx,
+                non_packet_budget,
+                tun_outbound_rx,
+                non_packet_budget,
+                tun_tx,
+                endpoint_tx,
+                budget,
+            )
+            .await;
+        let drained_packets = Self::packet_mover2_scratch_packet_activity(&turn);
+        self.process_packet_mover2_scratch_control_ingress(&mut turn)
+            .await;
         let drained_decrypt = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
             self.drain_decrypt_fallback(decrypt_fallback_rx, None, None, None, non_packet_budget)
                 .await
@@ -412,135 +452,15 @@ impl Node {
             None,
             non_packet_budget,
         );
-        let drained_tun = self
-            .drain_tun_outbound(tun_outbound_rx, None, non_packet_budget)
-            .await;
-        let drained_endpoint = self
-            .drain_endpoint_commands(
-                endpoint_priority_command_rx,
-                endpoint_command_rx,
-                None,
-                None,
-                non_packet_budget,
-            )
-            .await;
         RxLoopDataDrainStats::with_feedback(
             drained_packets,
             drained_decrypt,
             drained_endpoint_feedback,
-            drained_tun,
-            drained_endpoint,
+            turn.tun_outbound_drops().len(),
+            turn.summary()
+                .outbound_admitted()
+                .saturating_add(turn.summary().outbound_dropped()),
         )
-    }
-
-    async fn drain_packet_rx(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
-        mut side_queues: Option<RxLoopSideQueues<'_>>,
-        first_packet: Option<ReceivedPacket>,
-        budget: usize,
-    ) -> usize {
-        // Drain remaining ready inbound packets in a tight loop before
-        // yielding back to select! Every yield is a scheduler hop, and at
-        // line rate transports typically have several packets available per
-        // wake. Caps at a batch boundary so other branches eventually get a
-        // turn even under sustained load.
-        self.begin_endpoint_event_batch();
-        let side_queue_interleave_every = if side_queues.is_some() {
-            SIDE_QUEUE_INTERLEAVE_EVERY
-        } else {
-            0
-        };
-        let fallback_plan = fallback_drain_plan();
-        let mut drain = PacketDrainCursor::new(
-            first_packet,
-            budget,
-            fallback_plan.interleave_every,
-            side_queue_interleave_every,
-        );
-        let mut decrypt_jobs = DecryptJobBatcher::new();
-        while let Some(action) = drain.next(packet_rx) {
-            match action {
-                PacketDrainAction::Packet(packet) => {
-                    let action = self.begin_process_packet(packet);
-                    match action {
-                        PacketProcessAction::DecryptJob { job } => {
-                            if let Some(workers) = self.decrypt_workers.as_ref() {
-                                decrypt_jobs.push(workers, job);
-                            }
-                        }
-                        PacketProcessAction::Done => {}
-                        action => {
-                            self.flush_decrypt_job_batcher(&mut decrypt_jobs);
-                            self.finish_packet_process(action).await;
-                        }
-                    }
-                }
-                PacketDrainAction::InterleaveFallback => {
-                    self.flush_decrypt_job_batcher(&mut decrypt_jobs);
-                    let drained = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
-                        self.drain_decrypt_fallback(
-                            decrypt_fallback_rx,
-                            None,
-                            None,
-                            None,
-                            fallback_plan.interleave_budget,
-                        )
-                        .await
-                    } else {
-                        0
-                    };
-                    if drained == 0 {
-                        drain.refund_empty_interleave_turn();
-                    }
-                }
-                PacketDrainAction::InterleaveSideQueues => {
-                    self.flush_decrypt_job_batcher(&mut decrypt_jobs);
-                    let drained = if let Some(side_queues) = side_queues.as_mut() {
-                        if rx_loop_side_queues_have_ready(side_queues) {
-                            self.drain_rx_loop_side_queues(
-                                side_queues.control_query_rx,
-                                side_queues.endpoint_bulk_feedback_rx,
-                                side_queues.tun_outbound_rx,
-                                side_queues.endpoint_priority_command_rx,
-                                side_queues.endpoint_command_rx,
-                                SIDE_QUEUE_INTERLEAVE_BUDGET,
-                            )
-                            .await
-                        } else {
-                            RxLoopDataDrainStats::default()
-                        }
-                    } else {
-                        RxLoopDataDrainStats::default()
-                    };
-                    if !drained.has_drained() {
-                        drain.refund_empty_interleave_turn();
-                    }
-                }
-            }
-        }
-
-        self.flush_decrypt_job_batcher(&mut decrypt_jobs);
-        let drained = drain.drained();
-        if drained > 0 {
-            // One trailing fallback slice so the last bounced packets of the
-            // burst aren't held up by the post-burst send flush. Keep it a
-            // non-packet turn: bulk fallback should not convoy ahead of fresh
-            // transport receive work after every hot packet drain.
-            self.drain_decrypt_fallback(
-                decrypt_fallback_rx,
-                None,
-                None,
-                None,
-                fallback_plan.trailing_budget.min(budget),
-            )
-            .await;
-            self.finish_endpoint_event_batch();
-        } else {
-            self.finish_endpoint_event_batch();
-        }
-        drained
     }
 
     async fn drain_rx_loop_side_queues(

@@ -375,6 +375,30 @@ impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PacketMover2FmpControlIngress {
+    phase: u8,
+    packet: ReceivedPacket,
+}
+
+impl PacketMover2FmpControlIngress {
+    fn new(phase: u8, packet: ReceivedPacket) -> Self {
+        Self { phase, packet }
+    }
+
+    pub(crate) fn phase(&self) -> u8 {
+        self.phase
+    }
+
+    pub(crate) fn packet(&self) -> &ReceivedPacket {
+        &self.packet
+    }
+
+    pub(crate) fn into_packet(self) -> ReceivedPacket {
+        self.packet
+    }
+}
+
 /// Drains live transport packets from `PacketRx` as FMP link ingress.
 ///
 /// FSP ingress needs authenticated source context, so it must enter through a
@@ -382,15 +406,55 @@ impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
 pub(crate) struct PacketMover2FmpPacketRxSource<'a> {
     rx: &'a mut PacketRx,
     first: Option<ReceivedPacket>,
+    control_ingress: Vec<PacketMover2FmpControlIngress>,
 }
 
 impl<'a> PacketMover2FmpPacketRxSource<'a> {
     pub(crate) fn new(rx: &'a mut PacketRx) -> Self {
-        Self { rx, first: None }
+        Self {
+            rx,
+            first: None,
+            control_ingress: Vec::new(),
+        }
     }
 
     pub(crate) fn with_first(rx: &'a mut PacketRx, first: Option<ReceivedPacket>) -> Self {
-        Self { rx, first }
+        Self {
+            rx,
+            first,
+            control_ingress: Vec::new(),
+        }
+    }
+
+    pub(crate) fn take_control_ingress(&mut self) -> Vec<PacketMover2FmpControlIngress> {
+        std::mem::take(&mut self.control_ingress)
+    }
+
+    fn push_packet<F>(&mut self, packet: ReceivedPacket, push: &mut F) -> bool
+    where
+        F: FnMut(PacketMover2RawIngress),
+    {
+        match classify_live_fmp_packet(&packet) {
+            LiveFmpPacketClass::Established => {
+                push(PacketMover2RawIngress::from_live_received(
+                    PacketProtocol::Fmp,
+                    packet,
+                ));
+                true
+            }
+            LiveFmpPacketClass::Control { phase } => {
+                self.control_ingress
+                    .push(PacketMover2FmpControlIngress::new(phase, packet));
+                false
+            }
+            LiveFmpPacketClass::RawDrop => {
+                push(PacketMover2RawIngress::from_live_received(
+                    PacketProtocol::Fmp,
+                    packet,
+                ));
+                true
+            }
+        }
     }
 }
 
@@ -404,13 +468,38 @@ impl PacketMover2RawIngressSource for PacketMover2FmpPacketRxSource<'_> {
             let Some(packet) = self.first.take().or_else(|| self.rx.try_recv().ok()) else {
                 break;
             };
-            push(PacketMover2RawIngress::from_live_received(
-                PacketProtocol::Fmp,
-                packet,
-            ));
+            let keep_draining = self.push_packet(packet, &mut push);
             drained += 1;
+            if !keep_draining {
+                break;
+            }
         }
         drained
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LiveFmpPacketClass {
+    Established,
+    Control { phase: u8 },
+    RawDrop,
+}
+
+fn classify_live_fmp_packet(packet: &ReceivedPacket) -> LiveFmpPacketClass {
+    if packet.data.len() < FMP_COMMON_PREFIX_SIZE {
+        return LiveFmpPacketClass::RawDrop;
+    }
+    let Some(first) = packet.data.first().copied() else {
+        return LiveFmpPacketClass::RawDrop;
+    };
+    let version = first >> 4;
+    let phase = first & 0x0f;
+    if version == FMP_VERSION && phase == FMP_PHASE_ESTABLISHED {
+        LiveFmpPacketClass::Established
+    } else if version != FMP_VERSION || matches!(phase, FMP_PHASE_MSG1 | FMP_PHASE_MSG2) {
+        LiveFmpPacketClass::Control { phase }
+    } else {
+        LiveFmpPacketClass::RawDrop
     }
 }
 

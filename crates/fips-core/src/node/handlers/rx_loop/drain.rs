@@ -1,8 +1,5 @@
-use crate::control::ControlMessage;
 use crate::node::decrypt_worker::{DecryptJob, DecryptWorkerFallbackReceivers};
-use crate::node::{EndpointBulkSendFeedback, NodeEndpointCommand};
-use crate::transport::{PacketRx, ReceivedPacket};
-use crate::upper::tun::TunOutboundRx;
+use crate::transport::ReceivedPacket;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 
@@ -25,31 +22,8 @@ pub(super) enum PacketProcessAction {
     },
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum PacketDrainAction<T> {
-    Packet(T),
-    InterleaveFallback,
-    InterleaveSideQueues,
-}
-
-pub(super) struct RxLoopSideQueues<'a> {
-    pub(super) control_query_rx: &'a mut Receiver<ControlMessage>,
-    pub(super) endpoint_bulk_feedback_rx: &'a mut Receiver<EndpointBulkSendFeedback>,
-    pub(super) tun_outbound_rx: &'a mut TunOutboundRx,
-    pub(super) endpoint_priority_command_rx: &'a mut Receiver<NodeEndpointCommand>,
-    pub(super) endpoint_command_rx: &'a mut Receiver<NodeEndpointCommand>,
-}
-
 pub(super) fn decrypt_fallback_has_ready(rx: &DecryptWorkerFallbackReceivers) -> bool {
     !rx.priority.is_empty() || !rx.authenticated_bulk.is_empty() || !rx.bulk.is_empty()
-}
-
-pub(super) fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
-    !side_queues.control_query_rx.is_empty()
-        || !side_queues.endpoint_bulk_feedback_rx.is_empty()
-        || !side_queues.tun_outbound_rx.is_empty()
-        || !side_queues.endpoint_priority_command_rx.is_empty()
-        || !side_queues.endpoint_command_rx.is_empty()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -241,114 +215,6 @@ impl RxLoopMaintenancePlan {
 
     pub(super) fn slow_timeout(&self) -> Option<Duration> {
         self.slow_timeout
-    }
-}
-
-pub(super) struct PacketDrainCursor<T> {
-    first_packet: Option<T>,
-    remaining: usize,
-    drained: usize,
-    fallback_interleave_every: usize,
-    side_queue_interleave_every: usize,
-    packets_until_fallback_interleave: usize,
-    packets_until_side_queue_interleave: usize,
-}
-
-impl<T> PacketDrainCursor<T> {
-    pub(super) fn new(
-        first_packet: Option<T>,
-        budget: usize,
-        fallback_interleave_every: usize,
-        side_queue_interleave_every: usize,
-    ) -> Self {
-        Self {
-            first_packet,
-            remaining: budget,
-            drained: 0,
-            fallback_interleave_every,
-            side_queue_interleave_every,
-            packets_until_fallback_interleave: fallback_interleave_every,
-            packets_until_side_queue_interleave: side_queue_interleave_every,
-        }
-    }
-
-    pub(super) fn next<R>(&mut self, packet_rx: &mut R) -> Option<PacketDrainAction<T>>
-    where
-        R: PacketDrainReceiver<T>,
-    {
-        if self.remaining == 0 {
-            return None;
-        }
-
-        if self.fallback_interleave_due() {
-            self.packets_until_fallback_interleave = self.fallback_interleave_every;
-            self.charge_interleave_turn();
-            return Some(PacketDrainAction::InterleaveFallback);
-        }
-
-        if self.side_queue_interleave_due() {
-            self.packets_until_side_queue_interleave = self.side_queue_interleave_every;
-            self.charge_interleave_turn();
-            return Some(PacketDrainAction::InterleaveSideQueues);
-        }
-
-        let packet = self
-            .first_packet
-            .take()
-            .or_else(|| packet_rx.try_recv_packet())?;
-        self.charge_packet();
-        Some(PacketDrainAction::Packet(packet))
-    }
-
-    pub(super) fn drained(&self) -> usize {
-        self.drained
-    }
-
-    fn fallback_interleave_due(&self) -> bool {
-        self.drained > 0
-            && self.fallback_interleave_every > 0
-            && self.packets_until_fallback_interleave == 0
-    }
-
-    fn side_queue_interleave_due(&self) -> bool {
-        self.drained > 0
-            && self.side_queue_interleave_every > 0
-            && self.packets_until_side_queue_interleave == 0
-    }
-
-    fn charge_packet(&mut self) {
-        self.remaining -= 1;
-        self.drained += 1;
-        if self.packets_until_fallback_interleave > 0 {
-            self.packets_until_fallback_interleave -= 1;
-        }
-        if self.packets_until_side_queue_interleave > 0 {
-            self.packets_until_side_queue_interleave -= 1;
-        }
-    }
-
-    fn charge_interleave_turn(&mut self) {
-        self.remaining -= 1;
-    }
-
-    pub(super) fn refund_empty_interleave_turn(&mut self) {
-        self.remaining += 1;
-    }
-}
-
-pub(super) trait PacketDrainReceiver<T> {
-    fn try_recv_packet(&mut self) -> Option<T>;
-}
-
-impl<T> PacketDrainReceiver<T> for tokio::sync::mpsc::UnboundedReceiver<T> {
-    fn try_recv_packet(&mut self) -> Option<T> {
-        self.try_recv().ok()
-    }
-}
-
-impl PacketDrainReceiver<ReceivedPacket> for PacketRx {
-    fn try_recv_packet(&mut self) -> Option<ReceivedPacket> {
-        self.try_recv().ok()
     }
 }
 

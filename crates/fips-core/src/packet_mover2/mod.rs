@@ -33,6 +33,9 @@ use std::sync::Arc;
 
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
 const FMP_PHASE_ESTABLISHED: u8 = crate::node::wire::PHASE_ESTABLISHED;
+const FMP_PHASE_MSG1: u8 = crate::node::wire::PHASE_MSG1;
+const FMP_PHASE_MSG2: u8 = crate::node::wire::PHASE_MSG2;
+const FMP_COMMON_PREFIX_SIZE: usize = crate::node::wire::COMMON_PREFIX_SIZE;
 const FMP_ESTABLISHED_HEADER_SIZE: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
 const FSP_VERSION: u8 = crate::node::session_wire::FSP_VERSION;
 const FSP_PHASE_ESTABLISHED: u8 = crate::node::session_wire::FSP_PHASE_ESTABLISHED;

@@ -7,10 +7,6 @@ pub(super) const FALLBACK_INTERLEAVE_EVERY: usize = 32;
 /// Cap on the per-interleave fallback drain so a hot inbound spike
 /// can't starve the outer raw-packet drain in the opposite direction.
 pub(super) const FALLBACK_INTERLEAVE_BUDGET: usize = 16;
-/// How often a hot inbound packet drain gives outbound side queues a bounded
-/// turn. This keeps TUN egress and endpoint control sends moving when
-/// `packet_rx` remains ready for many consecutive biased select iterations.
-pub(super) const SIDE_QUEUE_INTERLEAVE_EVERY: usize = 64;
 /// Side-queue interleaves are a progress reserve, not a full drain. Keeping
 /// this smaller than the packet budget preserves raw receive throughput while
 /// avoiding tick-sized liveness stalls.

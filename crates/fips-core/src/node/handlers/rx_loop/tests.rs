@@ -1,13 +1,11 @@
 use super::budget::{
-    CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
-    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget,
+    ENDPOINT_COMMAND_COALESCE_MAX_PACKETS, FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY,
+    FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET,
+    authenticated_bulk_preempts_packet_rx, fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
-    DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
-    RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, RxLoopSideQueues,
-    SingleLaneDrainCursor, rx_loop_side_queues_have_ready,
+    DecryptReturnDrainCursor, PriorityBulkDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan,
+    RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
 use crate::control::protocol::Request;
 use crate::node::decrypt_worker::DecryptWorkerEvent;
@@ -18,6 +16,14 @@ use crate::{
     noise::HandshakeState,
 };
 use std::time::{Duration, Instant};
+
+fn closed_scratch_sinks() -> (crate::upper::tun::TunTx, crate::node::EndpointEventSender) {
+    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    drop(tun_rx);
+    let (endpoint_tx, endpoint_rx) = crate::node::EndpointEventSender::channel(1);
+    drop(endpoint_rx);
+    (tun_tx, endpoint_tx)
+}
 
 #[cfg(unix)]
 fn make_xk_session(initiator: &Identity, responder: &Identity) -> crate::noise::NoiseSession {
@@ -140,45 +146,6 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
 }
 
 #[tokio::test]
-async fn rx_loop_side_queue_readiness_includes_control_queries() {
-    assert!(
-        CONTROL_QUERY_INTERLEAVE_BUDGET < super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET,
-        "control query reserve should stay a small slice of the side-queue budget"
-    );
-
-    let (control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
-    let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-
-    control_tx
-        .send((
-            Request {
-                command: "show_status".to_string(),
-                params: None,
-            },
-            response_tx,
-        ))
-        .await
-        .unwrap();
-
-    let side_queues = RxLoopSideQueues {
-        control_query_rx: &mut control_rx,
-        endpoint_bulk_feedback_rx: &mut feedback_rx,
-        tun_outbound_rx: &mut tun_rx,
-        endpoint_priority_command_rx: &mut endpoint_priority_rx,
-        endpoint_command_rx: &mut endpoint_rx,
-    };
-
-    assert!(
-        rx_loop_side_queues_have_ready(&side_queues),
-        "hot packet drains should notice queued read-only control queries"
-    );
-}
-
-#[tokio::test]
 async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
@@ -272,6 +239,7 @@ async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
     let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (scratch_tun_tx, scratch_endpoint_tx) = closed_scratch_sinks();
 
     assert!(fallback_tx.send_for_test(DecryptWorkerEvent::AuthenticatedSessionBatch(Vec::new())));
     assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
@@ -285,6 +253,8 @@ async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
             &mut tun_rx,
             &mut endpoint_priority_rx,
             &mut endpoint_rx,
+            &scratch_tun_tx,
+            &scratch_endpoint_tx,
             NON_PACKET_DRAIN_BUDGET,
         )
         .await;
@@ -424,6 +394,7 @@ async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_livene
     let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (scratch_tun_tx, scratch_endpoint_tx) = closed_scratch_sinks();
 
     feedback_tx
         .send(crate::node::EndpointBulkSendFeedback {
@@ -452,6 +423,8 @@ async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_livene
             &mut tun_rx,
             &mut endpoint_priority_rx,
             &mut endpoint_rx,
+            &scratch_tun_tx,
+            &scratch_endpoint_tx,
             NON_PACKET_DRAIN_BUDGET,
         )
         .await;
@@ -808,152 +781,6 @@ fn endpoint_command_coalesce_cap_is_small_bounded_packet_groups() {
         ENDPOINT_COMMAND_COALESCE_MAX_PACKETS <= PACKET_DRAIN_BUDGET,
         "endpoint coalescing should remain below one raw packet drain turn"
     );
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_owns_first_packet_budget_and_interleave() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    let mut drain = PacketDrainCursor::new(Some("selected"), 3, 2, 0);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("selected"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(packet_rx.try_recv().ok(), Some("queued-2"));
-    assert_eq!(drain.drained(), 2);
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_charges_interleaves_against_budget() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    let mut drain = PacketDrainCursor::new(Some("selected"), 4, 2, 0);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("selected"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-2"))
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_refunds_empty_interleave_turns() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    packet_tx.send("queued-3").unwrap();
-    let mut drain = PacketDrainCursor::new(None, 3, 1, 0);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    drain.refund_empty_interleave_turn();
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-2"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    drain.refund_empty_interleave_turn();
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-3"))
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_interleaves_side_queues_after_fallback() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    packet_tx.send("queued-3").unwrap();
-    let mut drain = PacketDrainCursor::new(None, 5, 2, 2);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-2"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveSideQueues)
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-3"))
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_can_disable_side_queue_interleaves() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    packet_tx.send("queued-3").unwrap();
-    let mut drain = PacketDrainCursor::new(None, 3, 0, 0);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-2"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-3"))
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(drain.drained(), 3);
 }
 
 #[tokio::test]

@@ -76,6 +76,29 @@ impl Node {
         turn
     }
 
+    pub(super) async fn process_packet_mover2_scratch_control_ingress(
+        &mut self,
+        turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
+    ) -> usize {
+        let mut processed = 0usize;
+        for control in turn.take_fmp_control_ingress() {
+            self.process_packet(control.into_packet()).await;
+            processed += 1;
+        }
+        processed
+    }
+
+    pub(super) fn packet_mover2_scratch_packet_activity(
+        turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
+    ) -> usize {
+        let summary = turn.summary();
+        summary
+            .raw_ingress_dropped()
+            .saturating_add(summary.inbound_admitted())
+            .saturating_add(summary.inbound_dropped())
+            .saturating_add(turn.fmp_control_ingress().len())
+    }
+
     fn packet_mover2_endpoint_identity_snapshot(&self) -> HashMap<NodeAddr, PeerIdentity> {
         let mut identities = HashMap::new();
         for (addr, entry) in self.sessions.iter() {
@@ -103,6 +126,7 @@ impl Node {
                 inbound_dropped = summary.inbound_dropped(),
                 outbound_dropped = summary.outbound_dropped(),
                 output_drops = turn.output_drops().len(),
+                fmp_control_ingress = turn.fmp_control_ingress().len(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
                 tun_outbound_drops = turn.tun_outbound_drops().len(),
                 endpoint_command_drops = turn.endpoint_command_drops().len(),
@@ -119,6 +143,7 @@ impl Node {
             outputs_sent = summary.outputs_sent(),
             transport_sent = turn.transport_sent(),
             endpoint_deferred = turn.endpoint_deferred_commands(),
+            fmp_control_ingress = turn.fmp_control_ingress().len(),
             "packet mover2 scratch turn completed"
         );
     }

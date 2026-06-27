@@ -106,9 +106,10 @@ impl PacketMover2RuntimeTurn<'_> {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct PacketMover2LiveNodeTurn {
     summary: PacketMover2RuntimeSummary,
+    fmp_control_ingress: Vec<PacketMover2FmpControlIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
@@ -124,6 +125,7 @@ impl PacketMover2LiveNodeTurn {
     fn from_runtime_turn(turn: &PacketMover2RuntimeTurn<'_>) -> Self {
         Self {
             summary: turn.summary(),
+            fmp_control_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
             endpoint_command_drops: Vec::new(),
@@ -142,6 +144,18 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn raw_ingress_drops(&self) -> &[PacketMover2RawIngressDrop] {
         &self.raw_ingress_drops
+    }
+
+    pub(crate) fn fmp_control_ingress(&self) -> &[PacketMover2FmpControlIngress] {
+        &self.fmp_control_ingress
+    }
+
+    fn set_fmp_control_ingress(&mut self, ingress: Vec<PacketMover2FmpControlIngress>) {
+        self.fmp_control_ingress = ingress;
+    }
+
+    pub(crate) fn take_fmp_control_ingress(&mut self) -> Vec<PacketMover2FmpControlIngress> {
+        std::mem::take(&mut self.fmp_control_ingress)
     }
 
     pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
@@ -190,6 +204,7 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn has_activity(&self) -> bool {
         self.summary.has_activity()
+            || !self.fmp_control_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_command_drops.is_empty()

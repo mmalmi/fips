@@ -32,6 +32,12 @@
         data
     }
 
+    fn fmp_prefix_wire(version: u8, phase: u8) -> Vec<u8> {
+        let mut data = vec![0u8; FMP_COMMON_PREFIX_SIZE];
+        data[0] = (version << 4) | phase;
+        data
+    }
+
     fn fsp_wire(counter: u64, flags: u8) -> Vec<u8> {
         let mut data = vec![0u8; FSP_HEADER_SIZE + 16];
         data[0] = (FSP_VERSION << 4) | FSP_PHASE_ESTABLISHED;
@@ -415,4 +421,72 @@
             source.drain_raw_ingress(8, |packet| drained.push(packet)),
             0
         );
+    }
+
+    #[test]
+    fn fmp_packet_rx_source_defers_control_and_version_mismatch_to_legacy() {
+        let (tx, mut rx) = crate::transport::packet_channel(8);
+        let transport_id = TransportId::new(21);
+        let msg1_addr = TransportAddr::from_string("198.51.100.22:9000");
+        let tail_addr = TransportAddr::from_string("198.51.100.23:9000");
+        let wrong_version_addr = TransportAddr::from_string("198.51.100.24:9000");
+        let msg1 = ReceivedPacket::with_timestamp(
+            transport_id,
+            msg1_addr.clone(),
+            fmp_prefix_wire(FMP_VERSION, FMP_PHASE_MSG1),
+            21_000,
+        );
+        let tail_wire = fmp_wire(203, 4, 0);
+        tx.send(ReceivedPacket::with_timestamp(
+            transport_id,
+            tail_addr.clone(),
+            tail_wire.clone(),
+            21_001,
+        ))
+        .expect("enqueue tail packet");
+
+        let mut source = PacketMover2FmpPacketRxSource::with_first(&mut rx, Some(msg1.clone()));
+        let mut drained = Vec::new();
+
+        assert_eq!(
+            source.drain_raw_ingress(8, |packet| drained.push(packet)),
+            1
+        );
+        assert!(drained.is_empty());
+        let control = source.take_control_ingress();
+        assert_eq!(control.len(), 1);
+        assert_eq!(control[0].phase(), FMP_PHASE_MSG1);
+        assert_eq!(control[0].packet().transport_id, transport_id);
+        assert_eq!(control[0].packet().remote_addr, msg1_addr);
+        assert_eq!(control[0].packet().timestamp_ms, 21_000);
+
+        assert_eq!(
+            source.drain_raw_ingress(8, |packet| drained.push(packet)),
+            1
+        );
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].remote_addr(), &tail_addr);
+        assert_eq!(drained[0].payload_len(), tail_wire.len());
+
+        let wrong_version = ReceivedPacket::with_timestamp(
+            transport_id,
+            wrong_version_addr.clone(),
+            fmp_prefix_wire(FMP_VERSION.saturating_add(1), FMP_PHASE_ESTABLISHED),
+            21_002,
+        );
+        let mut source =
+            PacketMover2FmpPacketRxSource::with_first(&mut rx, Some(wrong_version.clone()));
+        drained.clear();
+
+        assert_eq!(
+            source.drain_raw_ingress(8, |packet| drained.push(packet)),
+            1
+        );
+        assert!(drained.is_empty());
+        let control = source.take_control_ingress();
+        assert_eq!(control.len(), 1);
+        assert_eq!(control[0].phase(), FMP_PHASE_ESTABLISHED);
+        assert_eq!(control[0].packet().transport_id, transport_id);
+        assert_eq!(control[0].packet().remote_addr, wrong_version_addr);
+        assert_eq!(control[0].packet().timestamp_ms, 21_002);
     }
