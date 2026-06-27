@@ -1169,6 +1169,10 @@ impl EndpointSendCommand {
         self.send.payload().drop_on_backpressure()
     }
 
+    pub(crate) fn data_send(&self) -> &EndpointDataSend {
+        &self.send
+    }
+
     pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<crate::perf_profile::TraceStamp>) {
         (self.send, self.queued_at)
     }

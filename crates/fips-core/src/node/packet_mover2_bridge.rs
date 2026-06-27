@@ -26,6 +26,8 @@ struct PacketMover2FspOwnerSeed {
     keys: OwnerCryptoKeys,
     counter_authority: crate::noise::SendCounterAuthority,
     session_start_ms: u64,
+    coords_warmup_remaining: u8,
+    coords_prefix: Vec<u8>,
     routes: PacketMover2LiveOwnerRoutes,
     next_hop: Option<NodeAddr>,
 }
@@ -89,6 +91,14 @@ impl Node {
                 .is_ok()
             && self
                 .packet_mover2
+                .set_owner_fsp_coords_warmup(
+                    seed.owner,
+                    seed.coords_warmup_remaining,
+                    seed.coords_prefix,
+                )
+                .is_ok()
+            && self
+                .packet_mover2
                 .replace_owner_routes(seed.owner, seed.routes)
                 .is_ok()
             && next_hop_ready
@@ -146,7 +156,15 @@ impl Node {
         &mut self,
         node_addr: &NodeAddr,
     ) -> Option<PacketMover2FspOwnerSeed> {
-        let (open, seal, counter_authority, session_start_ms, fsp_flags, inner_flags) = {
+        let (
+            open,
+            seal,
+            counter_authority,
+            session_start_ms,
+            fsp_flags,
+            inner_flags,
+            coords_warmup_remaining,
+        ) = {
             let session = self.sessions.get(node_addr)?;
             let (open, seal) = session.fsp_crypto_keys()?;
             let counter_authority = session.send_counter_authority()?;
@@ -165,8 +183,11 @@ impl Node {
                 session.session_start_ms(),
                 fsp_flags,
                 inner_flags,
+                session.coords_warmup_remaining(),
             )
         };
+        let coords_prefix =
+            self.packet_mover2_fsp_coords_prefix(node_addr, coords_warmup_remaining);
         let (routes, next_hop) =
             self.packet_mover2_fsp_owner_routes(node_addr, fsp_flags, inner_flags);
 
@@ -177,13 +198,35 @@ impl Node {
                 self.packet_mover2_owner_in_flight_limit(),
             )
             .with_send_counter_authority(counter_authority.clone())
-            .with_fsp_session_start_ms(session_start_ms),
+            .with_fsp_session_start_ms(session_start_ms)
+            .with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix.clone()),
             keys: OwnerCryptoKeys::new(Arc::new(open), Arc::new(seal)),
             counter_authority,
             session_start_ms,
+            coords_warmup_remaining,
+            coords_prefix,
             routes,
             next_hop,
         })
+    }
+
+    fn packet_mover2_fsp_coords_prefix(
+        &self,
+        node_addr: &NodeAddr,
+        coords_warmup_remaining: u8,
+    ) -> Vec<u8> {
+        if coords_warmup_remaining == 0 {
+            return Vec::new();
+        }
+
+        let src = self.tree_state.my_coords().clone();
+        let dst = self.get_dest_coords(node_addr);
+        let mut prefix = Vec::with_capacity(
+            crate::protocol::coords_wire_size(&src) + crate::protocol::coords_wire_size(&dst),
+        );
+        crate::protocol::encode_coords(&src, &mut prefix);
+        crate::protocol::encode_coords(&dst, &mut prefix);
+        prefix
     }
 
     fn packet_mover2_fsp_owner_routes(

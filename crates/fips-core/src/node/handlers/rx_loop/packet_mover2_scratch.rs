@@ -137,6 +137,10 @@ impl Node {
             self.process_packet(control.into_packet()).await;
             processed += 1;
         }
+        for command in self.packet_mover2.take_deferred_endpoint_commands() {
+            self.handle_endpoint_data_command(command).await;
+            processed += 1;
+        }
         processed
     }
 
@@ -212,6 +216,7 @@ impl Node {
             .saturating_add(turn.fmp_control_ingress().len())
             .saturating_add(turn.fmp_link_ingress().len())
             .saturating_add(turn.fsp_session_ingress().len())
+            .saturating_add(turn.endpoint_deferred_commands())
     }
 
     fn packet_mover2_endpoint_identity_snapshot(&self) -> HashMap<NodeAddr, PeerIdentity> {
@@ -250,6 +255,25 @@ impl Node {
                 transport_dropped = turn.transport_dropped(),
                 "packet mover2 scratch turn reported drops"
             );
+            for drop in turn.raw_ingress_drops() {
+                debug!(
+                    protocol = ?drop.protocol(),
+                    transport_id = ?drop.transport_id(),
+                    remote_addr = ?drop.remote_addr(),
+                    payload_len = drop.payload_len(),
+                    reason = ?drop.reason(),
+                    "packet mover2 raw ingress dropped"
+                );
+            }
+            for drop in turn.endpoint_command_drops() {
+                debug!(
+                    dest_addr = ?drop.dest_addr(),
+                    lane = ?drop.lane(),
+                    payload_len = drop.payload_len(),
+                    reason = ?drop.reason(),
+                    "packet mover2 endpoint command dropped"
+                );
+            }
             return;
         }
 

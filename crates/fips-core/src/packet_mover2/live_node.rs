@@ -285,6 +285,19 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         Ok(())
     }
 
+    pub(crate) fn set_owner_fsp_coords_warmup(
+        &mut self,
+        owner: OwnerId,
+        remaining: u8,
+        prefix: Vec<u8>,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        owner_state.set_fsp_coords_warmup(remaining, prefix);
+        Ok(())
+    }
+
     pub(crate) fn owner_active_path(
         &self,
         owner: OwnerId,

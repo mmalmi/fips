@@ -584,6 +584,48 @@
     }
 
     #[test]
+    fn outbound_owner_spends_fsp_coords_warmup_on_reserved_packets() {
+        let owner = OwnerId::fsp(89);
+        let coords_prefix = empty_fsp_coords_prefix();
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4), CopyCryptoWorker);
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_fsp_coords_warmup(1, coords_prefix.clone()),
+        );
+
+        mover
+            .submit_outbound_packet(OutboundPacket::fsp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                0,
+                b"first".to_vec(),
+            ))
+            .unwrap();
+        mover
+            .submit_outbound_packet(OutboundPacket::fsp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                0,
+                b"second".to_vec(),
+            ))
+            .unwrap();
+
+        let work = mover.dispatch_outbound_available(8);
+        assert_eq!(work.len(), 2);
+        assert_eq!(work[0].packet.fsp_cleartext_prefix, coords_prefix);
+        assert_eq!(
+            work[0].packet.wire,
+            OutboundWire::Fsp {
+                flags: crate::node::session_wire::FSP_FLAG_CP
+            }
+        );
+        assert!(work[1].packet.fsp_cleartext_prefix.is_empty());
+        assert_eq!(work[1].packet.wire, OutboundWire::Fsp { flags: 0 });
+    }
+
+    #[test]
     fn outbound_owner_reserves_counters_after_priority_overtakes_bulk() {
         let owner = OwnerId::fsp(33);
         let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1), CopyCryptoWorker);
@@ -717,8 +759,9 @@
         let mut fmp_state =
             OwnerState::new(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(1));
         let mismatch = OutboundPacket::fsp(fmp_owner, 1, PacketClass::Bulk, 0, b"body".to_vec());
+        let (reservation, mismatch) = fmp_state.reserve_outbound(mismatch, 0).unwrap();
         let mismatch_work = OutboundCryptoWork {
-            reservation: fmp_state.reserve_outbound(&mismatch, 0).unwrap(),
+            reservation,
             packet: mismatch,
         };
         assert_eq!(
@@ -735,8 +778,9 @@
             FSP_FLAG_U,
             b"body".to_vec(),
         );
+        let (reservation, plaintext_fsp) = fsp_state.reserve_outbound(plaintext_fsp, 0).unwrap();
         let plaintext_work = OutboundCryptoWork {
-            reservation: fsp_state.reserve_outbound(&plaintext_fsp, 0).unwrap(),
+            reservation,
             packet: plaintext_fsp,
         };
         assert_eq!(

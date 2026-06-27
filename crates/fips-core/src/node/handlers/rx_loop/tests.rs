@@ -317,6 +317,60 @@ async fn packet_mover2_scratch_turn_uses_rx_loop_owned_channels() {
 }
 
 #[tokio::test]
+async fn packet_mover2_scratch_replays_deferred_endpoint_commands() {
+    let mut node =
+        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
+    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
+    let (endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let mut endpoint_io = node
+        .attach_endpoint_data_io(1)
+        .expect("endpoint io should attach before start");
+    let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+
+    endpoint_priority_tx
+        .send(crate::node::NodeEndpointCommand::PeerSnapshot { response_tx })
+        .await
+        .expect("peer snapshot command queued");
+
+    let mut turn = node
+        .drain_packet_mover2_scratch_turn(
+            &mut packet_rx,
+            4,
+            &mut endpoint_priority_rx,
+            &mut endpoint_rx,
+            4,
+            &mut tun_outbound_rx,
+            4,
+            &tun_tx,
+            &endpoint_io.event_tx,
+            4,
+        )
+        .await;
+
+    assert_eq!(turn.endpoint_deferred_commands(), 1);
+    assert!(matches!(
+        response_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+
+    let processed = node
+        .process_packet_mover2_scratch_control_ingress(&mut turn)
+        .await;
+
+    assert_eq!(processed, 1);
+    let peers = tokio::time::timeout(Duration::from_secs(1), response_rx)
+        .await
+        .expect("deferred endpoint command should complete")
+        .expect("peer snapshot sender should stay alive");
+    assert!(peers.is_empty());
+    assert!(tun_rx.try_recv().is_err());
+    assert!(endpoint_io.event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn packet_mover2_scratch_turn_reports_raw_ingress_failures() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");

@@ -101,7 +101,6 @@
             PacketMover2EndpointCommandRoute::fsp(owner, 7, 0x03, 0x09)
                 .with_max_payload_len(64),
         );
-
         let priority_payload = priority_endpoint_payload();
         let bulk_payload = bulk_endpoint_payload();
         let oversized_payload = vec![0xaa; 65];
@@ -136,7 +135,6 @@
                 None,
             ))
             .expect("enqueue missing endpoint command");
-
         let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
         drop(tun_tx);
         let mut source = PacketMover2RouteTableOutboundSource::new(
@@ -148,9 +146,7 @@
             &mut routes,
         );
         let mut outbound = Vec::new();
-
         assert_eq!(source.drain_outbound(16, |packet| outbound.push(packet)), 3);
-
         assert_eq!(outbound.len(), 2);
         assert_eq!(outbound[0].owner, owner);
         assert_eq!(outbound[0].generation, 7);
@@ -164,7 +160,6 @@
             }
         );
         assert_eq!(outbound[0].payload.as_ref(), priority_payload.as_slice());
-
         assert_eq!(outbound[1].owner, owner);
         assert_eq!(outbound[1].generation, 7);
         assert_eq!(outbound[1].class, PacketClass::Bulk);
@@ -176,9 +171,8 @@
             }
         );
         assert_eq!(outbound[1].payload.as_ref(), bulk_payload.as_slice());
-
         let drops = source.take_endpoint_command_drops();
-        assert_eq!(drops.len(), 2);
+        assert_eq!(drops.len(), 1);
         assert_eq!(drops[0].dest_addr(), *remote.node_addr());
         assert_eq!(drops[0].lane(), EndpointCommandLane::Bulk);
         assert_eq!(drops[0].payload_len(), oversized_payload.len());
@@ -186,14 +180,53 @@
             drops[0].reason(),
             PacketMover2EndpointCommandDropReason::MtuExceeded
         );
-        assert_eq!(drops[1].dest_addr(), *missing_remote.node_addr());
-        assert_eq!(drops[1].lane(), EndpointCommandLane::Bulk);
-        assert_eq!(drops[1].payload_len(), missing_payload.len());
-        assert_eq!(
-            drops[1].reason(),
-            PacketMover2EndpointCommandDropReason::NoRoute
+        let deferred = source.take_endpoint_deferred_commands();
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].lane(), EndpointCommandLane::Bulk);
+        assert_eq!(deferred[0].packet_count(), 1);
+    }
+
+    #[test]
+    fn live_route_table_outbound_source_defers_unrouted_endpoint_send_with_response() {
+        let missing_remote =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        priority_tx
+            .try_send(NodeEndpointCommand::send(
+                missing_remote,
+                priority_endpoint_payload(),
+                None,
+                response_tx,
+            ))
+            .expect("enqueue endpoint command");
+
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        drop((bulk_tx, tun_tx));
+        let mut routes = PacketMover2LiveRouteTable::default();
+        let mut source = PacketMover2RouteTableOutboundSource::new(
+            &mut priority_rx,
+            &mut bulk_rx,
+            1,
+            &mut tun_rx,
+            0,
+            &mut routes,
         );
-        assert!(source.take_endpoint_deferred_commands().is_empty());
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(1, |packet| outbound.push(packet)), 1);
+
+        assert!(outbound.is_empty());
+        assert!(source.take_endpoint_command_drops().is_empty());
+        let deferred = source.take_endpoint_deferred_commands();
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].lane(), EndpointCommandLane::Priority);
+        assert_eq!(deferred[0].packet_count(), 1);
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]

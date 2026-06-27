@@ -187,9 +187,8 @@ where
 }
 
 fn route_endpoint_send_with_router<R, F>(
-    send: EndpointDataSend,
+    send: &EndpointDataSend,
     router: &mut R,
-    drops: &mut Vec<PacketMover2EndpointCommandDrop>,
     mut push: F,
 ) -> Result<(), PacketMover2EndpointCommandDropReason>
 where
@@ -202,11 +201,17 @@ where
             push(packet.with_activity_tick(ActivityTick::new(crate::time::now_ms())));
             Ok(())
         }
-        Err(reason) => {
-            drops.push(PacketMover2EndpointCommandDrop::new(&request, reason));
-            Err(reason)
-        }
+        Err(reason) => Err(reason),
     }
+}
+
+fn push_endpoint_command_drop(
+    send: &EndpointDataSend,
+    reason: PacketMover2EndpointCommandDropReason,
+    drops: &mut Vec<PacketMover2EndpointCommandDrop>,
+) {
+    let request = PacketMover2EndpointCommandPayload::new(send);
+    drops.push(PacketMover2EndpointCommandDrop::new(&request, reason));
 }
 
 fn route_endpoint_command_with_router<R, F>(
@@ -224,33 +229,60 @@ fn route_endpoint_command_with_router<R, F>(
             command,
             response_tx,
         } => {
-            let (send, queued_at) = command.into_parts();
-            let _ = queued_at;
-            let dest_addr = send.dest_addr();
-            let result =
-                route_endpoint_send_with_router(send, router, drops, &mut push).map_err(
-                    |reason| NodeError::SendFailed {
+            let dest_addr = command.data_send().dest_addr();
+            match route_endpoint_send_with_router(command.data_send(), router, &mut push) {
+                Ok(()) => {
+                    let _ = response_tx.send(Ok(()));
+                }
+                Err(PacketMover2EndpointCommandDropReason::NoRoute) => {
+                    deferred_commands.push(NodeEndpointCommand::Send {
+                        command,
+                        response_tx,
+                    });
+                }
+                Err(reason) => {
+                    push_endpoint_command_drop(command.data_send(), reason, drops);
+                    let _ = response_tx.send(Err(NodeError::SendFailed {
                         node_addr: dest_addr,
                         reason: format!("packet_mover2 endpoint route drop: {reason:?}"),
-                    },
-                );
-            let _ = response_tx.send(result);
+                    }));
+                }
+            }
         }
         NodeEndpointCommand::SendOneway { command } => {
-            let (send, queued_at) = command.into_parts();
-            let _ = queued_at;
-            let _ = route_endpoint_send_with_router(send, router, drops, &mut push);
+            match route_endpoint_send_with_router(command.data_send(), router, &mut push) {
+                Ok(()) => {}
+                Err(PacketMover2EndpointCommandDropReason::NoRoute) => {
+                    deferred_commands.push(NodeEndpointCommand::SendOneway { command });
+                }
+                Err(reason) => {
+                    push_endpoint_command_drop(command.data_send(), reason, drops);
+                }
+            }
         }
         NodeEndpointCommand::SendBatchOneway { command, lane } => {
             let (remote, payloads, queued_at) = command.into_parts();
-            let _ = (lane, queued_at);
-            for payload in payloads {
-                let _ = route_endpoint_send_with_router(
-                    EndpointDataSend::new(remote, payload),
-                    router,
-                    drops,
-                    &mut push,
-                );
+            let mut routed = false;
+            let mut defer_unrouted = false;
+            for payload in &payloads {
+                let send = EndpointDataSend::new(remote, payload.clone());
+                match route_endpoint_send_with_router(&send, router, &mut push) {
+                    Ok(()) => {
+                        routed = true;
+                    }
+                    Err(PacketMover2EndpointCommandDropReason::NoRoute) if !routed => {
+                        defer_unrouted = true;
+                        break;
+                    }
+                    Err(reason) => {
+                        push_endpoint_command_drop(&send, reason, drops);
+                    }
+                }
+            }
+            if defer_unrouted {
+                let command = EndpointSendBatchCommand::new(remote, payloads, queued_at)
+                    .expect("deferred endpoint batch should remain non-empty");
+                deferred_commands.push(NodeEndpointCommand::SendBatchOneway { command, lane });
             }
         }
         other => deferred_commands.push(other),

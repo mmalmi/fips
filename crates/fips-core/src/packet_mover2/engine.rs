@@ -150,14 +150,21 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
                 continue;
             };
 
-            match owner.reserve_outbound(&queued.packet, queued.ingress_seq) {
-                Ok(reservation) => work.push(OutboundCryptoWork {
+            let owner_id = queued.packet.owner;
+            let lane = queued.packet.lane();
+            let ingress_seq = queued.ingress_seq;
+            match owner.reserve_outbound(queued.packet, ingress_seq) {
+                Ok((reservation, packet)) => work.push(OutboundCryptoWork {
                     reservation,
-                    packet: queued.packet,
+                    packet,
                 }),
-                Err(error) => self
-                    .drops
-                    .push(PacketDrop::from_queued_outbound(&queued, error.into())),
+                Err(error) => self.drops.push(PacketDrop {
+                    owner: owner_id,
+                    counter: None,
+                    ingress_seq: Some(ingress_seq),
+                    lane,
+                    reason: error.into(),
+                }),
             }
         }
 

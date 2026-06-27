@@ -6,6 +6,8 @@ pub(crate) struct OwnerConfig {
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
+    fsp_coords_warmup_remaining: u8,
+    fsp_coords_prefix: Vec<u8>,
 }
 
 impl OwnerConfig {
@@ -17,6 +19,8 @@ impl OwnerConfig {
             send_counter_authority: None,
             fmp_session_start_ms: None,
             fsp_session_start_ms: None,
+            fsp_coords_warmup_remaining: 0,
+            fsp_coords_prefix: Vec::new(),
         }
     }
 
@@ -41,6 +45,12 @@ impl OwnerConfig {
 
     pub(crate) fn with_fsp_session_start_ms(mut self, session_start_ms: u64) -> Self {
         self.fsp_session_start_ms = Some(session_start_ms);
+        self
+    }
+
+    pub(crate) fn with_fsp_coords_warmup(mut self, remaining: u8, prefix: Vec<u8>) -> Self {
+        self.fsp_coords_warmup_remaining = remaining;
+        self.fsp_coords_prefix = prefix;
         self
     }
 }
@@ -105,6 +115,8 @@ pub(crate) struct OwnerState {
     active_path: Option<TransportPath>,
     fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
+    fsp_coords_warmup_remaining: u8,
+    fsp_coords_prefix: Vec<u8>,
     last_rx_activity: Option<ActivityTick>,
     last_tx_activity: Option<ActivityTick>,
     last_hard_event: Option<ActivityTick>,
@@ -128,6 +140,8 @@ impl OwnerState {
             active_path: None,
             fmp_session_start_ms: config.fmp_session_start_ms,
             fsp_session_start_ms: config.fsp_session_start_ms,
+            fsp_coords_warmup_remaining: config.fsp_coords_warmup_remaining,
+            fsp_coords_prefix: config.fsp_coords_prefix,
             last_rx_activity: None,
             last_tx_activity: None,
             last_hard_event: None,
@@ -145,6 +159,8 @@ impl OwnerState {
         self.crypto_keys = None;
         self.fmp_session_start_ms = None;
         self.fsp_session_start_ms = None;
+        self.fsp_coords_warmup_remaining = 0;
+        self.fsp_coords_prefix.clear();
     }
 
     pub(crate) fn set_crypto_keys(&mut self, keys: OwnerCryptoKeys) {
@@ -161,6 +177,11 @@ impl OwnerState {
 
     pub(crate) fn set_fsp_session_start_ms(&mut self, session_start_ms: u64) {
         self.fsp_session_start_ms = Some(session_start_ms);
+    }
+
+    pub(crate) fn set_fsp_coords_warmup(&mut self, remaining: u8, prefix: Vec<u8>) {
+        self.fsp_coords_warmup_remaining = remaining;
+        self.fsp_coords_prefix = prefix;
     }
 
     pub(crate) fn set_fmp_session_start_ms(&mut self, session_start_ms: u64) {
@@ -244,9 +265,9 @@ impl OwnerState {
 
     pub(crate) fn reserve_outbound(
         &mut self,
-        packet: &OutboundPacket,
+        mut packet: OutboundPacket,
         ingress_seq: u64,
-    ) -> Result<OwnerReservation, OwnerReserveError> {
+    ) -> Result<(OwnerReservation, OutboundPacket), OwnerReserveError> {
         if packet.generation != self.generation {
             return Err(OwnerReserveError::StaleGeneration);
         }
@@ -258,13 +279,14 @@ impl OwnerState {
         let output_path = self.active_path.clone();
         let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
         let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
+        self.reserve_fsp_coords_warmup(&mut packet);
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_tx_activity, tick);
         }
         self.in_flight += 1;
         let order = OrderToken(self.next_order);
         self.next_order = self.next_order.wrapping_add(1);
-        Ok(OwnerReservation {
+        let reservation = OwnerReservation {
             owner: self.owner,
             generation: self.generation,
             order,
@@ -278,7 +300,25 @@ impl OwnerState {
             activity_tick: packet.activity_tick,
             fmp_timestamp_ms,
             fsp_timestamp_ms,
-        })
+        };
+        Ok((reservation, packet))
+    }
+
+    fn reserve_fsp_coords_warmup(&mut self, packet: &mut OutboundPacket) {
+        if self.owner.protocol() != PacketProtocol::Fsp
+            || self.fsp_coords_warmup_remaining == 0
+            || self.fsp_coords_prefix.is_empty()
+            || !packet.fsp_cleartext_prefix.is_empty()
+        {
+            return;
+        }
+
+        let OutboundWire::Fsp { flags } = &mut packet.wire else {
+            return;
+        };
+        *flags |= crate::node::session_wire::FSP_FLAG_CP;
+        packet.fsp_cleartext_prefix = self.fsp_coords_prefix.clone();
+        self.fsp_coords_warmup_remaining = self.fsp_coords_warmup_remaining.saturating_sub(1);
     }
 
     fn reserve_send_counter(&mut self) -> Result<u64, OwnerReserveError> {
