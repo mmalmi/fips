@@ -1,0 +1,57 @@
+//! Scratch packet mover for the intended straight dataplane.
+//!
+//! This module is intentionally separate from `packet_mover`: it models the
+//! final ownership shape first, then old runtime edges can adapt into it. The
+//! path is:
+//!
+//! ```text
+//! UDP/socket drain
+//!   -> bounded priority/bulk admission
+//!   -> peer/session owner sequencer
+//!   -> stateless crypto workers
+//!   -> ordered owner retire
+//!   -> TUN/endpoint/transport output
+//! ```
+//!
+//! The core invariant is simple: owners reserve replay, order, generation, and
+//! in-flight state before crypto work leaves the owner; workers only copy/open
+//! bytes and return completions; owners retire those completions in order.
+
+use crate::node::{
+    EndpointCommandLane, EndpointDataSend, EndpointEventSender, NodeEndpointCommand,
+    NodeEndpointEvent,
+};
+use crate::transport::{
+    PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,
+    TransportId,
+};
+use crate::upper::tun::TunOutboundRx;
+use crate::{NodeAddr, NodeError, PeerIdentity};
+use ring::aead::{Aad, LessSafeKey, Nonce};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+
+const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
+const FMP_PHASE_ESTABLISHED: u8 = crate::node::wire::PHASE_ESTABLISHED;
+const FMP_ESTABLISHED_HEADER_SIZE: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
+const FSP_VERSION: u8 = crate::node::session_wire::FSP_VERSION;
+const FSP_PHASE_ESTABLISHED: u8 = crate::node::session_wire::FSP_PHASE_ESTABLISHED;
+const FSP_HEADER_SIZE: usize = crate::node::session_wire::FSP_HEADER_SIZE;
+const FSP_FLAG_U: u8 = crate::node::session_wire::FSP_FLAG_U;
+const AEAD_TAG_SIZE: usize = crate::noise::TAG_SIZE;
+
+include!("types.rs");
+include!("wire.rs");
+include!("admission.rs");
+include!("owner.rs");
+include!("work.rs");
+include!("live_ingress.rs");
+include!("tun_outbound.rs");
+include!("endpoint_command.rs");
+include!("live_output.rs");
+include!("runtime.rs");
+include!("crypto.rs");
+include!("engine.rs");
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,329 @@
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2RawIngress {
+    protocol: PacketProtocol,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    path: TransportPath,
+    fsp_source: Option<NodeAddr>,
+    activity_tick: Option<ActivityTick>,
+    payload: PacketBuffer,
+}
+
+impl PacketMover2RawIngress {
+    pub(crate) fn from_received(
+        protocol: PacketProtocol,
+        path: TransportPath,
+        packet: ReceivedPacket,
+    ) -> Self {
+        Self {
+            protocol,
+            transport_id: packet.transport_id,
+            remote_addr: packet.remote_addr,
+            path,
+            fsp_source: None,
+            activity_tick: Some(ActivityTick::new(packet.timestamp_ms)),
+            payload: packet.data,
+        }
+    }
+
+    pub(crate) fn from_live_received(protocol: PacketProtocol, packet: ReceivedPacket) -> Self {
+        let path = TransportPath::live(packet.transport_id, packet.remote_addr.clone());
+        Self::from_received(protocol, path, packet)
+    }
+
+    pub(crate) fn with_fsp_source(mut self, source_addr: NodeAddr) -> Self {
+        self.fsp_source = Some(source_addr);
+        self
+    }
+
+    pub(crate) fn protocol(&self) -> PacketProtocol {
+        self.protocol
+    }
+
+    pub(crate) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    pub(crate) fn remote_addr(&self) -> &TransportAddr {
+        &self.remote_addr
+    }
+
+    pub(crate) fn path(&self) -> TransportPath {
+        self.path.clone()
+    }
+
+    pub(crate) fn fsp_source(&self) -> Option<NodeAddr> {
+        self.fsp_source
+    }
+
+    pub(crate) fn activity_tick(&self) -> Option<ActivityTick> {
+        self.activity_tick
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2IngressHeader {
+    Fmp(FmpWireHeader),
+    Fsp(FspWireHeader),
+}
+
+impl PacketMover2IngressHeader {
+    pub(crate) fn counter(self) -> u64 {
+        match self {
+            Self::Fmp(header) => header.counter(),
+            Self::Fsp(header) => header.counter(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2IngressRoute {
+    owner: OwnerId,
+    generation: u64,
+    class: PacketClass,
+    output: OutputTarget,
+}
+
+impl PacketMover2IngressRoute {
+    pub(crate) fn new(owner: OwnerId, generation: u64, output: OutputTarget) -> Self {
+        Self {
+            owner,
+            generation,
+            class: PacketClass::Bulk,
+            output,
+        }
+    }
+
+    pub(crate) fn with_class(mut self, class: PacketClass) -> Self {
+        self.class = class;
+        self
+    }
+}
+
+pub(crate) trait PacketMover2IngressRouter {
+    fn route(
+        &mut self,
+        packet: &PacketMover2RawIngress,
+        header: PacketMover2IngressHeader,
+    ) -> Option<PacketMover2IngressRoute>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct FmpIngressRouteKey {
+    transport_id: TransportId,
+    receiver_idx: u32,
+}
+
+impl FmpIngressRouteKey {
+    fn new(transport_id: TransportId, receiver_idx: u32) -> Self {
+        Self {
+            transport_id,
+            receiver_idx,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PacketMover2LiveIngressRoutes {
+    fmp: HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
+    fsp: HashMap<NodeAddr, PacketMover2IngressRoute>,
+}
+
+impl PacketMover2LiveIngressRoutes {
+    pub(crate) fn register_fmp(
+        &mut self,
+        transport_id: TransportId,
+        receiver_idx: u32,
+        route: PacketMover2IngressRoute,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fmp
+            .insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route)
+    }
+
+    pub(crate) fn unregister_fmp(
+        &mut self,
+        transport_id: TransportId,
+        receiver_idx: u32,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fmp
+            .remove(&FmpIngressRouteKey::new(transport_id, receiver_idx))
+    }
+
+    pub(crate) fn register_fsp(
+        &mut self,
+        source_addr: NodeAddr,
+        route: PacketMover2IngressRoute,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fsp.insert(source_addr, route)
+    }
+
+    pub(crate) fn unregister_fsp(
+        &mut self,
+        source_addr: NodeAddr,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fsp.remove(&source_addr)
+    }
+
+    pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> usize {
+        let before = self.fmp.len() + self.fsp.len();
+        self.fmp.retain(|_, route| route.owner != owner);
+        self.fsp.retain(|_, route| route.owner != owner);
+        before.saturating_sub(self.fmp.len() + self.fsp.len())
+    }
+}
+
+impl PacketMover2IngressRouter for PacketMover2LiveIngressRoutes {
+    fn route(
+        &mut self,
+        packet: &PacketMover2RawIngress,
+        header: PacketMover2IngressHeader,
+    ) -> Option<PacketMover2IngressRoute> {
+        match (packet.protocol, header) {
+            (PacketProtocol::Fmp, PacketMover2IngressHeader::Fmp(header)) => self
+                .fmp
+                .get(&FmpIngressRouteKey::new(
+                    packet.transport_id,
+                    header.receiver_idx(),
+                ))
+                .copied(),
+            (PacketProtocol::Fsp, PacketMover2IngressHeader::Fsp(_)) => packet
+                .fsp_source
+                .and_then(|source_addr| self.fsp.get(&source_addr).copied()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PacketMover2LiveIngressPacket {
+    protocol: PacketProtocol,
+    fsp_source: Option<NodeAddr>,
+    packet: ReceivedPacket,
+}
+
+impl PacketMover2LiveIngressPacket {
+    pub(crate) fn fmp(packet: ReceivedPacket) -> Self {
+        Self {
+            protocol: PacketProtocol::Fmp,
+            fsp_source: None,
+            packet,
+        }
+    }
+
+    pub(crate) fn fsp(packet: ReceivedPacket, source_addr: NodeAddr) -> Self {
+        Self {
+            protocol: PacketProtocol::Fsp,
+            fsp_source: Some(source_addr),
+            packet,
+        }
+    }
+
+    fn into_raw_ingress(self) -> PacketMover2RawIngress {
+        let raw = PacketMover2RawIngress::from_live_received(self.protocol, self.packet);
+        match self.fsp_source {
+            Some(source_addr) => raw.with_fsp_source(source_addr),
+            None => raw,
+        }
+    }
+}
+
+pub(crate) trait PacketMover2LiveIngressDrain {
+    fn drain_live_ingress<F>(&mut self, limit: usize, push: F) -> usize
+    where
+        F: FnMut(PacketMover2LiveIngressPacket);
+}
+
+impl PacketMover2LiveIngressDrain for VecDeque<PacketMover2LiveIngressPacket> {
+    fn drain_live_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2LiveIngressPacket),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Some(packet) = self.pop_front() else {
+                break;
+            };
+            push(packet);
+            drained += 1;
+        }
+        drained
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PacketMover2LiveRawIngressSource<S> {
+    source: S,
+}
+
+impl<S> PacketMover2LiveRawIngressSource<S> {
+    pub(crate) fn new(source: S) -> Self {
+        Self { source }
+    }
+
+    pub(crate) fn source_mut(&mut self) -> &mut S {
+        &mut self.source
+    }
+}
+
+impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
+    for PacketMover2LiveRawIngressSource<S>
+{
+    fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2RawIngress),
+    {
+        self.source
+            .drain_live_ingress(limit, |packet| push(packet.into_raw_ingress()))
+    }
+}
+
+/// Drains live transport packets from `PacketRx` as FMP link ingress.
+///
+/// FSP ingress needs authenticated source context, so it must enter through a
+/// source that can attach `with_fsp_source`.
+pub(crate) struct PacketMover2FmpPacketRxSource<'a> {
+    rx: &'a mut PacketRx,
+}
+
+impl<'a> PacketMover2FmpPacketRxSource<'a> {
+    pub(crate) fn new(rx: &'a mut PacketRx) -> Self {
+        Self { rx }
+    }
+}
+
+impl PacketMover2RawIngressSource for PacketMover2FmpPacketRxSource<'_> {
+    fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2RawIngress),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Ok(packet) = self.rx.try_recv() else {
+                break;
+            };
+            push(PacketMover2RawIngress::from_live_received(
+                PacketProtocol::Fmp,
+                packet,
+            ));
+            drained += 1;
+        }
+        drained
+    }
+}
+
+pub(crate) trait PacketMover2RawIngressSource {
+    fn drain_raw_ingress<F>(&mut self, limit: usize, push: F) -> usize
+    where
+        F: FnMut(PacketMover2RawIngress);
+}
+
+pub(crate) trait PacketMover2OutboundSource {
+    fn drain_outbound<F>(&mut self, limit: usize, push: F) -> usize
+    where
+        F: FnMut(OutboundPacket);
+}
+
