@@ -36,6 +36,8 @@ pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
     endpoint_drops: Vec<PacketMover2EndpointCommandDrop>,
     endpoint_deferred_commands: Vec<NodeEndpointCommand>,
     tun_drops: Vec<PacketMover2TunOutboundDrop>,
+    endpoint_drained: usize,
+    tun_drained: usize,
 }
 
 impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
@@ -60,6 +62,8 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
             endpoint_drops: Vec::new(),
             endpoint_deferred_commands: Vec::new(),
             tun_drops: Vec::new(),
+            endpoint_drained: 0,
+            tun_drained: 0,
         }
     }
 
@@ -80,6 +84,14 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
 
     fn take_tun_outbound_drops(&mut self) -> Vec<PacketMover2TunOutboundDrop> {
         std::mem::take(&mut self.tun_drops)
+    }
+
+    fn endpoint_drained(&self) -> usize {
+        self.endpoint_drained
+    }
+
+    fn tun_drained(&self) -> usize {
+        self.tun_drained
     }
 }
 
@@ -187,9 +199,11 @@ where
     {
         let endpoint_limit = self.endpoint_limit.min(limit);
         let endpoint_drained = self.drain_endpoint(endpoint_limit, &mut push);
+        self.endpoint_drained = self.endpoint_drained.saturating_add(endpoint_drained);
         let remaining = limit.saturating_sub(endpoint_drained.min(endpoint_limit));
         let tun_limit = self.tun_limit.min(remaining);
         let tun_drained = self.drain_tun(tun_limit, push);
+        self.tun_drained = self.tun_drained.saturating_add(tun_drained);
         endpoint_drained.saturating_add(tun_drained)
     }
 }

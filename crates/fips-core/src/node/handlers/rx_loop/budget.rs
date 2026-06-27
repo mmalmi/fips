@@ -15,11 +15,6 @@ pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 16;
 /// Keep their reserved slice tiny so a burst of fipstop/fipsctl reads cannot
 /// convoy ahead of packet receive or endpoint/TUN progress.
 pub(super) const CONTROL_QUERY_INTERLEAVE_BUDGET: usize = 4;
-/// Max endpoint payloads coalesced from consecutive same-peer batch commands
-/// during one rx-loop endpoint turn. This is intentionally only a few public
-/// API command chunks: enough to amortize route/session bookkeeping, but still
-/// bounded so priority commands can cut back in quickly.
-pub(super) const ENDPOINT_COMMAND_COALESCE_MAX_PACKETS: usize = 256;
 /// Top-level non-packet queues get shorter turns than raw packet receive.
 /// Returning to the biased select loop after a small slice lets ready
 /// `packet_rx` preempt bulk fallback, TUN egress, and endpoint command work
@@ -45,10 +40,6 @@ pub(super) fn split_side_queue_budget(budget: usize) -> (usize, usize) {
     let endpoint_budget = (budget / 2).max(1);
     let tun_budget = budget.saturating_sub(endpoint_budget).max(1);
     (endpoint_budget, tun_budget)
-}
-
-pub(super) fn remaining_side_queue_budget(budget: usize, drained: usize) -> usize {
-    budget.saturating_sub(drained)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

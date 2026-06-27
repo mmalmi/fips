@@ -1,11 +1,11 @@
 use super::budget::{
-    ENDPOINT_COMMAND_COALESCE_MAX_PACKETS, FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY,
-    FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET,
-    authenticated_bulk_preempts_packet_rx, fallback_drain_plan, non_packet_drain_budget,
+    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
+    fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
-    DecryptReturnDrainCursor, PriorityBulkDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan,
-    RxLoopMaintenanceState, SingleLaneDrainCursor,
+    DecryptReturnDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState,
+    SingleLaneDrainCursor,
 };
 use crate::control::protocol::Request;
 use crate::node::decrypt_worker::DecryptWorkerEvent;
@@ -149,6 +149,8 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
 async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
+    let (scratch_tun_tx, scratch_endpoint_tx) = closed_scratch_sinks();
+    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
     let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
     let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
@@ -178,11 +180,14 @@ async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
 
     let drained = node
         .drain_rx_loop_side_queues(
+            &mut packet_rx,
             &mut control_rx,
             &mut feedback_rx,
             &mut tun_rx,
             &mut endpoint_priority_rx,
             &mut endpoint_rx,
+            &scratch_tun_tx,
+            &scratch_endpoint_tx,
             2,
         )
         .await;
@@ -552,28 +557,6 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
 }
 
 #[tokio::test]
-async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("priority").await.unwrap();
-    bulk_tx.send("bulk-queued").await.unwrap();
-    let mut drain = PriorityBulkDrainCursor::new(None, Some("bulk-selected"), 4);
-
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), Some("priority"));
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("bulk-selected")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("bulk-queued")
-    );
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
 async fn fallback_drain_prefers_ready_priority_over_selected_bulk() {
     let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
     let (_authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
@@ -681,106 +664,6 @@ async fn priority_fallback_drain_leaves_bulk_for_lower_priority_turn() {
     assert_eq!(drain.next(&mut priority_rx), None);
     assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
     assert_eq!(drain.drained(), 2);
-}
-
-#[tokio::test]
-async fn priority_bulk_drain_cursor_owns_selected_head_and_budget() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("queued-priority").await.unwrap();
-    bulk_tx.send("queued-bulk").await.unwrap();
-    let mut drain =
-        PriorityBulkDrainCursor::new(Some("selected-priority"), Some("selected-bulk"), 3);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("selected-priority")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("queued-priority")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("selected-bulk")
-    );
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
-    assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn priority_bulk_drain_cursor_charges_batch_extra_against_budget() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("queued-priority").await.unwrap();
-    bulk_tx.send("queued-bulk").await.unwrap();
-    let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk"), 4);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("queued-priority")
-    );
-    drain.charge_extra(3);
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
-    assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
-    assert_eq!(drain.drained(), 4);
-}
-
-#[tokio::test]
-async fn priority_bulk_drain_cursor_bulk_only_stops_for_priority() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("priority").await.unwrap();
-    bulk_tx.send("bulk").await.unwrap();
-    let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk"), 4);
-
-    assert_eq!(
-        drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
-        None,
-        "bulk coalescing must stop when priority work is ready"
-    );
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), Some("priority"));
-    assert_eq!(
-        drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
-        Some("selected-bulk")
-    );
-    assert_eq!(
-        drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
-        Some("bulk")
-    );
-}
-
-#[tokio::test]
-async fn priority_bulk_drain_cursor_deferred_bulk_yields_to_later_priority() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (_bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-    let mut drain = PriorityBulkDrainCursor::new(None, None, 4);
-
-    drain.defer_bulk("deferred-bulk");
-    priority_tx.send("priority").await.unwrap();
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("priority"),
-        "a non-coalesced bulk command should be put back behind new priority work"
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("deferred-bulk")
-    );
-}
-
-#[test]
-fn endpoint_command_coalesce_cap_is_small_bounded_packet_groups() {
-    assert_eq!(ENDPOINT_COMMAND_COALESCE_MAX_PACKETS, 256);
-    assert!(
-        ENDPOINT_COMMAND_COALESCE_MAX_PACKETS <= PACKET_DRAIN_BUDGET,
-        "endpoint coalescing should remain below one raw packet drain turn"
-    );
 }
 
 #[tokio::test]

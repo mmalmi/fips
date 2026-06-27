@@ -6,8 +6,7 @@ use crate::node::decrypt_worker::{
     DecryptFailureReport, DecryptFallback, DecryptWorkerEvent, DecryptWorkerFallbackReceivers,
 };
 use crate::node::{
-    AuthenticatedFmpPlaintext, EndpointEventSender, EndpointSendBatchCommand, Node,
-    NodeEndpointCommand, NodeError,
+    AuthenticatedFmpPlaintext, EndpointEventSender, Node, NodeEndpointCommand, NodeError,
 };
 use crate::transport::PacketRx;
 use crate::upper::tun::TunOutboundRx;
@@ -174,11 +173,14 @@ impl Node {
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
+                        &mut packet_rx,
                         &mut control_query_rx,
                         &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
+                        &scratch_tun_tx,
+                        &scratch_endpoint_tx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_data_drained() {
@@ -263,11 +265,14 @@ impl Node {
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
+                        &mut packet_rx,
                         &mut control_query_rx,
                         &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
+                        &scratch_tun_tx,
+                        &scratch_endpoint_tx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_data_drained() {
@@ -367,11 +372,14 @@ impl Node {
                         fallback_plan.trailing_budget,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
+                        &mut packet_rx,
                         &mut control_query_rx,
                         &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
+                        &scratch_tun_tx,
+                        &scratch_endpoint_tx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_data_drained() {
@@ -491,20 +499,21 @@ impl Node {
             drained_packets,
             drained_decrypt,
             drained_endpoint_feedback,
-            turn.tun_outbound_drops().len(),
-            turn.summary()
-                .outbound_admitted()
-                .saturating_add(turn.summary().outbound_dropped()),
+            turn.tun_source_drained(),
+            turn.endpoint_source_drained(),
         )
     }
 
     async fn drain_rx_loop_side_queues(
         &mut self,
+        packet_rx: &mut PacketRx,
         control_query_rx: &mut Receiver<ControlMessage>,
         endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
         budget: usize,
     ) -> RxLoopDataDrainStats {
         let drained_endpoint_feedback =
@@ -516,39 +525,24 @@ impl Node {
             .await;
         let remaining_budget = feedback_remaining_budget.saturating_sub(drained_control);
         let (endpoint_budget, tun_budget) = split_side_queue_budget(remaining_budget);
-        let mut drained_endpoint = self
-            .drain_endpoint_commands(
+        let mut turn = self
+            .drain_packet_mover2_scratch_turn(
+                packet_rx,
+                0,
                 endpoint_priority_command_rx,
                 endpoint_command_rx,
-                None,
-                None,
                 endpoint_budget,
+                tun_outbound_rx,
+                tun_budget,
+                tun_tx,
+                endpoint_tx,
+                remaining_budget,
             )
             .await;
-        let mut drained_tun = self
-            .drain_tun_outbound(tun_outbound_rx, None, tun_budget)
+        self.process_packet_mover2_scratch_control_ingress(&mut turn)
             .await;
-
-        let endpoint_remainder = remaining_side_queue_budget(endpoint_budget, drained_endpoint);
-        let tun_remainder = remaining_side_queue_budget(tun_budget, drained_tun);
-        if endpoint_remainder > 0 && !tun_outbound_rx.is_empty() {
-            drained_tun += self
-                .drain_tun_outbound(tun_outbound_rx, None, endpoint_remainder)
-                .await;
-        }
-        if tun_remainder > 0
-            && (!endpoint_priority_command_rx.is_empty() || !endpoint_command_rx.is_empty())
-        {
-            drained_endpoint += self
-                .drain_endpoint_commands(
-                    endpoint_priority_command_rx,
-                    endpoint_command_rx,
-                    None,
-                    None,
-                    tun_remainder,
-                )
-                .await;
-        }
+        let drained_endpoint = turn.endpoint_source_drained();
+        let drained_tun = turn.tun_source_drained();
 
         RxLoopDataDrainStats::with_control(
             0,
@@ -574,54 +568,6 @@ impl Node {
         drain.drained()
     }
 
-    async fn drain_tun_outbound(
-        &mut self,
-        tun_outbound_rx: &mut TunOutboundRx,
-        first_packet: Option<Vec<u8>>,
-        budget: usize,
-    ) -> usize {
-        let mut drain = SingleLaneDrainCursor::new(first_packet, budget);
-        while let Some(packet) = drain.next(tun_outbound_rx) {
-            self.handle_tun_outbound(packet).await;
-        }
-
-        drain.drained()
-    }
-
-    async fn drain_endpoint_commands(
-        &mut self,
-        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
-        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
-        first_priority_command: Option<NodeEndpointCommand>,
-        first_bulk_command: Option<NodeEndpointCommand>,
-        budget: usize,
-    ) -> usize {
-        let mut drain =
-            PriorityBulkDrainCursor::new(first_priority_command, first_bulk_command, budget);
-        while let Some(command) = drain.next(endpoint_priority_command_rx, endpoint_command_rx) {
-            let drain_cost = command.drain_cost();
-            match command.into_send_batch_oneway() {
-                Ok((batch, _lane)) => {
-                    let mut batch_commands = vec![batch];
-                    self.coalesce_endpoint_send_batch_commands(
-                        &mut drain,
-                        endpoint_priority_command_rx,
-                        endpoint_command_rx,
-                        &mut batch_commands,
-                    );
-                    self.handle_endpoint_send_batch_commands(batch_commands)
-                        .await;
-                }
-                Err(command) => {
-                    self.handle_endpoint_data_command(command).await;
-                }
-            }
-            drain.charge_extra(drain_cost.saturating_sub(1));
-        }
-
-        drain.drained()
-    }
-
     fn drain_endpoint_bulk_send_feedback(
         &mut self,
         endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
@@ -634,48 +580,6 @@ impl Node {
         }
 
         drain.drained()
-    }
-
-    fn coalesce_endpoint_send_batch_commands(
-        &mut self,
-        drain: &mut PriorityBulkDrainCursor<NodeEndpointCommand>,
-        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
-        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
-        batch_commands: &mut Vec<EndpointSendBatchCommand>,
-    ) {
-        let mut payloads = batch_commands
-            .iter()
-            .fold(0usize, |total, command| total.saturating_add(command.len()));
-        while payloads < ENDPOINT_COMMAND_COALESCE_MAX_PACKETS {
-            let Some(command) =
-                drain.next_bulk_if_no_priority(endpoint_priority_command_rx, endpoint_command_rx)
-            else {
-                break;
-            };
-            let drain_cost = command.drain_cost();
-            match command.into_send_batch_oneway() {
-                Ok((batch, _lane))
-                    if batch_commands.last().is_some_and(|last| {
-                        last.can_coalesce_with(&batch, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS)
-                    }) =>
-                {
-                    payloads = payloads.saturating_add(batch.len());
-                    batch_commands.push(batch);
-                    drain.charge_extra(drain_cost.saturating_sub(1));
-                }
-                Ok((batch, lane)) => {
-                    drain.defer_bulk(NodeEndpointCommand::SendBatchOneway {
-                        command: batch,
-                        lane,
-                    });
-                    break;
-                }
-                Err(command) => {
-                    drain.defer_bulk(command);
-                    break;
-                }
-            }
-        }
     }
 
     async fn run_rx_loop_maintenance_tick(&mut self, plan: RxLoopMaintenancePlan) -> bool {

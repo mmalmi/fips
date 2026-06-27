@@ -113,6 +113,8 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
+    tun_source_drained: usize,
+    endpoint_source_drained: usize,
     endpoint_deferred_commands: usize,
     output_drops: Vec<PacketMover2OutputDrop>,
     drops: Vec<PacketDrop>,
@@ -129,6 +131,8 @@ impl PacketMover2LiveNodeTurn {
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
             endpoint_command_drops: Vec::new(),
+            tun_source_drained: 0,
+            endpoint_source_drained: 0,
             endpoint_deferred_commands: 0,
             output_drops: turn.output_drops().to_vec(),
             drops: turn.drops().to_vec(),
@@ -174,6 +178,22 @@ impl PacketMover2LiveNodeTurn {
         self.endpoint_command_drops = drops;
     }
 
+    pub(crate) fn tun_source_drained(&self) -> usize {
+        self.tun_source_drained
+    }
+
+    fn set_tun_source_drained(&mut self, count: usize) {
+        self.tun_source_drained = count;
+    }
+
+    pub(crate) fn endpoint_source_drained(&self) -> usize {
+        self.endpoint_source_drained
+    }
+
+    fn set_endpoint_source_drained(&mut self, count: usize) {
+        self.endpoint_source_drained = count;
+    }
+
     pub(crate) fn endpoint_deferred_commands(&self) -> usize {
         self.endpoint_deferred_commands
     }
@@ -208,6 +228,8 @@ impl PacketMover2LiveNodeTurn {
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_command_drops.is_empty()
+            || self.tun_source_drained > 0
+            || self.endpoint_source_drained > 0
             || self.endpoint_deferred_commands > 0
             || !self.output_drops.is_empty()
             || !self.drops.is_empty()
@@ -510,7 +532,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         });
 
         let outbound_limit = endpoint_limit.saturating_add(tun_limit);
-        let (endpoint_drops, deferred, tun_drops) = {
+        let (endpoint_drops, endpoint_drained, deferred, tun_drops, tun_drained) = {
             let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
                 endpoint_priority_rx,
                 endpoint_bulk_rx,
@@ -525,8 +547,10 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             });
             (
                 outbound_source.take_endpoint_command_drops(),
+                outbound_source.endpoint_drained(),
                 outbound_source.take_endpoint_deferred_commands(),
                 outbound_source.take_tun_outbound_drops(),
+                outbound_source.tun_drained(),
             )
         };
 
@@ -542,9 +566,11 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             )
             .await;
         report.set_endpoint_command_drops(endpoint_drops);
+        report.set_endpoint_source_drained(endpoint_drained);
         report.set_endpoint_deferred_commands(deferred.len());
         deferred_endpoint_commands.extend(deferred);
         report.set_tun_outbound_drops(tun_drops);
+        report.set_tun_source_drained(tun_drained);
         report
     }
 

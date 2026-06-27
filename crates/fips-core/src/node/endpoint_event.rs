@@ -1326,15 +1326,6 @@ impl NodeEndpointCommand {
             | Self::RefreshPeerPaths { .. } => 1,
         }
     }
-
-    pub(crate) fn into_send_batch_oneway(
-        self,
-    ) -> Result<(EndpointSendBatchCommand, EndpointCommandLane), Self> {
-        match self {
-            Self::SendBatchOneway { command, lane } => Ok((command, lane)),
-            other => Err(other),
-        }
-    }
 }
 
 /// Reports what changed in response to `UpdatePeers`.
