@@ -128,14 +128,14 @@ impl FmpIngressRouteKey {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct PacketMover2LiveIngressRoutes {
+pub(crate) struct PacketMover2LiveRouteTable {
     fmp: HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
     fsp: HashMap<NodeAddr, PacketMover2IngressRoute>,
     tun_outbound: HashMap<FipsTunDestinationPrefix, PacketMover2TunDestinationRoute>,
     endpoint: HashMap<NodeAddr, PacketMover2EndpointCommandRoute>,
 }
 
-impl PacketMover2LiveIngressRoutes {
+impl PacketMover2LiveRouteTable {
     pub(crate) fn register_fmp(
         &mut self,
         transport_id: TransportId,
@@ -245,7 +245,7 @@ impl PacketMover2LiveIngressRoutes {
     }
 }
 
-impl PacketMover2IngressRouter for PacketMover2LiveIngressRoutes {
+impl PacketMover2IngressRouter for PacketMover2LiveRouteTable {
     fn route(
         &mut self,
         packet: &PacketMover2RawIngress,
@@ -267,7 +267,7 @@ impl PacketMover2IngressRouter for PacketMover2LiveIngressRoutes {
     }
 }
 
-impl PacketMover2TunOutboundRouter for PacketMover2LiveIngressRoutes {
+impl PacketMover2TunOutboundRouter for PacketMover2LiveRouteTable {
     fn route_tun_outbound(
         &mut self,
         packet: &[u8],
@@ -280,7 +280,7 @@ impl PacketMover2TunOutboundRouter for PacketMover2LiveIngressRoutes {
     }
 }
 
-impl PacketMover2EndpointCommandRouter for PacketMover2LiveIngressRoutes {
+impl PacketMover2EndpointCommandRouter for PacketMover2LiveRouteTable {
     fn route_endpoint_command_payload(
         &mut self,
         request: PacketMover2EndpointCommandPayload<'_>,

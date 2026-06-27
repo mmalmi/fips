@@ -443,7 +443,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     pub(crate) async fn pump_aead_live_node_route_table_turn<RI, Resolver, Transports>(
         &mut self,
         raw_ingress: &mut RI,
-        routes: &mut PacketMover2LiveIngressRoutes,
+        routes: &mut PacketMover2LiveRouteTable,
         raw_ingress_limit: usize,
         endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
@@ -509,7 +509,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     pub(crate) async fn pump_aead_live_node_packet_rx_route_table_turn<Resolver, Transports>(
         &mut self,
         packet_rx: &mut PacketRx,
-        routes: &mut PacketMover2LiveIngressRoutes,
+        routes: &mut PacketMover2LiveRouteTable,
         packet_limit: usize,
         endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,

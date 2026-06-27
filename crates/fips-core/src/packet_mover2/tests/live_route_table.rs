@@ -23,7 +23,7 @@
     fn live_route_table_routes_tun_outbound_by_fips_destination_prefix() {
         let dest = NodeAddr::from_bytes([0x61; 16]);
         let owner = OwnerId::fmp_node(dest);
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_tun_destination(
             dest,
             PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
@@ -89,7 +89,7 @@
         let missing_remote =
             PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
         let owner = OwnerId::fsp_node(*remote.node_addr());
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_endpoint_destination(
             *remote.node_addr(),
             PacketMover2EndpointCommandRoute::fsp(owner, 7, 0x03, 12_345, 0x09)
@@ -188,7 +188,7 @@
         let endpoint_owner = OwnerId::fsp_node(*remote.node_addr());
         let tun_dest = NodeAddr::from_bytes([0x65; 16]);
         let tun_owner = OwnerId::fmp_node(tun_dest);
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_endpoint_destination(
             *remote.node_addr(),
             PacketMover2EndpointCommandRoute::fsp(endpoint_owner, 1, 0, 1_000, 0),
@@ -272,7 +272,7 @@
         let stale_fsp_owner = OwnerId::fsp_node(stale);
         let keep_fmp_owner = OwnerId::fmp_node(keep);
         let keep_fsp_owner = OwnerId::fsp_node(keep);
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_fmp(
             TransportId::new(63),
             630,
@@ -361,7 +361,7 @@
         let transport_id = TransportId::new(66);
         let keep_transport_id = TransportId::new(68);
         let remote_addr = TransportAddr::from_string("198.51.100.66:9000");
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
 
         routes.register_fmp(
             transport_id,
@@ -572,7 +572,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
 
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_endpoint_destination(
             fsp_source,
             PacketMover2EndpointCommandRoute::fsp(fsp_owner, 1, 0, 8_200, 0)
@@ -726,7 +726,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
 
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_fsp(
             fsp_source,
             PacketMover2IngressRoute::new(fsp_owner, 1, OutputTarget::Endpoint)

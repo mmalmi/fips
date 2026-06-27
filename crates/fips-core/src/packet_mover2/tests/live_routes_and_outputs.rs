@@ -10,7 +10,7 @@
             .with_class(PacketClass::Liveness);
         let route_b = PacketMover2IngressRoute::new(owner_b, 8, OutputTarget::Endpoint)
             .with_class(PacketClass::Rekey);
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         assert_eq!(routes.register_fmp(transport_id, 404, route_a), None);
 
         let raw = PacketMover2RawIngress::from_live_received(
@@ -56,7 +56,7 @@
     fn live_ingress_routes_fsp_require_source_context_and_refresh_cleanly() {
         let source = NodeAddr::from_bytes([0x42; 16]);
         let owner = OwnerId::fsp_node(source);
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         let old_route = PacketMover2IngressRoute::new(owner, 3, OutputTarget::Tun)
             .with_class(PacketClass::Bulk);
         let new_route = PacketMover2IngressRoute::new(owner, 4, OutputTarget::Endpoint)
@@ -104,7 +104,7 @@
         let transport_b = TransportId::new(51);
         let transport_keep = TransportId::new(52);
         let remote_addr = TransportAddr::from_string("198.51.100.50:9000");
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
 
         routes.register_fmp(
             transport_a,
@@ -208,7 +208,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
 
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_fmp(
             transport_id,
             430,
@@ -311,7 +311,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
 
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_fmp(
             transport_id,
             450,
@@ -443,7 +443,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
 
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_fmp(
             transport_id,
             740,
@@ -573,7 +573,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
 
-        let mut routes = PacketMover2LiveIngressRoutes::default();
+        let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_fmp(
             transport_id,
             750,
