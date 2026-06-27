@@ -40,6 +40,7 @@ pub(crate) struct PacketMover2EndpointCommandRoute {
     flags: u8,
     timestamp_ms: u32,
     inner_flags: u8,
+    post_seal: OutboundPostSeal,
     max_payload_len: Option<usize>,
 }
 
@@ -57,8 +58,14 @@ impl PacketMover2EndpointCommandRoute {
             flags,
             timestamp_ms,
             inner_flags,
+            post_seal: OutboundPostSeal::Transport,
             max_payload_len: None,
         }
+    }
+
+    pub(crate) fn with_fmp_wrap(mut self, route: PacketMover2FspWrapRoute) -> Self {
+        self.post_seal = OutboundPostSeal::FmpWrap(route);
+        self
     }
 
     pub(crate) fn with_max_payload_len(mut self, max_payload_len: usize) -> Self {
@@ -94,13 +101,15 @@ impl PacketMover2EndpointCommandRoute {
             self.inner_flags,
             request.payload(),
         );
-        Ok(OutboundPacket::fsp(
+        let packet = OutboundPacket::fsp(
             self.owner,
             self.generation,
             endpoint_packet_class(request.lane()),
             self.flags,
             inner_plaintext,
-        ))
+        )
+        .with_post_seal(self.post_seal);
+        Ok(packet)
     }
 }
 

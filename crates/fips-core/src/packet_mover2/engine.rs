@@ -180,6 +180,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             .extend(retired.iter().filter_map(|item| match item {
                 RetiredPacket::Drop(drop) => Some(drop.clone()),
                 RetiredPacket::Output(_) => None,
+                RetiredPacket::Outbound(_) => None,
             }));
         retired
     }

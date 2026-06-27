@@ -231,6 +231,7 @@ impl OwnerState {
             match completion.result {
                 CryptoResult::Opened(output) => retired.push(RetiredPacket::Output(output)),
                 CryptoResult::Sealed(output) => retired.push(RetiredPacket::Output(output)),
+                CryptoResult::Outbound(packet) => retired.push(RetiredPacket::Outbound(packet)),
                 CryptoResult::Failed => {
                     retired.push(RetiredPacket::Drop(PacketDrop::from_completion(
                         &completion,
@@ -260,4 +261,3 @@ fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) {
         _ => *slot = Some(tick),
     }
 }
-

@@ -144,6 +144,7 @@
                 assert_eq!(drop.lane, Lane::Bulk);
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
+            RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
         }
         assert_eq!(turn.drops().len(), 1);
         assert_eq!(turn.drops()[0].reason, PacketDropReason::CryptoFailed);
@@ -179,6 +180,7 @@
                 assert_eq!(drop.counter, Some(0));
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
+            RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
         }
         let owner = mover.owner_mut(owner).unwrap();
         assert_eq!(owner.next_send_counter(), 1);
@@ -790,4 +792,3 @@
             )
         }
     }
-

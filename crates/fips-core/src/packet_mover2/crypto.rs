@@ -127,6 +127,7 @@ impl StatelessAeadOpenWorker {
 pub(crate) struct AeadSealWork {
     work: OutboundCryptoWork,
     cipher: AeadKey,
+    post_seal: OutboundPostSeal,
     ciphertext_offset: usize,
 }
 
@@ -162,6 +163,7 @@ impl AeadSealWork {
         work.packet.payload = wire.into();
 
         Ok(Self {
+            post_seal: work.packet.post_seal,
             work,
             cipher,
             ciphertext_offset,
@@ -192,14 +194,19 @@ impl StatelessAeadSealWorker {
         let result = match tag {
             Some(tag) => {
                 work.work.packet.payload.extend_from_slice(tag.as_ref());
-                CryptoResult::Sealed(PacketOutput {
-                    owner: reservation.owner,
-                    counter: reservation.counter,
-                    ingress_seq: reservation.ingress_seq,
-                    target: OutputTarget::Transport,
-                    path: reservation.output_path.clone(),
-                    payload: work.work.packet.payload,
-                })
+                match work.post_seal {
+                    OutboundPostSeal::Transport => CryptoResult::Sealed(PacketOutput {
+                        owner: reservation.owner,
+                        counter: reservation.counter,
+                        ingress_seq: reservation.ingress_seq,
+                        target: OutputTarget::Transport,
+                        path: reservation.output_path.clone(),
+                        payload: work.work.packet.payload,
+                    }),
+                    OutboundPostSeal::FmpWrap(route) => {
+                        CryptoResult::Outbound(route.into_fmp_outbound(work.work.packet.payload))
+                    }
+                }
             }
             None => CryptoResult::Failed,
         };
@@ -216,4 +223,3 @@ fn aead_nonce(counter: u64) -> Nonce {
     nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
     Nonce::assume_unique_for_key(nonce_bytes)
 }
-

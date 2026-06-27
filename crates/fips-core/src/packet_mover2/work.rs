@@ -34,6 +34,7 @@ pub(crate) struct CryptoCompletion {
 pub(crate) enum CryptoResult {
     Opened(PacketOutput),
     Sealed(PacketOutput),
+    Outbound(OutboundPacket),
     Failed,
 }
 
@@ -84,6 +85,7 @@ impl PacketOutput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RetiredPacket {
     Output(PacketOutput),
+    Outbound(OutboundPacket),
     Drop(PacketDrop),
 }
 
@@ -235,9 +237,9 @@ impl PacketMoverTurn {
             .iter()
             .filter_map(|item| match item {
                 RetiredPacket::Output(output) => Some(output),
+                RetiredPacket::Outbound(_) => None,
                 RetiredPacket::Drop(_) => None,
             })
             .collect()
     }
 }
-

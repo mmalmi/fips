@@ -173,12 +173,19 @@ pub(crate) enum OutboundWire {
     Fsp { flags: u8 },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutboundPostSeal {
+    Transport,
+    FmpWrap(PacketMover2FspWrapRoute),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OutboundPacket {
     owner: OwnerId,
     generation: u64,
     class: PacketClass,
     wire: OutboundWire,
+    post_seal: OutboundPostSeal,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -200,6 +207,7 @@ impl OutboundPacket {
                 receiver_idx,
                 flags,
             },
+            post_seal: OutboundPostSeal::Transport,
             activity_tick: None,
             payload: payload.into(),
         }
@@ -217,9 +225,15 @@ impl OutboundPacket {
             generation,
             class,
             wire: OutboundWire::Fsp { flags },
+            post_seal: OutboundPostSeal::Transport,
             activity_tick: None,
             payload: payload.into(),
         }
+    }
+
+    pub(crate) fn with_post_seal(mut self, post_seal: OutboundPostSeal) -> Self {
+        self.post_seal = post_seal;
+        self
     }
 
     pub(crate) fn with_activity_tick(mut self, tick: ActivityTick) -> Self {
@@ -303,4 +317,3 @@ impl SocketPacket {
         ))
     }
 }
-

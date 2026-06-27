@@ -611,8 +611,10 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.drops.extend(drops);
 
         for packet in retired {
-            if let RetiredPacket::Output(output) = packet {
-                self.outputs.push(output);
+            match packet {
+                RetiredPacket::Output(output) => self.outputs.push(output),
+                RetiredPacket::Outbound(packet) => self.admit_outbound_packet(packet, &mut summary),
+                RetiredPacket::Drop(_) => {}
             }
         }
 

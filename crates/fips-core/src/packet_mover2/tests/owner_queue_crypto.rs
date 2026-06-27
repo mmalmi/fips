@@ -437,6 +437,7 @@
                 assert_eq!(drop.reason, PacketDropReason::CryptoFailed);
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
+            RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
         }
         match &retired[1] {
             RetiredPacket::Output(output) => {
@@ -444,6 +445,7 @@
                 assert_eq!(&output.payload[FMP_ESTABLISHED_HEADER_SIZE..], b"second");
             }
             RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
+            RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
         }
     }
 
@@ -647,4 +649,3 @@
             Some(WireBuildError::PlaintextFsp)
         );
     }
-

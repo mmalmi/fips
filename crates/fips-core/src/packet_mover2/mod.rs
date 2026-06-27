@@ -41,6 +41,7 @@ const FSP_FLAG_U: u8 = crate::node::session_wire::FSP_FLAG_U;
 const AEAD_TAG_SIZE: usize = crate::noise::TAG_SIZE;
 
 include!("types.rs");
+include!("session_wrap.rs");
 include!("wire.rs");
 include!("admission.rs");
 include!("owner.rs");

@@ -243,6 +243,7 @@
             .into_iter()
             .map(|item| match item {
                 RetiredPacket::Output(output) => output,
+                RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
                 RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
             })
             .collect()
@@ -254,6 +255,7 @@
             .map(|item| match item {
                 RetiredPacket::Drop(drop) => drop,
                 RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
+                RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
             })
             .collect()
     }
