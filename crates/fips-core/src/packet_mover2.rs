@@ -17,6 +17,7 @@
 //! in-flight state before crypto work leaves the owner; workers only copy/open
 //! bytes and return completions; owners retire those completions in order.
 
+use crate::transport::PacketBuffer;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
@@ -93,7 +94,7 @@ pub(crate) struct SocketPacket {
     counter: u64,
     class: PacketClass,
     output: OutputTarget,
-    payload: Vec<u8>,
+    payload: PacketBuffer,
 }
 
 impl SocketPacket {
@@ -103,7 +104,7 @@ impl SocketPacket {
         counter: u64,
         class: PacketClass,
         output: OutputTarget,
-        payload: Vec<u8>,
+        payload: impl Into<PacketBuffer>,
     ) -> Self {
         Self {
             owner,
@@ -111,7 +112,7 @@ impl SocketPacket {
             counter,
             class,
             output,
-            payload,
+            payload: payload.into(),
         }
     }
 
@@ -123,9 +124,9 @@ impl SocketPacket {
         owner: OwnerId,
         generation: u64,
         output: OutputTarget,
-        data: impl Into<Vec<u8>>,
+        data: impl Into<PacketBuffer>,
     ) -> Result<Self, WirePreflightError> {
-        let payload = data.into();
+        let payload: PacketBuffer = data.into();
         let header = FmpWireHeader::parse(&payload)?;
         Ok(Self::new(
             owner,
@@ -141,9 +142,9 @@ impl SocketPacket {
         owner: OwnerId,
         generation: u64,
         output: OutputTarget,
-        data: impl Into<Vec<u8>>,
+        data: impl Into<PacketBuffer>,
     ) -> Result<Self, WirePreflightError> {
-        let payload = data.into();
+        let payload: PacketBuffer = data.into();
         let header = FspWireHeader::parse(&payload)?;
         Ok(Self::new(
             owner,
@@ -522,7 +523,7 @@ pub(crate) struct PacketOutput {
     counter: u64,
     ingress_seq: u64,
     target: OutputTarget,
-    payload: Vec<u8>,
+    payload: PacketBuffer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -595,6 +596,54 @@ impl From<OwnerReserveError> for PacketDropReason {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AdmissionBatchSummary {
+    admitted: usize,
+    dropped: usize,
+}
+
+impl AdmissionBatchSummary {
+    pub(crate) fn admitted(self) -> usize {
+        self.admitted
+    }
+
+    pub(crate) fn dropped(self) -> usize {
+        self.dropped
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PacketMoverTurn {
+    dispatched: usize,
+    retired: Vec<RetiredPacket>,
+    drops: Vec<PacketDrop>,
+}
+
+impl PacketMoverTurn {
+    pub(crate) fn dispatched(&self) -> usize {
+        self.dispatched
+    }
+
+    pub(crate) fn retired(&self) -> &[RetiredPacket] {
+        &self.retired
+    }
+
+    pub(crate) fn drops(&self) -> &[PacketDrop] {
+        &self.drops
+    }
+
+    #[cfg(test)]
+    fn outputs(&self) -> Vec<&PacketOutput> {
+        self.retired
+            .iter()
+            .filter_map(|item| match item {
+                RetiredPacket::Output(output) => Some(output),
+                RetiredPacket::Drop(_) => None,
+            })
+            .collect()
+    }
+}
+
 pub(crate) trait StatelessCryptoWorker {
     fn execute(&self, work: CryptoWork) -> CryptoCompletion;
 }
@@ -657,8 +706,32 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         }
     }
 
+    pub(crate) fn submit_socket_batch<I>(&mut self, packets: I) -> AdmissionBatchSummary
+    where
+        I: IntoIterator<Item = SocketPacket>,
+    {
+        let mut summary = AdmissionBatchSummary::default();
+        for packet in packets {
+            match self.submit_socket_packet(packet) {
+                Ok(_) => summary.admitted += 1,
+                Err(_) => summary.dropped += 1,
+            }
+        }
+        summary
+    }
+
     pub(crate) fn dispatch_available(&mut self, limit: usize) -> Vec<CryptoWork> {
         let mut work = Vec::new();
+        self.dispatch_available_into(limit, &mut work);
+        work
+    }
+
+    pub(crate) fn dispatch_available_into(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<CryptoWork>,
+    ) -> usize {
+        work.clear();
 
         while work.len() < limit {
             let Some(queued) = self.admission.pop_next() else {
@@ -684,7 +757,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             }
         }
 
-        work
+        work.len()
     }
 
     pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
@@ -705,6 +778,29 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
                 RetiredPacket::Output(_) => None,
             }));
         retired
+    }
+
+    pub(crate) fn run_available(&mut self, limit: usize) -> PacketMoverTurn {
+        let mut work = Vec::new();
+        self.run_available_with_scratch(limit, &mut work)
+    }
+
+    pub(crate) fn run_available_with_scratch(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<CryptoWork>,
+    ) -> PacketMoverTurn {
+        let dispatched = self.dispatch_available_into(limit, work);
+        let mut retired = Vec::new();
+        for work in work.drain(..) {
+            let completion = self.worker.execute(work);
+            retired.extend(self.retire_completion(completion));
+        }
+        PacketMoverTurn {
+            dispatched,
+            retired,
+            drops: self.drain_drops(),
+        }
     }
 
     pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
@@ -890,6 +986,45 @@ mod tests {
             PacketDropReason::Admission(AdmissionDropReason::BulkFull)
         );
         assert_eq!(drops[0].counter, 2);
+    }
+
+    #[test]
+    fn turn_runner_batches_admission_and_reuses_work_scratch() {
+        let owner = OwnerId::fsp(11);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 4), CopyCryptoWorker);
+        mover.register_owner(owner, OwnerConfig::new(1, 8));
+        let summary = mover.submit_socket_batch([
+            packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun),
+            packet(owner, 1, 2, PacketClass::Liveness, OutputTarget::Endpoint),
+            packet(owner, 1, 3, PacketClass::Bulk, OutputTarget::Transport),
+        ]);
+        assert_eq!(summary.admitted(), 3);
+        assert_eq!(summary.dropped(), 0);
+
+        let mut work = Vec::with_capacity(8);
+        let turn = mover.run_available_with_scratch(2, &mut work);
+        assert!(work.is_empty());
+        assert_eq!(turn.dispatched(), 2);
+        assert!(turn.drops().is_empty());
+        assert_eq!(
+            turn.outputs()
+                .iter()
+                .map(|output| output.counter)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        assert_eq!(
+            turn.retired()
+                .iter()
+                .filter(|item| matches!(item, RetiredPacket::Output(_)))
+                .count(),
+            2
+        );
+
+        let turn = mover.run_available_with_scratch(2, &mut work);
+        assert_eq!(turn.dispatched(), 1);
+        assert_eq!(turn.outputs()[0].counter, 3);
+        assert_eq!(work.capacity(), 8);
     }
 
     #[test]
