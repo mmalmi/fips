@@ -345,8 +345,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let mut summary = self.collect_aead_outputs(summary, crypto_limit);
-        self.admit_session_ingress_outputs(routes, &mut summary);
+        let summary = self.collect_live_session_outputs(summary, routes, crypto_limit);
         let mut transport_output = PacketMover2TransportSendPlanOutput::new();
         let mut report = {
             let tun_output = PacketMover2TunTxOutput::new(tun_tx);
@@ -612,11 +611,13 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         &mut self,
         router: &mut R,
         summary: &mut PacketMover2RuntimeSummary,
-    ) where
+    ) -> usize
+    where
         R: PacketMover2IngressRouter,
     {
         let outputs = std::mem::take(&mut self.outputs);
         let dropped_before = self.output_drops.len();
+        let admitted_before = summary.inbound_admitted;
         for output in outputs {
             match output.target {
                 OutputTarget::SessionIngress { local_addr } => {
@@ -635,6 +636,33 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         summary.outputs_dropped = summary
             .outputs_dropped
             .saturating_add(self.output_drops.len().saturating_sub(dropped_before));
+        summary.inbound_admitted.saturating_sub(admitted_before)
+    }
+
+    fn collect_live_session_outputs<R>(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        router: &mut R,
+        crypto_limit: usize,
+    ) -> PacketMover2RuntimeSummary
+    where
+        R: PacketMover2IngressRouter,
+    {
+        let mut remaining = crypto_limit;
+        loop {
+            let dispatched_before = summary.dispatched;
+            summary = self.collect_aead_outputs(summary, remaining);
+            let dispatched = summary.dispatched.saturating_sub(dispatched_before);
+            remaining = remaining.saturating_sub(dispatched);
+            if remaining == 0 {
+                break;
+            }
+
+            if self.admit_session_ingress_outputs(router, &mut summary) == 0 {
+                break;
+            }
+        }
+        summary
     }
 
     fn collect_aead_outputs(
@@ -651,7 +679,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             &mut self.open_work,
             &mut self.seal_work,
         );
-        summary.dispatched = dispatched;
+        summary.dispatched = summary.dispatched.saturating_add(dispatched);
         self.drops.extend(drops);
 
         for packet in retired {

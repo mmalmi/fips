@@ -77,6 +77,80 @@
     }
 
     #[test]
+    fn session_handoff_routes_opened_fmp_datagram_to_sourced_fsp_ingress() {
+        let local_addr = NodeAddr::from_bytes([0x41; 16]);
+        let source_addr = NodeAddr::from_bytes([0x42; 16]);
+        let next_hop = NodeAddr::from_bytes([0x43; 16]);
+        let transport_id = TransportId::new(4100);
+        let remote_addr = TransportAddr::from_string("198.51.100.41:4100");
+        let source_path = TransportPath::live(transport_id, remote_addr.clone());
+        let activity_tick = ActivityTick::new(41_000);
+        let fsp_wire = fsp_wire(410, 0x03);
+        let datagram =
+            crate::protocol::SessionDatagram::new(source_addr, local_addr, fsp_wire.clone())
+                .with_ttl(42)
+                .with_path_mtu(1280)
+                .encode();
+        let mut payload = fmp_wire(4100, 41, 0);
+        payload.truncate(FMP_ESTABLISHED_HEADER_SIZE);
+        payload.extend_from_slice(&datagram);
+        let output = PacketOutput {
+            owner: OwnerId::fmp_node(next_hop),
+            counter: 41,
+            ingress_seq: 410,
+            target: OutputTarget::SessionIngress { local_addr },
+            source_path: Some(source_path.clone()),
+            path: None,
+            activity_tick: Some(activity_tick),
+            payload: payload.into(),
+        };
+
+        let raw = packet_mover2_session_ingress_from_output(&output, local_addr)
+            .expect("session datagram should route to sourced FSP ingress");
+
+        assert_eq!(raw.protocol, PacketProtocol::Fsp);
+        assert_eq!(raw.transport_id, transport_id);
+        assert_eq!(raw.remote_addr, remote_addr);
+        assert_eq!(raw.path, source_path);
+        assert_eq!(raw.fsp_source, Some(source_addr));
+        assert_eq!(raw.activity_tick, Some(activity_tick));
+        assert_eq!(raw.payload.as_ref(), fsp_wire.as_slice());
+    }
+
+    #[test]
+    fn session_handoff_delivers_opened_fsp_endpoint_payload() {
+        let local_addr = NodeAddr::from_bytes([0x51; 16]);
+        let source_addr = NodeAddr::from_bytes([0x52; 16]);
+        let endpoint_payload = b"endpoint-body";
+        let inner = crate::node::session_wire::fsp_prepend_inner_header(
+            51_000,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0x03,
+            endpoint_payload,
+        );
+        let mut payload = fsp_wire(510, 0);
+        payload.truncate(FSP_HEADER_SIZE);
+        payload.extend_from_slice(&inner);
+        let output = PacketOutput {
+            owner: OwnerId::fsp_node(source_addr),
+            counter: 510,
+            ingress_seq: 51,
+            target: OutputTarget::SessionPayload { local_addr },
+            source_path: None,
+            path: None,
+            activity_tick: Some(ActivityTick::new(51_000)),
+            payload: payload.into(),
+        };
+
+        assert_eq!(
+            packet_mover2_fsp_payload_delivery(&output, local_addr),
+            Ok(PacketMover2FspPayloadDelivery::Endpoint(
+                endpoint_payload.to_vec(),
+            ))
+        );
+    }
+
+    #[test]
     fn priority_admission_keeps_reserved_progress_when_bulk_is_full() {
         let owner = OwnerId::fsp(1);
         let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1), CopyCryptoWorker);
