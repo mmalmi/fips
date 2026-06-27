@@ -35,7 +35,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(N_EVENTS, 221);
     assert!(
-        (Event::FspAeadCompletionStaleEpochWorkerOpen as usize) < N_EVENTS,
+        (Event::ReservedEvent220 as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -239,20 +239,20 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_fsp_path_handoff"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspPathHelper as usize).name(),
-        "decrypt_fsp_path_helper"
+        event_from_index(Event::ReservedEvent74 as usize).name(),
+        "reserved_event_74"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspPathFallback as usize).name(),
         "decrypt_fsp_path_fallback"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspPathWorkerOpen as usize).name(),
-        "decrypt_fsp_path_worker_open"
+        event_from_index(Event::ReservedEvent137 as usize).name(),
+        "reserved_event_137"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspPathWorkerOpenStriped as usize).name(),
-        "decrypt_fsp_path_worker_open_striped"
+        event_from_index(Event::ReservedEvent160 as usize).name(),
+        "reserved_event_160"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspPathLocalPriority as usize).name(),
@@ -271,12 +271,12 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_fsp_path_handoff_bulk"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspPathHelperBulk as usize).name(),
-        "decrypt_fsp_path_helper_bulk"
+        event_from_index(Event::ReservedEvent186 as usize).name(),
+        "reserved_event_186"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspPathWorkerOpenBulk as usize).name(),
-        "decrypt_fsp_path_worker_open_bulk"
+        event_from_index(Event::ReservedEvent187 as usize).name(),
+        "reserved_event_187"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerControlDropped as usize).name(),
@@ -307,8 +307,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "reserved_event_144"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize).name(),
-        "decrypt_fsp_open_worker_completion_backlog_fallback"
+        event_from_index(Event::ReservedEvent145 as usize).name(),
+        "reserved_event_145"
     );
     assert_eq!(
         event_from_index(Event::FmpWorkerDispatchFlowKeyed as usize).name(),
@@ -399,20 +399,20 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_aead_failed_local"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionAeadFailedHelper as usize).name(),
-        "fsp_aead_completion_aead_failed_helper"
+        event_from_index(Event::ReservedEvent201 as usize).name(),
+        "reserved_event_201"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionAeadFailedHelperReturned as usize).name(),
-        "fsp_aead_completion_aead_failed_helper_returned"
+        event_from_index(Event::ReservedEvent202 as usize).name(),
+        "reserved_event_202"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionAeadFailedWorkerOpen as usize).name(),
-        "fsp_aead_completion_aead_failed_worker_open"
+        event_from_index(Event::ReservedEvent203 as usize).name(),
+        "reserved_event_203"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionAeadFailedWorkerOpenReturned as usize).name(),
-        "fsp_aead_completion_aead_failed_worker_open_returned"
+        event_from_index(Event::ReservedEvent204 as usize).name(),
+        "reserved_event_204"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionEpochMismatch as usize).name(),
@@ -427,28 +427,28 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_aead_failed_accept_kbit_mismatch"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionStaleEpochWorkerOpen as usize).name(),
-        "fsp_aead_completion_stale_epoch_worker_open"
+        event_from_index(Event::ReservedEvent220 as usize).name(),
+        "reserved_event_220"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReplayDropped as usize).name(),
         "fsp_aead_completion_replay_dropped"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReplayDroppedHelper as usize).name(),
-        "fsp_aead_completion_replay_dropped_helper"
+        event_from_index(Event::ReservedEvent146 as usize).name(),
+        "reserved_event_146"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReplayDroppedHelperReturned as usize).name(),
-        "fsp_aead_completion_replay_dropped_helper_returned"
+        event_from_index(Event::ReservedEvent147 as usize).name(),
+        "reserved_event_147"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReplayDroppedWorkerOpen as usize).name(),
-        "fsp_aead_completion_replay_dropped_worker_open"
+        event_from_index(Event::ReservedEvent148 as usize).name(),
+        "reserved_event_148"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReplayDroppedWorkerOpenReturned as usize).name(),
-        "fsp_aead_completion_replay_dropped_worker_open_returned"
+        event_from_index(Event::ReservedEvent149 as usize).name(),
+        "reserved_event_149"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReplayDroppedDuplicate as usize).name(),
@@ -479,8 +479,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "reserved_event_156"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspOpenPoolQueueFullFallback as usize).name(),
-        "decrypt_fsp_open_pool_queue_full_fallback"
+        event_from_index(Event::ReservedEvent157 as usize).name(),
+        "reserved_event_157"
     );
     assert_eq!(
         event_from_index(Event::ReservedEvent158 as usize).name(),
@@ -639,8 +639,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_window_exceeded"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspOpenWorkerWindowFallback as usize).name(),
-        "decrypt_fsp_open_worker_window_fallback"
+        event_from_index(Event::ReservedEvent127 as usize).name(),
+        "reserved_event_127"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerSelectPriority as usize).name(),
@@ -699,12 +699,12 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "reserved_event_210"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspHelperCompletionBacklogFallback as usize).name(),
-        "decrypt_fsp_helper_completion_backlog_fallback"
+        event_from_index(Event::ReservedEvent141 as usize).name(),
+        "reserved_event_141"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspHelperQueueFullFallback as usize).name(),
-        "decrypt_fsp_helper_queue_full_fallback"
+        event_from_index(Event::ReservedEvent142 as usize).name(),
+        "reserved_event_142"
     );
     assert_eq!(
         event_from_index(Event::ReservedEvent143 as usize).name(),
@@ -715,20 +715,20 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "reserved_event_144"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize).name(),
-        "decrypt_fsp_open_worker_completion_backlog_fallback"
+        event_from_index(Event::ReservedEvent145 as usize).name(),
+        "reserved_event_145"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspOpenPoolQueueFullFallback as usize).name(),
-        "decrypt_fsp_open_pool_queue_full_fallback"
+        event_from_index(Event::ReservedEvent157 as usize).name(),
+        "reserved_event_157"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReturnedHelper as usize).name(),
-        "fsp_aead_completion_returned_helper"
+        event_from_index(Event::ReservedEvent188 as usize).name(),
+        "reserved_event_188"
     );
     assert_eq!(
-        event_from_index(Event::FspAeadCompletionReturnedWorkerOpen as usize).name(),
-        "fsp_aead_completion_returned_worker_open"
+        event_from_index(Event::ReservedEvent189 as usize).name(),
+        "reserved_event_189"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOwnerHandoffDropped as usize).name(),
@@ -852,12 +852,12 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         "decrypt_fsp_worker_bulk_input_tail_wait"
     );
     assert_eq!(
-        stage_from_index(Stage::FspAeadHelperQueueWait as usize).name(),
-        "fsp_aead_helper_queue_wait"
+        stage_from_index(Stage::ReservedStage45 as usize).name(),
+        "reserved_stage_45"
     );
     assert_eq!(
-        stage_from_index(Stage::FspAeadHelperCompletionWait as usize).name(),
-        "fsp_aead_helper_completion_wait"
+        stage_from_index(Stage::ReservedStage46 as usize).name(),
+        "reserved_stage_46"
     );
     assert_eq!(
         stage_from_index(Stage::FmpWorkerFspSeal as usize).name(),
@@ -932,12 +932,12 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         "decrypt_authenticated_fmp_receive_wait"
     );
     assert_eq!(
-        stage_from_index(Stage::FspAeadWorkerOpenQueueWait as usize).name(),
-        "fsp_aead_worker_open_queue_wait"
+        stage_from_index(Stage::ReservedStage65 as usize).name(),
+        "reserved_stage_65"
     );
     assert_eq!(
-        stage_from_index(Stage::FspAeadWorkerOpenCompletionWait as usize).name(),
-        "fsp_aead_worker_open_completion_wait"
+        stage_from_index(Stage::ReservedStage66 as usize).name(),
+        "reserved_stage_66"
     );
     assert_eq!(
         stage_from_index(Stage::DecryptDirectSessionCommitWait as usize).name(),
@@ -995,18 +995,9 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     let fsp_owner_mismatch_before = EVENTS[Event::DecryptFspOwnerMismatch as usize].load(Relaxed);
     let fsp_path_local_before = EVENTS[Event::DecryptFspPathLocal as usize].load(Relaxed);
     let fsp_path_handoff_before = EVENTS[Event::DecryptFspPathHandoff as usize].load(Relaxed);
-    let fsp_path_helper_before = EVENTS[Event::DecryptFspPathHelper as usize].load(Relaxed);
     let fsp_path_fallback_before = EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed);
     let fsp_owner_handoff_dropped_before =
         EVENTS[Event::DecryptFspOwnerHandoffDropped as usize].load(Relaxed);
-    let fsp_path_worker_open_before =
-        EVENTS[Event::DecryptFspPathWorkerOpen as usize].load(Relaxed);
-    let fsp_open_worker_completion_backlog_fallback_before =
-        EVENTS[Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize].load(Relaxed);
-    let fsp_open_pool_queue_full_fallback_before =
-        EVENTS[Event::DecryptFspOpenPoolQueueFullFallback as usize].load(Relaxed);
-    let fsp_path_worker_open_striped_before =
-        EVENTS[Event::DecryptFspPathWorkerOpenStriped as usize].load(Relaxed);
     let dispatch_flow_keyed_before =
         EVENTS[Event::FmpWorkerDispatchFlowKeyed as usize].load(Relaxed);
     let dispatch_target_only_before =
@@ -1055,13 +1046,8 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptFspOwnerMismatch, 73);
     record_event_count_sample(Event::DecryptFspPathLocal, 79);
     record_event_count_sample(Event::DecryptFspPathHandoff, 83);
-    record_event_count_sample(Event::DecryptFspPathHelper, 89);
     record_event_count_sample(Event::DecryptFspPathFallback, 97);
     record_event_count_sample(Event::DecryptFspOwnerHandoffDropped, 98);
-    record_event_count_sample(Event::DecryptFspPathWorkerOpen, 99);
-    record_event_count_sample(Event::DecryptFspOpenWorkerCompletionBacklogFallback, 116);
-    record_event_count_sample(Event::DecryptFspOpenPoolQueueFullFallback, 117);
-    record_event_count_sample(Event::DecryptFspPathWorkerOpenStriped, 118);
     record_event_count_sample(Event::FmpWorkerDispatchFlowKeyed, 113);
     record_event_count_sample(Event::FmpWorkerDispatchTargetOnly, 127);
     record_event_count_sample(Event::FmpWorkerDispatchWorker0, 131);
@@ -1217,10 +1203,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         83
     );
     assert_eq!(
-        EVENTS[Event::DecryptFspPathHelper as usize].load(Relaxed) - fsp_path_helper_before,
-        89
-    );
-    assert_eq!(
         EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed) - fsp_path_fallback_before,
         97
     );
@@ -1228,26 +1210,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptFspOwnerHandoffDropped as usize].load(Relaxed)
             - fsp_owner_handoff_dropped_before,
         98
-    );
-    assert_eq!(
-        EVENTS[Event::DecryptFspPathWorkerOpen as usize].load(Relaxed)
-            - fsp_path_worker_open_before,
-        99
-    );
-    assert_eq!(
-        EVENTS[Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize].load(Relaxed)
-            - fsp_open_worker_completion_backlog_fallback_before,
-        116
-    );
-    assert_eq!(
-        EVENTS[Event::DecryptFspOpenPoolQueueFullFallback as usize].load(Relaxed)
-            - fsp_open_pool_queue_full_fallback_before,
-        117
-    );
-    assert_eq!(
-        EVENTS[Event::DecryptFspPathWorkerOpenStriped as usize].load(Relaxed)
-            - fsp_path_worker_open_striped_before,
-        118
     );
     assert_eq!(
         EVENTS[Event::FmpWorkerDispatchFlowKeyed as usize].load(Relaxed)

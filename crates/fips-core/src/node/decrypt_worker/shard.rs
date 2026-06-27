@@ -726,23 +726,12 @@ impl DecryptWorkerShard {
                         header,
                         plaintext_len,
                     },
-                    source: FspAeadCompletionSource::Local,
                 },
                 Err(FspOpenError::Aead) => {
                     crate::perf_profile::record_fsp_aead_completion_local_open_aead_failure();
-                    FspOrderedCompletion::AeadFailed {
-                        job,
-                        header,
-                        source: FspAeadCompletionSource::Local,
-                    }
+                    FspOrderedCompletion::AeadFailed { job, header }
                 }
-                Err(FspOpenError::Replay) => {
-                    FspOrderedCompletion::AeadFailed {
-                        job,
-                        header,
-                        source: FspAeadCompletionSource::Local,
-                    }
-                }
+                Err(FspOpenError::Replay) => FspOrderedCompletion::AeadFailed { job, header },
             };
             let drain = match state.complete_ordered_fsp_open(ticket, completion) {
                 Ok(drain) => drain,
@@ -762,7 +751,6 @@ impl DecryptWorkerShard {
                 drain.accepted
                     + drain.aead_failures
                     + drain.epoch_mismatches
-                    + drain.stale_epoch_worker_open_failures
                     + drain.replay_drops
                     + drain.dropped
             );
@@ -771,11 +759,11 @@ impl DecryptWorkerShard {
                 drain.accepted,
                 drain.aead_failures,
                 drain.epoch_mismatches,
-                drain.stale_epoch_worker_open_failures,
                 drain.replay_drops,
             );
-            drain.aead_failure_sources.record();
-            drain.replay_drop_sources.record();
+            crate::perf_profile::record_fsp_aead_completion_local_aead_failures(
+                drain.aead_failures,
+            );
             return self.outputs_for_fsp_ready_completions(drain.outputs);
         }
 

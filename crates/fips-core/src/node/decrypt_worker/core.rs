@@ -451,7 +451,7 @@ impl OwnedFspSessionState {
         };
         for completion in ready {
             match completion {
-                FspOrderedCompletion::Opened { opened, source } => {
+                FspOrderedCompletion::Opened { opened } => {
                     match self.accept_opened_current_established_frame(&opened.header) {
                         Ok(slot) => {
                             drain.accepted += 1;
@@ -463,36 +463,24 @@ impl OwnedFspSessionState {
                         }
                         Err(FspOpenError::Replay) => {
                             drain.replay_drops += 1;
-                            drain.replay_drop_sources.add(source);
                             crate::perf_profile::record_event(
                                 crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
                             );
                         }
                         Err(FspOpenError::Aead) => {
                             drain.aead_failures += 1;
-                            drain.aead_failure_sources.add(source);
                             crate::perf_profile::record_fsp_aead_completion_accept_kbit_mismatch();
                         }
                     }
                 }
-                FspOrderedCompletion::AeadFailed {
-                    job,
-                    header,
-                    source,
-                } => {
+                FspOrderedCompletion::AeadFailed { job, header } => {
                     drain.aead_failures += 1;
-                    drain.aead_failure_sources.add(source);
                     drain
                         .outputs
                         .push(FspReadyCompletion::AeadFailed { job, header });
                 }
                 #[cfg(test)]
-                FspOrderedCompletion::EpochMismatch {
-                    job,
-                    header,
-                    source,
-                } => {
-                    let _ = source;
+                FspOrderedCompletion::EpochMismatch { job, header } => {
                     drain.epoch_mismatches += 1;
                     drain
                         .outputs
@@ -634,18 +622,15 @@ struct FspOpenedJob {
 enum FspOrderedCompletion {
     Opened {
         opened: FspOpenedJob,
-        source: FspAeadCompletionSource,
     },
     AeadFailed {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
-        source: FspAeadCompletionSource,
     },
     #[cfg(test)]
     EpochMismatch {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
-        source: FspAeadCompletionSource,
     },
 }
 
@@ -667,60 +652,9 @@ struct FspOrderedDrain {
     accepted: usize,
     aead_failures: usize,
     epoch_mismatches: usize,
-    stale_epoch_worker_open_failures: usize,
     replay_drops: usize,
     dropped: usize,
-    aead_failure_sources: FspAeadFailureSources,
-    replay_drop_sources: FspReplayDropSources,
     outputs: Vec<FspReadyCompletion>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct FspAeadFailureSources {
-    local: usize,
-    worker_open: usize,
-    worker_open_returned: usize,
-}
-
-impl FspAeadFailureSources {
-    fn add(&mut self, source: FspAeadCompletionSource) {
-        match source {
-            FspAeadCompletionSource::Local => self.local += 1,
-        }
-    }
-
-    fn record(self) {
-        crate::perf_profile::record_fsp_aead_completion_source_aead_failures(
-            self.local,
-            0,
-            0,
-            self.worker_open,
-            self.worker_open_returned,
-        );
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct FspReplayDropSources {
-    worker_open: usize,
-    worker_open_returned: usize,
-}
-
-impl FspReplayDropSources {
-    fn add(&mut self, source: FspAeadCompletionSource) {
-        match source {
-            FspAeadCompletionSource::Local => {}
-        }
-    }
-
-    fn record(self) {
-        crate::perf_profile::record_fsp_aead_completion_source_replay_drops(
-            0,
-            0,
-            self.worker_open,
-            self.worker_open_returned,
-        );
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -770,11 +704,6 @@ fn local_established_fsp_datagram_meta(
         fsp_payload_offset,
         fsp_payload_len: datagram.payload.len(),
     })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FspAeadCompletionSource {
-    Local,
 }
 
 #[derive(Debug)]

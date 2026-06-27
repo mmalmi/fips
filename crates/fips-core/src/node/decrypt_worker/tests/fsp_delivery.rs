@@ -305,7 +305,6 @@
                 FspOrderedCompletion::EpochMismatch {
                     job,
                     header,
-                    source: FspAeadCompletionSource::Local,
                 },
             )
             .expect("epoch-mismatch completion should fit receive order");

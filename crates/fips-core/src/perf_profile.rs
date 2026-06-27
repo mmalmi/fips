@@ -71,8 +71,6 @@
 //!   * `DECRYPT_WORKER_BULK_INPUT_TAIL_WAIT` — decrypt-worker batch item service start → individual job handling
 //!   * `DECRYPT_WORKER_BULK_ITEM_SERVICE` — decrypt-worker bulk item service time
 //!   * `DECRYPT_WORKER_OUTPUT_FLUSH` — worker output batch flush into rx_loop/endpoint lanes
-//!   * `FSP_AEAD_WORKER_OPEN_QUEUE_WAIT` — FSP opener-worker bulk queue residence
-//!   * `FSP_AEAD_WORKER_OPEN_COMPLETION_WAIT` — FSP opener-worker completion residence
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -210,12 +208,8 @@ pub enum Stage {
     /// individual FSP job begins service. This is batch-tail residence inside
     /// one worker turn.
     DecryptFspWorkerBulkInputTailWait = 44,
-    /// Retired FSP AEAD helper job residence. Kept as a stable historical slot;
-    /// current FSP worker-open opens use `FspAeadWorkerOpenQueueWait`.
-    FspAeadHelperQueueWait = 45,
-    /// Retired FSP AEAD helper completion residence. Kept as a stable historical
-    /// slot; current FSP worker-open completions use `FspAeadWorkerOpenCompletionWait`.
-    FspAeadHelperCompletionWait = 46,
+    ReservedStage45 = 45,
+    ReservedStage46 = 46,
     /// Worker-side inner FSP seal for pipelined endpoint sends.
     FmpWorkerFspSeal = 47,
     /// Worker-side outer FMP seal for pipelined endpoint sends.
@@ -257,12 +251,8 @@ pub enum Stage {
     /// Time spent after a decrypt worker authenticates a plain FMP receive
     /// until the rx loop records link/MMP liveness.
     DecryptAuthenticatedFmpReceiveWait = 64,
-    /// Worker-open FSP AEAD job residence before the opener worker starts
-    /// opening it. Recorded in addition to the aggregate FSP AEAD queue wait.
-    FspAeadWorkerOpenQueueWait = 65,
-    /// Worker-open FSP AEAD completion residence before the owner worker
-    /// handles it. Recorded in addition to the aggregate FSP AEAD completion wait.
-    FspAeadWorkerOpenCompletionWait = 66,
+    ReservedStage65 = 65,
+    ReservedStage66 = 66,
     /// Direct session commit residence before the rx loop applies receive-sync
     /// and session/peer bookkeeping. Recorded in addition to the aggregate
     /// `decrypt_authenticated_session_wait` to keep old bench comparisons intact.
@@ -323,8 +313,8 @@ impl Stage {
             Stage::DecryptFspWorkerService => "decrypt_fsp_worker_service",
             Stage::DecryptFspWorkerBulkInputHeadWait => "decrypt_fsp_worker_bulk_input_head_wait",
             Stage::DecryptFspWorkerBulkInputTailWait => "decrypt_fsp_worker_bulk_input_tail_wait",
-            Stage::FspAeadHelperQueueWait => "fsp_aead_helper_queue_wait",
-            Stage::FspAeadHelperCompletionWait => "fsp_aead_helper_completion_wait",
+            Stage::ReservedStage45 => "reserved_stage_45",
+            Stage::ReservedStage46 => "reserved_stage_46",
             Stage::FmpWorkerFspSeal => "fmp_worker_fsp_seal",
             Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
             Stage::FmpWorkerDispatch => "fmp_worker_dispatch",
@@ -343,8 +333,8 @@ impl Stage {
             Stage::EndpointSendPlan => "endpoint_send_plan",
             Stage::EndpointSendCommit => "endpoint_send_commit",
             Stage::DecryptAuthenticatedFmpReceiveWait => "decrypt_authenticated_fmp_receive_wait",
-            Stage::FspAeadWorkerOpenQueueWait => "fsp_aead_worker_open_queue_wait",
-            Stage::FspAeadWorkerOpenCompletionWait => "fsp_aead_worker_open_completion_wait",
+            Stage::ReservedStage65 => "reserved_stage_65",
+            Stage::ReservedStage66 => "reserved_stage_66",
             Stage::DecryptDirectSessionCommitWait => "decrypt_direct_session_commit_wait",
             Stage::DecryptDirectSessionDataWait => "decrypt_direct_session_data_wait",
         }
@@ -398,8 +388,8 @@ fn stage_from_index(idx: usize) -> Stage {
         42 => Stage::DecryptFspWorkerService,
         43 => Stage::DecryptFspWorkerBulkInputHeadWait,
         44 => Stage::DecryptFspWorkerBulkInputTailWait,
-        45 => Stage::FspAeadHelperQueueWait,
-        46 => Stage::FspAeadHelperCompletionWait,
+        45 => Stage::ReservedStage45,
+        46 => Stage::ReservedStage46,
         47 => Stage::FmpWorkerFspSeal,
         48 => Stage::FmpWorkerFmpSeal,
         49 => Stage::FmpWorkerDispatch,
@@ -418,8 +408,8 @@ fn stage_from_index(idx: usize) -> Stage {
         62 => Stage::EndpointSendPlan,
         63 => Stage::EndpointSendCommit,
         64 => Stage::DecryptAuthenticatedFmpReceiveWait,
-        65 => Stage::FspAeadWorkerOpenQueueWait,
-        66 => Stage::FspAeadWorkerOpenCompletionWait,
+        65 => Stage::ReservedStage65,
+        66 => Stage::ReservedStage66,
         67 => Stage::DecryptDirectSessionCommitWait,
         68 => Stage::DecryptDirectSessionDataWait,
         _ => unreachable!(),
@@ -504,7 +494,7 @@ pub enum Event {
     DecryptFspOwnerMismatch = 71,
     DecryptFspPathLocal = 72,
     DecryptFspPathHandoff = 73,
-    DecryptFspPathHelper = 74,
+    ReservedEvent74 = 74,
     DecryptFspPathFallback = 75,
     ReservedEvent76 = 76,
     ReservedEvent77 = 77,
@@ -557,7 +547,7 @@ pub enum Event {
     FspAeadCompletionStaleTicket = 124,
     FspAeadCompletionDuplicateTicket = 125,
     FspAeadCompletionWindowExceeded = 126,
-    DecryptFspOpenWorkerWindowFallback = 127,
+    ReservedEvent127 = 127,
     DecryptWorkerSelectPriority = 128,
     DecryptWorkerSelectFmpCompletion = 129,
     ReservedEvent130 = 130,
@@ -567,19 +557,19 @@ pub enum Event {
     DecryptWorkerDrainBulkPackets = 134,
     ReservedEvent135 = 135,
     ReservedEvent136 = 136,
-    DecryptFspPathWorkerOpen = 137,
+    ReservedEvent137 = 137,
     DecryptWorkerControlDropped = 138,
     DecryptWorkerSelectControl = 139,
     DecryptWorkerDrainControl = 140,
-    DecryptFspHelperCompletionBacklogFallback = 141,
-    DecryptFspHelperQueueFullFallback = 142,
+    ReservedEvent141 = 141,
+    ReservedEvent142 = 142,
     ReservedEvent143 = 143,
     ReservedEvent144 = 144,
-    DecryptFspOpenWorkerCompletionBacklogFallback = 145,
-    FspAeadCompletionReplayDroppedHelper = 146,
-    FspAeadCompletionReplayDroppedHelperReturned = 147,
-    FspAeadCompletionReplayDroppedWorkerOpen = 148,
-    FspAeadCompletionReplayDroppedWorkerOpenReturned = 149,
+    ReservedEvent145 = 145,
+    ReservedEvent146 = 146,
+    ReservedEvent147 = 147,
+    ReservedEvent148 = 148,
+    ReservedEvent149 = 149,
     FspAeadCompletionReplayDroppedDuplicate = 150,
     FspAeadCompletionReplayDroppedTooOld = 151,
     FspAeadCompletionReplayDroppedTooOldLagGe2xWindow = 152,
@@ -587,10 +577,10 @@ pub enum Event {
     FspAeadCompletionReplayDroppedTooOldLagGe16xWindow = 154,
     FspAeadCompletionReplayDroppedTooOldLagGe64xWindow = 155,
     ReservedEvent156 = 156,
-    DecryptFspOpenPoolQueueFullFallback = 157,
+    ReservedEvent157 = 157,
     ReservedEvent158 = 158,
     ReservedEvent159 = 159,
-    DecryptFspPathWorkerOpenStriped = 160,
+    ReservedEvent160 = 160,
     DecryptAuthenticatedBacklogHigh = 161,
     EndpointEventBulkBacklogHigh = 162,
     PacketBatchPoolFresh = 163,
@@ -620,10 +610,10 @@ pub enum Event {
     DecryptFspPathLocalBulk = 183,
     DecryptFspPathHandoffPriority = 184,
     DecryptFspPathHandoffBulk = 185,
-    DecryptFspPathHelperBulk = 186,
-    DecryptFspPathWorkerOpenBulk = 187,
-    FspAeadCompletionReturnedHelper = 188,
-    FspAeadCompletionReturnedWorkerOpen = 189,
+    ReservedEvent186 = 186,
+    ReservedEvent187 = 187,
+    ReservedEvent188 = 188,
+    ReservedEvent189 = 189,
     DecryptFspOwnerHandoffDropped = 190,
     ReservedEvent191 = 191,
     ReservedEvent192 = 192,
@@ -635,10 +625,10 @@ pub enum Event {
     ReservedEvent198 = 198,
     DecryptFspMalformedDropped = 199,
     FspAeadCompletionAeadFailedLocal = 200,
-    FspAeadCompletionAeadFailedHelper = 201,
-    FspAeadCompletionAeadFailedHelperReturned = 202,
-    FspAeadCompletionAeadFailedWorkerOpen = 203,
-    FspAeadCompletionAeadFailedWorkerOpenReturned = 204,
+    ReservedEvent201 = 201,
+    ReservedEvent202 = 202,
+    ReservedEvent203 = 203,
+    ReservedEvent204 = 204,
     FspAeadCompletionEpochMismatch = 205,
     FspAeadCompletionAeadFailedLocalOpen = 206,
     FspAeadCompletionAeadFailedAcceptKbitMismatch = 207,
@@ -654,7 +644,7 @@ pub enum Event {
     DecryptWorkerBatchWorker6 = 217,
     DecryptWorkerBatchWorker7 = 218,
     DecryptWorkerBatchWorkerOther = 219,
-    FspAeadCompletionStaleEpochWorkerOpen = 220,
+    ReservedEvent220 = 220,
 }
 
 impl Event {
@@ -740,7 +730,7 @@ impl Event {
             Event::DecryptFspOwnerMismatch => "decrypt_fsp_owner_mismatch",
             Event::DecryptFspPathLocal => "decrypt_fsp_path_local",
             Event::DecryptFspPathHandoff => "decrypt_fsp_path_handoff",
-            Event::DecryptFspPathHelper => "decrypt_fsp_path_helper",
+            Event::ReservedEvent74 => "reserved_event_74",
             Event::DecryptFspPathFallback => "decrypt_fsp_path_fallback",
             Event::ReservedEvent76 => "reserved_event_76",
             Event::ReservedEvent77 => "reserved_event_77",
@@ -799,7 +789,7 @@ impl Event {
             Event::FspAeadCompletionStaleTicket => "fsp_aead_completion_stale_ticket",
             Event::FspAeadCompletionDuplicateTicket => "fsp_aead_completion_duplicate_ticket",
             Event::FspAeadCompletionWindowExceeded => "fsp_aead_completion_window_exceeded",
-            Event::DecryptFspOpenWorkerWindowFallback => "decrypt_fsp_open_worker_window_fallback",
+            Event::ReservedEvent127 => "reserved_event_127",
             Event::DecryptWorkerSelectPriority => "decrypt_worker_select_priority",
             Event::DecryptWorkerSelectFmpCompletion => "decrypt_worker_select_fmp_completion",
             Event::ReservedEvent130 => "reserved_event_130",
@@ -809,32 +799,20 @@ impl Event {
             Event::DecryptWorkerDrainBulkPackets => "decrypt_worker_drain_bulk_packets",
             Event::ReservedEvent135 => "reserved_event_135",
             Event::ReservedEvent136 => "reserved_event_136",
-            Event::DecryptFspPathWorkerOpen => "decrypt_fsp_path_worker_open",
-            Event::DecryptFspPathWorkerOpenStriped => "decrypt_fsp_path_worker_open_striped",
+            Event::ReservedEvent137 => "reserved_event_137",
+            Event::ReservedEvent160 => "reserved_event_160",
             Event::DecryptWorkerControlDropped => "decrypt_worker_control_dropped",
             Event::DecryptWorkerSelectControl => "decrypt_worker_select_control",
             Event::DecryptWorkerDrainControl => "decrypt_worker_drain_control",
-            Event::DecryptFspHelperCompletionBacklogFallback => {
-                "decrypt_fsp_helper_completion_backlog_fallback"
-            }
-            Event::DecryptFspHelperQueueFullFallback => "decrypt_fsp_helper_queue_full_fallback",
+            Event::ReservedEvent141 => "reserved_event_141",
+            Event::ReservedEvent142 => "reserved_event_142",
             Event::ReservedEvent143 => "reserved_event_143",
             Event::ReservedEvent144 => "reserved_event_144",
-            Event::DecryptFspOpenWorkerCompletionBacklogFallback => {
-                "decrypt_fsp_open_worker_completion_backlog_fallback"
-            }
-            Event::FspAeadCompletionReplayDroppedHelper => {
-                "fsp_aead_completion_replay_dropped_helper"
-            }
-            Event::FspAeadCompletionReplayDroppedHelperReturned => {
-                "fsp_aead_completion_replay_dropped_helper_returned"
-            }
-            Event::FspAeadCompletionReplayDroppedWorkerOpen => {
-                "fsp_aead_completion_replay_dropped_worker_open"
-            }
-            Event::FspAeadCompletionReplayDroppedWorkerOpenReturned => {
-                "fsp_aead_completion_replay_dropped_worker_open_returned"
-            }
+            Event::ReservedEvent145 => "reserved_event_145",
+            Event::ReservedEvent146 => "reserved_event_146",
+            Event::ReservedEvent147 => "reserved_event_147",
+            Event::ReservedEvent148 => "reserved_event_148",
+            Event::ReservedEvent149 => "reserved_event_149",
             Event::FspAeadCompletionReplayDroppedDuplicate => {
                 "fsp_aead_completion_replay_dropped_duplicate"
             }
@@ -854,9 +832,7 @@ impl Event {
                 "fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
             }
             Event::ReservedEvent156 => "reserved_event_156",
-            Event::DecryptFspOpenPoolQueueFullFallback => {
-                "decrypt_fsp_open_pool_queue_full_fallback"
-            }
+            Event::ReservedEvent157 => "reserved_event_157",
             Event::ReservedEvent158 => "reserved_event_158",
             Event::ReservedEvent159 => "reserved_event_159",
             Event::DecryptAuthenticatedBacklogHigh => "decrypt_authenticated_backlog_high",
@@ -896,12 +872,10 @@ impl Event {
             Event::DecryptFspPathLocalBulk => "decrypt_fsp_path_local_bulk",
             Event::DecryptFspPathHandoffPriority => "decrypt_fsp_path_handoff_priority",
             Event::DecryptFspPathHandoffBulk => "decrypt_fsp_path_handoff_bulk",
-            Event::DecryptFspPathHelperBulk => "decrypt_fsp_path_helper_bulk",
-            Event::DecryptFspPathWorkerOpenBulk => "decrypt_fsp_path_worker_open_bulk",
-            Event::FspAeadCompletionReturnedHelper => "fsp_aead_completion_returned_helper",
-            Event::FspAeadCompletionReturnedWorkerOpen => {
-                "fsp_aead_completion_returned_worker_open"
-            }
+            Event::ReservedEvent186 => "reserved_event_186",
+            Event::ReservedEvent187 => "reserved_event_187",
+            Event::ReservedEvent188 => "reserved_event_188",
+            Event::ReservedEvent189 => "reserved_event_189",
             Event::DecryptFspOwnerHandoffDropped => "decrypt_fsp_owner_handoff_dropped",
             Event::ReservedEvent191 => "reserved_event_191",
             Event::ReservedEvent192 => "reserved_event_192",
@@ -913,16 +887,10 @@ impl Event {
             Event::ReservedEvent198 => "reserved_event_198",
             Event::DecryptFspMalformedDropped => "decrypt_fsp_malformed_dropped",
             Event::FspAeadCompletionAeadFailedLocal => "fsp_aead_completion_aead_failed_local",
-            Event::FspAeadCompletionAeadFailedHelper => "fsp_aead_completion_aead_failed_helper",
-            Event::FspAeadCompletionAeadFailedHelperReturned => {
-                "fsp_aead_completion_aead_failed_helper_returned"
-            }
-            Event::FspAeadCompletionAeadFailedWorkerOpen => {
-                "fsp_aead_completion_aead_failed_worker_open"
-            }
-            Event::FspAeadCompletionAeadFailedWorkerOpenReturned => {
-                "fsp_aead_completion_aead_failed_worker_open_returned"
-            }
+            Event::ReservedEvent201 => "reserved_event_201",
+            Event::ReservedEvent202 => "reserved_event_202",
+            Event::ReservedEvent203 => "reserved_event_203",
+            Event::ReservedEvent204 => "reserved_event_204",
             Event::FspAeadCompletionEpochMismatch => "fsp_aead_completion_epoch_mismatch",
             Event::FspAeadCompletionAeadFailedLocalOpen => {
                 "fsp_aead_completion_aead_failed_local_open"
@@ -942,9 +910,7 @@ impl Event {
             Event::DecryptWorkerBatchWorker6 => "decrypt_worker_batch_worker6",
             Event::DecryptWorkerBatchWorker7 => "decrypt_worker_batch_worker7",
             Event::DecryptWorkerBatchWorkerOther => "decrypt_worker_batch_worker_other",
-            Event::FspAeadCompletionStaleEpochWorkerOpen => {
-                "fsp_aead_completion_stale_epoch_worker_open"
-            }
+            Event::ReservedEvent220 => "reserved_event_220",
         }
     }
 }
@@ -1025,7 +991,7 @@ fn event_from_index(idx: usize) -> Event {
         71 => Event::DecryptFspOwnerMismatch,
         72 => Event::DecryptFspPathLocal,
         73 => Event::DecryptFspPathHandoff,
-        74 => Event::DecryptFspPathHelper,
+        74 => Event::ReservedEvent74,
         75 => Event::DecryptFspPathFallback,
         76 => Event::ReservedEvent76,
         77 => Event::ReservedEvent77,
@@ -1078,7 +1044,7 @@ fn event_from_index(idx: usize) -> Event {
         124 => Event::FspAeadCompletionStaleTicket,
         125 => Event::FspAeadCompletionDuplicateTicket,
         126 => Event::FspAeadCompletionWindowExceeded,
-        127 => Event::DecryptFspOpenWorkerWindowFallback,
+        127 => Event::ReservedEvent127,
         128 => Event::DecryptWorkerSelectPriority,
         129 => Event::DecryptWorkerSelectFmpCompletion,
         130 => Event::ReservedEvent130,
@@ -1088,19 +1054,19 @@ fn event_from_index(idx: usize) -> Event {
         134 => Event::DecryptWorkerDrainBulkPackets,
         135 => Event::ReservedEvent135,
         136 => Event::ReservedEvent136,
-        137 => Event::DecryptFspPathWorkerOpen,
+        137 => Event::ReservedEvent137,
         138 => Event::DecryptWorkerControlDropped,
         139 => Event::DecryptWorkerSelectControl,
         140 => Event::DecryptWorkerDrainControl,
-        141 => Event::DecryptFspHelperCompletionBacklogFallback,
-        142 => Event::DecryptFspHelperQueueFullFallback,
+        141 => Event::ReservedEvent141,
+        142 => Event::ReservedEvent142,
         143 => Event::ReservedEvent143,
         144 => Event::ReservedEvent144,
-        145 => Event::DecryptFspOpenWorkerCompletionBacklogFallback,
-        146 => Event::FspAeadCompletionReplayDroppedHelper,
-        147 => Event::FspAeadCompletionReplayDroppedHelperReturned,
-        148 => Event::FspAeadCompletionReplayDroppedWorkerOpen,
-        149 => Event::FspAeadCompletionReplayDroppedWorkerOpenReturned,
+        145 => Event::ReservedEvent145,
+        146 => Event::ReservedEvent146,
+        147 => Event::ReservedEvent147,
+        148 => Event::ReservedEvent148,
+        149 => Event::ReservedEvent149,
         150 => Event::FspAeadCompletionReplayDroppedDuplicate,
         151 => Event::FspAeadCompletionReplayDroppedTooOld,
         152 => Event::FspAeadCompletionReplayDroppedTooOldLagGe2xWindow,
@@ -1108,10 +1074,10 @@ fn event_from_index(idx: usize) -> Event {
         154 => Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow,
         155 => Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow,
         156 => Event::ReservedEvent156,
-        157 => Event::DecryptFspOpenPoolQueueFullFallback,
+        157 => Event::ReservedEvent157,
         158 => Event::ReservedEvent158,
         159 => Event::ReservedEvent159,
-        160 => Event::DecryptFspPathWorkerOpenStriped,
+        160 => Event::ReservedEvent160,
         161 => Event::DecryptAuthenticatedBacklogHigh,
         162 => Event::EndpointEventBulkBacklogHigh,
         163 => Event::PacketBatchPoolFresh,
@@ -1137,10 +1103,10 @@ fn event_from_index(idx: usize) -> Event {
         183 => Event::DecryptFspPathLocalBulk,
         184 => Event::DecryptFspPathHandoffPriority,
         185 => Event::DecryptFspPathHandoffBulk,
-        186 => Event::DecryptFspPathHelperBulk,
-        187 => Event::DecryptFspPathWorkerOpenBulk,
-        188 => Event::FspAeadCompletionReturnedHelper,
-        189 => Event::FspAeadCompletionReturnedWorkerOpen,
+        186 => Event::ReservedEvent186,
+        187 => Event::ReservedEvent187,
+        188 => Event::ReservedEvent188,
+        189 => Event::ReservedEvent189,
         190 => Event::DecryptFspOwnerHandoffDropped,
         191 => Event::ReservedEvent191,
         192 => Event::ReservedEvent192,
@@ -1152,10 +1118,10 @@ fn event_from_index(idx: usize) -> Event {
         198 => Event::ReservedEvent198,
         199 => Event::DecryptFspMalformedDropped,
         200 => Event::FspAeadCompletionAeadFailedLocal,
-        201 => Event::FspAeadCompletionAeadFailedHelper,
-        202 => Event::FspAeadCompletionAeadFailedHelperReturned,
-        203 => Event::FspAeadCompletionAeadFailedWorkerOpen,
-        204 => Event::FspAeadCompletionAeadFailedWorkerOpenReturned,
+        201 => Event::ReservedEvent201,
+        202 => Event::ReservedEvent202,
+        203 => Event::ReservedEvent203,
+        204 => Event::ReservedEvent204,
         205 => Event::FspAeadCompletionEpochMismatch,
         206 => Event::FspAeadCompletionAeadFailedLocalOpen,
         207 => Event::FspAeadCompletionAeadFailedAcceptKbitMismatch,
@@ -1171,7 +1137,7 @@ fn event_from_index(idx: usize) -> Event {
         217 => Event::DecryptWorkerBatchWorker6,
         218 => Event::DecryptWorkerBatchWorker7,
         219 => Event::DecryptWorkerBatchWorkerOther,
-        220 => Event::FspAeadCompletionStaleEpochWorkerOpen,
+        220 => Event::ReservedEvent220,
         _ => unreachable!(),
     }
 }
@@ -1702,7 +1668,6 @@ pub(crate) fn record_fsp_aead_completion_drain(
     accepted: usize,
     aead_failures: usize,
     epoch_mismatches: usize,
-    stale_epoch_worker_open_failures: usize,
     replay_drops: usize,
 ) {
     if !enabled() || ready == 0 {
@@ -1721,12 +1686,6 @@ pub(crate) fn record_fsp_aead_completion_drain(
             epoch_mismatches as u64,
         );
     }
-    if stale_epoch_worker_open_failures > 0 {
-        record_event_count_sample(
-            Event::FspAeadCompletionStaleEpochWorkerOpen,
-            stale_epoch_worker_open_failures as u64,
-        );
-    }
     if replay_drops > 0 {
         record_event_count_sample(Event::FspAeadCompletionReplayDropped, replay_drops as u64);
     }
@@ -1736,72 +1695,12 @@ pub(crate) fn record_fsp_aead_completion_drain(
 }
 
 #[inline]
-pub(crate) fn record_fsp_aead_completion_source_replay_drops(
-    helper: usize,
-    helper_returned: usize,
-    worker_open: usize,
-    worker_open_returned: usize,
-) {
-    if !enabled() {
-        return;
-    }
-    if helper > 0 {
-        record_event_count_sample(Event::FspAeadCompletionReplayDroppedHelper, helper as u64);
-    }
-    if helper_returned > 0 {
-        record_event_count_sample(
-            Event::FspAeadCompletionReplayDroppedHelperReturned,
-            helper_returned as u64,
-        );
-    }
-    if worker_open > 0 {
-        record_event_count_sample(
-            Event::FspAeadCompletionReplayDroppedWorkerOpen,
-            worker_open as u64,
-        );
-    }
-    if worker_open_returned > 0 {
-        record_event_count_sample(
-            Event::FspAeadCompletionReplayDroppedWorkerOpenReturned,
-            worker_open_returned as u64,
-        );
-    }
-}
-
-#[inline]
-pub(crate) fn record_fsp_aead_completion_source_aead_failures(
-    local: usize,
-    helper: usize,
-    helper_returned: usize,
-    worker_open: usize,
-    worker_open_returned: usize,
-) {
+pub(crate) fn record_fsp_aead_completion_local_aead_failures(local: usize) {
     if !enabled() {
         return;
     }
     if local > 0 {
         record_event_count_sample(Event::FspAeadCompletionAeadFailedLocal, local as u64);
-    }
-    if helper > 0 {
-        record_event_count_sample(Event::FspAeadCompletionAeadFailedHelper, helper as u64);
-    }
-    if helper_returned > 0 {
-        record_event_count_sample(
-            Event::FspAeadCompletionAeadFailedHelperReturned,
-            helper_returned as u64,
-        );
-    }
-    if worker_open > 0 {
-        record_event_count_sample(
-            Event::FspAeadCompletionAeadFailedWorkerOpen,
-            worker_open as u64,
-        );
-    }
-    if worker_open_returned > 0 {
-        record_event_count_sample(
-            Event::FspAeadCompletionAeadFailedWorkerOpenReturned,
-            worker_open_returned as u64,
-        );
     }
 }
 
