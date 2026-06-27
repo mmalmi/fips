@@ -136,6 +136,27 @@
         );
     }
 
+    #[test]
+    fn live_node_register_owner_if_missing_preserves_existing_owner_state() {
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x93; 16]));
+        let active_path = TransportPath::new(93);
+        let mut live_node =
+            PacketMover2LiveNode::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+
+        assert!(live_node.register_owner_if_missing(
+            owner,
+            OwnerConfig::new(1, 8).with_next_send_counter(93_000),
+        ));
+        assert_eq!(live_node.set_owner_active_path(owner, active_path.clone()), Ok(()));
+
+        assert!(!live_node.register_owner_if_missing(
+            owner,
+            OwnerConfig::new(99, 1).with_next_send_counter(1),
+        ));
+
+        assert_eq!(live_node.owner_active_path(owner), Ok(Some(active_path)));
+    }
+
     #[tokio::test]
     async fn live_node_rekey_owner_keeps_registered_routes_live() {
         let send_transport_id = TransportId::new(93);
