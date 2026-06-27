@@ -12,6 +12,7 @@ pub(crate) enum WireBuildError {
     PayloadTooLarge,
     ProtocolMismatch,
     PlaintextFsp,
+    MissingFspTimestamp,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,4 +160,3 @@ fn build_fsp_established_header(
     header[4..12].copy_from_slice(&counter.to_le_bytes());
     Ok(header)
 }
-

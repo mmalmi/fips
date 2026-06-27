@@ -36,10 +36,7 @@ pub(crate) struct PacketMover2TunOutboundRoute {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PacketMover2TunPayload {
     Raw,
-    Ipv6Shim {
-        timestamp_ms: u32,
-        inner_flags: u8,
-    },
+    Ipv6Shim { inner_flags: u8 },
 }
 
 impl PacketMover2TunOutboundRoute {
@@ -79,7 +76,6 @@ impl PacketMover2TunOutboundRoute {
         generation: u64,
         class: PacketClass,
         flags: u8,
-        timestamp_ms: u32,
         inner_flags: u8,
     ) -> Self {
         Self {
@@ -88,10 +84,7 @@ impl PacketMover2TunOutboundRoute {
             class,
             wire: OutboundWire::Fsp { flags },
             post_seal: OutboundPostSeal::Transport,
-            payload: PacketMover2TunPayload::Ipv6Shim {
-                timestamp_ms,
-                inner_flags,
-            },
+            payload: PacketMover2TunPayload::Ipv6Shim { inner_flags },
         }
     }
 
@@ -113,11 +106,11 @@ impl PacketMover2TunOutboundRoute {
         payload: Vec<u8>,
     ) -> Result<OutboundPacket, PacketMover2TunOutboundDropReason> {
         let payload = self.encode_payload(payload)?;
-        match self.wire {
+        let packet = match self.wire {
             OutboundWire::Fmp {
                 receiver_idx,
                 flags,
-            } => Ok(OutboundPacket::fmp(
+            } => OutboundPacket::fmp(
                 self.owner,
                 self.generation,
                 self.class,
@@ -125,16 +118,17 @@ impl PacketMover2TunOutboundRoute {
                 flags,
                 payload,
             )
-            .with_post_seal(self.post_seal)),
-            OutboundWire::Fsp { flags } => Ok(OutboundPacket::fsp(
+            .with_post_seal(self.post_seal),
+            OutboundWire::Fsp { flags } => OutboundPacket::fsp(
                 self.owner,
                 self.generation,
                 self.class,
                 flags,
                 payload,
             )
-            .with_post_seal(self.post_seal)),
-        }
+            .with_post_seal(self.post_seal),
+        };
+        Ok(self.apply_payload_transform(packet))
     }
 
     fn encode_payload(
@@ -143,10 +137,7 @@ impl PacketMover2TunOutboundRoute {
     ) -> Result<Vec<u8>, PacketMover2TunOutboundDropReason> {
         match self.payload {
             PacketMover2TunPayload::Raw => Ok(payload),
-            PacketMover2TunPayload::Ipv6Shim {
-                timestamp_ms,
-                inner_flags,
-            } => {
+            PacketMover2TunPayload::Ipv6Shim { inner_flags: _ } => {
                 let compressed = crate::upper::ipv6_shim::compress_ipv6(&payload)
                     .ok_or(PacketMover2TunOutboundDropReason::InvalidPacket)?;
                 let mut port_payload = Vec::with_capacity(
@@ -159,13 +150,18 @@ impl PacketMover2TunOutboundRoute {
                     &crate::node::session_wire::FSP_PORT_IPV6_SHIM.to_le_bytes(),
                 );
                 port_payload.extend_from_slice(&compressed);
-                Ok(crate::node::session_wire::fsp_prepend_inner_header(
-                    timestamp_ms,
-                    crate::protocol::SessionMessageType::DataPacket.to_byte(),
-                    inner_flags,
-                    &port_payload,
-                ))
+                Ok(port_payload)
             }
+        }
+    }
+
+    fn apply_payload_transform(&self, packet: OutboundPacket) -> OutboundPacket {
+        match self.payload {
+            PacketMover2TunPayload::Raw => packet,
+            PacketMover2TunPayload::Ipv6Shim { inner_flags } => packet.with_fsp_inner_header(
+                crate::protocol::SessionMessageType::DataPacket.to_byte(),
+                inner_flags,
+            ),
         }
     }
 }
@@ -272,7 +268,7 @@ fn route_tun_outbound_packet_with_router<R, F>(
     let payload_len = packet.len();
     match router.route_tun_outbound(&packet) {
         Ok(route) => match route.into_outbound_packet(packet) {
-            Ok(packet) => push(packet),
+            Ok(packet) => push(packet.with_activity_tick(ActivityTick::new(crate::time::now_ms()))),
             Err(reason) => drops.push(PacketMover2TunOutboundDrop::new(payload_len, reason)),
         },
         Err(reason) => drops.push(PacketMover2TunOutboundDrop::new(packet.len(), reason)),

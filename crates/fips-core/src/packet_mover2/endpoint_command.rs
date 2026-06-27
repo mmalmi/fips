@@ -38,25 +38,17 @@ pub(crate) struct PacketMover2EndpointCommandRoute {
     owner: OwnerId,
     generation: u64,
     flags: u8,
-    timestamp_ms: u32,
     inner_flags: u8,
     post_seal: OutboundPostSeal,
     max_payload_len: Option<usize>,
 }
 
 impl PacketMover2EndpointCommandRoute {
-    pub(crate) fn fsp(
-        owner: OwnerId,
-        generation: u64,
-        flags: u8,
-        timestamp_ms: u32,
-        inner_flags: u8,
-    ) -> Self {
+    pub(crate) fn fsp(owner: OwnerId, generation: u64, flags: u8, inner_flags: u8) -> Self {
         Self {
             owner,
             generation,
             flags,
-            timestamp_ms,
             inner_flags,
             post_seal: OutboundPostSeal::Transport,
             max_payload_len: None,
@@ -95,18 +87,16 @@ impl PacketMover2EndpointCommandRoute {
         if request.payload().len() > max_fsp_payload {
             return Err(PacketMover2EndpointCommandDropReason::InvalidPayload);
         }
-        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
-            self.timestamp_ms,
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            self.inner_flags,
-            request.payload(),
-        );
         let packet = OutboundPacket::fsp(
             self.owner,
             self.generation,
             endpoint_packet_class(request.lane()),
             self.flags,
-            inner_plaintext,
+            request.payload().to_vec(),
+        )
+        .with_fsp_inner_header(
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            self.inner_flags,
         )
         .with_post_seal(self.post_seal);
         Ok(packet)
@@ -201,7 +191,7 @@ where
     let request = PacketMover2EndpointCommandPayload::new(&send);
     match router.route_endpoint_command_payload(request) {
         Ok(packet) => {
-            push(packet);
+            push(packet.with_activity_tick(ActivityTick::new(crate::time::now_ms())));
             Ok(())
         }
         Err(reason) => {

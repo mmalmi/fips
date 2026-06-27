@@ -153,6 +153,10 @@ impl ActivityTick {
     pub(crate) fn new(tick: u64) -> Self {
         Self(tick)
     }
+
+    fn get(self) -> u64 {
+        self.0
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -179,6 +183,12 @@ pub(crate) enum OutboundPostSeal {
     FmpWrap(PacketMover2FspWrapRoute),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutboundPayloadTransform {
+    None,
+    FspInnerHeader { msg_type: u8, inner_flags: u8 },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OutboundPacket {
     owner: OwnerId,
@@ -186,6 +196,7 @@ pub(crate) struct OutboundPacket {
     class: PacketClass,
     wire: OutboundWire,
     post_seal: OutboundPostSeal,
+    payload_transform: OutboundPayloadTransform,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -208,6 +219,7 @@ impl OutboundPacket {
                 flags,
             },
             post_seal: OutboundPostSeal::Transport,
+            payload_transform: OutboundPayloadTransform::None,
             activity_tick: None,
             payload: payload.into(),
         }
@@ -226,14 +238,48 @@ impl OutboundPacket {
             class,
             wire: OutboundWire::Fsp { flags },
             post_seal: OutboundPostSeal::Transport,
+            payload_transform: OutboundPayloadTransform::None,
             activity_tick: None,
             payload: payload.into(),
         }
     }
 
+    pub(crate) fn with_fsp_inner_header(mut self, msg_type: u8, inner_flags: u8) -> Self {
+        self.payload_transform = OutboundPayloadTransform::FspInnerHeader {
+            msg_type,
+            inner_flags,
+        };
+        self
+    }
+
     pub(crate) fn with_post_seal(mut self, post_seal: OutboundPostSeal) -> Self {
         self.post_seal = post_seal;
         self
+    }
+
+    fn apply_payload_transform(
+        &mut self,
+        fsp_timestamp_ms: Option<u32>,
+    ) -> Result<(), WireBuildError> {
+        match self.payload_transform {
+            OutboundPayloadTransform::None => Ok(()),
+            OutboundPayloadTransform::FspInnerHeader {
+                msg_type,
+                inner_flags,
+            } => {
+                let timestamp_ms = fsp_timestamp_ms.ok_or(WireBuildError::MissingFspTimestamp)?;
+                let payload = std::mem::take(&mut self.payload).into_vec();
+                self.payload = crate::node::session_wire::fsp_prepend_inner_header(
+                    timestamp_ms,
+                    msg_type,
+                    inner_flags,
+                    &payload,
+                )
+                .into();
+                self.payload_transform = OutboundPayloadTransform::None;
+                Ok(())
+            }
+        }
     }
 
     pub(crate) fn with_activity_tick(mut self, tick: ActivityTick) -> Self {

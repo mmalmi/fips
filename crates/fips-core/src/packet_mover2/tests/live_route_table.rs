@@ -98,7 +98,7 @@
         let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_endpoint_destination(
             *remote.node_addr(),
-            PacketMover2EndpointCommandRoute::fsp(owner, 7, 0x03, 12_345, 0x09)
+            PacketMover2EndpointCommandRoute::fsp(owner, 7, 0x03, 0x09)
                 .with_max_payload_len(64),
         );
 
@@ -156,28 +156,26 @@
         assert_eq!(outbound[0].generation, 7);
         assert_eq!(outbound[0].class, PacketClass::Control);
         assert_eq!(outbound[0].wire, OutboundWire::Fsp { flags: 0x03 });
-        let (timestamp, msg_type, inner_flags, payload) =
-            crate::node::session_wire::fsp_strip_inner_header(outbound[0].payload.as_ref())
-                .expect("priority FSP endpoint header");
-        assert_eq!(timestamp, 12_345);
         assert_eq!(
-            msg_type,
-            crate::protocol::SessionMessageType::EndpointData.to_byte()
+            outbound[0].payload_transform,
+            OutboundPayloadTransform::FspInnerHeader {
+                msg_type: crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                inner_flags: 0x09,
+            }
         );
-        assert_eq!(inner_flags, 0x09);
-        assert_eq!(payload, priority_payload.as_slice());
+        assert_eq!(outbound[0].payload.as_ref(), priority_payload.as_slice());
 
         assert_eq!(outbound[1].owner, owner);
         assert_eq!(outbound[1].generation, 7);
         assert_eq!(outbound[1].class, PacketClass::Bulk);
-        let (_, msg_type, _, payload) =
-            crate::node::session_wire::fsp_strip_inner_header(outbound[1].payload.as_ref())
-                .expect("bulk FSP endpoint header");
         assert_eq!(
-            msg_type,
-            crate::protocol::SessionMessageType::EndpointData.to_byte()
+            outbound[1].payload_transform,
+            OutboundPayloadTransform::FspInnerHeader {
+                msg_type: crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                inner_flags: 0x09,
+            }
         );
-        assert_eq!(payload, bulk_payload.as_slice());
+        assert_eq!(outbound[1].payload.as_ref(), bulk_payload.as_slice());
 
         let drops = source.take_endpoint_command_drops();
         assert_eq!(drops.len(), 2);
@@ -207,7 +205,7 @@
         let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_endpoint_destination(
             *remote.node_addr(),
-            PacketMover2EndpointCommandRoute::fsp(endpoint_owner, 1, 0, 1_000, 0),
+            PacketMover2EndpointCommandRoute::fsp(endpoint_owner, 1, 0, 0),
         );
         routes.register_tun_destination(
             tun_dest,
@@ -310,7 +308,7 @@
         );
         routes.register_endpoint_destination(
             stale,
-            PacketMover2EndpointCommandRoute::fsp(stale_fsp_owner, 2, 0, 1, 0),
+            PacketMover2EndpointCommandRoute::fsp(stale_fsp_owner, 2, 0, 0),
         );
         routes.register_tun_destination(
             keep,
@@ -324,7 +322,7 @@
         );
         routes.register_endpoint_destination(
             keep,
-            PacketMover2EndpointCommandRoute::fsp(keep_fsp_owner, 4, 0, 1, 0),
+            PacketMover2EndpointCommandRoute::fsp(keep_fsp_owner, 4, 0, 0),
         );
 
         assert_eq!(routes.unregister_owner(stale_fmp_owner), 2);
@@ -402,7 +400,7 @@
         );
         routes.register_endpoint_destination(
             fsp_source,
-            PacketMover2EndpointCommandRoute::fsp(fsp_owner, 2, 0, 6_700, 0),
+            PacketMover2EndpointCommandRoute::fsp(fsp_owner, 2, 0, 0),
         );
         routes.register_fmp(
             keep_transport_id,
@@ -411,7 +409,7 @@
         );
         routes.register_endpoint_destination(
             keep,
-            PacketMover2EndpointCommandRoute::fsp(keep_fsp_owner, 6, 0, 6_800, 0),
+            PacketMover2EndpointCommandRoute::fsp(keep_fsp_owner, 6, 0, 0),
         );
 
         assert_eq!(routes.refresh_owner_generation(fmp_owner, 10), 2);
@@ -588,11 +586,16 @@
             .owner_mut(fmp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
+        let fsp_session_start_ms = crate::time::now_ms().saturating_sub(8_200);
+        assert_eq!(
+            live_node.set_owner_fsp_session_start_ms(fsp_owner, fsp_session_start_ms),
+            Ok(())
+        );
 
         let mut fsp_routes = PacketMover2LiveOwnerRoutes::new();
         fsp_routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(
             fsp_source,
-            PacketMover2EndpointCommandRoute::fsp(fsp_owner, 1, 0, 8_200, 0)
+            PacketMover2EndpointCommandRoute::fsp(fsp_owner, 1, 0, 0)
                 .with_max_payload_len(64),
         ));
         let mut fmp_routes = PacketMover2LiveOwnerRoutes::new();
@@ -685,7 +688,10 @@
         let (timestamp, msg_type, inner_flags, delivered_endpoint_payload) =
             crate::node::session_wire::fsp_strip_inner_header(&plaintext)
                 .expect("endpoint FSP inner header");
-        assert_eq!(timestamp, 8_200);
+        assert!(
+            (8_200..=8_500).contains(&timestamp),
+            "unexpected endpoint timestamp {timestamp}"
+        );
         assert_eq!(
             msg_type,
             crate::protocol::SessionMessageType::EndpointData.to_byte()

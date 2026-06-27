@@ -136,6 +136,8 @@ impl AeadSealWork {
         mut work: OutboundCryptoWork,
         cipher: AeadKey,
     ) -> Result<Self, WireBuildError> {
+        work.packet
+            .apply_payload_transform(work.reservation.fsp_timestamp_ms)?;
         let payload_len = u16::try_from(work.packet.payload.len())
             .map_err(|_| WireBuildError::PayloadTooLarge)?;
         let counter = work.reservation.counter;
@@ -204,7 +206,9 @@ impl StatelessAeadSealWorker {
                         payload: work.work.packet.payload,
                     }),
                     OutboundPostSeal::FmpWrap(route) => {
-                        CryptoResult::Outbound(route.into_fmp_outbound(work.work.packet.payload))
+                        CryptoResult::Outbound(
+                            route.into_fmp_outbound(work.work.packet.class, work.work.packet.payload),
+                        )
                     }
                 }
             }

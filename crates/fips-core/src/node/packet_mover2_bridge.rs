@@ -20,6 +20,7 @@ struct PacketMover2FspOwnerSeed {
     owner: OwnerId,
     config: OwnerConfig,
     keys: OwnerCryptoKeys,
+    session_start_ms: u64,
     routes: PacketMover2LiveOwnerRoutes,
     next_hop: Option<NodeAddr>,
 }
@@ -63,6 +64,10 @@ impl Node {
             .is_ok()
             && self
                 .packet_mover2
+                .set_owner_fsp_session_start_ms(seed.owner, seed.session_start_ms)
+                .is_ok()
+            && self
+                .packet_mover2
                 .replace_owner_routes(seed.owner, seed.routes)
                 .is_ok()
             && next_hop_ready
@@ -100,8 +105,7 @@ impl Node {
         &mut self,
         node_addr: &NodeAddr,
     ) -> Option<PacketMover2FspOwnerSeed> {
-        let now_ms = Self::now_ms();
-        let (open, seal, next_send_counter, timestamp_ms, fsp_flags, inner_flags) = {
+        let (open, seal, next_send_counter, session_start_ms, fsp_flags, inner_flags) = {
             let session = self.sessions.get(node_addr)?;
             let (open, seal) = session.fsp_crypto_keys()?;
             let mut fsp_flags = 0;
@@ -116,13 +120,13 @@ impl Node {
                 open,
                 seal,
                 session.send_counter(),
-                session.session_timestamp(now_ms),
+                session.session_start_ms(),
                 fsp_flags,
                 inner_flags,
             )
         };
         let (routes, next_hop) =
-            self.packet_mover2_fsp_owner_routes(node_addr, timestamp_ms, fsp_flags, inner_flags);
+            self.packet_mover2_fsp_owner_routes(node_addr, fsp_flags, inner_flags);
 
         Some(PacketMover2FspOwnerSeed {
             owner: OwnerId::fsp_node(*node_addr),
@@ -130,8 +134,10 @@ impl Node {
                 INITIAL_FSP_GENERATION,
                 self.packet_mover2_owner_in_flight_limit(),
             )
-            .with_next_send_counter(next_send_counter),
+            .with_next_send_counter(next_send_counter)
+            .with_fsp_session_start_ms(session_start_ms),
             keys: OwnerCryptoKeys::new(Arc::new(open), Arc::new(seal)),
+            session_start_ms,
             routes,
             next_hop,
         })
@@ -140,14 +146,11 @@ impl Node {
     fn packet_mover2_fsp_owner_routes(
         &mut self,
         node_addr: &NodeAddr,
-        timestamp_ms: u32,
         fsp_flags: u8,
         inner_flags: u8,
     ) -> (PacketMover2LiveOwnerRoutes, Option<NodeAddr>) {
         let owner = OwnerId::fsp_node(*node_addr);
-        let Some((wrap, next_hop)) =
-            self.packet_mover2_fsp_wrap_route(node_addr, PacketClass::Bulk)
-        else {
+        let Some((wrap, next_hop)) = self.packet_mover2_fsp_wrap_route(node_addr) else {
             return (PacketMover2LiveOwnerRoutes::new(), None);
         };
 
@@ -157,7 +160,6 @@ impl Node {
             INITIAL_FSP_GENERATION,
             PacketClass::Bulk,
             fsp_flags,
-            timestamp_ms,
             inner_flags,
         )
         .with_fmp_wrap(wrap);
@@ -170,7 +172,6 @@ impl Node {
             owner,
             INITIAL_FSP_GENERATION,
             fsp_flags,
-            timestamp_ms,
             inner_flags,
         )
         .with_fmp_wrap(wrap);
@@ -182,7 +183,6 @@ impl Node {
     fn packet_mover2_fsp_wrap_route(
         &mut self,
         dest_addr: &NodeAddr,
-        class: PacketClass,
     ) -> Option<(PacketMover2FspWrapRoute, NodeAddr)> {
         let (next_hop, receiver_idx, transport_id, remote_addr, fmp_flags) = {
             let peer = self.find_next_hop(dest_addr)?;
@@ -210,7 +210,6 @@ impl Node {
         let wrap = PacketMover2FspWrapRoute::new(
             OwnerId::fmp_node(next_hop),
             INITIAL_FMP_GENERATION,
-            class,
             receiver_idx,
             *self.node_addr(),
             *dest_addr,
