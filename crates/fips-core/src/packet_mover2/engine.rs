@@ -22,6 +22,10 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         self.owners.insert(owner, OwnerState::new(owner, config));
     }
 
+    pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> bool {
+        self.owners.remove(&owner).is_some()
+    }
+
     pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.owners.get_mut(&owner)
     }
@@ -272,4 +276,3 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         self.outbound_admission.lens()
     }
 }
-
