@@ -214,6 +214,35 @@ impl PacketMover2LiveIngressRoutes {
             self.fmp.len() + self.fsp.len() + self.tun_outbound.len() + self.endpoint.len();
         before.saturating_sub(after)
     }
+
+    pub(crate) fn refresh_owner_generation(&mut self, owner: OwnerId, generation: u64) -> usize {
+        let mut refreshed = 0usize;
+        for route in self.fmp.values_mut() {
+            if route.owner == owner {
+                route.generation = generation;
+                refreshed = refreshed.saturating_add(1);
+            }
+        }
+        for route in self.fsp.values_mut() {
+            if route.owner == owner {
+                route.generation = generation;
+                refreshed = refreshed.saturating_add(1);
+            }
+        }
+        for route in self.tun_outbound.values_mut() {
+            if route.owner() == owner {
+                route.refresh_generation(generation);
+                refreshed = refreshed.saturating_add(1);
+            }
+        }
+        for route in self.endpoint.values_mut() {
+            if route.owner() == owner {
+                route.refresh_generation(generation);
+                refreshed = refreshed.saturating_add(1);
+            }
+        }
+        refreshed
+    }
 }
 
 impl PacketMover2IngressRouter for PacketMover2LiveIngressRoutes {

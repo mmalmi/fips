@@ -63,6 +63,10 @@ impl PacketMover2TunOutboundRoute {
         self.owner
     }
 
+    fn refresh_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
     fn into_outbound_packet(self, payload: Vec<u8>) -> OutboundPacket {
         match self.wire {
             OutboundWire::Fmp {
@@ -104,6 +108,10 @@ impl PacketMover2TunDestinationRoute {
 
     fn owner(&self) -> OwnerId {
         self.route.owner()
+    }
+
+    fn refresh_generation(&mut self, generation: u64) {
+        self.route.refresh_generation(generation);
     }
 
     fn route_packet(

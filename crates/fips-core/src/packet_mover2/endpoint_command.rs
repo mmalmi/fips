@@ -70,6 +70,10 @@ impl PacketMover2EndpointCommandRoute {
         self.owner
     }
 
+    fn refresh_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
     fn route_request(
         &self,
         request: PacketMover2EndpointCommandPayload<'_>,
