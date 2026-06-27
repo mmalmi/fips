@@ -18,6 +18,8 @@ pub mod identity {
 pub mod mmp;
 pub mod node;
 pub mod noise;
+#[allow(dead_code)]
+pub(crate) mod packet_mover2;
 pub mod peer;
 pub(crate) mod perf_profile;
 pub mod protocol;
