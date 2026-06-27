@@ -18,8 +18,8 @@
 //! bytes and return completions; owners retire those completions in order.
 
 use crate::node::{
-    EndpointCommandLane, EndpointDataPayload, EndpointDataSend, EndpointEventSender,
-    NodeEndpointCommand, NodeEndpointEvent,
+    EndpointCommandLane, EndpointDataSend, EndpointEventSender, NodeEndpointCommand,
+    NodeEndpointEvent,
 };
 use crate::transport::{
     PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,
@@ -1992,7 +1992,7 @@ where
     {
         let endpoint_limit = self.endpoint_limit.min(limit);
         let endpoint_drained = self.endpoint.drain_outbound(endpoint_limit, &mut push);
-        let remaining = limit.saturating_sub(endpoint_drained);
+        let remaining = limit.saturating_sub(endpoint_drained.min(endpoint_limit));
         let tun_limit = self.tun_limit.min(remaining);
         let tun_drained = self.tun.drain_outbound(tun_limit, push);
         endpoint_drained.saturating_add(tun_drained)
@@ -3716,6 +3716,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::EndpointDataPayload;
     use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
     use ring::aead::UnboundKey;
 
@@ -4250,6 +4251,64 @@ mod tests {
         );
         assert!(priority_rx.try_recv().is_err());
         assert!(bulk_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn live_outbound_sources_keep_tun_progress_after_endpoint_batch_overrun() {
+        let endpoint_owner = OwnerId::fsp_node(NodeAddr::from_bytes([0x23; 16]));
+        let tun_owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x24; 16]));
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
+        let payloads = (0..9)
+            .map(|idx| EndpointDataPayload::new(format!("endpoint-{idx}").into_bytes()))
+            .collect::<Vec<_>>();
+        bulk_tx
+            .try_send(
+                NodeEndpointCommand::send_batch_oneway(
+                    remote,
+                    payloads,
+                    None,
+                    EndpointCommandLane::Bulk,
+                )
+                .expect("endpoint batch command"),
+            )
+            .expect("enqueue endpoint batch");
+        drop(priority_tx);
+        let mut router = |request: PacketMover2EndpointCommandPayload<'_>| {
+            Ok(OutboundPacket::fsp(
+                endpoint_owner,
+                1,
+                PacketClass::Bulk,
+                0,
+                request.payload().to_vec(),
+            ))
+        };
+        let mut endpoint_source =
+            PacketMover2EndpointCommandSource::new(&mut priority_rx, &mut bulk_rx, &mut router);
+        let mut tun_source = VecDeque::from([OutboundPacket::fmp(
+            tun_owner,
+            1,
+            PacketClass::Bulk,
+            240,
+            0,
+            b"tun-reserved".to_vec(),
+        )]);
+        let mut combined =
+            PacketMover2LiveOutboundSources::new(&mut endpoint_source, 1, &mut tun_source, 1);
+        let mut outbound = Vec::new();
+
+        assert_eq!(
+            combined.drain_outbound(2, |packet| outbound.push(packet)),
+            3
+        );
+
+        assert_eq!(outbound.len(), 10);
+        assert_eq!(outbound[0].payload.as_ref(), b"endpoint-0");
+        assert_eq!(outbound[8].payload.as_ref(), b"endpoint-8");
+        assert_eq!(outbound[9].owner, tun_owner);
+        assert_eq!(outbound[9].payload.as_ref(), b"tun-reserved");
+        assert!(tun_source.is_empty());
     }
 
     #[test]
