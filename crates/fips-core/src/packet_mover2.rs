@@ -18,7 +18,9 @@
 //! bytes and return completions; owners retire those completions in order.
 
 use crate::node::{EndpointEventSender, NodeEndpointEvent};
-use crate::transport::{PacketBuffer, ReceivedPacket, TransportAddr, TransportId};
+use crate::transport::{
+    PacketBuffer, ReceivedPacket, TransportAddr, TransportError, TransportHandle, TransportId,
+};
 use crate::{NodeAddr, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -1624,6 +1626,8 @@ pub(crate) enum PacketMover2OutputError {
     Unavailable,
     Backpressure,
     NoRoute,
+    MtuExceeded,
+    TransportFailed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1828,8 +1832,8 @@ pub(crate) trait PacketMover2TransportOutput {
     fn send_transport(
         &mut self,
         transport_id: TransportId,
-        remote_addr: &TransportAddr,
-        output: &PacketOutput,
+        remote_addr: TransportAddr,
+        output: PacketOutput,
     ) -> Result<(), PacketMover2OutputError>;
 }
 
@@ -1837,10 +1841,148 @@ impl<T: PacketMover2TransportOutput + ?Sized> PacketMover2TransportOutput for &m
     fn send_transport(
         &mut self,
         transport_id: TransportId,
-        remote_addr: &TransportAddr,
-        output: &PacketOutput,
+        remote_addr: TransportAddr,
+        output: PacketOutput,
     ) -> Result<(), PacketMover2OutputError> {
         (**self).send_transport(transport_id, remote_addr, output)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2TransportSendPlan {
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    output: PacketOutput,
+}
+
+impl PacketMover2TransportSendPlan {
+    pub(crate) fn new(
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        output: PacketOutput,
+    ) -> Self {
+        Self {
+            transport_id,
+            remote_addr,
+            output,
+        }
+    }
+
+    pub(crate) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    pub(crate) fn remote_addr(&self) -> &TransportAddr {
+        &self.remote_addr
+    }
+
+    pub(crate) fn output(&self) -> &PacketOutput {
+        &self.output
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PacketMover2TransportSendPlanOutput {
+    plans: Vec<PacketMover2TransportSendPlan>,
+}
+
+impl PacketMover2TransportSendPlanOutput {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn plans(&self) -> &[PacketMover2TransportSendPlan] {
+        &self.plans
+    }
+
+    pub(crate) fn take_plans(&mut self) -> Vec<PacketMover2TransportSendPlan> {
+        std::mem::take(&mut self.plans)
+    }
+}
+
+impl PacketMover2TransportOutput for PacketMover2TransportSendPlanOutput {
+    fn send_transport(
+        &mut self,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        output: PacketOutput,
+    ) -> Result<(), PacketMover2OutputError> {
+        self.plans.push(PacketMover2TransportSendPlan::new(
+            transport_id,
+            remote_addr,
+            output,
+        ));
+        Ok(())
+    }
+}
+
+pub(crate) trait PacketMover2TransportResolver {
+    fn resolve_packet_mover2_transport(
+        &self,
+        transport_id: TransportId,
+    ) -> Option<&TransportHandle>;
+}
+
+impl PacketMover2TransportResolver for HashMap<TransportId, TransportHandle> {
+    fn resolve_packet_mover2_transport(
+        &self,
+        transport_id: TransportId,
+    ) -> Option<&TransportHandle> {
+        self.get(&transport_id)
+    }
+}
+
+impl<T: PacketMover2TransportResolver + ?Sized> PacketMover2TransportResolver for &T {
+    fn resolve_packet_mover2_transport(
+        &self,
+        transport_id: TransportId,
+    ) -> Option<&TransportHandle> {
+        (**self).resolve_packet_mover2_transport(transport_id)
+    }
+}
+
+pub(crate) async fn send_packet_mover2_transport_plans<R, I>(
+    transports: &R,
+    plans: I,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+) -> usize
+where
+    R: PacketMover2TransportResolver + ?Sized,
+    I: IntoIterator<Item = PacketMover2TransportSendPlan>,
+{
+    let mut sent = 0;
+    for plan in plans {
+        let mut drop = PacketMover2OutputDrop::from_output(
+            plan.output(),
+            PacketMover2OutputError::Unavailable,
+        );
+        let Some(transport) = transports.resolve_packet_mover2_transport(plan.transport_id) else {
+            drop.reason = PacketMover2OutputError::NoRoute;
+            drops.push(drop);
+            continue;
+        };
+        match transport
+            .send(plan.remote_addr(), plan.output().payload())
+            .await
+        {
+            Ok(_) => sent += 1,
+            Err(error) => {
+                drop.reason = packet_mover2_output_error_for_transport(&error);
+                drops.push(drop);
+            }
+        }
+    }
+    sent
+}
+
+fn packet_mover2_output_error_for_transport(error: &TransportError) -> PacketMover2OutputError {
+    match error {
+        TransportError::MtuExceeded { .. } => PacketMover2OutputError::MtuExceeded,
+        error if error.is_local_route_unavailable() => PacketMover2OutputError::NoRoute,
+        TransportError::NotStarted | TransportError::NotSupported(_) => {
+            PacketMover2OutputError::Unavailable
+        }
+        _ => PacketMover2OutputError::TransportFailed,
     }
 }
 
@@ -1883,15 +2025,19 @@ where
                 self.endpoint.send_endpoint(&output, payload)
             }
             OutputTarget::Transport => {
-                let Some(TransportPath::Live {
-                    transport_id,
-                    remote_addr,
-                }) = output.path.as_ref()
+                let Some((transport_id, remote_addr)) =
+                    output.path.as_ref().and_then(|path| match path {
+                        TransportPath::Live {
+                            transport_id,
+                            remote_addr,
+                        } => Some((*transport_id, remote_addr.clone())),
+                        TransportPath::Scratch(_) => None,
+                    })
                 else {
                     return Err(PacketMover2OutputError::NoRoute);
                 };
                 self.transport
-                    .send_transport(*transport_id, remote_addr, &output)
+                    .send_transport(transport_id, remote_addr, output)
             }
         }
     }
@@ -2879,6 +3025,24 @@ mod tests {
         }
     }
 
+    fn transport_output(
+        owner: OwnerId,
+        counter: u64,
+        ingress_seq: u64,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        payload: impl Into<PacketBuffer>,
+    ) -> PacketOutput {
+        PacketOutput {
+            owner,
+            counter,
+            ingress_seq,
+            target: OutputTarget::Transport,
+            path: Some(TransportPath::live(transport_id, remote_addr)),
+            payload: payload.into(),
+        }
+    }
+
     fn test_cipher(byte: u8) -> LessSafeKey {
         let key = [byte; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key).unwrap();
@@ -2887,6 +3051,19 @@ mod tests {
 
     fn test_key(byte: u8) -> AeadKey {
         Arc::new(test_cipher(byte))
+    }
+
+    fn unstarted_udp_transport(transport_id: TransportId) -> TransportHandle {
+        let (packet_tx, _packet_rx) = crate::transport::packet_channel(4);
+        TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        ))
     }
 
     fn fmp_encrypted_wire(
@@ -4514,12 +4691,12 @@ mod tests {
         fn send_transport(
             &mut self,
             transport_id: TransportId,
-            remote_addr: &TransportAddr,
-            output: &PacketOutput,
+            remote_addr: TransportAddr,
+            output: PacketOutput,
         ) -> Result<(), PacketMover2OutputError> {
             self.outputs.push(LiveTransportRecord {
                 transport_id,
-                remote_addr: remote_addr.clone(),
+                remote_addr,
                 owner: output.owner(),
                 counter: output.counter(),
                 ingress_seq: output.ingress_seq(),
@@ -5103,6 +5280,206 @@ mod tests {
         assert!(endpoint_io.event_rx.try_recv().is_err());
         assert!(tun.outputs.is_empty());
         assert!(transport.outputs.is_empty());
+    }
+
+    #[test]
+    fn transport_plan_output_takes_owned_wire_payload_from_live_sink() {
+        let transport_id = TransportId::new(54);
+        let remote_addr = TransportAddr::from_string("198.51.100.54:9000");
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x54; 16]));
+        let output = transport_output(
+            owner,
+            540,
+            12,
+            transport_id,
+            remote_addr.clone(),
+            b"wire-packet".to_vec(),
+        );
+        let mut tun = LiveTunRecorder::default();
+        let mut endpoint = LiveEndpointRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
+
+        let sent = {
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
+            sink.send(output)
+        };
+
+        assert_eq!(sent, Ok(()));
+        assert!(tun.outputs.is_empty());
+        assert!(endpoint.outputs.is_empty());
+        assert_eq!(transport.plans().len(), 1);
+        let plan = &transport.plans()[0];
+        assert_eq!(plan.transport_id(), transport_id);
+        assert_eq!(plan.remote_addr(), &remote_addr);
+        assert_eq!(plan.output().owner(), owner);
+        assert_eq!(plan.output().counter(), 540);
+        assert_eq!(plan.output().ingress_seq(), 12);
+        assert_eq!(plan.output().payload(), b"wire-packet");
+        assert_eq!(
+            plan.output().path(),
+            Some(TransportPath::live(transport_id, remote_addr))
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_plan_dispatch_records_no_route_without_retry() {
+        let transport_id = TransportId::new(55);
+        let remote_addr = TransportAddr::from_string("198.51.100.55:9000");
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x55; 16]));
+        let plan = PacketMover2TransportSendPlan::new(
+            transport_id,
+            remote_addr.clone(),
+            transport_output(
+                owner,
+                550,
+                13,
+                transport_id,
+                remote_addr.clone(),
+                b"missing-transport".to_vec(),
+            ),
+        );
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let mut drops = Vec::new();
+
+        let sent = send_packet_mover2_transport_plans(&transports, [plan], &mut drops).await;
+
+        assert_eq!(sent, 0);
+        assert_eq!(drops.len(), 1);
+        let drop = &drops[0];
+        assert_eq!(drop.owner(), owner);
+        assert_eq!(drop.counter(), 550);
+        assert_eq!(drop.ingress_seq(), 13);
+        assert_eq!(drop.target(), OutputTarget::Transport);
+        assert_eq!(
+            drop.path(),
+            Some(TransportPath::live(transport_id, remote_addr))
+        );
+        assert_eq!(drop.payload_len(), b"missing-transport".len());
+        assert_eq!(drop.reason(), PacketMover2OutputError::NoRoute);
+    }
+
+    #[tokio::test]
+    async fn transport_plan_dispatch_records_unavailable_transport_send_failure() {
+        let transport_id = TransportId::new(56);
+        let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x56; 16]));
+        let plan = PacketMover2TransportSendPlan::new(
+            transport_id,
+            remote_addr.clone(),
+            transport_output(
+                owner,
+                560,
+                14,
+                transport_id,
+                remote_addr.clone(),
+                b"not-started".to_vec(),
+            ),
+        );
+        let mut transports = HashMap::new();
+        transports.insert(transport_id, unstarted_udp_transport(transport_id));
+        let mut drops = Vec::new();
+
+        let sent = send_packet_mover2_transport_plans(&transports, [plan], &mut drops).await;
+
+        assert_eq!(sent, 0);
+        assert_eq!(drops.len(), 1);
+        let drop = &drops[0];
+        assert_eq!(drop.owner(), owner);
+        assert_eq!(drop.counter(), 560);
+        assert_eq!(drop.ingress_seq(), 14);
+        assert_eq!(drop.target(), OutputTarget::Transport);
+        assert_eq!(
+            drop.path(),
+            Some(TransportPath::live(transport_id, remote_addr))
+        );
+        assert_eq!(drop.payload_len(), b"not-started".len());
+        assert_eq!(drop.reason(), PacketMover2OutputError::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn transport_plan_dispatch_sends_with_resolved_live_transport() {
+        let send_transport_id = TransportId::new(57);
+        let recv_transport_id = TransportId::new(58);
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(4);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let send_local_addr = TransportAddr::from_string(
+            &send_transport
+                .local_addr()
+                .expect("send udp local addr")
+                .to_string(),
+        );
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x57; 16]));
+        let plan = PacketMover2TransportSendPlan::new(
+            send_transport_id,
+            remote_addr.clone(),
+            transport_output(
+                owner,
+                570,
+                15,
+                send_transport_id,
+                remote_addr,
+                b"live-transport".to_vec(),
+            ),
+        );
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let mut drops = Vec::new();
+
+        let sent = send_packet_mover2_transport_plans(&transports, [plan], &mut drops).await;
+
+        assert_eq!(sent, 1);
+        assert!(drops.is_empty());
+        let received =
+            tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                .await
+                .expect("receive forwarded packet")
+                .expect("packet channel open");
+        assert_eq!(received.transport_id, recv_transport_id);
+        assert_eq!(received.remote_addr, send_local_addr);
+        assert_eq!(received.data, b"live-transport");
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
+    }
+
+    #[test]
+    fn transport_error_mapping_keeps_mtu_and_route_failures_attributable() {
+        assert_eq!(
+            packet_mover2_output_error_for_transport(&TransportError::MtuExceeded {
+                packet_size: 1501,
+                mtu: 1500,
+            }),
+            PacketMover2OutputError::MtuExceeded
+        );
+        assert_eq!(
+            packet_mover2_output_error_for_transport(&TransportError::Io(std::io::Error::from(
+                std::io::ErrorKind::NetworkUnreachable,
+            ))),
+            PacketMover2OutputError::NoRoute
+        );
+        assert_eq!(
+            packet_mover2_output_error_for_transport(&TransportError::SendFailed(
+                "some other send failure".to_string(),
+            )),
+            PacketMover2OutputError::TransportFailed
+        );
     }
 
     #[test]
