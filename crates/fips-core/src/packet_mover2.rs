@@ -19,7 +19,8 @@
 
 use crate::node::{EndpointEventSender, NodeEndpointEvent};
 use crate::transport::{
-    PacketBuffer, ReceivedPacket, TransportAddr, TransportError, TransportHandle, TransportId,
+    PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,
+    TransportId,
 };
 use crate::{NodeAddr, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
@@ -1516,6 +1517,40 @@ impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
     {
         self.source
             .drain_live_ingress(limit, |packet| push(packet.into_raw_ingress()))
+    }
+}
+
+/// Drains live transport packets from `PacketRx` as FMP link ingress.
+///
+/// FSP ingress needs authenticated source context, so it must enter through a
+/// source that can attach `with_fsp_source`.
+pub(crate) struct PacketMover2FmpPacketRxSource<'a> {
+    rx: &'a mut PacketRx,
+}
+
+impl<'a> PacketMover2FmpPacketRxSource<'a> {
+    pub(crate) fn new(rx: &'a mut PacketRx) -> Self {
+        Self { rx }
+    }
+}
+
+impl PacketMover2RawIngressSource for PacketMover2FmpPacketRxSource<'_> {
+    fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2RawIngress),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Ok(packet) = self.rx.try_recv() else {
+                break;
+            };
+            push(PacketMover2RawIngress::from_live_received(
+                PacketProtocol::Fmp,
+                packet,
+            ));
+            drained += 1;
+        }
+        drained
     }
 }
 
@@ -3398,6 +3433,59 @@ mod tests {
         assert_eq!(drained[1].remote_addr(), &fsp_addr);
         assert_eq!(drained[1].fsp_source(), Some(fsp_source));
         assert_eq!(drained[1].path().remote_addr(), Some(&fsp_addr));
+    }
+
+    #[test]
+    fn fmp_packet_rx_source_drains_packet_rx_by_limit() {
+        let (tx, mut rx) = crate::transport::packet_channel(8);
+        let transport_id = TransportId::new(20);
+        let priority_addr = TransportAddr::from_string("198.51.100.20:9000");
+        let bulk_addr = TransportAddr::from_string("198.51.100.21:9000");
+        let priority_wire = fmp_wire(200, 1, 0);
+        let mut bulk_wire = fmp_wire(201, 2, 0);
+        bulk_wire.resize(700, 0xee);
+        tx.send_batch(vec![
+            ReceivedPacket::with_timestamp(transport_id, bulk_addr.clone(), bulk_wire, 20_000),
+            ReceivedPacket::with_timestamp(
+                transport_id,
+                priority_addr.clone(),
+                priority_wire.clone(),
+                20_001,
+            ),
+        ])
+        .expect("enqueue mixed packet batch");
+
+        let mut source = PacketMover2FmpPacketRxSource::new(&mut rx);
+        let mut drained = Vec::new();
+
+        assert_eq!(
+            source.drain_raw_ingress(1, |packet| drained.push(packet)),
+            1
+        );
+
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].protocol(), PacketProtocol::Fmp);
+        assert_eq!(drained[0].transport_id(), transport_id);
+        assert_eq!(drained[0].remote_addr(), &priority_addr);
+        assert_eq!(drained[0].path().remote_addr(), Some(&priority_addr));
+        assert_eq!(drained[0].activity_tick(), Some(ActivityTick::new(20_001)));
+        assert_eq!(drained[0].payload_len(), priority_wire.len());
+
+        assert_eq!(
+            source.drain_raw_ingress(8, |packet| drained.push(packet)),
+            1
+        );
+        assert_eq!(drained[1].protocol(), PacketProtocol::Fmp);
+        assert_eq!(drained[1].transport_id(), transport_id);
+        assert_eq!(drained[1].remote_addr(), &bulk_addr);
+        assert_eq!(drained[1].path().remote_addr(), Some(&bulk_addr));
+        assert_eq!(drained[1].activity_tick(), Some(ActivityTick::new(20_000)));
+        assert_eq!(drained[1].payload_len(), 700);
+
+        assert_eq!(
+            source.drain_raw_ingress(8, |packet| drained.push(packet)),
+            0
+        );
     }
 
     #[test]
