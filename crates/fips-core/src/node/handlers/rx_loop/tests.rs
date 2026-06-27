@@ -179,6 +179,62 @@ async fn rx_loop_side_queue_readiness_includes_control_queries() {
 }
 
 #[tokio::test]
+async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
+    let mut node =
+        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
+    let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
+    let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
+    let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let remote = crate::PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+    let payloads = (0..9)
+        .map(|idx| crate::node::EndpointDataPayload::new(format!("endpoint-{idx}").into_bytes()))
+        .collect::<Vec<_>>();
+
+    endpoint_tx
+        .send(
+            crate::node::NodeEndpointCommand::send_batch_oneway(
+                remote,
+                payloads,
+                None,
+                crate::node::EndpointCommandLane::Bulk,
+            )
+            .expect("endpoint batch command"),
+        )
+        .await
+        .expect("endpoint batch queued");
+    tun_tx
+        .send(vec![0])
+        .await
+        .expect("invalid TUN packet still exercises TUN drain accounting");
+
+    let drained = node
+        .drain_rx_loop_side_queues(
+            &mut control_rx,
+            &mut feedback_rx,
+            &mut tun_rx,
+            &mut endpoint_priority_rx,
+            &mut endpoint_rx,
+            2,
+        )
+        .await;
+
+    assert_eq!(
+        drained.endpoint, 2,
+        "nine endpoint payloads cost two endpoint drain credits"
+    );
+    assert_eq!(
+        drained.tun, 1,
+        "endpoint batch overrun must not consume the TUN reserved slice"
+    );
+    assert_eq!(drained.control, 0);
+    assert_eq!(drained.endpoint_feedback, 0);
+    assert!(endpoint_rx.try_recv().is_err());
+    assert!(tun_rx.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn drain_control_queries_answers_show_requests() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
