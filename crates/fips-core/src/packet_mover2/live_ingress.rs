@@ -381,11 +381,16 @@ impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
 /// source that can attach `with_fsp_source`.
 pub(crate) struct PacketMover2FmpPacketRxSource<'a> {
     rx: &'a mut PacketRx,
+    first: Option<ReceivedPacket>,
 }
 
 impl<'a> PacketMover2FmpPacketRxSource<'a> {
     pub(crate) fn new(rx: &'a mut PacketRx) -> Self {
-        Self { rx }
+        Self { rx, first: None }
+    }
+
+    pub(crate) fn with_first(rx: &'a mut PacketRx, first: Option<ReceivedPacket>) -> Self {
+        Self { rx, first }
     }
 }
 
@@ -396,7 +401,7 @@ impl PacketMover2RawIngressSource for PacketMover2FmpPacketRxSource<'_> {
     {
         let mut drained = 0;
         while drained < limit {
-            let Ok(packet) = self.rx.try_recv() else {
+            let Some(packet) = self.first.take().or_else(|| self.rx.try_recv().ok()) else {
                 break;
             };
             push(PacketMover2RawIngress::from_live_received(
