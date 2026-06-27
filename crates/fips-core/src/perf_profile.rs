@@ -1726,11 +1726,6 @@ pub(crate) fn record_decrypt_worker_select_control() {
 }
 
 #[inline]
-pub(crate) fn record_decrypt_worker_select_fmp_completion() {
-    record_event(Event::DecryptWorkerSelectFmpCompletion);
-}
-
-#[inline]
 pub(crate) fn record_decrypt_worker_select_fsp_completion(packets: usize) {
     record_event(Event::DecryptWorkerSelectFspCompletionBatch);
     record_event_count(
@@ -1789,31 +1784,6 @@ pub(crate) fn record_decrypt_worker_bulk_interleave_aead_completion(
 #[inline]
 pub(crate) fn record_decrypt_worker_bulk_interleave_budget_exhausted() {
     record_event(Event::DecryptWorkerBulkInterleaveBudgetExhausted);
-}
-
-#[inline]
-pub(crate) fn record_fmp_aead_completion_drain(
-    ready: usize,
-    accepted: usize,
-    aead_failures: usize,
-    replay_drops: usize,
-) {
-    if !enabled() || ready == 0 {
-        return;
-    }
-    record_event_count_sample(Event::FmpAeadCompletionReady, ready as u64);
-    if accepted > 0 {
-        record_event_count_sample(Event::FmpAeadCompletionAccepted, accepted as u64);
-    }
-    if aead_failures > 0 {
-        record_event_count_sample(Event::FmpAeadCompletionAeadFailed, aead_failures as u64);
-    }
-    if replay_drops > 0 {
-        record_event_count_sample(Event::FmpAeadCompletionReplayDropped, replay_drops as u64);
-    }
-    if ready > 1 {
-        record_event_count_sample(Event::FmpAeadCompletionReadyMulti, 1);
-    }
 }
 
 #[inline]
@@ -1936,36 +1906,6 @@ pub(crate) fn record_fsp_aead_completion_accept_kbit_mismatch() {
 }
 
 #[inline]
-pub(crate) fn record_fmp_aead_completion_replay_drop_mode(deferred: bool) {
-    if !enabled() {
-        return;
-    }
-    record_event(if deferred {
-        Event::FmpAeadCompletionReplayDroppedDeferred
-    } else {
-        Event::FmpAeadCompletionReplayDroppedPrechecked
-    });
-}
-
-#[inline]
-pub(crate) fn record_fmp_aead_completion_replay_drop_reason(
-    reason: crate::noise::ReplayRejection,
-    counter_lag: u64,
-) {
-    if !enabled() {
-        return;
-    }
-    let event = match reason {
-        crate::noise::ReplayRejection::Duplicate => Event::FmpAeadCompletionReplayDroppedDuplicate,
-        crate::noise::ReplayRejection::TooOld => Event::FmpAeadCompletionReplayDroppedTooOld,
-    };
-    record_event(event);
-    if reason == crate::noise::ReplayRejection::TooOld {
-        record_fmp_aead_completion_too_old_lag_buckets(counter_lag);
-    }
-}
-
-#[inline]
 pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
@@ -1998,23 +1938,6 @@ pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     record_event(event);
     if reason == crate::noise::ReplayRejection::TooOld {
         record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag);
-    }
-}
-
-#[inline]
-fn record_fmp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
-    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
-    if counter_lag >= window.saturating_mul(2) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow);
-    }
-    if counter_lag >= window.saturating_mul(4) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow);
-    }
-    if counter_lag >= window.saturating_mul(16) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow);
-    }
-    if counter_lag >= window.saturating_mul(64) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow);
     }
 }
 
