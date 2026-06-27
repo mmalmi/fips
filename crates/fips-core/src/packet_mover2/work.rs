@@ -44,7 +44,9 @@ pub(crate) struct PacketOutput {
     counter: u64,
     ingress_seq: u64,
     target: OutputTarget,
+    source_path: Option<TransportPath>,
     path: Option<TransportPath>,
+    activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
 

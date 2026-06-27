@@ -49,6 +49,7 @@ include!("work.rs");
 include!("live_ingress.rs");
 include!("tun_outbound.rs");
 include!("endpoint_command.rs");
+include!("session_handoff.rs");
 include!("live_output.rs");
 include!("runtime.rs");
 include!("live_node.rs");

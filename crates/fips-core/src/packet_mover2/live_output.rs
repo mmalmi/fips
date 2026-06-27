@@ -217,6 +217,7 @@ pub(crate) enum PacketMover2OutputError {
     Unavailable,
     Backpressure,
     NoRoute,
+    InvalidPacket,
     MtuExceeded,
     TransportFailed,
 }
@@ -630,6 +631,26 @@ where
                 self.transport
                     .send_transport(transport_id, remote_addr, output)
             }
+            OutputTarget::SessionIngress { .. } => Err(PacketMover2OutputError::NoRoute),
+            OutputTarget::SessionPayload { local_addr } => {
+                match packet_mover2_fsp_payload_delivery(&output, local_addr)
+                    .map_err(packet_mover2_output_error_from_session_handoff)?
+                {
+                    PacketMover2FspPayloadDelivery::Tun(packet) => self.tun.send_tun(&output, &packet),
+                    PacketMover2FspPayloadDelivery::Endpoint(payload) => {
+                        self.endpoint.send_endpoint(&output, &payload)
+                    }
+                }
+            }
         }
+    }
+}
+
+fn packet_mover2_output_error_from_session_handoff(
+    error: PacketMover2SessionHandoffError,
+) -> PacketMover2OutputError {
+    match error {
+        PacketMover2SessionHandoffError::InvalidPacket => PacketMover2OutputError::InvalidPacket,
+        PacketMover2SessionHandoffError::NoRoute => PacketMover2OutputError::NoRoute,
     }
 }

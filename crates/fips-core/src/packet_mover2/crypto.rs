@@ -12,7 +12,9 @@ impl StatelessCryptoWorker for CopyCryptoWorker {
             counter: work.packet.counter,
             ingress_seq: work.reservation.ingress_seq,
             target: work.packet.output,
+            source_path: work.reservation.source_path.clone(),
             path: work.reservation.output_path.clone(),
+            activity_tick: work.reservation.activity_tick,
             payload: work.packet.payload,
         };
         CryptoCompletion {
@@ -110,7 +112,9 @@ impl StatelessAeadOpenWorker {
                     counter: reservation.counter,
                     ingress_seq: reservation.ingress_seq,
                     target,
+                    source_path: reservation.source_path.clone(),
                     path: reservation.output_path.clone(),
+                    activity_tick: reservation.activity_tick,
                     payload: work.work.packet.payload,
                 })
             }
@@ -202,7 +206,9 @@ impl StatelessAeadSealWorker {
                         counter: reservation.counter,
                         ingress_seq: reservation.ingress_seq,
                         target: OutputTarget::Transport,
+                        source_path: reservation.source_path.clone(),
                         path: reservation.output_path.clone(),
+                        activity_tick: reservation.activity_tick,
                         payload: work.work.packet.payload,
                     }),
                     OutboundPostSeal::FmpWrap(route) => {

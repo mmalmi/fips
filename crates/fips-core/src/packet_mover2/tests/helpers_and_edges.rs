@@ -61,7 +61,9 @@
             counter,
             ingress_seq,
             target,
+            source_path: None,
             path: None,
+            activity_tick: None,
             payload: payload.into(),
         }
     }
@@ -79,7 +81,9 @@
             counter,
             ingress_seq,
             target: OutputTarget::Transport,
+            source_path: None,
             path: Some(TransportPath::live(transport_id, remote_addr)),
+            activity_tick: None,
             payload: payload.into(),
         }
     }

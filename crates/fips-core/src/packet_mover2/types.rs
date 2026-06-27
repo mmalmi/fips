@@ -100,6 +100,8 @@ pub(crate) enum OutputTarget {
     Tun,
     Endpoint,
     Transport,
+    SessionIngress { local_addr: NodeAddr },
+    SessionPayload { local_addr: NodeAddr },
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

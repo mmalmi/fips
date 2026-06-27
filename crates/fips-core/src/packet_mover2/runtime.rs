@@ -334,6 +334,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     async fn finish_aead_live_node_output_turn<Resolver, Transports>(
         &mut self,
         summary: PacketMover2RuntimeSummary,
+        routes: &mut PacketMover2LiveRouteTable,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         endpoint_resolver: Resolver,
@@ -344,6 +345,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        let mut summary = self.collect_aead_outputs(summary, crypto_limit);
+        self.admit_session_ingress_outputs(routes, &mut summary);
         let mut transport_output = PacketMover2TransportSendPlanOutput::new();
         let mut report = {
             let tun_output = PacketMover2TunTxOutput::new(tun_tx);
@@ -351,7 +354,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 PacketMover2EndpointEventOutput::new(endpoint_tx, endpoint_resolver);
             let mut sink =
                 PacketMover2LiveOutputSink::new(tun_output, endpoint_output, &mut transport_output);
-            let turn = self.finish_aead_output_turn(summary, &mut sink, crypto_limit);
+            let turn = self.send_collected_outputs(summary, &mut sink);
             PacketMover2LiveNodeTurn::from_runtime_turn(&turn)
         };
 
@@ -428,6 +431,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         let mut report = self
             .finish_aead_live_node_output_turn(
                 summary,
+                routes,
                 tun_tx,
                 endpoint_tx,
                 endpoint_resolver,
@@ -579,6 +583,17 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         S: PacketMover2OutputSink,
     {
         summary = self.collect_aead_outputs(summary, limit);
+        self.send_collected_outputs(summary, sink)
+    }
+
+    fn send_collected_outputs<S>(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        sink: &mut S,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        S: PacketMover2OutputSink,
+    {
         let dropped_before = self.output_drops.len();
         let sent = sink.send_batch(self.outputs.drain(..), &mut self.output_drops);
         summary.outputs_sent += sent;
@@ -591,6 +606,35 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             outputs: &self.outputs,
             drops: &self.drops,
         }
+    }
+
+    fn admit_session_ingress_outputs<R>(
+        &mut self,
+        router: &mut R,
+        summary: &mut PacketMover2RuntimeSummary,
+    ) where
+        R: PacketMover2IngressRouter,
+    {
+        let outputs = std::mem::take(&mut self.outputs);
+        let dropped_before = self.output_drops.len();
+        for output in outputs {
+            match output.target {
+                OutputTarget::SessionIngress { local_addr } => {
+                    match packet_mover2_session_ingress_from_output(&output, local_addr) {
+                        Ok(raw) => self.admit_raw_ingress_packet(raw, router, summary),
+                        Err(error) => self.output_drops.push(PacketMover2OutputDrop::from_output(
+                            &output,
+                            packet_mover2_output_error_from_session_handoff(error),
+                        )),
+                    }
+                }
+                _ => self.outputs.push(output),
+            }
+        }
+        summary.outputs = self.outputs.len();
+        summary.outputs_dropped = summary
+            .outputs_dropped
+            .saturating_add(self.output_drops.len().saturating_sub(dropped_before));
     }
 
     fn collect_aead_outputs(

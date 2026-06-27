@@ -56,7 +56,9 @@ pub(crate) struct OwnerReservation {
     ingress_seq: u64,
     counter: u64,
     lane: Lane,
+    source_path: Option<TransportPath>,
     output_path: Option<TransportPath>,
+    activity_tick: Option<ActivityTick>,
     fsp_timestamp_ms: Option<u32>,
 }
 
@@ -190,7 +192,9 @@ impl OwnerState {
             ingress_seq,
             counter: packet.counter,
             lane: packet.lane(),
+            source_path: packet.source_path.clone(),
             output_path: None,
+            activity_tick: packet.activity_tick,
             fsp_timestamp_ms: None,
         })
     }
@@ -224,7 +228,9 @@ impl OwnerState {
             ingress_seq,
             counter,
             lane: packet.lane(),
+            source_path: None,
             output_path,
+            activity_tick: packet.activity_tick,
             fsp_timestamp_ms,
         })
     }

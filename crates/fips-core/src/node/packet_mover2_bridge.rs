@@ -1,9 +1,10 @@
 use super::*;
 use crate::packet_mover2::{
-    OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass, PacketMover2EndpointCommandRoute,
-    PacketMover2FspWrapRoute, PacketMover2LiveEndpointRoute, PacketMover2LiveOwnerRoutes,
-    PacketMover2LiveTunRoute, PacketMover2TunDestinationRoute, PacketMover2TunOutboundRoute,
-    TransportPath,
+    OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
+    PacketMover2EndpointCommandRoute, PacketMover2FspWrapRoute, PacketMover2IngressRoute,
+    PacketMover2LiveEndpointRoute, PacketMover2LiveFmpIngressRoute,
+    PacketMover2LiveFspIngressRoute, PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute,
+    PacketMover2TunDestinationRoute, PacketMover2TunOutboundRoute, TransportPath,
 };
 
 const INITIAL_FMP_GENERATION: u64 = 1;
@@ -14,6 +15,7 @@ struct PacketMover2FmpOwnerSeed {
     config: OwnerConfig,
     keys: OwnerCryptoKeys,
     path: TransportPath,
+    routes: PacketMover2LiveOwnerRoutes,
 }
 
 struct PacketMover2FspOwnerSeed {
@@ -40,6 +42,10 @@ impl Node {
             && self
                 .packet_mover2
                 .set_owner_active_path(seed.owner, seed.path)
+                .is_ok()
+            && self
+                .packet_mover2
+                .replace_owner_routes(seed.owner, seed.routes)
                 .is_ok()
     }
 
@@ -86,8 +92,22 @@ impl Node {
         let session = peer.noise_session()?;
         let transport_id = peer.transport_id()?;
         let remote_addr = peer.current_addr()?.clone();
+        let receiver_idx = peer.their_index()?.as_u32();
         let open = Arc::new(session.recv_cipher_clone()?);
         let seal = Arc::new(session.send_cipher_clone()?);
+        let mut routes = PacketMover2LiveOwnerRoutes::new();
+        routes.push_fmp_ingress(PacketMover2LiveFmpIngressRoute::new(
+            transport_id,
+            receiver_idx,
+            PacketMover2IngressRoute::new(
+                OwnerId::fmp_node(*node_addr),
+                INITIAL_FMP_GENERATION,
+                OutputTarget::SessionIngress {
+                    local_addr: *self.node_addr(),
+                },
+            )
+            .with_class(PacketClass::Bulk),
+        ));
 
         Some(PacketMover2FmpOwnerSeed {
             owner: OwnerId::fmp_node(*node_addr),
@@ -98,6 +118,7 @@ impl Node {
             .with_next_send_counter(session.current_send_counter()),
             keys: OwnerCryptoKeys::new(open, seal),
             path: TransportPath::live(transport_id, remote_addr),
+            routes,
         })
     }
 
@@ -155,6 +176,17 @@ impl Node {
         };
 
         let mut routes = PacketMover2LiveOwnerRoutes::new();
+        routes.push_fsp_ingress(PacketMover2LiveFspIngressRoute::new(
+            *node_addr,
+            PacketMover2IngressRoute::new(
+                owner,
+                INITIAL_FSP_GENERATION,
+                OutputTarget::SessionPayload {
+                    local_addr: *self.node_addr(),
+                },
+            )
+            .with_class(PacketClass::Bulk),
+        ));
         let tun = PacketMover2TunOutboundRoute::fsp_ipv6_shim(
             owner,
             INITIAL_FSP_GENERATION,
