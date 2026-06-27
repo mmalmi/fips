@@ -1,46 +1,4 @@
 
-pub(crate) struct PacketMover2LiveOutboundSources<'a, Endpoint, Tun> {
-    endpoint: &'a mut Endpoint,
-    endpoint_limit: usize,
-    tun: &'a mut Tun,
-    tun_limit: usize,
-}
-
-impl<'a, Endpoint, Tun> PacketMover2LiveOutboundSources<'a, Endpoint, Tun> {
-    pub(crate) fn new(
-        endpoint: &'a mut Endpoint,
-        endpoint_limit: usize,
-        tun: &'a mut Tun,
-        tun_limit: usize,
-    ) -> Self {
-        Self {
-            endpoint,
-            endpoint_limit,
-            tun,
-            tun_limit,
-        }
-    }
-}
-
-impl<Endpoint, Tun> PacketMover2OutboundSource
-    for PacketMover2LiveOutboundSources<'_, Endpoint, Tun>
-where
-    Endpoint: PacketMover2OutboundSource,
-    Tun: PacketMover2OutboundSource,
-{
-    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
-    where
-        F: FnMut(OutboundPacket),
-    {
-        let endpoint_limit = self.endpoint_limit.min(limit);
-        let endpoint_drained = self.endpoint.drain_outbound(endpoint_limit, &mut push);
-        let remaining = limit.saturating_sub(endpoint_drained.min(endpoint_limit));
-        let tun_limit = self.tun_limit.min(remaining);
-        let tun_drained = self.tun.drain_outbound(tun_limit, push);
-        endpoint_drained.saturating_add(tun_drained)
-    }
-}
-
 pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
     endpoint_priority_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
     endpoint_bulk_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
