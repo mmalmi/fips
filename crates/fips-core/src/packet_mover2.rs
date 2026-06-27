@@ -92,6 +92,15 @@ pub(crate) enum OutputTarget {
     Transport,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct TransportPath(u64);
+
+impl TransportPath {
+    pub(crate) fn new(id: u64) -> Self {
+        Self(id)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SocketPacket {
     owner: OwnerId,
@@ -99,6 +108,7 @@ pub(crate) struct SocketPacket {
     counter: u64,
     class: PacketClass,
     output: OutputTarget,
+    source_path: Option<TransportPath>,
     payload: PacketBuffer,
 }
 
@@ -174,8 +184,14 @@ impl SocketPacket {
             counter,
             class,
             output,
+            source_path: None,
             payload: payload.into(),
         }
+    }
+
+    pub(crate) fn with_source_path(mut self, path: TransportPath) -> Self {
+        self.source_path = Some(path);
+        self
     }
 
     fn lane(&self) -> Lane {
@@ -607,6 +623,7 @@ pub(crate) struct OwnerReservation {
     ingress_seq: u64,
     counter: u64,
     lane: Lane,
+    output_path: Option<TransportPath>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -626,6 +643,7 @@ pub(crate) struct OwnerState {
     next_retire: u64,
     next_send_counter: u64,
     crypto_keys: Option<OwnerCryptoKeys>,
+    active_path: Option<TransportPath>,
     accepted_counters: HashSet<u64>,
     pending: BTreeMap<OrderToken, CryptoCompletion>,
 }
@@ -641,6 +659,7 @@ impl OwnerState {
             next_retire: 0,
             next_send_counter: config.next_send_counter,
             crypto_keys: None,
+            active_path: None,
             accepted_counters: HashSet::new(),
             pending: BTreeMap::new(),
         }
@@ -661,6 +680,14 @@ impl OwnerState {
         self.crypto_keys.clone()
     }
 
+    pub(crate) fn set_active_path(&mut self, path: TransportPath) {
+        self.active_path = Some(path);
+    }
+
+    pub(crate) fn active_path(&self) -> Option<TransportPath> {
+        self.active_path
+    }
+
     pub(crate) fn reserve(
         &mut self,
         packet: &SocketPacket,
@@ -677,6 +704,9 @@ impl OwnerState {
         }
 
         self.accepted_counters.insert(packet.counter);
+        if let Some(path) = packet.source_path {
+            self.active_path = Some(path);
+        }
         self.in_flight += 1;
         let order = OrderToken(self.next_order);
         self.next_order = self.next_order.wrapping_add(1);
@@ -687,6 +717,7 @@ impl OwnerState {
             ingress_seq,
             counter: packet.counter,
             lane: packet.lane(),
+            output_path: None,
         })
     }
 
@@ -703,6 +734,7 @@ impl OwnerState {
         }
 
         let counter = self.next_send_counter;
+        let output_path = self.active_path;
         self.next_send_counter = self.next_send_counter.wrapping_add(1);
         self.in_flight += 1;
         let order = OrderToken(self.next_order);
@@ -714,6 +746,7 @@ impl OwnerState {
             ingress_seq,
             counter,
             lane: packet.lane(),
+            output_path,
         })
     }
 
@@ -805,6 +838,7 @@ pub(crate) struct PacketOutput {
     counter: u64,
     ingress_seq: u64,
     target: OutputTarget,
+    path: Option<TransportPath>,
     payload: PacketBuffer,
 }
 
@@ -962,6 +996,7 @@ impl StatelessCryptoWorker for CopyCryptoWorker {
             counter: work.packet.counter,
             ingress_seq: work.reservation.ingress_seq,
             target: work.packet.output,
+            path: work.reservation.output_path,
             payload: work.packet.payload,
         };
         CryptoCompletion {
@@ -1059,6 +1094,7 @@ impl StatelessAeadOpenWorker {
                     counter: reservation.counter,
                     ingress_seq: reservation.ingress_seq,
                     target,
+                    path: reservation.output_path,
                     payload: work.work.packet.payload,
                 })
             }
@@ -1145,6 +1181,7 @@ impl StatelessAeadSealWorker {
                     counter: reservation.counter,
                     ingress_seq: reservation.ingress_seq,
                     target: OutputTarget::Transport,
+                    path: reservation.output_path,
                     payload: work.work.packet.payload,
                 })
             }
@@ -2355,5 +2392,114 @@ mod tests {
         let owner = mover.owner_mut(owner).unwrap();
         assert_eq!(owner.next_send_counter(), 1);
         assert_eq!(owner.in_flight(), 0);
+    }
+
+    #[test]
+    fn owner_tracks_inbound_path_drift_and_uses_latest_path_for_outbound_transport() {
+        let owner = OwnerId::fmp(73);
+        let open_key = 21;
+        let seal_key = 22;
+        let path_a = TransportPath::new(100);
+        let path_b = TransportPath::new(200);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(500));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+
+        let inbound_a = SocketPacket::from_fmp_established_wire(
+            owner,
+            1,
+            OutputTarget::Tun,
+            fmp_encrypted_wire(73, 1000, 0, b"in-a", open_key),
+        )
+        .unwrap()
+        .with_source_path(path_a);
+        mover.submit_socket_packet(inbound_a).unwrap();
+        let turn = mover.run_aead_available(8);
+        assert!(turn.drops().is_empty());
+        assert_eq!(turn.outputs()[0].path, None);
+        assert_eq!(mover.owner_mut(owner).unwrap().active_path(), Some(path_a));
+
+        mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                730,
+                0,
+                b"out-a".to_vec(),
+            ))
+            .unwrap();
+        let turn = mover.run_aead_available(8);
+        let output = turn.outputs()[0];
+        assert_eq!(output.counter, 500);
+        assert_eq!(output.target, OutputTarget::Transport);
+        assert_eq!(output.path, Some(path_a));
+        assert_eq!(open_sealed_output(output, seal_key), b"out-a");
+
+        let inbound_b = SocketPacket::from_fmp_established_wire(
+            owner,
+            1,
+            OutputTarget::Tun,
+            fmp_encrypted_wire(73, 1001, 0, b"in-b", open_key),
+        )
+        .unwrap()
+        .with_source_path(path_b);
+        mover.submit_socket_packet(inbound_b).unwrap();
+        let turn = mover.run_aead_available(8);
+        assert!(turn.drops().is_empty());
+        assert_eq!(turn.outputs()[0].path, None);
+        assert_eq!(mover.owner_mut(owner).unwrap().active_path(), Some(path_b));
+
+        mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                730,
+                0,
+                b"out-b".to_vec(),
+            ))
+            .unwrap();
+        let turn = mover.run_aead_available(8);
+        let output = turn.outputs()[0];
+        assert_eq!(output.counter, 501);
+        assert_eq!(output.path, Some(path_b));
+        assert_eq!(open_sealed_output(output, seal_key), b"out-b");
+    }
+
+    #[test]
+    fn stale_generation_does_not_move_owner_path() {
+        let owner = OwnerId::fsp(74);
+        let old_path = TransportPath::new(10);
+        let stale_path = TransportPath::new(11);
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(2, 8));
+        mover.owner_mut(owner).unwrap().set_active_path(old_path);
+        mover
+            .submit_socket_packet(
+                SocketPacket::new(
+                    owner,
+                    1,
+                    5,
+                    PacketClass::Bulk,
+                    OutputTarget::Tun,
+                    b"stale".to_vec(),
+                )
+                .with_source_path(stale_path),
+            )
+            .unwrap();
+
+        let work = mover.dispatch_available(8);
+        assert!(work.is_empty());
+        let drops = mover.drain_drops();
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].reason, PacketDropReason::StaleGeneration);
+        assert_eq!(
+            mover.owner_mut(owner).unwrap().active_path(),
+            Some(old_path)
+        );
     }
 }
