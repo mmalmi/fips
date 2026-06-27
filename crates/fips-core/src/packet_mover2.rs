@@ -17,8 +17,9 @@
 //! in-flight state before crypto work leaves the owner; workers only copy/open
 //! bytes and return completions; owners retire those completions in order.
 
-use crate::NodeAddr;
+use crate::node::{EndpointEventSender, NodeEndpointEvent};
 use crate::transport::{PacketBuffer, ReceivedPacket, TransportAddr, TransportId};
+use crate::{NodeAddr, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -1728,6 +1729,29 @@ impl<T: PacketMover2TunOutput + ?Sized> PacketMover2TunOutput for &mut T {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct PacketMover2TunTxOutput<'a> {
+    tx: &'a crate::upper::tun::TunTx,
+}
+
+impl<'a> PacketMover2TunTxOutput<'a> {
+    pub(crate) fn new(tx: &'a crate::upper::tun::TunTx) -> Self {
+        Self { tx }
+    }
+}
+
+impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
+    fn send_tun(
+        &mut self,
+        _output: &PacketOutput,
+        payload: &[u8],
+    ) -> Result<(), PacketMover2OutputError> {
+        self.tx
+            .send(payload.to_vec())
+            .map_err(|_| PacketMover2OutputError::Unavailable)
+    }
+}
+
 pub(crate) trait PacketMover2EndpointOutput {
     fn send_endpoint(
         &mut self,
@@ -1743,6 +1767,60 @@ impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut
         payload: &[u8],
     ) -> Result<(), PacketMover2OutputError> {
         (**self).send_endpoint(output, payload)
+    }
+}
+
+pub(crate) trait PacketMover2EndpointIdentityResolver {
+    fn resolve_endpoint_peer(&mut self, source_addr: &NodeAddr) -> Option<PeerIdentity>;
+}
+
+impl<F> PacketMover2EndpointIdentityResolver for F
+where
+    F: FnMut(&NodeAddr) -> Option<PeerIdentity>,
+{
+    fn resolve_endpoint_peer(&mut self, source_addr: &NodeAddr) -> Option<PeerIdentity> {
+        self(source_addr)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2EndpointEventOutput<'a, Resolver> {
+    tx: &'a EndpointEventSender,
+    resolver: Resolver,
+}
+
+impl<'a, Resolver> PacketMover2EndpointEventOutput<'a, Resolver> {
+    pub(crate) fn new(tx: &'a EndpointEventSender, resolver: Resolver) -> Self {
+        Self { tx, resolver }
+    }
+}
+
+impl<Resolver> PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_, Resolver>
+where
+    Resolver: PacketMover2EndpointIdentityResolver,
+{
+    fn send_endpoint(
+        &mut self,
+        output: &PacketOutput,
+        payload: &[u8],
+    ) -> Result<(), PacketMover2OutputError> {
+        let Some(source_addr) = output.owner().node_addr() else {
+            return Err(PacketMover2OutputError::NoRoute);
+        };
+        let Some(source_peer) = self.resolver.resolve_endpoint_peer(&source_addr) else {
+            return Err(PacketMover2OutputError::NoRoute);
+        };
+        if source_peer.node_addr() != &source_addr {
+            return Err(PacketMover2OutputError::NoRoute);
+        }
+
+        self.tx
+            .send(NodeEndpointEvent::Data {
+                source_peer,
+                payload: payload.to_vec().into(),
+                queued_at: crate::perf_profile::stamp(),
+            })
+            .map_err(|_| PacketMover2OutputError::Unavailable)
     }
 }
 
@@ -2773,6 +2851,32 @@ mod tests {
         data[1] = flags;
         data[4..12].copy_from_slice(&counter.to_le_bytes());
         data
+    }
+
+    fn opened_output(
+        owner: OwnerId,
+        counter: u64,
+        ingress_seq: u64,
+        target: OutputTarget,
+        plaintext: &[u8],
+    ) -> PacketOutput {
+        let mut payload = match owner.protocol() {
+            PacketProtocol::Fmp => fmp_wire(0, counter, 0),
+            PacketProtocol::Fsp => fsp_wire(counter, 0),
+        };
+        payload.truncate(match owner.protocol() {
+            PacketProtocol::Fmp => FMP_ESTABLISHED_HEADER_SIZE,
+            PacketProtocol::Fsp => FSP_HEADER_SIZE,
+        });
+        payload.extend_from_slice(plaintext);
+        PacketOutput {
+            owner,
+            counter,
+            ingress_seq,
+            target,
+            path: None,
+            payload: payload.into(),
+        }
     }
 
     fn test_cipher(byte: u8) -> LessSafeKey {
@@ -4857,6 +4961,148 @@ mod tests {
             open_fmp_wire_payload(&sent.payload, fmp_key),
             b"transport-live"
         );
+    }
+
+    #[test]
+    fn tun_tx_output_sends_opened_payload_to_node_tun_channel() {
+        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x48; 16]));
+        let output = opened_output(owner, 48, 0, OutputTarget::Tun, b"tun-node");
+        let mut endpoint = LiveEndpointRecorder::default();
+        let mut transport = LiveTransportRecorder::default();
+
+        let sent = {
+            let tun = PacketMover2TunTxOutput::new(&tun_tx);
+            let mut sink = PacketMover2LiveOutputSink::new(tun, &mut endpoint, &mut transport);
+            sink.send(output)
+        };
+
+        assert_eq!(sent, Ok(()));
+        assert_eq!(tun_rx.try_recv().unwrap(), b"tun-node".to_vec());
+        assert!(endpoint.outputs.is_empty());
+        assert!(transport.outputs.is_empty());
+    }
+
+    #[test]
+    fn tun_tx_output_reports_unavailable_when_node_tun_channel_is_closed() {
+        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        drop(tun_rx);
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x49; 16]));
+        let output = opened_output(owner, 49, 0, OutputTarget::Tun, b"closed");
+        let mut endpoint = LiveEndpointRecorder::default();
+        let mut transport = LiveTransportRecorder::default();
+
+        let sent = {
+            let tun = PacketMover2TunTxOutput::new(&tun_tx);
+            let mut sink = PacketMover2LiveOutputSink::new(tun, &mut endpoint, &mut transport);
+            sink.send(output)
+        };
+
+        assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
+        assert!(endpoint.outputs.is_empty());
+        assert!(transport.outputs.is_empty());
+    }
+
+    #[test]
+    fn endpoint_event_output_sends_resolved_peer_payload_to_node_endpoint_channel() {
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let output = opened_output(owner, 50, 7, OutputTarget::Endpoint, b"endpoint-node");
+        let resolver = |addr: &NodeAddr| {
+            assert_eq!(addr, &source_addr);
+            Some(source_peer)
+        };
+        let mut tun = LiveTunRecorder::default();
+        let mut transport = LiveTransportRecorder::default();
+
+        let sent = {
+            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx, resolver);
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            sink.send(output)
+        };
+
+        assert_eq!(sent, Ok(()));
+        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
+            NodeEndpointEvent::Data {
+                source_peer: delivered_source,
+                payload,
+                ..
+            } => {
+                assert_eq!(delivered_source, source_peer);
+                assert_eq!(payload, b"endpoint-node");
+            }
+            event => panic!("expected single endpoint event, got {event:?}"),
+        }
+        assert!(tun.outputs.is_empty());
+        assert!(transport.outputs.is_empty());
+    }
+
+    #[test]
+    fn endpoint_event_output_reports_unavailable_when_endpoint_channel_is_closed() {
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let endpoint_tx = endpoint_io.event_tx.clone();
+        drop(endpoint_io);
+        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let output = opened_output(owner, 53, 0, OutputTarget::Endpoint, b"closed-endpoint");
+        let mut tun = LiveTunRecorder::default();
+        let mut transport = LiveTransportRecorder::default();
+
+        let sent = {
+            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_tx, |_: &NodeAddr| {
+                Some(source_peer)
+            });
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            sink.send(output)
+        };
+
+        assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
+        assert!(tun.outputs.is_empty());
+        assert!(transport.outputs.is_empty());
+    }
+
+    #[test]
+    fn endpoint_event_output_requires_resolved_matching_peer_identity() {
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let wrong_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let owner = OwnerId::fsp_node(source_addr);
+        let missing_output =
+            opened_output(owner, 51, 0, OutputTarget::Endpoint, b"missing-identity");
+        let mismatched_output =
+            opened_output(owner, 52, 1, OutputTarget::Endpoint, b"wrong-identity");
+        let mut tun = LiveTunRecorder::default();
+        let mut transport = LiveTransportRecorder::default();
+
+        let missing = {
+            let endpoint =
+                PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx, |_: &NodeAddr| {
+                    None::<PeerIdentity>
+                });
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            sink.send(missing_output)
+        };
+        assert_eq!(missing, Err(PacketMover2OutputError::NoRoute));
+
+        let mismatched = {
+            let endpoint =
+                PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx, |_: &NodeAddr| {
+                    Some(wrong_peer)
+                });
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            sink.send(mismatched_output)
+        };
+        assert_eq!(mismatched, Err(PacketMover2OutputError::NoRoute));
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+        assert!(tun.outputs.is_empty());
+        assert!(transport.outputs.is_empty());
     }
 
     #[test]
