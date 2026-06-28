@@ -161,6 +161,7 @@ impl Node {
     ///
     /// Compresses the IPv6 header (format 0x00), then sends via `send_session_data`
     /// with `src_port=256, dst_port=256`.
+    #[cfg(test)]
     pub(in crate::node) async fn send_ipv6_packet(
         &mut self,
         dest_addr: &NodeAddr,

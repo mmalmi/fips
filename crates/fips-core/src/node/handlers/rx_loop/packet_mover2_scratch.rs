@@ -387,7 +387,17 @@ impl Node {
         true
     }
 
-    fn packet_mover2_peer_identity(&self, addr: &NodeAddr) -> Option<PeerIdentity> {
+    pub(in crate::node) fn packet_mover2_peer_identity(
+        &self,
+        addr: &NodeAddr,
+    ) -> Option<PeerIdentity> {
+        if let Some(identity) = self
+            .sessions
+            .get(addr)
+            .and_then(|entry| entry.remote_identity())
+        {
+            return Some(identity);
+        }
         if let Some(identity) = self.peers.get(addr).map(|peer| *peer.identity()) {
             return Some(identity);
         }
@@ -413,7 +423,9 @@ impl Node {
             .saturating_add(turn.endpoint_deferred_commands())
     }
 
-    fn packet_mover2_endpoint_identity_snapshot(&self) -> HashMap<NodeAddr, PeerIdentity> {
+    pub(in crate::node) fn packet_mover2_endpoint_identity_snapshot(
+        &self,
+    ) -> HashMap<NodeAddr, PeerIdentity> {
         let mut identities = HashMap::new();
         for (addr, entry) in self.sessions.iter() {
             if let Some(identity) = entry.remote_identity() {
@@ -428,7 +440,9 @@ impl Node {
         identities
     }
 
-    fn observe_packet_mover2_scratch_turn(turn: &crate::packet_mover2::PacketMover2LiveNodeTurn) {
+    pub(in crate::node) fn observe_packet_mover2_scratch_turn(
+        turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
+    ) {
         if !turn.has_activity() {
             return;
         }

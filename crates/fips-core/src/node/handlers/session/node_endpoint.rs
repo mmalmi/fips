@@ -198,6 +198,7 @@ impl Node {
         Ok(())
     }
 
+    #[cfg(test)]
     fn session_send_needs_path_recovery(error: &NodeError, dest_addr: &NodeAddr) -> bool {
         matches!(
             error,
@@ -207,6 +208,7 @@ impl Node {
     }
 
     /// Send app-owned endpoint bytes over an established session without DataPacket ports.
+    #[cfg(test)]
     async fn send_session_endpoint_data(
         &mut self,
         dest_addr: &NodeAddr,
@@ -218,6 +220,7 @@ impl Node {
         self.send_prepared_session_endpoint_data(prepared).await
     }
 
+    #[cfg(test)]
     async fn prepare_session_endpoint_data<'a>(
         &mut self,
         dest_addr: &'a NodeAddr,
@@ -229,6 +232,7 @@ impl Node {
         Ok(PreparedEndpointSessionData { meta, payload })
     }
 
+    #[cfg(test)]
     async fn prepare_session_endpoint_meta(
         &mut self,
         dest_addr: NodeAddr,
@@ -293,6 +297,7 @@ impl Node {
         })
     }
 
+    #[cfg(test)]
     async fn send_prepared_session_endpoint_data(
         &mut self,
         prepared: PreparedEndpointSessionData<'_>,
@@ -307,6 +312,7 @@ impl Node {
         self.send_session_fsp_plan(prepared.fallback_plan()).await
     }
 
+    #[cfg(test)]
     #[cfg(unix)]
     fn map_pipelined_endpoint_runtime_send_plan_error(
         dest_addr: NodeAddr,
@@ -349,6 +355,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     #[cfg(unix)]
     fn map_pipelined_endpoint_peer_runtime_route_request_error(
         error: PipelinedEndpointPeerRuntimeRouteRequestError,
@@ -367,6 +374,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     #[cfg(unix)]
     fn map_pipelined_endpoint_runtime_send_attempt_error(
         error: PipelinedEndpointRuntimeSendAttemptError,
@@ -382,6 +390,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     #[cfg(unix)]
     fn map_pipelined_endpoint_runtime_send_error(
         error: PipelinedEndpointRuntimeSendError,
@@ -396,6 +405,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     #[cfg(unix)]
     fn map_pipelined_endpoint_peer_runtime_send_error(
         error: PipelinedEndpointPeerRuntimeSendError,
@@ -416,6 +426,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     #[cfg(unix)]
     fn map_pipelined_endpoint_peer_runtime_send_request_error(
         error: PipelinedEndpointPeerRuntimeSendRequestError,
@@ -430,8 +441,8 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     #[cfg(unix)]
-    #[cfg_attr(not(test), allow(dead_code))]
     async fn execute_peer_runtime_endpoint_send(
         &mut self,
         send: PipelinedEndpointSend<'_>,
@@ -444,6 +455,7 @@ impl Node {
             .await
     }
 
+    #[cfg(test)]
     #[cfg(unix)]
     async fn try_send_session_endpoint_data_pipelined(
         &mut self,
@@ -461,6 +473,7 @@ impl Node {
         Ok(sent)
     }
 
+    #[cfg(test)]
     #[cfg(not(unix))]
     async fn try_send_session_endpoint_data_pipelined(
         &mut self,

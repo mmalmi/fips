@@ -94,6 +94,18 @@ impl EndpointSendCommand {
         Self::new_with_enqueued_at_ms(remote, payload, queued_at, crate::time::now_ms())
     }
 
+    pub(crate) fn from_payload(
+        remote: PeerIdentity,
+        payload: EndpointDataPayload,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> Self {
+        Self {
+            send: EndpointDataSend::new(remote, payload),
+            queued_at,
+            enqueued_at_ms: crate::time::now_ms(),
+        }
+    }
+
     pub(crate) fn new_with_enqueued_at_ms(
         remote: PeerIdentity,
         payload: Vec<u8>,
@@ -247,6 +259,16 @@ impl NodeEndpointCommand {
     ) -> Self {
         Self::SendOneway {
             command: EndpointSendCommand::new(remote, payload, queued_at),
+        }
+    }
+
+    pub(crate) fn send_payload_oneway(
+        remote: PeerIdentity,
+        payload: EndpointDataPayload,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> Self {
+        Self::SendOneway {
+            command: EndpointSendCommand::from_payload(remote, payload, queued_at),
         }
     }
 

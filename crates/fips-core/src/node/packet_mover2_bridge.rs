@@ -4,9 +4,10 @@ use crate::packet_mover2::{
     ActivityTick, OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
     PacketMover2EndpointCommandRoute, PacketMover2FspWrapRoute, PacketMover2IngressRoute,
     PacketMover2LiveEndpointRoute, PacketMover2LiveFmpIngressRoute,
-    PacketMover2LiveFspIngressRoute, PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute,
-    PacketMover2OutputDrop, PacketMover2OutputError, PacketMover2TunDestinationRoute,
-    PacketMover2TunOutboundRoute, TransportPath,
+    PacketMover2LiveFspIngressRoute, PacketMover2LiveNodeTurn, PacketMover2LiveOutboundFirsts,
+    PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute, PacketMover2OutputDrop,
+    PacketMover2OutputError, PacketMover2TunDestinationRoute, PacketMover2TunOutboundRoute,
+    TransportPath,
 };
 
 const INITIAL_FMP_GENERATION: u64 = 1;
@@ -124,6 +125,185 @@ impl Node {
                 turn.summary()
             ),
         })
+    }
+
+    pub(in crate::node) async fn send_packet_mover2_pending_tun_packet(
+        &mut self,
+        dest_addr: &NodeAddr,
+        packet: Vec<u8>,
+    ) -> Result<(), NodeError> {
+        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "packet_mover2 FSP owner unavailable for queued TUN packet".into(),
+            });
+        }
+
+        let turn = self
+            .pump_packet_mover2_pending_outbound_firsts(
+                PacketMover2LiveOutboundFirsts::default().with_tun_packet(Some(packet)),
+                0,
+                1,
+            )
+            .await;
+        self.finish_packet_mover2_pending_outbound_turn(dest_addr, "queued TUN packet", turn)
+            .await
+    }
+
+    pub(in crate::node) async fn send_packet_mover2_pending_endpoint_payload(
+        &mut self,
+        dest_addr: &NodeAddr,
+        payload: EndpointDataPayload,
+    ) -> Result<(), NodeError> {
+        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "packet_mover2 FSP owner unavailable for queued endpoint data".into(),
+            });
+        }
+        let Some(remote) = self.packet_mover2_peer_identity(dest_addr) else {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "packet_mover2 endpoint identity unavailable for queued endpoint data"
+                    .into(),
+            });
+        };
+
+        let lane = payload.lane();
+        let command = NodeEndpointCommand::send_payload_oneway(remote, payload, None);
+        let firsts = match lane {
+            EndpointCommandLane::Priority => {
+                PacketMover2LiveOutboundFirsts::default().with_endpoint_priority(Some(command))
+            }
+            EndpointCommandLane::Bulk => {
+                PacketMover2LiveOutboundFirsts::default().with_endpoint_bulk(Some(command))
+            }
+        };
+        let turn = self
+            .pump_packet_mover2_pending_outbound_firsts(firsts, 1, 0)
+            .await;
+        self.finish_packet_mover2_pending_outbound_turn(dest_addr, "queued endpoint data", turn)
+            .await
+    }
+
+    async fn pump_packet_mover2_pending_outbound_firsts(
+        &mut self,
+        firsts: PacketMover2LiveOutboundFirsts,
+        endpoint_limit: usize,
+        tun_limit: usize,
+    ) -> PacketMover2LiveNodeTurn {
+        let tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            drop(rx);
+            tx
+        });
+        let endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
+            let (tx, rx) = EndpointEventSender::channel(1);
+            drop(rx);
+            tx
+        });
+        let endpoint_identities = self.packet_mover2_endpoint_identity_snapshot();
+        let endpoint_resolver =
+            |source_addr: &NodeAddr| endpoint_identities.get(source_addr).copied();
+
+        let turn = self
+            .packet_mover2
+            .pump_outbound_firsts(
+                firsts,
+                endpoint_limit,
+                tun_limit,
+                &tun_tx,
+                &endpoint_tx,
+                endpoint_resolver,
+                &self.transports,
+                1,
+            )
+            .await;
+        Self::observe_packet_mover2_scratch_turn(&turn);
+        turn
+    }
+
+    async fn finish_packet_mover2_pending_outbound_turn(
+        &mut self,
+        dest_addr: &NodeAddr,
+        label: &str,
+        mut turn: PacketMover2LiveNodeTurn,
+    ) -> Result<(), NodeError> {
+        let summary = turn.summary();
+        let sent = turn.transport_sent() > 0 || summary.outputs_sent() > 0;
+        let deferred = turn.endpoint_deferred_commands() > 0;
+        let failed = turn.has_failures();
+        self.process_packet_mover2_pending_outbound_bookkeeping(&mut turn)
+            .await;
+
+        if failed {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: Self::packet_mover2_pending_outbound_failure(label, &turn),
+            });
+        }
+        if sent {
+            return Ok(());
+        }
+        let reason = if deferred {
+            "deferred without transport output"
+        } else {
+            "made no transport output progress"
+        };
+        Err(NodeError::SendFailed {
+            node_addr: *dest_addr,
+            reason: format!("packet_mover2 {label} {reason}: {:?}", summary),
+        })
+    }
+
+    fn packet_mover2_pending_outbound_failure(
+        label: &str,
+        turn: &PacketMover2LiveNodeTurn,
+    ) -> String {
+        let summary = turn.summary();
+        if let Some(drop) = turn.tun_outbound_drops().first() {
+            return format!(
+                "packet_mover2 {label} TUN route drop: {:?} ({summary:?})",
+                drop.reason()
+            );
+        }
+        if let Some(drop) = turn.endpoint_command_drops().first() {
+            return format!(
+                "packet_mover2 {label} endpoint route drop: {:?} ({summary:?})",
+                drop.reason()
+            );
+        }
+        if let Some(drop) = turn.output_drops().first() {
+            return format!(
+                "packet_mover2 {label} output drop: {:?} ({summary:?})",
+                drop.reason()
+            );
+        }
+        if let Some(drop) = turn.drops().first() {
+            return format!(
+                "packet_mover2 {label} packet drop: {:?} ({summary:?})",
+                drop.reason()
+            );
+        }
+        format!("packet_mover2 {label} failed: {summary:?}")
+    }
+
+    async fn process_packet_mover2_pending_outbound_bookkeeping(
+        &mut self,
+        turn: &mut PacketMover2LiveNodeTurn,
+    ) -> usize {
+        let mut processed = 0usize;
+        for routed in turn.take_endpoint_routed_destinations() {
+            if self.sessions.record_packet_mover2_endpoint_routed(routed) {
+                processed += 1;
+            }
+        }
+        for command in self.packet_mover2.take_deferred_endpoint_commands() {
+            self.handle_packet_mover2_deferred_endpoint_command(command)
+                .await;
+            processed += 1;
+        }
+        processed
     }
 
     pub(in crate::node) fn sync_packet_mover2_fmp_owner(&mut self, node_addr: &NodeAddr) -> bool {

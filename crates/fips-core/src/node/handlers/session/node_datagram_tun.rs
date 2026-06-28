@@ -417,7 +417,10 @@ impl Node {
                 );
             }
             for packet in packets {
-                if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
+                if let Err(e) = self
+                    .send_packet_mover2_pending_tun_packet(dest_addr, packet)
+                    .await
+                {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
                     break;
                 }
@@ -426,7 +429,10 @@ impl Node {
 
         if let Some(payloads) = self.pending_session_traffic.take_endpoint_data(dest_addr) {
             for payload in payloads.into_payloads() {
-                if let Err(e) = self.send_session_endpoint_data(dest_addr, &payload).await {
+                if let Err(e) = self
+                    .send_packet_mover2_pending_endpoint_payload(dest_addr, payload)
+                    .await
+                {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
                     break;
                 }
