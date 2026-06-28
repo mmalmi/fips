@@ -94,6 +94,26 @@ impl TransportHandle {
         }
     }
 
+    /// Send a batch of packets through one transport.
+    ///
+    /// UDP uses its platform batch primitive where available; transports
+    /// without a batch primitive keep their existing per-packet async send.
+    pub async fn send_batch(
+        &self,
+        packets: &[(&TransportAddr, &[u8])],
+    ) -> Vec<Result<usize, TransportError>> {
+        match self {
+            TransportHandle::Udp(t) => t.send_batch_async(packets).await,
+            _ => {
+                let mut results = Vec::with_capacity(packets.len());
+                for (addr, data) in packets {
+                    results.push(self.send(addr, data).await);
+                }
+                results
+            }
+        }
+    }
+
     /// Get the transport ID.
     pub fn transport_id(&self) -> TransportId {
         match self {

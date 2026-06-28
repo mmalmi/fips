@@ -727,26 +727,42 @@ where
     I: IntoIterator<Item = PacketMover2TransportSendPlan>,
 {
     let mut sent = 0;
-    for plan in plans {
-        let mut drop = PacketMover2OutputDrop::from_output(
-            plan.output(),
-            PacketMover2OutputError::Unavailable,
-        );
-        let Some(transport) = transports.resolve_packet_mover2_transport(plan.transport_id) else {
-            drop.reason = PacketMover2OutputError::NoRoute;
-            drops.push(drop);
+    let plans: Vec<_> = plans.into_iter().collect();
+    let mut start = 0usize;
+    while start < plans.len() {
+        let transport_id = plans[start].transport_id;
+        let mut end = start + 1;
+        while end < plans.len() && plans[end].transport_id == transport_id {
+            end += 1;
+        }
+
+        let Some(transport) = transports.resolve_packet_mover2_transport(transport_id) else {
+            for plan in &plans[start..end] {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    plan.output(),
+                    PacketMover2OutputError::NoRoute,
+                ));
+            }
+            start = end;
             continue;
         };
-        match transport
-            .send(plan.remote_addr(), plan.output().payload())
-            .await
-        {
-            Ok(_) => sent += 1,
-            Err(error) => {
-                drop.reason = packet_mover2_output_error_for_transport(&error);
-                drops.push(drop);
+
+        let batch: Vec<_> = plans[start..end]
+            .iter()
+            .map(|plan| (plan.remote_addr(), plan.output().payload()))
+            .collect();
+        let results = transport.send_batch(&batch).await;
+        debug_assert_eq!(results.len(), end - start);
+        for (plan, result) in plans[start..end].iter().zip(results) {
+            match result {
+                Ok(_) => sent += 1,
+                Err(error) => drops.push(PacketMover2OutputDrop::from_output(
+                    plan.output(),
+                    packet_mover2_output_error_for_transport(&error),
+                )),
             }
         }
+        start = end;
     }
     sent
 }

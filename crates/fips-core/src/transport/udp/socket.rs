@@ -672,9 +672,7 @@ mod platform {
         ///
         /// Used by `UdpTransport::send_async` for the low-rate control
         /// plane (handshakes, MMP reports, rekeys). The high-throughput
-        /// data path goes through `encrypt_worker::flush_batch_sync`,
-        /// which calls `sendmmsg(2)` / `sendmsg(2)+UDP_GSO` directly
-        /// on the raw fd.
+        /// packet_mover2 data path goes through `send_batch`.
         pub async fn send_to(
             &self,
             data: &[u8],
