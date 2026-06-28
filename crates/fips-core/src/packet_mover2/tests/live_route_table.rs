@@ -162,8 +162,8 @@
             &mut routes,
         );
         let mut outbound = Vec::new();
-        assert_eq!(source.drain_outbound(16, |packet| outbound.push(packet)), 3);
-        assert_eq!(outbound.len(), 2);
+        assert_eq!(source.drain_outbound(16, |packet| outbound.push(packet)), 1);
+        assert_eq!(outbound.len(), 1);
         assert_eq!(outbound[0].owner, owner);
         assert_eq!(outbound[0].generation, 7);
         assert_eq!(outbound[0].class, PacketClass::Control);
@@ -176,17 +176,25 @@
             }
         );
         assert_eq!(outbound[0].payload.as_ref(), priority_payload.as_slice());
-        assert_eq!(outbound[1].owner, owner);
-        assert_eq!(outbound[1].generation, 7);
-        assert_eq!(outbound[1].class, PacketClass::Bulk);
+        assert!(source.take_endpoint_command_drops().is_empty());
+
+        let mut bulk_outbound = Vec::new();
         assert_eq!(
-            outbound[1].payload_transform,
+            source.drain_outbound(16, |packet| bulk_outbound.push(packet)),
+            2
+        );
+        assert_eq!(bulk_outbound.len(), 1);
+        assert_eq!(bulk_outbound[0].owner, owner);
+        assert_eq!(bulk_outbound[0].generation, 7);
+        assert_eq!(bulk_outbound[0].class, PacketClass::Bulk);
+        assert_eq!(
+            bulk_outbound[0].payload_transform,
             OutboundPayloadTransform::FspInnerHeader {
                 msg_type: crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 inner_flags: 0x09,
             }
         );
-        assert_eq!(outbound[1].payload.as_ref(), bulk_payload.as_slice());
+        assert_eq!(bulk_outbound[0].payload.as_ref(), bulk_payload.as_slice());
         let drops = source.take_endpoint_command_drops();
         assert_eq!(drops.len(), 1);
         assert_eq!(drops[0].dest_addr(), *remote.node_addr());
@@ -311,17 +319,25 @@
         .with_firsts(firsts);
         let mut outbound = Vec::new();
 
-        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 4);
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 2);
 
-        assert_eq!(outbound.len(), 4);
+        assert_eq!(outbound.len(), 2);
         assert_eq!(outbound[0].class, PacketClass::Control);
         assert_eq!(outbound[0].payload.as_ref(), first_priority_payload);
         assert_eq!(outbound[1].class, PacketClass::Control);
         assert_eq!(outbound[1].payload.as_ref(), queued_priority_payload);
-        assert_eq!(outbound[2].class, PacketClass::Bulk);
-        assert_eq!(outbound[2].payload.as_ref(), first_bulk_payload);
-        assert_eq!(outbound[3].class, PacketClass::Bulk);
-        assert_eq!(outbound[3].payload.as_ref(), queued_bulk_payload);
+        assert!(source.take_endpoint_command_drops().is_empty());
+
+        let mut bulk_outbound = Vec::new();
+        assert_eq!(
+            source.drain_outbound(8, |packet| bulk_outbound.push(packet)),
+            2
+        );
+        assert_eq!(bulk_outbound.len(), 2);
+        assert_eq!(bulk_outbound[0].class, PacketClass::Bulk);
+        assert_eq!(bulk_outbound[0].payload.as_ref(), first_bulk_payload);
+        assert_eq!(bulk_outbound[1].class, PacketClass::Bulk);
+        assert_eq!(bulk_outbound[1].payload.as_ref(), queued_bulk_payload);
         let drops = source.take_endpoint_command_drops();
         let deferred = source.take_endpoint_deferred_commands();
         drop(source);

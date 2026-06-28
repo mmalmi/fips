@@ -153,6 +153,12 @@ where
         if drained_cost < limit && !stale_bulk_drop_trigger_drained {
             stale_bulk_drop_trigger_drained = self.first_tun_packet_triggers_stale_bulk_drop();
         }
+        if stale_bulk_drop_trigger_drained {
+            drained_cost = drained_cost.saturating_add(
+                self.drop_stale_bulk_endpoint_commands(limit.saturating_sub(drained_cost)),
+            );
+            return drained_cost;
+        }
         if drained_cost < limit {
             if let Some(command) = self.first_endpoint_bulk.take() {
                 drained_cost = drained_cost.saturating_add(command.drain_cost());
@@ -173,6 +179,37 @@ where
                 stale_bulk_drop_trigger_drained,
                 &mut push,
             );
+        }
+        drained_cost
+    }
+
+    fn drop_stale_bulk_endpoint_commands(&mut self, limit: usize) -> usize {
+        let mut drained_cost = 0usize;
+        let now_ms = crate::time::now_ms();
+        while drained_cost < limit {
+            let command = match self.first_endpoint_bulk.take() {
+                Some(command) => command,
+                None => match self.endpoint_bulk_rx.try_recv() {
+                    Ok(command) => command,
+                    Err(_) => break,
+                },
+            };
+            let drop_count = stale_bulk_endpoint_command_drop_count(
+                &command,
+                now_ms,
+                self.endpoint_stale_bulk_drop_ms,
+            );
+            if drop_count == 0 {
+                self.first_endpoint_bulk = Some(command);
+                break;
+            }
+
+            drained_cost = drained_cost.saturating_add(command.drain_cost());
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::EndpointCommandBulkDropped,
+                drop_count as u64,
+            );
+            drop_stale_bulk_endpoint_command(command, &mut self.endpoint_drops);
         }
         drained_cost
     }
