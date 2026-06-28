@@ -224,6 +224,38 @@
     }
 
     #[test]
+    fn runtime_promotes_opened_latency_sensitive_fsp_outputs() {
+        let owner = OwnerId::fsp(88);
+        let key = 88;
+        let payload = priority_endpoint_payload();
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+        let packet = SocketPacket::from_fsp_established_wire(
+            owner,
+            1,
+            OutputTarget::Tun,
+            fsp_encrypted_wire(88, 0, &payload, key),
+        )
+        .unwrap();
+        assert_eq!(packet.lane(), Lane::Bulk);
+        let mut sink = RecordingOutputSink::default();
+
+        let turn =
+            driver.run_aead_classified_output_turn([packet], std::iter::empty(), &mut sink, 8);
+
+        assert_eq!(turn.summary().outputs_sent(), 1);
+        assert!(turn.output_drops().is_empty());
+        assert_eq!(sink.outputs.len(), 1);
+        assert_eq!(sink.outputs[0].lane(), Lane::Priority);
+        assert_eq!(sink.outputs[0].target(), OutputTarget::Tun);
+        assert_eq!(sink.outputs[0].opened_payload(), Some(payload.as_slice()));
+    }
+
+    #[test]
     fn runtime_output_sink_reports_failures_without_retrying() {
         let owner = OwnerId::fsp(84);
         let key = 72;

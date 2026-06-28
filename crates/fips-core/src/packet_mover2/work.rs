@@ -113,6 +113,20 @@ impl PacketOutput {
     pub(crate) fn into_payload(self) -> PacketBuffer {
         self.payload
     }
+
+    fn promote_opened_latency_sensitive_payload(&mut self) {
+        if self.lane == Lane::Priority
+            || !matches!(self.target, OutputTarget::Tun | OutputTarget::Endpoint)
+        {
+            return;
+        }
+        if self
+            .opened_payload()
+            .is_some_and(crate::node::endpoint_payload_is_latency_sensitive)
+        {
+            self.lane = Lane::Priority;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

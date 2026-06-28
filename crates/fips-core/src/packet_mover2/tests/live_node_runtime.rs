@@ -201,11 +201,27 @@
         let fresh_bulk = opened_output(owner, 48, 2, OutputTarget::Tun, b"fresh-bulk");
         assert_eq!(sink.send(fresh_bulk), Ok(()));
 
+        let transport_id = TransportId::new(46);
+        let remote_addr = TransportAddr::from_string("198.51.100.46:9000");
+        let mut stale_transport = transport_output(
+            owner,
+            49,
+            3,
+            transport_id,
+            remote_addr.clone(),
+            b"sealed-wire".to_vec(),
+        );
+        stale_transport.activity_tick = Some(ActivityTick::new(1));
+        assert_eq!(sink.send(stale_transport), Ok(()));
+
         assert_eq!(tun_rx.try_recv().unwrap(), b"priority".to_vec());
         assert_eq!(tun_rx.try_recv().unwrap(), b"fresh-bulk".to_vec());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
+        assert_eq!(transport.outputs.len(), 1);
+        assert_eq!(transport.outputs[0].transport_id, transport_id);
+        assert_eq!(transport.outputs[0].remote_addr, remote_addr);
+        assert_eq!(transport.outputs[0].payload, b"sealed-wire");
     }
 
     #[test]

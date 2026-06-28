@@ -699,7 +699,10 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         let mut retired = std::mem::take(&mut self.retired);
         for packet in retired.drain(..) {
             match packet {
-                RetiredPacket::Output(output) => self.outputs.push(output),
+                RetiredPacket::Output(mut output) => {
+                    output.promote_opened_latency_sensitive_payload();
+                    self.outputs.push(output);
+                }
                 RetiredPacket::Outbound(packet) => self.admit_outbound_packet(packet, &mut summary),
                 RetiredPacket::Drop(_) => {}
             }
