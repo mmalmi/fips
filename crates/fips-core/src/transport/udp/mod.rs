@@ -458,6 +458,7 @@ impl UdpTransport {
                 "remote address family {socket_addr} is incompatible with local UDP socket {local_addr}"
             )));
         }
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
         match socket.send_to(data, &socket_addr).await {
             Ok(bytes_sent) => {
                 self.stats.record_send(bytes_sent);
@@ -565,6 +566,8 @@ impl UdpTransport {
 
         let mut offset = 0usize;
         while offset < socket_packets.len() {
+            crate::perf_profile::record_udp_send_sendmmsg_batch(socket_packets.len() - offset);
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
             match socket.send_batch(&socket_packets[offset..]).await {
                 Ok(0) => {
                     self.stats.record_send_error();
