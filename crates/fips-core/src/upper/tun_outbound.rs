@@ -252,6 +252,21 @@ impl TunOutboundRx {
         }
     }
 
+    pub(crate) fn try_recv_priority_first(&mut self) -> Result<Vec<u8>, mpsc::error::TryRecvError> {
+        if let Some(packet) = self.try_recv_priority()? {
+            return Ok(packet);
+        }
+        if let Some(packet) = self.try_recv_bulk()? {
+            return Ok(packet);
+        }
+
+        if self.priority_closed && self.bulk_closed {
+            Err(mpsc::error::TryRecvError::Disconnected)
+        } else {
+            Err(mpsc::error::TryRecvError::Empty)
+        }
+    }
+
     fn try_recv_priority(&mut self) -> Result<Option<Vec<u8>>, mpsc::error::TryRecvError> {
         if self.priority_closed {
             return Ok(None);
@@ -486,6 +501,31 @@ mod tests {
         }
         assert_eq!(rx.try_recv(), Ok(bulk));
         assert_eq!(rx.try_recv(), Ok(overflow_priority));
+    }
+
+    #[test]
+    fn tun_outbound_priority_first_bypasses_burst_cap_once() {
+        let (tx, mut rx) = tun_outbound_channel(TUN_OUTBOUND_PRIORITY_BURST_MAX + 1);
+        let bulk = ipv4_tcp_bulk_packet();
+        let overflow_priority = packet_variant(ipv4_icmp_packet(), 0xff);
+
+        tx.try_send(bulk.clone())
+            .expect("bulk packet should enqueue");
+        for index in 0..TUN_OUTBOUND_PRIORITY_BURST_MAX {
+            tx.try_send(packet_variant(ipv4_icmp_packet(), index as u8))
+                .expect("priority burst packet should enqueue");
+        }
+        tx.try_send(overflow_priority.clone())
+            .expect("overflow priority packet should enqueue");
+
+        for index in 0..TUN_OUTBOUND_PRIORITY_BURST_MAX {
+            assert_eq!(
+                rx.try_recv(),
+                Ok(packet_variant(ipv4_icmp_packet(), index as u8))
+            );
+        }
+        assert_eq!(rx.try_recv_priority_first(), Ok(overflow_priority));
+        assert_eq!(rx.try_recv(), Ok(bulk));
     }
 
     #[test]

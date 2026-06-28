@@ -253,7 +253,7 @@ where
 
     fn first_tun_packet_triggers_stale_bulk_drop(&mut self) -> bool {
         if self.first_tun_packet.is_none()
-            && let Ok(packet) = self.tun_outbound_rx.try_recv()
+            && let Ok(packet) = self.tun_outbound_rx.try_recv_priority_first()
         {
             self.first_tun_packet = Some(packet);
         }
@@ -302,7 +302,7 @@ where
     {
         let mut drained = 0usize;
         if self.first_tun_packet.is_none()
-            && let Ok(packet) = self.tun_outbound_rx.try_recv()
+            && let Ok(packet) = self.tun_outbound_rx.try_recv_priority_first()
         {
             self.first_tun_packet = Some(packet);
         }
