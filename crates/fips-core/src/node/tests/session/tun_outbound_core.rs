@@ -55,21 +55,14 @@ async fn test_tun_outbound_established_session() {
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Setup → Node 1
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Ack → Node 0, Node 0 sends Msg3
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Msg3 → Node 1
-
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&node1_addr)
-            .unwrap()
-            .state()
-            .is_established()
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "direct TUN fixture",
+    )
+    .await;
 
     // Install TUN receiver on Node 1
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
@@ -81,15 +74,16 @@ async fn test_tun_outbound_established_session() {
 
     nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
 
-    // Process packets: encrypted data → Node 1
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
-
     // Verify plaintext arrived at Node 1's TUN
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
-    assert_eq!(delivered.len(), 1, "Exactly one packet should be delivered");
+    let delivered = recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(10),
+        "direct established TUN packet",
+    )
+    .await;
     assert_eq!(
-        delivered[0], ipv6_packet,
+        delivered, ipv6_packet,
         "Delivered packet should match original"
     );
 
@@ -136,27 +130,24 @@ async fn test_tun_outbound_triggers_session_initiation() {
             .is_initiating()
     );
 
-    // Drain packets until session established and queued packet delivered
-    drain_to_quiescence(&mut nodes).await;
-
-    // Session should be established on Node 0
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&node1_addr)
-            .unwrap()
-            .state()
-            .is_established()
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "TUN-triggered session",
+    )
+    .await;
 
     // Verify the queued packet was delivered to Node 1
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
-    assert_eq!(
-        delivered.len(),
-        1,
-        "Queued packet should be delivered after handshake"
-    );
-    assert_eq!(delivered[0], ipv6_packet);
+    let delivered = recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(10),
+        "queued TUN packet",
+    )
+    .await;
+    assert_eq!(delivered, ipv6_packet);
 
     cleanup_nodes(&mut nodes).await;
 }
@@ -262,15 +253,14 @@ async fn test_update_peers_warms_auto_connect_session_over_existing_graph() {
         "configured peer should start an FIPS graph session without waiting for data"
     );
 
-    drain_to_quiescence(&mut nodes).await;
-
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&dest_addr)
-            .is_some_and(|entry| entry.is_established()),
-        "proactive graph session should complete over the existing FIPS path"
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest_addr,
+        Duration::from_secs(10),
+        "proactive graph session",
+    )
+    .await;
 
     cleanup_nodes(&mut nodes).await;
 }

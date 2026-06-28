@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
+#[test]
+fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
+    run_large_stack_async_test("fips-established-msg3-resend", || async {
+        established_initiator_resends_final_msg3_until_responder_establishes().await;
+    });
+}
+
+async fn established_initiator_resends_final_msg3_until_responder_establishes() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
@@ -107,8 +113,14 @@ async fn test_established_initiator_resends_final_msg3_until_responder_establish
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
+#[test]
+fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
+    run_large_stack_async_test("fips-rekey-msg3-resend", || async {
+        rekey_initiator_resends_final_msg3_until_responder_has_pending_session().await;
+    });
+}
+
+async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
@@ -131,7 +143,22 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .expect("initial session should start");
-    drain_to_quiescence(&mut nodes).await;
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey msg3 fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey msg3 fixture responder",
+    )
+    .await;
 
     assert!(
         nodes[0]
@@ -248,8 +275,14 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
+#[test]
+fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
+    run_large_stack_async_test("fips-rekey-msg1-resend", || async {
+        rekey_initiator_resends_msg1_when_first_setup_lost().await;
+    });
+}
+
+async fn rekey_initiator_resends_msg1_when_first_setup_lost() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
@@ -272,7 +305,22 @@ async fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .expect("initial session should start");
-    drain_to_quiescence(&mut nodes).await;
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture responder",
+    )
+    .await;
 
     assert!(
         nodes[0].node.initiate_session_rekey(&node1_addr).await,
@@ -331,13 +379,20 @@ async fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
+#[test]
+fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
+    run_large_stack_async_test("fips-rekey-msg1-exhaustion", || async {
+        rekey_msg1_exhaustion_allows_peer_msg1_to_converge().await;
+    });
+}
+
+async fn rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
     populate_all_coord_caches(&mut nodes);
 
+    let node0_addr = *nodes[0].node.node_addr();
     let node1_addr = *nodes[1].node.node_addr();
     let node1_pubkey = nodes[1].node.identity().pubkey_full();
 
@@ -346,7 +401,22 @@ async fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .expect("initial session should start");
-    drain_to_quiescence(&mut nodes).await;
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture responder",
+    )
+    .await;
 
     let smaller = if nodes[0].node.node_addr() < nodes[1].node.node_addr() {
         0
@@ -422,8 +492,14 @@ async fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_session_100_nodes() {
+#[test]
+fn test_session_100_nodes() {
+    run_large_stack_async_test("fips-session-100-nodes", || async {
+        session_100_nodes().await;
+    });
+}
+
+async fn session_100_nodes() {
     let _guard = lock_large_network_test().await;
 
     use rand::rngs::StdRng;

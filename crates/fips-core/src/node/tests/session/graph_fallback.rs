@@ -154,8 +154,14 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
+#[test]
+fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
+    run_large_stack_async_test("fips-graph-fallback-endpoint-data", || async {
+        direct_established_endpoint_data_falls_back_after_link_dead().await;
+    });
+}
+
+async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     // A, B, C are all linked. A<->B should establish directly first. When
     // that direct path goes stale, endpoint data must keep using the
     // existing end-to-end session over C instead of sticking to the stale

@@ -31,8 +31,7 @@ async fn test_session_direct_peer_handshake() {
     );
 
     // Process packets: SessionSetup arrives at Node 1
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let count = process_available_packets(&mut nodes).await;
+    let count = wait_process_packets_for_node(&mut nodes, 1).await;
     assert!(count > 0, "Expected SessionSetup packet to arrive");
 
     // Node 1 should now have a session in AwaitingMsg3 state (XK: identity not yet known)
@@ -47,8 +46,7 @@ async fn test_session_direct_peer_handshake() {
     );
 
     // Process packets: SessionAck arrives at Node 0, Node 0 sends SessionMsg3
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let count = process_available_packets(&mut nodes).await;
+    let count = wait_process_packets_for_node(&mut nodes, 0).await;
     assert!(count > 0, "Expected SessionAck packet to arrive");
 
     // Node 0 should now be Established (transitions after sending msg3)
@@ -62,8 +60,7 @@ async fn test_session_direct_peer_handshake() {
     );
 
     // Process packets: SessionMsg3 arrives at Node 1
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let count = process_available_packets(&mut nodes).await;
+    let count = wait_process_packets_for_node(&mut nodes, 1).await;
     assert!(count > 0, "Expected SessionMsg3 packet to arrive");
 
     // Node 1 should now be Established (transitions after processing msg3)
@@ -91,18 +88,13 @@ async fn test_session_direct_peer_data_transfer() {
     let node1_addr = *nodes[1].node.node_addr();
     let node1_pubkey = nodes[1].node.identity().pubkey_full();
 
-    // Establish session (XK: 3 messages — Setup, Ack, Msg3)
+    // Establish session (XK: Setup, Ack, Msg3)
     nodes[0]
         .node
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Setup → Node 1
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Ack → Node 0, Node 0 sends Msg3
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Msg3 → Node 1
+    drain_to_quiescence(&mut nodes).await;
 
     assert!(
         nodes[0]
@@ -130,8 +122,7 @@ async fn test_session_direct_peer_data_transfer() {
         .expect("send_session_data failed");
 
     // Process packets: encrypted data arrives at Node 1
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let count = process_available_packets(&mut nodes).await;
+    let count = wait_process_packets_for_node(&mut nodes, 1).await;
     assert!(count > 0, "Expected encrypted data to arrive");
 
     cleanup_nodes(&mut nodes).await;
@@ -164,15 +155,13 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
         .await
         .expect("endpoint data should queue behind session establishment");
 
-    for _ in 0..10 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        process_available_packets(&mut nodes).await;
-    }
-
-    let event = tokio::time::timeout(Duration::from_secs(1), node1_endpoint.event_rx.recv())
-        .await
-        .expect("endpoint data event should not time out")
-        .expect("endpoint data event should arrive");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node1_endpoint.event_rx,
+        Duration::from_secs(10),
+        "node 1 endpoint data",
+    )
+    .await;
     match event {
         NodeEndpointEvent::Data {
             source_peer,
@@ -192,13 +181,13 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
         .await
         .expect("reply data should send");
 
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
-
-    let event = tokio::time::timeout(Duration::from_secs(1), node0_endpoint.event_rx.recv())
-        .await
-        .expect("endpoint data event should not time out")
-        .expect("endpoint data event should arrive");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "node 0 endpoint data",
+    )
+    .await;
     match event {
         NodeEndpointEvent::Data {
             source_peer,
@@ -247,12 +236,14 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         .send_endpoint_data(bob_identity, b"alice-to-bob".to_vec())
         .await
         .expect("alice endpoint data should send");
-    drain_to_quiescence(&mut nodes).await;
 
-    let event = tokio::time::timeout(Duration::from_secs(1), bob_endpoint.event_rx.recv())
-        .await
-        .expect("bob endpoint data should not time out")
-        .expect("bob endpoint data should arrive");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut bob_endpoint.event_rx,
+        Duration::from_secs(10),
+        "alice to bob endpoint data",
+    )
+    .await;
     match event {
         NodeEndpointEvent::Data {
             source_peer,
@@ -284,12 +275,14 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         .send_endpoint_data(alice_identity, b"bob-to-alice".to_vec())
         .await
         .expect("bob endpoint data should send");
-    drain_to_quiescence(&mut nodes).await;
 
-    let event = tokio::time::timeout(Duration::from_secs(1), alice_endpoint.event_rx.recv())
-        .await
-        .expect("alice endpoint data should not time out")
-        .expect("alice endpoint data should arrive");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut alice_endpoint.event_rx,
+        Duration::from_secs(10),
+        "bob to alice endpoint data",
+    )
+    .await;
     match event {
         NodeEndpointEvent::Data {
             source_peer,

@@ -257,14 +257,14 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
         .initiate_session(dest_addr, dest_pubkey)
         .await
         .expect("session should initiate over graph route");
-    drain_to_quiescence(&mut nodes).await;
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&dest_addr)
-            .is_some_and(|entry| entry.is_established()),
-        "fixture should start with an established end-to-end session"
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest_addr,
+        Duration::from_secs(10),
+        "fallback warmup fixture",
+    )
+    .await;
     nodes[0].node.coord_cache_mut().remove(&dest_addr);
 
     let request_id = 5150;
@@ -337,14 +337,14 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
         .initiate_session(dest_addr, dest_pubkey)
         .await
         .expect("session should initiate over graph route");
-    drain_to_quiescence(&mut nodes).await;
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&dest_addr)
-            .is_some_and(|entry| entry.is_established()),
-        "fixture should start with an established end-to-end session"
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest_addr,
+        Duration::from_secs(10),
+        "fallback TUN fixture",
+    )
+    .await;
     nodes[0].node.coord_cache_mut().remove(&dest_addr);
 
     let src_fips = crate::FipsAddress::from_node_addr(&src_addr);
@@ -371,7 +371,13 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
         .node
         .handle_lookup_response(&fallback_next_hop, response_payload)
         .await;
-    drain_to_quiescence(&mut nodes).await;
+    let delivered = recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(10),
+        "fallback queued TUN packet",
+    )
+    .await;
 
     assert!(
         nodes[0]
@@ -381,10 +387,8 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
             .is_none(),
         "discovery should flush queued TUN traffic through the established session"
     );
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
     assert_eq!(
-        delivered,
-        vec![ipv6_packet],
+        delivered, ipv6_packet,
         "fresh discovery route should carry queued session traffic over fallback"
     );
 

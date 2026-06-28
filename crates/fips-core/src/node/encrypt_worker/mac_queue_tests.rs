@@ -494,13 +494,28 @@ mod mac_queue_tests {
                 );
             }
 
+            let flow_a_key = 0x1111;
+            let target_key = bulk.target_key();
+            let flow_a_expected_idx = (send_dispatch_fast_hash(&SendDispatchKey::new(
+                target_key,
+                Some(flow_a_key),
+            )) as usize)
+                % pool.senders.len();
+            let flow_b_key = (0x2222..0x2322)
+                .find(|candidate| {
+                    let key = SendDispatchKey::new(target_key, Some(*candidate));
+                    (send_dispatch_fast_hash(&key) as usize) % pool.senders.len()
+                        != flow_a_expected_idx
+                })
+                .expect("test should find an endpoint flow that spreads workers");
+
             let (flow_a_idx, flow_a) = pool.prepare_dispatch(fmp_send_job_classified(
                 socket.clone(),
                 &cipher,
                 addr,
                 true,
                 true,
-                Some(0x1111),
+                Some(flow_a_key),
             ));
             let (flow_b_idx, flow_b) = pool.prepare_dispatch(fmp_send_job_classified(
                 socket.clone(),
@@ -508,7 +523,7 @@ mod mac_queue_tests {
                 addr,
                 true,
                 true,
-                Some(0x2222),
+                Some(flow_b_key),
             ));
             assert_eq!(flow_a.queue_lane(), EncryptWorkerLane::Bulk);
             assert_eq!(flow_b.queue_lane(), EncryptWorkerLane::Bulk);

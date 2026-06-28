@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn test_session_3node_forwarded_handshake() {
+#[test]
+fn test_session_3node_forwarded_handshake() {
+    run_large_stack_async_test("fips-forwarded-handshake", || async {
+        session_3node_forwarded_handshake().await;
+    });
+}
+
+async fn session_3node_forwarded_handshake() {
     // A—B—C: Node A initiates session with Node C through transit node B
     let edges = vec![(0, 1), (1, 2)];
     let mut nodes = run_tree_test(3, &edges, false).await;
@@ -19,13 +25,11 @@ async fn test_session_3node_forwarded_handshake() {
         .await
         .expect("initiate_session failed");
 
-    // Process: SessionSetup: 0→1 (forwarded by transit B)
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
+    // Process: SessionSetup: 0->1 (forwarded by transit B)
+    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
 
-    // Process: SessionSetup: 1→2 (arrives at destination C)
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
+    // Process: SessionSetup: 1->2 (arrives at destination C)
+    assert!(wait_process_packets_for_node(&mut nodes, 2).await > 0);
 
     // Node 2 should have an AwaitingMsg3 session (XK: identity not yet known)
     assert!(
@@ -41,13 +45,11 @@ async fn test_session_3node_forwarded_handshake() {
             .is_awaiting_msg3()
     );
 
-    // Process: SessionAck: 2→1 (forwarded by transit B)
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
+    // Process: SessionAck: 2->1 (forwarded by transit B)
+    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
 
-    // Process: SessionAck: 1→0 (arrives at initiator A, sends SessionMsg3)
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
+    // Process: SessionAck: 1->0 (arrives at initiator A, sends SessionMsg3)
+    assert!(wait_process_packets_for_node(&mut nodes, 0).await > 0);
 
     // Node 0 should now be Established (transitions after sending msg3)
     assert!(
@@ -59,13 +61,11 @@ async fn test_session_3node_forwarded_handshake() {
             .is_established()
     );
 
-    // Process: SessionMsg3: 0→1 (forwarded by transit B)
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
+    // Process: SessionMsg3: 0->1 (forwarded by transit B)
+    assert!(wait_process_packets_for_node(&mut nodes, 1).await > 0);
 
-    // Process: SessionMsg3: 1→2 (arrives at responder C)
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
+    // Process: SessionMsg3: 1->2 (arrives at responder C)
+    assert!(wait_process_packets_for_node(&mut nodes, 2).await > 0);
 
     // Node 2 should now be Established (transitions after processing msg3)
     assert!(

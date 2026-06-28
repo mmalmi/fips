@@ -79,6 +79,53 @@ async fn drain_to_quiescence(nodes: &mut [TestNode]) {
     }
 }
 
+async fn wait_for_session_established(
+    nodes: &mut [TestNode],
+    index: usize,
+    peer: &NodeAddr,
+    timeout: Duration,
+    context: &str,
+) {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if nodes[index]
+                .node
+                .get_session(peer)
+                .is_some_and(|entry| entry.state().is_established())
+            {
+                return;
+            }
+
+            process_available_packets(nodes).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{context}: session did not establish"));
+}
+
+fn run_large_stack_async_test<F, Fut>(name: &'static str, test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("large-stack test runtime")
+                .block_on(test());
+        })
+        .expect("spawn large-stack test");
+
+    if let Err(panic) = handle.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 async fn recv_endpoint_event_while_draining(
     nodes: &mut [TestNode],
     rx: &mut EndpointEventReceiver,
@@ -99,6 +146,30 @@ async fn recv_endpoint_event_while_draining(
     })
     .await
     .unwrap_or_else(|_| panic!("{context}: endpoint data should not time out"))
+}
+
+async fn recv_tun_packet_while_draining(
+    nodes: &mut [TestNode],
+    rx: &crate::upper::tun::TunRx,
+    timeout: Duration,
+    context: &str,
+) -> Vec<u8> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            match rx.try_recv() {
+                Ok(packet) => return packet,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("{context}: TUN receiver disconnected");
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+
+            process_available_packets(nodes).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{context}: TUN packet should not time out"))
 }
 
 async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
