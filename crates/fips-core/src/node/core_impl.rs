@@ -1,7 +1,7 @@
 use super::*;
 
 impl Node {
-    fn new_packet_mover2_scratch_node() -> PacketMover2ScratchNode {
+    fn new_packet_mover2_node() -> PacketMover2Node {
         PacketMover2LiveNode::new(AdmissionConfig::new(1024, 4096), CopyCryptoWorker)
     }
 
@@ -89,7 +89,7 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
-            packet_mover2: Self::new_packet_mover2_scratch_node(),
+            packet_mover2: Self::new_packet_mover2_node(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
@@ -241,7 +241,7 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
-            packet_mover2: Self::new_packet_mover2_scratch_node(),
+            packet_mover2: Self::new_packet_mover2_node(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),

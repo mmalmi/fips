@@ -13,7 +13,7 @@ use tokio::sync::mpsc::Receiver;
 use tracing::{debug, trace, warn};
 
 impl Node {
-    pub(in crate::node) async fn drain_packet_mover2_scratch_turn(
+    pub(in crate::node) async fn drain_packet_mover2_turn(
         &mut self,
         packet_rx: &mut PacketRx,
         packet_limit: usize,
@@ -26,7 +26,7 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        self.drain_packet_mover2_scratch_turn_with_first(
+        self.drain_packet_mover2_turn_with_first(
             packet_rx,
             None,
             packet_limit,
@@ -42,7 +42,7 @@ impl Node {
         .await
     }
 
-    pub(in crate::node) async fn drain_packet_mover2_scratch_turn_with_first(
+    pub(in crate::node) async fn drain_packet_mover2_turn_with_first(
         &mut self,
         packet_rx: &mut PacketRx,
         first_packet: Option<ReceivedPacket>,
@@ -56,7 +56,7 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        self.drain_packet_mover2_scratch_turn_with_firsts(
+        self.drain_packet_mover2_turn_with_firsts(
             packet_rx,
             crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
                 .with_raw_packet(first_packet),
@@ -73,7 +73,7 @@ impl Node {
         .await
     }
 
-    pub(in crate::node) async fn drain_packet_mover2_scratch_turn_with_firsts(
+    pub(in crate::node) async fn drain_packet_mover2_turn_with_firsts(
         &mut self,
         packet_rx: &mut PacketRx,
         firsts: crate::packet_mover2::PacketMover2LiveTurnFirsts,
@@ -111,11 +111,11 @@ impl Node {
                 crypto_limit,
             )
             .await;
-        Self::observe_packet_mover2_scratch_turn(&turn);
+        Self::observe_packet_mover2_turn(&turn);
         turn
     }
 
-    pub(super) async fn process_packet_mover2_scratch_control_ingress(
+    pub(super) async fn process_packet_mover2_control_ingress(
         &mut self,
         turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) -> usize {
@@ -424,7 +424,7 @@ impl Node {
             })
     }
 
-    pub(super) fn packet_mover2_scratch_packet_activity(
+    pub(super) fn packet_mover2_packet_activity(
         turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) -> usize {
         let summary = turn.summary();
@@ -439,7 +439,7 @@ impl Node {
             .saturating_add(turn.endpoint_deferred_commands())
     }
 
-    pub(in crate::node) fn observe_packet_mover2_scratch_turn(
+    pub(in crate::node) fn observe_packet_mover2_turn(
         turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) {
         if !turn.has_activity() {
@@ -461,7 +461,7 @@ impl Node {
                 endpoint_command_drops = turn.endpoint_command_drops().len(),
                 packet_drops = turn.drops().len(),
                 transport_dropped = turn.transport_dropped(),
-                "packet mover2 scratch turn reported drops"
+                "packet mover2 turn reported drops"
             );
             for drop in turn.raw_ingress_drops() {
                 debug!(
@@ -495,7 +495,7 @@ impl Node {
             fmp_link_ingress = turn.fmp_link_ingress().len(),
             fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
             fsp_session_ingress = turn.fsp_session_ingress().len(),
-            "packet mover2 scratch turn completed"
+            "packet mover2 turn completed"
         );
     }
 }

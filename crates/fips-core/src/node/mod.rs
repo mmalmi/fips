@@ -22,7 +22,7 @@ mod identity_cache;
 mod io_impl;
 mod lifecycle;
 mod link_registry;
-mod packet_mover2_bridge;
+mod packet_mover2_integration;
 mod peer_lifecycle;
 mod peer_runtime;
 mod rate_limit;
@@ -146,7 +146,7 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};
 
-type PacketMover2ScratchNode = PacketMover2LiveNode<CopyCryptoWorker>;
+type PacketMover2Node = PacketMover2LiveNode<CopyCryptoWorker>;
 
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 pub(crate) const ENDPOINT_EVENT_PRIORITY_MAX_LEN: usize = 512;
@@ -249,11 +249,10 @@ pub struct Node {
     /// Packet receiver (for event loop).
     packet_rx: Option<PacketRx>,
 
-    // === Packet Mover2 Scratch ===
-    /// Straight-path scratch packet mover owned by the node while the final
-    /// dataplane is built.
+    // === Packet Mover2 ===
+    /// Canonical packet_mover2 dataplane state owned by the node.
     #[allow(dead_code)]
-    packet_mover2: PacketMover2ScratchNode,
+    packet_mover2: PacketMover2Node,
 
     // === Peer Lifecycle ===
     /// Pending handshake connections plus authenticated peers.

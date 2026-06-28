@@ -88,7 +88,7 @@ async fn drain_control_queries_answers_show_requests() {
 }
 
 #[tokio::test]
-async fn packet_mover2_scratch_turn_uses_rx_loop_owned_channels() {
+async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
@@ -101,7 +101,7 @@ async fn packet_mover2_scratch_turn_uses_rx_loop_owned_channels() {
         .expect("endpoint io should attach before start");
 
     let turn = node
-        .drain_packet_mover2_scratch_turn(
+        .drain_packet_mover2_turn(
             &mut packet_rx,
             4,
             &mut endpoint_priority_rx,
@@ -131,7 +131,7 @@ async fn packet_mover2_scratch_turn_uses_rx_loop_owned_channels() {
 }
 
 #[tokio::test]
-async fn packet_mover2_scratch_replays_deferred_endpoint_commands() {
+async fn packet_mover2_replays_deferred_endpoint_commands() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
@@ -150,7 +150,7 @@ async fn packet_mover2_scratch_replays_deferred_endpoint_commands() {
         .expect("peer snapshot command queued");
 
     let mut turn = node
-        .drain_packet_mover2_scratch_turn(
+        .drain_packet_mover2_turn(
             &mut packet_rx,
             4,
             &mut endpoint_priority_rx,
@@ -170,9 +170,7 @@ async fn packet_mover2_scratch_replays_deferred_endpoint_commands() {
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
 
-    let processed = node
-        .process_packet_mover2_scratch_control_ingress(&mut turn)
-        .await;
+    let processed = node.process_packet_mover2_control_ingress(&mut turn).await;
 
     assert_eq!(processed, 1);
     let peers = tokio::time::timeout(Duration::from_secs(1), response_rx)
@@ -185,7 +183,7 @@ async fn packet_mover2_scratch_replays_deferred_endpoint_commands() {
 }
 
 #[tokio::test]
-async fn packet_mover2_scratch_turn_reports_raw_ingress_failures() {
+async fn packet_mover2_turn_reports_raw_ingress_failures() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
@@ -207,7 +205,7 @@ async fn packet_mover2_scratch_turn_reports_raw_ingress_failures() {
         .expect("malformed packet queued");
 
     let turn = node
-        .drain_packet_mover2_scratch_turn(
+        .drain_packet_mover2_turn(
             &mut packet_rx,
             4,
             &mut endpoint_priority_rx,

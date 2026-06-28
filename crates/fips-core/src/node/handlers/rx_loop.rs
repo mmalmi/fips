@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 
 mod budget;
 mod drain;
-mod packet_mover2_scratch;
+mod packet_mover2;
 #[cfg(test)]
 mod packet_process;
 
@@ -121,12 +121,12 @@ impl Node {
         drop(control_query_tx);
         drop(control_command_tx);
 
-        let scratch_tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
+        let packet_mover2_tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
             let (tx, rx) = crate::upper::tun::write_channel();
             drop(rx);
             tx
         });
-        let scratch_endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
+        let packet_mover2_endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
             let (tx, rx) = EndpointEventSender::channel(1);
             drop(rx);
             tx
@@ -154,8 +154,8 @@ impl Node {
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        &scratch_tun_tx,
-                        &scratch_endpoint_tx,
+                        &packet_mover2_tun_tx,
+                        &packet_mover2_endpoint_tx,
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained.has_drained() {
@@ -190,8 +190,8 @@ impl Node {
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        &scratch_tun_tx,
-                        &scratch_endpoint_tx,
+                        &packet_mover2_tun_tx,
+                        &packet_mover2_endpoint_tx,
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     if post_drained.has_drained() {
@@ -220,7 +220,7 @@ impl Node {
                 // receive. Bulk endpoint commands intentionally remain below
                 // packet_rx.
                 Some(command) = endpoint_priority_command_rx.recv() => {
-                    let mut turn = self.drain_packet_mover2_scratch_turn_with_firsts(
+                    let mut turn = self.drain_packet_mover2_turn_with_firsts(
                         &mut packet_rx,
                         crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
                             .with_endpoint_priority(Some(command)),
@@ -230,13 +230,13 @@ impl Node {
                         NON_PACKET_DRAIN_BUDGET,
                         &mut tun_outbound_rx,
                         0,
-                        &scratch_tun_tx,
-                        &scratch_endpoint_tx,
+                        &packet_mover2_tun_tx,
+                        &packet_mover2_endpoint_tx,
                         LATENCY_PACKET_DRAIN_BUDGET,
                     ).await;
                     let had_activity = turn.has_activity();
                     let control_drained = self
-                        .process_packet_mover2_scratch_control_ingress(&mut turn)
+                        .process_packet_mover2_control_ingress(&mut turn)
                         .await;
                     if had_activity || control_drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -262,7 +262,7 @@ impl Node {
                                     || packet_rx.priority_ready_packets() > 0
                                     || side_latency_ready,
                             );
-                            let mut turn = self.drain_packet_mover2_scratch_turn_with_firsts(
+                            let mut turn = self.drain_packet_mover2_turn_with_firsts(
                                 &mut packet_rx,
                                 firsts,
                                 packet_budget,
@@ -271,13 +271,13 @@ impl Node {
                                 NON_PACKET_DRAIN_BUDGET,
                                 &mut tun_outbound_rx,
                                 NON_PACKET_DRAIN_BUDGET,
-                                &scratch_tun_tx,
-                                &scratch_endpoint_tx,
+                                &packet_mover2_tun_tx,
+                                &packet_mover2_endpoint_tx,
                                 packet_budget,
                             ).await;
                             let had_activity = turn.has_activity();
                             let control_drained = self
-                                .process_packet_mover2_scratch_control_ingress(&mut turn)
+                                .process_packet_mover2_control_ingress(&mut turn)
                                 .await;
                             self.drain_control_queries(
                                 &mut control_query_rx,
@@ -292,7 +292,7 @@ impl Node {
                     }
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
-                    let mut turn = self.drain_packet_mover2_scratch_turn_with_firsts(
+                    let mut turn = self.drain_packet_mover2_turn_with_firsts(
                         &mut packet_rx,
                         crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
                             .with_tun_packet(Some(ipv6_packet)),
@@ -302,13 +302,13 @@ impl Node {
                         0,
                         &mut tun_outbound_rx,
                         NON_PACKET_DRAIN_BUDGET,
-                        &scratch_tun_tx,
-                        &scratch_endpoint_tx,
+                        &packet_mover2_tun_tx,
+                        &packet_mover2_endpoint_tx,
                         LATENCY_PACKET_DRAIN_BUDGET,
                     ).await;
                     let had_activity = turn.has_activity();
                     let control_drained = self
-                        .process_packet_mover2_scratch_control_ingress(&mut turn)
+                        .process_packet_mover2_control_ingress(&mut turn)
                         .await;
                     if had_activity || control_drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -322,7 +322,7 @@ impl Node {
                     self.register_identity(identity.node_addr, identity.pubkey);
                 }
                 Some(command) = endpoint_command_rx.recv() => {
-                    let mut turn = self.drain_packet_mover2_scratch_turn_with_firsts(
+                    let mut turn = self.drain_packet_mover2_turn_with_firsts(
                         &mut packet_rx,
                         crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
                             .with_endpoint_bulk(Some(command)),
@@ -332,13 +332,13 @@ impl Node {
                         NON_PACKET_DRAIN_BUDGET,
                         &mut tun_outbound_rx,
                         0,
-                        &scratch_tun_tx,
-                        &scratch_endpoint_tx,
+                        &packet_mover2_tun_tx,
+                        &packet_mover2_endpoint_tx,
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     let had_activity = turn.has_activity();
                     let control_drained = self
-                        .process_packet_mover2_scratch_control_ingress(&mut turn)
+                        .process_packet_mover2_control_ingress(&mut turn)
                         .await;
                     if had_activity || control_drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -371,7 +371,7 @@ impl Node {
     ) -> RxLoopDataDrainStats {
         let non_packet_budget = non_packet_drain_budget(budget);
         let mut turn = self
-            .drain_packet_mover2_scratch_turn(
+            .drain_packet_mover2_turn(
                 packet_rx,
                 budget,
                 endpoint_priority_command_rx,
@@ -384,9 +384,8 @@ impl Node {
                 budget,
             )
             .await;
-        let drained_packets = Self::packet_mover2_scratch_packet_activity(&turn);
-        self.process_packet_mover2_scratch_control_ingress(&mut turn)
-            .await;
+        let drained_packets = Self::packet_mover2_packet_activity(&turn);
+        self.process_packet_mover2_control_ingress(&mut turn).await;
         RxLoopDataDrainStats::with_data(
             drained_packets,
             0,

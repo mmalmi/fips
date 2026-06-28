@@ -284,7 +284,7 @@ impl Node {
                 crypto_limit,
             )
             .await;
-        Self::observe_packet_mover2_scratch_turn(&turn);
+        Self::observe_packet_mover2_turn(&turn);
         turn
     }
 
