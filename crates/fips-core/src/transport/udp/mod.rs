@@ -528,7 +528,6 @@ impl UdpTransport {
         };
 
         let mut socket_packets = Vec::with_capacity(packets.len());
-        let mut socket_packet_indexes = Vec::with_capacity(packets.len());
         let mtu = self.config.mtu() as usize;
         for (index, (addr, data)) in packets.iter().enumerate() {
             if data.len() > mtu {
@@ -558,8 +557,7 @@ impl UdpTransport {
                 );
                 continue;
             }
-            socket_packet_indexes.push(index);
-            socket_packets.push((*data, socket_addr));
+            socket_packets.push((index, *data, socket_addr));
         }
 
         let mut offset = 0usize;
@@ -567,7 +565,7 @@ impl UdpTransport {
             match socket.send_batch(&socket_packets[offset..]).await {
                 Ok(0) => {
                     self.stats.record_send_error();
-                    for index in socket_packet_indexes[offset..].iter().copied() {
+                    for (index, _, _) in socket_packets[offset..].iter().copied() {
                         record(
                             index,
                             Err(TransportError::SendFailed(
@@ -580,16 +578,17 @@ impl UdpTransport {
                 Ok(sent) => {
                     let end = offset.saturating_add(sent).min(socket_packets.len());
                     for batch_index in offset..end {
-                        let bytes_sent = socket_packets[batch_index].0.len();
+                        let (index, data, _) = socket_packets[batch_index];
+                        let bytes_sent = data.len();
                         self.stats.record_send(bytes_sent);
-                        record(socket_packet_indexes[batch_index], Ok(bytes_sent));
+                        record(index, Ok(bytes_sent));
                     }
                     offset = end;
                 }
                 Err(error) => {
                     self.stats.record_send_error();
                     let message = error.to_string();
-                    for index in socket_packet_indexes[offset..].iter().copied() {
+                    for (index, _, _) in socket_packets[offset..].iter().copied() {
                         record(index, Err(TransportError::SendFailed(message.clone())));
                     }
                     break;

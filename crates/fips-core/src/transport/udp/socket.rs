@@ -594,7 +594,7 @@ mod platform {
         /// is responsible for retrying remaining packets if
         /// `n < packets.len()`.
         #[cfg(target_os = "linux")]
-        pub fn send_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<usize> {
+        pub fn send_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> std::io::Result<usize> {
             let n = packets.len().min(SEND_BATCH_SIZE);
             if n == 0 {
                 return Ok(0);
@@ -608,7 +608,7 @@ mod platform {
             let mut msgs: [libc::mmsghdr; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
-                let (data, dest) = packets[i];
+                let (_, data, dest) = packets[i];
                 let sa: socket2::SockAddr = (dest).into();
                 let sa_len = sa.len();
                 debug_assert!(sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>());
@@ -755,7 +755,7 @@ mod platform {
         #[cfg(target_os = "linux")]
         pub async fn send_batch(
             &self,
-            packets: &[(&[u8], SocketAddr)],
+            packets: &[(usize, &[u8], SocketAddr)],
         ) -> Result<usize, TransportError> {
             loop {
                 let mut guard = self
