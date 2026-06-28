@@ -845,6 +845,42 @@
     }
 
     #[test]
+    fn outbound_owner_live_config_refresh_updates_existing_owner() {
+        let owner = OwnerId::fsp(35);
+        let stale_authority = crate::noise::SendCounterAuthority::new_for_test(35);
+        let refreshed_authority = crate::noise::SendCounterAuthority::new_for_test(350);
+        let coords_prefix = empty_fsp_coords_prefix();
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4), CopyCryptoWorker);
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_send_counter_authority(stale_authority),
+        );
+
+        mover.owner_mut(owner).unwrap().apply_live_config(
+            OwnerConfig::new(1, 8)
+                .with_send_counter_authority(refreshed_authority.clone())
+                .with_fsp_coords_warmup(1, coords_prefix.clone()),
+        );
+
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"refreshed"))
+            .unwrap();
+
+        let work = mover.dispatch_outbound_available(8);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].reservation.counter, 350);
+        assert_eq!(work[0].packet.fsp_cleartext_prefix, coords_prefix);
+        assert_eq!(
+            work[0].packet.wire,
+            OutboundWire::Fsp {
+                flags: crate::node::session_wire::FSP_FLAG_CP
+            }
+        );
+        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter(), 351);
+        assert_eq!(refreshed_authority.reserve().unwrap(), 351);
+    }
+
+    #[test]
     fn outbound_completions_retire_in_owner_order() {
         let owner = OwnerId::fmp(44);
         let key = 7;
