@@ -283,68 +283,6 @@
     }
 
     #[test]
-    fn live_output_sink_batches_endpoint_outputs_by_event_lane() {
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let source_addr = *source_peer.node_addr();
-        let owner = OwnerId::fsp_node(source_addr);
-        let mut tun = LiveTunRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
-        let mut drops = Vec::new();
-
-        let priority_a = opened_output(owner, 54, 0, OutputTarget::Endpoint, b"priority-a");
-        let priority_b = opened_output(owner, 55, 1, OutputTarget::Endpoint, b"priority-b");
-        let bulk = opened_output(
-            owner,
-            56,
-            2,
-            OutputTarget::Endpoint,
-            &vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1],
-        );
-
-        let sent = {
-            let endpoint = PacketMover2EndpointEventOutput::new(
-                &endpoint_io.event_tx,
-                |addr: &NodeAddr| {
-                    assert_eq!(addr, &source_addr);
-                    Some(source_peer)
-                },
-            );
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            sink.send_batch([priority_a, priority_b, bulk], &mut drops)
-        };
-
-        assert_eq!(sent, 3);
-        assert!(drops.is_empty());
-        match endpoint_io.event_rx.try_recv().expect("priority event") {
-            NodeEndpointEvent::DataBatch { messages, .. } => {
-                assert_eq!(messages.len(), 2);
-                assert_eq!(messages[0].source_peer, source_peer);
-                assert_eq!(messages[0].payload, b"priority-a");
-                assert_eq!(messages[1].source_peer, source_peer);
-                assert_eq!(messages[1].payload, b"priority-b");
-            }
-            event => panic!("expected priority endpoint batch, got {event:?}"),
-        }
-        match endpoint_io.event_rx.try_recv().expect("bulk event") {
-            NodeEndpointEvent::Data {
-                source_peer: delivered_source,
-                payload,
-                ..
-            } => {
-                assert_eq!(delivered_source, source_peer);
-                assert_eq!(payload.len(), ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1);
-                assert_eq!(payload[0], 0xbb);
-            }
-            event => panic!("expected bulk endpoint event, got {event:?}"),
-        }
-        assert!(endpoint_io.event_rx.try_recv().is_err());
-        assert!(tun.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
-    }
-
-    #[test]
     fn endpoint_event_output_reports_unavailable_when_endpoint_channel_is_closed() {
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");

@@ -667,31 +667,6 @@ pub(crate) trait PacketMover2EndpointOutput {
         output: &PacketOutput,
         payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError>;
-
-    fn send_endpoint_batch<I>(
-        &mut self,
-        outputs: I,
-        drops: &mut Vec<PacketMover2OutputDrop>,
-    ) -> usize
-    where
-        I: IntoIterator<Item = PacketMover2EndpointBatchItem>,
-    {
-        let mut sent = 0usize;
-        for item in outputs {
-            let mut drop = PacketMover2OutputDrop::from_output(
-                &item.output,
-                PacketMover2OutputError::Unavailable,
-            );
-            match self.send_endpoint(&item.output, item.payload) {
-                Ok(()) => sent += 1,
-                Err(reason) => {
-                    drop.reason = reason;
-                    drops.push(drop);
-                }
-            }
-        }
-        sent
-    }
 }
 
 impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut T {
@@ -701,29 +676,6 @@ impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut
         payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError> {
         (**self).send_endpoint(output, payload)
-    }
-
-    fn send_endpoint_batch<I>(
-        &mut self,
-        outputs: I,
-        drops: &mut Vec<PacketMover2OutputDrop>,
-    ) -> usize
-    where
-        I: IntoIterator<Item = PacketMover2EndpointBatchItem>,
-    {
-        (**self).send_endpoint_batch(outputs, drops)
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct PacketMover2EndpointBatchItem {
-    output: PacketOutput,
-    payload: PacketBuffer,
-}
-
-impl PacketMover2EndpointBatchItem {
-    fn new(output: PacketOutput, payload: PacketBuffer) -> Self {
-        Self { output, payload }
     }
 }
 
@@ -780,109 +732,6 @@ where
             })
             .map_err(|_| PacketMover2OutputError::Unavailable)
     }
-
-    fn send_endpoint_batch<I>(
-        &mut self,
-        outputs: I,
-        drops: &mut Vec<PacketMover2OutputDrop>,
-    ) -> usize
-    where
-        I: IntoIterator<Item = PacketMover2EndpointBatchItem>,
-    {
-        let mut sent = 0usize;
-        let mut messages = Vec::new();
-        let mut pending_drops = Vec::new();
-        let mut current_priority = None;
-
-        for item in outputs {
-            let priority = item.payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN;
-            if current_priority.is_some_and(|current| current != priority) {
-                sent +=
-                    self.flush_endpoint_delivery_batch(&mut messages, &mut pending_drops, drops);
-            }
-            current_priority = Some(priority);
-
-            let Some(source_addr) = item.output.owner().node_addr() else {
-                let mut drop = PacketMover2OutputDrop::from_output(
-                    &item.output,
-                    PacketMover2OutputError::NoRoute,
-                );
-                drop.reason = PacketMover2OutputError::NoRoute;
-                drops.push(drop);
-                continue;
-            };
-            let Some(source_peer) = self.resolver.resolve_endpoint_peer(&source_addr) else {
-                let mut drop = PacketMover2OutputDrop::from_output(
-                    &item.output,
-                    PacketMover2OutputError::NoRoute,
-                );
-                drop.reason = PacketMover2OutputError::NoRoute;
-                drops.push(drop);
-                continue;
-            };
-            if source_peer.node_addr() != &source_addr {
-                let mut drop = PacketMover2OutputDrop::from_output(
-                    &item.output,
-                    PacketMover2OutputError::NoRoute,
-                );
-                drop.reason = PacketMover2OutputError::NoRoute;
-                drops.push(drop);
-                continue;
-            }
-
-            pending_drops.push(PacketMover2OutputDrop::from_output(
-                &item.output,
-                PacketMover2OutputError::Unavailable,
-            ));
-            messages.push(EndpointDataDelivery::new(source_peer, item.payload));
-        }
-
-        sent + self.flush_endpoint_delivery_batch(&mut messages, &mut pending_drops, drops)
-    }
-}
-
-impl<Resolver> PacketMover2EndpointEventOutput<'_, Resolver>
-where
-    Resolver: PacketMover2EndpointIdentityResolver,
-{
-    fn flush_endpoint_delivery_batch(
-        &self,
-        messages: &mut Vec<EndpointDataDelivery>,
-        pending_drops: &mut Vec<PacketMover2OutputDrop>,
-        drops: &mut Vec<PacketMover2OutputDrop>,
-    ) -> usize {
-        let count = messages.len();
-        if count == 0 {
-            return 0;
-        }
-
-        let queued_at = crate::perf_profile::stamp();
-        let event = if count == 1 {
-            let message = messages.pop().expect("endpoint batch message");
-            NodeEndpointEvent::Data {
-                source_peer: message.source_peer,
-                payload: message.payload,
-                enqueued_at_ms: message.enqueued_at_ms,
-                queued_at,
-            }
-        } else {
-            NodeEndpointEvent::DataBatch {
-                messages: std::mem::take(messages),
-                queued_at,
-            }
-        };
-
-        match self.tx.send(event) {
-            Ok(()) => {
-                pending_drops.clear();
-                count
-            }
-            Err(_) => {
-                drops.append(pending_drops);
-                0
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -917,57 +766,6 @@ where
     Endpoint: PacketMover2EndpointOutput,
     Transport: PacketMover2TransportOutput,
 {
-    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
-    where
-        I: IntoIterator<Item = PacketOutput>,
-    {
-        let mut sent = 0usize;
-        let mut endpoint_batch = Vec::new();
-
-        for mut output in outputs {
-            if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
-                record_stale_bulk_output_drop(output.target());
-                let mut drop = PacketMover2OutputDrop::from_output(
-                    &output,
-                    PacketMover2OutputError::StaleQueuedBulk,
-                );
-                drop.reason = PacketMover2OutputError::StaleQueuedBulk;
-                drops.push(drop);
-                continue;
-            }
-
-            if output.target == OutputTarget::Endpoint {
-                match output.take_opened_payload() {
-                    Some(payload) => {
-                        endpoint_batch.push(PacketMover2EndpointBatchItem::new(output, payload));
-                    }
-                    None => drops.push(PacketMover2OutputDrop::from_output(
-                        &output,
-                        PacketMover2OutputError::Unavailable,
-                    )),
-                }
-                continue;
-            }
-
-            sent += self
-                .endpoint
-                .send_endpoint_batch(endpoint_batch.drain(..), drops);
-            let mut drop =
-                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
-            match self.send(output) {
-                Ok(()) => sent += 1,
-                Err(reason) => {
-                    drop.reason = reason;
-                    drops.push(drop);
-                }
-            }
-        }
-
-        sent + self
-            .endpoint
-            .send_endpoint_batch(endpoint_batch.drain(..), drops)
-    }
-
     fn send(&mut self, mut output: PacketOutput) -> Result<(), PacketMover2OutputError> {
         if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
             record_stale_bulk_output_drop(output.target());
