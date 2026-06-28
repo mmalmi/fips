@@ -24,7 +24,6 @@ pub(crate) struct TunWriteError {
 }
 
 impl TunWriteError {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn kind(&self) -> TunWriteErrorKind {
         self.kind
     }
@@ -46,50 +45,6 @@ impl std::fmt::Display for TunWriteError {
 impl std::error::Error for TunWriteError {}
 
 #[derive(Debug)]
-pub(crate) struct TunWriteBufferError {
-    kind: TunWriteErrorKind,
-}
-
-impl TunWriteBufferError {
-    pub(crate) fn kind(&self) -> TunWriteErrorKind {
-        self.kind
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum TunWritePacket {
-    Vec(Vec<u8>),
-    Buffer(crate::transport::PacketBuffer),
-}
-
-impl TunWritePacket {
-    fn into_vec(self) -> Vec<u8> {
-        match self {
-            Self::Vec(packet) => packet,
-            Self::Buffer(packet) => packet.into_vec(),
-        }
-    }
-}
-
-impl AsRef<[u8]> for TunWritePacket {
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            Self::Vec(packet) => packet,
-            Self::Buffer(packet) => packet.as_ref(),
-        }
-    }
-}
-
-impl AsMut<[u8]> for TunWritePacket {
-    fn as_mut(&mut self) -> &mut [u8] {
-        match self {
-            Self::Vec(packet) => packet.as_mut(),
-            Self::Buffer(packet) => packet.as_mut(),
-        }
-    }
-}
-
-#[derive(Debug)]
 struct TunWriteQueue {
     state: Mutex<TunWriteState>,
     ready: Condvar,
@@ -97,8 +52,8 @@ struct TunWriteQueue {
 
 #[derive(Debug)]
 struct TunWriteState {
-    priority: VecDeque<TunWritePacket>,
-    bulk: VecDeque<TunWritePacket>,
+    priority: VecDeque<Vec<u8>>,
+    bulk: VecDeque<Vec<u8>>,
     senders: usize,
     receiver_alive: bool,
     bulk_capacity: usize,
@@ -154,30 +109,12 @@ impl TunTx {
         packet: Vec<u8>,
         lane: TunWriteLane,
     ) -> Result<(), TunWriteError> {
-        self.send_packet_with_lane(TunWritePacket::Vec(packet), lane)
-            .map_err(|(packet, kind)| TunWriteError {
-                packet: packet.into_vec(),
-                kind,
-            })
-    }
-
-    pub(crate) fn send_buffer_with_lane(
-        &self,
-        packet: crate::transport::PacketBuffer,
-        lane: TunWriteLane,
-    ) -> Result<(), TunWriteBufferError> {
-        self.send_packet_with_lane(TunWritePacket::Buffer(packet), lane)
-            .map_err(|(_packet, kind)| TunWriteBufferError { kind })
-    }
-
-    fn send_packet_with_lane(
-        &self,
-        packet: TunWritePacket,
-        lane: TunWriteLane,
-    ) -> Result<(), (TunWritePacket, TunWriteErrorKind)> {
         let mut state = self.queue.lock();
         if !state.receiver_alive {
-            return Err((packet, TunWriteErrorKind::Closed));
+            return Err(TunWriteError {
+                packet,
+                kind: TunWriteErrorKind::Closed,
+            });
         }
 
         match lane {
@@ -187,7 +124,10 @@ impl TunTx {
                     crate::perf_profile::record_event(
                         crate::perf_profile::Event::TunWriteBulkDropped,
                     );
-                    return Err((packet, TunWriteErrorKind::BulkFull));
+                    return Err(TunWriteError {
+                        packet,
+                        kind: TunWriteErrorKind::BulkFull,
+                    });
                 }
                 let high_water = (state.bulk_capacity / 2).max(1);
                 let previous = state.bulk.len();
@@ -207,10 +147,6 @@ impl TunTx {
 
 impl TunRx {
     pub(crate) fn recv(&self) -> Option<Vec<u8>> {
-        self.recv_packet().map(TunWritePacket::into_vec)
-    }
-
-    pub(crate) fn recv_packet(&self) -> Option<TunWritePacket> {
         let mut state = self.queue.lock();
         loop {
             if let Some(packet) = state.priority.pop_front() {
@@ -235,10 +171,10 @@ impl TunRx {
     pub(crate) fn try_recv(&self) -> Result<Vec<u8>, mpsc::TryRecvError> {
         let mut state = self.queue.lock();
         if let Some(packet) = state.priority.pop_front() {
-            return Ok(packet.into_vec());
+            return Ok(packet);
         }
         if let Some(packet) = state.bulk.pop_front() {
-            return Ok(packet.into_vec());
+            return Ok(packet);
         }
         if state.senders == 0 {
             state.receiver_alive = false;
