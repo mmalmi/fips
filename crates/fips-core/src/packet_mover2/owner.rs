@@ -182,6 +182,20 @@ impl OwnerState {
         self.crypto_keys = Some(keys);
     }
 
+    pub(crate) fn apply_live_config(&mut self, config: OwnerConfig) {
+        if let Some(authority) = config.send_counter_authority {
+            self.set_send_counter_authority(authority);
+        }
+        if let Some(session_start_ms) = config.fmp_session_start_ms {
+            self.fmp_session_start_ms = Some(session_start_ms);
+        }
+        if let Some(session_start_ms) = config.fsp_session_start_ms {
+            self.fsp_session_start_ms = Some(session_start_ms);
+        }
+        self.fsp_coords_warmup_remaining = config.fsp_coords_warmup_remaining;
+        self.fsp_coords_prefix = config.fsp_coords_prefix;
+    }
+
     pub(crate) fn set_send_counter_authority(
         &mut self,
         authority: crate::noise::SendCounterAuthority,
@@ -192,15 +206,6 @@ impl OwnerState {
 
     pub(crate) fn set_fsp_session_start_ms(&mut self, session_start_ms: u64) {
         self.fsp_session_start_ms = Some(session_start_ms);
-    }
-
-    pub(crate) fn set_fsp_coords_warmup(&mut self, remaining: u8, prefix: Vec<u8>) {
-        self.fsp_coords_warmup_remaining = remaining;
-        self.fsp_coords_prefix = prefix;
-    }
-
-    pub(crate) fn set_fmp_session_start_ms(&mut self, session_start_ms: u64) {
-        self.fmp_session_start_ms = Some(session_start_ms);
     }
 
     fn crypto_keys(&self) -> Option<OwnerCryptoKeys> {

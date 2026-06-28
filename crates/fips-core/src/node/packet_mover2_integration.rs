@@ -20,8 +20,6 @@ struct PacketMover2FmpOwnerSeed {
     owner: OwnerId,
     config: OwnerConfig,
     keys: OwnerCryptoKeys,
-    counter_authority: crate::noise::SendCounterAuthority,
-    session_start_ms: u64,
     path: TransportPath,
     routes: PacketMover2LiveOwnerRoutes,
 }
@@ -30,10 +28,6 @@ struct PacketMover2FspOwnerSeed {
     owner: OwnerId,
     config: OwnerConfig,
     keys: OwnerCryptoKeys,
-    counter_authority: crate::noise::SendCounterAuthority,
-    session_start_ms: u64,
-    coords_warmup_remaining: u8,
-    coords_prefix: Vec<u8>,
     routes: PacketMover2LiveOwnerRoutes,
     next_hop: Option<NodeAddr>,
 }
@@ -527,17 +521,13 @@ impl Node {
         };
 
         self.packet_mover2
-            .register_owner_if_missing(seed.owner, seed.config);
+            .register_owner_if_missing(seed.owner, seed.config.clone());
         self.packet_mover2
             .set_owner_crypto_keys(seed.owner, seed.keys)
             .is_ok()
             && self
                 .packet_mover2
-                .set_owner_send_counter_authority(seed.owner, seed.counter_authority)
-                .is_ok()
-            && self
-                .packet_mover2
-                .set_owner_fmp_session_start_ms(seed.owner, seed.session_start_ms)
+                .apply_owner_live_config(seed.owner, seed.config)
                 .is_ok()
             && self
                 .packet_mover2
@@ -561,7 +551,7 @@ impl Node {
         };
 
         self.packet_mover2
-            .register_owner_if_missing(seed.owner, seed.config);
+            .register_owner_if_missing(seed.owner, seed.config.clone());
         let next_hop_ready = seed
             .next_hop
             .is_none_or(|next_hop| self.sync_packet_mover2_fmp_owner(&next_hop));
@@ -570,19 +560,7 @@ impl Node {
             .is_ok()
             && self
                 .packet_mover2
-                .set_owner_send_counter_authority(seed.owner, seed.counter_authority)
-                .is_ok()
-            && self
-                .packet_mover2
-                .set_owner_fsp_session_start_ms(seed.owner, seed.session_start_ms)
-                .is_ok()
-            && self
-                .packet_mover2
-                .set_owner_fsp_coords_warmup(
-                    seed.owner,
-                    seed.coords_warmup_remaining,
-                    seed.coords_prefix,
-                )
+                .apply_owner_live_config(seed.owner, seed.config)
                 .is_ok()
             && self
                 .packet_mover2
@@ -627,11 +605,9 @@ impl Node {
             owner: OwnerId::fmp_node(*node_addr),
             config: self
                 .packet_mover2_owner_config(INITIAL_FMP_GENERATION)
-                .with_send_counter_authority(counter_authority.clone())
+                .with_send_counter_authority(counter_authority)
                 .with_fmp_session_start_ms(session_start_ms),
             keys: OwnerCryptoKeys::new(open, seal),
-            counter_authority,
-            session_start_ms,
             path: TransportPath::live(transport_id, remote_addr),
             routes,
         })
@@ -680,14 +656,10 @@ impl Node {
             owner: OwnerId::fsp_node(*node_addr),
             config: self
                 .packet_mover2_owner_config(INITIAL_FSP_GENERATION)
-                .with_send_counter_authority(counter_authority.clone())
+                .with_send_counter_authority(counter_authority)
                 .with_fsp_session_start_ms(session_start_ms)
-                .with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix.clone()),
+                .with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix),
             keys: OwnerCryptoKeys::new(Arc::new(open), Arc::new(seal)),
-            counter_authority,
-            session_start_ms,
-            coords_warmup_remaining,
-            coords_prefix,
             routes,
             next_hop,
         })
