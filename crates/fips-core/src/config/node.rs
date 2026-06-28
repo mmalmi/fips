@@ -56,53 +56,6 @@ impl LimitsConfig {
     }
 }
 
-/// Test-only parser coverage for retired connected UDP config (`node.connected_udp.*`).
-///
-/// Production config no longer exposes a connected-UDP runtime path or
-/// env-selected opener mode. Unknown `node.connected_udp` entries in old files
-/// are ignored by production deserialization.
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectedUdpConfig {
-    /// Legacy parse-only flag (`node.connected_udp.enabled`).
-    #[serde(default = "ConnectedUdpConfig::default_enabled")]
-    pub enabled: bool,
-
-    /// Legacy parse-only peer cap (`node.connected_udp.max_peers`).
-    #[serde(default = "ConnectedUdpConfig::default_max_peers")]
-    pub max_peers: usize,
-
-    /// Legacy parse-only fd reserve (`node.connected_udp.fd_reserve`).
-    #[serde(default = "ConnectedUdpConfig::default_fd_reserve")]
-    pub fd_reserve: usize,
-}
-
-#[cfg(test)]
-impl Default for ConnectedUdpConfig {
-    fn default() -> Self {
-        Self {
-            enabled: Self::default_enabled(),
-            max_peers: Self::default_max_peers(),
-            fd_reserve: Self::default_fd_reserve(),
-        }
-    }
-}
-
-#[cfg(test)]
-impl ConnectedUdpConfig {
-    fn default_enabled() -> bool {
-        false
-    }
-
-    fn default_max_peers() -> usize {
-        0
-    }
-
-    fn default_fd_reserve() -> usize {
-        128
-    }
-}
-
 /// Rate limiting (`node.rate_limit.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
@@ -751,11 +704,6 @@ pub struct NodeConfig {
     #[serde(default)]
     pub limits: LimitsConfig,
 
-    /// Test-only parser coverage for retired connected UDP config.
-    #[cfg(test)]
-    #[serde(default)]
-    pub connected_udp: ConnectedUdpConfig,
-
     /// Rate limiting (`node.rate_limit.*`).
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
@@ -841,8 +789,6 @@ impl Default for NodeConfig {
             link_dead_timeout_secs: 30,
             fast_link_dead_timeout_secs: 5,
             limits: LimitsConfig::default(),
-            #[cfg(test)]
-            connected_udp: ConnectedUdpConfig::default(),
             rate_limit: RateLimitConfig::default(),
             retry: RetryConfig::default(),
             cache: CacheConfig::default(),

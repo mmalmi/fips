@@ -33,8 +33,6 @@ use thiserror::Error;
 pub use crate::discovery::local::LocalInstanceDiscoveryConfig;
 #[cfg(target_os = "linux")]
 pub use gateway::{ConntrackConfig, GatewayConfig, GatewayDnsConfig, PortForward, Proto};
-#[cfg(test)]
-pub use node::ConnectedUdpConfig;
 pub use node::{
     BloomConfig, BuffersConfig, CacheConfig, ControlConfig, DiscoveryConfig, LimitsConfig,
     NodeConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, RateLimitConfig, RekeyConfig,
