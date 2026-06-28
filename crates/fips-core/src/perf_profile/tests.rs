@@ -723,12 +723,12 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "reserved_event_157"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent188 as usize).name(),
-        "reserved_event_188"
+        event_from_index(Event::DecryptFspPathWorkerOpen as usize).name(),
+        "decrypt_fsp_path_worker_open"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent189 as usize).name(),
-        "reserved_event_189"
+        event_from_index(Event::DecryptFspPathWorkerOpenBulk as usize).name(),
+        "decrypt_fsp_path_worker_open_bulk"
     );
     assert_eq!(
         event_from_index(Event::DecryptFspOwnerHandoffDropped as usize).name(),

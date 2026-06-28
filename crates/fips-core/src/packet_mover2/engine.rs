@@ -291,8 +291,15 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             retired.extend(self.retire_completion(completion));
         }
 
+        let mut fsp_worker_open = 0u64;
+        let mut fsp_worker_open_bulk = 0u64;
         for work in open_work.drain(..) {
             let reservation = work.reservation.clone();
+            count_fsp_worker_open_dispatch(
+                &reservation,
+                &mut fsp_worker_open,
+                &mut fsp_worker_open_bulk,
+            );
             let completion = match self.owner_crypto_keys(reservation.owner) {
                 Some(keys) => match AeadOpenWork::from_crypto_work(work, keys.open) {
                     Ok(work) => opened.execute(work),
@@ -308,6 +315,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             };
             retired.extend(self.retire_completion(completion));
         }
+        record_fsp_worker_open_dispatch(fsp_worker_open, fsp_worker_open_bulk);
 
         for work in seal_work.drain(..) {
             let reservation = work.reservation.clone();
@@ -343,5 +351,41 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
     #[cfg(test)]
     fn outbound_queue_lens(&self) -> (usize, usize) {
         self.outbound_admission.lens()
+    }
+}
+
+fn count_fsp_worker_open_dispatch(
+    reservation: &OwnerReservation,
+    total: &mut u64,
+    bulk: &mut u64,
+) {
+    if reservation.owner.protocol() != PacketProtocol::Fsp {
+        return;
+    }
+
+    *total += 1;
+    if reservation.lane == Lane::Bulk {
+        *bulk += 1;
+    }
+}
+
+fn record_fsp_worker_open_dispatch(total: u64, bulk: u64) {
+    if total == 0 {
+        return;
+    }
+
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptFspOwnerSame,
+        total,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptFspPathWorkerOpen,
+        total,
+    );
+    if bulk > 0 {
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::DecryptFspPathWorkerOpenBulk,
+            bulk,
+        );
     }
 }
