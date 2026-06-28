@@ -250,7 +250,7 @@ impl<'a> PipelinedEndpointRuntimeSend<'a> {
         peers: &mut crate::node::PeerLifecycleRegistry,
     ) -> Result<Option<PipelinedEndpointRuntimeSendDispatch<'a>>, PipelinedEndpointRuntimeSendError>
     {
-        let TransportHandle::Udp(udp) = transport else {
+        let crate::transport::TransportHandle::Udp(udp) = transport else {
             return Ok(None);
         };
         let Some(send_target) = self.runtime_plan.resolve_send_target(udp).await else {
@@ -660,13 +660,14 @@ impl<'a> PipelinedEndpointWirePlan<'a> {
 
     fn build(
         &self,
-        fmp_header: [u8; ESTABLISHED_HEADER_SIZE],
+        fmp_header: [u8; crate::node::wire::ESTABLISHED_HEADER_SIZE],
         fsp_header: [u8; FSP_HEADER_SIZE],
         timestamp_ms: u32,
     ) -> PipelinedEndpointWire {
         let fmp_inner_len = self.fmp_payload_len as usize;
 
-        let wire_capacity = ESTABLISHED_HEADER_SIZE + fmp_inner_len + crate::noise::TAG_SIZE;
+        let wire_capacity =
+            crate::node::wire::ESTABLISHED_HEADER_SIZE + fmp_inner_len + crate::noise::TAG_SIZE;
         let mut wire_buf = Vec::with_capacity(wire_capacity);
         wire_buf.extend_from_slice(&fmp_header);
         wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
@@ -704,7 +705,7 @@ impl PipelinedEndpointWire {
     ) -> PipelinedEndpointWorkerWire {
         debug_assert_eq!(self.wire_capacity, fmp_reservation.predicted_bytes);
         debug_assert_eq!(
-            &self.wire_buf[..ESTABLISHED_HEADER_SIZE],
+            &self.wire_buf[..crate::node::wire::ESTABLISHED_HEADER_SIZE],
             &fmp_reservation.header
         );
         debug_assert_eq!(
