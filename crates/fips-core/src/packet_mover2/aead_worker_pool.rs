@@ -15,14 +15,15 @@ impl PacketMover2AeadJob {
     }
 }
 
-struct PacketMover2QueuedAeadJob {
-    job: PacketMover2AeadJob,
-    completion_tx: crossbeam_channel::Sender<CryptoCompletion>,
+struct PacketMover2QueuedAeadBatch {
+    jobs: Vec<PacketMover2AeadJob>,
+    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletion>>,
 }
 
 struct PacketMover2AeadWorkerPool {
-    priority_tx: crossbeam_channel::Sender<PacketMover2QueuedAeadJob>,
-    bulk_tx: crossbeam_channel::Sender<PacketMover2QueuedAeadJob>,
+    priority_tx: crossbeam_channel::Sender<PacketMover2QueuedAeadBatch>,
+    bulk_tx: crossbeam_channel::Sender<PacketMover2QueuedAeadBatch>,
+    workers: usize,
 }
 
 impl PacketMover2AeadWorkerPool {
@@ -43,6 +44,7 @@ impl PacketMover2AeadWorkerPool {
         Self {
             priority_tx,
             bulk_tx,
+            workers,
         }
     }
 
@@ -56,30 +58,64 @@ impl PacketMover2AeadWorkerPool {
             return;
         }
 
-        let (completion_tx, completion_rx) = crossbeam_channel::bounded(count);
+        let (completion_tx, completion_rx) = crossbeam_channel::bounded(self.workers * 2);
+        let mut priority_jobs = Vec::new();
+        let mut bulk_jobs = Vec::new();
         for job in jobs.drain(..) {
-            self.dispatch(PacketMover2QueuedAeadJob {
-                job,
-                completion_tx: completion_tx.clone(),
-            });
+            match job.lane() {
+                Lane::Priority => priority_jobs.push(job),
+                Lane::Bulk => bulk_jobs.push(job),
+            }
         }
+
+        let mut batches = 0usize;
+        batches += self.dispatch_lane_jobs(priority_jobs, Lane::Priority, &completion_tx);
+        batches += self.dispatch_lane_jobs(bulk_jobs, Lane::Bulk, &completion_tx);
         drop(completion_tx);
 
-        for completion in completion_rx.iter().take(count) {
-            completions.push(completion);
+        for batch in completion_rx.iter().take(batches) {
+            completions.extend(batch);
         }
     }
 
-    fn dispatch(&self, queued: PacketMover2QueuedAeadJob) {
-        let lane = queued.job.lane();
+    fn dispatch_lane_jobs(
+        &self,
+        mut jobs: Vec<PacketMover2AeadJob>,
+        lane: Lane,
+        completion_tx: &crossbeam_channel::Sender<Vec<CryptoCompletion>>,
+    ) -> usize {
+        let mut batches = 0usize;
+        let chunk_size = packet_mover2_aead_chunk_size(jobs.len(), self.workers);
+        while !jobs.is_empty() {
+            let tail = if jobs.len() > chunk_size {
+                jobs.split_off(chunk_size)
+            } else {
+                Vec::new()
+            };
+            let queued = PacketMover2QueuedAeadBatch {
+                jobs,
+                completion_tx: completion_tx.clone(),
+            };
+            self.dispatch(queued, lane);
+            batches += 1;
+            jobs = tail;
+        }
+        batches
+    }
+
+    fn dispatch(&self, queued: PacketMover2QueuedAeadBatch, lane: Lane) {
         let result = match lane {
             Lane::Priority => self.priority_tx.send(queued),
             Lane::Bulk => self.bulk_tx.send(queued),
         };
         if let Err(error) = result {
             let queued = error.into_inner();
-            let completion = packet_mover2_aead_failed_completion(queued.job);
-            let _ = queued.completion_tx.send(completion);
+            let completions = queued
+                .jobs
+                .into_iter()
+                .map(packet_mover2_aead_failed_completion)
+                .collect();
+            let _ = queued.completion_tx.send(completions);
         }
     }
 }
@@ -104,9 +140,18 @@ fn packet_mover2_aead_bulk_queue_cap() -> usize {
     4096
 }
 
+fn packet_mover2_aead_chunk_size(jobs: usize, workers: usize) -> usize {
+    if jobs == 0 {
+        return 1;
+    }
+
+    let chunks = jobs.min(workers.max(1));
+    jobs.div_ceil(chunks)
+}
+
 fn run_packet_mover2_aead_worker(
-    priority_rx: crossbeam_channel::Receiver<PacketMover2QueuedAeadJob>,
-    bulk_rx: crossbeam_channel::Receiver<PacketMover2QueuedAeadJob>,
+    priority_rx: crossbeam_channel::Receiver<PacketMover2QueuedAeadBatch>,
+    bulk_rx: crossbeam_channel::Receiver<PacketMover2QueuedAeadBatch>,
 ) {
     loop {
         let queued = match priority_rx.try_recv() {
@@ -126,8 +171,12 @@ fn run_packet_mover2_aead_worker(
             }
         };
 
-        let completion = execute_packet_mover2_aead_job(queued.job);
-        let _ = queued.completion_tx.send(completion);
+        let completions = queued
+            .jobs
+            .into_iter()
+            .map(execute_packet_mover2_aead_job)
+            .collect();
+        let _ = queued.completion_tx.send(completions);
     }
 }
 
