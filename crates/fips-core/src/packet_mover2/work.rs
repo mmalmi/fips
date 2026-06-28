@@ -356,6 +356,7 @@ impl AdmissionBatchSummary {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PacketMoverTurn {
     dispatched: usize,
@@ -363,6 +364,7 @@ pub(crate) struct PacketMoverTurn {
     drops: Vec<PacketDrop>,
 }
 
+#[cfg(test)]
 impl PacketMoverTurn {
     pub(crate) fn dispatched(&self) -> usize {
         self.dispatched

@@ -84,12 +84,6 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         }
     }
 
-    pub(crate) fn dispatch_available(&mut self, limit: usize) -> Vec<CryptoWork> {
-        let mut work = Vec::new();
-        self.dispatch_available_into(limit, &mut work);
-        work
-    }
-
     pub(crate) fn dispatch_available_into(
         &mut self,
         limit: usize,
@@ -126,12 +120,6 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         }
 
         work.len()
-    }
-
-    pub(crate) fn dispatch_outbound_available(&mut self, limit: usize) -> Vec<OutboundCryptoWork> {
-        let mut work = Vec::new();
-        self.dispatch_outbound_available_into(limit, &mut work);
-        work
     }
 
     pub(crate) fn dispatch_outbound_available_into(
@@ -230,10 +218,6 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         work.len()
     }
 
-    pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
-        self.worker.execute(work)
-    }
-
     pub(crate) fn retire_completion(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
         let Some(owner) = self.owners.get_mut(&completion.reservation.owner) else {
             return vec![RetiredPacket::Drop(PacketDrop::from_completion(
@@ -252,11 +236,32 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         retired
     }
 
+    #[cfg(test)]
+    pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
+        self.worker.execute(work)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dispatch_available(&mut self, limit: usize) -> Vec<CryptoWork> {
+        let mut work = Vec::new();
+        self.dispatch_available_into(limit, &mut work);
+        work
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dispatch_outbound_available(&mut self, limit: usize) -> Vec<OutboundCryptoWork> {
+        let mut work = Vec::new();
+        self.dispatch_outbound_available_into(limit, &mut work);
+        work
+    }
+
+    #[cfg(test)]
     pub(crate) fn run_available(&mut self, limit: usize) -> PacketMoverTurn {
         let mut work = Vec::new();
         self.run_available_with_work_buffer(limit, &mut work)
     }
 
+    #[cfg(test)]
     pub(crate) fn run_available_with_work_buffer(
         &mut self,
         limit: usize,
@@ -275,12 +280,14 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn run_aead_available(&mut self, limit: usize) -> PacketMoverTurn {
         let mut open_work = Vec::new();
         let mut seal_work = Vec::new();
         self.run_aead_available_with_work_buffers(limit, &mut open_work, &mut seal_work)
     }
 
+    #[cfg(test)]
     pub(crate) fn run_aead_available_with_work_buffers(
         &mut self,
         limit: usize,
