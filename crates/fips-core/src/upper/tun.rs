@@ -429,17 +429,18 @@ impl TunWriter {
 
         debug!(name = %self.name, max_mss = self.max_mss, "TUN writer starting");
 
-        for mut packet in self.rx {
+        while let Some(mut packet) = self.rx.recv_packet() {
             // Per-destination clamp: peer IPv6 source address (bytes 8..24)
             // identifies the flow's remote end. If discovery has learned a
             // smaller path MTU for that peer, tighten the ceiling.
-            let effective_max_mss = if packet.len() >= 24 {
-                per_flow_max_mss(&self.path_mtu_lookup, &packet[8..24], self.max_mss)
+            let packet_bytes = packet.as_ref();
+            let effective_max_mss = if packet_bytes.len() >= 24 {
+                per_flow_max_mss(&self.path_mtu_lookup, &packet_bytes[8..24], self.max_mss)
             } else {
                 self.max_mss
             };
             // Clamp TCP MSS on inbound SYN-ACK packets
-            if clamp_tcp_mss(&mut packet, effective_max_mss) {
+            if clamp_tcp_mss(packet.as_mut(), effective_max_mss) {
                 trace!(
                     name = %self.name,
                     max_mss = effective_max_mss,
@@ -454,6 +455,7 @@ impl TunWriter {
             #[cfg(target_os = "macos")]
             let write_result = {
                 use std::os::unix::io::AsRawFd;
+                let packet = packet.as_ref();
                 let af_header = utun_af_inet6_header();
                 let iov = [
                     libc::iovec {
@@ -481,7 +483,7 @@ impl TunWriter {
                 }
             };
             #[cfg(not(target_os = "macos"))]
-            let write_result = self.file.write_all(&packet);
+            let write_result = self.file.write_all(packet.as_ref());
 
             if let Err(e) = write_result {
                 // "Bad address" is expected during shutdown when interface is deleted
@@ -491,7 +493,7 @@ impl TunWriter {
                 }
                 error!(name = %self.name, error = %e, "TUN write error");
             } else {
-                trace!(name = %self.name, len = packet.len(), "TUN packet written");
+                trace!(name = %self.name, len = packet.as_ref().len(), "TUN packet written");
             }
         }
     }
