@@ -236,7 +236,7 @@ impl PacketMover2 {
 
     #[cfg(test)]
     pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
-        CopyCryptoWorker.execute(work)
+        copy_crypto_completion(work)
     }
 
     #[cfg(test)]
@@ -268,7 +268,7 @@ impl PacketMover2 {
         let dispatched = self.dispatch_available_into(limit, work);
         let mut retired = Vec::new();
         for work in work.drain(..) {
-            let completion = CopyCryptoWorker.execute(work);
+            let completion = copy_crypto_completion(work);
             retired.extend(self.retire_completion(completion));
         }
         PacketMoverTurn {

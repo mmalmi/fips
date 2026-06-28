@@ -1,34 +1,23 @@
 #[cfg(test)]
-pub(crate) trait StatelessCryptoWorker {
-    fn execute(&self, work: CryptoWork) -> CryptoCompletion;
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct CopyCryptoWorker;
-
-#[cfg(test)]
-impl StatelessCryptoWorker for CopyCryptoWorker {
-    fn execute(&self, work: CryptoWork) -> CryptoCompletion {
-        let output = PacketOutput {
-            owner: work.packet.owner,
-            counter: work.packet.counter,
-            ingress_seq: work.reservation.ingress_seq,
-            lane: work.reservation.lane,
-            target: work.packet.output,
-            source_path: work.reservation.source_path.clone(),
-            previous_hop: work.reservation.previous_hop,
-            ce_flag: work.reservation.ce_flag,
-            path: work.reservation.output_path.clone(),
-            activity_tick: work.reservation.activity_tick,
-            fmp_timestamp_ms: work.reservation.fmp_timestamp_ms,
-            source_wire_len: Some(work.packet.payload.len()),
-            payload: work.packet.payload,
-        };
-        CryptoCompletion {
-            reservation: work.reservation,
-            result: CryptoResult::Opened(output),
-        }
+pub(crate) fn copy_crypto_completion(work: CryptoWork) -> CryptoCompletion {
+    let output = PacketOutput {
+        owner: work.packet.owner,
+        counter: work.packet.counter,
+        ingress_seq: work.reservation.ingress_seq,
+        lane: work.reservation.lane,
+        target: work.packet.output,
+        source_path: work.reservation.source_path.clone(),
+        previous_hop: work.reservation.previous_hop,
+        ce_flag: work.reservation.ce_flag,
+        path: work.reservation.output_path.clone(),
+        activity_tick: work.reservation.activity_tick,
+        fmp_timestamp_ms: work.reservation.fmp_timestamp_ms,
+        source_wire_len: Some(work.packet.payload.len()),
+        payload: work.packet.payload,
+    };
+    CryptoCompletion {
+        reservation: work.reservation,
+        result: CryptoResult::Opened(output),
     }
 }
 

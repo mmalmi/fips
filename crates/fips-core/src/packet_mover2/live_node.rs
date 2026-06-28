@@ -347,10 +347,6 @@ impl PacketMover2LiveNode {
         &mut self.routes
     }
 
-    pub(crate) fn deferred_endpoint_commands(&self) -> &[NodeEndpointCommand] {
-        &self.deferred_endpoint_commands
-    }
-
     pub(crate) fn take_deferred_endpoint_commands(&mut self) -> Vec<NodeEndpointCommand> {
         std::mem::take(&mut self.deferred_endpoint_commands)
     }

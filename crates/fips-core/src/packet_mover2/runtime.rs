@@ -58,10 +58,6 @@ impl PacketMover2TurnDriver {
         self.mover.owner_mut(owner)
     }
 
-    pub(crate) fn mover_mut(&mut self) -> &mut PacketMover2 {
-        &mut self.mover
-    }
-
     pub(crate) fn run_aead_classified_turn<I, O>(
         &mut self,
         inbound: I,

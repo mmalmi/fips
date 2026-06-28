@@ -46,7 +46,6 @@ use thiserror::Error;
 pub use handshake::HandshakeState;
 pub use replay::{ReplayRejection, ReplayWindow};
 pub use session::NoiseSession;
-#[cfg(unix)]
 pub(crate) use session::SendCounterAuthority;
 
 /// Protocol name for Noise IK with secp256k1 (link layer).

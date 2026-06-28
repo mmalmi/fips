@@ -403,6 +403,7 @@ impl<S> PacketMover2LiveRawIngressSource<S> {
         Self { source }
     }
 
+    #[cfg(test)]
     pub(crate) fn source_mut(&mut self) -> &mut S {
         &mut self.source
     }
