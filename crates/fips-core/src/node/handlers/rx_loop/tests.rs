@@ -3,12 +3,6 @@ use super::drain::{
     RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
 use crate::control::protocol::Request;
-#[cfg(unix)]
-use crate::{
-    Identity,
-    node::session::{EndToEndState, SessionEntry},
-    noise::HandshakeState,
-};
 use std::time::{Duration, Instant};
 
 fn closed_scratch_sinks() -> (crate::upper::tun::TunTx, crate::node::EndpointEventSender) {
@@ -17,35 +11,6 @@ fn closed_scratch_sinks() -> (crate::upper::tun::TunTx, crate::node::EndpointEve
     let (endpoint_tx, endpoint_rx) = crate::node::EndpointEventSender::channel(1);
     drop(endpoint_rx);
     (tun_tx, endpoint_tx)
-}
-
-#[cfg(unix)]
-fn make_xk_session(initiator: &Identity, responder: &Identity) -> crate::noise::NoiseSession {
-    let mut initiator_hs =
-        HandshakeState::new_xk_initiator(initiator.keypair(), responder.pubkey_full());
-    let mut responder_hs = HandshakeState::new_xk_responder(responder.keypair());
-    initiator_hs.set_local_epoch([1u8; 8]);
-    responder_hs.set_local_epoch([2u8; 8]);
-
-    let msg1 = initiator_hs.write_xk_message_1().unwrap();
-    responder_hs.read_xk_message_1(&msg1).unwrap();
-    let msg2 = responder_hs.write_xk_message_2().unwrap();
-    initiator_hs.read_xk_message_2(&msg2).unwrap();
-    let msg3 = initiator_hs.write_xk_message_3().unwrap();
-    responder_hs.read_xk_message_3(&msg3).unwrap();
-
-    initiator_hs.into_session().unwrap()
-}
-
-#[cfg(unix)]
-fn established_entry(local: &Identity, peer: &Identity) -> SessionEntry {
-    SessionEntry::new(
-        *peer.node_addr(),
-        peer.pubkey_full(),
-        EndToEndState::Established(make_xk_session(local, peer)),
-        1_000,
-        true,
-    )
 }
 
 #[test]
@@ -84,7 +49,7 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     assert!(drained.data_pressure(false));
     assert!(drained.data_pressure(true));
 
-    let control_only = RxLoopDataDrainStats::with_control(0, 0, 0, 0, 2);
+    let control_only = RxLoopDataDrainStats::with_control(0, 0, 0, 2);
     assert_eq!(control_only.data_total(), 0);
     assert_eq!(control_only.total(), 2);
     assert!(control_only.has_drained());
@@ -110,7 +75,6 @@ async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
     let (scratch_tun_tx, scratch_endpoint_tx) = closed_scratch_sinks();
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
-    let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
     let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
@@ -140,7 +104,6 @@ async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
         .drain_rx_loop_side_queues(
             &mut packet_rx,
             &mut control_rx,
-            &mut feedback_rx,
             &mut tun_rx,
             &mut endpoint_priority_rx,
             &mut endpoint_rx,
@@ -159,7 +122,6 @@ async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
         "endpoint batch overrun must not consume the TUN reserved slice"
     );
     assert_eq!(drained.control, 0);
-    assert_eq!(drained.endpoint_feedback, 0);
     assert!(endpoint_rx.try_recv().is_err());
     assert!(tun_rx.try_recv().is_err());
 }
@@ -346,69 +308,6 @@ async fn packet_mover2_scratch_turn_reports_raw_ingress_failures() {
     assert!(packet_rx.try_recv().is_err());
     assert!(tun_rx.try_recv().is_err());
     assert!(endpoint_io.event_rx.try_recv().is_err());
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_liveness() {
-    let local = Identity::generate();
-    let dest = Identity::generate();
-    let next_hop = Identity::generate();
-    let dest_addr = *dest.node_addr();
-    let next_hop_addr = *next_hop.node_addr();
-
-    let mut node =
-        crate::node::Node::with_identity(local, crate::config::Config::new()).expect("node");
-    let mut session = established_entry(&node.identity, &dest);
-    session.mark_established(1_000);
-    session.init_mmp(&node.config.node.session_mmp);
-    assert!(node.sessions.insert(dest_addr, session).is_none());
-
-    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let (scratch_tun_tx, scratch_endpoint_tx) = closed_scratch_sinks();
-
-    feedback_tx
-        .send(crate::node::EndpointBulkSendFeedback {
-            records: vec![crate::node::EndpointBulkSendFeedbackRecord {
-                dest_addr,
-                next_hop_addr,
-                fmp_counter: 3,
-                fmp_timestamp_ms: 4,
-                fmp_wire_capacity: 128,
-                originated_bytes: 96,
-                session_bookkeeping: crate::node::EndpointBulkSendSessionBookkeeping::Fsp {
-                    path_mtu: 1234,
-                    bookkeeping: crate::node::FspSendBookkeepingInput::data(80, 5, 6, 96, 2_000)
-                        .with_next_hop(next_hop_addr),
-                },
-            }],
-        })
-        .await
-        .expect("feedback queued");
-
-    let drained = node
-        .drain_rx_loop_data_queues(
-            &mut packet_rx,
-            &mut feedback_rx,
-            &mut tun_rx,
-            &mut endpoint_priority_rx,
-            &mut endpoint_rx,
-            &scratch_tun_tx,
-            &scratch_endpoint_tx,
-            NON_PACKET_DRAIN_BUDGET,
-        )
-        .await;
-
-    assert_eq!(drained.endpoint_feedback, 1);
-    assert!(drained.has_data_drained());
-    assert!(feedback_rx.is_empty());
-    let session = node.sessions.get(&dest_addr).expect("session remains");
-    assert_eq!(session.last_outbound_next_hop(), Some(next_hop_addr));
-    assert_eq!(session.traffic_counters().0, 1);
 }
 
 #[test]

@@ -462,25 +462,12 @@ impl Node {
         dest: NodeAddr,
         now_ms: u64,
     ) -> bool {
-        let changed = self.session_direct_degradation.mark_degraded(
-            dest,
-            now_ms,
-            SESSION_DIRECT_DEGRADED_HOLD_MS,
-        );
-        #[cfg(unix)]
-        if changed && let Some(runtime) = &self.endpoint_bulk_send_runtime {
-            runtime.invalidate(&dest);
-        }
-        changed
+        self.session_direct_degradation
+            .mark_degraded(dest, now_ms, SESSION_DIRECT_DEGRADED_HOLD_MS)
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
-        let changed = self.session_direct_degradation.clear(dest);
-        #[cfg(unix)]
-        if changed && let Some(runtime) = &self.endpoint_bulk_send_runtime {
-            runtime.invalidate(dest);
-        }
-        changed
+        self.session_direct_degradation.clear(dest)
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded_after_promotion(

@@ -521,13 +521,13 @@ pub enum Event {
     FspAeadCompletionAeadFailed = 98,
     FspAeadCompletionReplayDropped = 99,
     FspAeadCompletionReadyMulti = 100,
-    EndpointBulkFastPathPrepareFailed = 101,
-    EndpointBulkFastPathStageFull = 102,
-    EndpointBulkFastPathFeedbackFull = 103,
-    EndpointBulkFastPathAttempt = 104,
-    EndpointBulkFastPathDispatched = 105,
-    EndpointBulkFastPathLeaseMiss = 106,
-    EndpointBulkFastPathIneligible = 107,
+    ReservedEvent101 = 101,
+    ReservedEvent102 = 102,
+    ReservedEvent103 = 103,
+    ReservedEvent104 = 104,
+    ReservedEvent105 = 105,
+    ReservedEvent106 = 106,
+    ReservedEvent107 = 107,
     LinuxWgBatchChunk = 108,
     LinuxWgBatchChunkPackets = 109,
     LinuxWgBatchChunkFull = 110,
@@ -538,10 +538,10 @@ pub enum Event {
     FmpSendGroupSplitLane = 115,
     FmpSendGroupSplitBackpressure = 116,
     FmpSendGroupSplitPacketCap = 117,
-    EndpointCommittedBulkDispatchBatch = 118,
-    EndpointCommittedBulkDispatchPackets = 119,
-    EndpointCommittedBulkDispatchMergedBatch = 120,
-    EndpointCommittedBulkDispatchMergedPackets = 121,
+    ReservedEvent118 = 118,
+    ReservedEvent119 = 119,
+    ReservedEvent120 = 120,
+    ReservedEvent121 = 121,
     FspAeadCompletionStaleSession = 122,
     FspAeadCompletionStaleOrder = 123,
     FspAeadCompletionStaleTicket = 124,
@@ -757,13 +757,13 @@ impl Event {
             Event::FspAeadCompletionAeadFailed => "fsp_aead_completion_aead_failed",
             Event::FspAeadCompletionReplayDropped => "fsp_aead_completion_replay_dropped",
             Event::FspAeadCompletionReadyMulti => "fsp_aead_completion_ready_multi",
-            Event::EndpointBulkFastPathPrepareFailed => "endpoint_bulk_fast_path_prepare_failed",
-            Event::EndpointBulkFastPathStageFull => "endpoint_bulk_fast_path_stage_full",
-            Event::EndpointBulkFastPathFeedbackFull => "endpoint_bulk_fast_path_feedback_full",
-            Event::EndpointBulkFastPathAttempt => "endpoint_bulk_fast_path_attempt",
-            Event::EndpointBulkFastPathDispatched => "endpoint_bulk_fast_path_dispatched",
-            Event::EndpointBulkFastPathLeaseMiss => "endpoint_bulk_fast_path_lease_miss",
-            Event::EndpointBulkFastPathIneligible => "endpoint_bulk_fast_path_ineligible",
+            Event::ReservedEvent101 => "reserved_event_101",
+            Event::ReservedEvent102 => "reserved_event_102",
+            Event::ReservedEvent103 => "reserved_event_103",
+            Event::ReservedEvent104 => "reserved_event_104",
+            Event::ReservedEvent105 => "reserved_event_105",
+            Event::ReservedEvent106 => "reserved_event_106",
+            Event::ReservedEvent107 => "reserved_event_107",
             Event::LinuxWgBatchChunk => "linux_wg_batch_chunk",
             Event::LinuxWgBatchChunkPackets => "linux_wg_batch_chunk_packets",
             Event::LinuxWgBatchChunkFull => "linux_wg_batch_chunk_full",
@@ -774,16 +774,10 @@ impl Event {
             Event::FmpSendGroupSplitLane => "fmp_send_group_split_lane",
             Event::FmpSendGroupSplitBackpressure => "fmp_send_group_split_backpressure",
             Event::FmpSendGroupSplitPacketCap => "fmp_send_group_split_packet_cap",
-            Event::EndpointCommittedBulkDispatchBatch => "endpoint_committed_bulk_dispatch_batch",
-            Event::EndpointCommittedBulkDispatchPackets => {
-                "endpoint_committed_bulk_dispatch_packets"
-            }
-            Event::EndpointCommittedBulkDispatchMergedBatch => {
-                "endpoint_committed_bulk_dispatch_merged_batch"
-            }
-            Event::EndpointCommittedBulkDispatchMergedPackets => {
-                "endpoint_committed_bulk_dispatch_merged_packets"
-            }
+            Event::ReservedEvent118 => "reserved_event_118",
+            Event::ReservedEvent119 => "reserved_event_119",
+            Event::ReservedEvent120 => "reserved_event_120",
+            Event::ReservedEvent121 => "reserved_event_121",
             Event::FspAeadCompletionStaleSession => "fsp_aead_completion_stale_session",
             Event::FspAeadCompletionStaleOrder => "fsp_aead_completion_stale_order",
             Event::FspAeadCompletionStaleTicket => "fsp_aead_completion_stale_ticket",
@@ -1018,13 +1012,13 @@ fn event_from_index(idx: usize) -> Event {
         98 => Event::FspAeadCompletionAeadFailed,
         99 => Event::FspAeadCompletionReplayDropped,
         100 => Event::FspAeadCompletionReadyMulti,
-        101 => Event::EndpointBulkFastPathPrepareFailed,
-        102 => Event::EndpointBulkFastPathStageFull,
-        103 => Event::EndpointBulkFastPathFeedbackFull,
-        104 => Event::EndpointBulkFastPathAttempt,
-        105 => Event::EndpointBulkFastPathDispatched,
-        106 => Event::EndpointBulkFastPathLeaseMiss,
-        107 => Event::EndpointBulkFastPathIneligible,
+        101 => Event::ReservedEvent101,
+        102 => Event::ReservedEvent102,
+        103 => Event::ReservedEvent103,
+        104 => Event::ReservedEvent104,
+        105 => Event::ReservedEvent105,
+        106 => Event::ReservedEvent106,
+        107 => Event::ReservedEvent107,
         108 => Event::LinuxWgBatchChunk,
         109 => Event::LinuxWgBatchChunkPackets,
         110 => Event::LinuxWgBatchChunkFull,
@@ -1035,10 +1029,10 @@ fn event_from_index(idx: usize) -> Event {
         115 => Event::FmpSendGroupSplitLane,
         116 => Event::FmpSendGroupSplitBackpressure,
         117 => Event::FmpSendGroupSplitPacketCap,
-        118 => Event::EndpointCommittedBulkDispatchBatch,
-        119 => Event::EndpointCommittedBulkDispatchPackets,
-        120 => Event::EndpointCommittedBulkDispatchMergedBatch,
-        121 => Event::EndpointCommittedBulkDispatchMergedPackets,
+        118 => Event::ReservedEvent118,
+        119 => Event::ReservedEvent119,
+        120 => Event::ReservedEvent120,
+        121 => Event::ReservedEvent121,
         122 => Event::FspAeadCompletionStaleSession,
         123 => Event::FspAeadCompletionStaleOrder,
         124 => Event::FspAeadCompletionStaleTicket,
@@ -1422,31 +1416,6 @@ fn record_fmp_send_group_split(event: Event) {
         return;
     }
     record_event_count_sample(event, 1);
-}
-
-#[inline]
-pub(crate) fn record_endpoint_committed_bulk_dispatch(
-    packets: usize,
-    merged_batches: usize,
-    merged_packets: usize,
-) {
-    if !enabled() || packets == 0 {
-        return;
-    }
-    record_event_count_sample(Event::EndpointCommittedBulkDispatchBatch, 1);
-    record_event_count_sample(Event::EndpointCommittedBulkDispatchPackets, packets as u64);
-    if merged_batches > 0 {
-        record_event_count_sample(
-            Event::EndpointCommittedBulkDispatchMergedBatch,
-            merged_batches as u64,
-        );
-    }
-    if merged_packets > 0 {
-        record_event_count_sample(
-            Event::EndpointCommittedBulkDispatchMergedPackets,
-            merged_packets as u64,
-        );
-    }
 }
 
 /// Record rx-loop producer-side cost for handing prepared packets to the

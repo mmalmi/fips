@@ -1,9 +1,5 @@
 use std::time::Duration;
 
-/// Side-queue interleaves are a progress reserve, not a full drain. Keeping
-/// this smaller than the packet budget preserves raw receive throughput while
-/// avoiding tick-sized liveness stalls.
-pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 16;
 /// Read-only control queries are status/observability work, not dataplane bulk.
 /// Keep their reserved slice tiny so a burst of fipstop/fipsctl reads cannot
 /// convoy ahead of packet receive or endpoint/TUN progress.

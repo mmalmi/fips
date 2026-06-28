@@ -89,14 +89,6 @@ impl Node {
                     (rx, Some(tx))
                 }
             };
-        let (mut endpoint_bulk_feedback_rx, _endpoint_bulk_feedback_guard) =
-            match self.endpoint_bulk_feedback_rx.take() {
-                Some(rx) => (rx, None),
-                None => {
-                    let (tx, rx) = tokio::sync::mpsc::channel(1);
-                    (rx, Some(tx))
-                }
-            };
 
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
@@ -159,7 +151,6 @@ impl Node {
                 _ = tick.tick() => {
                     let drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
-                        &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
@@ -196,7 +187,6 @@ impl Node {
 
                     let post_drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
-                        &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
@@ -222,16 +212,6 @@ impl Node {
                         Some(message),
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
-                }
-                Some(feedback) = endpoint_bulk_feedback_rx.recv() => {
-                    let drained = self.drain_endpoint_bulk_send_feedback(
-                        &mut endpoint_bulk_feedback_rx,
-                        Some(feedback),
-                        NON_PACKET_DRAIN_BUDGET,
-                    );
-                    if drained > 0 {
-                        maintenance_state.record_data_activity(Instant::now());
-                    }
                 }
                 // Endpoint priority is app-owned latency-sensitive traffic
                 // (ICMP, TCP ACK/SYN, tiny TCP data). On platforms without the
@@ -282,17 +262,12 @@ impl Node {
                             let control_drained = self
                                 .process_packet_mover2_scratch_control_ingress(&mut turn)
                                 .await;
-                            let feedback_drained = self.drain_endpoint_bulk_send_feedback(
-                                &mut endpoint_bulk_feedback_rx,
-                                None,
-                                SIDE_QUEUE_INTERLEAVE_BUDGET,
-                            );
                             self.drain_control_queries(
                                 &mut control_query_rx,
                                 None,
                                 CONTROL_QUERY_INTERLEAVE_BUDGET,
                             ).await;
-                            if had_activity || control_drained > 0 || feedback_drained > 0 {
+                            if had_activity || control_drained > 0 {
                                 maintenance_state.record_data_activity(Instant::now());
                             }
                         }
@@ -370,7 +345,6 @@ impl Node {
     async fn drain_rx_loop_data_queues(
         &mut self,
         packet_rx: &mut PacketRx,
-        endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
@@ -396,15 +370,9 @@ impl Node {
         let drained_packets = Self::packet_mover2_scratch_packet_activity(&turn);
         self.process_packet_mover2_scratch_control_ingress(&mut turn)
             .await;
-        let drained_endpoint_feedback = self.drain_endpoint_bulk_send_feedback(
-            endpoint_bulk_feedback_rx,
-            None,
-            non_packet_budget,
-        );
-        RxLoopDataDrainStats::with_feedback(
+        RxLoopDataDrainStats::with_data(
             drained_packets,
             0,
-            drained_endpoint_feedback,
             turn.tun_source_drained(),
             turn.endpoint_source_drained(),
         )
@@ -414,7 +382,6 @@ impl Node {
         &mut self,
         packet_rx: &mut PacketRx,
         control_query_rx: &mut Receiver<ControlMessage>,
-        endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
@@ -422,14 +389,11 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         budget: usize,
     ) -> RxLoopDataDrainStats {
-        let drained_endpoint_feedback =
-            self.drain_endpoint_bulk_send_feedback(endpoint_bulk_feedback_rx, None, budget);
-        let feedback_remaining_budget = budget.saturating_sub(drained_endpoint_feedback);
-        let control_budget = feedback_remaining_budget.min(CONTROL_QUERY_INTERLEAVE_BUDGET);
+        let control_budget = budget.min(CONTROL_QUERY_INTERLEAVE_BUDGET);
         let drained_control = self
             .drain_control_queries(control_query_rx, None, control_budget)
             .await;
-        let remaining_budget = feedback_remaining_budget.saturating_sub(drained_control);
+        let remaining_budget = budget.saturating_sub(drained_control);
         let (endpoint_budget, tun_budget) = split_side_queue_budget(remaining_budget);
         let mut turn = self
             .drain_packet_mover2_scratch_turn(
@@ -450,13 +414,7 @@ impl Node {
         let drained_endpoint = turn.endpoint_source_drained();
         let drained_tun = turn.tun_source_drained();
 
-        RxLoopDataDrainStats::with_control(
-            0,
-            drained_endpoint_feedback,
-            drained_tun,
-            drained_endpoint,
-            drained_control,
-        )
+        RxLoopDataDrainStats::with_control(0, drained_tun, drained_endpoint, drained_control)
     }
 
     async fn drain_control_queries(
@@ -469,20 +427,6 @@ impl Node {
         while let Some((request, response_tx)) = drain.next(control_query_rx) {
             let response = queries::dispatch(self, &request.command, request.params.as_ref());
             let _ = response_tx.send(response);
-        }
-
-        drain.drained()
-    }
-
-    fn drain_endpoint_bulk_send_feedback(
-        &mut self,
-        endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
-        first_feedback: Option<crate::node::EndpointBulkSendFeedback>,
-        budget: usize,
-    ) -> usize {
-        let mut drain = SingleLaneDrainCursor::new(first_feedback, budget);
-        while let Some(feedback) = drain.next(endpoint_bulk_feedback_rx) {
-            self.apply_endpoint_bulk_send_feedback(feedback);
         }
 
         drain.drained()

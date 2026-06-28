@@ -692,26 +692,6 @@ impl SessionEntry {
         Some(self.current_noise_session()?.send_counter_authority())
     }
 
-    /// Snapshot send-side FSP material for a short-lived endpoint bulk lease.
-    ///
-    /// The lease receives cloned AEAD state plus the shared counter authority;
-    /// it does not receive mutable session state. Node-owned bookkeeping still
-    /// returns through the endpoint feedback lane.
-    #[cfg(unix)]
-    pub(crate) fn endpoint_bulk_fsp_lease(&self) -> Option<crate::node::EndpointBulkSendFspLease> {
-        if !self.is_established() {
-            return None;
-        }
-        let session = self.current_noise_session()?;
-        Some(crate::node::EndpointBulkSendFspLease {
-            cipher: session.send_cipher_clone()?,
-            counter_authority: session.send_counter_authority(),
-            session_start_ms: self.session_start_ms,
-            current_k_bit: self.current_k_bit,
-            spin_bit: self.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()),
-        })
-    }
-
     /// Reserve FSP send state for worker-side encryption.
     ///
     /// The session entry owns the send counter sequence. Worker paths receive a

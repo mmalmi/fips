@@ -27,7 +27,6 @@ pub(super) enum PacketProcessAction {
 pub(super) struct RxLoopDataDrainStats {
     pub(super) packets: usize,
     pub(super) decrypt: usize,
-    pub(super) endpoint_feedback: usize,
     pub(super) tun: usize,
     pub(super) endpoint: usize,
     pub(super) control: usize,
@@ -39,7 +38,6 @@ impl RxLoopDataDrainStats {
         Self {
             packets,
             decrypt: 0,
-            endpoint_feedback: 0,
             tun,
             endpoint,
             control: 0,
@@ -56,24 +54,16 @@ impl RxLoopDataDrainStats {
         Self {
             packets,
             decrypt,
-            endpoint_feedback: 0,
             tun,
             endpoint,
             control: 0,
         }
     }
 
-    pub(super) fn with_feedback(
-        packets: usize,
-        decrypt: usize,
-        endpoint_feedback: usize,
-        tun: usize,
-        endpoint: usize,
-    ) -> Self {
+    pub(super) fn with_data(packets: usize, decrypt: usize, tun: usize, endpoint: usize) -> Self {
         Self {
             packets,
             decrypt,
-            endpoint_feedback,
             tun,
             endpoint,
             control: 0,
@@ -82,7 +72,6 @@ impl RxLoopDataDrainStats {
 
     pub(super) fn with_control(
         packets: usize,
-        endpoint_feedback: usize,
         tun: usize,
         endpoint: usize,
         control: usize,
@@ -90,7 +79,6 @@ impl RxLoopDataDrainStats {
         Self {
             packets,
             decrypt: 0,
-            endpoint_feedback,
             tun,
             endpoint,
             control,
@@ -98,7 +86,7 @@ impl RxLoopDataDrainStats {
     }
 
     pub(super) fn data_total(&self) -> usize {
-        self.packets + self.decrypt + self.endpoint_feedback + self.tun + self.endpoint
+        self.packets + self.decrypt + self.tun + self.endpoint
     }
 
     pub(super) fn total(&self) -> usize {

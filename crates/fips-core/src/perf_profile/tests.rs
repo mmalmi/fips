@@ -535,32 +535,32 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_ready_multi"
     );
     assert_eq!(
-        event_from_index(Event::EndpointBulkFastPathPrepareFailed as usize).name(),
-        "endpoint_bulk_fast_path_prepare_failed"
+        event_from_index(Event::ReservedEvent101 as usize).name(),
+        "reserved_event_101"
     );
     assert_eq!(
-        event_from_index(Event::EndpointBulkFastPathStageFull as usize).name(),
-        "endpoint_bulk_fast_path_stage_full"
+        event_from_index(Event::ReservedEvent102 as usize).name(),
+        "reserved_event_102"
     );
     assert_eq!(
-        event_from_index(Event::EndpointBulkFastPathFeedbackFull as usize).name(),
-        "endpoint_bulk_fast_path_feedback_full"
+        event_from_index(Event::ReservedEvent103 as usize).name(),
+        "reserved_event_103"
     );
     assert_eq!(
-        event_from_index(Event::EndpointBulkFastPathAttempt as usize).name(),
-        "endpoint_bulk_fast_path_attempt"
+        event_from_index(Event::ReservedEvent104 as usize).name(),
+        "reserved_event_104"
     );
     assert_eq!(
-        event_from_index(Event::EndpointBulkFastPathDispatched as usize).name(),
-        "endpoint_bulk_fast_path_dispatched"
+        event_from_index(Event::ReservedEvent105 as usize).name(),
+        "reserved_event_105"
     );
     assert_eq!(
-        event_from_index(Event::EndpointBulkFastPathLeaseMiss as usize).name(),
-        "endpoint_bulk_fast_path_lease_miss"
+        event_from_index(Event::ReservedEvent106 as usize).name(),
+        "reserved_event_106"
     );
     assert_eq!(
-        event_from_index(Event::EndpointBulkFastPathIneligible as usize).name(),
-        "endpoint_bulk_fast_path_ineligible"
+        event_from_index(Event::ReservedEvent107 as usize).name(),
+        "reserved_event_107"
     );
     assert_eq!(
         event_from_index(Event::LinuxWgBatchChunk as usize).name(),
@@ -603,20 +603,20 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fmp_send_group_split_packet_cap"
     );
     assert_eq!(
-        event_from_index(Event::EndpointCommittedBulkDispatchBatch as usize).name(),
-        "endpoint_committed_bulk_dispatch_batch"
+        event_from_index(Event::ReservedEvent118 as usize).name(),
+        "reserved_event_118"
     );
     assert_eq!(
-        event_from_index(Event::EndpointCommittedBulkDispatchPackets as usize).name(),
-        "endpoint_committed_bulk_dispatch_packets"
+        event_from_index(Event::ReservedEvent119 as usize).name(),
+        "reserved_event_119"
     );
     assert_eq!(
-        event_from_index(Event::EndpointCommittedBulkDispatchMergedBatch as usize).name(),
-        "endpoint_committed_bulk_dispatch_merged_batch"
+        event_from_index(Event::ReservedEvent120 as usize).name(),
+        "reserved_event_120"
     );
     assert_eq!(
-        event_from_index(Event::EndpointCommittedBulkDispatchMergedPackets as usize).name(),
-        "endpoint_committed_bulk_dispatch_merged_packets"
+        event_from_index(Event::ReservedEvent121 as usize).name(),
+        "reserved_event_121"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionStaleSession as usize).name(),
@@ -1006,12 +1006,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     let dispatch_worker7_before = EVENTS[Event::FmpWorkerDispatchWorker7 as usize].load(Relaxed);
     let dispatch_worker_other_before =
         EVENTS[Event::FmpWorkerDispatchWorkerOther as usize].load(Relaxed);
-    let endpoint_bulk_prepare_failed_before =
-        EVENTS[Event::EndpointBulkFastPathPrepareFailed as usize].load(Relaxed);
-    let endpoint_bulk_stage_full_before =
-        EVENTS[Event::EndpointBulkFastPathStageFull as usize].load(Relaxed);
-    let endpoint_bulk_feedback_full_before =
-        EVENTS[Event::EndpointBulkFastPathFeedbackFull as usize].load(Relaxed);
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
     record_event_count_sample(Event::DecryptFallbackPressureDrain, 7);
@@ -1053,9 +1047,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::FmpWorkerDispatchWorker0, 131);
     record_event_count_sample(Event::FmpWorkerDispatchWorker7, 137);
     record_event_count_sample(Event::FmpWorkerDispatchWorkerOther, 139);
-    record_event_count_sample(Event::EndpointBulkFastPathPrepareFailed, 149);
-    record_event_count_sample(Event::EndpointBulkFastPathStageFull, 151);
-    record_event_count_sample(Event::EndpointBulkFastPathFeedbackFull, 157);
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
         3
@@ -1233,21 +1224,6 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::FmpWorkerDispatchWorkerOther as usize].load(Relaxed)
             - dispatch_worker_other_before,
         139
-    );
-    assert_eq!(
-        EVENTS[Event::EndpointBulkFastPathPrepareFailed as usize].load(Relaxed)
-            - endpoint_bulk_prepare_failed_before,
-        149
-    );
-    assert_eq!(
-        EVENTS[Event::EndpointBulkFastPathStageFull as usize].load(Relaxed)
-            - endpoint_bulk_stage_full_before,
-        151
-    );
-    assert_eq!(
-        EVENTS[Event::EndpointBulkFastPathFeedbackFull as usize].load(Relaxed)
-            - endpoint_bulk_feedback_full_before,
-        157
     );
 }
 

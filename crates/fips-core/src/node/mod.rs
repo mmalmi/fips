@@ -57,25 +57,19 @@ pub(crate) use endpoint_command::{
     EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand,
     endpoint_data_command_capacity, endpoint_stale_bulk_drop_ms,
 };
-pub(crate) use endpoint_event::EndpointBulkSendFeedback;
 #[cfg(test)]
 pub(in crate::node) use endpoint_event::EndpointEventDequeueCounts;
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
 #[cfg(test)]
 pub(in crate::node) use endpoint_event::release_endpoint_event_messages;
-#[cfg(unix)]
-pub(in crate::node) use endpoint_event::{
-    EndpointBulkSendFeedbackRecord, EndpointBulkSendSessionBookkeeping,
-};
-#[cfg(unix)]
-pub(crate) use endpoint_event::{
-    EndpointBulkSendFmpLease, EndpointBulkSendFspLease, EndpointBulkSendLease,
-    EndpointBulkSendRuntime,
-};
 pub(crate) use endpoint_event::{
     EndpointDataDelivery, EndpointDataIo, EndpointEventReceiver, EndpointEventSender,
     NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome,
 };
+#[cfg(all(test, unix))]
+pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
+#[cfg(unix)]
+pub(in crate::node) use endpoint_traffic::endpoint_flow_dispatch_key;
 #[cfg(unix)]
 pub(in crate::node) use endpoint_traffic::reserve_fmp_worker_send;
 pub(crate) use endpoint_traffic::{
@@ -83,10 +77,6 @@ pub(crate) use endpoint_traffic::{
 };
 #[cfg(test)]
 pub(crate) use endpoint_traffic::{PendingEndpointDataQueue, PendingTunPacketQueue};
-#[cfg(unix)]
-pub(in crate::node) use endpoint_traffic::{
-    classify_fmp_plaintext_traffic, endpoint_flow_dispatch_key,
-};
 #[cfg(test)]
 pub(in crate::node) use endpoint_traffic::{
     endpoint_command_lane_for_payload, endpoint_payload_is_tcp,
@@ -114,10 +104,9 @@ use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
 #[cfg(unix)]
 use self::wire::ESTABLISHED_HEADER_SIZE;
-use self::wire::{
-    FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
-    prepend_inner_header,
-};
+#[cfg(test)]
+use self::wire::prepend_inner_header;
+use self::wire::{FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header};
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
@@ -323,14 +312,6 @@ pub struct Node {
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
     endpoint_events: EndpointEventRuntime,
-    /// Priority feedback from endpoint-side bulk-send leases. The endpoint
-    /// mover must report FMP/FSP send bookkeeping before it dispatches worker
-    /// jobs; rx_loop applies this lane ahead of bulk endpoint commands so
-    /// MMP/liveness/accounting do not starve behind bulk traffic.
-    endpoint_bulk_feedback_rx: Option<tokio::sync::mpsc::Receiver<EndpointBulkSendFeedback>>,
-    /// Shared lease publisher for endpoint-side bulk sends.
-    #[cfg(unix)]
-    endpoint_bulk_send_runtime: Option<EndpointBulkSendRuntime>,
     /// Off-task FMP-encrypt + UDP-send worker pool. `None` if not yet
     /// spawned (set up in `start()` once transports are running).
     /// `Some(pool)` once available; the pool internally holds

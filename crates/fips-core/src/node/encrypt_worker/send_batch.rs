@@ -170,23 +170,6 @@ impl FmpSendJob {
 }
 
 #[cfg(unix)]
-pub(in crate::node) fn fmp_send_job_batches_share_bulk_target(
-    left: &[FmpSendJob],
-    right: &[FmpSendJob],
-) -> bool {
-    let Some(first) = left.first().or_else(|| right.first()) else {
-        return true;
-    };
-    if !first.bulk_endpoint_data {
-        return false;
-    }
-    let target_key = first.send_target_key();
-    left.iter()
-        .chain(right.iter())
-        .all(|job| job.bulk_endpoint_data && job.send_target_key() == target_key)
-}
-
-#[cfg(unix)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SelectedSendLane {
     Priority,

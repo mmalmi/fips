@@ -1,80 +1,4 @@
 impl Node {
-    #[cfg(unix)]
-    fn publish_endpoint_bulk_send_lease(
-        &mut self,
-        dest_addr: NodeAddr,
-        route: &PipelinedEndpointPeerRuntimeRoute,
-        batch_target: &PipelinedEndpointBatchTarget,
-        workers: &crate::node::encrypt_worker::EncryptWorkerPool,
-    ) {
-        const ENDPOINT_BULK_SEND_LEASE_TTL: std::time::Duration =
-            std::time::Duration::from_millis(50);
-
-        let Some(runtime) = self.endpoint_bulk_send_runtime.as_ref().cloned() else {
-            return;
-        };
-        let Some(fsp) = self
-            .sessions
-            .get(&dest_addr)
-            .and_then(|entry| entry.endpoint_bulk_fsp_lease())
-        else {
-            runtime.invalidate(&dest_addr);
-            return;
-        };
-        let next_hop_addr = route.next_hop_addr();
-        let Some(fmp) = self.peers.endpoint_bulk_fmp_lease(&next_hop_addr) else {
-            runtime.invalidate(&dest_addr);
-            return;
-        };
-        let route_plan = route.route_plan_with_path_mtu(batch_target.path_mtu);
-        let lease = crate::node::EndpointBulkSendLease::new(
-            route_plan.source_addr,
-            dest_addr,
-            route_plan.next_hop_addr,
-            route_plan.path_mtu,
-            route_plan.default_ttl,
-            route_plan.scheduling_weight,
-            route_plan.direct_path_blocks_direct_payload,
-            fsp,
-            fmp,
-            batch_target.send_target.clone().into_selected_send_target(),
-            workers.clone(),
-            ENDPOINT_BULK_SEND_LEASE_TTL,
-        );
-        runtime.publish(lease);
-    }
-
-    #[cfg(unix)]
-    pub(in crate::node) async fn refresh_endpoint_bulk_send_lease(
-        &mut self,
-        dest_addr: NodeAddr,
-    ) -> bool {
-        let Some(runtime) = self.endpoint_bulk_send_runtime.as_ref().cloned() else {
-            return false;
-        };
-        let Some(workers) = self.encrypt_workers.as_ref().cloned() else {
-            runtime.invalidate(&dest_addr);
-            return false;
-        };
-        let route = match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
-            Ok(route) => route,
-            Err(_) => {
-                runtime.invalidate(&dest_addr);
-                return false;
-            }
-        };
-        let batch_target = match route.batch_target(&self.transports).await {
-            Ok(Some(batch_target)) => batch_target,
-            _ => {
-                runtime.invalidate(&dest_addr);
-                return false;
-            }
-        };
-
-        self.publish_endpoint_bulk_send_lease(dest_addr, &route, &batch_target, &workers);
-        true
-    }
-
     async fn handle_endpoint_send_batch_slow_path(
         &mut self,
         dest_addr: NodeAddr,
@@ -231,7 +155,6 @@ impl Node {
         let batch_target = route.batch_target(&self.transports).await.ok().flatten();
 
         if let Some(batch_target) = batch_target.as_ref() {
-            self.publish_endpoint_bulk_send_lease(dest_addr, &route, batch_target, &workers);
             self.handle_established_endpoint_send_batch_with_batch_target(
                 dest_addr,
                 dest_pubkey,
