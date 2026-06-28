@@ -278,37 +278,32 @@ impl OutboundPacket {
         self
     }
 
-    fn apply_payload_transform(
+    fn crypto_plaintext_prefix(
         &mut self,
+        fmp_timestamp_ms: Option<u32>,
         fsp_timestamp_ms: Option<u32>,
-    ) -> Result<(), WireBuildError> {
+    ) -> Result<Vec<u8>, WireBuildError> {
+        let mut prefix = Vec::new();
+        if self.owner.protocol == PacketProtocol::Fmp
+            && let Some(timestamp_ms) = fmp_timestamp_ms
+        {
+            prefix.extend_from_slice(&timestamp_ms.to_le_bytes());
+        }
+
         match self.payload_transform {
-            OutboundPayloadTransform::None => Ok(()),
+            OutboundPayloadTransform::None => {}
             OutboundPayloadTransform::FspInnerHeader {
                 msg_type,
                 inner_flags,
             } => {
                 let timestamp_ms = fsp_timestamp_ms.ok_or(WireBuildError::MissingFspTimestamp)?;
-                let payload = std::mem::take(&mut self.payload).into_vec();
-                self.payload = crate::node::session_wire::fsp_prepend_inner_header(
-                    timestamp_ms,
-                    msg_type,
-                    inner_flags,
-                    &payload,
-                )
-                .into();
+                prefix.extend_from_slice(&timestamp_ms.to_le_bytes());
+                prefix.push(msg_type);
+                prefix.push(inner_flags);
                 self.payload_transform = OutboundPayloadTransform::None;
-                Ok(())
             }
         }
-    }
-
-    fn prepend_fmp_inner_timestamp(&mut self, timestamp_ms: u32) {
-        let payload = std::mem::take(&mut self.payload).into_vec();
-        let mut inner = Vec::with_capacity(4 + payload.len());
-        inner.extend_from_slice(&timestamp_ms.to_le_bytes());
-        inner.extend_from_slice(&payload);
-        self.payload = inner.into();
+        Ok(prefix)
     }
 
     pub(crate) fn with_activity_tick(mut self, tick: ActivityTick) -> Self {

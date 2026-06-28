@@ -150,14 +150,11 @@ impl AeadSealWork {
         mut work: OutboundCryptoWork,
         cipher: AeadKey,
     ) -> Result<Self, WireBuildError> {
-        work.packet
-            .apply_payload_transform(work.reservation.fsp_timestamp_ms)?;
-        if work.packet.owner.protocol == PacketProtocol::Fmp
-            && let Some(timestamp_ms) = work.reservation.fmp_timestamp_ms
-        {
-            work.packet.prepend_fmp_inner_timestamp(timestamp_ms);
-        }
-        let payload_len = u16::try_from(work.packet.payload.len())
+        let inner_prefix = work.packet.crypto_plaintext_prefix(
+            work.reservation.fmp_timestamp_ms,
+            work.reservation.fsp_timestamp_ms,
+        )?;
+        let payload_len = u16::try_from(inner_prefix.len().saturating_add(work.packet.payload.len()))
             .map_err(|_| WireBuildError::PayloadTooLarge)?;
         let counter = work.reservation.counter;
         let (header, coord_prefix, ciphertext_offset) =
@@ -187,13 +184,16 @@ impl AeadSealWork {
         };
 
         let aad_len = header.len();
-        let mut wire = Vec::with_capacity(
-            header.len() + coord_prefix.len() + work.packet.payload.len() + AEAD_TAG_SIZE,
-        );
-        wire.extend_from_slice(&header);
-        wire.extend_from_slice(&coord_prefix);
-        wire.extend_from_slice(&work.packet.payload);
-        work.packet.payload = wire.into();
+        let prefix_len = header
+            .len()
+            .saturating_add(coord_prefix.len())
+            .saturating_add(inner_prefix.len());
+        let mut prefix = Vec::with_capacity(prefix_len);
+        prefix.extend_from_slice(&header);
+        prefix.extend_from_slice(&coord_prefix);
+        prefix.extend_from_slice(&inner_prefix);
+        work.packet.payload.reserve(prefix_len + AEAD_TAG_SIZE);
+        drop(work.packet.payload.splice(0..0, prefix));
 
         Ok(Self {
             post_seal: work.packet.post_seal,
