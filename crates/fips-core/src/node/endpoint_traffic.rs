@@ -200,6 +200,10 @@ impl EndpointDataPayload {
         self.traffic_class.drop_on_backpressure()
     }
 
+    pub(crate) fn triggers_stale_bulk_drop(&self) -> bool {
+        endpoint_payload_is_liveness_probe(&self.bytes)
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes
     }
@@ -564,6 +568,16 @@ fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) 
         .and_then(|ip_payload_len| ip_payload_len.checked_sub(tcp_header_len))
         .unwrap_or_else(|| payload.len().saturating_sub(tcp_offset + tcp_header_len));
     payload_len <= INTERACTIVE_TCP_PAYLOAD_MAX
+}
+
+fn endpoint_payload_is_liveness_probe(payload: &[u8]) -> bool {
+    const IPPROTO_ICMP: u8 = 1;
+    const IPPROTO_ICMPV6: u8 = 58;
+
+    matches!(
+        parse_endpoint_payload_ip_proto(payload),
+        Some((IPPROTO_ICMP | IPPROTO_ICMPV6, _))
+    )
 }
 
 fn endpoint_ip_payload_len(payload: &[u8]) -> Option<usize> {

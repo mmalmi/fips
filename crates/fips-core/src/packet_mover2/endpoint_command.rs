@@ -167,6 +167,7 @@ pub(crate) enum PacketMover2EndpointCommandDropReason {
     NotEstablished,
     MtuExceeded,
     StaleGeneration,
+    StaleQueuedBulk,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -309,7 +310,7 @@ fn route_endpoint_command_with_router<R, F>(
             }
         }
         NodeEndpointCommand::SendBatchOneway { command, lane } => {
-            let (remote, payloads, queued_at) = command.into_parts();
+            let (remote, payloads, queued_at, enqueued_at_ms) = command.into_deferred_parts();
             let mut any_routed = false;
             let mut routed_destination: Option<PacketMover2EndpointRoutedDestination> = None;
             let mut defer_unrouted = false;
@@ -333,7 +334,12 @@ fn route_endpoint_command_with_router<R, F>(
                 }
             }
             if defer_unrouted {
-                let command = EndpointSendBatchCommand::new(remote, payloads, queued_at)
+                let command = EndpointSendBatchCommand::new_with_enqueued_at_ms(
+                    remote,
+                    payloads,
+                    queued_at,
+                    enqueued_at_ms,
+                )
                     .expect("deferred endpoint batch should remain non-empty");
                 deferred_commands.push(NodeEndpointCommand::SendBatchOneway { command, lane });
             } else if let Some(routed) = routed_destination {
@@ -341,5 +347,53 @@ fn route_endpoint_command_with_router<R, F>(
             }
         }
         other => deferred_commands.push(other),
+    }
+}
+
+fn stale_bulk_endpoint_command_drop_count(
+    command: &NodeEndpointCommand,
+    now_ms: u64,
+    max_age_ms: u64,
+) -> usize {
+    match command {
+        NodeEndpointCommand::SendOneway { command }
+            if command.lane() == EndpointCommandLane::Bulk
+                && command.stale_at(now_ms, max_age_ms) =>
+        {
+            1
+        }
+        NodeEndpointCommand::SendBatchOneway { command, lane }
+            if *lane == EndpointCommandLane::Bulk && command.stale_at(now_ms, max_age_ms) =>
+        {
+            command.len()
+        }
+        _ => 0,
+    }
+}
+
+fn drop_stale_bulk_endpoint_command(
+    command: NodeEndpointCommand,
+    drops: &mut Vec<PacketMover2EndpointCommandDrop>,
+) {
+    match command {
+        NodeEndpointCommand::SendOneway { command } => {
+            push_endpoint_command_drop(
+                command.data_send(),
+                PacketMover2EndpointCommandDropReason::StaleQueuedBulk,
+                drops,
+            );
+        }
+        NodeEndpointCommand::SendBatchOneway { command, .. } => {
+            let (remote, payloads, _) = command.into_parts();
+            for payload in payloads {
+                let send = EndpointDataSend::new(remote, payload);
+                push_endpoint_command_drop(
+                    &send,
+                    PacketMover2EndpointCommandDropReason::StaleQueuedBulk,
+                    drops,
+                );
+            }
+        }
+        _ => {}
     }
 }

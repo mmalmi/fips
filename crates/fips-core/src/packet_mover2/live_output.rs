@@ -39,6 +39,7 @@ pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
     tun_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_drained: usize,
     tun_drained: usize,
+    endpoint_stale_bulk_drop_ms: u64,
 }
 
 impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
@@ -66,6 +67,7 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
             tun_drops: Vec::new(),
             endpoint_drained: 0,
             tun_drained: 0,
+            endpoint_stale_bulk_drop_ms: crate::node::endpoint_stale_bulk_drop_ms(),
         }
     }
 
@@ -73,6 +75,12 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         self.first_endpoint_priority = firsts.endpoint_priority;
         self.first_endpoint_bulk = firsts.endpoint_bulk;
         self.first_tun_packet = firsts.tun_packet;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_endpoint_stale_bulk_drop_ms(mut self, max_age_ms: u64) -> Self {
+        self.endpoint_stale_bulk_drop_ms = max_age_ms;
         self
     }
 
@@ -112,8 +120,10 @@ where
         F: FnMut(OutboundPacket),
     {
         let mut drained_cost = 0usize;
+        let mut stale_bulk_drop_trigger_drained = false;
         if drained_cost < limit {
             if let Some(command) = self.first_endpoint_priority.take() {
+                stale_bulk_drop_trigger_drained |= command.triggers_stale_bulk_drop();
                 drained_cost = drained_cost.saturating_add(command.drain_cost());
                 route_endpoint_command_with_router(
                     command,
@@ -129,6 +139,7 @@ where
             let Ok(command) = self.endpoint_priority_rx.try_recv() else {
                 break;
             };
+            stale_bulk_drop_trigger_drained |= command.triggers_stale_bulk_drop();
             drained_cost = drained_cost.saturating_add(command.drain_cost());
             route_endpoint_command_with_router(
                 command,
@@ -142,12 +153,9 @@ where
         if drained_cost < limit {
             if let Some(command) = self.first_endpoint_bulk.take() {
                 drained_cost = drained_cost.saturating_add(command.drain_cost());
-                route_endpoint_command_with_router(
+                self.route_or_drop_bulk_endpoint_command(
                     command,
-                    self.routes,
-                    &mut self.endpoint_drops,
-                    &mut self.endpoint_deferred_commands,
-                    &mut self.endpoint_routed_destinations,
+                    stale_bulk_drop_trigger_drained,
                     &mut push,
                 );
             }
@@ -157,16 +165,47 @@ where
                 break;
             };
             drained_cost = drained_cost.saturating_add(command.drain_cost());
-            route_endpoint_command_with_router(
+            self.route_or_drop_bulk_endpoint_command(
                 command,
-                self.routes,
-                &mut self.endpoint_drops,
-                &mut self.endpoint_deferred_commands,
-                &mut self.endpoint_routed_destinations,
+                stale_bulk_drop_trigger_drained,
                 &mut push,
             );
         }
         drained_cost
+    }
+
+    fn route_or_drop_bulk_endpoint_command<F>(
+        &mut self,
+        command: NodeEndpointCommand,
+        stale_bulk_drop_trigger_drained: bool,
+        mut push: F,
+    ) where
+        F: FnMut(OutboundPacket),
+    {
+        if stale_bulk_drop_trigger_drained {
+            let drop_count = stale_bulk_endpoint_command_drop_count(
+                &command,
+                crate::time::now_ms(),
+                self.endpoint_stale_bulk_drop_ms,
+            );
+            if drop_count > 0 {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::EndpointCommandBulkDropped,
+                    drop_count as u64,
+                );
+                drop_stale_bulk_endpoint_command(command, &mut self.endpoint_drops);
+                return;
+            }
+        }
+
+        route_endpoint_command_with_router(
+            command,
+            self.routes,
+            &mut self.endpoint_drops,
+            &mut self.endpoint_deferred_commands,
+            &mut self.endpoint_routed_destinations,
+            &mut push,
+        );
     }
 
     fn drain_tun<F>(&mut self, limit: usize, mut push: F) -> usize

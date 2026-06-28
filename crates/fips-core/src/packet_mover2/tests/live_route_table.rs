@@ -17,6 +17,16 @@
         packet
     }
 
+    fn priority_tcp_ack_endpoint_payload() -> Vec<u8> {
+        let mut packet = vec![0u8; 60];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&20u16.to_be_bytes());
+        packet[6] = 6;
+        packet[52] = 5 << 4;
+        packet[53] = 0x10;
+        packet
+    }
+
     fn bulk_endpoint_payload() -> Vec<u8> {
         vec![0x01, 0x02, 0x03, 0x04]
     }
@@ -313,6 +323,186 @@
         assert!(bulk_rx.try_recv().is_err());
         assert!(drops.is_empty());
         assert!(deferred.is_empty());
+    }
+
+    #[test]
+    fn live_route_table_outbound_source_drops_stale_bulk_after_priority_progress() {
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let owner = OwnerId::fsp_node(*remote.node_addr());
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_endpoint_destination(
+            *remote.node_addr(),
+            PacketMover2EndpointCommandRoute::fsp(owner, 7, 0x03, 0x09),
+        );
+
+        let priority_payload = priority_endpoint_payload();
+        let stale_bulk_payload = bulk_endpoint_payload();
+        let old_ms = crate::time::now_ms().saturating_sub(1_000);
+        let stale_bulk = EndpointSendBatchCommand::new_with_enqueued_at_ms(
+            remote,
+            vec![EndpointDataPayload::new(stale_bulk_payload.clone())],
+            None,
+            old_ms,
+        )
+        .expect("stale bulk command");
+
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
+        priority_tx
+            .try_send(NodeEndpointCommand::send_oneway(
+                remote,
+                priority_payload.clone(),
+                None,
+            ))
+            .expect("enqueue priority endpoint command");
+        bulk_tx
+            .try_send(NodeEndpointCommand::SendBatchOneway {
+                command: stale_bulk,
+                lane: EndpointCommandLane::Bulk,
+            })
+            .expect("enqueue stale bulk command");
+
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        drop(tun_tx);
+        let mut source = PacketMover2RouteTableOutboundSource::new(
+            &mut priority_rx,
+            &mut bulk_rx,
+            8,
+            &mut tun_rx,
+            0,
+            &mut routes,
+        )
+        .with_endpoint_stale_bulk_drop_ms(50);
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 2);
+
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].class, PacketClass::Control);
+        assert_eq!(outbound[0].payload.as_ref(), priority_payload);
+        let drops = source.take_endpoint_command_drops();
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].dest_addr(), *remote.node_addr());
+        assert_eq!(drops[0].lane(), EndpointCommandLane::Bulk);
+        assert_eq!(drops[0].payload_len(), stale_bulk_payload.len());
+        assert_eq!(
+            drops[0].reason(),
+            PacketMover2EndpointCommandDropReason::StaleQueuedBulk
+        );
+        assert!(source.take_endpoint_deferred_commands().is_empty());
+    }
+
+    #[test]
+    fn live_route_table_outbound_source_does_not_drop_stale_bulk_after_tcp_ack_progress() {
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let owner = OwnerId::fsp_node(*remote.node_addr());
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_endpoint_destination(
+            *remote.node_addr(),
+            PacketMover2EndpointCommandRoute::fsp(owner, 7, 0x03, 0x09),
+        );
+
+        let tcp_ack_payload = priority_tcp_ack_endpoint_payload();
+        let stale_bulk_payload = bulk_endpoint_payload();
+        let old_ms = crate::time::now_ms().saturating_sub(1_000);
+        let stale_bulk = EndpointSendBatchCommand::new_with_enqueued_at_ms(
+            remote,
+            vec![EndpointDataPayload::new(stale_bulk_payload.clone())],
+            None,
+            old_ms,
+        )
+        .expect("stale bulk command");
+
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
+        priority_tx
+            .try_send(NodeEndpointCommand::send_oneway(
+                remote,
+                tcp_ack_payload.clone(),
+                None,
+            ))
+            .expect("enqueue TCP ACK endpoint command");
+        bulk_tx
+            .try_send(NodeEndpointCommand::SendBatchOneway {
+                command: stale_bulk,
+                lane: EndpointCommandLane::Bulk,
+            })
+            .expect("enqueue stale bulk command");
+
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        drop(tun_tx);
+        let mut source = PacketMover2RouteTableOutboundSource::new(
+            &mut priority_rx,
+            &mut bulk_rx,
+            8,
+            &mut tun_rx,
+            0,
+            &mut routes,
+        )
+        .with_endpoint_stale_bulk_drop_ms(50);
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 2);
+
+        assert_eq!(outbound.len(), 2);
+        assert_eq!(outbound[0].class, PacketClass::Control);
+        assert_eq!(outbound[0].payload.as_ref(), tcp_ack_payload);
+        assert_eq!(outbound[1].class, PacketClass::Bulk);
+        assert_eq!(outbound[1].payload.as_ref(), stale_bulk_payload);
+        assert!(source.take_endpoint_command_drops().is_empty());
+        assert!(source.take_endpoint_deferred_commands().is_empty());
+    }
+
+    #[test]
+    fn live_route_table_outbound_source_routes_stale_bulk_without_priority_progress() {
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let owner = OwnerId::fsp_node(*remote.node_addr());
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_endpoint_destination(
+            *remote.node_addr(),
+            PacketMover2EndpointCommandRoute::fsp(owner, 7, 0x03, 0x09),
+        );
+
+        let stale_bulk_payload = bulk_endpoint_payload();
+        let old_ms = crate::time::now_ms().saturating_sub(1_000);
+        let stale_bulk = EndpointSendBatchCommand::new_with_enqueued_at_ms(
+            remote,
+            vec![EndpointDataPayload::new(stale_bulk_payload.clone())],
+            None,
+            old_ms,
+        )
+        .expect("stale bulk command");
+
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
+        drop(priority_tx);
+        bulk_tx
+            .try_send(NodeEndpointCommand::SendBatchOneway {
+                command: stale_bulk,
+                lane: EndpointCommandLane::Bulk,
+            })
+            .expect("enqueue stale bulk command");
+
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        drop(tun_tx);
+        let mut source = PacketMover2RouteTableOutboundSource::new(
+            &mut priority_rx,
+            &mut bulk_rx,
+            8,
+            &mut tun_rx,
+            0,
+            &mut routes,
+        )
+        .with_endpoint_stale_bulk_drop_ms(50);
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 1);
+
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].class, PacketClass::Bulk);
+        assert_eq!(outbound[0].payload.as_ref(), stale_bulk_payload);
+        assert!(source.take_endpoint_command_drops().is_empty());
+        assert!(source.take_endpoint_deferred_commands().is_empty());
     }
 
     #[test]

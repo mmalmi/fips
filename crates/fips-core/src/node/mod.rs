@@ -12,6 +12,7 @@ mod core_impl;
 mod decrypt_worker;
 mod discovery_rate_limit;
 mod encrypt_worker;
+mod endpoint_command;
 mod endpoint_event;
 mod endpoint_traffic;
 mod error;
@@ -52,6 +53,10 @@ pub use error::NodeError;
 pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
+pub(crate) use endpoint_command::{
+    EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand,
+    endpoint_data_command_capacity, endpoint_stale_bulk_drop_ms,
+};
 pub(crate) use endpoint_event::EndpointBulkSendFeedback;
 #[cfg(test)]
 pub(in crate::node) use endpoint_event::EndpointEventDequeueCounts;
@@ -69,8 +74,7 @@ pub(crate) use endpoint_event::{
 };
 pub(crate) use endpoint_event::{
     EndpointDataDelivery, EndpointDataIo, EndpointEventReceiver, EndpointEventSender,
-    EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
-    NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome, endpoint_data_command_capacity,
+    NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome,
 };
 #[cfg(unix)]
 pub(in crate::node) use endpoint_traffic::reserve_fmp_worker_send;
