@@ -217,6 +217,8 @@ impl PacketMover2 {
     }
 
     pub(crate) fn retire_completion(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
+        let _timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2Retire);
         let Some(owner) = self.owners.get_mut(&completion.reservation.owner) else {
             return vec![RetiredPacket::Drop(PacketDrop::from_completion(
                 &completion,
@@ -390,13 +392,18 @@ impl PacketMover2 {
     ) -> CryptoCompletion {
         let reservation = work.reservation.clone();
         match self.owner_crypto_keys(reservation.owner) {
-            Some(keys) => match AeadSealWork::from_outbound_work(work, keys.seal) {
-                Ok(work) => sealed.execute(work),
-                Err(_) => CryptoCompletion {
-                    reservation,
-                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
-                },
-            },
+            Some(keys) => {
+                let _timer = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::PacketMover2AeadSeal,
+                );
+                match AeadSealWork::from_outbound_work(work, keys.seal) {
+                    Ok(work) => sealed.execute(work),
+                    Err(_) => CryptoCompletion {
+                        reservation,
+                        result: CryptoResult::Failed(CryptoFailureKind::Seal),
+                    },
+                }
+            }
             None => CryptoCompletion {
                 reservation,
                 result: CryptoResult::Failed(CryptoFailureKind::Seal),
@@ -416,13 +423,18 @@ impl PacketMover2 {
             let reservation = work.reservation.clone();
             count_fsp_worker_open_dispatch(&reservation, fsp_worker_open, fsp_worker_open_bulk);
             let completion = match self.owner_crypto_keys(reservation.owner) {
-                Some(keys) => match AeadOpenWork::from_crypto_work(work, keys.open) {
-                    Ok(work) => opened.execute(work),
-                    Err(_) => CryptoCompletion {
-                        reservation,
-                        result: CryptoResult::Failed(CryptoFailureKind::Open),
-                    },
-                },
+                Some(keys) => {
+                    let _timer = crate::perf_profile::Timer::start(
+                        crate::perf_profile::Stage::PacketMover2AeadOpen,
+                    );
+                    match AeadOpenWork::from_crypto_work(work, keys.open) {
+                        Ok(work) => opened.execute(work),
+                        Err(_) => CryptoCompletion {
+                            reservation,
+                            result: CryptoResult::Failed(CryptoFailureKind::Open),
+                        },
+                    }
+                }
                 None => CryptoCompletion {
                     reservation,
                     result: CryptoResult::Failed(CryptoFailureKind::Open),

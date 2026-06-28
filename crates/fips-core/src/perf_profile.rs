@@ -26,6 +26,9 @@
 //!   * `ENDPOINT_SEND_PREPARE` — rx_loop sender-side session/FSP context preparation
 //!   * `ENDPOINT_SEND_PLAN` — rx_loop sender-side runtime route/target/reservation planning
 //!   * `ENDPOINT_SEND_COMMIT` — rx_loop sender-side bookkeeping commit + worker dispatch
+//!   * `PACKET_MOVER2_AEAD_OPEN` — packet_mover2 inline stateless AEAD open
+//!   * `PACKET_MOVER2_AEAD_SEAL` — packet_mover2 inline stateless AEAD seal
+//!   * `PACKET_MOVER2_RETIRE` — packet_mover2 owner ordered retirement
 //!   * `FMP_WORKER_FSP_SEAL` — pipelined worker inner FSP AEAD seal
 //!   * `FMP_WORKER_FMP_SEAL` — pipelined worker outer FMP AEAD seal
 //!   * `FMP_WORKER_DISPATCH` — rx_loop-side worker hashing/admission/channel enqueue
@@ -225,9 +228,12 @@ pub enum Stage {
     DecryptWorkerBulkInputTailWait = 51,
     /// Time a decrypt worker spends servicing one dequeued bulk item.
     DecryptWorkerBulkItemService = 52,
-    ReservedStage53 = 53,
-    ReservedStage54 = 54,
-    ReservedStage55 = 55,
+    /// Inline packet_mover2 stateless AEAD open service before ordered owner retirement.
+    PacketMover2AeadOpen = 53,
+    /// Inline packet_mover2 stateless AEAD seal service before ordered owner retirement.
+    PacketMover2AeadSeal = 54,
+    /// Packet_mover2 owner ordered retirement after crypto completion.
+    PacketMover2Retire = 55,
     ReservedStage56 = 56,
     ReservedStage57 = 57,
     ReservedStage58 = 58,
@@ -321,9 +327,9 @@ impl Stage {
             Stage::DecryptWorkerBulkInputHeadWait => "decrypt_worker_bulk_input_head_wait",
             Stage::DecryptWorkerBulkInputTailWait => "decrypt_worker_bulk_input_tail_wait",
             Stage::DecryptWorkerBulkItemService => "decrypt_worker_bulk_item_service",
-            Stage::ReservedStage53 => "reserved_stage_53",
-            Stage::ReservedStage54 => "reserved_stage_54",
-            Stage::ReservedStage55 => "reserved_stage_55",
+            Stage::PacketMover2AeadOpen => "packet_mover2_aead_open",
+            Stage::PacketMover2AeadSeal => "packet_mover2_aead_seal",
+            Stage::PacketMover2Retire => "packet_mover2_retire",
             Stage::ReservedStage56 => "reserved_stage_56",
             Stage::ReservedStage57 => "reserved_stage_57",
             Stage::ReservedStage58 => "reserved_stage_58",
@@ -396,9 +402,9 @@ fn stage_from_index(idx: usize) -> Stage {
         50 => Stage::DecryptWorkerBulkInputHeadWait,
         51 => Stage::DecryptWorkerBulkInputTailWait,
         52 => Stage::DecryptWorkerBulkItemService,
-        53 => Stage::ReservedStage53,
-        54 => Stage::ReservedStage54,
-        55 => Stage::ReservedStage55,
+        53 => Stage::PacketMover2AeadOpen,
+        54 => Stage::PacketMover2AeadSeal,
+        55 => Stage::PacketMover2Retire,
         56 => Stage::ReservedStage56,
         57 => Stage::ReservedStage57,
         58 => Stage::ReservedStage58,

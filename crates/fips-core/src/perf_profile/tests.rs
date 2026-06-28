@@ -884,16 +884,16 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         "decrypt_worker_bulk_item_service"
     );
     assert_eq!(
-        stage_from_index(Stage::ReservedStage53 as usize).name(),
-        "reserved_stage_53"
+        stage_from_index(Stage::PacketMover2AeadOpen as usize).name(),
+        "packet_mover2_aead_open"
     );
     assert_eq!(
-        stage_from_index(Stage::ReservedStage54 as usize).name(),
-        "reserved_stage_54"
+        stage_from_index(Stage::PacketMover2AeadSeal as usize).name(),
+        "packet_mover2_aead_seal"
     );
     assert_eq!(
-        stage_from_index(Stage::ReservedStage55 as usize).name(),
-        "reserved_stage_55"
+        stage_from_index(Stage::PacketMover2Retire as usize).name(),
+        "packet_mover2_retire"
     );
     assert_eq!(
         stage_from_index(Stage::ReservedStage56 as usize).name(),
