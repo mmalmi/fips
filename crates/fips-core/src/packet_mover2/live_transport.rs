@@ -265,16 +265,6 @@ async fn send_transport_plan_batch<'a, R>(
         return;
     };
 
-    if batch.len() == 1 {
-        let plan_index = batch[0].0;
-        let plan = &plans[plan_index];
-        let result = transport
-            .send(plan.remote_addr(), plan.output().payload())
-            .await;
-        record_transport_send_result(plans, plan_index, result, sent, drops, sent_outputs);
-        return;
-    }
-
     transport
         .send_batch(batch, |plan_index, result| {
             record_transport_send_result(plans, plan_index, result, sent, drops, sent_outputs);
