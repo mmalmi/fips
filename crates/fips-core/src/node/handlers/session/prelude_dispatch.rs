@@ -17,10 +17,10 @@ use crate::node::session_wire::{
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
-    EncryptedSessionPayload, EndpointCommandLane, EndpointDataDelivery, EndpointDataPayload,
-    EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput,
-    LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
-    NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
+    EncryptedSessionPayload, EndpointDataDelivery, EndpointDataPayload, EndpointSendBatchCommand,
+    EndpointSendCommand, FspSendBookkeepingInput, LocalSessionPayload, Node, NodeEndpointCommand,
+    NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
+    SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 #[cfg(unix)]
@@ -85,26 +85,6 @@ enum FspFrameOutcome {
     /// either. This is normally replayed or very stale post-cutover traffic,
     /// not evidence that the current session diverged.
     StaleEpochDrainFailure { counter: u64 },
-}
-
-fn record_endpoint_command_wait(
-    queued_at: Option<crate::perf_profile::TraceStamp>,
-    lane: EndpointCommandLane,
-    count: u64,
-) {
-    let (priority_count, bulk_count) = match lane {
-        EndpointCommandLane::Priority => (count, 0),
-        EndpointCommandLane::Bulk => (0, count),
-    };
-    crate::perf_profile::record_since_split_count(
-        crate::perf_profile::Stage::EndpointCommandWait,
-        crate::perf_profile::Stage::EndpointPriorityCommandWait,
-        crate::perf_profile::Stage::EndpointBulkCommandWait,
-        queued_at,
-        count,
-        priority_count,
-        bulk_count,
-    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -656,11 +636,6 @@ struct PreparedEndpointSessionData<'a> {
     payload: &'a EndpointDataPayload,
 }
 
-struct PreparedOwnedEndpointSessionData {
-    meta: PreparedEndpointSessionMeta,
-    payload: EndpointDataPayload,
-}
-
 #[cfg(unix)]
 struct PipelinedEndpointWire {
     wire_buf: Vec<u8>,
@@ -716,6 +691,7 @@ struct PipelinedEndpointSendTarget {
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 struct PipelinedEndpointBatchTarget {
     send_target: PipelinedEndpointSendTarget,
     path_mtu: u16,
@@ -898,6 +874,7 @@ struct PipelinedEndpointRuntimeSendAttempt<'a> {
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 struct PipelinedEndpointRuntimeBatchSendAttempt<'a> {
     runtime_plans: Vec<PipelinedEndpointRuntimeSendPlan<'a>>,
     send_target: PipelinedEndpointSendTarget,
@@ -915,6 +892,7 @@ struct PipelinedEndpointPeerRuntimeSend<'a> {
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 struct PipelinedEndpointPeerRuntimeBatchSend;
 
 #[cfg(unix)]
@@ -1004,12 +982,6 @@ impl<'a> PreparedEndpointSessionData<'a> {
 
     fn fallback_plan(&self) -> SessionFspSendPlan<'_> {
         self.meta.fallback_plan(self.payload)
-    }
-}
-
-impl PreparedOwnedEndpointSessionData {
-    fn pipelined(&self) -> PipelinedEndpointSend<'_> {
-        self.meta.pipelined(&self.payload)
     }
 }
 

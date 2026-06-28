@@ -112,36 +112,6 @@ impl EncryptWorkerPool {
         record_encrypt_worker_dispatch(started_at, 1);
     }
 
-    pub(crate) fn dispatch_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
-        #[cfg(target_os = "linux")]
-        let mut jobs = jobs;
-        #[cfg(not(target_os = "linux"))]
-        let jobs = jobs;
-        let count = jobs.len();
-        if count == 0 {
-            return;
-        }
-        let started_at = encrypt_worker_dispatch_timer();
-
-        #[cfg(target_os = "linux")]
-        {
-            match self.dispatch_linux_wg_bulk_batch_unmeasured(jobs) {
-                Ok(()) => {
-                    record_encrypt_worker_dispatch(started_at, count);
-                    return;
-                }
-                Err(returned_jobs) => {
-                    jobs = returned_jobs;
-                }
-            }
-        }
-
-        for job in jobs {
-            self.dispatch_unmeasured(job);
-        }
-        record_encrypt_worker_dispatch(started_at, count);
-    }
-
     fn dispatch_unmeasured(&self, job: FmpSendJob) {
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");

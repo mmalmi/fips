@@ -1,18 +1,4 @@
 impl Node {
-    async fn handle_endpoint_send_batch_slow_path(
-        &mut self,
-        dest_addr: NodeAddr,
-        dest_pubkey: secp256k1::PublicKey,
-        payloads: Vec<EndpointDataPayload>,
-    ) {
-        for payload in payloads {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
-            let _ = self
-                .send_or_queue_endpoint_payload(dest_addr, dest_pubkey, payload)
-                .await;
-        }
-    }
-
     pub(in crate::node) async fn handle_packet_mover2_deferred_endpoint_command(
         &mut self,
         command: NodeEndpointCommand,
@@ -129,232 +115,24 @@ impl Node {
         }
     }
 
-    #[cfg(unix)]
-    async fn handle_established_endpoint_send_batch(
-        &mut self,
-        dest_addr: NodeAddr,
-        dest_pubkey: secp256k1::PublicKey,
-        payloads: Vec<EndpointDataPayload>,
-    ) {
-        let route = match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
-            Ok(route) => route,
-            Err(_) => {
-                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
-                    .await;
-                return;
-            }
-        };
-
-        let Some(workers) = self.encrypt_workers.as_ref().cloned() else {
-            self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
-                .await;
-            return;
-        };
-        let mut prepared_sends = Vec::with_capacity(payloads.len().min(64));
-        let mut use_reused_route = true;
-        let batch_target = route.batch_target(&self.transports).await.ok().flatten();
-
-        if let Some(batch_target) = batch_target.as_ref() {
-            self.handle_established_endpoint_send_batch_with_batch_target(
-                dest_addr,
-                dest_pubkey,
-                payloads,
-                &route,
-                batch_target,
-                &workers,
-            )
-            .await;
-            return;
-        }
-
-        for payload in payloads {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
-
-            if !use_reused_route {
-                PipelinedEndpointPreparedSend::commit_many(
-                    std::mem::take(&mut prepared_sends),
-                    self,
-                    &workers,
-                );
-                let _ = self
-                    .send_or_queue_endpoint_payload(dest_addr, dest_pubkey, payload)
-                    .await;
-                continue;
-            }
-
-            let prepared = match self
-                .prepare_session_endpoint_data(&dest_addr, &payload)
-                .await
-            {
-                Ok(prepared) => prepared,
-                Err(error) if Self::session_send_needs_path_recovery(&error, &dest_addr) => {
-                    PipelinedEndpointPreparedSend::commit_many(
-                        std::mem::take(&mut prepared_sends),
-                        self,
-                        &workers,
-                    );
-                    debug!(
-                        dest = %self.peer_display_name(&dest_addr),
-                        error = %error,
-                        "Established endpoint-data session lost route during batch preparation; queueing payload and probing fallback"
-                    );
-                    self.queue_pending_endpoint_data(dest_addr, payload);
-                    self.maybe_initiate_lookup(&dest_addr).await;
-                    use_reused_route = false;
-                    continue;
-                }
-                Err(_) => {
-                    PipelinedEndpointPreparedSend::commit_many(
-                        std::mem::take(&mut prepared_sends),
-                        self,
-                        &workers,
-                    );
-                    use_reused_route = false;
-                    continue;
-                }
-            };
-
-            let prepared_send = self
-                .prepare_peer_runtime_endpoint_send_with_route(prepared.pipelined(), &route)
-                .await;
-
-            match prepared_send {
-                Ok(Some(prepared_send)) => {
-                    prepared_sends.push(prepared_send);
-                }
-                Ok(None) => {
-                    PipelinedEndpointPreparedSend::commit_many(
-                        std::mem::take(&mut prepared_sends),
-                        self,
-                        &workers,
-                    );
-                    match self.send_session_fsp_plan(prepared.fallback_plan()).await {
-                        Ok(()) => {}
-                        Err(error)
-                            if Self::session_send_needs_path_recovery(&error, &dest_addr) =>
-                        {
-                            drop(prepared);
-                            debug!(
-                                dest = %self.peer_display_name(&dest_addr),
-                                error = %error,
-                                "Established endpoint-data fallback send lost route during batch send; queueing payload and probing fallback"
-                            );
-                            self.queue_pending_endpoint_data(dest_addr, payload);
-                            self.maybe_initiate_lookup(&dest_addr).await;
-                            use_reused_route = false;
-                        }
-                        Err(_) => {
-                            use_reused_route = false;
-                        }
-                    }
-                }
-                Err(error) if Self::session_send_needs_path_recovery(&error, &dest_addr) => {
-                    drop(prepared);
-                    PipelinedEndpointPreparedSend::commit_many(
-                        std::mem::take(&mut prepared_sends),
-                        self,
-                        &workers,
-                    );
-                    debug!(
-                        dest = %self.peer_display_name(&dest_addr),
-                        error = %error,
-                        "Established endpoint-data session lost route during batch send; queueing payload and probing fallback"
-                    );
-                    self.queue_pending_endpoint_data(dest_addr, payload);
-                    self.maybe_initiate_lookup(&dest_addr).await;
-                    use_reused_route = false;
-                }
-                Err(_) => {
-                    PipelinedEndpointPreparedSend::commit_many(
-                        std::mem::take(&mut prepared_sends),
-                        self,
-                        &workers,
-                    );
-                    use_reused_route = false;
-                }
-            }
-        }
-
-        PipelinedEndpointPreparedSend::commit_many(prepared_sends, self, &workers);
-    }
-
-    #[cfg(unix)]
-    async fn handle_established_endpoint_send_batch_with_batch_target(
-        &mut self,
-        dest_addr: NodeAddr,
-        dest_pubkey: secp256k1::PublicKey,
-        payloads: Vec<EndpointDataPayload>,
-        route: &PipelinedEndpointPeerRuntimeRoute,
-        batch_target: &PipelinedEndpointBatchTarget,
-        workers: &crate::node::encrypt_worker::EncryptWorkerPool,
-    ) {
-        let mut prepared_payloads = Vec::with_capacity(payloads.len());
-        let mut payloads = payloads.into_iter();
-
-        while let Some(payload) = payloads.next() {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
-            match self
-                .prepare_owned_session_endpoint_data(dest_addr, payload)
-                .await
-            {
-                Ok(prepared) => prepared_payloads.push(prepared),
-                Err((_, payload)) => {
-                    let mut fallback_payloads = Vec::with_capacity(
-                        prepared_payloads.len() + 1 + payloads.size_hint().0,
-                    );
-                    fallback_payloads.extend(
-                        prepared_payloads
-                            .into_iter()
-                            .map(|prepared| prepared.payload),
-                    );
-                    fallback_payloads.push(payload);
-                    fallback_payloads.extend(payloads);
-                    self.handle_endpoint_send_batch_slow_path(
-                        dest_addr,
-                        dest_pubkey,
-                        fallback_payloads,
-                    )
-                    .await;
-                    return;
-                }
-            }
-        }
-
-        let prepared_sends = self.prepare_peer_runtime_endpoint_send_batch_with_batch_target(
-            &prepared_payloads,
-            route,
-            batch_target,
-        );
-
-        match prepared_sends {
-            Ok(Some(prepared_sends)) => {
-                PipelinedEndpointPreparedSend::commit_many(prepared_sends, self, workers);
-            }
-            Ok(None) | Err(_) => {
-                let fallback_payloads = prepared_payloads
-                    .into_iter()
-                    .map(|prepared| prepared.payload)
-                    .collect();
-                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, fallback_payloads)
-                    .await;
-            }
-        }
-    }
-
     #[cfg(test)]
     pub(crate) async fn send_endpoint_data(
         &mut self,
         remote: crate::PeerIdentity,
         payload: Vec<u8>,
     ) -> Result<(), NodeError> {
-        self.send_endpoint_data_send(EndpointDataSend::new(
+        self.send_endpoint_data_send(crate::node::EndpointDataSend::new(
             remote,
             EndpointDataPayload::new(payload),
         ))
         .await
     }
 
-    async fn send_endpoint_data_send(&mut self, send: EndpointDataSend) -> Result<(), NodeError> {
+    #[cfg(test)]
+    async fn send_endpoint_data_send(
+        &mut self,
+        send: crate::node::EndpointDataSend,
+    ) -> Result<(), NodeError> {
         let dest_addr = send.dest_addr();
         let dest_pubkey = send.dest_pubkey();
         self.register_identity(dest_addr, dest_pubkey);
@@ -362,6 +140,7 @@ impl Node {
             .await
     }
 
+    #[cfg(test)]
     async fn send_or_queue_endpoint_payload(
         &mut self,
         dest_addr: NodeAddr,
@@ -448,20 +227,6 @@ impl Node {
             .prepare_session_endpoint_meta(*dest_addr, payload.len())
             .await?;
         Ok(PreparedEndpointSessionData { meta, payload })
-    }
-
-    async fn prepare_owned_session_endpoint_data(
-        &mut self,
-        dest_addr: NodeAddr,
-        payload: EndpointDataPayload,
-    ) -> Result<PreparedOwnedEndpointSessionData, (NodeError, EndpointDataPayload)> {
-        match self
-            .prepare_session_endpoint_meta(dest_addr, payload.len())
-            .await
-        {
-            Ok(meta) => Ok(PreparedOwnedEndpointSessionData { meta, payload }),
-            Err(error) => Err((error, payload)),
-        }
     }
 
     async fn prepare_session_endpoint_meta(
@@ -677,59 +442,6 @@ impl Node {
         PipelinedEndpointPeerRuntimeSendRequest::new(source_addr, send, default_ttl)
             .execute(self, workers)
             .await
-    }
-
-    #[cfg(unix)]
-    fn resolve_peer_runtime_endpoint_route(
-        &mut self,
-        dest_addr: NodeAddr,
-        now_ms: u64,
-    ) -> Result<PipelinedEndpointPeerRuntimeRoute, PipelinedEndpointPeerRuntimeRouteRequestError>
-    {
-        let source_addr = *self.node_addr();
-        let default_ttl = self.config.node.session.default_ttl;
-        PipelinedEndpointPeerRuntimeRouteRequest::new(source_addr, dest_addr, now_ms, default_ttl)
-            .resolve(self)
-    }
-
-    #[cfg(unix)]
-    #[cfg_attr(not(test), allow(dead_code))]
-    async fn prepare_peer_runtime_endpoint_send_with_route(
-        &mut self,
-        send: PipelinedEndpointSend<'_>,
-        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
-    ) -> Result<Option<PipelinedEndpointPreparedSend>, NodeError> {
-        let Some(dispatch) = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_route(
-            runtime_route,
-            send,
-            &self.transports,
-            &mut self.sessions,
-            &mut self.peers,
-        )
-        .await
-        .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
-        else {
-            return Ok(None);
-        };
-
-        Ok(Some(dispatch.into_prepared_send(None)))
-    }
-
-    #[cfg(unix)]
-    fn prepare_peer_runtime_endpoint_send_batch_with_batch_target(
-        &mut self,
-        prepared: &[PreparedOwnedEndpointSessionData],
-        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
-        batch_target: &PipelinedEndpointBatchTarget,
-    ) -> Result<Option<Vec<PipelinedEndpointPreparedSend>>, NodeError> {
-        PipelinedEndpointPeerRuntimeBatchSend::resolve_prepared_sends_with_batch_target(
-            runtime_route,
-            prepared.iter().map(|prepared| prepared.pipelined()),
-            batch_target,
-            &mut self.sessions,
-            &mut self.peers,
-        )
-        .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)
     }
 
     #[cfg(unix)]

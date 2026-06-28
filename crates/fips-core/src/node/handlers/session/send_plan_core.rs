@@ -278,6 +278,7 @@ impl PipelinedEndpointPeerRuntimeRoute {
         self.peer_snapshot.transport_id()
     }
 
+    #[cfg(test)]
     async fn batch_target(
         &self,
         transports: &std::collections::HashMap<
@@ -355,6 +356,7 @@ impl PipelinedEndpointPeerRuntimeRoute {
         self.runtime_send_plan_with_route_plan(send, route_plan)
     }
 
+    #[cfg(test)]
     fn runtime_send_plan_with_path_mtu<'a>(
         &self,
         send: &PipelinedEndpointSend<'a>,

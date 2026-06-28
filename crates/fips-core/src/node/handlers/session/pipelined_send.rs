@@ -117,7 +117,7 @@ impl<'a> PipelinedEndpointRuntimeSendAttempt<'a> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl<'a> PipelinedEndpointRuntimeBatchSendAttempt<'a> {
     fn new(
         runtime_plans: Vec<PipelinedEndpointRuntimeSendPlan<'a>>,
@@ -235,21 +235,6 @@ fn record_pipelined_endpoint_session_bookkeeping(
     let _ = node
         .sessions
         .record_fsp_send_bookkeeping(&record.dest_addr, record.fsp_bookkeeping);
-}
-
-#[cfg(unix)]
-fn record_pipelined_endpoint_session_bookkeeping_batch(
-    node: &mut Node,
-    dest_addr: &NodeAddr,
-    records: &[PipelinedEndpointBookkeeping],
-) {
-    let _ = node
-        .sessions
-        .seed_endpoint_data_fsp_path_mtu_batch(dest_addr, records.iter().map(|r| r.fsp_path_mtu));
-    let _ = node.sessions.record_fsp_send_bookkeeping_batch(
-        dest_addr,
-        records.iter().map(|record| record.fsp_bookkeeping),
-    );
 }
 
 #[cfg(unix)]
@@ -405,7 +390,7 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl PipelinedEndpointPeerRuntimeBatchSend {
     fn resolve_prepared_sends_with_batch_target<'a, I>(
         runtime_route: &PipelinedEndpointPeerRuntimeRoute,
@@ -546,55 +531,6 @@ impl PipelinedEndpointPreparedSend {
         worker_job
     }
 
-    fn record_bookkeeping_many(
-        records: &[PipelinedEndpointBookkeeping],
-        node: &mut Node,
-    ) {
-        let Some(first) = records.first().copied() else {
-            return;
-        };
-
-        if records
-            .iter()
-            .all(|record| {
-                record.dest_addr == first.dest_addr && record.next_hop_addr == first.next_hop_addr
-            })
-        {
-            let _ = node.peers.record_fmp_send_bookkeeping_batch(
-                &first.next_hop_addr,
-                records.iter().map(|record| {
-                    (
-                        record.fmp_counter,
-                        record.fmp_timestamp_ms,
-                        record.fmp_wire_capacity,
-                    )
-                }),
-            );
-            let originated_bytes = records
-                .iter()
-                .map(|record| record.originated_bytes)
-                .sum::<usize>();
-            node.stats_mut()
-                .forwarding
-                .record_originated_batch(records.len(), originated_bytes);
-            record_pipelined_endpoint_session_bookkeeping_batch(node, &first.dest_addr, records);
-            return;
-        }
-
-        for record in records {
-            let _ = node.peers.record_fmp_send_bookkeeping(
-                &record.next_hop_addr,
-                record.fmp_counter,
-                record.fmp_timestamp_ms,
-                record.fmp_wire_capacity,
-            );
-            node.stats_mut()
-                .forwarding
-                .record_originated(record.originated_bytes);
-            record_pipelined_endpoint_session_bookkeeping(node, record);
-        }
-    }
-
     fn commit(self, node: &mut Node, workers: &crate::node::encrypt_worker::EncryptWorkerPool) {
         let _t = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::EndpointSendCommit,
@@ -604,41 +540,6 @@ impl PipelinedEndpointPreparedSend {
             worker_job.queued_at = crate::perf_profile::stamp();
         }
         workers.dispatch(worker_job);
-    }
-
-    fn commit_many(
-        sends: Vec<Self>,
-        node: &mut Node,
-        workers: &crate::node::encrypt_worker::EncryptWorkerPool,
-    ) {
-        if sends.is_empty() {
-            return;
-        }
-        if sends.len() == 1 {
-            sends
-                .into_iter()
-                .next()
-                .expect("single send exists")
-                .commit(node, workers);
-            return;
-        }
-
-        let _t = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::EndpointSendCommit,
-        );
-        let queued_at = crate::perf_profile::stamp();
-        let mut records = Vec::with_capacity(sends.len());
-        let jobs = sends
-            .into_iter()
-            .map(|send| {
-                let (bookkeeping, mut worker_job) = send.into_bookkeeping_and_job();
-                records.push(bookkeeping);
-                worker_job.queued_at = queued_at;
-                worker_job
-            })
-            .collect();
-        Self::record_bookkeeping_many(&records, node);
-        workers.dispatch_bulk_batch(jobs);
     }
 }
 

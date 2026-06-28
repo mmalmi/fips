@@ -199,8 +199,9 @@ impl Node {
         crate::time::now_ms()
     }
 
-    // === TUN Outbound (Data Plane) ===
+    // === Legacy Test TUN Outbound ===
 
+    #[cfg(test)]
     /// Handle an outbound IPv6 packet from the TUN reader.
     ///
     /// Extracts the destination FipsAddress, looks up the NodeAddr and PublicKey

@@ -191,17 +191,30 @@ impl Node {
                 command,
                 response_tx,
             } => {
-                let result = self.handle_endpoint_send_command(command).await;
-                let _ = response_tx.send(result);
+                let dest_addr = command.data_send().dest_addr();
+                debug!(
+                    dest = %self.peer_display_name(&dest_addr),
+                    "Dropping endpoint send command that reached the control fallback"
+                );
+                let _ = response_tx.send(Err(NodeError::SendFailed {
+                    node_addr: dest_addr,
+                    reason: "endpoint data sends are owned by packet_mover2".into(),
+                }));
             }
             NodeEndpointCommand::SendOneway { command } => {
-                // Result deliberately discarded — caller wanted
-                // fire-and-forget. Errors still get logged inside
-                // `send_endpoint_data` so they're not silent.
-                let _ = self.handle_endpoint_send_command(command).await;
+                let dest_addr = command.data_send().dest_addr();
+                debug!(
+                    dest = %self.peer_display_name(&dest_addr),
+                    "Dropping endpoint oneway send command that reached the control fallback"
+                );
             }
             NodeEndpointCommand::SendBatchOneway { command, .. } => {
-                self.handle_endpoint_send_batch_commands(vec![command]).await;
+                let remote = command.remote();
+                debug!(
+                    dest = %self.peer_display_name(remote.node_addr()),
+                    packets = command.len(),
+                    "Dropping endpoint batch send command that reached the control fallback"
+                );
             }
             NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
@@ -385,67 +398,6 @@ impl Node {
                 let _ = response_tx.send(result);
             }
         }
-    }
-
-    async fn handle_endpoint_send_command(
-        &mut self,
-        command: EndpointSendCommand,
-    ) -> Result<(), NodeError> {
-        let lane = command.lane();
-        let (send, queued_at) = command.into_parts();
-        record_endpoint_command_wait(queued_at, lane, 1);
-        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
-        self.send_endpoint_data_send(send).await
-    }
-
-    pub(in crate::node) async fn handle_endpoint_send_batch_commands(
-        &mut self,
-        commands: Vec<EndpointSendBatchCommand>,
-    ) {
-        let Some(first) = commands.first() else {
-            return;
-        };
-        let lane = first.lane();
-        let remote = first.remote();
-        let mut payload_count = 0usize;
-        let mut payloads = Vec::new();
-
-        for command in commands {
-            debug_assert_eq!(command.lane(), lane);
-            debug_assert_eq!(command.remote(), remote);
-            let count = command.len();
-            let (command_remote, command_payloads, queued_at) = command.into_parts();
-            debug_assert_eq!(command_remote, remote);
-            // The command queue wait ends when rx_loop starts handling the
-            // batch. Preserve per-command queue residence before coalescing
-            // same-peer batches for shared route/session preparation.
-            record_endpoint_command_wait(queued_at, lane, count as u64);
-            payload_count = payload_count.saturating_add(count);
-            payloads.extend(command_payloads);
-        }
-
-        if payload_count == 0 {
-            return;
-        }
-
-        let dest_addr = *remote.node_addr();
-        let dest_pubkey = remote.pubkey_full();
-        self.register_identity(dest_addr, dest_pubkey);
-
-        #[cfg(unix)]
-        if self.encrypt_workers.is_some()
-            && self
-                .sessions
-                .get(&dest_addr)
-                .is_some_and(|entry| entry.is_established())
-        {
-            self.handle_established_endpoint_send_batch(dest_addr, dest_pubkey, payloads)
-                .await;
-            return;
-        }
-
-        self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
-            .await;
     }
 
 }
