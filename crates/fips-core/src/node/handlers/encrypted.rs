@@ -54,21 +54,12 @@ pub(in crate::node) enum EncryptedFrameFastPath {
 
 impl Node {
     #[cfg(test)]
-    pub(in crate::node) fn decrypt_worker_count(default: usize) -> usize {
-        std::env::var("FIPS_DECRYPT_WORKERS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(default.max(1))
-            .max(1)
-    }
-
-    #[cfg(test)]
     pub(in crate::node) fn ensure_decrypt_worker_pool(
         &mut self,
         default_workers: usize,
     ) -> crate::node::decrypt_worker::DecryptWorkerPool {
         if self.decrypt_workers.is_none() {
-            let worker_count = Self::decrypt_worker_count(default_workers);
+            let worker_count = default_workers.max(1);
             let direct_delivery_sink = self.decrypt_direct_session_delivery_sink();
             self.decrypt_workers = Some(
                 crate::node::decrypt_worker::DecryptWorkerPool::spawn_with_direct_delivery_sink(

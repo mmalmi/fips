@@ -66,39 +66,6 @@ impl Node {
             info!(count = self.transports.len(), "Transports initialized");
         }
 
-        // Legacy worker pools are kept alive only for old direct handler/send
-        // tests. Production receive and output are owned by packet_mover2.
-        #[cfg(all(test, unix))]
-        {
-            let cpu_default = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-                .max(1);
-            if self.config.node.worker_pools_enabled {
-                node_start_debug_log("Node::start worker pools begin");
-                // Test worker count defaults to the number of CPUs, with an
-                // override for debug-only legacy worker tests.
-                let encrypt_worker_count: usize = std::env::var("FIPS_ENCRYPT_WORKERS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(cpu_default)
-                    .max(1);
-                self.encrypt_workers = Some(crate::node::encrypt_worker::EncryptWorkerPool::spawn(
-                    encrypt_worker_count,
-                ));
-                info!(
-                    workers = encrypt_worker_count,
-                    "Spawned FMP-encrypt worker pool"
-                );
-                node_start_debug_log("Node::start worker pools complete");
-            } else {
-                node_start_debug_log("Node::start worker pools disabled");
-                info!("FIPS encrypt worker pool disabled; using in-line send path");
-            }
-            #[cfg(test)]
-            self.ensure_decrypt_worker_pool(cpu_default);
-        }
-
         if self.config.node.discovery.nostr.enabled {
             node_start_debug_log("Node::start nostr discovery start begin");
             match NostrDiscovery::start(&self.identity, self.config.node.discovery.nostr.clone())
