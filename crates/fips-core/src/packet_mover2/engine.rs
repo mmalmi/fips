@@ -269,6 +269,28 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         let outbound_dispatched = self
             .dispatch_outbound_available_into(limit.saturating_sub(inbound_dispatched), seal_work);
 
+        let leading_priority_seals = seal_work
+            .iter()
+            .take_while(|work| work.reservation.lane == Lane::Priority)
+            .count();
+        for work in seal_work.drain(..leading_priority_seals) {
+            let reservation = work.reservation.clone();
+            let completion = match self.owner_crypto_keys(reservation.owner) {
+                Some(keys) => match AeadSealWork::from_outbound_work(work, keys.seal) {
+                    Ok(work) => sealed.execute(work),
+                    Err(_) => CryptoCompletion {
+                        reservation,
+                        result: CryptoResult::Failed(CryptoFailureKind::Seal),
+                    },
+                },
+                None => CryptoCompletion {
+                    reservation,
+                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
+                },
+            };
+            retired.extend(self.retire_completion(completion));
+        }
+
         for work in open_work.drain(..) {
             let reservation = work.reservation.clone();
             let completion = match self.owner_crypto_keys(reservation.owner) {
