@@ -1,5 +1,6 @@
 include!("helpers_and_edges.rs");
 include!("live_route_table.rs");
+include!("live_route_table_liveness.rs");
 include!("live_route_table_outbound.rs");
 include!("live_route_table_node.rs");
 include!("live_node_routes.rs");
