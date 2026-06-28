@@ -709,7 +709,6 @@ impl PacketMover2TurnDriver {
             summary.dispatched = summary.dispatched.saturating_add(dispatched);
             remaining = remaining.saturating_sub(dispatched);
 
-            let mut generated_outbound = 0usize;
             let mut retired = std::mem::take(&mut self.retired);
             for packet in retired.drain(..) {
                 match packet {
@@ -720,14 +719,13 @@ impl PacketMover2TurnDriver {
                     RetiredPacket::Outbound(packet) => {
                         self.wrapped_outbound_receipts.push(packet.receipt());
                         self.admit_outbound_packet(packet.into_packet(), &mut summary);
-                        generated_outbound = generated_outbound.saturating_add(1);
                     }
                     RetiredPacket::Drop(_) => {}
                 }
             }
             self.retired = retired;
 
-            if dispatched == 0 || generated_outbound == 0 {
+            if dispatched == 0 {
                 break;
             }
         }
