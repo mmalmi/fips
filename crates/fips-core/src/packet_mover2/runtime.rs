@@ -6,7 +6,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
-    output_scratch: Vec<PacketOutput>,
+    output_rewrite_buffer: Vec<PacketOutput>,
     retired: Vec<RetiredPacket>,
     transport_output: PacketMover2TransportSendPlanOutput,
     drops: Vec<PacketDrop>,
@@ -25,7 +25,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             raw_ingress_drops: Vec::new(),
             output_drops: Vec::new(),
             outputs: Vec::new(),
-            output_scratch: Vec::new(),
+            output_rewrite_buffer: Vec::new(),
             retired: Vec::new(),
             transport_output: PacketMover2TransportSendPlanOutput::new(),
             drops: Vec::new(),
@@ -413,7 +413,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
 
     fn reset_turn_buffers(&mut self) {
         self.outputs.clear();
-        self.output_scratch.clear();
+        self.output_rewrite_buffer.clear();
         self.retired.clear();
         self.transport_output.clear();
         self.drops.clear();
@@ -622,7 +622,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 _ => self.outputs.push(output),
             }
         }
-        self.output_scratch = outputs;
+        self.output_rewrite_buffer = outputs;
         summary.outputs = self.outputs.len();
         summary.outputs_dropped = summary
             .outputs_dropped
@@ -649,7 +649,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 _ => self.outputs.push(output),
             }
         }
-        self.output_scratch = outputs;
+        self.output_rewrite_buffer = outputs;
         summary.outputs = self.outputs.len();
         summary.outputs_dropped = summary
             .outputs_dropped
@@ -683,7 +683,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     }
 
     fn take_outputs_for_rewrite(&mut self) -> Vec<PacketOutput> {
-        let mut outputs = std::mem::take(&mut self.output_scratch);
+        let mut outputs = std::mem::take(&mut self.output_rewrite_buffer);
         std::mem::swap(&mut self.outputs, &mut outputs);
         outputs
     }

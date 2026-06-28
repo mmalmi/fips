@@ -254,10 +254,10 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
 
     pub(crate) fn run_available(&mut self, limit: usize) -> PacketMoverTurn {
         let mut work = Vec::new();
-        self.run_available_with_scratch(limit, &mut work)
+        self.run_available_with_work_buffer(limit, &mut work)
     }
 
-    pub(crate) fn run_available_with_scratch(
+    pub(crate) fn run_available_with_work_buffer(
         &mut self,
         limit: usize,
         work: &mut Vec<CryptoWork>,
@@ -278,10 +278,10 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
     pub(crate) fn run_aead_available(&mut self, limit: usize) -> PacketMoverTurn {
         let mut open_work = Vec::new();
         let mut seal_work = Vec::new();
-        self.run_aead_available_with_scratch(limit, &mut open_work, &mut seal_work)
+        self.run_aead_available_with_work_buffers(limit, &mut open_work, &mut seal_work)
     }
 
-    pub(crate) fn run_aead_available_with_scratch(
+    pub(crate) fn run_aead_available_with_work_buffers(
         &mut self,
         limit: usize,
         open_work: &mut Vec<CryptoWork>,

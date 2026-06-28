@@ -32,13 +32,13 @@
             ))
             .unwrap();
 
-        let mut open_scratch = Vec::with_capacity(4);
-        let mut seal_scratch = Vec::with_capacity(4);
-        let turn = mover.run_aead_available_with_scratch(8, &mut open_scratch, &mut seal_scratch);
+        let mut open_work_buffer = Vec::with_capacity(4);
+        let mut seal_work_buffer = Vec::with_capacity(4);
+        let turn = mover.run_aead_available_with_work_buffers(8, &mut open_work_buffer, &mut seal_work_buffer);
         assert_eq!(turn.dispatched(), 2);
         assert!(turn.drops().is_empty());
-        assert!(open_scratch.is_empty());
-        assert!(seal_scratch.is_empty());
+        assert!(open_work_buffer.is_empty());
+        assert!(seal_work_buffer.is_empty());
 
         let outputs = turn.outputs();
         assert_eq!(outputs.len(), 2);
@@ -54,8 +54,8 @@
         assert_eq!(sealed_header.receiver_idx(), 700);
         assert_eq!(sealed_header.counter(), 200);
         assert_eq!(open_sealed_output(outputs[1], seal_key), b"outbound");
-        assert_eq!(open_scratch.capacity(), 4);
-        assert_eq!(seal_scratch.capacity(), 4);
+        assert_eq!(open_work_buffer.capacity(), 4);
+        assert_eq!(seal_work_buffer.capacity(), 4);
     }
 
     #[test]
@@ -264,9 +264,9 @@
             ))
             .unwrap();
 
-        let mut open_scratch = Vec::new();
-        let mut seal_scratch = Vec::new();
-        let turn = mover.run_aead_available_with_scratch(2, &mut open_scratch, &mut seal_scratch);
+        let mut open_work_buffer = Vec::new();
+        let mut seal_work_buffer = Vec::new();
+        let turn = mover.run_aead_available_with_work_buffers(2, &mut open_work_buffer, &mut seal_work_buffer);
 
         assert_eq!(turn.dispatched(), 2);
         let outputs = turn.outputs();
@@ -718,7 +718,7 @@
     }
 
     #[test]
-    fn runtime_turn_driver_reuses_scratch_and_output_buffers() {
+    fn runtime_turn_driver_reuses_work_and_output_buffers() {
         let owner = OwnerId::fsp(80);
         let key = 41;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);

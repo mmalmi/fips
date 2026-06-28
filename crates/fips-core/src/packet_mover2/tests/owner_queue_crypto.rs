@@ -241,7 +241,7 @@
     }
 
     #[test]
-    fn turn_runner_batches_admission_and_reuses_work_scratch() {
+    fn turn_runner_batches_admission_and_reuses_work_buffer() {
         let owner = OwnerId::fsp(11);
         let mut mover = PacketMover2::new(AdmissionConfig::new(2, 4), CopyCryptoWorker);
         mover.register_owner(owner, OwnerConfig::new(1, 8));
@@ -254,7 +254,7 @@
         assert_eq!(summary.dropped(), 0);
 
         let mut work = Vec::with_capacity(8);
-        let turn = mover.run_available_with_scratch(2, &mut work);
+        let turn = mover.run_available_with_work_buffer(2, &mut work);
         assert!(work.is_empty());
         assert_eq!(turn.dispatched(), 2);
         assert!(turn.drops().is_empty());
@@ -273,7 +273,7 @@
             2
         );
 
-        let turn = mover.run_available_with_scratch(2, &mut work);
+        let turn = mover.run_available_with_work_buffer(2, &mut work);
         assert_eq!(turn.dispatched(), 1);
         assert_eq!(turn.outputs()[0].counter, 3);
         assert_eq!(work.capacity(), 8);
