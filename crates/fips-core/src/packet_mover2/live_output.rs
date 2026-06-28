@@ -746,6 +746,22 @@ where
             continue;
         };
 
+        if end - start == 1 {
+            let plan = &plans[start];
+            match transport
+                .send(plan.remote_addr(), plan.output().payload())
+                .await
+            {
+                Ok(_) => sent += 1,
+                Err(error) => drops.push(PacketMover2OutputDrop::from_output(
+                    plan.output(),
+                    packet_mover2_output_error_for_transport(&error),
+                )),
+            }
+            start = end;
+            continue;
+        }
+
         batch.clear();
         batch.extend(
             plans[start..end]
