@@ -17,6 +17,7 @@ impl StatelessCryptoWorker for CopyCryptoWorker {
             ce_flag: work.reservation.ce_flag,
             path: work.reservation.output_path.clone(),
             activity_tick: work.reservation.activity_tick,
+            fmp_timestamp_ms: work.reservation.fmp_timestamp_ms,
             source_wire_len: Some(work.packet.payload.len()),
             payload: work.packet.payload,
         };
@@ -121,6 +122,7 @@ impl StatelessAeadOpenWorker {
                     ce_flag: reservation.ce_flag,
                     path: reservation.output_path.clone(),
                     activity_tick: reservation.activity_tick,
+                    fmp_timestamp_ms: reservation.fmp_timestamp_ms,
                     source_wire_len: Some(source_wire_len),
                     payload: work.work.packet.payload,
                 })
@@ -245,6 +247,7 @@ impl StatelessAeadSealWorker {
                         ce_flag: reservation.ce_flag,
                         path: reservation.output_path.clone(),
                         activity_tick: reservation.activity_tick,
+                        fmp_timestamp_ms: reservation.fmp_timestamp_ms,
                         source_wire_len: None,
                         payload: work.work.packet.payload,
                     }),

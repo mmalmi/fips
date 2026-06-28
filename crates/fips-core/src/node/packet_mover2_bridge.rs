@@ -1,10 +1,12 @@
+use super::endpoint_traffic::classify_fmp_plaintext_traffic;
 use super::*;
 use crate::packet_mover2::{
-    OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
+    ActivityTick, OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
     PacketMover2EndpointCommandRoute, PacketMover2FspWrapRoute, PacketMover2IngressRoute,
     PacketMover2LiveEndpointRoute, PacketMover2LiveFmpIngressRoute,
     PacketMover2LiveFspIngressRoute, PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute,
-    PacketMover2TunDestinationRoute, PacketMover2TunOutboundRoute, TransportPath,
+    PacketMover2OutputDrop, PacketMover2OutputError, PacketMover2TunDestinationRoute,
+    PacketMover2TunOutboundRoute, TransportPath,
 };
 
 const INITIAL_FMP_GENERATION: u64 = 1;
@@ -33,6 +35,97 @@ struct PacketMover2FspOwnerSeed {
 }
 
 impl Node {
+    pub(in crate::node) async fn send_packet_mover2_fmp_link_plaintext(
+        &mut self,
+        node_addr: &NodeAddr,
+        plaintext: &[u8],
+        ce_flag: bool,
+    ) -> Result<(), NodeError> {
+        if !self.sync_packet_mover2_fmp_owner(node_addr) {
+            return if self.peers.get(node_addr).is_none() {
+                Err(NodeError::PeerNotFound(*node_addr))
+            } else {
+                Err(NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: "packet_mover2 FMP owner unavailable".into(),
+                })
+            };
+        }
+
+        let (receiver_idx, mut flags) = {
+            let peer = self
+                .peers
+                .get(node_addr)
+                .ok_or(NodeError::PeerNotFound(*node_addr))?;
+            let receiver_idx = peer.their_index().ok_or_else(|| NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "no their_index".into(),
+            })?;
+            let mut flags = if peer.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()) {
+                FLAG_SP
+            } else {
+                0
+            };
+            if peer.current_k_bit() {
+                flags |= FLAG_KEY_EPOCH;
+            }
+            (receiver_idx.as_u32(), flags)
+        };
+        if ce_flag {
+            flags |= FLAG_CE;
+        }
+
+        let outbound = OutboundPacket::fmp(
+            OwnerId::fmp_node(*node_addr),
+            INITIAL_FMP_GENERATION,
+            packet_mover2_fmp_link_class(plaintext),
+            receiver_idx,
+            flags,
+            plaintext.to_vec(),
+        )
+        .with_activity_tick(ActivityTick::new(Self::now_ms()));
+        let (turn, sent_output) = self
+            .packet_mover2
+            .send_outbound_transport(outbound, &self.transports, 1)
+            .await;
+
+        if let Some(output) = sent_output {
+            let timestamp_ms = output
+                .fmp_timestamp_ms()
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: "packet_mover2 FMP timestamp missing".into(),
+                })?;
+            let bytes_sent = output.payload_len();
+            let _ = self.peers.record_fmp_send_bookkeeping(
+                node_addr,
+                output.counter(),
+                timestamp_ms,
+                bytes_sent,
+            );
+            let send_result: Result<usize, TransportError> = Ok(bytes_sent);
+            self.note_local_send_outcome(node_addr, &send_result);
+            return Ok(());
+        }
+
+        if let Some(drop) = turn.output_drops().first() {
+            return Err(self.packet_mover2_fmp_output_drop_error(*node_addr, drop));
+        }
+        if let Some(drop) = turn.drops().first() {
+            return Err(NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: format!("packet_mover2 FMP send drop: {:?}", drop.reason()),
+            });
+        }
+        Err(NodeError::SendFailed {
+            node_addr: *node_addr,
+            reason: format!(
+                "packet_mover2 FMP send made no progress: {:?}",
+                turn.summary()
+            ),
+        })
+    }
+
     pub(in crate::node) fn sync_packet_mover2_fmp_owner(&mut self, node_addr: &NodeAddr) -> bool {
         let Some(seed) = self.packet_mover2_fmp_owner_seed(node_addr) else {
             self.remove_packet_mover2_fmp_owner(node_addr);
@@ -319,5 +412,56 @@ impl Node {
 
     fn packet_mover2_owner_in_flight_limit(&self) -> usize {
         self.config.node.limits.max_pending_inbound.max(1)
+    }
+
+    fn packet_mover2_fmp_output_drop_error(
+        &self,
+        node_addr: NodeAddr,
+        drop: &PacketMover2OutputDrop,
+    ) -> NodeError {
+        match drop.reason() {
+            PacketMover2OutputError::MtuExceeded => NodeError::MtuExceeded {
+                node_addr,
+                packet_size: drop.payload_len(),
+                mtu: self.packet_mover2_drop_path_mtu(drop),
+            },
+            PacketMover2OutputError::NoRoute => {
+                NodeError::LocalRouteUnavailable("packet_mover2 transport route unavailable".into())
+            }
+            reason => NodeError::SendFailed {
+                node_addr,
+                reason: format!("packet_mover2 transport output failed: {:?}", reason),
+            },
+        }
+    }
+
+    fn packet_mover2_drop_path_mtu(&self, drop: &PacketMover2OutputDrop) -> u16 {
+        let Some(TransportPath::Live {
+            transport_id,
+            remote_addr,
+        }) = drop.path()
+        else {
+            return self.transport_mtu();
+        };
+        self.transports
+            .get(&transport_id)
+            .map(|transport| transport.link_mtu(&remote_addr))
+            .unwrap_or_else(|| self.transport_mtu())
+    }
+}
+
+fn packet_mover2_fmp_link_class(plaintext: &[u8]) -> PacketClass {
+    match plaintext
+        .first()
+        .and_then(|msg_type| LinkMessageType::from_byte(*msg_type))
+    {
+        Some(LinkMessageType::Heartbeat) => PacketClass::Liveness,
+        Some(LinkMessageType::SenderReport | LinkMessageType::ReceiverReport) => PacketClass::Mmp,
+        Some(LinkMessageType::SessionDatagram)
+            if classify_fmp_plaintext_traffic(plaintext).bulk_endpoint_data =>
+        {
+            PacketClass::Bulk
+        }
+        _ => PacketClass::Control,
     }
 }

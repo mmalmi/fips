@@ -131,8 +131,7 @@ use crate::transport::udp::UdpTransport;
 #[cfg(feature = "webrtc-transport")]
 use crate::transport::webrtc::WebRtcTransport;
 use crate::transport::{
-    ConnectionState, Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError,
-    TransportHandle, TransportId,
+    Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError, TransportHandle, TransportId,
 };
 use crate::tree::TreeState;
 use crate::upper::hosts::HostMap;

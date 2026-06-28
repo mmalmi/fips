@@ -123,6 +123,7 @@
             path: None,
             activity_tick: Some(activity_tick),
             source_wire_len: Some(payload.len()),
+            fmp_timestamp_ms: None,
             payload: payload.into(),
         };
 
@@ -177,6 +178,7 @@
             path: None,
             activity_tick: None,
             source_wire_len: Some(payload.len()),
+            fmp_timestamp_ms: None,
             payload: payload.into(),
         };
 

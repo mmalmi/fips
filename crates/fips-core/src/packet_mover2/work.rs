@@ -55,6 +55,7 @@ pub(crate) struct PacketOutput {
     ce_flag: bool,
     path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
+    fmp_timestamp_ms: Option<u32>,
     source_wire_len: Option<usize>,
     payload: PacketBuffer,
 }
@@ -98,6 +99,10 @@ impl PacketOutput {
 
     pub(crate) fn source_wire_len(&self) -> Option<usize> {
         self.source_wire_len
+    }
+
+    pub(crate) fn fmp_timestamp_ms(&self) -> Option<u32> {
+        self.fmp_timestamp_ms
     }
 
     pub(crate) fn into_payload(self) -> PacketBuffer {

@@ -73,6 +73,7 @@
             path: None,
             activity_tick: None,
             source_wire_len: None,
+            fmp_timestamp_ms: None,
             payload: payload.into(),
         }
     }
@@ -96,6 +97,7 @@
             path: Some(TransportPath::live(transport_id, remote_addr)),
             activity_tick: None,
             source_wire_len: None,
+            fmp_timestamp_ms: None,
             payload: payload.into(),
         }
     }

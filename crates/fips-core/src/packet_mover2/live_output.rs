@@ -624,6 +624,21 @@ impl PacketMover2TransportOutput for PacketMover2TransportSendPlanOutput {
     }
 }
 
+impl PacketMover2OutputSink for PacketMover2TransportSendPlanOutput {
+    fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError> {
+        let Some((transport_id, remote_addr)) = output.path.as_ref().and_then(|path| match path {
+            TransportPath::Live {
+                transport_id,
+                remote_addr,
+            } => Some((*transport_id, remote_addr.clone())),
+            TransportPath::Scratch(_) => None,
+        }) else {
+            return Err(PacketMover2OutputError::NoRoute);
+        };
+        self.send_transport(transport_id, remote_addr, output)
+    }
+}
+
 pub(crate) trait PacketMover2TransportResolver {
     fn resolve_packet_mover2_transport(
         &self,
