@@ -128,7 +128,7 @@
             payload: payload.into(),
         };
 
-        let handoff = packet_mover2_session_ingress_from_output(&output, local_addr)
+        let handoff = packet_mover2_session_ingress_from_output(output, local_addr)
             .expect("session datagram should route to sourced FSP ingress");
         let PacketMover2SessionIngressHandoff::Raw(raw) = handoff else {
             panic!("established encrypted FSP should use raw fast path");
@@ -184,7 +184,7 @@
             payload: payload.into(),
         };
 
-        let handoff = packet_mover2_session_ingress_from_output(&output, local_addr)
+        let handoff = packet_mover2_session_ingress_from_output(output, local_addr)
             .expect("session datagram should route to local session ingress");
         let PacketMover2SessionIngressHandoff::Local(local) = handoff else {
             panic!("FSP handshake should stay on local session path");

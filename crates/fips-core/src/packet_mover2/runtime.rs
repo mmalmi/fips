@@ -585,22 +585,21 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         for output in outputs.drain(..) {
             match output.target {
                 OutputTarget::SessionIngress { local_addr } => {
-                    match packet_mover2_session_ingress_from_output(&output, local_addr) {
+                    let receipt = PacketMover2FmpIngressReceipt::from_output(&output);
+                    match packet_mover2_session_ingress_from_output(output, local_addr) {
                         Ok(PacketMover2SessionIngressHandoff::Raw(raw)) => {
-                            if let Some(receipt) = PacketMover2FmpIngressReceipt::from_output(&output)
-                            {
+                            if let Some(receipt) = receipt {
                                 self.fmp_ingress_receipts.push(receipt);
                             }
                             self.admit_raw_ingress_packet(raw, router, summary);
                         }
                         Ok(PacketMover2SessionIngressHandoff::Local(ingress)) => {
-                            if let Some(receipt) = PacketMover2FmpIngressReceipt::from_output(&output)
-                            {
+                            if let Some(receipt) = receipt {
                                 self.fmp_ingress_receipts.push(receipt);
                             }
                             self.fsp_local_session_ingress.push(ingress);
                         }
-                        Err(PacketMover2SessionHandoffError::NoRoute) => {
+                        Err((output, PacketMover2SessionHandoffError::NoRoute)) => {
                             match PacketMover2FmpLinkIngress::from_output(output) {
                                 Ok(ingress) => self.fmp_link_ingress.push(ingress),
                                 Err(output) => {
@@ -611,7 +610,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                                 }
                             }
                         }
-                        Err(error) => {
+                        Err((output, error)) => {
                             self.output_drops.push(PacketMover2OutputDrop::from_output(
                                 &output,
                                 packet_mover2_output_error_from_session_handoff(error),
