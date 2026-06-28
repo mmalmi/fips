@@ -304,6 +304,7 @@ pub(crate) struct PacketMover2FspSessionIngress {
     source_addr: NodeAddr,
     previous_hop_addr: NodeAddr,
     ce_flag: bool,
+    receive_sync: crate::node::session::FspReceiveSync,
     timestamp_ms: u32,
     msg_type: u8,
     inner_flags: u8,
@@ -317,7 +318,12 @@ impl PacketMover2FspSessionIngress {
         };
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
-        let (timestamp_ms, msg_type, inner_flags) = {
+        let header = match FspWireHeader::parse(output.payload()) {
+            Ok(header) => header,
+            Err(_) => return Err(output),
+        };
+        let path_mtu = output.path_mtu();
+        let (timestamp_ms, msg_type, inner_flags, plaintext_len) = {
             let Some(plaintext) = output.opened_payload() else {
                 return Err(output);
             };
@@ -326,7 +332,17 @@ impl PacketMover2FspSessionIngress {
             else {
                 return Err(output);
             };
-            (timestamp_ms, msg_type, inner_flags)
+            (timestamp_ms, msg_type, inner_flags, plaintext.len())
+        };
+        let receive_sync = crate::node::session::FspReceiveSync {
+            counter: output.counter(),
+            slot: crate::node::session::EpochSlot::Current,
+            received_k_bit: header.flags() & crate::node::session_wire::FSP_FLAG_K != 0,
+            timestamp: timestamp_ms,
+            plaintext_len,
+            ce_flag,
+            path_mtu,
+            spin_bit: inner_flags & 0x01 != 0,
         };
         let plaintext = match output.into_opened_payload() {
             Ok(plaintext) => plaintext,
@@ -336,6 +352,7 @@ impl PacketMover2FspSessionIngress {
             source_addr,
             previous_hop_addr,
             ce_flag,
+            receive_sync,
             timestamp_ms,
             msg_type,
             inner_flags,
@@ -371,11 +388,23 @@ impl PacketMover2FspSessionIngress {
         &self.plaintext
     }
 
-    pub(crate) fn into_parts(self) -> (NodeAddr, NodeAddr, bool, u32, u8, u8, PacketBuffer) {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        NodeAddr,
+        NodeAddr,
+        bool,
+        crate::node::session::FspReceiveSync,
+        u32,
+        u8,
+        u8,
+        PacketBuffer,
+    ) {
         (
             self.source_addr,
             self.previous_hop_addr,
             self.ce_flag,
+            self.receive_sync,
             self.timestamp_ms,
             self.msg_type,
             self.inner_flags,

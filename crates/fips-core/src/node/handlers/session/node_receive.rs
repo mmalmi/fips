@@ -15,8 +15,7 @@ impl Node {
         }
     }
 
-    #[cfg(test)]
-    fn apply_worker_fsp_receive_sync(
+    fn apply_authenticated_fsp_receive_sync(
         &mut self,
         source_addr: NodeAddr,
         sync: crate::node::session::FspReceiveSync,
@@ -233,8 +232,26 @@ impl Node {
         &mut self,
         ingress: crate::packet_mover2::PacketMover2FspSessionIngress,
     ) -> bool {
-        let (source_addr, previous_hop_addr, ce_flag, timestamp_ms, msg_type, inner_flags, plaintext) =
-            ingress.into_parts();
+        let (
+            source_addr,
+            previous_hop_addr,
+            ce_flag,
+            receive_sync,
+            timestamp_ms,
+            msg_type,
+            inner_flags,
+            plaintext,
+        ) = ingress.into_parts();
+        let now = Instant::now();
+        let receive_applied =
+            self.apply_authenticated_fsp_receive_sync(source_addr, receive_sync, now);
+        if !receive_applied {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                "Dropping packet-mover2 authenticated session message for missing or stale session"
+            );
+            return false;
+        }
         let Some(source_peer) = self.packet_mover2_session_source_peer(&source_addr) else {
             debug!(
                 src = %self.peer_display_name(&source_addr),
@@ -369,8 +386,11 @@ impl Node {
         );
 
         let source_addr = authenticated.source_addr;
-        let receive_applied =
-            self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
+        let receive_applied = self.apply_authenticated_fsp_receive_sync(
+            source_addr,
+            authenticated.receive_sync,
+            now,
+        );
         if !receive_applied {
             debug!(
                 src = %self.peer_display_name(&source_addr),
@@ -409,8 +429,11 @@ impl Node {
             );
 
             let source_addr = authenticated.source_addr;
-            let receive_applied =
-                self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
+            let receive_applied = self.apply_authenticated_fsp_receive_sync(
+                source_addr,
+                authenticated.receive_sync,
+                now,
+            );
             if !receive_applied {
                 debug!(
                     src = %self.peer_display_name(&source_addr),

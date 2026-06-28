@@ -54,6 +54,7 @@ pub(crate) struct PacketOutput {
     source_path: Option<TransportPath>,
     previous_hop: Option<NodeAddr>,
     ce_flag: bool,
+    path_mtu: u16,
     path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
@@ -104,6 +105,10 @@ impl PacketOutput {
 
     pub(crate) fn ce_flag(&self) -> bool {
         self.ce_flag
+    }
+
+    pub(crate) fn path_mtu(&self) -> u16 {
+        self.path_mtu
     }
 
     pub(crate) fn payload(&self) -> &[u8] {

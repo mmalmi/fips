@@ -173,29 +173,7 @@ async fn recv_tun_packet_while_draining(
 }
 
 async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
-    use crate::node::wire::{
-        COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
-    };
-
-    let mut count = 0;
-    while let Ok(packet) = node.packet_rx.try_recv() {
-        if packet.data.len() < COMMON_PREFIX_SIZE {
-            continue;
-        }
-        if let Some(prefix) = CommonPrefix::parse(&packet.data) {
-            if prefix.version != FMP_VERSION {
-                continue;
-            }
-            match prefix.phase {
-                PHASE_MSG1 => node.node.handle_msg1(packet).await,
-                PHASE_MSG2 => node.node.handle_msg2(packet).await,
-                PHASE_ESTABLISHED => node.node.handle_encrypted_frame(packet).await,
-                _ => {}
-            }
-            count += 1;
-        }
-    }
-    count
+    process_available_packets(std::slice::from_mut(node)).await
 }
 
 async fn wait_process_packets_for_node(nodes: &mut [TestNode], index: usize) -> usize {

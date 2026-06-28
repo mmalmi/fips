@@ -7,6 +7,7 @@ pub(crate) struct PacketMover2RawIngress {
     fsp_source: Option<NodeAddr>,
     previous_hop: Option<NodeAddr>,
     ce_flag: bool,
+    path_mtu: u16,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -25,6 +26,7 @@ impl PacketMover2RawIngress {
             fsp_source: None,
             previous_hop: None,
             ce_flag: false,
+            path_mtu: u16::MAX,
             activity_tick: Some(ActivityTick::new(packet.timestamp_ms)),
             payload: packet.data,
         }
@@ -47,6 +49,11 @@ impl PacketMover2RawIngress {
 
     pub(crate) fn with_ce_flag(mut self, ce_flag: bool) -> Self {
         self.ce_flag = ce_flag;
+        self
+    }
+
+    pub(crate) fn with_path_mtu(mut self, path_mtu: u16) -> Self {
+        self.path_mtu = path_mtu;
         self
     }
 
@@ -76,6 +83,10 @@ impl PacketMover2RawIngress {
 
     pub(crate) fn ce_flag(&self) -> bool {
         self.ce_flag
+    }
+
+    pub(crate) fn path_mtu(&self) -> u16 {
+        self.path_mtu
     }
 
     pub(crate) fn activity_tick(&self) -> Option<ActivityTick> {

@@ -179,6 +179,7 @@ pub(crate) struct SocketPacket {
     source_path: Option<TransportPath>,
     previous_hop: Option<NodeAddr>,
     ce_flag: bool,
+    path_mtu: u16,
     wire_flags: u8,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
@@ -342,6 +343,7 @@ impl SocketPacket {
             source_path: None,
             previous_hop: None,
             ce_flag: false,
+            path_mtu: u16::MAX,
             wire_flags: 0,
             activity_tick: None,
             payload: payload.into(),
@@ -360,6 +362,11 @@ impl SocketPacket {
 
     pub(crate) fn with_ce_flag(mut self, ce_flag: bool) -> Self {
         self.ce_flag = ce_flag;
+        self
+    }
+
+    pub(crate) fn with_path_mtu(mut self, path_mtu: u16) -> Self {
+        self.path_mtu = path_mtu;
         self
     }
 

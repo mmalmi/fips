@@ -123,6 +123,7 @@ fn packet_mover2_session_ingress_from_output(
             fsp_source: Some(source_addr),
             previous_hop: Some(previous_hop),
             ce_flag,
+            path_mtu,
             activity_tick,
             payload,
         },

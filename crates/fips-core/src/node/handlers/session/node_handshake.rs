@@ -21,6 +21,8 @@ impl Node {
             );
             return;
         }
+        self.coord_cache
+            .insert(*src_addr, setup.src_coords.clone(), Self::now_ms());
 
         // Check for existing session with this remote
         if let Some(existing) = self.sessions.get(src_addr) {
@@ -252,6 +254,8 @@ impl Node {
             );
             return;
         }
+        self.coord_cache
+            .insert(*src_addr, ack.src_coords.clone(), Self::now_ms());
 
         // Remove the entry to take ownership of the handshake state
         let mut entry = match self.sessions.remove(src_addr) {
@@ -433,7 +437,6 @@ impl Node {
             &self.config.node.session_mmp,
         );
         self.register_packet_mover2_fsp_owner(src_addr);
-        self.coord_cache.insert(*src_addr, ack.src_coords, now_ms);
 
         // Flush any queued outbound packets for this destination
         self.flush_pending_packets(src_addr).await;

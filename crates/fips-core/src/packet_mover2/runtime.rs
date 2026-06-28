@@ -477,6 +477,7 @@ impl PacketMover2TurnDriver {
             path: source_path,
             previous_hop,
             ce_flag,
+            path_mtu,
             activity_tick,
             payload,
             ..
@@ -490,6 +491,7 @@ impl PacketMover2TurnDriver {
             payload,
         )
         .with_source_path(source_path);
+        socket_packet = socket_packet.with_path_mtu(path_mtu);
         if let Some(tick) = activity_tick {
             socket_packet = socket_packet.with_activity_tick(tick);
         }

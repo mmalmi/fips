@@ -121,6 +121,7 @@
             source_path: Some(source_path.clone()),
             previous_hop: None,
             ce_flag: false,
+            path_mtu: u16::MAX,
             path: None,
             activity_tick: Some(activity_tick),
             source_wire_len: Some(payload.len()),
@@ -139,6 +140,7 @@
         assert_eq!(raw.remote_addr, remote_addr);
         assert_eq!(raw.path, source_path);
         assert_eq!(raw.fsp_source, Some(source_addr));
+        assert_eq!(raw.path_mtu, 1280);
         assert_eq!(raw.activity_tick, Some(activity_tick));
         assert_eq!(raw.payload.as_ref(), fsp_wire.as_slice());
     }
@@ -177,6 +179,7 @@
             source_path: Some(source_path),
             previous_hop: None,
             ce_flag: false,
+            path_mtu: u16::MAX,
             path: None,
             activity_tick: None,
             source_wire_len: Some(payload.len()),
