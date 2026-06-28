@@ -843,7 +843,7 @@ async fn fresh_bootstrap_endpoint_data_clears_static_direct_refresh_pending() {
 }
 
 #[tokio::test]
-async fn fresh_control_with_unreturned_endpoint_data_blocks_direct_without_known_fallback() {
+async fn fresh_control_with_unreturned_endpoint_data_keeps_direct_without_fallback_peer() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
@@ -908,6 +908,7 @@ async fn fresh_control_with_unreturned_endpoint_data_blocks_direct_without_known
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(peer_addr, session);
 
+    let discovery_initiated = node.stats().discovery.req_initiated;
     node.check_link_heartbeats().await;
 
     let direct = node.get_peer(&peer_addr).expect("direct peer retained");
@@ -917,15 +918,22 @@ async fn fresh_control_with_unreturned_endpoint_data_blocks_direct_without_known
     );
     assert!(
         node.session_direct_path_blocks_direct_payload(&peer_addr, Node::now_ms()),
-        "unreturned endpoint data should block payload routing over the suspect direct path"
+        "the soft traversal trust signal should still be visible to fallback-capable meshes"
     );
     assert!(
-        node.pending_lookups.contains_key(&peer_addr),
-        "fallback discovery should start immediately when direct payload is blocked"
+        !node.pending_lookups.contains_key(&peer_addr),
+        "a two-node direct path must not discover the peer through itself every maintenance tick"
     );
-    assert!(
-        node.find_next_hop(&peer_addr).is_none(),
-        "without a known fallback, payload should queue instead of continuing into the blackholed direct tuple"
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        discovery_initiated,
+        "path recovery without a fallback peer should not initiate discovery"
+    );
+    assert_eq!(
+        node.find_next_hop(&peer_addr)
+            .map(|next_hop| *next_hop.node_addr()),
+        Some(peer_addr),
+        "with no alternate carrier, the soft-suspect direct path remains the payload route"
     );
 }
 

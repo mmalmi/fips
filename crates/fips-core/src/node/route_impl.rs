@@ -53,8 +53,13 @@ impl Node {
             return None;
         }
         let now_ms = Self::now_ms();
-        let direct_session_degraded =
-            self.session_direct_path_blocks_direct_payload(dest_node_addr, now_ms);
+        let direct_path_hard_degraded =
+            self.session_direct_path_is_degraded(dest_node_addr, now_ms);
+        let direct_path_soft_degraded = !direct_path_hard_degraded
+            && self.session_direct_discovered_endpoint_trust_expired(dest_node_addr, now_ms);
+        let direct_session_degraded = direct_path_hard_degraded
+            || (direct_path_soft_degraded
+                && self.has_sendable_fallback_lookup_peer(dest_node_addr));
         let direct_session_untrusted = !direct_session_degraded
             && self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms);
         let stale_traversal_direct_route = self

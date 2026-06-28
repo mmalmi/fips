@@ -744,6 +744,36 @@ impl Node {
         }
     }
 
+    /// Initiate discovery after an established payload path becomes suspect.
+    ///
+    /// This is narrower than first-contact discovery: if there is no alternate
+    /// mesh neighbor that could carry a fallback route, asking the direct peer
+    /// about itself only churns control traffic and cannot improve routing.
+    pub(in crate::node) async fn maybe_initiate_path_recovery_lookup(&mut self, dest: &NodeAddr) {
+        if !self.has_sendable_fallback_lookup_peer(dest) {
+            debug!(
+                target_node = %self.peer_display_name(dest),
+                "Skipping path-recovery lookup, no sendable fallback peer"
+            );
+            return;
+        }
+
+        if self.retry_pending.contains_key(dest) {
+            self.maybe_initiate_direct_path_fallback_lookup(dest).await;
+        } else {
+            self.maybe_initiate_lookup(dest).await;
+        }
+    }
+
+    pub(in crate::node) fn has_sendable_fallback_lookup_peer(&self, dest: &NodeAddr) -> bool {
+        self.peers.iter().any(|(addr, peer)| {
+            *addr != *dest
+                && peer.is_healthy()
+                && (self.config.node.routing.mode != RoutingMode::ReplyLearned
+                    || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
+        })
+    }
+
     /// Ask existing mesh neighbors for a route after a direct path becomes suspect.
     ///
     /// MMP link-dead is evidence about the selected path, not proof that the
@@ -758,18 +788,7 @@ impl Node {
             return;
         }
 
-        let fallback_peers = self
-            .peers
-            .iter()
-            .filter(|(addr, peer)| {
-                *addr != dest
-                    && peer.is_healthy()
-                    && (self.config.node.routing.mode != RoutingMode::ReplyLearned
-                        || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
-            })
-            .map(|(addr, _)| *addr)
-            .collect::<Vec<_>>();
-        if fallback_peers.is_empty() {
+        if !self.has_sendable_fallback_lookup_peer(dest) {
             debug!(
                 target_node = %self.peer_display_name(dest),
                 "Skipping direct-path fallback lookup, no sendable fallback peer"

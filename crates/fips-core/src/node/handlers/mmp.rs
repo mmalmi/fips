@@ -997,17 +997,15 @@ impl Node {
             if selected_next_hop.is_some_and(|next_hop| next_hop != node_addr) {
                 continue;
             }
+            if !self.has_sendable_fallback_lookup_peer(&node_addr) {
+                continue;
+            }
 
             debug!(
                 peer = %self.peer_display_name(&node_addr),
                 "Warming fallback lookup for path with fresh control but unreturned endpoint data"
             );
-            if self.retry_pending.contains_key(&node_addr) {
-                self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
-                    .await;
-            } else {
-                self.maybe_initiate_lookup(&node_addr).await;
-            }
+            self.maybe_initiate_path_recovery_lookup(&node_addr).await;
         }
 
         for dead_peer in &heartbeat_plan.dead_peers {

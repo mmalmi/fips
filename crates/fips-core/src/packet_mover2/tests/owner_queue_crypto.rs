@@ -448,6 +448,50 @@
     }
 
     #[test]
+    fn outbound_dispatch_preserves_priority_when_bulk_in_flight_cap_is_full() {
+        let owner = OwnerId::fsp(36);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(8, 8));
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 4)
+                .with_next_send_counter(10)
+                .with_bulk_in_flight_limit(2),
+        );
+
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-1"))
+            .unwrap();
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-2"))
+            .unwrap();
+        let work = mover.dispatch_outbound_available(8);
+        assert_eq!(work.len(), 2);
+        assert_eq!(work[0].reservation.counter, 10);
+        assert_eq!(work[1].reservation.counter, 11);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 2);
+
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-3"))
+            .unwrap();
+        mover
+            .submit_outbound_packet(outbound_packet(
+                owner,
+                1,
+                PacketClass::Liveness,
+                b"priority",
+            ))
+            .unwrap();
+
+        let work = mover.dispatch_outbound_available(8);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].packet.class, PacketClass::Liveness);
+        assert_eq!(work[0].reservation.counter, 12);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 3);
+        assert_eq!(mover.outbound_queue_lens(), (0, 1));
+        assert!(mover.drain_drops().is_empty());
+    }
+
+    #[test]
     fn stale_generation_is_dropped_before_dispatch_and_at_retire() {
         let owner = OwnerId::fmp(4);
         let mut mover = mover();

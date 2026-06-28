@@ -12,7 +12,7 @@ use crate::packet_mover2::{
 use crate::protocol::SessionMessageType;
 
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
-const PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT: usize = 64;
+const PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT: usize = 16;
 
 struct PacketMover2FmpOwnerSeed {
     owner: OwnerId,
@@ -785,8 +785,7 @@ impl Node {
 
     fn packet_mover2_owner_config(&self, generation: u64) -> OwnerConfig {
         let in_flight_limit = self.packet_mover2_owner_in_flight_limit();
-        let bulk_in_flight_limit =
-            PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT.min(in_flight_limit.max(1));
+        let bulk_in_flight_limit = packet_mover2_owner_bulk_in_flight_limit(in_flight_limit);
         OwnerConfig::new(generation, in_flight_limit)
             .with_bulk_in_flight_limit(bulk_in_flight_limit)
     }
@@ -853,6 +852,14 @@ fn packet_mover2_fmp_link_class(plaintext: &[u8]) -> PacketClass {
     }
 }
 
+fn packet_mover2_owner_bulk_in_flight_limit(in_flight_limit: usize) -> usize {
+    let in_flight_limit = in_flight_limit.max(1);
+    let priority_reserve = usize::from(in_flight_limit > 1);
+    PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT
+        .min(in_flight_limit.saturating_sub(priority_reserve))
+        .max(1)
+}
+
 fn packet_mover2_fsp_control_class(msg_type: u8) -> PacketClass {
     match SessionMessageType::from_byte(msg_type) {
         Some(
@@ -861,5 +868,20 @@ fn packet_mover2_fsp_control_class(msg_type: u8) -> PacketClass {
             | SessionMessageType::PathMtuNotification,
         ) => PacketClass::Mmp,
         _ => PacketClass::Control,
+    }
+}
+
+#[cfg(test)]
+mod packet_mover2_integration_tests {
+    use super::*;
+
+    #[test]
+    fn owner_bulk_in_flight_limit_reserves_priority_slot() {
+        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(0), 1);
+        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(1), 1);
+        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(2), 1);
+        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(16), 15);
+        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(17), 16);
+        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(128), 16);
     }
 }

@@ -208,7 +208,8 @@ impl Node {
                             "Established TUN session lost route; queueing packet and probing fallback"
                         );
                         self.queue_pending_packet(dest_addr, ipv6_packet);
-                        self.maybe_initiate_lookup(&dest_addr).await;
+                        self.maybe_initiate_path_recovery_lookup(&dest_addr)
+                            .await;
                     } else {
                         debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Failed to send TUN packet via session");
                     }

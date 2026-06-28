@@ -50,7 +50,7 @@ impl Node {
                 for payload in payloads {
                     self.queue_pending_endpoint_data(dest_addr, payload);
                 }
-                self.maybe_initiate_lookup(&dest_addr).await;
+                self.maybe_initiate_path_recovery_lookup(&dest_addr).await;
                 Ok(())
             }
             OutboundSessionState::Pending => {
@@ -138,7 +138,8 @@ impl Node {
                             "Established endpoint-data session lost route; queueing payload and probing fallback"
                         );
                         self.queue_pending_endpoint_data(dest_addr, payload);
-                        self.maybe_initiate_lookup(&dest_addr).await;
+                        self.maybe_initiate_path_recovery_lookup(&dest_addr)
+                            .await;
                         return Ok(());
                     }
                     Err(error) => return Err(error),
