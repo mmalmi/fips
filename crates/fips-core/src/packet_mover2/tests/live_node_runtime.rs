@@ -321,7 +321,7 @@
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut drops = Vec::new();
 
-        let sent = send_packet_mover2_transport_plans(&transports, [plan], &mut drops).await;
+        let sent = send_packet_mover2_transport_plans(&transports, &[plan], &mut drops).await;
 
         assert_eq!(sent, 0);
         assert_eq!(drops.len(), 1);
@@ -359,7 +359,7 @@
         transports.insert(transport_id, unstarted_udp_transport(transport_id));
         let mut drops = Vec::new();
 
-        let sent = send_packet_mover2_transport_plans(&transports, [plan], &mut drops).await;
+        let sent = send_packet_mover2_transport_plans(&transports, &[plan], &mut drops).await;
 
         assert_eq!(sent, 0);
         assert_eq!(drops.len(), 1);
@@ -421,7 +421,7 @@
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
 
-        let sent = send_packet_mover2_transport_plans(&transports, [plan], &mut drops).await;
+        let sent = send_packet_mover2_transport_plans(&transports, &[plan], &mut drops).await;
 
         assert_eq!(sent, 1);
         assert!(drops.is_empty());

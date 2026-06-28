@@ -656,9 +656,6 @@ impl PacketMover2TransportSendPlanOutput {
         &self.plans
     }
 
-    pub(crate) fn take_plans(&mut self) -> Vec<PacketMover2TransportSendPlan> {
-        std::mem::take(&mut self.plans)
-    }
 }
 
 impl PacketMover2TransportOutput for PacketMover2TransportSendPlanOutput {
@@ -717,17 +714,16 @@ impl<T: PacketMover2TransportResolver + ?Sized> PacketMover2TransportResolver fo
     }
 }
 
-pub(crate) async fn send_packet_mover2_transport_plans<R, I>(
+pub(crate) async fn send_packet_mover2_transport_plans<R>(
     transports: &R,
-    plans: I,
+    plans: &[PacketMover2TransportSendPlan],
     drops: &mut Vec<PacketMover2OutputDrop>,
 ) -> usize
 where
     R: PacketMover2TransportResolver + ?Sized,
-    I: IntoIterator<Item = PacketMover2TransportSendPlan>,
 {
     let mut sent = 0;
-    let plans: Vec<_> = plans.into_iter().collect();
+    let mut batch = Vec::new();
     let mut start = 0usize;
     while start < plans.len() {
         let transport_id = plans[start].transport_id;
@@ -747,10 +743,12 @@ where
             continue;
         };
 
-        let batch: Vec<_> = plans[start..end]
-            .iter()
-            .map(|plan| (plan.remote_addr(), plan.output().payload()))
-            .collect();
+        batch.clear();
+        batch.extend(
+            plans[start..end]
+                .iter()
+                .map(|plan| (plan.remote_addr(), plan.output().payload())),
+        );
         let results = transport.send_batch(&batch).await;
         debug_assert_eq!(results.len(), end - start);
         for (plan, result) in plans[start..end].iter().zip(results) {

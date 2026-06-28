@@ -387,7 +387,7 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         );
         let mut report = PacketMover2LiveNodeTurn::from_runtime_turn(&turn);
 
-        let plans = transport_output.take_plans();
+        let plans = transport_output.plans();
         report.transport_planned = plans.len();
         let sent_output = if plans.len() == 1 {
             Some(plans[0].output().clone())

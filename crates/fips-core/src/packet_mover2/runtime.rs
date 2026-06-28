@@ -202,7 +202,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         ));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
 
-        let plans = transport_output.take_plans();
+        let plans = transport_output.plans();
         report.transport_planned = plans.len();
         let dropped_before = report.output_drops.len();
         report.transport_sent =
