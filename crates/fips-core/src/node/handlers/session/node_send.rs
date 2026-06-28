@@ -194,30 +194,19 @@ impl Node {
                 command,
                 response_tx,
             } => {
-                let dest_addr = command.data_send().dest_addr();
-                debug!(
-                    dest = %self.peer_display_name(&dest_addr),
-                    "Dropping endpoint send command that reached the control fallback"
-                );
-                let _ = response_tx.send(Err(NodeError::SendFailed {
-                    node_addr: dest_addr,
-                    reason: "endpoint data sends are owned by packet_mover2".into(),
-                }));
+                let result = self
+                    .queue_packet_mover2_unrouted_endpoint_send(command)
+                    .await;
+                let _ = response_tx.send(result);
             }
             NodeEndpointCommand::SendOneway { command } => {
-                let dest_addr = command.data_send().dest_addr();
-                debug!(
-                    dest = %self.peer_display_name(&dest_addr),
-                    "Dropping endpoint oneway send command that reached the control fallback"
-                );
+                let _ = self
+                    .queue_packet_mover2_unrouted_endpoint_send(command)
+                    .await;
             }
             NodeEndpointCommand::SendBatchOneway { command, .. } => {
-                let remote = command.remote();
-                debug!(
-                    dest = %self.peer_display_name(remote.node_addr()),
-                    packets = command.len(),
-                    "Dropping endpoint batch send command that reached the control fallback"
-                );
+                self.queue_packet_mover2_unrouted_endpoint_batch(command)
+                    .await;
             }
             NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;

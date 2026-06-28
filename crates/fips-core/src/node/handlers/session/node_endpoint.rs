@@ -3,27 +3,7 @@ impl Node {
         &mut self,
         command: NodeEndpointCommand,
     ) {
-        match command {
-            NodeEndpointCommand::Send {
-                command,
-                response_tx,
-            } => {
-                let result = self
-                    .queue_packet_mover2_unrouted_endpoint_send(command)
-                    .await;
-                let _ = response_tx.send(result);
-            }
-            NodeEndpointCommand::SendOneway { command } => {
-                let _ = self
-                    .queue_packet_mover2_unrouted_endpoint_send(command)
-                    .await;
-            }
-            NodeEndpointCommand::SendBatchOneway { command, .. } => {
-                self.queue_packet_mover2_unrouted_endpoint_batch(command)
-                    .await;
-            }
-            other => self.handle_endpoint_data_command(other).await,
-        }
+        self.handle_endpoint_data_command(command).await;
     }
 
     async fn queue_packet_mover2_unrouted_endpoint_send(

@@ -489,16 +489,8 @@ impl Node {
             }
         }
         for command in self.packet_mover2.take_deferred_endpoint_commands() {
-            if let NodeEndpointCommand::Send {
-                command,
-                response_tx,
-            } = command
-            {
-                let _ = response_tx.send(Err(NodeError::SendFailed {
-                    node_addr: command.data_send().dest_addr(),
-                    reason: "packet_mover2 pending flush endpoint route unavailable".into(),
-                }));
-            }
+            self.handle_packet_mover2_deferred_endpoint_command(command)
+                .await;
             processed += 1;
         }
         processed

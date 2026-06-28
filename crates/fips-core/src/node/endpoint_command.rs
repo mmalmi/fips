@@ -192,10 +192,6 @@ impl EndpointSendBatchCommand {
             && self.len().saturating_add(other.len()) <= max_payloads
     }
 
-    pub(crate) fn remote(&self) -> PeerIdentity {
-        self.remote
-    }
-
     pub(crate) fn drop_on_backpressure(&self) -> bool {
         self.payloads
             .iter()
