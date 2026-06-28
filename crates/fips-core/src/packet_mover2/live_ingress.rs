@@ -319,6 +319,22 @@ impl PacketMover2EndpointCommandRouter for PacketMover2LiveRouteTable {
             .ok_or(PacketMover2EndpointCommandDropReason::NoRoute)?
             .route_request(request)
     }
+
+    fn route_endpoint_command_owned_payload(
+        &mut self,
+        request: PacketMover2EndpointCommandOwnedPayload,
+    ) -> Result<
+        OutboundPacket,
+        (
+            PacketMover2EndpointCommandOwnedPayload,
+            PacketMover2EndpointCommandDropReason,
+        ),
+    > {
+        let Some(route) = self.endpoint.get(&request.dest_addr()) else {
+            return Err((request, PacketMover2EndpointCommandDropReason::NoRoute));
+        };
+        route.route_owned_request(request)
+    }
 }
 
 #[derive(Clone, Debug)]

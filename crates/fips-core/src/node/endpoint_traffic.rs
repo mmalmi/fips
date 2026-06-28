@@ -208,6 +208,10 @@ impl EndpointDataPayload {
         &self.bytes
     }
 
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.bytes.len()
     }

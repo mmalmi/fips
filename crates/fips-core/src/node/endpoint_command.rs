@@ -99,10 +99,31 @@ impl EndpointSendCommand {
         payload: EndpointDataPayload,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Self {
+        Self::from_payload_with_enqueued_at_ms(remote, payload, queued_at, crate::time::now_ms())
+    }
+
+    pub(crate) fn from_payload_with_enqueued_at_ms(
+        remote: PeerIdentity,
+        payload: EndpointDataPayload,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+        enqueued_at_ms: u64,
+    ) -> Self {
         Self {
             send: EndpointDataSend::new(remote, payload),
             queued_at,
-            enqueued_at_ms: crate::time::now_ms(),
+            enqueued_at_ms,
+        }
+    }
+
+    pub(crate) fn from_send_with_enqueued_at_ms(
+        send: EndpointDataSend,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+        enqueued_at_ms: u64,
+    ) -> Self {
+        Self {
+            send,
+            queued_at,
+            enqueued_at_ms,
         }
     }
 
@@ -141,6 +162,16 @@ impl EndpointSendCommand {
 
     pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<crate::perf_profile::TraceStamp>) {
         (self.send, self.queued_at)
+    }
+
+    pub(crate) fn into_deferred_parts(
+        self,
+    ) -> (
+        EndpointDataSend,
+        Option<crate::perf_profile::TraceStamp>,
+        u64,
+    ) {
+        (self.send, self.queued_at, self.enqueued_at_ms)
     }
 }
 
