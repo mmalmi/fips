@@ -205,9 +205,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         };
         report.set_fmp_ingress_receipts(std::mem::take(&mut self.fmp_ingress_receipts));
         report.set_fmp_link_ingress(std::mem::take(&mut self.fmp_link_ingress));
-        report.set_fsp_local_session_ingress(std::mem::take(
-            &mut self.fsp_local_session_ingress,
-        ));
+        report.set_fsp_local_session_ingress(std::mem::take(&mut self.fsp_local_session_ingress));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
 
         let plans = transport_output.plans();
@@ -338,8 +336,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             outbound_drained = outbound_source.drain_outbound(reserved_outbound_limit, |packet| {
                 self.admit_outbound_packet(packet, &mut summary);
             });
-            endpoint_drained =
-                endpoint_drained.saturating_add(outbound_source.endpoint_drained());
+            endpoint_drained = endpoint_drained.saturating_add(outbound_source.endpoint_drained());
             tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
             outbound_firsts = outbound_source.take_firsts();
             outbound_buffers = outbound_source.take_report_buffers();
@@ -365,8 +362,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             outbound_source.drain_outbound(remaining_outbound_limit, |packet| {
                 self.admit_outbound_packet(packet, &mut summary);
             });
-            endpoint_drained =
-                endpoint_drained.saturating_add(outbound_source.endpoint_drained());
+            endpoint_drained = endpoint_drained.saturating_add(outbound_source.endpoint_drained());
             tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
             outbound_buffers = outbound_source.take_report_buffers();
         }
@@ -474,20 +470,25 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             return;
         };
 
-        let source_path = packet.path.clone();
-        let previous_hop = packet.previous_hop();
-        let ce_flag = packet.ce_flag();
         let wire_flags = header.flags();
+        let PacketMover2RawIngress {
+            path: source_path,
+            previous_hop,
+            ce_flag,
+            activity_tick,
+            payload,
+            ..
+        } = packet;
         let mut socket_packet = SocketPacket::new(
             route.owner,
             route.generation,
             header.counter(),
             route.class,
             route.output,
-            packet.payload,
+            payload,
         )
         .with_source_path(source_path);
-        if let Some(tick) = packet.activity_tick {
+        if let Some(tick) = activity_tick {
             socket_packet = socket_packet.with_activity_tick(tick);
         }
         if let Some(previous_hop) = previous_hop {
@@ -629,10 +630,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         summary.inbound_admitted.saturating_sub(admitted_before)
     }
 
-    fn collect_fsp_session_payload_outputs(
-        &mut self,
-        summary: &mut PacketMover2RuntimeSummary,
-    ) {
+    fn collect_fsp_session_payload_outputs(&mut self, summary: &mut PacketMover2RuntimeSummary) {
         let mut outputs = self.take_outputs_for_rewrite();
         let dropped_before = self.output_drops.len();
         for output in outputs.drain(..) {
