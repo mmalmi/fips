@@ -7,6 +7,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
     output_scratch: Vec<PacketOutput>,
+    retired: Vec<RetiredPacket>,
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
@@ -24,6 +25,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             output_drops: Vec::new(),
             outputs: Vec::new(),
             output_scratch: Vec::new(),
+            retired: Vec::new(),
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
@@ -373,6 +375,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     fn reset_turn_buffers(&mut self) {
         self.outputs.clear();
         self.output_scratch.clear();
+        self.retired.clear();
         self.drops.clear();
         self.raw_ingress_drops.clear();
         self.output_drops.clear();
@@ -649,25 +652,24 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         mut summary: PacketMover2RuntimeSummary,
         limit: usize,
     ) -> PacketMover2RuntimeSummary {
-        let PacketMoverTurn {
-            dispatched,
-            retired,
-            drops,
-        } = self.mover.run_aead_available_with_scratch(
+        let dispatched = self.mover.run_aead_available_into(
             limit,
             &mut self.open_work,
             &mut self.seal_work,
+            &mut self.retired,
+            &mut self.drops,
         );
         summary.dispatched = summary.dispatched.saturating_add(dispatched);
-        self.drops.extend(drops);
 
-        for packet in retired {
+        let mut retired = std::mem::take(&mut self.retired);
+        for packet in retired.drain(..) {
             match packet {
                 RetiredPacket::Output(output) => self.outputs.push(output),
                 RetiredPacket::Outbound(packet) => self.admit_outbound_packet(packet, &mut summary),
                 RetiredPacket::Drop(_) => {}
             }
         }
+        self.retired = retired;
 
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();

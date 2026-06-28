@@ -231,6 +231,27 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         open_work: &mut Vec<CryptoWork>,
         seal_work: &mut Vec<OutboundCryptoWork>,
     ) -> PacketMoverTurn {
+        let mut retired = Vec::new();
+        let mut drops = Vec::new();
+        let dispatched =
+            self.run_aead_available_into(limit, open_work, seal_work, &mut retired, &mut drops);
+
+        PacketMoverTurn {
+            dispatched,
+            retired,
+            drops,
+        }
+    }
+
+    pub(crate) fn run_aead_available_into(
+        &mut self,
+        limit: usize,
+        open_work: &mut Vec<CryptoWork>,
+        seal_work: &mut Vec<OutboundCryptoWork>,
+        retired: &mut Vec<RetiredPacket>,
+        drops: &mut Vec<PacketDrop>,
+    ) -> usize {
+        retired.clear();
         let opened = StatelessAeadOpenWorker;
         let sealed = StatelessAeadSealWorker;
         let outbound_priority_reserve =
@@ -239,7 +260,6 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             .dispatch_available_into(limit.saturating_sub(outbound_priority_reserve), open_work);
         let outbound_dispatched = self
             .dispatch_outbound_available_into(limit.saturating_sub(inbound_dispatched), seal_work);
-        let mut retired = Vec::new();
 
         for work in open_work.drain(..) {
             let reservation = work.reservation.clone();
@@ -277,11 +297,8 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             retired.extend(self.retire_completion(completion));
         }
 
-        PacketMoverTurn {
-            dispatched: inbound_dispatched + outbound_dispatched,
-            retired,
-            drops: self.drain_drops(),
-        }
+        drops.extend(self.drain_drops());
+        inbound_dispatched + outbound_dispatched
     }
 
     pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
