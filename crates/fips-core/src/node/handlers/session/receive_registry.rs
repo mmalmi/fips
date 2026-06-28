@@ -642,6 +642,7 @@ impl crate::node::SessionRegistry {
         true
     }
 
+    #[cfg(test)]
     fn seal_session_fsp_send(
         &mut self,
         plan: SessionFspSendPlan<'_>,

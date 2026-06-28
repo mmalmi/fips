@@ -11,6 +11,7 @@ mod core_impl;
 #[cfg(test)]
 mod decrypt_worker;
 mod discovery_rate_limit;
+#[cfg(test)]
 mod encrypt_worker;
 mod endpoint_command;
 mod endpoint_event;

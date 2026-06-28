@@ -299,6 +299,9 @@ impl DecryptSessionRegistrations {
 }
 
 /// Send-scheduling policy derived from the configured peer roster.
+const DEFAULT_SEND_WEIGHT: u8 = 1;
+const EXPLICIT_PEER_SEND_WEIGHT: u8 = 2;
+
 #[derive(Debug, Default)]
 pub(in crate::node) struct ConfiguredPeerSendWeights {
     entries: HashMap<NodeAddr, u8>,
@@ -316,7 +319,7 @@ impl ConfiguredPeerSendWeights {
                 continue;
             };
             let node_addr = *identity.node_addr();
-            entries.insert(node_addr, encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT);
+            entries.insert(node_addr, EXPLICIT_PEER_SEND_WEIGHT);
             peer_addrs_by_npub.insert(peer.npub.clone(), node_addr);
             peer_configs.insert(node_addr, peer.clone());
         }
@@ -331,7 +334,7 @@ impl ConfiguredPeerSendWeights {
         self.entries
             .get(peer_addr)
             .copied()
-            .unwrap_or(encrypt_worker::DEFAULT_SEND_WEIGHT)
+            .unwrap_or(DEFAULT_SEND_WEIGHT)
     }
 
     pub(in crate::node) fn peer_config(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {

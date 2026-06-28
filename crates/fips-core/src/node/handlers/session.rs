@@ -6,7 +6,10 @@
 //! encrypted data, and error signals (CoordsRequired, PathBroken).
 
 include!("session/prelude_dispatch.rs");
+#[cfg(all(test, unix))]
+include!("session/pipelined_types.rs");
 include!("session/send_plan_core.rs");
+#[cfg(all(test, unix))]
 include!("session/pipelined_send.rs");
 include!("session/receive_registry.rs");
 include!("session/node_receive.rs");

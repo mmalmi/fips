@@ -1,3 +1,4 @@
+#[cfg(test)]
 impl SealedSessionFspSend {
     #[cfg(test)]
     fn dest_addr(&self) -> NodeAddr {
@@ -83,7 +84,7 @@ impl SessionDatagramRuntimeRoute {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl PipelinedEndpointSendTarget {
     async fn resolve(
         udp: &crate::transport::udp::UdpTransport,
@@ -105,7 +106,7 @@ impl PipelinedEndpointSendTarget {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl<'a> PipelinedEndpointDispatchPlan<'a> {
     fn new(
         send: &PipelinedEndpointSend<'a>,
@@ -199,7 +200,7 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl PipelinedEndpointRoutePlan {
     fn new(
         source_addr: NodeAddr,
@@ -236,7 +237,7 @@ impl PipelinedEndpointRoutePlan {
 
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl PipelinedEndpointPeerRuntimeRoute {
     fn new(
         source_addr: NodeAddr,
@@ -399,7 +400,7 @@ impl PipelinedEndpointPeerRuntimeRoute {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl PipelinedEndpointPeerRuntimeRouteRequest {
     fn new(source_addr: NodeAddr, dest_addr: NodeAddr, now_ms: u64, default_ttl: u8) -> Self {
         Self {
@@ -444,7 +445,7 @@ impl PipelinedEndpointPeerRuntimeRouteRequest {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl<'a> PipelinedEndpointSendPlan<'a> {
     fn new(
         source_addr: &NodeAddr,
@@ -540,7 +541,7 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
     fn from_peer_route_snapshot(
         route_plan: PipelinedEndpointRoutePlan,
