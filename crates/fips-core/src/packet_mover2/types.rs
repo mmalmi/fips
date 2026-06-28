@@ -171,6 +171,7 @@ pub(crate) struct SocketPacket {
     source_path: Option<TransportPath>,
     previous_hop: Option<NodeAddr>,
     ce_flag: bool,
+    wire_flags: u8,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -330,6 +331,7 @@ impl SocketPacket {
             source_path: None,
             previous_hop: None,
             ce_flag: false,
+            wire_flags: 0,
             activity_tick: None,
             payload: payload.into(),
         }
@@ -347,6 +349,11 @@ impl SocketPacket {
 
     pub(crate) fn with_ce_flag(mut self, ce_flag: bool) -> Self {
         self.ce_flag = ce_flag;
+        self
+    }
+
+    pub(crate) fn with_wire_flags(mut self, wire_flags: u8) -> Self {
+        self.wire_flags = wire_flags;
         self
     }
 
@@ -374,7 +381,8 @@ impl SocketPacket {
             PacketClass::Bulk,
             output,
             payload,
-        ))
+        )
+        .with_wire_flags(header.flags()))
     }
 
     pub(crate) fn from_fsp_established_wire(
@@ -392,6 +400,7 @@ impl SocketPacket {
             PacketClass::Bulk,
             output,
             payload,
-        ))
+        )
+        .with_wire_flags(header.flags()))
     }
 }

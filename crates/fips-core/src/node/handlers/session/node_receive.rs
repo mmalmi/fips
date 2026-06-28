@@ -609,30 +609,63 @@ impl Node {
         report: DecryptFspFailureReport,
     ) {
         self.record_worker_authenticated_fmp_receive(&report.fmp, None);
-        let src_addr = report.source_addr;
+        self.handle_reported_fsp_decrypt_failure(
+            report.source_addr,
+            report.counter,
+            report.received_k_bit,
+            "Worker",
+        )
+        .await;
+    }
+
+    pub(in crate::node) async fn handle_packet_mover2_fsp_decrypt_failure(
+        &mut self,
+        source_addr: NodeAddr,
+        counter: u64,
+        received_k_bit: bool,
+    ) -> bool {
+        self.handle_reported_fsp_decrypt_failure(
+            source_addr,
+            counter,
+            received_k_bit,
+            "packet_mover2",
+        )
+        .await
+    }
+
+    async fn handle_reported_fsp_decrypt_failure(
+        &mut self,
+        src_addr: NodeAddr,
+        counter: u64,
+        received_k_bit: bool,
+        source: &'static str,
+    ) -> bool {
         let Some(entry) = self.sessions.get_mut(&src_addr) else {
             debug!(
                 src = %self.peer_display_name(&src_addr),
-                counter = report.counter,
-                "Worker FSP AEAD failure for unknown session"
+                counter,
+                source,
+                "FSP AEAD failure for unknown session"
             );
-            return;
+            return false;
         };
-        if should_ignore_stale_epoch_drain_failure(entry, report.received_k_bit) {
+        if should_ignore_stale_epoch_drain_failure(entry, received_k_bit) {
             trace!(
                 src = %self.peer_display_name(&src_addr),
-                counter = report.counter,
-                "Ignoring worker FSP AEAD failure from stale previous key epoch during drain"
+                counter,
+                source,
+                "Ignoring FSP AEAD failure from stale previous key epoch during drain"
             );
-            return;
+            return true;
         }
         let consecutive = entry.record_decrypt_failure();
         let recover_session = should_start_decrypt_failure_rekey(entry, consecutive, Self::now_ms());
         debug!(
             src = %self.peer_display_name(&src_addr),
-            counter = report.counter,
+            counter,
             consecutive_failures = consecutive,
-            "Worker FSP AEAD decryption failed"
+            source,
+            "FSP AEAD decryption failed"
         );
         if recover_session {
             warn!(
@@ -643,10 +676,12 @@ impl Node {
             if !self.initiate_session_rekey(&src_addr).await {
                 debug!(
                     peer = %self.peer_display_name(&src_addr),
-                    "Failed to start recovery rekey after worker FSP decrypt-failure threshold"
+                    source,
+                    "Failed to start recovery rekey after FSP decrypt-failure threshold"
                 );
             }
         }
+        true
     }
 
     async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {

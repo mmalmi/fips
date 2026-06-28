@@ -418,6 +418,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         let source_path = packet.path.clone();
         let previous_hop = packet.previous_hop();
         let ce_flag = packet.ce_flag();
+        let wire_flags = header.flags();
         let mut socket_packet = SocketPacket::new(
             route.owner,
             route.generation,
@@ -434,6 +435,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             socket_packet = socket_packet.with_previous_hop(previous_hop);
         }
         socket_packet = socket_packet.with_ce_flag(ce_flag);
+        socket_packet = socket_packet.with_wire_flags(wire_flags);
         self.admit_socket_packet(socket_packet, summary);
     }
 

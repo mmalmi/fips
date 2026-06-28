@@ -132,6 +132,7 @@ pub(crate) struct PacketDrop {
     lane: Lane,
     reason: PacketDropReason,
     crypto_failure: Option<CryptoFailureKind>,
+    wire_flags: Option<u8>,
     authenticated_counter_highest: Option<u64>,
 }
 
@@ -144,6 +145,7 @@ impl PacketDrop {
             lane: queued.packet.lane(),
             reason,
             crypto_failure: None,
+            wire_flags: Some(queued.packet.wire_flags),
             authenticated_counter_highest: None,
         }
     }
@@ -156,6 +158,7 @@ impl PacketDrop {
             lane: queued.packet.lane(),
             reason,
             crypto_failure: None,
+            wire_flags: None,
             authenticated_counter_highest: None,
         }
     }
@@ -172,6 +175,7 @@ impl PacketDrop {
             lane: completion.reservation.lane,
             reason,
             crypto_failure,
+            wire_flags: Some(completion.reservation.wire_flags),
             authenticated_counter_highest: None,
         }
     }
@@ -211,6 +215,10 @@ impl PacketDrop {
         self.crypto_failure
     }
 
+    pub(crate) fn wire_flags(&self) -> Option<u8> {
+        self.wire_flags
+    }
+
     pub(crate) fn authenticated_counter_highest(&self) -> Option<u64> {
         self.authenticated_counter_highest
     }
@@ -225,6 +233,7 @@ impl From<AdmissionDrop> for PacketDrop {
             lane: drop.lane,
             reason: PacketDropReason::Admission(drop.reason),
             crypto_failure: None,
+            wire_flags: None,
             authenticated_counter_highest: None,
         }
     }
@@ -239,6 +248,7 @@ impl From<OutboundAdmissionDrop> for PacketDrop {
             lane: drop.lane,
             reason: PacketDropReason::Admission(drop.reason),
             crypto_failure: None,
+            wire_flags: None,
             authenticated_counter_highest: None,
         }
     }

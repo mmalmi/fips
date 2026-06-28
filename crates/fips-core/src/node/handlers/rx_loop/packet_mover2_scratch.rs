@@ -146,6 +146,19 @@ impl Node {
                 processed += 1;
             }
         }
+        let fsp_crypto_failures: Vec<_> = turn
+            .drops()
+            .iter()
+            .filter_map(Self::packet_mover2_fsp_crypto_failure)
+            .collect();
+        for (source_addr, counter, received_k_bit) in fsp_crypto_failures {
+            if self
+                .handle_packet_mover2_fsp_decrypt_failure(source_addr, counter, received_k_bit)
+                .await
+            {
+                processed += 1;
+            }
+        }
         for ingress in turn.take_fsp_local_session_ingress() {
             if self
                 .process_packet_mover2_local_session_ingress(ingress)
@@ -191,6 +204,20 @@ impl Node {
             drop.counter()?,
             drop.authenticated_counter_highest().unwrap_or(0),
         ))
+    }
+
+    fn packet_mover2_fsp_crypto_failure(
+        drop: &crate::packet_mover2::PacketDrop,
+    ) -> Option<(NodeAddr, u64, bool)> {
+        if drop.owner().protocol() != crate::packet_mover2::PacketProtocol::Fsp
+            || drop.reason() != crate::packet_mover2::PacketDropReason::CryptoFailed
+            || drop.crypto_failure() != Some(crate::packet_mover2::CryptoFailureKind::Open)
+        {
+            return None;
+        }
+        let received_k_bit =
+            drop.wire_flags().unwrap_or(0) & crate::node::session_wire::FSP_FLAG_K != 0;
+        Some((drop.owner().node_addr()?, drop.counter()?, received_k_bit))
     }
 
     async fn process_packet_mover2_local_session_ingress(

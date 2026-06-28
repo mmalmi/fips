@@ -100,6 +100,13 @@ impl PacketMover2IngressHeader {
             Self::Fsp(header) => header.counter(),
         }
     }
+
+    pub(crate) fn flags(self) -> u8 {
+        match self {
+            Self::Fmp(header) => header.flags(),
+            Self::Fsp(header) => header.flags(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

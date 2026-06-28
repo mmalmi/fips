@@ -165,6 +165,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
                     lane,
                     reason: error.into(),
                     crypto_failure: None,
+                    wire_flags: None,
                     authenticated_counter_highest: None,
                 }),
             }
