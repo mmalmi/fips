@@ -10,19 +10,23 @@ use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry}
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
     FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE,
-    FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, build_fsp_header,
-    fsp_prepend_inner_header, fsp_strip_inner_header, parse_encrypted_coords,
+    FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, fsp_strip_inner_header,
+    parse_encrypted_coords,
 };
+#[cfg(test)]
+use crate::node::session_wire::{build_fsp_header, fsp_prepend_inner_header};
 #[cfg(all(test, unix))]
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
     EncryptedSessionPayload, EndpointDataDelivery, EndpointDataPayload, EndpointSendBatchCommand,
-    EndpointSendCommand, FspSendBookkeepingInput, LocalSessionPayload, Node, NodeEndpointCommand,
-    NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
+    EndpointSendCommand, LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer,
+    NodeEndpointRelayStatus, NodeError,
     SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
+#[cfg(test)]
+use crate::node::FspSendBookkeepingInput;
 #[cfg(all(test, unix))]
 use crate::node::endpoint_flow_dispatch_key;
 use crate::noise::{
@@ -36,6 +40,7 @@ use crate::protocol::{
 };
 #[cfg(all(test, unix))]
 use crate::protocol::{LinkMessageType, SESSION_DATAGRAM_HEADER_SIZE};
+#[cfg(test)]
 use crate::protocol::{coords_wire_size, encode_coords};
 #[cfg(all(test, unix))]
 use crate::transport::TransportHandle;
@@ -44,6 +49,7 @@ use crate::transport::PacketBuffer;
 use crate::upper::icmp::FIPS_OVERHEAD;
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
+#[cfg(test)]
 use std::borrow::Cow;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};

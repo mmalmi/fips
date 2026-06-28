@@ -69,9 +69,9 @@ pub(crate) use endpoint_event::{
 };
 #[cfg(all(test, unix))]
 pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(in crate::node) use endpoint_traffic::endpoint_flow_dispatch_key;
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(in crate::node) use endpoint_traffic::reserve_fmp_worker_send;
 pub(crate) use endpoint_traffic::{
     EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingSessionTrafficQueues,

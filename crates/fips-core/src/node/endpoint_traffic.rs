@@ -53,14 +53,14 @@ impl EndpointPayloadClass {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(in crate::node) struct FmpWorkerSendReservation {
     pub(in crate::node) counter: u64,
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
     pub(in crate::node) cipher: ring::aead::LessSafeKey,
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(in crate::node) fn reserve_fmp_worker_send(
     session: &mut crate::noise::NoiseSession,
     their_index: crate::utils::index::SessionIndex,

@@ -559,7 +559,7 @@ impl PeerLifecycleRegistry {
             .prepare_send_snapshot(ce_flag, payload_len))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn reserve_prepared_fmp_worker_send(
         &mut self,
         node_addr: &NodeAddr,
@@ -592,7 +592,7 @@ impl PeerLifecycleRegistry {
         }))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn reserve_prepared_fmp_worker_send_batch<'a, I>(
         &mut self,
         node_addr: &NodeAddr,
@@ -638,7 +638,7 @@ impl PeerLifecycleRegistry {
         Ok(Some(reservations))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn reserve_peer_runtime_fmp_worker_send(
         &mut self,
         snapshot: &PeerRuntimeSendSnapshot,
@@ -646,7 +646,7 @@ impl PeerLifecycleRegistry {
         self.reserve_prepared_fmp_worker_send(&snapshot.node_addr(), snapshot.fmp_prepared())
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn reserve_peer_runtime_fmp_worker_send_batch<'a, I>(
         &mut self,
         node_addr: &NodeAddr,
@@ -664,7 +664,7 @@ impl PeerLifecycleRegistry {
         )
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn prepare_fmp_worker_send(
         &mut self,
         node_addr: &NodeAddr,

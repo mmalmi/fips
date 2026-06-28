@@ -345,12 +345,12 @@ impl Node {
         (Arc::new(host_map), peer_acl)
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(super) fn send_weight_for_peer(&self, peer_addr: &NodeAddr) -> u8 {
         self.configured_peer_send_weights.weight_for(peer_addr)
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn resolve_peer_runtime_route_decision(
         &mut self,
         dest_addr: &NodeAddr,

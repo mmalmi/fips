@@ -157,7 +157,7 @@ impl SessionRegistry {
         Some(data_packets)
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn seed_endpoint_data_fsp_path_mtu_batch<I>(
         &mut self,
         node_addr: &NodeAddr,
@@ -175,7 +175,7 @@ impl SessionRegistry {
         Some(())
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send(
         &mut self,
         node_addr: &NodeAddr,
@@ -196,7 +196,7 @@ impl SessionRegistry {
             .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send_batch(
         &mut self,
         node_addr: &NodeAddr,
@@ -299,11 +299,14 @@ impl DecryptSessionRegistrations {
 }
 
 /// Send-scheduling policy derived from the configured peer roster.
+#[cfg(test)]
 const DEFAULT_SEND_WEIGHT: u8 = 1;
+#[cfg(test)]
 const EXPLICIT_PEER_SEND_WEIGHT: u8 = 2;
 
 #[derive(Debug, Default)]
 pub(in crate::node) struct ConfiguredPeerSendWeights {
+    #[cfg(test)]
     entries: HashMap<NodeAddr, u8>,
     peer_configs: HashMap<NodeAddr, PeerConfig>,
     peer_addrs_by_npub: HashMap<String, NodeAddr>,
@@ -311,6 +314,7 @@ pub(in crate::node) struct ConfiguredPeerSendWeights {
 
 impl ConfiguredPeerSendWeights {
     pub(in crate::node) fn from_config(config: &Config) -> Self {
+        #[cfg(test)]
         let mut entries = HashMap::with_capacity(config.peers().len());
         let mut peer_configs = HashMap::with_capacity(config.peers().len());
         let mut peer_addrs_by_npub = HashMap::with_capacity(config.peers().len());
@@ -319,17 +323,20 @@ impl ConfiguredPeerSendWeights {
                 continue;
             };
             let node_addr = *identity.node_addr();
+            #[cfg(test)]
             entries.insert(node_addr, EXPLICIT_PEER_SEND_WEIGHT);
             peer_addrs_by_npub.insert(peer.npub.clone(), node_addr);
             peer_configs.insert(node_addr, peer.clone());
         }
         Self {
+            #[cfg(test)]
             entries,
             peer_configs,
             peer_addrs_by_npub,
         }
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn weight_for(&self, peer_addr: &NodeAddr) -> u8 {
         self.entries
             .get(peer_addr)

@@ -712,7 +712,7 @@ pub(in crate::node) struct PreparedFmpInlineSend {
     pub(in crate::node) wire_packet: Vec<u8>,
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(in crate::node) struct PreparedFmpWorkerReservation {
     pub(in crate::node) counter: u64,
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
@@ -720,7 +720,7 @@ pub(in crate::node) struct PreparedFmpWorkerReservation {
     pub(in crate::node) predicted_bytes: usize,
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(in crate::node) struct PreparedFmpWorkerSend {
     pub(in crate::node) counter: u64,
     #[cfg(test)]
