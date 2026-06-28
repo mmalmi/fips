@@ -670,7 +670,7 @@ impl crate::node::SessionRegistry {
         true
     }
 
-    fn record_session_datagram_next_hop(
+    pub(in crate::node) fn record_session_datagram_next_hop(
         &mut self,
         dest_addr: &NodeAddr,
         next_hop_addr: NodeAddr,

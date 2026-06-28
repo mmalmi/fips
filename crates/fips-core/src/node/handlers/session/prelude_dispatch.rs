@@ -40,6 +40,7 @@ use crate::protocol::{coords_wire_size, encode_coords};
 #[cfg(unix)]
 use crate::transport::TransportHandle;
 use crate::transport::PacketBuffer;
+#[cfg(test)]
 use crate::upper::icmp::FIPS_OVERHEAD;
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;

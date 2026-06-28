@@ -338,12 +338,13 @@ impl Node {
                 reason: format!("packet_mover2 FSP counter unavailable for {label}"),
             });
         };
-        let Some((wrap, _next_hop)) = self.packet_mover2_fsp_wrap_route(dest_addr) else {
+        let Some((wrap, next_hop)) = self.packet_mover2_fsp_wrap_route(dest_addr) else {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
                 reason: format!("packet_mover2 FSP wrap route unavailable for {label}"),
             });
         };
+        let coords_prefix_len = coords_prefix.as_ref().map_or(0, Vec::len);
 
         let mut outbound = OutboundPacket::fsp(
             OwnerId::fsp_node(*dest_addr),
@@ -362,15 +363,30 @@ impl Node {
         }
 
         let turn = self.send_packet_mover2_live_outbound(outbound, 2).await;
-        self.finish_packet_mover2_pending_outbound_turn(dest_addr, label, turn)
-            .await?;
+        if let Err(error) = self
+            .finish_packet_mover2_pending_outbound_turn(dest_addr, label, turn)
+            .await
+        {
+            self.record_route_failure(*dest_addr, next_hop);
+            self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
+            return Err(error);
+        }
         let frame_bytes = crate::node::session_wire::FSP_INNER_HEADER_SIZE
             .saturating_add(payload.len())
             .saturating_add(crate::noise::TAG_SIZE);
+        let datagram_bytes = crate::protocol::SESSION_DATAGRAM_HEADER_SIZE
+            .saturating_add(crate::node::session_wire::FSP_HEADER_SIZE)
+            .saturating_add(coords_prefix_len)
+            .saturating_add(frame_bytes);
         let _ = self.sessions.record_fsp_send_bookkeeping(
             dest_addr,
             FspSendBookkeepingInput::control(counter, timestamp, frame_bytes),
         );
+        self.sessions
+            .record_session_datagram_next_hop(dest_addr, next_hop);
+        self.stats_mut()
+            .forwarding
+            .record_originated(datagram_bytes);
         Ok(())
     }
 
