@@ -150,6 +150,9 @@ where
                 &mut push,
             );
         }
+        if drained_cost < limit && !stale_bulk_drop_trigger_drained {
+            stale_bulk_drop_trigger_drained = self.first_tun_packet_triggers_stale_bulk_drop();
+        }
         if drained_cost < limit {
             if let Some(command) = self.first_endpoint_bulk.take() {
                 drained_cost = drained_cost.saturating_add(command.drain_cost());
@@ -172,6 +175,17 @@ where
             );
         }
         drained_cost
+    }
+
+    fn first_tun_packet_triggers_stale_bulk_drop(&mut self) -> bool {
+        if self.first_tun_packet.is_none()
+            && let Ok(packet) = self.tun_outbound_rx.try_recv()
+        {
+            self.first_tun_packet = Some(packet);
+        }
+        self.first_tun_packet
+            .as_deref()
+            .is_some_and(crate::node::endpoint_payload_is_liveness_probe)
     }
 
     fn route_or_drop_bulk_endpoint_command<F>(

@@ -570,7 +570,7 @@ fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) 
     payload_len <= INTERACTIVE_TCP_PAYLOAD_MAX
 }
 
-fn endpoint_payload_is_liveness_probe(payload: &[u8]) -> bool {
+pub(crate) fn endpoint_payload_is_liveness_probe(payload: &[u8]) -> bool {
     const IPPROTO_ICMP: u8 = 1;
     const IPPROTO_ICMPV6: u8 = 58;
 

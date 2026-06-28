@@ -74,6 +74,7 @@ pub(in crate::node) use endpoint_traffic::endpoint_flow_dispatch_key;
 pub(in crate::node) use endpoint_traffic::reserve_fmp_worker_send;
 pub(crate) use endpoint_traffic::{
     EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingSessionTrafficQueues,
+    endpoint_payload_is_liveness_probe,
 };
 #[cfg(test)]
 pub(crate) use endpoint_traffic::{PendingEndpointDataQueue, PendingTunPacketQueue};
