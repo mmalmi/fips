@@ -199,15 +199,26 @@ pub(crate) struct PacketMover2LiveNode<W = CopyCryptoWorker> {
     routes: PacketMover2LiveRouteTable,
     deferred_endpoint_commands: Vec<NodeEndpointCommand>,
     transport_output: PacketMover2TransportSendPlanOutput,
+    empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
+    empty_endpoint_priority_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    empty_endpoint_bulk_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    empty_tun_outbound_rx: TunOutboundRx,
 }
 
 impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
     pub(crate) fn new(config: AdmissionConfig, worker: W) -> Self {
+        let (_, empty_endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_, empty_endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_, empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         Self {
             driver: PacketMover2TurnDriver::new(config, worker),
             routes: PacketMover2LiveRouteTable::default(),
             deferred_endpoint_commands: Vec::new(),
             transport_output: PacketMover2TransportSendPlanOutput::new(),
+            empty_raw_ingress: VecDeque::new(),
+            empty_endpoint_priority_rx,
+            empty_endpoint_bulk_rx,
+            empty_tun_outbound_rx,
         }
     }
 
@@ -546,28 +557,37 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
-        let (_tun_outbound_tx, mut tun_outbound_rx) =
-            crate::upper::tun::tun_outbound_channel(1);
-        let mut raw_ingress = VecDeque::<PacketMover2RawIngress>::new();
+        let Self {
+            driver,
+            routes,
+            deferred_endpoint_commands,
+            empty_raw_ingress,
+            empty_endpoint_priority_rx,
+            empty_endpoint_bulk_rx,
+            empty_tun_outbound_rx,
+            ..
+        } = self;
+        empty_raw_ingress.clear();
 
-        self.pump_turn_with_firsts(
-            &mut raw_ingress,
+        driver
+            .pump_aead_live_node_route_table_turn_with_firsts(
+            empty_raw_ingress,
+            routes,
             0,
-            outbound_firsts,
-            &mut endpoint_priority_rx,
-            &mut endpoint_bulk_rx,
+            empty_endpoint_priority_rx,
+            empty_endpoint_bulk_rx,
             endpoint_limit,
-            &mut tun_outbound_rx,
+            empty_tun_outbound_rx,
             tun_limit,
+            outbound_firsts,
+            deferred_endpoint_commands,
             tun_tx,
             endpoint_tx,
             endpoint_resolver,
             transports,
             crypto_limit,
         )
-        .await
+            .await
     }
 
     pub(crate) async fn pump_packet_rx_turn<Resolver, Transports>(
