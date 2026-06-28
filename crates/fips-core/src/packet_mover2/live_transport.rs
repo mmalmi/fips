@@ -160,7 +160,6 @@ where
 {
     let mut sent = 0;
     let mut batch = Vec::new();
-    let mut batch_plan_indexes = Vec::new();
     let mut start = 0usize;
     while start < plans.len() {
         let transport_id = plans[start].transport_id;
@@ -199,26 +198,11 @@ where
         }
 
         batch.clear();
-        batch_plan_indexes.clear();
-        append_transport_batch_plans(
-            plans,
-            start,
-            end,
-            Lane::Priority,
-            &mut batch,
-            &mut batch_plan_indexes,
-        );
-        append_transport_batch_plans(
-            plans,
-            start,
-            end,
-            Lane::Bulk,
-            &mut batch,
-            &mut batch_plan_indexes,
-        );
+        append_transport_batch_plans(plans, start, end, Lane::Priority, &mut batch);
+        append_transport_batch_plans(plans, start, end, Lane::Bulk, &mut batch);
         transport
-            .send_batch(&batch, |batch_index, result| {
-                let plan = &plans[batch_plan_indexes[batch_index]];
+            .send_batch(&batch, |plan_index, result| {
+                let plan = &plans[plan_index];
                 match result {
                     Ok(_) => {
                         sent += 1;
@@ -243,8 +227,7 @@ fn append_transport_batch_plans<'a>(
     start: usize,
     end: usize,
     lane: Lane,
-    batch: &mut Vec<(&'a TransportAddr, &'a [u8])>,
-    batch_plan_indexes: &mut Vec<usize>,
+    batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
 ) {
     batch.extend(
         plans[start..end]
@@ -254,8 +237,7 @@ fn append_transport_batch_plans<'a>(
                 if plan.output().lane() != lane {
                     return None;
                 }
-                batch_plan_indexes.push(start + relative_index);
-                Some((plan.remote_addr(), plan.output().payload()))
+                Some((start + relative_index, plan.remote_addr(), plan.output().payload()))
             }),
     );
 }

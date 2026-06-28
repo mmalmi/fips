@@ -94,11 +94,13 @@ impl TransportHandle {
         }
     }
 
-    /// Send a batch of packets through one transport.
+    /// Send an indexed batch of packets through one transport.
     ///
     /// UDP uses its platform batch primitive where available; transports
     /// without a batch primitive keep their existing per-packet async send.
-    pub async fn send_batch<F>(&self, packets: &[(&TransportAddr, &[u8])], record: F)
+    /// The callback receives the caller-supplied packet index for explicit
+    /// accounting after priority/bulk reordering.
+    pub async fn send_batch<F>(&self, packets: &[(usize, &TransportAddr, &[u8])], record: F)
     where
         F: FnMut(usize, Result<usize, TransportError>),
     {
@@ -106,7 +108,7 @@ impl TransportHandle {
             TransportHandle::Udp(t) => t.send_batch_async(packets, record).await,
             _ => {
                 let mut record = record;
-                for (index, (addr, data)) in packets.iter().enumerate() {
+                for (index, addr, data) in packets.iter().copied() {
                     record(index, self.send(addr, data).await);
                 }
             }

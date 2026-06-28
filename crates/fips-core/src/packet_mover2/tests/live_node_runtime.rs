@@ -572,29 +572,18 @@
             PacketMover2TransportSendPlan::new(transport_id, remote_addr, priority_b),
         ];
         let mut batch = Vec::new();
-        let mut indexes = Vec::new();
 
-        append_transport_batch_plans(
-            &plans,
-            0,
-            plans.len(),
-            Lane::Priority,
-            &mut batch,
-            &mut indexes,
-        );
-        append_transport_batch_plans(
-            &plans,
-            0,
-            plans.len(),
-            Lane::Bulk,
-            &mut batch,
-            &mut indexes,
-        );
+        append_transport_batch_plans(&plans, 0, plans.len(), Lane::Priority, &mut batch);
+        append_transport_batch_plans(&plans, 0, plans.len(), Lane::Bulk, &mut batch);
 
+        let indexes = batch
+            .iter()
+            .map(|(index, _, _)| *index)
+            .collect::<Vec<_>>();
         assert_eq!(indexes, [1, 3, 0, 2]);
         let payloads = batch
             .iter()
-            .map(|(_, payload)| *payload)
+            .map(|(_, _, payload)| *payload)
             .collect::<Vec<_>>();
         assert_eq!(
             payloads,

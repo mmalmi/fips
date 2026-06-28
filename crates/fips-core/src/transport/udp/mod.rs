@@ -476,20 +476,20 @@ impl UdpTransport {
         }
     }
 
-    /// Send packet-mover batches through the UDP socket in transport order.
+    /// Send indexed packet-mover batches through the UDP socket in transport order.
     ///
     /// On Linux this maps to `sendmmsg(2)` via `AsyncUdpSocket::send_batch`.
-    /// Other platforms keep the same per-packet `send_async` behavior until
-    /// they grow a kernel batch primitive. The callback receives one indexed
-    /// result per input packet so callers can account drops without retries.
-    pub async fn send_batch_async<F>(&self, packets: &[(&TransportAddr, &[u8])], record: F)
+    /// Other platforms keep the same per-packet `send_async` behavior. The
+    /// callback receives the caller-supplied packet index so packet_mover2 can
+    /// reorder priority ahead of bulk and still account drops without retries.
+    pub async fn send_batch_async<F>(&self, packets: &[(usize, &TransportAddr, &[u8])], record: F)
     where
         F: FnMut(usize, Result<usize, TransportError>),
     {
         #[cfg(not(target_os = "linux"))]
         {
             let mut record = record;
-            for (index, (addr, data)) in packets.iter().enumerate() {
+            for (index, addr, data) in packets.iter().copied() {
                 record(index, self.send_async(addr, data).await);
             }
         }
@@ -501,27 +501,30 @@ impl UdpTransport {
     }
 
     #[cfg(target_os = "linux")]
-    async fn send_batch_async_linux<F>(&self, packets: &[(&TransportAddr, &[u8])], mut record: F)
-    where
+    async fn send_batch_async_linux<F>(
+        &self,
+        packets: &[(usize, &TransportAddr, &[u8])],
+        mut record: F,
+    ) where
         F: FnMut(usize, Result<usize, TransportError>),
     {
         if packets.is_empty() {
             return;
         }
         if !self.state.is_operational() {
-            for index in 0..packets.len() {
+            for (index, _, _) in packets.iter().copied() {
                 record(index, Err(TransportError::NotStarted));
             }
             return;
         }
         let Some(socket) = self.socket.as_ref() else {
-            for index in 0..packets.len() {
+            for (index, _, _) in packets.iter().copied() {
                 record(index, Err(TransportError::NotStarted));
             }
             return;
         };
         let Some(local_addr) = self.local_addr else {
-            for index in 0..packets.len() {
+            for (index, _, _) in packets.iter().copied() {
                 record(index, Err(TransportError::NotStarted));
             }
             return;
@@ -529,7 +532,7 @@ impl UdpTransport {
 
         let mut socket_packets = Vec::with_capacity(packets.len());
         let mtu = self.config.mtu() as usize;
-        for (index, (addr, data)) in packets.iter().enumerate() {
+        for (index, addr, data) in packets.iter().copied() {
             if data.len() > mtu {
                 self.stats.record_mtu_exceeded();
                 record(
