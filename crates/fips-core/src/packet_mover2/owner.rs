@@ -123,7 +123,7 @@ pub(crate) struct OwnerState {
     last_hard_event: Option<ActivityTick>,
     hard_events: u64,
     authenticated_counter_highest: u64,
-    accepted_counters: HashSet<u64>,
+    replay_window: ReplayWindow,
     pending: BTreeMap<OrderToken, CryptoCompletion>,
 }
 
@@ -149,14 +149,14 @@ impl OwnerState {
             last_hard_event: None,
             hard_events: 0,
             authenticated_counter_highest: 0,
-            accepted_counters: HashSet::new(),
+            replay_window: ReplayWindow::default(),
             pending: BTreeMap::new(),
         }
     }
 
     pub(crate) fn rekey(&mut self, generation: u64) {
         self.generation = generation;
-        self.accepted_counters.clear();
+        self.replay_window.clear();
         self.next_send_counter = 0;
         self.send_counter_authority = None;
         self.crypto_keys = None;
@@ -233,14 +233,16 @@ impl OwnerState {
         if packet.generation != self.generation {
             return Err(OwnerReserveError::StaleGeneration);
         }
-        if self.accepted_counters.contains(&packet.counter) {
+        if self.replay_window.is_replay(packet.counter) {
             return Err(OwnerReserveError::Replay);
         }
         if self.in_flight >= self.in_flight_limit {
             return Err(OwnerReserveError::InFlightFull);
         }
 
-        self.accepted_counters.insert(packet.counter);
+        if !self.replay_window.accept(packet.counter) {
+            return Err(OwnerReserveError::Replay);
+        }
         if let Some(path) = packet.source_path.clone() {
             self.active_path = Some(path);
         }
@@ -418,5 +420,98 @@ fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) {
     match slot {
         Some(current) if *current >= tick => {}
         _ => *slot = Some(tick),
+    }
+}
+
+const REPLAY_WINDOW_BITS: u64 = u128::BITS as u64;
+
+#[derive(Debug, Default)]
+struct ReplayWindow {
+    highest: Option<u64>,
+    seen: u128,
+}
+
+impl ReplayWindow {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn is_replay(&self, counter: u64) -> bool {
+        let Some(highest) = self.highest else {
+            return false;
+        };
+        if counter > highest {
+            return false;
+        }
+
+        let behind = highest - counter;
+        if behind >= REPLAY_WINDOW_BITS {
+            return true;
+        }
+        self.seen & bit(behind) != 0
+    }
+
+    fn accept(&mut self, counter: u64) -> bool {
+        let Some(highest) = self.highest else {
+            self.highest = Some(counter);
+            self.seen = 1;
+            return true;
+        };
+
+        if counter > highest {
+            let advance = counter - highest;
+            self.seen = if advance >= REPLAY_WINDOW_BITS {
+                0
+            } else {
+                self.seen << advance
+            };
+            self.seen |= 1;
+            self.highest = Some(counter);
+            return true;
+        }
+
+        let behind = highest - counter;
+        if behind >= REPLAY_WINDOW_BITS {
+            return false;
+        }
+        let mask = bit(behind);
+        if self.seen & mask != 0 {
+            return false;
+        }
+        self.seen |= mask;
+        true
+    }
+}
+
+fn bit(offset: u64) -> u128 {
+    1u128 << offset
+}
+
+#[cfg(test)]
+mod replay_window_tests {
+    use super::*;
+
+    #[test]
+    fn replay_window_accepts_out_of_order_once_within_window() {
+        let mut window = ReplayWindow::default();
+
+        assert!(window.accept(10));
+        assert!(window.accept(8));
+        assert!(window.accept(9));
+        assert!(!window.accept(10));
+        assert!(!window.accept(8));
+    }
+
+    #[test]
+    fn replay_window_rejects_packets_after_window_moves_past_them() {
+        let mut window = ReplayWindow::default();
+
+        assert!(window.accept(1));
+        assert!(window.accept(128));
+        assert!(!window.accept(1));
+
+        assert!(window.accept(129));
+        assert!(!window.accept(1));
+        assert!(window.accept(2));
     }
 }

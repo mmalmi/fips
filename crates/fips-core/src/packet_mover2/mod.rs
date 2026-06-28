@@ -28,7 +28,7 @@ use crate::transport::{
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, NodeError, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
