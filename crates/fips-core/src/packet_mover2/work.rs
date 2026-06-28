@@ -86,6 +86,18 @@ impl PacketOutput {
         self.path.clone()
     }
 
+    pub(crate) fn source_path(&self) -> Option<&TransportPath> {
+        self.source_path.as_ref()
+    }
+
+    pub(crate) fn take_source_path(&mut self) -> Option<TransportPath> {
+        self.source_path.take()
+    }
+
+    pub(crate) fn restore_source_path(&mut self, path: TransportPath) {
+        self.source_path = Some(path);
+    }
+
     pub(crate) fn previous_hop(&self) -> Option<NodeAddr> {
         self.previous_hop
     }

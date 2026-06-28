@@ -10,13 +10,11 @@ enum PacketMover2SessionIngressHandoff {
     Local(PacketMover2FspLocalSessionIngress),
 }
 
-type PacketMover2SessionHandoffResult = Result<
-    PacketMover2SessionIngressHandoff,
-    (PacketOutput, PacketMover2SessionHandoffError),
->;
+type PacketMover2SessionHandoffResult =
+    Result<PacketMover2SessionIngressHandoff, (PacketOutput, PacketMover2SessionHandoffError)>;
 
 fn packet_mover2_session_ingress_from_output(
-    output: PacketOutput,
+    mut output: PacketOutput,
     local_addr: NodeAddr,
 ) -> PacketMover2SessionHandoffResult {
     if output.owner.protocol() != PacketProtocol::Fmp {
@@ -38,13 +36,9 @@ fn packet_mover2_session_ingress_from_output(
         Err(_) => return Err((output, PacketMover2SessionHandoffError::InvalidPacket)),
     };
 
-    let Some(TransportPath::Live {
-        transport_id,
-        remote_addr,
-    }) = output.source_path.clone()
-    else {
+    if !matches!(output.source_path(), Some(TransportPath::Live { .. })) {
         return Err((output, PacketMover2SessionHandoffError::NoRoute));
-    };
+    }
 
     let (source_addr, path_mtu, local_delivery) = {
         let Some(link_payload) = output.opened_payload() else {
@@ -79,18 +73,34 @@ fn packet_mover2_session_ingress_from_output(
         )
     };
 
-    let path = TransportPath::Live {
-        transport_id,
-        remote_addr: remote_addr.clone(),
+    let source_path = match output.take_source_path() {
+        Some(source_path @ TransportPath::Live { .. }) => source_path,
+        _ => return Err((output, PacketMover2SessionHandoffError::NoRoute)),
     };
     let ce_flag = fmp_header.flags() & crate::node::wire::FLAG_CE != 0;
     let activity_tick = output.activity_tick;
     let mut payload = match output.into_opened_payload() {
         Ok(payload) => payload,
-        Err(output) => return Err((output, PacketMover2SessionHandoffError::InvalidPacket)),
+        Err(mut output) => {
+            output.restore_source_path(source_path);
+            return Err((output, PacketMover2SessionHandoffError::InvalidPacket));
+        }
     };
     debug_assert!(payload.len() >= FMP_SESSION_PAYLOAD_OFFSET);
     payload.drain(..FMP_SESSION_PAYLOAD_OFFSET);
+
+    let (transport_id, remote_addr) = match source_path {
+        TransportPath::Live {
+            transport_id,
+            remote_addr,
+        } => (transport_id, remote_addr),
+        #[cfg(test)]
+        TransportPath::Fixture(_) => unreachable!("source path was validated as live"),
+    };
+    let path = TransportPath::Live {
+        transport_id,
+        remote_addr: remote_addr.clone(),
+    };
 
     if local_delivery {
         return Ok(PacketMover2SessionIngressHandoff::Local(
@@ -104,15 +114,17 @@ fn packet_mover2_session_ingress_from_output(
         ));
     }
 
-    Ok(PacketMover2SessionIngressHandoff::Raw(PacketMover2RawIngress {
-        protocol: PacketProtocol::Fsp,
-        transport_id,
-        remote_addr,
-        path,
-        fsp_source: Some(source_addr),
-        previous_hop: Some(previous_hop),
-        ce_flag,
-        activity_tick,
-        payload,
-    }))
+    Ok(PacketMover2SessionIngressHandoff::Raw(
+        PacketMover2RawIngress {
+            protocol: PacketProtocol::Fsp,
+            transport_id,
+            remote_addr,
+            path,
+            fsp_source: Some(source_addr),
+            previous_hop: Some(previous_hop),
+            ce_flag,
+            activity_tick,
+            payload,
+        },
+    ))
 }
