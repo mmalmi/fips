@@ -34,16 +34,6 @@ pub(super) fn packet_drain_budget(latency_work_ready: bool) -> usize {
     }
 }
 
-pub(super) fn split_side_queue_budget(budget: usize) -> (usize, usize) {
-    if budget == 0 {
-        return (0, 0);
-    }
-
-    let endpoint_budget = (budget / 2).max(1);
-    let tun_budget = budget.saturating_sub(endpoint_budget).max(1);
-    (endpoint_budget, tun_budget)
-}
-
 pub(super) fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
     let raw = std::env::var("FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS").ok()?;
     let ms = raw

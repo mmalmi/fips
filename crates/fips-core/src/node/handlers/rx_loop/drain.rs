@@ -70,6 +70,7 @@ impl RxLoopDataDrainStats {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn with_control(
         packets: usize,
         tun: usize,

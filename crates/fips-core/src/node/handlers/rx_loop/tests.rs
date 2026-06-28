@@ -5,14 +5,6 @@ use super::drain::{
 use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
 
-fn closed_scratch_sinks() -> (crate::upper::tun::TunTx, crate::node::EndpointEventSender) {
-    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-    drop(tun_rx);
-    let (endpoint_tx, endpoint_rx) = crate::node::EndpointEventSender::channel(1);
-    drop(endpoint_rx);
-    (tun_tx, endpoint_tx)
-}
-
 #[test]
 fn non_packet_drain_budget_caps_large_packet_turns() {
     assert_eq!(non_packet_drain_budget(0), 0);
@@ -66,64 +58,6 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
         decrypt_only.data_pressure(false),
         "decrypt-worker receive bookkeeping must count as dataplane progress"
     );
-}
-
-#[tokio::test]
-async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
-    let mut node =
-        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
-    let (scratch_tun_tx, scratch_endpoint_tx) = closed_scratch_sinks();
-    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
-    let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
-    let (endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let remote = crate::PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-    let payloads = (0..9)
-        .map(|idx| crate::node::EndpointDataPayload::new(format!("endpoint-{idx}").into_bytes()))
-        .collect::<Vec<_>>();
-
-    endpoint_tx
-        .send(
-            crate::node::NodeEndpointCommand::send_batch_oneway(
-                remote,
-                payloads,
-                None,
-                crate::node::EndpointCommandLane::Bulk,
-            )
-            .expect("endpoint batch command"),
-        )
-        .await
-        .expect("endpoint batch queued");
-    tun_tx
-        .send(vec![0])
-        .await
-        .expect("invalid TUN packet still exercises TUN drain accounting");
-
-    let drained = node
-        .drain_rx_loop_side_queues(
-            &mut packet_rx,
-            &mut control_rx,
-            &mut tun_rx,
-            &mut endpoint_priority_rx,
-            &mut endpoint_rx,
-            &scratch_tun_tx,
-            &scratch_endpoint_tx,
-            2,
-        )
-        .await;
-
-    assert_eq!(
-        drained.endpoint, 2,
-        "nine endpoint payloads cost two endpoint drain credits"
-    );
-    assert_eq!(
-        drained.tun, 1,
-        "endpoint batch overrun must not consume the TUN reserved slice"
-    );
-    assert_eq!(drained.control, 0);
-    assert!(endpoint_rx.try_recv().is_err());
-    assert!(tun_rx.try_recv().is_err());
 }
 
 #[tokio::test]

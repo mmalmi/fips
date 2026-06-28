@@ -395,45 +395,6 @@ impl Node {
         )
     }
 
-    async fn drain_rx_loop_side_queues(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        control_query_rx: &mut Receiver<ControlMessage>,
-        tun_outbound_rx: &mut TunOutboundRx,
-        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
-        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        budget: usize,
-    ) -> RxLoopDataDrainStats {
-        let control_budget = budget.min(CONTROL_QUERY_INTERLEAVE_BUDGET);
-        let drained_control = self
-            .drain_control_queries(control_query_rx, None, control_budget)
-            .await;
-        let remaining_budget = budget.saturating_sub(drained_control);
-        let (endpoint_budget, tun_budget) = split_side_queue_budget(remaining_budget);
-        let mut turn = self
-            .drain_packet_mover2_scratch_turn(
-                packet_rx,
-                0,
-                endpoint_priority_command_rx,
-                endpoint_command_rx,
-                endpoint_budget,
-                tun_outbound_rx,
-                tun_budget,
-                tun_tx,
-                endpoint_tx,
-                remaining_budget,
-            )
-            .await;
-        self.process_packet_mover2_scratch_control_ingress(&mut turn)
-            .await;
-        let drained_endpoint = turn.endpoint_source_drained();
-        let drained_tun = turn.tun_source_drained();
-
-        RxLoopDataDrainStats::with_control(0, drained_tun, drained_endpoint, drained_control)
-    }
-
     async fn drain_control_queries(
         &mut self,
         control_query_rx: &mut Receiver<ControlMessage>,
