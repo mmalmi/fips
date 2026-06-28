@@ -9,9 +9,11 @@ pub(super) const CONTROL_QUERY_INTERLEAVE_BUDGET: usize = 4;
 /// `packet_rx` preempt bulk fallback, TUN egress, and endpoint command work
 /// without adding a second packet-drain path inside those handlers.
 pub(super) const NON_PACKET_DRAIN_BUDGET: usize = 16;
-/// Raw receive burst cap. This amortizes select/scheduler hops across a hot
-/// transport queue; fallback/side interleaves reserve progress before the cap.
-pub(super) const PACKET_DRAIN_BUDGET: usize = 512;
+/// Raw receive burst cap. This is two Linux UDP receive batches: large enough
+/// to amortize select/scheduler hops, small enough that a hot packet queue
+/// cannot sit on the runtime for several GSO-heavy batches before TUN,
+/// endpoint, and control get their next reserved slice.
+pub(super) const PACKET_DRAIN_BUDGET: usize = 256;
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 pub(super) const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
