@@ -505,18 +505,34 @@ impl Node {
                     .await;
             }
             DecryptWorkerEvent::DirectSessionCommit(commit) => {
-                self.process_direct_session_commit_from_worker(commit).await;
+                let _ = (
+                    commit.previous_hop_peer,
+                    commit.ce_flag,
+                    commit.receive_sync,
+                    commit.body_len,
+                );
+                debug!("Ignoring obsolete direct decrypt-worker session event");
             }
             DecryptWorkerEvent::DirectSessionCommitBatch(commits) => {
-                self.process_direct_session_commit_batch_from_worker(commits)
-                    .await;
+                for commit in commits {
+                    let _ = (
+                        commit.previous_hop_peer,
+                        commit.ce_flag,
+                        commit.receive_sync,
+                        commit.body_len,
+                    );
+                }
+                debug!("Ignoring obsolete direct decrypt-worker session event batch");
             }
             DecryptWorkerEvent::DirectSessionData(direct) => {
-                self.process_direct_session_data_from_worker(direct).await;
+                let _ = direct.ce_flag;
+                debug!("Ignoring obsolete direct decrypt-worker session event");
             }
             DecryptWorkerEvent::DirectSessionDataBatch(directs) => {
-                self.process_direct_session_data_batch_from_worker(directs)
-                    .await;
+                for direct in directs {
+                    let _ = direct.ce_flag;
+                }
+                debug!("Ignoring obsolete direct decrypt-worker session event batch");
             }
             DecryptWorkerEvent::FspDecryptFailure(report) => {
                 self.process_fsp_decrypt_failure_from_worker(report).await;
