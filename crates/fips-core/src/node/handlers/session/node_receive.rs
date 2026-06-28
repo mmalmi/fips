@@ -334,8 +334,13 @@ impl Node {
             now,
             path_bookkeeping_allowed,
         );
-        if bookkeeping.is_some_and(|update| update.path_bookkeeping_recorded) {
-            self.clear_retry_unless_direct_refresh_needed(source_addr);
+        if let Some(update) = bookkeeping {
+            if update.path_bookkeeping_recorded {
+                self.clear_retry_unless_direct_refresh_needed(source_addr);
+            }
+            if update.address_changed {
+                self.sync_packet_mover2_fmp_owner(source_addr);
+            }
         }
     }
 

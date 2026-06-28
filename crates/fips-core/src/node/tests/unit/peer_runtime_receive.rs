@@ -165,6 +165,79 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
 }
 
 #[test]
+fn authenticated_fmp_receive_refreshes_packet_mover2_owner_path_after_route_drift() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let old_transport_id = TransportId::new(11);
+    let new_transport_id = TransportId::new(12);
+    let link_id = LinkId::new(10);
+    let old_addr = TransportAddr::from_string("runtime-recv-pm2-old-path");
+    let new_addr = TransportAddr::from_string("runtime-recv-pm2-new-path");
+    let current_our_index = SessionIndex::new(10);
+    let current_their_index = SessionIndex::new(20);
+
+    let active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        old_transport_id,
+        link_id,
+        old_addr.clone(),
+        current_our_index,
+        current_their_index,
+    );
+    node.peers
+        .insert_with_current_session_index(peer_addr, active_peer);
+
+    let owner = crate::packet_mover2::OwnerId::fmp_node(peer_addr);
+    assert!(node.sync_packet_mover2_fmp_owner(&peer_addr));
+    assert_eq!(
+        node.packet_mover2.owner_active_path(owner),
+        Ok(Some(crate::packet_mover2::TransportPath::live(
+            old_transport_id,
+            old_addr
+        )))
+    );
+
+    node.peers
+        .get_mut(&peer_addr)
+        .expect("peer should exist")
+        .mark_disconnected();
+
+    node.record_authenticated_fmp_receive_facts(
+        crate::node::AuthenticatedFmpReceiveFacts::new(
+            peer_identity,
+            new_transport_id,
+            &new_addr,
+            2_000,
+            128,
+            7,
+            1_234,
+            0,
+        ),
+        None,
+    );
+
+    let peer = node
+        .peers
+        .get(&peer_addr)
+        .expect("peer should remain active");
+    assert_eq!(peer.transport_id(), Some(new_transport_id));
+    assert_eq!(peer.current_addr(), Some(&new_addr));
+    assert_eq!(
+        node.packet_mover2.owner_active_path(owner),
+        Ok(Some(crate::packet_mover2::TransportPath::live(
+            new_transport_id,
+            new_addr
+        ))),
+        "packet_mover2 owner routes must track authenticated direct-path drift"
+    );
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_fmp_send_bookkeeping() {
     let node = make_node();
     let peer_full = Identity::generate();
