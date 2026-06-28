@@ -8,6 +8,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     outputs: Vec<PacketOutput>,
     output_scratch: Vec<PacketOutput>,
     retired: Vec<RetiredPacket>,
+    transport_output: PacketMover2TransportSendPlanOutput,
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
@@ -26,6 +27,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             outputs: Vec::new(),
             output_scratch: Vec::new(),
             retired: Vec::new(),
+            transport_output: PacketMover2TransportSendPlanOutput::new(),
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
@@ -189,7 +191,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     {
         let mut summary = self.collect_live_session_outputs(summary, routes, crypto_limit);
         self.collect_fsp_session_payload_outputs(&mut summary);
-        let mut transport_output = PacketMover2TransportSendPlanOutput::new();
+        let mut transport_output = std::mem::take(&mut self.transport_output);
+        transport_output.clear();
         let mut report = {
             let tun_output = PacketMover2TunTxOutput::new(tun_tx);
             let endpoint_output =
@@ -224,6 +227,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             .summary
             .outputs_dropped
             .saturating_add(report.transport_dropped);
+        self.transport_output = transport_output;
         report
     }
 
@@ -376,6 +380,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.outputs.clear();
         self.output_scratch.clear();
         self.retired.clear();
+        self.transport_output.clear();
         self.drops.clear();
         self.raw_ingress_drops.clear();
         self.output_drops.clear();

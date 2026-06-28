@@ -198,6 +198,7 @@ pub(crate) struct PacketMover2LiveNode<W = CopyCryptoWorker> {
     driver: PacketMover2TurnDriver<W>,
     routes: PacketMover2LiveRouteTable,
     deferred_endpoint_commands: Vec<NodeEndpointCommand>,
+    transport_output: PacketMover2TransportSendPlanOutput,
 }
 
 impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
@@ -206,6 +207,7 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
             driver: PacketMover2TurnDriver::new(config, worker),
             routes: PacketMover2LiveRouteTable::default(),
             deferred_endpoint_commands: Vec::new(),
+            transport_output: PacketMover2TransportSendPlanOutput::new(),
         }
     }
 
@@ -378,7 +380,8 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
     where
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let mut transport_output = PacketMover2TransportSendPlanOutput::new();
+        let mut transport_output = std::mem::take(&mut self.transport_output);
+        transport_output.clear();
         let turn = self.driver.run_aead_classified_output_turn(
             std::iter::empty(),
             [outbound],
@@ -415,6 +418,7 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         } else {
             None
         };
+        self.transport_output = transport_output;
         (report, sent_output)
     }
 

@@ -652,10 +652,13 @@ impl PacketMover2TransportSendPlanOutput {
         Self::default()
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.plans.clear();
+    }
+
     pub(crate) fn plans(&self) -> &[PacketMover2TransportSendPlan] {
         &self.plans
     }
-
 }
 
 impl PacketMover2TransportOutput for PacketMover2TransportSendPlanOutput {
