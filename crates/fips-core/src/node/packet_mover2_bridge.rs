@@ -147,6 +147,7 @@ impl Node {
                 PacketMover2LiveOutboundFirsts::default().with_tun_packet(Some(packet)),
                 0,
                 1,
+                1,
             )
             .await;
         self.finish_packet_mover2_pending_outbound_turn(dest_addr, "queued TUN packet", turn)
@@ -183,7 +184,7 @@ impl Node {
             }
         };
         let turn = self
-            .pump_packet_mover2_pending_outbound_firsts(firsts, 1, 0)
+            .pump_packet_mover2_pending_outbound_firsts(firsts, 1, 0, 1)
             .await;
         self.finish_packet_mover2_pending_outbound_turn(dest_addr, "queued endpoint data", turn)
             .await
@@ -243,6 +244,7 @@ impl Node {
         firsts: PacketMover2LiveOutboundFirsts,
         endpoint_limit: usize,
         tun_limit: usize,
+        crypto_limit: usize,
     ) -> PacketMover2LiveNodeTurn {
         let tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
             let (tx, rx) = crate::upper::tun::write_channel();
@@ -270,46 +272,26 @@ impl Node {
                 &endpoint_tx,
                 endpoint_resolver,
                 &self.transports,
-                1,
+                crypto_limit,
             )
             .await;
         Self::observe_packet_mover2_scratch_turn(&turn);
         turn
     }
 
-    async fn send_packet_mover2_live_outbound(
+    async fn pump_packet_mover2_direct_outbound(
         &mut self,
         outbound: OutboundPacket,
         crypto_limit: usize,
     ) -> PacketMover2LiveNodeTurn {
-        let tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
-            let (tx, rx) = crate::upper::tun::write_channel();
-            drop(rx);
-            tx
-        });
-        let endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
-            let (tx, rx) = EndpointEventSender::channel(1);
-            drop(rx);
-            tx
-        });
-        let sessions = &self.sessions;
-        let identity_cache = &self.identity_cache;
-        let endpoint_resolver = |source_addr: &NodeAddr| {
-            Self::packet_mover2_endpoint_peer_from_stores(sessions, identity_cache, source_addr)
-        };
-
         let turn = self
-            .packet_mover2
-            .send_live_outbound(
-                outbound,
-                &tun_tx,
-                &endpoint_tx,
-                endpoint_resolver,
-                &self.transports,
+            .pump_packet_mover2_pending_outbound_firsts(
+                PacketMover2LiveOutboundFirsts::default().with_direct_outbound(Some(outbound)),
+                0,
+                0,
                 crypto_limit,
             )
             .await;
-        Self::observe_packet_mover2_scratch_turn(&turn);
         turn
     }
 
@@ -367,7 +349,7 @@ impl Node {
             outbound = outbound.without_fsp_auto_coords_warmup();
         }
 
-        let turn = self.send_packet_mover2_live_outbound(outbound, 2).await;
+        let turn = self.pump_packet_mover2_direct_outbound(outbound, 2).await;
         if let Err(error) = self
             .finish_packet_mover2_pending_outbound_turn(dest_addr, label, turn)
             .await
@@ -446,6 +428,7 @@ impl Node {
                     PacketMover2LiveOutboundFirsts::default(),
                     0,
                     0,
+                    1,
                 )
                 .await;
         }

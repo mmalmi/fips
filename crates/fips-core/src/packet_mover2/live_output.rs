@@ -1,12 +1,22 @@
 
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveOutboundFirsts {
+    direct_outbound: Option<OutboundPacket>,
     endpoint_priority: Option<NodeEndpointCommand>,
     endpoint_bulk: Option<NodeEndpointCommand>,
     tun_packet: Option<Vec<u8>>,
 }
 
 impl PacketMover2LiveOutboundFirsts {
+    pub(crate) fn with_direct_outbound(mut self, packet: Option<OutboundPacket>) -> Self {
+        self.direct_outbound = packet;
+        self
+    }
+
+    pub(crate) fn take_direct_outbound(&mut self) -> Option<OutboundPacket> {
+        self.direct_outbound.take()
+    }
+
     pub(crate) fn with_endpoint_priority(mut self, command: Option<NodeEndpointCommand>) -> Self {
         self.endpoint_priority = command;
         self
@@ -364,7 +374,8 @@ where
         let endpoint_limit = self.endpoint_limit.min(limit);
         let endpoint_drained = self.drain_endpoint(endpoint_limit, &mut push);
         self.endpoint_drained = self.endpoint_drained.saturating_add(endpoint_drained);
-        let remaining = limit.saturating_sub(endpoint_drained.min(endpoint_limit));
+        let reserved_drained = endpoint_drained.min(endpoint_limit);
+        let remaining = limit.saturating_sub(reserved_drained);
         let tun_limit = self.tun_limit.min(remaining);
         let tun_drained = self.drain_tun(tun_limit, push);
         self.tun_drained = self.tun_drained.saturating_add(tun_drained);

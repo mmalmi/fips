@@ -299,14 +299,19 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
-        let outbound_limit = endpoint_limit.saturating_add(tun_limit);
+        let mut outbound_firsts = outbound_firsts;
+        if let Some(packet) = outbound_firsts.take_direct_outbound() {
+            self.admit_outbound_packet(packet, &mut summary);
+        }
+
+        let routed_outbound_limit = endpoint_limit.saturating_add(tun_limit);
+        let outbound_limit = routed_outbound_limit;
         let reserved_outbound_limit =
-            reserved_live_outbound_progress_limit(endpoint_limit, tun_limit, outbound_limit);
+            reserved_live_outbound_progress_limit(endpoint_limit, tun_limit, routed_outbound_limit);
         let mut outbound_buffers = PacketMover2RouteTableOutboundBuffers::default();
         let mut endpoint_drained = 0usize;
         let mut tun_drained = 0usize;
         let mut outbound_drained = 0usize;
-        let mut outbound_firsts = outbound_firsts;
 
         if reserved_outbound_limit > 0 {
             let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
