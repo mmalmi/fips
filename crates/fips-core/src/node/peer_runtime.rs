@@ -70,6 +70,18 @@ pub(in crate::node) struct AuthenticatedFmpReceiveBookkeeping {
     pub(in crate::node) spin_rtt: Option<std::time::Duration>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(in crate::node) struct AuthenticatedFmpReceiveFacts<'a> {
+    pub(in crate::node) source_peer: PeerIdentity,
+    pub(in crate::node) transport_id: TransportId,
+    pub(in crate::node) remote_addr: &'a TransportAddr,
+    pub(in crate::node) packet_timestamp_ms: u64,
+    pub(in crate::node) packet_len: usize,
+    pub(in crate::node) fmp_counter: u64,
+    pub(in crate::node) inner_timestamp_ms: u32,
+    pub(in crate::node) fmp_flags: u8,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) enum PeerRuntimeReceiveError {
     MissingInnerTimestamp,
@@ -198,6 +210,35 @@ pub(in crate::node) struct PeerRuntimeRouteDecision {
     peer_snapshot: PeerRuntimeRouteSnapshot,
     scheduling_weight: u8,
     direct_path_blocks_direct_payload: bool,
+}
+
+impl<'a> AuthenticatedFmpReceiveFacts<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::node) fn new(
+        source_peer: PeerIdentity,
+        transport_id: TransportId,
+        remote_addr: &'a TransportAddr,
+        packet_timestamp_ms: u64,
+        packet_len: usize,
+        fmp_counter: u64,
+        inner_timestamp_ms: u32,
+        fmp_flags: u8,
+    ) -> Self {
+        Self {
+            source_peer,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags,
+        }
+    }
+
+    pub(in crate::node) fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
 }
 
 impl<'a> AuthenticatedFmpPlaintext<'a> {

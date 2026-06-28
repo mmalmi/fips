@@ -1,11 +1,10 @@
 use crate::discovery::is_punch_packet;
-use crate::node::decrypt_worker::DecryptFmpBookkeeping;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
 use crate::node::{
-    AuthenticatedLinkMessage, EndpointEventSender, FLAG_CE, LocalSessionPayload, Node,
-    NodeEndpointCommand,
+    AuthenticatedFmpReceiveFacts, AuthenticatedLinkMessage, EndpointEventSender, FLAG_CE,
+    LocalSessionPayload, Node, NodeEndpointCommand,
 };
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
@@ -272,17 +271,17 @@ impl Node {
         else {
             return false;
         };
-        let fmp = DecryptFmpBookkeeping {
+        let fmp = AuthenticatedFmpReceiveFacts::new(
             source_peer,
-            transport_id: receipt.transport_id(),
-            remote_addr: receipt.remote_addr().clone(),
-            packet_timestamp_ms: receipt.packet_timestamp_ms(),
-            packet_len: receipt.packet_len(),
-            fmp_counter: receipt.fmp_counter(),
-            inner_timestamp_ms: receipt.inner_timestamp_ms(),
-            fmp_flags: receipt.fmp_flags(),
-        };
-        self.record_worker_authenticated_fmp_receive(&fmp, Some(receipt.source_addr()));
+            receipt.transport_id(),
+            receipt.remote_addr(),
+            receipt.packet_timestamp_ms(),
+            receipt.packet_len(),
+            receipt.fmp_counter(),
+            receipt.inner_timestamp_ms(),
+            receipt.fmp_flags(),
+        );
+        self.record_authenticated_fmp_receive_facts(fmp, Some(receipt.source_addr()));
         true
     }
 
@@ -298,17 +297,17 @@ impl Node {
         else {
             return false;
         };
-        let fmp = DecryptFmpBookkeeping {
+        let fmp = AuthenticatedFmpReceiveFacts::new(
             source_peer,
-            transport_id: receipt.transport_id(),
-            remote_addr: receipt.remote_addr().clone(),
-            packet_timestamp_ms: receipt.packet_timestamp_ms(),
-            packet_len: receipt.packet_len(),
-            fmp_counter: receipt.fmp_counter(),
-            inner_timestamp_ms: receipt.inner_timestamp_ms(),
-            fmp_flags: receipt.fmp_flags(),
-        };
-        self.record_worker_authenticated_fmp_receive(&fmp, Some(receipt.source_addr()));
+            receipt.transport_id(),
+            receipt.remote_addr(),
+            receipt.packet_timestamp_ms(),
+            receipt.packet_len(),
+            receipt.fmp_counter(),
+            receipt.inner_timestamp_ms(),
+            receipt.fmp_flags(),
+        );
+        self.record_authenticated_fmp_receive_facts(fmp, Some(receipt.source_addr()));
         let Some(msg_type) = ingress.msg_type() else {
             return true;
         };

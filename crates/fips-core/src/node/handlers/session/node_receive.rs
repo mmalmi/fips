@@ -287,18 +287,18 @@ impl Node {
             })
     }
 
-    pub(in crate::node) fn record_worker_authenticated_fmp_receive(
+    pub(in crate::node) fn record_authenticated_fmp_receive_facts(
         &mut self,
-        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
+        fmp: crate::node::AuthenticatedFmpReceiveFacts<'_>,
         previous_hop: Option<&NodeAddr>,
     ) {
         let now = Instant::now();
-        let source_addr = fmp.source_peer.node_addr();
+        let source_addr = fmp.source_node_addr();
         let arrived_from_source = previous_hop.is_none_or(|hop| hop == source_addr);
         let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
             source_addr,
             fmp.transport_id,
-            &fmp.remote_addr,
+            fmp.remote_addr,
             fmp.packet_timestamp_ms,
         ) && arrived_from_source;
         let bookkeeping = self.peers.record_authenticated_fmp_receive(
@@ -317,6 +317,26 @@ impl Node {
         if bookkeeping.is_some_and(|update| update.path_bookkeeping_recorded) {
             self.clear_retry_unless_direct_refresh_needed(source_addr);
         }
+    }
+
+    pub(in crate::node) fn record_worker_authenticated_fmp_receive(
+        &mut self,
+        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
+        previous_hop: Option<&NodeAddr>,
+    ) {
+        self.record_authenticated_fmp_receive_facts(
+            crate::node::AuthenticatedFmpReceiveFacts::new(
+                fmp.source_peer,
+                fmp.transport_id,
+                &fmp.remote_addr,
+                fmp.packet_timestamp_ms,
+                fmp.packet_len,
+                fmp.fmp_counter,
+                fmp.inner_timestamp_ms,
+                fmp.fmp_flags,
+            ),
+            previous_hop,
+        );
     }
 
     pub(in crate::node) fn process_authenticated_fmp_receive_from_worker(
