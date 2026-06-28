@@ -1,10 +1,13 @@
+#[cfg(test)]
 pub(crate) trait StatelessCryptoWorker {
     fn execute(&self, work: CryptoWork) -> CryptoCompletion;
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CopyCryptoWorker;
 
+#[cfg(test)]
 impl StatelessCryptoWorker for CopyCryptoWorker {
     fn execute(&self, work: CryptoWork) -> CryptoCompletion {
         let output = PacketOutput {

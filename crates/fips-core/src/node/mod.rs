@@ -116,7 +116,7 @@ use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::node::session::FspSendReservation;
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
-use crate::packet_mover2::{AdmissionConfig, CopyCryptoWorker, PacketMover2LiveNode};
+use crate::packet_mover2::{AdmissionConfig, PacketMover2LiveNode};
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
@@ -146,7 +146,7 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};
 
-type PacketMover2Node = PacketMover2LiveNode<CopyCryptoWorker>;
+type PacketMover2Node = PacketMover2LiveNode;
 
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 pub(crate) const ENDPOINT_EVENT_PRIORITY_MAX_LEN: usize = 512;

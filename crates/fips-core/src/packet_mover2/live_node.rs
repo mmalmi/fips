@@ -194,8 +194,8 @@ impl PacketMover2LiveTurnFirsts {
 }
 
 #[derive(Debug)]
-pub(crate) struct PacketMover2LiveNode<W = CopyCryptoWorker> {
-    driver: PacketMover2TurnDriver<W>,
+pub(crate) struct PacketMover2LiveNode {
+    driver: PacketMover2TurnDriver,
     routes: PacketMover2LiveRouteTable,
     deferred_endpoint_commands: Vec<NodeEndpointCommand>,
     empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
@@ -204,13 +204,13 @@ pub(crate) struct PacketMover2LiveNode<W = CopyCryptoWorker> {
     empty_tun_outbound_rx: TunOutboundRx,
 }
 
-impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
-    pub(crate) fn new(config: AdmissionConfig, worker: W) -> Self {
+impl PacketMover2LiveNode {
+    pub(crate) fn new(config: AdmissionConfig) -> Self {
         let (_, empty_endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
         let (_, empty_endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_, empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         Self {
-            driver: PacketMover2TurnDriver::new(config, worker),
+            driver: PacketMover2TurnDriver::new(config),
             routes: PacketMover2LiveRouteTable::default(),
             deferred_endpoint_commands: Vec::new(),
             empty_raw_ingress: VecDeque::new(),

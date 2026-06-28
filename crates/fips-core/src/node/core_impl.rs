@@ -2,7 +2,7 @@ use super::*;
 
 impl Node {
     fn new_packet_mover2_node() -> PacketMover2Node {
-        PacketMover2LiveNode::new(AdmissionConfig::new(1024, 4096), CopyCryptoWorker)
+        PacketMover2LiveNode::new(AdmissionConfig::new(1024, 4096))
     }
 
     /// Create a new node from configuration.

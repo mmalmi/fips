@@ -1,19 +1,17 @@
 #[derive(Debug)]
-pub(crate) struct PacketMover2<W = CopyCryptoWorker> {
+pub(crate) struct PacketMover2 {
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
     owners: HashMap<OwnerId, OwnerState>,
-    worker: W,
     drops: Vec<PacketDrop>,
 }
 
-impl<W: StatelessCryptoWorker> PacketMover2<W> {
-    pub(crate) fn new(config: AdmissionConfig, worker: W) -> Self {
+impl PacketMover2 {
+    pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
             admission: AdmissionQueue::new(config),
             outbound_admission: OutboundAdmissionQueue::new(config),
             owners: HashMap::new(),
-            worker,
             drops: Vec::new(),
         }
     }
@@ -238,7 +236,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
 
     #[cfg(test)]
     pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
-        self.worker.execute(work)
+        CopyCryptoWorker.execute(work)
     }
 
     #[cfg(test)]
@@ -270,7 +268,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         let dispatched = self.dispatch_available_into(limit, work);
         let mut retired = Vec::new();
         for work in work.drain(..) {
-            let completion = self.worker.execute(work);
+            let completion = CopyCryptoWorker.execute(work);
             retired.extend(self.retire_completion(completion));
         }
         PacketMoverTurn {

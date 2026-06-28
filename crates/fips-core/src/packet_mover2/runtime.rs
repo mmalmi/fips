@@ -1,6 +1,6 @@
 #[derive(Debug)]
-pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
-    mover: PacketMover2<W>,
+pub(crate) struct PacketMover2TurnDriver {
+    mover: PacketMover2,
     open_work: Vec<CryptoWork>,
     seal_work: Vec<OutboundCryptoWork>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
@@ -17,10 +17,10 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
 }
 
-impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
-    pub(crate) fn new(config: AdmissionConfig, worker: W) -> Self {
+impl PacketMover2TurnDriver {
+    pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
-            mover: PacketMover2::new(config, worker),
+            mover: PacketMover2::new(config),
             open_work: Vec::new(),
             seal_work: Vec::new(),
             raw_ingress_drops: Vec::new(),
@@ -58,7 +58,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.mover.owner_mut(owner)
     }
 
-    pub(crate) fn mover_mut(&mut self) -> &mut PacketMover2<W> {
+    pub(crate) fn mover_mut(&mut self) -> &mut PacketMover2 {
         &mut self.mover
     }
 
