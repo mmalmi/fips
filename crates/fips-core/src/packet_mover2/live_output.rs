@@ -699,6 +699,7 @@ where
             .send(NodeEndpointEvent::Data {
                 source_peer,
                 payload: payload.to_vec().into(),
+                enqueued_at_ms: crate::time::now_ms(),
                 queued_at: crate::perf_profile::stamp(),
             })
             .map_err(|_| PacketMover2OutputError::Unavailable)

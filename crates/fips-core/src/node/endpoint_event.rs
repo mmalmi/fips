@@ -191,6 +191,7 @@ impl EndpointEventSender {
             NodeEndpointEvent::Data {
                 source_peer,
                 payload,
+                enqueued_at_ms,
                 queued_at,
             } => {
                 let lane = endpoint_event_lane_for_len(payload.len());
@@ -198,6 +199,7 @@ impl EndpointEventSender {
                     NodeEndpointEvent::Data {
                         source_peer,
                         payload,
+                        enqueued_at_ms,
                         queued_at,
                     },
                     lane,
@@ -450,6 +452,7 @@ impl EndpointEventRuntime {
         self.send(NodeEndpointEvent::Data {
             source_peer: message.source_peer,
             payload: message.payload,
+            enqueued_at_ms: message.enqueued_at_ms,
             queued_at: crate::perf_profile::stamp(),
         })
     }
@@ -466,6 +469,7 @@ impl EndpointEventRuntime {
             NodeEndpointEvent::Data {
                 source_peer: message.source_peer,
                 payload: message.payload,
+                enqueued_at_ms: message.enqueued_at_ms,
                 queued_at,
             }
         } else {
@@ -631,6 +635,7 @@ pub(crate) struct UpdatePeersOutcome {
 pub(crate) struct EndpointDataDelivery {
     pub(crate) source_peer: PeerIdentity,
     pub(crate) payload: PacketBuffer,
+    pub(crate) enqueued_at_ms: u64,
 }
 
 impl EndpointDataDelivery {
@@ -638,6 +643,7 @@ impl EndpointDataDelivery {
         Self {
             source_peer,
             payload: payload.into(),
+            enqueued_at_ms: crate::time::now_ms(),
         }
     }
 
@@ -655,6 +661,7 @@ pub(crate) enum NodeEndpointEvent {
     Data {
         source_peer: PeerIdentity,
         payload: PacketBuffer,
+        enqueued_at_ms: u64,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     },
     DataBatch {
@@ -737,6 +744,7 @@ impl NodeEndpointEvent {
                 Some(NodeEndpointEvent::Data {
                     source_peer: message.source_peer,
                     payload: message.payload,
+                    enqueued_at_ms: message.enqueued_at_ms,
                     queued_at,
                 })
             }

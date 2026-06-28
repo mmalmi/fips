@@ -81,6 +81,8 @@ pub struct FipsEndpointMessage {
     pub source_peer: PeerIdentity,
     /// Application-owned payload bytes.
     pub data: Vec<u8>,
+    /// Unix-millisecond time when FIPS queued this message for the embedder.
+    pub enqueued_at_ms: u64,
 }
 
 impl FipsEndpointMessage {
@@ -450,6 +452,7 @@ impl FipsEndpoint {
             .send(NodeEndpointEvent::Data {
                 source_peer: self.identity,
                 payload: data.into(),
+                enqueued_at_ms: crate::time::now_ms(),
                 queued_at: crate::perf_profile::stamp(),
             })
             .map_err(|_| FipsEndpointError::Closed)

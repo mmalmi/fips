@@ -1115,6 +1115,7 @@ impl DecryptDirectSessionDeliverySink {
                 let event = NodeEndpointEvent::Data {
                     source_peer: delivery.source_peer,
                     payload: delivery.payload,
+                    enqueued_at_ms: delivery.enqueued_at_ms,
                     queued_at: crate::perf_profile::stamp(),
                 };
                 if let Err(error) = endpoint_event_tx.send(event) {

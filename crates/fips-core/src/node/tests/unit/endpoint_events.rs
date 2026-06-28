@@ -138,6 +138,7 @@ fn endpoint_event_dequeue_counts_preserve_message_and_lane_counts() {
     let event = NodeEndpointEvent::Data {
         source_peer: source,
         payload: vec![0x11; ENDPOINT_EVENT_PRIORITY_MAX_LEN].into(),
+        enqueued_at_ms: crate::time::now_ms(),
         queued_at: None,
     };
     assert_eq!(
@@ -289,6 +290,7 @@ fn endpoint_event_queue_drops_bulk_when_full_without_blocking_priority() {
         .send(NodeEndpointEvent::Data {
             source_peer: source,
             payload: vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1].into(),
+            enqueued_at_ms: crate::time::now_ms(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("first bulk endpoint event should enqueue");
@@ -298,6 +300,7 @@ fn endpoint_event_queue_drops_bulk_when_full_without_blocking_priority() {
         .send(NodeEndpointEvent::Data {
             source_peer: source,
             payload: vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1].into(),
+            enqueued_at_ms: crate::time::now_ms(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("full bulk endpoint lane should drop rather than fail");
@@ -311,6 +314,7 @@ fn endpoint_event_queue_drops_bulk_when_full_without_blocking_priority() {
         .send(NodeEndpointEvent::Data {
             source_peer: source,
             payload: b"priority".to_vec().into(),
+            enqueued_at_ms: crate::time::now_ms(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("priority endpoint event should keep reserved progress");
@@ -461,6 +465,7 @@ fn endpoint_event_bulk_capacity_counts_messages_not_batches() {
         .send(NodeEndpointEvent::Data {
             source_peer: source,
             payload: b"priority".to_vec().into(),
+            enqueued_at_ms: crate::time::now_ms(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("priority endpoint event should keep reserved progress");
@@ -481,6 +486,7 @@ fn endpoint_event_queue_send_fails_after_receiver_drop() {
         .send(NodeEndpointEvent::Data {
             source_peer: source,
             payload: b"queued".to_vec().into(),
+            enqueued_at_ms: crate::time::now_ms(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("endpoint event should enqueue while receiver is alive");
@@ -498,6 +504,7 @@ fn endpoint_event_queue_send_fails_after_receiver_drop() {
         .send(NodeEndpointEvent::Data {
             source_peer: source,
             payload: b"after-drop".to_vec().into(),
+            enqueued_at_ms: crate::time::now_ms(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect_err("send should fail once endpoint event receiver is dropped");
