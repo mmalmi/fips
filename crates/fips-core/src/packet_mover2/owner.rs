@@ -121,6 +121,7 @@ pub(crate) struct OwnerState {
     last_tx_activity: Option<ActivityTick>,
     last_hard_event: Option<ActivityTick>,
     hard_events: u64,
+    authenticated_counter_highest: u64,
     accepted_counters: HashSet<u64>,
     pending: BTreeMap<OrderToken, CryptoCompletion>,
 }
@@ -146,6 +147,7 @@ impl OwnerState {
             last_tx_activity: None,
             last_hard_event: None,
             hard_events: 0,
+            authenticated_counter_highest: 0,
             accepted_counters: HashSet::new(),
             pending: BTreeMap::new(),
         }
@@ -161,6 +163,7 @@ impl OwnerState {
         self.fsp_session_start_ms = None;
         self.fsp_coords_warmup_remaining = 0;
         self.fsp_coords_prefix.clear();
+        self.authenticated_counter_highest = 0;
     }
 
     pub(crate) fn set_crypto_keys(&mut self, keys: OwnerCryptoKeys) {
@@ -366,19 +369,29 @@ impl OwnerState {
                 retired.push(RetiredPacket::Drop(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::StaleCompletionGeneration,
+                    None,
                 )));
                 continue;
             }
 
             match completion.result {
-                CryptoResult::Opened(output) => retired.push(RetiredPacket::Output(output)),
+                CryptoResult::Opened(output) => {
+                    self.authenticated_counter_highest = self
+                        .authenticated_counter_highest
+                        .max(completion.reservation.counter);
+                    retired.push(RetiredPacket::Output(output));
+                }
                 CryptoResult::Sealed(output) => retired.push(RetiredPacket::Output(output)),
                 CryptoResult::Outbound(packet) => retired.push(RetiredPacket::Outbound(packet)),
-                CryptoResult::Failed => {
-                    retired.push(RetiredPacket::Drop(PacketDrop::from_completion(
-                        &completion,
-                        PacketDropReason::CryptoFailed,
-                    )));
+                CryptoResult::Failed(failure) => {
+                    retired.push(RetiredPacket::Drop(
+                        PacketDrop::from_completion_with_authenticated_highest(
+                            &completion,
+                            PacketDropReason::CryptoFailed,
+                            failure,
+                            self.authenticated_counter_highest,
+                        ),
+                    ));
                 }
             }
         }

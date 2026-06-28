@@ -617,11 +617,41 @@ impl Node {
         report: &DecryptFailureReport,
     ) {
         let source_node_addr = report.source_peer.node_addr();
+        self.handle_reported_fmp_decrypt_failure(
+            source_node_addr,
+            report.fmp_counter,
+            report.fmp_replay_highest,
+        )
+        .await;
+    }
+
+    pub(in crate::node) async fn handle_packet_mover2_fmp_decrypt_failure(
+        &mut self,
+        source_node_addr: &crate::NodeAddr,
+        fmp_counter: u64,
+        fmp_replay_highest: u64,
+    ) -> bool {
+        debug!(
+            peer = %self.peer_display_name(source_node_addr),
+            counter = fmp_counter,
+            replay_highest = fmp_replay_highest,
+            "packet_mover2 FMP AEAD decryption failed"
+        );
+        self.handle_reported_fmp_decrypt_failure(source_node_addr, fmp_counter, fmp_replay_highest)
+            .await
+    }
+
+    async fn handle_reported_fmp_decrypt_failure(
+        &mut self,
+        source_node_addr: &crate::NodeAddr,
+        fmp_counter: u64,
+        fmp_replay_highest: u64,
+    ) -> bool {
         let Some(peer) = self.peers.get(source_node_addr) else {
-            return;
+            return false;
         };
         let session_age = peer.session_established_at().elapsed();
-        let grace_secs = if report.fmp_replay_highest == 0 {
+        let grace_secs = if fmp_replay_highest == 0 {
             DECRYPT_FAILURE_FRESH_SESSION_GRACE_SECS
         } else {
             DECRYPT_FAILURE_POST_AUTH_GRACE_SECS
@@ -629,15 +659,16 @@ impl Node {
         if session_age.as_secs() < grace_secs {
             trace!(
                 peer = %self.peer_display_name(source_node_addr),
-                counter = report.fmp_counter,
-                replay_highest = report.fmp_replay_highest,
+                counter = fmp_counter,
+                replay_highest = fmp_replay_highest,
                 session_age_ms = session_age.as_millis(),
                 grace_secs,
                 "Ignoring likely stale FMP AEAD failure during fresh-session drain window"
             );
-            return;
+            return true;
         }
 
         self.handle_decrypt_failure(source_node_addr).await;
+        true
     }
 }

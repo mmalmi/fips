@@ -164,6 +164,8 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
                     ingress_seq: Some(ingress_seq),
                     lane,
                     reason: error.into(),
+                    crypto_failure: None,
+                    authenticated_counter_highest: None,
                 }),
             }
         }
@@ -180,6 +182,7 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             return vec![RetiredPacket::Drop(PacketDrop::from_completion(
                 &completion,
                 PacketDropReason::UnknownOwner,
+                None,
             ))];
         };
         let retired = owner.retire(completion);
@@ -244,12 +247,12 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
                     Ok(work) => opened.execute(work),
                     Err(_) => CryptoCompletion {
                         reservation,
-                        result: CryptoResult::Failed,
+                        result: CryptoResult::Failed(CryptoFailureKind::Open),
                     },
                 },
                 None => CryptoCompletion {
                     reservation,
-                    result: CryptoResult::Failed,
+                    result: CryptoResult::Failed(CryptoFailureKind::Open),
                 },
             };
             retired.extend(self.retire_completion(completion));
@@ -262,12 +265,12 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
                     Ok(work) => sealed.execute(work),
                     Err(_) => CryptoCompletion {
                         reservation,
-                        result: CryptoResult::Failed,
+                        result: CryptoResult::Failed(CryptoFailureKind::Seal),
                     },
                 },
                 None => CryptoCompletion {
                     reservation,
-                    result: CryptoResult::Failed,
+                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
                 },
             };
             retired.extend(self.retire_completion(completion));

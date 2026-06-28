@@ -119,6 +119,23 @@ impl Node {
         turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) -> usize {
         let mut processed = 0usize;
+        let fmp_crypto_failures: Vec<_> = turn
+            .drops()
+            .iter()
+            .filter_map(Self::packet_mover2_fmp_crypto_failure)
+            .collect();
+        for (source_addr, counter, authenticated_highest) in fmp_crypto_failures {
+            if self
+                .handle_packet_mover2_fmp_decrypt_failure(
+                    &source_addr,
+                    counter,
+                    authenticated_highest,
+                )
+                .await
+            {
+                processed += 1;
+            }
+        }
         for receipt in turn.take_fmp_ingress_receipts() {
             if self.record_packet_mover2_fmp_ingress_receipt(&receipt) {
                 processed += 1;
@@ -158,6 +175,22 @@ impl Node {
             processed += 1;
         }
         processed
+    }
+
+    fn packet_mover2_fmp_crypto_failure(
+        drop: &crate::packet_mover2::PacketDrop,
+    ) -> Option<(NodeAddr, u64, u64)> {
+        if drop.owner().protocol() != crate::packet_mover2::PacketProtocol::Fmp
+            || drop.reason() != crate::packet_mover2::PacketDropReason::CryptoFailed
+            || drop.crypto_failure() != Some(crate::packet_mover2::CryptoFailureKind::Open)
+        {
+            return None;
+        }
+        Some((
+            drop.owner().node_addr()?,
+            drop.counter()?,
+            drop.authenticated_counter_highest().unwrap_or(0),
+        ))
     }
 
     async fn process_packet_mover2_local_session_ingress(

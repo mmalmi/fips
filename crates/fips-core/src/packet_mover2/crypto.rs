@@ -125,7 +125,7 @@ impl StatelessAeadOpenWorker {
                     payload: work.work.packet.payload,
                 })
             }
-            None => CryptoResult::Failed,
+            None => CryptoResult::Failed(CryptoFailureKind::Open),
         };
 
         CryptoCompletion {
@@ -221,7 +221,7 @@ impl StatelessAeadSealWorker {
             let Some(aad) = prefix.get(..work.aad_len) else {
                 return CryptoCompletion {
                     reservation,
-                    result: CryptoResult::Failed,
+                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
                 };
             };
             work.cipher
@@ -258,7 +258,7 @@ impl StatelessAeadSealWorker {
                     }
                 }
             }
-            None => CryptoResult::Failed,
+            None => CryptoResult::Failed(CryptoFailureKind::Seal),
         };
 
         CryptoCompletion {

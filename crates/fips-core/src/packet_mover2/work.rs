@@ -35,7 +35,13 @@ pub(crate) enum CryptoResult {
     Opened(PacketOutput),
     Sealed(PacketOutput),
     Outbound(OutboundPacket),
-    Failed,
+    Failed(CryptoFailureKind),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CryptoFailureKind {
+    Open,
+    Seal,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +131,8 @@ pub(crate) struct PacketDrop {
     ingress_seq: Option<u64>,
     lane: Lane,
     reason: PacketDropReason,
+    crypto_failure: Option<CryptoFailureKind>,
+    authenticated_counter_highest: Option<u64>,
 }
 
 impl PacketDrop {
@@ -135,6 +143,8 @@ impl PacketDrop {
             ingress_seq: Some(queued.ingress_seq),
             lane: queued.packet.lane(),
             reason,
+            crypto_failure: None,
+            authenticated_counter_highest: None,
         }
     }
 
@@ -145,17 +155,36 @@ impl PacketDrop {
             ingress_seq: Some(queued.ingress_seq),
             lane: queued.packet.lane(),
             reason,
+            crypto_failure: None,
+            authenticated_counter_highest: None,
         }
     }
 
-    fn from_completion(completion: &CryptoCompletion, reason: PacketDropReason) -> Self {
+    fn from_completion(
+        completion: &CryptoCompletion,
+        reason: PacketDropReason,
+        crypto_failure: Option<CryptoFailureKind>,
+    ) -> Self {
         Self {
             owner: completion.reservation.owner,
             counter: Some(completion.reservation.counter),
             ingress_seq: Some(completion.reservation.ingress_seq),
             lane: completion.reservation.lane,
             reason,
+            crypto_failure,
+            authenticated_counter_highest: None,
         }
+    }
+
+    fn from_completion_with_authenticated_highest(
+        completion: &CryptoCompletion,
+        reason: PacketDropReason,
+        crypto_failure: CryptoFailureKind,
+        authenticated_counter_highest: u64,
+    ) -> Self {
+        let mut drop = Self::from_completion(completion, reason, Some(crypto_failure));
+        drop.authenticated_counter_highest = Some(authenticated_counter_highest);
+        drop
     }
 
     pub(crate) fn owner(&self) -> OwnerId {
@@ -177,6 +206,14 @@ impl PacketDrop {
     pub(crate) fn reason(&self) -> PacketDropReason {
         self.reason
     }
+
+    pub(crate) fn crypto_failure(&self) -> Option<CryptoFailureKind> {
+        self.crypto_failure
+    }
+
+    pub(crate) fn authenticated_counter_highest(&self) -> Option<u64> {
+        self.authenticated_counter_highest
+    }
 }
 
 impl From<AdmissionDrop> for PacketDrop {
@@ -187,6 +224,8 @@ impl From<AdmissionDrop> for PacketDrop {
             ingress_seq: None,
             lane: drop.lane,
             reason: PacketDropReason::Admission(drop.reason),
+            crypto_failure: None,
+            authenticated_counter_highest: None,
         }
     }
 }
@@ -199,6 +238,8 @@ impl From<OutboundAdmissionDrop> for PacketDrop {
             ingress_seq: None,
             lane: drop.lane,
             reason: PacketDropReason::Admission(drop.reason),
+            crypto_failure: None,
+            authenticated_counter_highest: None,
         }
     }
 }
