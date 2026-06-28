@@ -140,7 +140,7 @@ impl PacketMover2FmpIngressReceipt {
         let Some(TransportPath::Live {
             transport_id,
             remote_addr,
-        }) = output.source_path.clone()
+        }) = output.source_path()
         else {
             return None;
         };
@@ -155,8 +155,8 @@ impl PacketMover2FmpIngressReceipt {
             u32::from_le_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]);
         Some(Self {
             source_addr,
-            transport_id,
-            remote_addr,
+            transport_id: *transport_id,
+            remote_addr: remote_addr.clone(),
             packet_timestamp_ms,
             packet_len,
             fmp_counter: header.counter(),
@@ -480,10 +480,7 @@ impl PacketMover2LiveNodeTurn {
         &self.fsp_local_session_ingress
     }
 
-    fn set_fsp_local_session_ingress(
-        &mut self,
-        ingress: Vec<PacketMover2FspLocalSessionIngress>,
-    ) {
+    fn set_fsp_local_session_ingress(&mut self, ingress: Vec<PacketMover2FspLocalSessionIngress>) {
         self.fsp_local_session_ingress = ingress;
     }
 
