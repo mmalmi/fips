@@ -404,6 +404,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     transport_planned: usize,
     transport_sent: usize,
     transport_dropped: usize,
+    transport_sent_outputs: Vec<PacketOutput>,
 }
 
 impl PacketMover2LiveNodeTurn {
@@ -427,6 +428,7 @@ impl PacketMover2LiveNodeTurn {
             transport_planned: 0,
             transport_sent: 0,
             transport_dropped: 0,
+            transport_sent_outputs: Vec::new(),
         }
     }
 
@@ -580,6 +582,10 @@ impl PacketMover2LiveNodeTurn {
         self.transport_dropped
     }
 
+    pub(crate) fn take_transport_sent_outputs(&mut self) -> Vec<PacketOutput> {
+        std::mem::take(&mut self.transport_sent_outputs)
+    }
+
     pub(crate) fn has_activity(&self) -> bool {
         self.summary.has_activity()
             || !self.fmp_control_ingress.is_empty()
@@ -599,6 +605,7 @@ impl PacketMover2LiveNodeTurn {
             || self.transport_planned > 0
             || self.transport_sent > 0
             || self.transport_dropped > 0
+            || !self.transport_sent_outputs.is_empty()
     }
 
     pub(crate) fn has_failures(&self) -> bool {

@@ -62,7 +62,7 @@
             .try_send(tun_packet.clone())
             .expect("enqueue TUN outbound packet");
 
-        let turn = live_node
+        let mut turn = live_node
             .pump_turn(
                 &mut raw_source,
                 8,
@@ -88,6 +88,9 @@
         assert_eq!(turn.transport_planned(), 1);
         assert_eq!(turn.transport_sent(), 1);
         assert_eq!(turn.transport_dropped(), 0);
+        let sent_outputs = turn.take_transport_sent_outputs();
+        assert_eq!(sent_outputs.len(), 1);
+        assert_eq!(sent_outputs[0].counter(), 760);
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());

@@ -134,6 +134,30 @@ pub(crate) async fn send_packet_mover2_transport_plans<R>(
 where
     R: PacketMover2TransportResolver + ?Sized,
 {
+    send_packet_mover2_transport_plans_inner(transports, plans, drops, None).await
+}
+
+pub(crate) async fn send_packet_mover2_transport_plans_collect_sent<R>(
+    transports: &R,
+    plans: &[PacketMover2TransportSendPlan],
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    sent_outputs: &mut Vec<PacketOutput>,
+) -> usize
+where
+    R: PacketMover2TransportResolver + ?Sized,
+{
+    send_packet_mover2_transport_plans_inner(transports, plans, drops, Some(sent_outputs)).await
+}
+
+async fn send_packet_mover2_transport_plans_inner<R>(
+    transports: &R,
+    plans: &[PacketMover2TransportSendPlan],
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    mut sent_outputs: Option<&mut Vec<PacketOutput>>,
+) -> usize
+where
+    R: PacketMover2TransportResolver + ?Sized,
+{
     let mut sent = 0;
     let mut batch = Vec::new();
     let mut batch_plan_indexes = Vec::new();
@@ -159,7 +183,12 @@ where
         if end - start == 1 {
             let plan = &plans[start];
             match transport.send(plan.remote_addr(), plan.output().payload()).await {
-                Ok(_) => sent += 1,
+                Ok(_) => {
+                    sent += 1;
+                    if let Some(sent_outputs) = sent_outputs.as_deref_mut() {
+                        sent_outputs.push(plan.output().clone());
+                    }
+                }
                 Err(error) => drops.push(PacketMover2OutputDrop::from_output(
                     plan.output(),
                     packet_mover2_output_error_for_transport(&error),
@@ -191,7 +220,12 @@ where
             .send_batch(&batch, |batch_index, result| {
                 let plan = &plans[batch_plan_indexes[batch_index]];
                 match result {
-                    Ok(_) => sent += 1,
+                    Ok(_) => {
+                        sent += 1;
+                        if let Some(sent_outputs) = sent_outputs.as_deref_mut() {
+                            sent_outputs.push(plan.output().clone());
+                        }
+                    }
                     Err(error) => drops.push(PacketMover2OutputDrop::from_output(
                         plan.output(),
                         packet_mover2_output_error_for_transport(&error),

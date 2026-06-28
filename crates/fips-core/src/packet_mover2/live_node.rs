@@ -382,57 +382,6 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         std::mem::take(&mut self.deferred_endpoint_commands)
     }
 
-    pub(crate) async fn send_outbound_transport<Transports>(
-        &mut self,
-        outbound: OutboundPacket,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> (PacketMover2LiveNodeTurn, Option<PacketOutput>)
-    where
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        let mut transport_output = std::mem::take(&mut self.transport_output);
-        transport_output.clear();
-        let turn = self.driver.run_aead_classified_output_turn(
-            std::iter::empty(),
-            [outbound],
-            &mut transport_output,
-            crypto_limit,
-        );
-        let mut report = PacketMover2LiveNodeTurn::from_runtime_turn(&turn);
-
-        let plans = transport_output.plans();
-        report.transport_planned = plans.len();
-        let sent_output = if plans.len() == 1 {
-            Some(plans[0].output().clone())
-        } else {
-            None
-        };
-        let dropped_before = report.output_drops.len();
-        report.transport_sent =
-            send_packet_mover2_transport_plans(transports, plans, &mut report.output_drops).await;
-        report.transport_dropped = report.output_drops.len().saturating_sub(dropped_before);
-        debug_assert_eq!(
-            report.transport_planned,
-            report.transport_sent + report.transport_dropped
-        );
-        report.summary.outputs_sent = report
-            .summary
-            .outputs_sent
-            .saturating_sub(report.transport_dropped);
-        report.summary.outputs_dropped = report
-            .summary
-            .outputs_dropped
-            .saturating_add(report.transport_dropped);
-        let sent_output = if report.transport_sent == 1 && report.transport_dropped == 0 {
-            sent_output
-        } else {
-            None
-        };
-        self.transport_output = transport_output;
-        (report, sent_output)
-    }
-
     pub(crate) async fn pump_turn<RI, Resolver, Transports>(
         &mut self,
         raw_ingress: &mut RI,

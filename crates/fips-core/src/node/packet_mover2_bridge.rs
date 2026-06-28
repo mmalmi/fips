@@ -88,10 +88,17 @@ impl Node {
             plaintext.to_vec(),
         )
         .with_activity_tick(ActivityTick::new(Self::now_ms()));
-        let (turn, sent_output) = self
-            .packet_mover2
-            .send_outbound_transport(outbound, &self.transports, 1)
-            .await;
+        let mut turn = self.pump_packet_mover2_direct_outbound(outbound, 1).await;
+        let sent_output = if turn.transport_sent() == 1 && turn.transport_dropped() == 0 {
+            let mut sent_outputs = turn.take_transport_sent_outputs();
+            if sent_outputs.len() == 1 {
+                sent_outputs.pop()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         if let Some(output) = sent_output {
             let timestamp_ms = output

@@ -212,8 +212,13 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         let plans = transport_output.plans();
         report.transport_planned = plans.len();
         let dropped_before = report.output_drops.len();
-        report.transport_sent =
-            send_packet_mover2_transport_plans(transports, plans, &mut report.output_drops).await;
+        report.transport_sent = send_packet_mover2_transport_plans_collect_sent(
+            transports,
+            plans,
+            &mut report.output_drops,
+            &mut report.transport_sent_outputs,
+        )
+        .await;
         report.transport_dropped = report.output_drops.len().saturating_sub(dropped_before);
         debug_assert_eq!(
             report.transport_planned,
