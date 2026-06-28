@@ -420,7 +420,7 @@
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut ipv6 = vec![0u8; 48];
         ipv6[0] = 0x60;
         ipv6[1] = 0x20;
@@ -493,7 +493,7 @@
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut batch = DecryptPlaintextFallbackBatch::new();
 
         let mut first = vec![0u8; 48];
@@ -574,7 +574,7 @@
     fn decrypt_worker_direct_tun_batch_drops_delivery_when_authenticated_lane_is_full() {
         let source_peer = test_source_peer();
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 1);
-        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
 
         let mut first_batch = DecryptPlaintextFallbackBatch::new();
         first_batch.push_output(dummy_direct_tun_output(

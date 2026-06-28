@@ -27,7 +27,7 @@ use std::io::Write;
 use std::net::Ipv6Addr;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::io::{AsRawFd, FromRawFd};
-use std::sync::{Arc, RwLock, mpsc};
+use std::sync::{Arc, RwLock};
 use thiserror::Error;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tracing::error;
@@ -36,6 +36,11 @@ use tracing::{debug, trace};
 use tracing::{error, warn};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::Layer;
+
+pub use super::tun_write::TunTx;
+#[cfg(test)]
+pub(crate) use super::tun_write::write_channel_with_bulk_capacity;
+pub(crate) use super::tun_write::{TunRx, TunWriteErrorKind, TunWriteLane, write_channel};
 
 /// Read-only handle to the per-destination path MTU map. Populated by
 /// the discovery handler on `LookupResponse`; read by the TUN reader
@@ -136,9 +141,6 @@ pub(crate) fn per_flow_max_mss(
     );
     result
 }
-
-/// Channel sender for packets to be written to TUN.
-pub type TunTx = mpsc::Sender<Vec<u8>>;
 
 /// Channel sender for outbound packets from TUN reader to Node.
 pub type TunOutboundTx = tokio::sync::mpsc::Sender<Vec<u8>>;
@@ -353,7 +355,7 @@ impl TunDevice {
         }
 
         let write_file = unsafe { File::from_raw_fd(write_fd) };
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = write_channel();
 
         Ok((
             TunWriter {
@@ -412,7 +414,7 @@ fn parse_utun_af_prefix(buf: &[u8]) -> Option<u32> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub struct TunWriter {
     file: File,
-    rx: mpsc::Receiver<Vec<u8>>,
+    rx: TunRx,
     name: String,
     max_mss: u16,
     path_mtu_lookup: PathMtuLookup,

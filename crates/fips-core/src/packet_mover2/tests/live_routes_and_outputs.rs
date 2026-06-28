@@ -427,7 +427,7 @@
 
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
         driver.register_owner(
             fmp_owner,
@@ -580,7 +580,7 @@
 
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
         driver

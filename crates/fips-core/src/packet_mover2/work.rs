@@ -49,6 +49,7 @@ pub(crate) struct PacketOutput {
     owner: OwnerId,
     counter: u64,
     ingress_seq: u64,
+    lane: Lane,
     target: OutputTarget,
     source_path: Option<TransportPath>,
     previous_hop: Option<NodeAddr>,
@@ -71,6 +72,10 @@ impl PacketOutput {
 
     pub(crate) fn ingress_seq(&self) -> u64 {
         self.ingress_seq
+    }
+
+    pub(crate) fn lane(&self) -> Lane {
+        self.lane
     }
 
     pub(crate) fn target(&self) -> OutputTarget {

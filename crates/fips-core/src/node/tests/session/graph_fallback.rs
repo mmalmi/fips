@@ -134,7 +134,7 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
         "link-dead direct peer should not hide graph fallback"
     );
 
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[2].node.tun_tx = Some(tun_tx);
 
     let src_fips = crate::FipsAddress::from_node_addr(&src_addr);

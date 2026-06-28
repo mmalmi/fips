@@ -49,7 +49,6 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     use crate::node::handlers::discovery::PendingLookup;
     use crate::peer::ActivePeer;
     use crate::transport::LinkId;
-    use std::sync::mpsc;
 
     let mut node = make_node();
 
@@ -62,7 +61,7 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     );
 
     // Inject a TUN sender so `send_icmpv6_dest_unreachable` is observable.
-    let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     node.tun_tx = Some(tun_tx);
 
     // Build a target identity (the unreachable destination).

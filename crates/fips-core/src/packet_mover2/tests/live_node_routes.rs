@@ -190,7 +190,7 @@
 
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut live_node =
             PacketMover2LiveNode::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
         live_node.register_owner(

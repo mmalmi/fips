@@ -244,7 +244,7 @@ impl Node {
         tun_limit: usize,
     ) -> PacketMover2LiveNodeTurn {
         let tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = crate::upper::tun::write_channel();
             drop(rx);
             tx
         });
@@ -280,7 +280,7 @@ impl Node {
         crypto_limit: usize,
     ) -> PacketMover2LiveNodeTurn {
         let tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = crate::upper::tun::write_channel();
             drop(rx);
             tx
         });

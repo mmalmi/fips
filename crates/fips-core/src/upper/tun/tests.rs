@@ -6,6 +6,33 @@ fn test_tun_state_display() {
     assert_eq!(format!("{}", TunState::Active), "active");
 }
 
+#[test]
+fn tun_write_channel_prioritizes_priority_and_bounds_bulk() {
+    let (tx, rx) = write_channel_with_bulk_capacity(2);
+
+    tx.send_with_lane(vec![1], TunWriteLane::Bulk)
+        .expect("first bulk packet fits");
+    tx.send_with_lane(vec![2], TunWriteLane::Bulk)
+        .expect("second bulk packet fits");
+    let dropped = tx
+        .send_with_lane(vec![3], TunWriteLane::Bulk)
+        .expect_err("bulk cap should drop the tail");
+
+    assert_eq!(dropped.kind(), TunWriteErrorKind::BulkFull);
+    assert_eq!(dropped.into_packet(), vec![3]);
+
+    tx.send_with_lane(vec![9], TunWriteLane::Priority)
+        .expect("priority remains admitted under bulk pressure");
+
+    assert_eq!(rx.try_recv().unwrap(), vec![9]);
+    assert_eq!(rx.try_recv().unwrap(), vec![1]);
+    assert_eq!(rx.try_recv().unwrap(), vec![2]);
+    assert!(matches!(
+        rx.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+}
+
 // Note: TUN device creation tests require elevated privileges
 // and are better suited for integration tests.
 

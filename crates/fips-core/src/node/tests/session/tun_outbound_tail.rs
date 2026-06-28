@@ -8,7 +8,7 @@ async fn test_tun_outbound_unknown_destination() {
     verify_tree_convergence(&nodes);
 
     // Install TUN receiver on Node 0 (for ICMPv6 response)
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[0].node.tun_tx = Some(tun_tx);
 
     let src_fips = crate::FipsAddress::from_node_addr(nodes[0].node.node_addr());
@@ -60,7 +60,7 @@ async fn test_tun_outbound_3node_forwarded() {
     nodes[0].node.register_identity(node2_addr, node2_pubkey);
 
     // Install TUN receiver on Node 2
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[2].node.tun_tx = Some(tun_tx);
 
     // Build and inject an IPv6 packet (triggers session initiation to Node 2)
@@ -105,7 +105,7 @@ async fn test_tun_outbound_pending_queue_flush() {
     let dst_fips = crate::FipsAddress::from_node_addr(&node1_addr);
 
     // Install TUN receiver on Node 1
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[1].node.tun_tx = Some(tun_tx);
 
     // Send 5 packets before any session exists

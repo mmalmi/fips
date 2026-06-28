@@ -72,7 +72,7 @@ async fn test_tun_outbound_established_session() {
     );
 
     // Install TUN receiver on Node 1
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[1].node.tun_tx = Some(tun_tx);
 
     // Build and inject an IPv6 packet
@@ -116,7 +116,7 @@ async fn test_tun_outbound_triggers_session_initiation() {
     assert_eq!(nodes[0].node.session_count(), 0);
 
     // Install TUN receiver on Node 1
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[1].node.tun_tx = Some(tun_tx);
 
     // Build and inject an IPv6 packet (identity cache populated at peer promotion)

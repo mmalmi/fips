@@ -116,7 +116,7 @@ async fn test_multihop_pmtud_heterogeneous_mtu() {
     // Now send ANOTHER oversized packet — this time handle_tun_outbound
     // should check PathMtuState and generate ICMPv6 PTB on TUN instead
     // of forwarding.
-    let (tun_tx2, tun_rx2) = std::sync::mpsc::channel();
+    let (tun_tx2, tun_rx2) = crate::upper::tun::write_channel();
     nodes[0].node.tun_tx = Some(tun_tx2);
 
     nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
@@ -160,7 +160,7 @@ async fn test_multihop_pmtud_heterogeneous_mtu() {
     );
 
     // Verify a fitting packet still passes through without PTB
-    let (tun_tx3, tun_rx3) = std::sync::mpsc::channel();
+    let (tun_tx3, tun_rx3) = crate::upper::tun::write_channel();
     nodes[0].node.tun_tx = Some(tun_tx3);
 
     let fitting_payload = vec![0xCDu8; 600 - 40]; // 600-byte IPv6 packet, well within 694

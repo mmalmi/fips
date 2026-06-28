@@ -428,7 +428,6 @@ async fn test_session_100_nodes() {
 
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
-    use std::sync::mpsc;
     use std::time::Instant;
 
     // Same random topology as other 100-node tests
@@ -505,9 +504,9 @@ async fn test_session_100_nodes() {
     // === Phase 2: Inject TUN receivers and snapshot link stats ===
 
     // Install a tun_tx on every node so delivered datagrams can be counted.
-    let mut tun_receivers: Vec<mpsc::Receiver<Vec<u8>>> = Vec::with_capacity(NUM_NODES);
+    let mut tun_receivers: Vec<crate::upper::tun::TunRx> = Vec::with_capacity(NUM_NODES);
     for tn in nodes.iter_mut() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = crate::upper::tun::write_channel();
         tn.node.tun_tx = Some(tx);
         tun_receivers.push(rx);
     }

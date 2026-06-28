@@ -6,7 +6,7 @@ use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
 
 fn closed_scratch_sinks() -> (crate::upper::tun::TunTx, crate::node::EndpointEventSender) {
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     drop(tun_rx);
     let (endpoint_tx, endpoint_rx) = crate::node::EndpointEventSender::channel(1);
     drop(endpoint_rx);
@@ -161,7 +161,7 @@ async fn packet_mover2_scratch_turn_uses_rx_loop_owned_channels() {
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
         .attach_endpoint_data_io(1)
         .expect("endpoint io should attach before start");
@@ -204,7 +204,7 @@ async fn packet_mover2_scratch_replays_deferred_endpoint_commands() {
     let (endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
         .attach_endpoint_data_io(1)
         .expect("endpoint io should attach before start");
@@ -258,7 +258,7 @@ async fn packet_mover2_scratch_turn_reports_raw_ingress_failures() {
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
         .attach_endpoint_data_io(1)
         .expect("endpoint io should attach before start");

@@ -148,7 +148,7 @@ impl TunDevice {
         max_mss: u16,
         path_mtu_lookup: PathMtuLookup,
     ) -> Result<(TunWriter, TunTx), TunError> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = write_channel();
         Ok((
             TunWriter {
                 session: self.session.clone(),
@@ -181,7 +181,7 @@ impl std::fmt::Debug for TunDevice {
 /// Also performs TCP MSS clamping on inbound SYN-ACK packets.
 pub struct TunWriter {
     session: Arc<wintun::Session>,
-    rx: mpsc::Receiver<Vec<u8>>,
+    rx: TunRx,
     name: String,
     max_mss: u16,
     path_mtu_lookup: PathMtuLookup,

@@ -55,7 +55,7 @@
             .expect("enqueue TUN outbound packet");
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut live_node =
             PacketMover2LiveNode::new(AdmissionConfig::new(8, 16), CopyCryptoWorker);
         live_node.register_owner(
@@ -249,7 +249,7 @@
         drop((endpoint_priority_tx, endpoint_bulk_tx, tun_outbound_tx));
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(1).expect("endpoint io");
-        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
         driver

@@ -122,7 +122,7 @@ impl Node {
         drop(control_command_tx);
 
         let scratch_tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = crate::upper::tun::write_channel();
             drop(rx);
             tx
         });

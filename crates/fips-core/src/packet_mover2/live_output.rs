@@ -557,12 +557,23 @@ impl<'a> PacketMover2TunTxOutput<'a> {
 impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
     fn send_tun(
         &mut self,
-        _output: &PacketOutput,
+        output: &PacketOutput,
         payload: &[u8],
     ) -> Result<(), PacketMover2OutputError> {
+        let lane = match output.lane() {
+            Lane::Priority => crate::upper::tun::TunWriteLane::Priority,
+            Lane::Bulk => crate::upper::tun::TunWriteLane::Bulk,
+        };
         self.tx
-            .send(payload.to_vec())
-            .map_err(|_| PacketMover2OutputError::Unavailable)
+            .send_with_lane(payload.to_vec(), lane)
+            .map_err(|error| match error.kind() {
+                crate::upper::tun::TunWriteErrorKind::Closed => {
+                    PacketMover2OutputError::Unavailable
+                }
+                crate::upper::tun::TunWriteErrorKind::BulkFull => {
+                    PacketMover2OutputError::Backpressure
+                }
+            })
     }
 }
 
@@ -776,6 +787,7 @@ where
 {
     let mut sent = 0;
     let mut batch = Vec::new();
+    let mut batch_plan_indexes = Vec::new();
     let mut start = 0usize;
     while start < plans.len() {
         let transport_id = plans[start].transport_id;
@@ -812,14 +824,26 @@ where
         }
 
         batch.clear();
-        batch.extend(
-            plans[start..end]
-                .iter()
-                .map(|plan| (plan.remote_addr(), plan.output().payload())),
+        batch_plan_indexes.clear();
+        append_transport_batch_plans(
+            plans,
+            start,
+            end,
+            Lane::Priority,
+            &mut batch,
+            &mut batch_plan_indexes,
+        );
+        append_transport_batch_plans(
+            plans,
+            start,
+            end,
+            Lane::Bulk,
+            &mut batch,
+            &mut batch_plan_indexes,
         );
         transport
             .send_batch(&batch, |batch_index, result| {
-                let plan = &plans[start + batch_index];
+                let plan = &plans[batch_plan_indexes[batch_index]];
                 match result {
                     Ok(_) => sent += 1,
                     Err(error) => drops.push(PacketMover2OutputDrop::from_output(
@@ -832,6 +856,25 @@ where
         start = end;
     }
     sent
+}
+
+fn append_transport_batch_plans<'a>(
+    plans: &'a [PacketMover2TransportSendPlan],
+    start: usize,
+    end: usize,
+    lane: Lane,
+    batch: &mut Vec<(&'a TransportAddr, &'a [u8])>,
+    batch_plan_indexes: &mut Vec<usize>,
+) {
+    batch.extend(plans[start..end].iter().enumerate().filter_map(
+        |(relative_index, plan)| {
+            if plan.output().lane() != lane {
+                return None;
+            }
+            batch_plan_indexes.push(start + relative_index);
+            Some((plan.remote_addr(), plan.output().payload()))
+        },
+    ));
 }
 
 fn packet_mover2_output_error_for_transport(error: &TransportError) -> PacketMover2OutputError {

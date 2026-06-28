@@ -271,12 +271,12 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_fsp_path_handoff_bulk"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent186 as usize).name(),
-        "reserved_event_186"
+        event_from_index(Event::TunWriteBulkDropped as usize).name(),
+        "tun_write_bulk_dropped"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent187 as usize).name(),
-        "reserved_event_187"
+        event_from_index(Event::TunWriteBulkBacklogHigh as usize).name(),
+        "tun_write_bulk_backlog_high"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerControlDropped as usize).name(),

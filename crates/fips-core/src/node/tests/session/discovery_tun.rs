@@ -365,7 +365,7 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
     let response = crate::protocol::LookupResponse::new(request_id, dest_addr, fresh_coords, proof);
     let response_payload = &response.encode()[1..];
 
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[2].node.tun_tx = Some(tun_tx);
     nodes[0]
         .node

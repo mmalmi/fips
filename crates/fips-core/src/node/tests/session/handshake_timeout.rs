@@ -226,7 +226,7 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     }
 
     // Install TUN receiver on source node to capture ICMPv6 PTB
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[0].node.tun_tx = Some(tun_tx);
 
     // Build an IPv6 packet that fits local MTU but exceeds path MTU
@@ -283,7 +283,7 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     );
 
     // Verify a packet that fits within path MTU passes through (no PTB)
-    let (tun_tx2, tun_rx2) = std::sync::mpsc::channel();
+    let (tun_tx2, tun_rx2) = crate::upper::tun::write_channel();
     nodes[0].node.tun_tx = Some(tun_tx2);
     let fitting_payload = vec![0u8; reduced_ipv6_mtu - 41]; // fits within path MTU
     let fitting_packet = build_ipv6_packet(&src_fips, &dst_fips, &fitting_payload);
