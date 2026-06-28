@@ -222,6 +222,10 @@ impl OutboundAdmissionQueue {
         self.priority.pop_front().or_else(|| self.bulk.pop_front())
     }
 
+    fn pop_next_priority(&mut self) -> Option<QueuedOutboundPacket> {
+        self.priority.pop_front()
+    }
+
     fn push_front(&mut self, queued: QueuedOutboundPacket) {
         match queued.packet.lane() {
             Lane::Priority => self.priority.push_front(queued),

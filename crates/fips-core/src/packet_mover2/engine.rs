@@ -182,6 +182,54 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         work.len()
     }
 
+    fn dispatch_outbound_priority_available_into(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<OutboundCryptoWork>,
+    ) -> usize {
+        work.clear();
+
+        while work.len() < limit {
+            let Some(queued) = self.outbound_admission.pop_next_priority() else {
+                break;
+            };
+
+            let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
+                self.drops.push(PacketDrop::from_queued_outbound(
+                    &queued,
+                    PacketDropReason::UnknownOwner,
+                ));
+                continue;
+            };
+
+            let owner_id = queued.packet.owner;
+            let lane = queued.packet.lane();
+            let ingress_seq = queued.ingress_seq;
+            if !owner.can_reserve_lane(lane) {
+                self.outbound_admission.push_front(queued);
+                break;
+            }
+            match owner.reserve_outbound(queued.packet, ingress_seq) {
+                Ok((reservation, packet)) => work.push(OutboundCryptoWork {
+                    reservation,
+                    packet,
+                }),
+                Err(error) => self.drops.push(PacketDrop {
+                    owner: owner_id,
+                    counter: None,
+                    ingress_seq: Some(ingress_seq),
+                    lane,
+                    reason: error.into(),
+                    crypto_failure: None,
+                    wire_flags: None,
+                    authenticated_counter_highest: None,
+                }),
+            }
+        }
+
+        work.len()
+    }
+
     pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
         self.worker.execute(work)
     }
@@ -260,46 +308,108 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
         retired.clear();
+        open_work.clear();
+        seal_work.clear();
         let opened = StatelessAeadOpenWorker;
         let sealed = StatelessAeadSealWorker;
         let outbound_priority_reserve =
-            usize::from(limit > 1 && self.outbound_admission.has_priority_pending());
-        let inbound_dispatched = self
-            .dispatch_available_into(limit.saturating_sub(outbound_priority_reserve), open_work);
-        let outbound_dispatched = self
-            .dispatch_outbound_available_into(limit.saturating_sub(inbound_dispatched), seal_work);
+            outbound_priority_dispatch_limit(limit, self.outbound_admission.has_priority_pending());
+        let pre_priority_inbound_limit =
+            inbound_before_outbound_priority_limit(limit, outbound_priority_reserve);
+        let mut fsp_worker_open = 0u64;
+        let mut fsp_worker_open_bulk = 0u64;
+        let pre_priority_inbound_dispatched =
+            self.dispatch_available_into(pre_priority_inbound_limit, open_work);
+        self.execute_open_work_batch(
+            open_work,
+            &opened,
+            retired,
+            &mut fsp_worker_open,
+            &mut fsp_worker_open_bulk,
+        );
+
+        let priority_outbound_dispatched =
+            self.dispatch_outbound_priority_available_into(outbound_priority_reserve, seal_work);
+        for work in seal_work.drain(..) {
+            let completion = self.execute_seal_work(work, &sealed);
+            retired.extend(self.retire_completion(completion));
+        }
+
+        let dispatched_before_bulk =
+            pre_priority_inbound_dispatched.saturating_add(priority_outbound_dispatched);
+        let inbound_dispatched =
+            self.dispatch_available_into(limit.saturating_sub(dispatched_before_bulk), open_work);
+        let outbound_dispatched = self.dispatch_outbound_available_into(
+            limit.saturating_sub(dispatched_before_bulk + inbound_dispatched),
+            seal_work,
+        );
 
         let leading_priority_seals = seal_work
             .iter()
             .take_while(|work| work.reservation.lane == Lane::Priority)
             .count();
         for work in seal_work.drain(..leading_priority_seals) {
-            let reservation = work.reservation.clone();
-            let completion = match self.owner_crypto_keys(reservation.owner) {
-                Some(keys) => match AeadSealWork::from_outbound_work(work, keys.seal) {
-                    Ok(work) => sealed.execute(work),
-                    Err(_) => CryptoCompletion {
-                        reservation,
-                        result: CryptoResult::Failed(CryptoFailureKind::Seal),
-                    },
-                },
-                None => CryptoCompletion {
-                    reservation,
-                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
-                },
-            };
+            let completion = self.execute_seal_work(work, &sealed);
             retired.extend(self.retire_completion(completion));
         }
 
-        let mut fsp_worker_open = 0u64;
-        let mut fsp_worker_open_bulk = 0u64;
+        self.execute_open_work_batch(
+            open_work,
+            &opened,
+            retired,
+            &mut fsp_worker_open,
+            &mut fsp_worker_open_bulk,
+        );
+        record_fsp_worker_open_dispatch(fsp_worker_open, fsp_worker_open_bulk);
+
+        for work in seal_work.drain(..) {
+            let completion = self.execute_seal_work(work, &sealed);
+            retired.extend(self.retire_completion(completion));
+        }
+
+        drops.extend(self.drain_drops());
+        pre_priority_inbound_dispatched
+            + priority_outbound_dispatched
+            + inbound_dispatched
+            + outbound_dispatched
+    }
+
+    pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
+        std::mem::take(&mut self.drops)
+    }
+
+    fn execute_seal_work(
+        &mut self,
+        work: OutboundCryptoWork,
+        sealed: &StatelessAeadSealWorker,
+    ) -> CryptoCompletion {
+        let reservation = work.reservation.clone();
+        match self.owner_crypto_keys(reservation.owner) {
+            Some(keys) => match AeadSealWork::from_outbound_work(work, keys.seal) {
+                Ok(work) => sealed.execute(work),
+                Err(_) => CryptoCompletion {
+                    reservation,
+                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
+                },
+            },
+            None => CryptoCompletion {
+                reservation,
+                result: CryptoResult::Failed(CryptoFailureKind::Seal),
+            },
+        }
+    }
+
+    fn execute_open_work_batch(
+        &mut self,
+        open_work: &mut Vec<CryptoWork>,
+        opened: &StatelessAeadOpenWorker,
+        retired: &mut Vec<RetiredPacket>,
+        fsp_worker_open: &mut u64,
+        fsp_worker_open_bulk: &mut u64,
+    ) {
         for work in open_work.drain(..) {
             let reservation = work.reservation.clone();
-            count_fsp_worker_open_dispatch(
-                &reservation,
-                &mut fsp_worker_open,
-                &mut fsp_worker_open_bulk,
-            );
+            count_fsp_worker_open_dispatch(&reservation, fsp_worker_open, fsp_worker_open_bulk);
             let completion = match self.owner_crypto_keys(reservation.owner) {
                 Some(keys) => match AeadOpenWork::from_crypto_work(work, keys.open) {
                     Ok(work) => opened.execute(work),
@@ -315,32 +425,6 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             };
             retired.extend(self.retire_completion(completion));
         }
-        record_fsp_worker_open_dispatch(fsp_worker_open, fsp_worker_open_bulk);
-
-        for work in seal_work.drain(..) {
-            let reservation = work.reservation.clone();
-            let completion = match self.owner_crypto_keys(reservation.owner) {
-                Some(keys) => match AeadSealWork::from_outbound_work(work, keys.seal) {
-                    Ok(work) => sealed.execute(work),
-                    Err(_) => CryptoCompletion {
-                        reservation,
-                        result: CryptoResult::Failed(CryptoFailureKind::Seal),
-                    },
-                },
-                None => CryptoCompletion {
-                    reservation,
-                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
-                },
-            };
-            retired.extend(self.retire_completion(completion));
-        }
-
-        drops.extend(self.drain_drops());
-        inbound_dispatched + outbound_dispatched
-    }
-
-    pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
-        std::mem::take(&mut self.drops)
     }
 
     #[cfg(test)]
@@ -352,6 +436,22 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
     fn outbound_queue_lens(&self) -> (usize, usize) {
         self.outbound_admission.lens()
     }
+}
+
+fn outbound_priority_dispatch_limit(limit: usize, has_priority_pending: bool) -> usize {
+    if !has_priority_pending || limit == 0 {
+        return 0;
+    }
+
+    limit.min((limit / 32).max(1)).min(8)
+}
+
+fn inbound_before_outbound_priority_limit(limit: usize, outbound_priority_reserve: usize) -> usize {
+    if outbound_priority_reserve == 0 {
+        return 0;
+    }
+
+    limit.saturating_sub(outbound_priority_reserve).min(1)
 }
 
 fn count_fsp_worker_open_dispatch(
