@@ -101,6 +101,7 @@ pub(in crate::node) use support_state::{
     BootstrapTransports, DiscoveryFallbackTransit, LocalSendFailures, SessionDirectDegradation,
 };
 
+#[cfg(test)]
 use self::decrypt_worker::DecryptSessionKey;
 use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
@@ -332,8 +333,10 @@ pub struct Node {
     /// per-worker mpsc senders and round-robins jobs across them.
     /// See `node::encrypt_worker` for the rationale and layout.
     encrypt_workers: Option<encrypt_worker::EncryptWorkerPool>,
-    /// Off-task FMP + FSP decrypt + delivery worker pool. Mirror of
-    /// `encrypt_workers` for the receive side.
+    /// Legacy off-task FMP + FSP decrypt + delivery worker pool. packet_mover2
+    /// owns production receive; this pool remains only for old direct handler
+    /// tests until those are retired.
+    #[cfg(test)]
     decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
     /// Decrypt-worker return channel. Compact authenticated receive metadata,
     /// direct local FSP completions, and fallback plaintext all return here so

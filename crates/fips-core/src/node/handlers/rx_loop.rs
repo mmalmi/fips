@@ -1,4 +1,4 @@
-//! RX event loop and packet dispatch.
+//! RX event loop and packet_mover2 dispatch.
 
 use crate::control::queries;
 use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
@@ -17,6 +17,7 @@ use tracing::{debug, info, warn};
 mod budget;
 mod drain;
 mod packet_mover2_scratch;
+#[cfg(test)]
 mod packet_process;
 
 #[cfg(test)]

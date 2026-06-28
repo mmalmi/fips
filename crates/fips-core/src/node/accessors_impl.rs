@@ -59,13 +59,16 @@ impl Node {
         // state in one step. Rekey drain depends on seeing the NEW index that
         // was already installed for the same peer.
         let removed_index = self.peers.remove_session_index_with_owner_state(&cache_key);
-        let session_key = DecryptSessionKey::from(cache_key);
-        if self
-            .sessions
-            .unregister_worker_session_if_registered(&session_key)
-            && let Some(workers) = self.decrypt_workers.as_ref()
+        #[cfg(test)]
         {
-            workers.unregister_session(session_key);
+            let session_key = DecryptSessionKey::from(cache_key);
+            if self
+                .sessions
+                .unregister_worker_session_if_registered(&session_key)
+                && let Some(workers) = self.decrypt_workers.as_ref()
+            {
+                workers.unregister_session(session_key);
+            }
         }
         let _ = removed_index;
     }

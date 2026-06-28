@@ -4,6 +4,7 @@ use super::*;
 #[derive(Default)]
 pub(in crate::node) struct SessionRegistry {
     sessions: HashMap<NodeAddr, SessionEntry>,
+    #[cfg(test)]
     worker_registrations: DecryptSessionRegistrations,
 }
 
@@ -203,6 +204,7 @@ impl SessionRegistry {
             .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn record_worker_registration(
         &mut self,
         session_key: DecryptSessionKey,
@@ -212,6 +214,7 @@ impl SessionRegistry {
             .record_worker_registration(session_key, accepted)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn unregister_worker_session_if_registered(
         &mut self,
         session_key: &DecryptSessionKey,
@@ -220,6 +223,7 @@ impl SessionRegistry {
             .unregister_if_registered(session_key)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn is_worker_registered(&self, session_key: &DecryptSessionKey) -> bool {
         self.worker_registrations.is_registered(session_key)
     }
@@ -240,11 +244,13 @@ impl<'a> IntoIterator for &'a SessionRegistry {
 }
 
 /// Rx-loop mirror of sessions accepted by decrypt-worker shards.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub(in crate::node) struct DecryptSessionRegistrations {
     sessions: HashSet<DecryptSessionKey>,
 }
 
+#[cfg(test)]
 impl DecryptSessionRegistrations {
     pub(in crate::node) fn record_worker_registration(
         &mut self,

@@ -112,6 +112,7 @@ impl Node {
             #[cfg(unix)]
             endpoint_bulk_send_runtime: None,
             encrypt_workers: None,
+            #[cfg(test)]
             decrypt_workers: None,
             decrypt_fallback_tx,
             decrypt_fallback_rx,
@@ -261,6 +262,7 @@ impl Node {
             #[cfg(unix)]
             endpoint_bulk_send_runtime: None,
             encrypt_workers: None,
+            #[cfg(test)]
             decrypt_workers: None,
             decrypt_fallback_tx,
             decrypt_fallback_rx,

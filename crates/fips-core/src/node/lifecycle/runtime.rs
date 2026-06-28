@@ -67,13 +67,12 @@ impl Node {
         }
 
         // Spawn the off-task FMP-encrypt + UDP-send worker pool on Unix.
-        // The decrypt worker pool is mandatory for established receive and
-        // is spawned below even when the send-side worker pool is disabled.
+        // Established receive is owned by packet_mover2 in production; the
+        // legacy decrypt worker pool is only kept alive for tests that call
+        // old encrypted-frame handlers directly.
         //
         // Worker count defaults to the number of CPUs, overridable via
-        // `FIPS_ENCRYPT_WORKERS=N` / `FIPS_DECRYPT_WORKERS=N` for debug /
-        // benchmarking. A zero decrypt-worker count is clamped to one worker;
-        // it is a sizing knob, not an alternate inline-decrypt mode.
+        // `FIPS_ENCRYPT_WORKERS=N` for debug/benchmarking.
         #[cfg(unix)]
         {
             let cpu_default = std::thread::available_parallelism()
@@ -99,6 +98,7 @@ impl Node {
                 node_start_debug_log("Node::start worker pools disabled");
                 info!("FIPS encrypt worker pool disabled; using in-line send path");
             }
+            #[cfg(test)]
             self.ensure_decrypt_worker_pool(cpu_default);
         }
 

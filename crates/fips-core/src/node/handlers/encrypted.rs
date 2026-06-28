@@ -1,12 +1,9 @@
 //! Encrypted frame handling (hot path).
 //!
-//! Every authentic packet on an established session is dispatched to
-//! the decrypt-worker shard pool — there is **no in-line decrypt
-//! path** in this handler anymore. Sessions are registered with the
-//! worker at FMP-establishment (see `register_decrypt_worker_session`,
-//! invoked from `handlers/handshake.rs::promote_connection`), so the
-//! shard owns the recv-side state from the moment a peer becomes
-//! reachable.
+//! Production established receive is owned by packet_mover2. The legacy
+//! direct encrypted-frame entry points in this file are retained for old
+//! tests while session establishment calls mirror FMP/FSP owner state into
+//! packet_mover2.
 //!
 //! The rx_loop's decrypt-worker return arms apply the compact receive
 //! bookkeeping or authenticated FMP plaintext that still needs link dispatch.
@@ -14,12 +11,18 @@
 //! liveness, link stats, path rotation, and MMP receive metrics in one
 //! lifecycle owner.
 
-use crate::node::decrypt_worker::{DecryptFailureReport, DecryptJob, DecryptSessionKey};
+use crate::node::decrypt_worker::DecryptFailureReport;
+#[cfg(test)]
+use crate::node::decrypt_worker::{DecryptJob, DecryptSessionKey};
+#[cfg(test)]
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
 use crate::node::{AuthenticatedFmpPlaintext, Node, PeerRuntimeReceive, PeerRuntimeReceiveError};
+#[cfg(test)]
 use crate::transport::ReceivedPacket;
 use std::time::Instant;
-use tracing::{debug, info, trace, warn};
+#[cfg(test)]
+use tracing::info;
+use tracing::{debug, trace, warn};
 
 /// Start link-session recovery after this many consecutive FMP AEAD failures.
 const DECRYPT_FAILURE_THRESHOLD: u32 = 4;
@@ -42,6 +45,7 @@ enum DecryptFailureAction {
     RemovePeer { consecutive_failures: u32 },
 }
 
+#[cfg(test)]
 pub(in crate::node) enum EncryptedFrameFastPath {
     Dispatch(DecryptJob),
     Dropped,
@@ -49,6 +53,7 @@ pub(in crate::node) enum EncryptedFrameFastPath {
 }
 
 impl Node {
+    #[cfg(test)]
     pub(in crate::node) fn decrypt_worker_count(default: usize) -> usize {
         std::env::var("FIPS_DECRYPT_WORKERS")
             .ok()
@@ -57,6 +62,7 @@ impl Node {
             .max(1)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn ensure_decrypt_worker_pool(
         &mut self,
         default_workers: usize,
@@ -81,6 +87,7 @@ impl Node {
             .clone()
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn try_prepare_encrypted_frame_for_worker(
         &mut self,
         packet: ReceivedPacket,
@@ -197,6 +204,7 @@ impl Node {
         self.decrypt_fallback_rx = Some(rx);
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn handle_encrypted_frame_rekey_trial(
         &mut self,
         packet: ReceivedPacket,
@@ -382,20 +390,17 @@ impl Node {
         self.dispatch_link_message(link_message).await;
     }
 
-    /// Register a peer's recv state with the decrypt-worker shard
-    /// **eagerly at FSP-session establishment**. After this call the
-    /// worker becomes the sole replay-window writer for the session
-    /// and rx_loop's legacy in-line decrypt is no longer used for
-    /// this peer.
-    ///
-    /// Called from the FSP-session-established sites in
-    /// `handlers/session.rs` (both initiator and responder). No-op if
-    /// the session state can't be built yet (peer gone, FSP not yet
-    /// promoted to Established) — the caller can retry on a later
-    /// event. Idempotent: re-registering the same cache_key
-    /// overwrites the worker's entry, which is the correct behaviour
-    /// for rekey.
+    /// Mirror a peer's FMP state into packet_mover2. The legacy decrypt-worker
+    /// registration remains test-only while old direct encrypted-frame tests
+    /// still exist.
+    #[cfg(not(test))]
     pub(in crate::node) fn register_decrypt_worker_session(&mut self, node_addr: &crate::NodeAddr) {
+        self.sync_packet_mover2_fmp_owner(node_addr);
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn register_decrypt_worker_session(&mut self, node_addr: &crate::NodeAddr) {
+        self.sync_packet_mover2_fmp_owner(node_addr);
         let workers = self.ensure_decrypt_worker_pool(1);
         let (session_key, state) = {
             let Some(peer) = self.peers.get(node_addr) else {
@@ -422,6 +427,15 @@ impl Node {
             .record_worker_registration(session_key, accepted);
     }
 
+    #[cfg(not(test))]
+    pub(in crate::node) fn register_decrypt_worker_fsp_session(
+        &mut self,
+        node_addr: &crate::NodeAddr,
+    ) {
+        self.sync_packet_mover2_fsp_owner(node_addr);
+    }
+
+    #[cfg(test)]
     pub(in crate::node) fn register_decrypt_worker_fsp_session(
         &mut self,
         node_addr: &crate::NodeAddr,
@@ -445,6 +459,7 @@ impl Node {
     ) {
         self.remove_packet_mover2_fsp_owner(node_addr);
 
+        #[cfg(test)]
         if let Some(workers) = self.decrypt_workers.as_ref() {
             let _ = workers.unregister_fsp_session(*node_addr);
         }
@@ -460,6 +475,7 @@ impl Node {
     /// the session handshake/rekey reaches an FSP-ready state. This lets FMP
     /// registration happen as soon as the link Noise handshake completes
     /// without pretending the end-to-end receive state is available yet.
+    #[cfg(test)]
     fn build_owned_session_state(
         &self,
         node_addr: &crate::NodeAddr,
@@ -476,6 +492,7 @@ impl Node {
         ))
     }
 
+    #[cfg(test)]
     fn record_decrypt_worker_unowned_packet_drop(
         &self,
         node_addr: &crate::NodeAddr,

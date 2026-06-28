@@ -1,8 +1,10 @@
-use crate::node::decrypt_worker::{DecryptJob, DecryptWorkerFallbackReceivers};
-use crate::transport::ReceivedPacket;
+use crate::node::decrypt_worker::DecryptWorkerFallbackReceivers;
+#[cfg(test)]
+use crate::{node::decrypt_worker::DecryptJob, transport::ReceivedPacket};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 
+#[cfg(test)]
 pub(super) enum PacketProcessAction {
     Done,
     DecryptJob {
