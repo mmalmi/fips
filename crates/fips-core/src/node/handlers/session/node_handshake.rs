@@ -327,7 +327,7 @@ impl Node {
                 now_ms,
                 resend_interval,
             );
-            self.register_decrypt_worker_fsp_session(src_addr);
+            self.register_packet_mover2_fsp_owner(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -432,7 +432,7 @@ impl Node {
             self.config.node.session.coords_warmup_packets,
             &self.config.node.session_mmp,
         );
-        self.register_decrypt_worker_fsp_session(src_addr);
+        self.register_packet_mover2_fsp_owner(src_addr);
         self.coord_cache.insert(*src_addr, ack.src_coords, now_ms);
 
         // Flush any queued outbound packets for this destination
@@ -547,7 +547,7 @@ impl Node {
 
             self.sessions
                 .install_rekey_responder_pending_session(*src_addr, entry, session);
-            self.register_decrypt_worker_fsp_session(src_addr);
+            self.register_packet_mover2_fsp_owner(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -604,7 +604,7 @@ impl Node {
             self.config.node.session.coords_warmup_packets,
             &self.config.node.session_mmp,
         );
-        self.register_decrypt_worker_fsp_session(src_addr);
+        self.register_packet_mover2_fsp_owner(src_addr);
 
         // Flush any pending packets
         self.flush_pending_packets(src_addr).await;

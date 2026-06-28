@@ -526,12 +526,8 @@ impl Node {
 
         // Execute cutover for initiator side
         for node_addr in plan.cutover {
-            // Re-register the (now-current) FMP session with the
-            // decrypt worker shard. Without this, the worker's
-            // owned cipher + replay state stays pinned to the
-            // pre-rekey session and post-cutover packets miss the
-            // worker entirely. See the matching comment in
-            // `handle_encrypted_frame`'s K-bit-flip branch.
+            // Refresh the packet_mover2 FMP owner with the now-current
+            // session so owner crypto/replay state follows the cutover.
             if self
                 .peers
                 .cutover_due_fmp_rekey(&node_addr, Duration::from_millis(FMP_CUTOVER_DELAY_MS))
@@ -541,7 +537,7 @@ impl Node {
                     "Rekey cutover complete (initiator), K-bit flipped"
                 );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
-                self.register_decrypt_worker_session(&node_addr);
+                self.register_packet_mover2_fmp_owner(&node_addr);
             }
         }
 
@@ -557,11 +553,8 @@ impl Node {
                     "Drain complete, previous session erased"
                 );
                 // Drop the old session index through `deregister_session_
-                // index` rather than registry removal directly so
-                // the decrypt worker also evicts the old session's owned
-                // cipher + replay state. Pre-fix the worker held onto
-                // the old entry forever, wasting a HashMap slot per
-                // rekey for the peer's lifetime.
+                // index` rather than registry removal directly so stale
+                // receive indexes are retired consistently after drain.
                 if let Some(transport_id) = drained.transport_id {
                     self.deregister_session_index((transport_id, drained.old_our_index.as_u32()));
                     let _ = self.index_allocator.free(drained.old_our_index);
@@ -816,7 +809,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP rekey cutover complete (initiator), K-bit flipped"
                 );
-                self.register_decrypt_worker_fsp_session(&node_addr);
+                self.register_packet_mover2_fsp_owner(&node_addr);
             }
         }
 
@@ -830,7 +823,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP drain complete, previous session erased"
                 );
-                self.register_decrypt_worker_fsp_session(&node_addr);
+                self.register_packet_mover2_fsp_owner(&node_addr);
             }
         }
 

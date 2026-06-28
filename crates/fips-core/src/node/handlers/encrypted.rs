@@ -5,11 +5,10 @@
 //! tests while session establishment calls mirror FMP/FSP owner state into
 //! packet_mover2.
 //!
-//! The rx_loop's decrypt-worker return arms apply the compact receive
-//! bookkeeping or authenticated FMP plaintext that still needs link dispatch.
-//! Peer receive bookkeeping then goes through `PeerLifecycleRegistry`, keeping
-//! liveness, link stats, path rotation, and MMP receive metrics in one
-//! lifecycle owner.
+//! Test-only decrypt-worker return arms still apply compact receive
+//! bookkeeping for old direct-handler tests. Production receive goes through
+//! packet_mover2 and then `PeerLifecycleRegistry`, keeping liveness, link
+//! stats, path rotation, and MMP receive metrics in one lifecycle owner.
 
 use crate::node::decrypt_worker::DecryptFailureReport;
 #[cfg(test)]
@@ -280,12 +279,12 @@ impl Node {
                 // dropped silently in `handle_job` or, if the worker
                 // had never been registered for this peer at all, fell
                 // through to the in-line legacy path on rx_loop for
-                // the lifetime of the new session. Re-register here so
-                // the worker observes the rekey and the bulk receive
-                // path keeps using it.
+                // the lifetime of the new session. Refresh the owner mirror
+                // here so packet_mover2, and the test-only worker mirror,
+                // observe the rekey.
                 if did_flip {
                     self.ensure_current_session_index_registered(&node_addr, "peer K-bit flip");
-                    self.register_decrypt_worker_session(&node_addr);
+                    self.register_packet_mover2_fmp_owner(&node_addr);
                 }
                 let Some(source_peer) = self.peers.get(&node_addr).map(|peer| *peer.identity())
                 else {
@@ -394,12 +393,18 @@ impl Node {
     /// registration remains test-only while old direct encrypted-frame tests
     /// still exist.
     #[cfg(not(test))]
-    pub(in crate::node) fn register_decrypt_worker_session(&mut self, node_addr: &crate::NodeAddr) {
+    pub(in crate::node) fn register_packet_mover2_fmp_owner(
+        &mut self,
+        node_addr: &crate::NodeAddr,
+    ) {
         self.sync_packet_mover2_fmp_owner(node_addr);
     }
 
     #[cfg(test)]
-    pub(in crate::node) fn register_decrypt_worker_session(&mut self, node_addr: &crate::NodeAddr) {
+    pub(in crate::node) fn register_packet_mover2_fmp_owner(
+        &mut self,
+        node_addr: &crate::NodeAddr,
+    ) {
         self.sync_packet_mover2_fmp_owner(node_addr);
         let workers = self.ensure_decrypt_worker_pool(1);
         let (session_key, state) = {
@@ -428,7 +433,7 @@ impl Node {
     }
 
     #[cfg(not(test))]
-    pub(in crate::node) fn register_decrypt_worker_fsp_session(
+    pub(in crate::node) fn register_packet_mover2_fsp_owner(
         &mut self,
         node_addr: &crate::NodeAddr,
     ) {
@@ -436,7 +441,7 @@ impl Node {
     }
 
     #[cfg(test)]
-    pub(in crate::node) fn register_decrypt_worker_fsp_session(
+    pub(in crate::node) fn register_packet_mover2_fsp_owner(
         &mut self,
         node_addr: &crate::NodeAddr,
     ) {
@@ -453,7 +458,7 @@ impl Node {
         let _accepted = workers.register_fsp_session(*node_addr, snapshot);
     }
 
-    pub(in crate::node) fn unregister_decrypt_worker_fsp_session(
+    pub(in crate::node) fn unregister_packet_mover2_fsp_owner(
         &mut self,
         node_addr: &crate::NodeAddr,
     ) {

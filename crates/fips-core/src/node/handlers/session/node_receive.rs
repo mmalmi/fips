@@ -26,7 +26,7 @@ impl Node {
             entry.apply_fsp_receive_sync_result(sync, Self::now_ms(), now)
         };
         if apply.refresh_worker_session() {
-            self.register_decrypt_worker_fsp_session(&source_addr);
+            self.register_packet_mover2_fsp_owner(&source_addr);
         }
         apply.is_applied()
     }
@@ -209,7 +209,7 @@ impl Node {
                 return;
             }
         };
-        self.register_decrypt_worker_fsp_session(src_addr);
+        self.register_packet_mover2_fsp_owner(src_addr);
         let dispatch = AuthenticatedSessionDispatch::new(
             *src_addr,
             *delivery.previous_hop_addr(),

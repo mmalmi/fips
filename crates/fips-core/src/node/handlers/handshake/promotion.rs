@@ -119,7 +119,7 @@ impl Node {
                 }
 
                 if remote_epoch_changed {
-                    self.unregister_decrypt_worker_fsp_session(&peer_node_addr);
+                    self.unregister_packet_mover2_fsp_owner(&peer_node_addr);
                     if self.sessions.remove(&peer_node_addr).is_some() {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
@@ -174,14 +174,10 @@ impl Node {
                 );
                 self.register_identity(peer_node_addr, verified_identity.pubkey_full());
 
-                // Hand the new FMP recv state to the decrypt-worker
-                // shard. The sibling "no existing peer" branch below
-                // already does this on initial promotion; the
-                // existing-peer replace branch was missing it, so a
-                // cross-connection winner ended up never registered
-                // with the worker and dropped established packets until a
-                // later session event happened to retry registration.
-                self.register_decrypt_worker_session(&peer_node_addr);
+                // Refresh the packet_mover2 FMP owner after cross-connection
+                // replacement. The sibling "no existing peer" branch below
+                // already does this on initial promotion.
+                self.register_packet_mover2_fmp_owner(&peer_node_addr);
 
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),
@@ -292,10 +288,10 @@ impl Node {
             );
             self.register_identity(peer_node_addr, verified_identity.pubkey_full());
 
-            // Eagerly hand the FMP recv state to the decrypt-worker
-            // shard. From this point on the shard is the
-            // authoritative FMP-replay-window writer for this peer.
-            self.register_decrypt_worker_session(&peer_node_addr);
+            // Eagerly hand the FMP recv state to the packet_mover2 owner.
+            // From this point on the owner is the authoritative
+            // FMP-replay-window writer for this peer.
+            self.register_packet_mover2_fmp_owner(&peer_node_addr);
 
             info!(
                 peer = %self.peer_display_name(&peer_node_addr),
