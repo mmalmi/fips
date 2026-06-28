@@ -4,7 +4,7 @@
         let open_key = 75;
         let seal_key = 76;
         let path = TransportPath::new(8600);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(3, 8).with_next_send_counter(700));
         driver
             .owner_mut(owner)
@@ -122,7 +122,7 @@
         let transport_id = TransportId::new(87);
         let remote_addr = TransportAddr::from_string("198.51.100.87:9000");
         let path = TransportPath::live(transport_id, remote_addr.clone());
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(8700));
         driver
             .owner_mut(owner)
@@ -161,7 +161,7 @@
         let owner = OwnerId::fmp(83);
         let key = 71;
         let path = TransportPath::new(8300);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(400));
         driver
             .owner_mut(owner)
@@ -228,7 +228,7 @@
         let owner = OwnerId::fsp(88);
         let key = 88;
         let payload = priority_endpoint_payload();
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
         driver
             .owner_mut(owner)
@@ -259,7 +259,7 @@
     fn runtime_output_sink_reports_failures_without_retrying() {
         let owner = OwnerId::fsp(84);
         let key = 72;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
         driver
             .owner_mut(owner)

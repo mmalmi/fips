@@ -3,7 +3,7 @@
     use ring::aead::UnboundKey;
 
     fn mover() -> PacketMover2 {
-        PacketMover2::new(AdmissionConfig::new(4, 8), CopyCryptoWorker)
+        PacketMover2::new(AdmissionConfig::new(4, 8))
     }
 
     fn packet(

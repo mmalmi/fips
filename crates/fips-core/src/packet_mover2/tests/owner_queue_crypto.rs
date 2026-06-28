@@ -200,7 +200,7 @@
     #[test]
     fn priority_admission_keeps_reserved_progress_when_bulk_is_full() {
         let owner = OwnerId::fsp(1);
-        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1), CopyCryptoWorker);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1));
         mover.register_owner(owner, OwnerConfig::new(1, 8));
 
         mover
@@ -243,7 +243,7 @@
     #[test]
     fn turn_runner_batches_admission_and_reuses_work_buffer() {
         let owner = OwnerId::fsp(11);
-        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 4), CopyCryptoWorker);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 4));
         mover.register_owner(owner, OwnerConfig::new(1, 8));
         let summary = mover.submit_socket_batch([
             packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun),
@@ -329,7 +329,7 @@
     #[test]
     fn owner_defers_in_flight_overflow_and_still_rejects_replay() {
         let owner = OwnerId::fsp(3);
-        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4), CopyCryptoWorker);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
         mover.register_owner(owner, OwnerConfig::new(1, 1));
 
         mover
@@ -726,7 +726,7 @@
     fn outbound_owner_spends_fsp_coords_warmup_on_reserved_packets() {
         let owner = OwnerId::fsp(89);
         let coords_prefix = empty_fsp_coords_prefix();
-        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4), CopyCryptoWorker);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
         mover.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_fsp_coords_warmup(1, coords_prefix.clone()),
@@ -767,7 +767,7 @@
     #[test]
     fn outbound_owner_reserves_counters_after_priority_overtakes_bulk() {
         let owner = OwnerId::fsp(33);
-        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1), CopyCryptoWorker);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1));
         mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(40));
 
         mover
@@ -815,7 +815,7 @@
     fn outbound_owner_uses_shared_send_counter_authority() {
         let owner = OwnerId::fsp(34);
         let authority = crate::noise::SendCounterAuthority::new_for_test(90);
-        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4), CopyCryptoWorker);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
         mover.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_send_counter_authority(authority.clone()),
@@ -850,7 +850,7 @@
         let stale_authority = crate::noise::SendCounterAuthority::new_for_test(35);
         let refreshed_authority = crate::noise::SendCounterAuthority::new_for_test(350);
         let coords_prefix = empty_fsp_coords_prefix();
-        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4), CopyCryptoWorker);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
         mover.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_send_counter_authority(stale_authority),

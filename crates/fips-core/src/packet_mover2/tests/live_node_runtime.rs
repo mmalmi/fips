@@ -29,7 +29,7 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
         live_node.register_owner(
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(760),
@@ -655,7 +655,7 @@
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let key = 47;
         let fixture_path = TransportPath::new(4700);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(470));
         driver
             .owner_mut(owner)
@@ -696,7 +696,7 @@
         let owner = OwnerId::fmp(81);
         let open_key = 51;
         let path = TransportPath::new(9005);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(7, 8));
         driver
             .owner_mut(owner)
@@ -743,7 +743,7 @@
     fn runtime_raw_ingress_turn_drops_wire_and_unrouted_packets_before_admission() {
         let owner = OwnerId::fsp(82);
         let path = TransportPath::new(9105);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
         let bad_wire = PacketMover2RawIngress::from_received(
             PacketProtocol::Fmp,
@@ -800,7 +800,7 @@
         let open_key = 73;
         let seal_key = 74;
         let path = TransportPath::new(9005);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(7, 8).with_next_send_counter(500));
         driver
             .owner_mut(owner)

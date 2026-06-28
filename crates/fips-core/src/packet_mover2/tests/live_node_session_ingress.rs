@@ -40,7 +40,7 @@
         let fmp_wire = fmp_encrypted_wire(0xa7, fmp_counter, fmp_flags, &fmp_plaintext, fmp_key);
         let fmp_wire_len = fmp_wire.len();
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
         driver
@@ -175,7 +175,7 @@
         let fmp_wire = fmp_encrypted_wire(0xb1, fmp_counter, fmp_flags, &fmp_plaintext, fmp_key);
         let fmp_wire_len = fmp_wire.len();
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
         driver
             .owner_mut(fmp_owner)
@@ -273,7 +273,7 @@
         let fmp_wire = fmp_encrypted_wire(0xb5, fmp_counter, fmp_flags, &fmp_plaintext, fmp_key);
         let fmp_wire_len = fmp_wire.len();
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
         driver
             .owner_mut(fmp_owner)

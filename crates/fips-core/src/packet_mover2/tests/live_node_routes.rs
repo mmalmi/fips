@@ -7,7 +7,7 @@
         let transport_b = TransportId::new(92);
         let remote_addr = TransportAddr::from_string("198.51.100.91:9000");
         let mut live_node =
-            PacketMover2LiveNode::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+            PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
 
         assert_eq!(
             live_node.replace_owner_routes(owner, PacketMover2LiveOwnerRoutes::new()),
@@ -141,7 +141,7 @@
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x93; 16]));
         let active_path = TransportPath::new(93);
         let mut live_node =
-            PacketMover2LiveNode::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+            PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
 
         assert!(live_node.register_owner_if_missing(
             owner,
@@ -192,7 +192,7 @@
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut live_node =
-            PacketMover2LiveNode::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+            PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
         live_node.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_next_send_counter(93_000),

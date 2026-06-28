@@ -196,7 +196,7 @@
         let transport_id = TransportId::new(43);
         let remote_addr = TransportAddr::from_string("198.51.100.43:9000");
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fmp_owner, OwnerConfig::new(11, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(12, 8));
         driver
@@ -296,7 +296,7 @@
         let transport_id = TransportId::new(45);
         let remote_addr = TransportAddr::from_string("198.51.100.45:9000");
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(700),
@@ -428,7 +428,7 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(740),
@@ -582,7 +582,7 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
         driver
             .owner_mut(fmp_owner)

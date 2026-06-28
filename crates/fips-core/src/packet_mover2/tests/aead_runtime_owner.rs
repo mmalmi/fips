@@ -69,7 +69,7 @@
         let fmp_key = 22;
         let fmp_path = TransportPath::new(2200);
         let mut driver =
-            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(70));
         driver
@@ -172,7 +172,7 @@
         let fmp_key = 32;
         let fmp_path = TransportPath::new(3200);
         let mut driver =
-            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(90));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(100));
         driver
@@ -599,7 +599,7 @@
         let open_key = 31;
         let seal_key = 32;
         let path = TransportPath::new(7800);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(300));
         driver
             .owner_mut(owner)
@@ -666,7 +666,7 @@
     #[test]
     fn runtime_turn_driver_reports_admission_and_crypto_drops() {
         let owner = OwnerId::fsp(79);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(1, 1), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(1, 1));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
 
         let first = SocketPacket::from_fsp_established_wire(
@@ -721,7 +721,7 @@
     fn runtime_turn_driver_reuses_work_and_output_buffers() {
         let owner = OwnerId::fsp(80);
         let key = 41;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(20));
         driver
             .owner_mut(owner)
