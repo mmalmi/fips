@@ -18,8 +18,9 @@
 //! bytes and return completions; owners retire those completions in order.
 
 use crate::node::{
-    EndpointCommandLane, EndpointDataSend, EndpointEventSender, EndpointSendBatchCommand,
-    EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
+    ENDPOINT_EVENT_PRIORITY_MAX_LEN, EndpointCommandLane, EndpointDataDelivery, EndpointDataSend,
+    EndpointEventSender, EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand,
+    NodeEndpointEvent,
 };
 use crate::transport::{
     PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,
