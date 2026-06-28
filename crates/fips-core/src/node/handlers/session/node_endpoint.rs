@@ -89,6 +89,122 @@ impl Node {
         }
     }
 
+    pub(in crate::node) async fn handle_packet_mover2_deferred_endpoint_command(
+        &mut self,
+        command: NodeEndpointCommand,
+    ) {
+        match command {
+            NodeEndpointCommand::Send {
+                command,
+                response_tx,
+            } => {
+                let result = self
+                    .queue_packet_mover2_unrouted_endpoint_send(command)
+                    .await;
+                let _ = response_tx.send(result);
+            }
+            NodeEndpointCommand::SendOneway { command } => {
+                let _ = self
+                    .queue_packet_mover2_unrouted_endpoint_send(command)
+                    .await;
+            }
+            NodeEndpointCommand::SendBatchOneway { command, .. } => {
+                self.queue_packet_mover2_unrouted_endpoint_batch(command)
+                    .await;
+            }
+            other => self.handle_endpoint_data_command(other).await,
+        }
+    }
+
+    async fn queue_packet_mover2_unrouted_endpoint_send(
+        &mut self,
+        command: EndpointSendCommand,
+    ) -> Result<(), NodeError> {
+        let (send, _) = command.into_parts();
+        let dest_addr = send.dest_addr();
+        let dest_pubkey = send.dest_pubkey();
+        self.register_identity(dest_addr, dest_pubkey);
+        self.queue_packet_mover2_unrouted_endpoint_payloads(
+            dest_addr,
+            dest_pubkey,
+            vec![send.into_payload()],
+        )
+        .await
+    }
+
+    async fn queue_packet_mover2_unrouted_endpoint_batch(
+        &mut self,
+        command: EndpointSendBatchCommand,
+    ) {
+        let (remote, payloads, _) = command.into_parts();
+        let dest_addr = *remote.node_addr();
+        let dest_pubkey = remote.pubkey_full();
+        self.register_identity(dest_addr, dest_pubkey);
+        let _ = self
+            .queue_packet_mover2_unrouted_endpoint_payloads(dest_addr, dest_pubkey, payloads)
+            .await;
+    }
+
+    async fn queue_packet_mover2_unrouted_endpoint_payloads(
+        &mut self,
+        dest_addr: NodeAddr,
+        dest_pubkey: secp256k1::PublicKey,
+        payloads: Vec<EndpointDataPayload>,
+    ) -> Result<(), NodeError> {
+        if payloads.is_empty() {
+            return Ok(());
+        }
+
+        match self.sessions.outbound_session_state(&dest_addr) {
+            OutboundSessionState::Established => {
+                for payload in payloads {
+                    self.queue_pending_endpoint_data(dest_addr, payload);
+                }
+                self.maybe_initiate_lookup(&dest_addr).await;
+                Ok(())
+            }
+            OutboundSessionState::Pending => {
+                for payload in payloads {
+                    self.queue_pending_endpoint_data(dest_addr, payload);
+                }
+                let should_discover = self.config.node.routing.mode
+                    == crate::config::RoutingMode::ReplyLearned
+                    || self.find_next_hop(&dest_addr).is_none();
+                if should_discover {
+                    self.maybe_initiate_lookup(&dest_addr).await;
+                }
+                Ok(())
+            }
+            OutboundSessionState::Missing => {
+                if self.find_next_hop(&dest_addr).is_none() {
+                    for payload in payloads {
+                        self.queue_pending_endpoint_data(dest_addr, payload);
+                    }
+                    self.maybe_initiate_lookup(&dest_addr).await;
+                    return Ok(());
+                }
+
+                match self.initiate_session(dest_addr, dest_pubkey).await {
+                    Ok(()) => {}
+                    Err(NodeError::SendFailed { node_addr, reason })
+                        if node_addr == dest_addr && reason == "no route to destination" =>
+                    {
+                        for payload in payloads {
+                            self.queue_pending_endpoint_data(dest_addr, payload);
+                        }
+                        self.maybe_initiate_lookup(&dest_addr).await;
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                }
+                for payload in payloads {
+                    self.queue_pending_endpoint_data(dest_addr, payload);
+                }
+                Ok(())
+            }
+        }
+    }
+
     #[cfg(unix)]
     async fn handle_established_endpoint_send_batch(
         &mut self,

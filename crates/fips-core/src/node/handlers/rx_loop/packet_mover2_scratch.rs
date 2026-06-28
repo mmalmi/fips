@@ -205,7 +205,8 @@ impl Node {
             }
         }
         for command in self.packet_mover2.take_deferred_endpoint_commands() {
-            self.handle_endpoint_data_command(command).await;
+            self.handle_packet_mover2_deferred_endpoint_command(command)
+                .await;
             processed += 1;
         }
         processed
