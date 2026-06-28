@@ -166,7 +166,12 @@ impl AeadSealWork {
                     flags,
                 },
             ) => (
-                build_fmp_established_header(receiver_idx, counter, flags, payload_len).to_vec(),
+                AeadHeader::Fmp(build_fmp_established_header(
+                    receiver_idx,
+                    counter,
+                    flags,
+                    payload_len,
+                )),
                 Vec::new(),
                 FMP_ESTABLISHED_HEADER_SIZE,
             ),
@@ -175,7 +180,7 @@ impl AeadSealWork {
                 validate_fsp_cleartext_prefix(flags, &coord_prefix)?;
                 let ciphertext_offset = FSP_HEADER_SIZE + coord_prefix.len();
                 (
-                    build_fsp_established_header(counter, flags, payload_len)?.to_vec(),
+                    AeadHeader::Fsp(build_fsp_established_header(counter, flags, payload_len)?),
                     coord_prefix,
                     ciphertext_offset,
                 )
@@ -183,17 +188,23 @@ impl AeadSealWork {
             _ => return Err(WireBuildError::ProtocolMismatch),
         };
 
-        let aad_len = header.len();
-        let prefix_len = header
+        let aad = header.as_aad();
+        let aad_len = aad.len();
+        let prefix_len = aad
             .len()
             .saturating_add(coord_prefix.len())
             .saturating_add(inner_prefix.len());
-        let mut prefix = Vec::with_capacity(prefix_len);
-        prefix.extend_from_slice(&header);
-        prefix.extend_from_slice(&coord_prefix);
-        prefix.extend_from_slice(&inner_prefix);
-        work.packet.payload.reserve(prefix_len + AEAD_TAG_SIZE);
-        drop(work.packet.payload.splice(0..0, prefix));
+        let plaintext = std::mem::take(&mut work.packet.payload);
+        let mut payload = Vec::with_capacity(
+            prefix_len
+                .saturating_add(plaintext.len())
+                .saturating_add(AEAD_TAG_SIZE),
+        );
+        payload.extend_from_slice(aad);
+        payload.extend_from_slice(&coord_prefix);
+        payload.extend_from_slice(&inner_prefix);
+        payload.extend_from_slice(&plaintext);
+        work.packet.payload = payload.into();
 
         Ok(Self {
             post_seal: work.packet.post_seal,
