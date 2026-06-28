@@ -7,6 +7,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
     output_rewrite_buffer: Vec<PacketOutput>,
+    wrapped_outbound_receipts: Vec<PacketMover2WrappedOutboundReceipt>,
     retired: Vec<RetiredPacket>,
     transport_output: PacketMover2TransportSendPlanOutput,
     drops: Vec<PacketDrop>,
@@ -26,6 +27,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             output_drops: Vec::new(),
             outputs: Vec::new(),
             output_rewrite_buffer: Vec::new(),
+            wrapped_outbound_receipts: Vec::new(),
             retired: Vec::new(),
             transport_output: PacketMover2TransportSendPlanOutput::new(),
             drops: Vec::new(),
@@ -207,6 +209,9 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         report.set_fmp_link_ingress(std::mem::take(&mut self.fmp_link_ingress));
         report.set_fsp_local_session_ingress(std::mem::take(&mut self.fsp_local_session_ingress));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
+        report.set_wrapped_outbound_receipts(std::mem::take(
+            &mut self.wrapped_outbound_receipts,
+        ));
 
         let plans = transport_output.plans();
         report.transport_planned = plans.len();
@@ -414,6 +419,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     fn reset_turn_buffers(&mut self) {
         self.outputs.clear();
         self.output_rewrite_buffer.clear();
+        self.wrapped_outbound_receipts.clear();
         self.retired.clear();
         self.transport_output.clear();
         self.drops.clear();
@@ -714,7 +720,8 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                         self.outputs.push(output);
                     }
                     RetiredPacket::Outbound(packet) => {
-                        self.admit_outbound_packet(packet, &mut summary);
+                        self.wrapped_outbound_receipts.push(packet.receipt());
+                        self.admit_outbound_packet(packet.into_packet(), &mut summary);
                         generated_outbound = generated_outbound.saturating_add(1);
                     }
                     RetiredPacket::Drop(_) => {}

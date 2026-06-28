@@ -34,7 +34,7 @@ pub(crate) struct CryptoCompletion {
 pub(crate) enum CryptoResult {
     Opened(PacketOutput),
     Sealed(PacketOutput),
-    Outbound(OutboundPacket),
+    Outbound(WrappedOutboundPacket),
     Failed(CryptoFailureKind),
 }
 
@@ -141,10 +141,49 @@ impl PacketOutput {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2WrappedOutboundReceipt {
+    owner: OwnerId,
+    counter: u64,
+}
+
+impl PacketMover2WrappedOutboundReceipt {
+    pub(crate) fn owner(self) -> OwnerId {
+        self.owner
+    }
+
+    pub(crate) fn counter(self) -> u64 {
+        self.counter
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WrappedOutboundPacket {
+    packet: OutboundPacket,
+    receipt: PacketMover2WrappedOutboundReceipt,
+}
+
+impl WrappedOutboundPacket {
+    pub(crate) fn new(packet: OutboundPacket, owner: OwnerId, counter: u64) -> Self {
+        Self {
+            packet,
+            receipt: PacketMover2WrappedOutboundReceipt { owner, counter },
+        }
+    }
+
+    pub(crate) fn receipt(&self) -> PacketMover2WrappedOutboundReceipt {
+        self.receipt
+    }
+
+    pub(crate) fn into_packet(self) -> OutboundPacket {
+        self.packet
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RetiredPacket {
     Output(PacketOutput),
-    Outbound(OutboundPacket),
+    Outbound(WrappedOutboundPacket),
     Drop(PacketDrop),
 }
 

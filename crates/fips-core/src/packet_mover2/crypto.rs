@@ -271,7 +271,11 @@ impl StatelessAeadSealWorker {
                         if let Some(tick) = reservation.activity_tick {
                             packet = packet.with_activity_tick(tick);
                         }
-                        CryptoResult::Outbound(packet)
+                        CryptoResult::Outbound(WrappedOutboundPacket::new(
+                            packet,
+                            reservation.owner,
+                            reservation.counter,
+                        ))
                     }
                 }
             }

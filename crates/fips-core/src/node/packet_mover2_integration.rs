@@ -161,6 +161,7 @@ impl Node {
             .await;
         self.finish_packet_mover2_pending_outbound_turn(dest_addr, "queued TUN packet", turn)
             .await
+            .map(|_| ())
     }
 
     pub(in crate::node) async fn send_packet_mover2_pending_endpoint_payload(
@@ -197,6 +198,7 @@ impl Node {
             .await;
         self.finish_packet_mover2_pending_outbound_turn(dest_addr, "queued endpoint data", turn)
             .await
+            .map(|_| ())
     }
 
     pub(in crate::node) async fn send_packet_mover2_fsp_session_msg(
@@ -322,17 +324,6 @@ impl Node {
                 reason: format!("packet_mover2 FSP owner unavailable for {label}"),
             });
         }
-        let Some(counter) = self
-            .sessions
-            .get(dest_addr)
-            .and_then(|entry| entry.send_counter_authority())
-            .map(|authority| authority.current())
-        else {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("packet_mover2 FSP counter unavailable for {label}"),
-            });
-        };
         let Some((wrap, next_hop)) = self.packet_mover2_fsp_wrap_route(dest_addr) else {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
@@ -360,14 +351,23 @@ impl Node {
         let turn = self
             .pump_packet_mover2_initial_outbound(outbound, 2, false)
             .await;
-        if let Err(error) = self
+        let mut turn = match self
             .finish_packet_mover2_pending_outbound_turn(dest_addr, label, turn)
             .await
         {
-            self.record_route_failure(*dest_addr, next_hop);
-            self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
-            return Err(error);
-        }
+            Ok(turn) => turn,
+            Err(error) => {
+                self.record_route_failure(*dest_addr, next_hop);
+                self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
+                return Err(error);
+            }
+        };
+        let Some(counter) = Self::packet_mover2_wrapped_fsp_counter(&mut turn, *dest_addr) else {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("packet_mover2 FSP receipt unavailable for {label}"),
+            });
+        };
         let frame_bytes = crate::node::session_wire::FSP_INNER_HEADER_SIZE
             .saturating_add(payload.len())
             .saturating_add(crate::noise::TAG_SIZE);
@@ -392,7 +392,7 @@ impl Node {
         dest_addr: &NodeAddr,
         label: &str,
         mut turn: PacketMover2LiveNodeTurn,
-    ) -> Result<(), NodeError> {
+    ) -> Result<PacketMover2LiveNodeTurn, NodeError> {
         for continuation in 0..=PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS {
             let summary = turn.summary();
             let sent = Self::packet_mover2_pending_outbound_sent(&turn);
@@ -410,7 +410,7 @@ impl Node {
                 });
             }
             if sent {
-                return Ok(());
+                return Ok(turn);
             }
             if deferred || !needs_continuation {
                 let reason = if deferred {
@@ -444,6 +444,20 @@ impl Node {
         }
 
         unreachable!("bounded pending outbound continuation loop must return")
+    }
+
+    fn packet_mover2_wrapped_fsp_counter(
+        turn: &mut PacketMover2LiveNodeTurn,
+        dest_addr: NodeAddr,
+    ) -> Option<u64> {
+        let owner = OwnerId::fsp_node(dest_addr);
+        let mut counter = None;
+        for receipt in turn.take_wrapped_outbound_receipts() {
+            if receipt.owner() == owner {
+                counter = Some(receipt.counter());
+            }
+        }
+        counter
     }
 
     fn packet_mover2_pending_outbound_sent(turn: &PacketMover2LiveNodeTurn) -> bool {
