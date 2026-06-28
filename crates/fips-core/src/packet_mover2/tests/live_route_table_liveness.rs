@@ -74,3 +74,57 @@
         assert!(bulk_rx.try_recv().is_err());
         assert!(tun_rx.try_recv().is_err());
     }
+
+    #[test]
+    fn live_route_table_outbound_source_drops_stale_tun_bulk_when_tun_liveness_waits() {
+        let tun_dest = NodeAddr::from_bytes([0x71; 16]);
+        let tun_owner = OwnerId::fmp_node(tun_dest);
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_tun_destination(
+            tun_dest,
+            PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
+                tun_owner,
+                5,
+                PacketClass::Bulk,
+                611,
+                0x02,
+            )),
+        );
+
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
+        drop((priority_tx, bulk_tx));
+
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(4);
+        let old_ms = crate::time::now_ms().saturating_sub(1_000);
+        let stale_bulk = tun_ipv6_packet(tun_dest, 512);
+        let tun_liveness = tun_icmpv6_packet(tun_dest, 48);
+        tun_tx
+            .try_send_with_enqueued_at_ms(stale_bulk, old_ms)
+            .expect("enqueue stale TUN bulk packet");
+        tun_tx
+            .try_send(tun_liveness.clone())
+            .expect("enqueue TUN liveness packet");
+
+        let mut source = PacketMover2RouteTableOutboundSource::new(
+            &mut priority_rx,
+            &mut bulk_rx,
+            0,
+            &mut tun_rx,
+            8,
+            &mut routes,
+        )
+        .with_endpoint_stale_bulk_drop_ms(50);
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 2);
+
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].owner, tun_owner);
+        assert_eq!(outbound[0].class, PacketClass::Liveness);
+        assert_eq!(outbound[0].payload.as_ref(), tun_liveness);
+        assert!(source.take_endpoint_command_drops().is_empty());
+        assert!(source.take_tun_outbound_drops().is_empty());
+        drop(source);
+        assert!(tun_rx.try_recv().is_err());
+    }

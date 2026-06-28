@@ -275,7 +275,23 @@ where
     where
         F: FnMut(OutboundPacket),
     {
-        let mut drained = 0;
+        let mut drained = 0usize;
+        if self.first_tun_packet.is_none()
+            && let Ok(packet) = self.tun_outbound_rx.try_recv()
+        {
+            self.first_tun_packet = Some(packet);
+        }
+        if self
+            .first_tun_packet
+            .as_deref()
+            .is_some_and(crate::node::endpoint_payload_is_liveness_probe)
+            && limit > 1
+        {
+            drained = drained.saturating_add(
+                self.tun_outbound_rx
+                    .drop_stale_bulk(self.endpoint_stale_bulk_drop_ms, limit.saturating_sub(1)),
+            );
+        }
         if drained < limit {
             if let Some(packet) = self.first_tun_packet.take() {
                 route_tun_outbound_packet_with_router(
