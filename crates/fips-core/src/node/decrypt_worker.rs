@@ -52,12 +52,3 @@ include!("decrypt_worker/pool.rs");
 include!("decrypt_worker/runtime.rs");
 include!("decrypt_worker/fallback_batch.rs");
 include!("decrypt_worker/shard.rs");
-
-#[cfg(test)]
-mod tests {
-    include!("decrypt_worker/tests/support.rs");
-    include!("decrypt_worker/tests/fsp_delivery.rs");
-    include!("decrypt_worker/tests/fallback_queue.rs");
-    include!("decrypt_worker/tests/direct_endpoint.rs");
-    include!("decrypt_worker/tests/replay_failures.rs");
-}

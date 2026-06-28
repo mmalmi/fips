@@ -333,11 +333,6 @@ impl OwnedFspSessionState {
         self.fsp_receive_order = previous.fsp_receive_order;
     }
 
-    #[cfg(test)]
-    fn current_epoch_matches(&self, header: &FspEncryptedHeader) -> bool {
-        (header.flags & FSP_FLAG_K != 0) == self.current_k_bit
-    }
-
     fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
         self.fsp_receive_order.issue()
     }
@@ -475,13 +470,6 @@ impl OwnedFspSessionState {
                 }
                 FspOrderedCompletion::AeadFailed { job, header } => {
                     drain.aead_failures += 1;
-                    drain
-                        .outputs
-                        .push(FspReadyCompletion::AeadFailed { job, header });
-                }
-                #[cfg(test)]
-                FspOrderedCompletion::EpochMismatch { job, header } => {
-                    drain.epoch_mismatches += 1;
                     drain
                         .outputs
                         .push(FspReadyCompletion::AeadFailed { job, header });
@@ -627,11 +615,6 @@ enum FspOrderedCompletion {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
     },
-    #[cfg(test)]
-    EpochMismatch {
-        job: FspDecryptJob,
-        header: FspEncryptedHeader,
-    },
 }
 
 enum FspReadyCompletion {
@@ -714,8 +697,6 @@ struct FmpOpenOutcome {
 #[derive(Debug, PartialEq, Eq)]
 enum FmpOpenError {
     Replay,
-    #[cfg(test)]
-    Aead { fmp_replay_highest: u64 },
 }
 
 impl OwnedSessionState {
@@ -773,38 +754,6 @@ impl OwnedSessionState {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn accept_prechecked_fmp_replay(
-        &mut self,
-        precheck: FmpReplayPrecheck,
-    ) -> Result<(), FmpOpenError> {
-        Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, precheck)
-    }
-
-    #[cfg(test)]
-    fn open_fmp_in_place(
-        &mut self,
-        packet_data: &mut [u8],
-        fmp_ciphertext_offset: usize,
-        fmp_counter: u64,
-        fmp_flags: u8,
-        fmp_header: &[u8; 16],
-    ) -> Result<FmpOpenOutcome, FmpOpenError> {
-        let precheck = self.precheck_fmp_replay(fmp_counter)?;
-        let outcome = Self::open_fmp_aead_in_place(
-            &self.fmp_cipher,
-            packet_data,
-            fmp_ciphertext_offset,
-            fmp_counter,
-            fmp_flags,
-            fmp_header,
-        )
-        .map_err(|_| FmpOpenError::Aead {
-            fmp_replay_highest: precheck.replay_highest,
-        })?;
-        Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, precheck)?;
-        Ok(outcome)
-    }
 }
 
 /// Pre-cooked decrypt + dispatch job. Built on rx_loop after parsing
@@ -891,10 +840,6 @@ impl DecryptJob {
 
     fn lane(&self) -> DecryptWorkerLane {
         self.lane
-    }
-
-    fn is_bulk_lane(&self) -> bool {
-        matches!(self.lane(), DecryptWorkerLane::Bulk)
     }
 
     fn set_trace_enqueued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
@@ -1205,77 +1150,18 @@ impl PendingDirectSessionDelivery {
 }
 
 pub(crate) struct DecryptDirectSessionData {
-    pub fmp: DecryptFmpBookkeeping,
-    pub source_addr: NodeAddr,
-    pub previous_hop_peer: PeerIdentity,
     pub ce_flag: bool,
-    pub receive_sync: FspReceiveSync,
-    pub body_len: usize,
-    pub delivery: DecryptDirectSessionDelivery,
     lane: DecryptWorkerLane,
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
-}
-
-impl DecryptDirectSessionData {
-    #[cfg(test)]
-    pub(in crate::node) fn for_test(
-        fmp: DecryptFmpBookkeeping,
-        source_addr: NodeAddr,
-        previous_hop_peer: PeerIdentity,
-        ce_flag: bool,
-        receive_sync: FspReceiveSync,
-        body_len: usize,
-        delivery: DecryptDirectSessionDelivery,
-    ) -> Self {
-        Self {
-            fmp,
-            source_addr,
-            previous_hop_peer,
-            ce_flag,
-            receive_sync,
-            body_len,
-            delivery,
-            lane: DecryptWorkerLane::Bulk,
-            trace_enqueued_at: None,
-        }
-    }
 }
 
 pub(crate) struct DecryptDirectSessionCommit {
-    pub fmp: DecryptFmpBookkeeping,
-    pub source_addr: NodeAddr,
     pub previous_hop_peer: PeerIdentity,
     pub ce_flag: bool,
     pub receive_sync: FspReceiveSync,
     pub body_len: usize,
-    pub delivered_ipv6: bool,
     lane: DecryptWorkerLane,
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
-}
-
-impl DecryptDirectSessionCommit {
-    #[cfg(test)]
-    pub(in crate::node) fn for_test(
-        fmp: DecryptFmpBookkeeping,
-        source_addr: NodeAddr,
-        previous_hop_peer: PeerIdentity,
-        ce_flag: bool,
-        receive_sync: FspReceiveSync,
-        body_len: usize,
-        delivered_ipv6: bool,
-    ) -> Self {
-        Self {
-            fmp,
-            source_addr,
-            previous_hop_peer,
-            ce_flag,
-            receive_sync,
-            body_len,
-            delivered_ipv6,
-            lane: DecryptWorkerLane::Bulk,
-            trace_enqueued_at: None,
-        }
-    }
 }
 
 pub(crate) struct DecryptFspFailureReport {

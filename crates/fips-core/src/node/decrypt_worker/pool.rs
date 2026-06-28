@@ -356,25 +356,6 @@ impl DecryptWorkerPool {
         }
     }
 
-    fn dispatch_bulk_job_batch(&self, idx: usize, mut jobs: Vec<DecryptJob>) {
-        debug_assert!(!jobs.is_empty());
-        debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
-        debug_assert!(jobs.iter().all(DecryptJob::is_bulk_lane));
-
-        let queued_at = crate::perf_profile::stamp();
-        for job in &mut jobs {
-            job.set_trace_enqueued_at(queued_at);
-        }
-
-        if jobs.len() == 1 {
-            let job = jobs.pop().expect("checked non-empty batch");
-            self.dispatch_bulk_job(idx, job);
-            return;
-        }
-
-        self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Batch(jobs));
-    }
-
     fn dispatch_bulk_item(&self, idx: usize, item: DecryptWorkerBulkItem) {
         let _ = self.dispatch_bulk_item_or_return(idx, item);
     }

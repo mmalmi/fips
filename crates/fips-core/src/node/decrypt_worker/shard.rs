@@ -211,17 +211,6 @@ impl DecryptWorkerShard {
         self.fsp_sessions.remove(&source_addr);
     }
 
-    #[cfg(test)]
-    fn handle_job(
-        &mut self,
-        job: DecryptJob,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(output) = self.handle_job_output(0, job)? {
-            let _ = output.send();
-        }
-        Ok(())
-    }
-
     fn handle_job_actions_immediate(&mut self, idx: usize, actions: DecryptWorkerJobActions) {
         actions.for_each(|action| self.handle_job_action_immediate(idx, action));
     }
@@ -360,17 +349,13 @@ impl DecryptWorkerShard {
             DecryptDirectSessionDelivery::Ipv6Packet(_) => fmp.source_peer,
         };
         let direct_hop = previous_hop_peer.node_addr() == &source_addr;
-        let delivered_ipv6 = matches!(delivery, DecryptDirectSessionDelivery::Ipv6Packet(_));
         if direct_hop && sink.can_deliver(&delivery) {
             return (
                 DecryptWorkerEvent::DirectSessionCommit(DecryptDirectSessionCommit {
-                    fmp,
-                    source_addr,
                     previous_hop_peer,
                     ce_flag,
                     receive_sync,
                     body_len,
-                    delivered_ipv6,
                     lane,
                     trace_enqueued_at: None,
                 }),
@@ -386,13 +371,7 @@ impl DecryptWorkerShard {
 
         (
             DecryptWorkerEvent::DirectSessionData(DecryptDirectSessionData {
-                fmp,
-                source_addr,
-                previous_hop_peer,
                 ce_flag,
-                receive_sync,
-                body_len,
-                delivery,
                 lane,
                 trace_enqueued_at: None,
             }),
@@ -932,10 +911,6 @@ impl DecryptWorkerShard {
             let precheck = match state.precheck_fmp_replay(fmp_counter) {
                 Ok(precheck) => precheck,
                 Err(FmpOpenError::Replay) => return Ok(DecryptWorkerJobActions::None),
-                #[cfg(test)]
-                Err(FmpOpenError::Aead { .. }) => {
-                    unreachable!("FMP replay precheck cannot run AEAD")
-                }
             };
             let outcome = match OwnedSessionState::open_fmp_aead_in_place(
                 &state.fmp_cipher,
@@ -1100,48 +1075,4 @@ impl DecryptWorkerShard {
         }))
     }
 
-    #[cfg(test)]
-    fn handle_job_output(
-        &mut self,
-        idx: usize,
-        job: DecryptJob,
-    ) -> Result<Option<DecryptWorkerOutput>, Box<dyn std::error::Error + Send + Sync>> {
-        let actions = self.handle_job_action(idx, job)?;
-        Ok(self.handle_job_actions_output(idx, actions))
-    }
-
-    #[cfg(test)]
-    fn handle_job_actions_output(
-        &mut self,
-        idx: usize,
-        actions: DecryptWorkerJobActions,
-    ) -> Option<DecryptWorkerOutput> {
-        let mut first_output = None;
-        actions.for_each(|action| {
-            let outputs = match action {
-                DecryptWorkerJobAction::Output(output) => vec![output],
-                DecryptWorkerJobAction::FspJob(job) => self.dispatch_or_handle_fsp_job(idx, job),
-            };
-            for output in outputs {
-                if first_output.is_none() {
-                    first_output = Some(output);
-                } else {
-                    let _ = output.send();
-                }
-            }
-        });
-        first_output
-    }
-
-    #[cfg(test)]
-    fn contains_session(&self, session_key: DecryptSessionKey) -> bool {
-        self.sessions.contains_key(&session_key)
-    }
-
-    #[cfg(test)]
-    fn fmp_replay_highest(&self, session_key: DecryptSessionKey) -> Option<u64> {
-        self.sessions
-            .get(&session_key)
-            .map(|state| state.fmp_replay.highest())
-    }
 }

@@ -124,16 +124,6 @@ impl Default for DecryptWorkerBatchStats {
 }
 
 impl DecryptWorkerBatchStats {
-    #[cfg(test)]
-    fn enabled_for_test() -> Self {
-        Self {
-            enabled: true,
-            packets: 0,
-            priority_packets: 0,
-            bulk_packets: 0,
-        }
-    }
-
     fn add_lane(&mut self, lane: DecryptWorkerLane, count: usize) {
         if !self.enabled || count == 0 {
             return;
@@ -243,66 +233,6 @@ struct FspDecryptJobMeta {
     path_mtu: u16,
     fsp_payload_offset: usize,
     fsp_payload_len: usize,
-}
-
-pub(crate) struct DecryptJobBatcher {
-    worker_idx: Option<usize>,
-    jobs: Vec<DecryptJob>,
-}
-
-impl DecryptJobBatcher {
-    pub(crate) fn new() -> Self {
-        Self {
-            worker_idx: None,
-            jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-        }
-    }
-
-    #[cfg(test)]
-    fn pending_buffer_ptr(&self) -> *const DecryptJob {
-        self.jobs.as_ptr()
-    }
-
-    pub(crate) fn push(&mut self, workers: &DecryptWorkerPool, job: DecryptJob) {
-        if !job.is_bulk_lane() {
-            self.flush(workers);
-            workers.dispatch_job(job);
-            return;
-        }
-
-        let worker_idx = workers.worker_idx_for_fmp_session(job.session_key);
-        let batch_max = workers.bulk_batch_packet_max_for(worker_idx);
-        if self.worker_idx != Some(worker_idx) || self.jobs.len() >= batch_max {
-            self.flush(workers);
-        }
-        self.worker_idx = Some(worker_idx);
-        self.jobs.push(job);
-
-        if self.jobs.len() >= batch_max {
-            self.flush(workers);
-        }
-    }
-
-    pub(crate) fn flush(&mut self, workers: &DecryptWorkerPool) {
-        let Some(worker_idx) = self.worker_idx.take() else {
-            return;
-        };
-        if self.jobs.is_empty() {
-            return;
-        }
-
-        if self.jobs.len() == 1 {
-            let job = self.jobs.pop().expect("checked single pending job");
-            workers.dispatch_bulk_job(worker_idx, job);
-            return;
-        }
-
-        let jobs = std::mem::replace(
-            &mut self.jobs,
-            Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-        );
-        workers.dispatch_bulk_job_batch(worker_idx, jobs);
-    }
 }
 
 struct FspDecryptJobBatcher {

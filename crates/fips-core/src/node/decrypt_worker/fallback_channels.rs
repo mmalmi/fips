@@ -151,23 +151,6 @@ impl DecryptWorkerFallbackReceivers {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn bulk_queued_packets(&self) -> usize {
-        self.bulk_queued_packets.load(Ordering::Relaxed)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn bulk_pressure_queued_packets(&self) -> usize {
-        self.bulk_queued_packets()
-            .saturating_add(self.authenticated_bulk_queued_packets())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn authenticated_bulk_queued_packets(&self) -> usize {
-        self.authenticated_bulk_queued_packets
-            .load(Ordering::Relaxed)
-    }
-
     fn return_bulk_queued_packets(&self, lane: DecryptWorkerReturnBulkLane) -> &Arc<AtomicUsize> {
         match lane {
             DecryptWorkerReturnBulkLane::Fallback => &self.bulk_queued_packets,
