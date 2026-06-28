@@ -87,7 +87,13 @@ mod pending_queue_tests {
         let (packets, stale) = queue.into_fresh_packets(4_000, 2_000);
 
         assert_eq!(stale, 1);
-        assert_eq!(packets.into_iter().collect::<Vec<_>>(), vec![vec![2]]);
+        assert_eq!(
+            packets
+                .into_iter()
+                .map(|packet| packet.into_packet())
+                .collect::<Vec<_>>(),
+            vec![vec![2]]
+        );
     }
 
     #[test]
@@ -178,6 +184,61 @@ mod pending_queue_tests {
             !queues.has_traffic_for(&dest),
             "guard should clear after the final pending queue is removed"
         );
+    }
+
+    #[test]
+    fn pending_session_traffic_restore_keeps_unsent_tail() {
+        let mut queues = crate::node::PendingSessionTrafficQueues::default();
+        let dest = NodeAddr::from_bytes([0x0a; 16]);
+
+        assert!(
+            !queues
+                .push_tun_packet(dest, vec![1], 8, 4)
+                .destination_dropped()
+        );
+        assert!(
+            !queues
+                .push_tun_packet(dest, vec![2], 8, 4)
+                .destination_dropped()
+        );
+        let (mut packets, stale) = queues
+            .take_tun_packets(&dest)
+            .expect("tun packets")
+            .into_fresh_packets(2_000, 2_000);
+        assert_eq!(stale, 0);
+        assert_eq!(packets.pop_front().map(|packet| packet.into_packet()), Some(vec![1]));
+        queues.restore_tun_packets(dest, packets);
+        let restored_tun: Vec<Vec<u8>> = queues
+            .tun_packets_for(&dest)
+            .expect("restored TUN queue")
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(restored_tun, vec![vec![2]]);
+
+        assert!(
+            !queues
+                .push_endpoint_data(dest, vec![3], 8, 4)
+                .destination_dropped()
+        );
+        assert!(
+            !queues
+                .push_endpoint_data(dest, vec![4], 8, 4)
+                .destination_dropped()
+        );
+        let mut payloads = queues
+            .take_endpoint_data(&dest)
+            .expect("endpoint data")
+            .into_payloads();
+        assert_eq!(payloads.pop_front().map(|payload| payload.as_slice().to_vec()), Some(vec![3]));
+        queues.restore_endpoint_data(dest, payloads);
+        let restored_endpoint: Vec<Vec<u8>> = queues
+            .endpoint_data_for(&dest)
+            .expect("restored endpoint queue")
+            .iter()
+            .map(|payload| payload.as_slice().to_vec())
+            .collect();
+        assert_eq!(restored_endpoint, vec![vec![4]]);
     }
 
     #[test]

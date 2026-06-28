@@ -357,7 +357,7 @@ impl Node {
         }
 
         if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
-            let (packets, stale_count) = packets.into_fresh_packets(
+            let (mut packets, stale_count) = packets.into_fresh_packets(
                 Self::now_ms(),
                 Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
             );
@@ -372,24 +372,29 @@ impl Node {
                     "Dropped stale queued TUN packets before session flush"
                 );
             }
-            for packet in packets {
+            while let Some(packet) = packets.pop_front() {
                 if let Err(e) = self
-                    .send_packet_mover2_pending_tun_packet(dest_addr, packet)
+                    .send_packet_mover2_pending_tun_packet(dest_addr, packet.into_packet())
                     .await
                 {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+                    self.pending_session_traffic
+                        .restore_tun_packets(*dest_addr, packets);
                     break;
                 }
             }
         }
 
         if let Some(payloads) = self.pending_session_traffic.take_endpoint_data(dest_addr) {
-            for payload in payloads.into_payloads() {
+            let mut payloads = payloads.into_payloads();
+            while let Some(payload) = payloads.pop_front() {
                 if let Err(e) = self
                     .send_packet_mover2_pending_endpoint_payload(dest_addr, payload)
                     .await
                 {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
+                    self.pending_session_traffic
+                        .restore_endpoint_data(*dest_addr, payloads);
                     break;
                 }
             }

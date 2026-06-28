@@ -293,6 +293,10 @@ impl PendingEndpointDataQueue {
         self.payloads
     }
 
+    fn append_payloads(&mut self, payloads: &mut VecDeque<EndpointDataPayload>) {
+        self.payloads.append(payloads);
+    }
+
     #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &EndpointDataPayload> {
         self.payloads.iter()
@@ -328,6 +332,10 @@ impl PendingTunPacket {
 
     fn is_stale(&self, now_ms: u64, max_age_ms: u64) -> bool {
         now_ms.saturating_sub(self.queued_at_ms) > max_age_ms
+    }
+
+    pub(crate) fn into_packet(self) -> Vec<u8> {
+        self.packet
     }
 }
 
@@ -368,17 +376,21 @@ impl PendingTunPacketQueue {
         self,
         now_ms: u64,
         max_age_ms: u64,
-    ) -> (VecDeque<Vec<u8>>, usize) {
+    ) -> (VecDeque<PendingTunPacket>, usize) {
         let mut fresh = VecDeque::with_capacity(self.packets.len());
         let mut stale = 0usize;
         for packet in self.packets {
             if packet.is_stale(now_ms, max_age_ms) {
                 stale = stale.saturating_add(1);
             } else {
-                fresh.push_back(packet.packet);
+                fresh.push_back(packet);
             }
         }
         (fresh, stale)
+    }
+
+    fn append_packets(&mut self, packets: &mut VecDeque<PendingTunPacket>) {
+        self.packets.append(packets);
     }
 
     #[cfg(test)]
@@ -508,6 +520,21 @@ impl PendingSessionTrafficQueues {
         packets
     }
 
+    pub(crate) fn restore_tun_packets(
+        &mut self,
+        dest_addr: NodeAddr,
+        mut packets: VecDeque<PendingTunPacket>,
+    ) {
+        if packets.is_empty() {
+            return;
+        }
+        self.tun_packets
+            .entry(dest_addr)
+            .or_default()
+            .append_packets(&mut packets);
+        self.pending_destinations.insert(dest_addr);
+    }
+
     pub(crate) fn take_endpoint_data(
         &mut self,
         dest_addr: &NodeAddr,
@@ -517,6 +544,21 @@ impl PendingSessionTrafficQueues {
             self.pending_destinations.remove(dest_addr);
         }
         payloads
+    }
+
+    pub(crate) fn restore_endpoint_data(
+        &mut self,
+        dest_addr: NodeAddr,
+        mut payloads: VecDeque<EndpointDataPayload>,
+    ) {
+        if payloads.is_empty() {
+            return;
+        }
+        self.endpoint_data
+            .entry(dest_addr)
+            .or_default()
+            .append_payloads(&mut payloads);
+        self.pending_destinations.insert(dest_addr);
     }
 
     pub(crate) fn has_traffic_for(&self, dest_addr: &NodeAddr) -> bool {
