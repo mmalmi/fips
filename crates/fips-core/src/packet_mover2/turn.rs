@@ -106,6 +106,19 @@ impl PacketMover2RuntimeTurn<'_> {
     }
 }
 
+fn reserved_live_outbound_progress_limit(
+    endpoint_limit: usize,
+    tun_limit: usize,
+    outbound_limit: usize,
+) -> usize {
+    if outbound_limit == 0 {
+        return 0;
+    }
+    let endpoint_reserve = usize::from(endpoint_limit > 0);
+    let tun_reserve = usize::from(tun_limit > 0);
+    outbound_limit.min(endpoint_reserve.saturating_add(tun_reserve))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2FmpIngressReceipt {
     source_addr: NodeAddr,

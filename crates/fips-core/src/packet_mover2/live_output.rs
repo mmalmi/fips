@@ -102,6 +102,13 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         std::mem::take(&mut self.tun_drops)
     }
 
+    fn take_firsts(&mut self) -> PacketMover2LiveOutboundFirsts {
+        PacketMover2LiveOutboundFirsts::default()
+            .with_endpoint_priority(self.first_endpoint_priority.take())
+            .with_endpoint_bulk(self.first_endpoint_bulk.take())
+            .with_tun_packet(self.first_tun_packet.take())
+    }
+
     fn endpoint_drained(&self) -> usize {
         self.endpoint_drained
     }
@@ -150,13 +157,18 @@ where
                 &mut push,
             );
         }
-        if drained_cost < limit && !stale_bulk_drop_trigger_drained {
-            stale_bulk_drop_trigger_drained = self.first_tun_packet_triggers_stale_bulk_drop();
+        let mut tun_liveness_waiting = false;
+        if drained_cost < limit {
+            tun_liveness_waiting = self.first_tun_packet_triggers_stale_bulk_drop();
+            stale_bulk_drop_trigger_drained |= tun_liveness_waiting;
         }
         if stale_bulk_drop_trigger_drained {
-            drained_cost = drained_cost.saturating_add(
-                self.drop_stale_bulk_endpoint_commands(limit.saturating_sub(drained_cost)),
-            );
+            let mut drop_limit = limit.saturating_sub(drained_cost);
+            if tun_liveness_waiting {
+                drop_limit = drop_limit.saturating_sub(1);
+            }
+            let dropped_cost = self.drop_stale_bulk_endpoint_commands(drop_limit);
+            drained_cost = drained_cost.saturating_add(dropped_cost.min(drop_limit));
             return drained_cost;
         }
         if drained_cost < limit {

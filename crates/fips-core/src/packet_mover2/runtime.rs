@@ -299,19 +299,19 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         self.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
-        raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
-            self.admit_raw_ingress_packet(packet, routes, &mut summary);
-        });
-
         let outbound_limit = endpoint_limit.saturating_add(tun_limit);
-        let (
-            endpoint_drops,
-            endpoint_drained,
-            endpoint_routed_destinations,
-            deferred,
-            tun_drops,
-            tun_drained,
-        ) = {
+        let reserved_outbound_limit =
+            reserved_live_outbound_progress_limit(endpoint_limit, tun_limit, outbound_limit);
+        let mut endpoint_drops = Vec::new();
+        let mut endpoint_routed_destinations = Vec::new();
+        let mut deferred = Vec::new();
+        let mut tun_drops = Vec::new();
+        let mut endpoint_drained = 0usize;
+        let mut tun_drained = 0usize;
+        let mut outbound_drained = 0usize;
+        let mut outbound_firsts = outbound_firsts;
+
+        if reserved_outbound_limit > 0 {
             let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
                 endpoint_priority_rx,
                 endpoint_bulk_rx,
@@ -321,18 +321,48 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 routes,
             )
             .with_firsts(outbound_firsts);
-            outbound_source.drain_outbound(outbound_limit, |packet| {
+            outbound_drained = outbound_source.drain_outbound(reserved_outbound_limit, |packet| {
                 self.admit_outbound_packet(packet, &mut summary);
             });
-            (
-                outbound_source.take_endpoint_command_drops(),
-                outbound_source.endpoint_drained(),
-                outbound_source.take_endpoint_routed_destinations(),
-                outbound_source.take_endpoint_deferred_commands(),
-                outbound_source.take_tun_outbound_drops(),
-                outbound_source.tun_drained(),
+            endpoint_drops.extend(outbound_source.take_endpoint_command_drops());
+            endpoint_drained =
+                endpoint_drained.saturating_add(outbound_source.endpoint_drained());
+            endpoint_routed_destinations
+                .extend(outbound_source.take_endpoint_routed_destinations());
+            deferred.extend(outbound_source.take_endpoint_deferred_commands());
+            tun_drops.extend(outbound_source.take_tun_outbound_drops());
+            tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
+            outbound_firsts = outbound_source.take_firsts();
+        }
+
+        raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
+            self.admit_raw_ingress_packet(packet, routes, &mut summary);
+        });
+
+        let remaining_outbound_limit =
+            outbound_limit.saturating_sub(outbound_drained.min(outbound_limit));
+        if remaining_outbound_limit > 0 {
+            let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
+                endpoint_priority_rx,
+                endpoint_bulk_rx,
+                endpoint_limit,
+                tun_outbound_rx,
+                tun_limit,
+                routes,
             )
-        };
+            .with_firsts(outbound_firsts);
+            outbound_source.drain_outbound(remaining_outbound_limit, |packet| {
+                self.admit_outbound_packet(packet, &mut summary);
+            });
+            endpoint_drops.extend(outbound_source.take_endpoint_command_drops());
+            endpoint_drained =
+                endpoint_drained.saturating_add(outbound_source.endpoint_drained());
+            endpoint_routed_destinations
+                .extend(outbound_source.take_endpoint_routed_destinations());
+            deferred.extend(outbound_source.take_endpoint_deferred_commands());
+            tun_drops.extend(outbound_source.take_tun_outbound_drops());
+            tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
+        }
 
         let mut report = self
             .finish_aead_live_node_output_turn(
