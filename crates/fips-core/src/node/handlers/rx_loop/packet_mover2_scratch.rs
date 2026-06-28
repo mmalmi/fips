@@ -9,7 +9,6 @@ use crate::node::{
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
-use std::collections::HashMap;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, trace, warn};
 
@@ -88,9 +87,11 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        let endpoint_identities = self.packet_mover2_endpoint_identity_snapshot();
-        let endpoint_resolver =
-            |source_addr: &NodeAddr| endpoint_identities.get(source_addr).copied();
+        let sessions = &self.sessions;
+        let identity_cache = &self.identity_cache;
+        let endpoint_resolver = |source_addr: &NodeAddr| {
+            Self::packet_mover2_endpoint_peer_from_stores(sessions, identity_cache, source_addr)
+        };
 
         let turn = self
             .packet_mover2
@@ -408,6 +409,21 @@ impl Node {
             })
     }
 
+    pub(in crate::node) fn packet_mover2_endpoint_peer_from_stores(
+        sessions: &crate::node::session_registry::SessionRegistry,
+        identity_cache: &crate::node::IdentityCache,
+        source_addr: &NodeAddr,
+    ) -> Option<PeerIdentity> {
+        sessions
+            .get(source_addr)
+            .and_then(|entry| entry.remote_identity())
+            .or_else(|| {
+                identity_cache
+                    .pubkey_for_node_addr(source_addr)
+                    .map(PeerIdentity::from_pubkey_full)
+            })
+    }
+
     pub(super) fn packet_mover2_scratch_packet_activity(
         turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) -> usize {
@@ -421,23 +437,6 @@ impl Node {
             .saturating_add(turn.fsp_local_session_ingress().len())
             .saturating_add(turn.fsp_session_ingress().len())
             .saturating_add(turn.endpoint_deferred_commands())
-    }
-
-    pub(in crate::node) fn packet_mover2_endpoint_identity_snapshot(
-        &self,
-    ) -> HashMap<NodeAddr, PeerIdentity> {
-        let mut identities = HashMap::new();
-        for (addr, entry) in self.sessions.iter() {
-            if let Some(identity) = entry.remote_identity() {
-                identities.insert(*addr, identity);
-            }
-        }
-        for (addr, pubkey, _) in self.identity_cache.iter() {
-            identities
-                .entry(*addr)
-                .or_insert_with(|| PeerIdentity::from_pubkey_full(*pubkey));
-        }
-        identities
     }
 
     pub(in crate::node) fn observe_packet_mover2_scratch_turn(

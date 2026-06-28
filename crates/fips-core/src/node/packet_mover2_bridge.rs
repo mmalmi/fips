@@ -256,9 +256,11 @@ impl Node {
             drop(rx);
             tx
         });
-        let endpoint_identities = self.packet_mover2_endpoint_identity_snapshot();
-        let endpoint_resolver =
-            |source_addr: &NodeAddr| endpoint_identities.get(source_addr).copied();
+        let sessions = &self.sessions;
+        let identity_cache = &self.identity_cache;
+        let endpoint_resolver = |source_addr: &NodeAddr| {
+            Self::packet_mover2_endpoint_peer_from_stores(sessions, identity_cache, source_addr)
+        };
 
         let turn = self
             .packet_mover2
@@ -292,9 +294,11 @@ impl Node {
             drop(rx);
             tx
         });
-        let endpoint_identities = self.packet_mover2_endpoint_identity_snapshot();
-        let endpoint_resolver =
-            |source_addr: &NodeAddr| endpoint_identities.get(source_addr).copied();
+        let sessions = &self.sessions;
+        let identity_cache = &self.identity_cache;
+        let endpoint_resolver = |source_addr: &NodeAddr| {
+            Self::packet_mover2_endpoint_peer_from_stores(sessions, identity_cache, source_addr)
+        };
 
         let turn = self
             .packet_mover2
