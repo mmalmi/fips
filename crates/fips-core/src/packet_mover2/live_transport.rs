@@ -95,7 +95,8 @@ impl PacketMover2OutputSink for PacketMover2TransportSendPlanOutput {
                 transport_id,
                 remote_addr,
             } => Some((*transport_id, remote_addr.clone())),
-            TransportPath::Scratch(_) => None,
+            #[cfg(test)]
+            TransportPath::Fixture(_) => None,
         }) else {
             return Err(PacketMover2OutputError::NoRoute);
         };

@@ -256,8 +256,8 @@
                 generation,
                 class,
                 owner
-                    .scratch_peer()
-                    .expect("test outbound FMP helper requires scratch owner")
+                    .fixture_peer()
+                    .expect("test outbound FMP helper requires fixture owner")
                     as u32,
                 0,
                 payload.to_vec(),
@@ -302,7 +302,7 @@
         assert_eq!(fsp.protocol(), PacketProtocol::Fsp);
         assert_ne!(fmp, fsp);
         assert_ne!(fmp, OwnerId::fmp(0x42));
-        assert_eq!(OwnerId::fmp(0x42).scratch_peer(), Some(0x42));
+        assert_eq!(OwnerId::fmp(0x42).fixture_peer(), Some(0x42));
         assert_eq!(OwnerId::fmp(0x42).node_addr(), None);
     }
 
@@ -314,7 +314,7 @@
 
         assert_eq!(path.transport_id(), Some(transport_id));
         assert_eq!(path.remote_addr(), Some(&remote_addr));
-        assert_eq!(path.scratch_id(), None);
+        assert_eq!(path.fixture_id(), None);
 
         let raw = PacketMover2RawIngress::from_live_received(
             PacketProtocol::Fmp,

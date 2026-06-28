@@ -1,4 +1,4 @@
-//! Scratch packet mover for the intended straight dataplane.
+//! Packet mover for the straight dataplane.
 //!
 //! This module is intentionally separate from `packet_mover`: it models the
 //! final ownership shape first, then old runtime edges can adapt into it. The

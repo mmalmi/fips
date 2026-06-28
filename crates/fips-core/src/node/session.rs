@@ -650,7 +650,7 @@ impl SessionEntry {
         })
     }
 
-    /// Snapshot the current established-FSP open/seal keys for scratch owner state.
+    /// Snapshot the current established-FSP open/seal keys for packet mover owner state.
     pub(crate) fn fsp_crypto_keys(&self) -> Option<(LessSafeKey, LessSafeKey)> {
         let session = self.current_noise_session()?;
         Some((session.recv_cipher_clone()?, session.send_cipher_clone()?))

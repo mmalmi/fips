@@ -654,13 +654,13 @@
     fn live_output_sink_drops_transport_without_live_path() {
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let key = 47;
-        let scratch_path = TransportPath::new(4700);
+        let fixture_path = TransportPath::new(4700);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(470));
         driver
             .owner_mut(owner)
             .unwrap()
-            .set_active_path(scratch_path.clone());
+            .set_active_path(fixture_path.clone());
         driver
             .owner_mut(owner)
             .unwrap()
@@ -685,7 +685,7 @@
             turn.output_drops()[0].reason(),
             PacketMover2OutputError::NoRoute
         );
-        assert_eq!(turn.output_drops()[0].path(), Some(scratch_path));
+        assert_eq!(turn.output_drops()[0].path(), Some(fixture_path));
         assert!(tun.outputs.is_empty());
         assert!(endpoint.outputs.is_empty());
         assert!(transport.outputs.is_empty());

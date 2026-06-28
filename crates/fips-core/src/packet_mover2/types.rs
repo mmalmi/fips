@@ -14,21 +14,24 @@ pub(crate) struct OwnerId {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum OwnerPeerId {
-    Scratch(u64),
+    #[cfg(test)]
+    Fixture(u64),
     Node(NodeAddr),
 }
 
 impl OwnerId {
+    #[cfg(test)]
     pub(crate) fn fmp(peer: u64) -> Self {
         Self {
-            peer: OwnerPeerId::Scratch(peer),
+            peer: OwnerPeerId::Fixture(peer),
             protocol: PacketProtocol::Fmp,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn fsp(peer: u64) -> Self {
         Self {
-            peer: OwnerPeerId::Scratch(peer),
+            peer: OwnerPeerId::Fixture(peer),
             protocol: PacketProtocol::Fsp,
         }
     }
@@ -57,15 +60,16 @@ impl OwnerId {
 
     pub(crate) fn node_addr(self) -> Option<NodeAddr> {
         match self.peer {
-            OwnerPeerId::Scratch(_) => None,
+            #[cfg(test)]
+            OwnerPeerId::Fixture(_) => None,
             OwnerPeerId::Node(node_addr) => Some(node_addr),
         }
     }
 
     #[cfg(test)]
-    fn scratch_peer(self) -> Option<u64> {
+    fn fixture_peer(self) -> Option<u64> {
         match self.peer {
-            OwnerPeerId::Scratch(peer) => Some(peer),
+            OwnerPeerId::Fixture(peer) => Some(peer),
             OwnerPeerId::Node(_) => None,
         }
     }
@@ -106,7 +110,8 @@ pub(crate) enum OutputTarget {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum TransportPath {
-    Scratch(u64),
+    #[cfg(test)]
+    Fixture(u64),
     Live {
         transport_id: TransportId,
         remote_addr: TransportAddr,
@@ -114,8 +119,9 @@ pub(crate) enum TransportPath {
 }
 
 impl TransportPath {
+    #[cfg(test)]
     pub(crate) fn new(id: u64) -> Self {
-        Self::Scratch(id)
+        Self::Fixture(id)
     }
 
     pub(crate) fn live(transport_id: TransportId, remote_addr: TransportAddr) -> Self {
@@ -127,22 +133,24 @@ impl TransportPath {
 
     pub(crate) fn transport_id(&self) -> Option<TransportId> {
         match self {
-            Self::Scratch(_) => None,
+            #[cfg(test)]
+            Self::Fixture(_) => None,
             Self::Live { transport_id, .. } => Some(*transport_id),
         }
     }
 
     pub(crate) fn remote_addr(&self) -> Option<&TransportAddr> {
         match self {
-            Self::Scratch(_) => None,
+            #[cfg(test)]
+            Self::Fixture(_) => None,
             Self::Live { remote_addr, .. } => Some(remote_addr),
         }
     }
 
     #[cfg(test)]
-    fn scratch_id(&self) -> Option<u64> {
+    fn fixture_id(&self) -> Option<u64> {
         match self {
-            Self::Scratch(id) => Some(*id),
+            Self::Fixture(id) => Some(*id),
             Self::Live { .. } => None,
         }
     }
