@@ -14,6 +14,8 @@ use crate::protocol::SessionMessageType;
 const INITIAL_FMP_GENERATION: u64 = 1;
 const INITIAL_FSP_GENERATION: u64 = 1;
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
+const PACKET_MOVER2_OWNER_BULK_IN_FLIGHT_LIMIT_ENV: &str =
+    "FIPS_PACKET_MOVER2_OWNER_BULK_IN_FLIGHT_LIMIT";
 
 struct PacketMover2FmpOwnerSeed {
     owner: OwnerId,
@@ -621,12 +623,10 @@ impl Node {
 
         Some(PacketMover2FmpOwnerSeed {
             owner: OwnerId::fmp_node(*node_addr),
-            config: OwnerConfig::new(
-                INITIAL_FMP_GENERATION,
-                self.packet_mover2_owner_in_flight_limit(),
-            )
-            .with_send_counter_authority(counter_authority.clone())
-            .with_fmp_session_start_ms(session_start_ms),
+            config: self
+                .packet_mover2_owner_config(INITIAL_FMP_GENERATION)
+                .with_send_counter_authority(counter_authority.clone())
+                .with_fmp_session_start_ms(session_start_ms),
             keys: OwnerCryptoKeys::new(open, seal),
             counter_authority,
             session_start_ms,
@@ -676,13 +676,11 @@ impl Node {
 
         Some(PacketMover2FspOwnerSeed {
             owner: OwnerId::fsp_node(*node_addr),
-            config: OwnerConfig::new(
-                INITIAL_FSP_GENERATION,
-                self.packet_mover2_owner_in_flight_limit(),
-            )
-            .with_send_counter_authority(counter_authority.clone())
-            .with_fsp_session_start_ms(session_start_ms)
-            .with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix.clone()),
+            config: self
+                .packet_mover2_owner_config(INITIAL_FSP_GENERATION)
+                .with_send_counter_authority(counter_authority.clone())
+                .with_fsp_session_start_ms(session_start_ms)
+                .with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix.clone()),
             keys: OwnerCryptoKeys::new(Arc::new(open), Arc::new(seal)),
             counter_authority,
             session_start_ms,
@@ -807,6 +805,14 @@ impl Node {
         self.config.node.limits.max_pending_inbound.max(1)
     }
 
+    fn packet_mover2_owner_config(&self, generation: u64) -> OwnerConfig {
+        let config = OwnerConfig::new(generation, self.packet_mover2_owner_in_flight_limit());
+        match packet_mover2_owner_bulk_in_flight_limit_from_env() {
+            Some(limit) => config.with_bulk_in_flight_limit(limit),
+            None => config,
+        }
+    }
+
     fn packet_mover2_fmp_output_drop_error(
         &self,
         node_addr: NodeAddr,
@@ -840,6 +846,44 @@ impl Node {
             .get(&transport_id)
             .map(|transport| transport.link_mtu(&remote_addr))
             .unwrap_or_else(|| self.transport_mtu())
+    }
+}
+
+fn packet_mover2_owner_bulk_in_flight_limit_from_env() -> Option<usize> {
+    static VALUE: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_packet_mover2_owner_bulk_in_flight_limit(
+            std::env::var(PACKET_MOVER2_OWNER_BULK_IN_FLIGHT_LIMIT_ENV)
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+fn parse_packet_mover2_owner_bulk_in_flight_limit(raw: Option<&str>) -> Option<usize> {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|limit| *limit > 0)
+}
+
+#[cfg(test)]
+mod packet_mover2_owner_bulk_in_flight_limit_tests {
+    use super::*;
+
+    #[test]
+    fn owner_bulk_in_flight_limit_parser_is_opt_in() {
+        assert_eq!(parse_packet_mover2_owner_bulk_in_flight_limit(None), None);
+        assert_eq!(
+            parse_packet_mover2_owner_bulk_in_flight_limit(Some("")),
+            None
+        );
+        assert_eq!(
+            parse_packet_mover2_owner_bulk_in_flight_limit(Some("0")),
+            None
+        );
+        assert_eq!(
+            parse_packet_mover2_owner_bulk_in_flight_limit(Some("64")),
+            Some(64)
+        );
     }
 }
 
