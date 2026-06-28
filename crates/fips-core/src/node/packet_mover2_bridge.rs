@@ -14,7 +14,6 @@ use crate::protocol::SessionMessageType;
 const INITIAL_FMP_GENERATION: u64 = 1;
 const INITIAL_FSP_GENERATION: u64 = 1;
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
-const PACKET_MOVER2_OWNER_BULK_IN_FLIGHT_LIMIT: usize = 64;
 
 struct PacketMover2FmpOwnerSeed {
     owner: OwnerId,
@@ -626,7 +625,6 @@ impl Node {
                 INITIAL_FMP_GENERATION,
                 self.packet_mover2_owner_in_flight_limit(),
             )
-            .with_bulk_in_flight_limit(self.packet_mover2_owner_bulk_in_flight_limit())
             .with_send_counter_authority(counter_authority.clone())
             .with_fmp_session_start_ms(session_start_ms),
             keys: OwnerCryptoKeys::new(open, seal),
@@ -682,7 +680,6 @@ impl Node {
                 INITIAL_FSP_GENERATION,
                 self.packet_mover2_owner_in_flight_limit(),
             )
-            .with_bulk_in_flight_limit(self.packet_mover2_owner_bulk_in_flight_limit())
             .with_send_counter_authority(counter_authority.clone())
             .with_fsp_session_start_ms(session_start_ms)
             .with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix.clone()),
@@ -808,12 +805,6 @@ impl Node {
 
     fn packet_mover2_owner_in_flight_limit(&self) -> usize {
         self.config.node.limits.max_pending_inbound.max(1)
-    }
-
-    fn packet_mover2_owner_bulk_in_flight_limit(&self) -> usize {
-        self.packet_mover2_owner_in_flight_limit()
-            .min(PACKET_MOVER2_OWNER_BULK_IN_FLIGHT_LIMIT)
-            .max(1)
     }
 
     fn packet_mover2_fmp_output_drop_error(
