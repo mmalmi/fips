@@ -50,12 +50,6 @@ mod platform {
     #[cfg(target_os = "linux")]
     const SEND_BATCH_SIZE: usize = 256;
 
-    /// Back-compat alias used by call sites that don't distinguish.
-    /// `recv_batch` uses `RECV_BATCH_SIZE`; `send_batch` uses
-    /// `SEND_BATCH_SIZE`.
-    #[cfg(target_os = "linux")]
-    const BATCH_SIZE: usize = RECV_BATCH_SIZE;
-
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
     pub struct UdpRawSocket {
@@ -477,7 +471,7 @@ mod platform {
             Ok((n as usize, addr, drops))
         }
 
-        /// Receive up to `BATCH_SIZE` datagrams in a single recvmmsg syscall
+        /// Receive up to `RECV_BATCH_SIZE` datagrams in a single recvmmsg syscall
         /// (Linux only — macOS falls through to per-packet recvmsg).
         ///
         /// Returns `(count, kernel_drops)`. Caller provides receive buffers
@@ -497,7 +491,7 @@ mod platform {
             bufs: &mut [Vec<u8>],
             addrs: &mut [Option<SocketAddr>],
         ) -> std::io::Result<(usize, u32)> {
-            let n = bufs.len().min(addrs.len()).min(BATCH_SIZE);
+            let n = bufs.len().min(addrs.len()).min(RECV_BATCH_SIZE);
             if n == 0 {
                 return Ok((0, 0));
             }
@@ -508,12 +502,13 @@ mod platform {
             // recvmmsg batch, so parse all returned messages and keep the
             // newest monotonic counter sample.
             const CMSG_BUF_SIZE: usize = unsafe { libc::CMSG_SPACE(4) } as usize;
-            let mut cmsg_bufs = [[0u8; CMSG_BUF_SIZE]; BATCH_SIZE];
+            let mut cmsg_bufs = [[0u8; CMSG_BUF_SIZE]; RECV_BATCH_SIZE];
 
             // Stack-allocated parallel arrays; lifetime tied to this call.
-            let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut iovs: [libc::iovec; RECV_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; RECV_BATCH_SIZE] =
+                unsafe { std::mem::zeroed() };
+            let mut msgs: [libc::mmsghdr; RECV_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
                 bufs[i].clear();
@@ -719,7 +714,7 @@ mod platform {
             }
         }
 
-        /// Drain up to `BATCH_SIZE` datagrams from the kernel via
+        /// Drain up to `RECV_BATCH_SIZE` datagrams from the kernel via
         /// `recvmmsg` (Linux). Returns `(count, kernel_drops)`; same
         /// buffer / addr contract as `UdpRawSocket::recv_batch`.
         #[cfg(target_os = "linux")]
@@ -749,7 +744,7 @@ mod platform {
             }
         }
 
-        /// Push up to `BATCH_SIZE` datagrams to the kernel via `sendmmsg`
+        /// Push up to `SEND_BATCH_SIZE` datagrams to the kernel via `sendmmsg`
         /// (Linux). Returns the count actually sent. Caller is responsible
         /// for retrying remaining packets if `n < packets.len()`.
         #[cfg(target_os = "linux")]
