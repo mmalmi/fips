@@ -6,6 +6,7 @@ pub(crate) struct PacketMover2TurnDriver<W = CopyCryptoWorker> {
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
+    output_scratch: Vec<PacketOutput>,
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
@@ -22,6 +23,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             raw_ingress_drops: Vec::new(),
             output_drops: Vec::new(),
             outputs: Vec::new(),
+            output_scratch: Vec::new(),
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
@@ -370,6 +372,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
 
     fn reset_turn_buffers(&mut self) {
         self.outputs.clear();
+        self.output_scratch.clear();
         self.drops.clear();
         self.raw_ingress_drops.clear();
         self.output_drops.clear();
@@ -529,10 +532,10 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
     where
         R: PacketMover2IngressRouter,
     {
-        let outputs = std::mem::take(&mut self.outputs);
+        let mut outputs = self.take_outputs_for_rewrite();
         let dropped_before = self.output_drops.len();
         let admitted_before = summary.inbound_admitted;
-        for output in outputs {
+        for output in outputs.drain(..) {
             match output.target {
                 OutputTarget::SessionIngress { local_addr } => {
                     match packet_mover2_session_ingress_from_output(&output, local_addr) {
@@ -572,6 +575,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 _ => self.outputs.push(output),
             }
         }
+        self.output_scratch = outputs;
         summary.outputs = self.outputs.len();
         summary.outputs_dropped = summary
             .outputs_dropped
@@ -583,9 +587,9 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         &mut self,
         summary: &mut PacketMover2RuntimeSummary,
     ) {
-        let outputs = std::mem::take(&mut self.outputs);
+        let mut outputs = self.take_outputs_for_rewrite();
         let dropped_before = self.output_drops.len();
-        for output in outputs {
+        for output in outputs.drain(..) {
             match output.target {
                 OutputTarget::SessionPayload { .. } => {
                     match PacketMover2FspSessionIngress::from_output(output) {
@@ -601,6 +605,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 _ => self.outputs.push(output),
             }
         }
+        self.output_scratch = outputs;
         summary.outputs = self.outputs.len();
         summary.outputs_dropped = summary
             .outputs_dropped
@@ -631,6 +636,12 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             }
         }
         summary
+    }
+
+    fn take_outputs_for_rewrite(&mut self) -> Vec<PacketOutput> {
+        let mut outputs = std::mem::take(&mut self.output_scratch);
+        std::mem::swap(&mut self.outputs, &mut outputs);
+        outputs
     }
 
     fn collect_aead_outputs(
