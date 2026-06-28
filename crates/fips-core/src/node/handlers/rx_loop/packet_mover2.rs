@@ -115,7 +115,7 @@ impl Node {
         turn
     }
 
-    pub(super) async fn process_packet_mover2_control_ingress(
+    pub(in crate::node) async fn process_packet_mover2_control_ingress(
         &mut self,
         turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) -> usize {

@@ -18,8 +18,6 @@ use tracing::{debug, info, warn};
 mod budget;
 mod drain;
 mod packet_mover2;
-#[cfg(test)]
-mod packet_process;
 
 #[cfg(test)]
 mod tests;

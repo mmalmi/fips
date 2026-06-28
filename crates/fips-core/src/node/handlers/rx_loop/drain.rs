@@ -1,27 +1,5 @@
-#[cfg(test)]
-use crate::{node::decrypt_worker::DecryptJob, transport::ReceivedPacket};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
-
-#[cfg(test)]
-pub(super) enum PacketProcessAction {
-    Done,
-    DecryptJob {
-        job: DecryptJob,
-    },
-    EncryptedRekeyTrial {
-        packet: ReceivedPacket,
-        timer: crate::perf_profile::Timer,
-    },
-    Msg1 {
-        packet: ReceivedPacket,
-        timer: crate::perf_profile::Timer,
-    },
-    Msg2 {
-        packet: ReceivedPacket,
-        timer: crate::perf_profile::Timer,
-    },
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct RxLoopDataDrainStats {
