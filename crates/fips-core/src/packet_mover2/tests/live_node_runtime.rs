@@ -526,14 +526,15 @@
 
     #[test]
     fn transport_batch_mapper_sends_priority_before_bulk_with_original_indexes() {
-        let transport_id = TransportId::new(60);
+        let transport_a = TransportId::new(60);
+        let transport_b = TransportId::new(61);
         let remote_addr = TransportAddr::from_string("127.0.0.1:6000");
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x60; 16]));
         let mut bulk_a = transport_output(
             owner,
             600,
             10,
-            transport_id,
+            transport_a,
             remote_addr.clone(),
             b"bulk-a".to_vec(),
         );
@@ -541,7 +542,7 @@
             owner,
             601,
             11,
-            transport_id,
+            transport_a,
             remote_addr.clone(),
             b"priority-a".to_vec(),
         );
@@ -549,7 +550,7 @@
             owner,
             602,
             12,
-            transport_id,
+            transport_b,
             remote_addr.clone(),
             b"bulk-b".to_vec(),
         );
@@ -557,7 +558,7 @@
             owner,
             603,
             13,
-            transport_id,
+            transport_b,
             remote_addr.clone(),
             b"priority-b".to_vec(),
         );
@@ -566,10 +567,10 @@
         bulk_b.lane = Lane::Bulk;
         priority_b.lane = Lane::Priority;
         let plans = vec![
-            PacketMover2TransportSendPlan::new(transport_id, remote_addr.clone(), bulk_a),
-            PacketMover2TransportSendPlan::new(transport_id, remote_addr.clone(), priority_a),
-            PacketMover2TransportSendPlan::new(transport_id, remote_addr.clone(), bulk_b),
-            PacketMover2TransportSendPlan::new(transport_id, remote_addr, priority_b),
+            PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), bulk_a),
+            PacketMover2TransportSendPlan::new(transport_b, remote_addr.clone(), priority_b),
+            PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), priority_a),
+            PacketMover2TransportSendPlan::new(transport_b, remote_addr, bulk_b),
         ];
         let mut batch = Vec::new();
 
@@ -580,7 +581,7 @@
             .iter()
             .map(|(index, _, _)| *index)
             .collect::<Vec<_>>();
-        assert_eq!(indexes, [1, 3, 0, 2]);
+        assert_eq!(indexes, [1, 2, 0, 3]);
         let payloads = batch
             .iter()
             .map(|(_, _, payload)| *payload)
@@ -588,11 +589,27 @@
         assert_eq!(
             payloads,
             [
-                b"priority-a".as_slice(),
                 b"priority-b".as_slice(),
+                b"priority-a".as_slice(),
                 b"bulk-a".as_slice(),
                 b"bulk-b".as_slice()
             ]
+        );
+        assert_eq!(
+            next_transport_lane_batch_range(&plans, 0, Lane::Priority),
+            Some((1, 2, transport_b))
+        );
+        assert_eq!(
+            next_transport_lane_batch_range(&plans, 2, Lane::Priority),
+            Some((2, plans.len(), transport_a))
+        );
+        assert_eq!(
+            next_transport_lane_batch_range(&plans, 0, Lane::Bulk),
+            Some((0, 3, transport_a))
+        );
+        assert_eq!(
+            next_transport_lane_batch_range(&plans, 3, Lane::Bulk),
+            Some((3, plans.len(), transport_b))
         );
     }
 
