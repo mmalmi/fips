@@ -147,6 +147,21 @@ impl<Routes> PacketMover2RouteTableOutboundSource<'_, Routes>
 where
     Routes: PacketMover2EndpointCommandRouter + PacketMover2TunOutboundRouter,
 {
+    fn cache_first_tun_packet_priority_first(&mut self) {
+        if self.first_tun_packet.is_none()
+            && let Ok(packet) = self.tun_outbound_rx.try_recv_priority_first()
+        {
+            self.first_tun_packet = Some(packet);
+        }
+    }
+
+    fn first_tun_packet_is_priority(&mut self) -> bool {
+        self.cache_first_tun_packet_priority_first();
+        self.first_tun_packet
+            .as_deref()
+            .is_some_and(tun_packet_is_priority)
+    }
+
     fn drain_endpoint<F>(&mut self, limit: usize, mut push: F) -> usize
     where
         F: FnMut(OutboundPacket),
@@ -182,9 +197,15 @@ where
                 &mut push,
             );
         }
+        let mut tun_priority_waiting = false;
         let mut tun_liveness_waiting = false;
         if drained_cost < limit {
-            tun_liveness_waiting = self.first_tun_packet_triggers_stale_bulk_drop();
+            tun_priority_waiting = self.first_tun_packet_is_priority();
+            tun_liveness_waiting = tun_priority_waiting
+                && self
+                    .first_tun_packet
+                    .as_deref()
+                    .is_some_and(crate::node::endpoint_payload_is_liveness_probe);
             stale_bulk_drop_trigger_drained |= tun_liveness_waiting;
         }
         if stale_bulk_drop_trigger_drained {
@@ -194,6 +215,9 @@ where
             }
             let dropped_cost = self.drop_stale_bulk_endpoint_commands(drop_limit);
             drained_cost = drained_cost.saturating_add(dropped_cost.min(drop_limit));
+            return drained_cost;
+        }
+        if tun_priority_waiting {
             return drained_cost;
         }
         if drained_cost < limit {
@@ -251,17 +275,6 @@ where
         drained_cost
     }
 
-    fn first_tun_packet_triggers_stale_bulk_drop(&mut self) -> bool {
-        if self.first_tun_packet.is_none()
-            && let Ok(packet) = self.tun_outbound_rx.try_recv_priority_first()
-        {
-            self.first_tun_packet = Some(packet);
-        }
-        self.first_tun_packet
-            .as_deref()
-            .is_some_and(crate::node::endpoint_payload_is_liveness_probe)
-    }
-
     fn route_or_drop_bulk_endpoint_command<F>(
         &mut self,
         command: NodeEndpointCommand,
@@ -301,11 +314,7 @@ where
         F: FnMut(OutboundPacket),
     {
         let mut drained = 0usize;
-        if self.first_tun_packet.is_none()
-            && let Ok(packet) = self.tun_outbound_rx.try_recv_priority_first()
-        {
-            self.first_tun_packet = Some(packet);
-        }
+        self.cache_first_tun_packet_priority_first();
         if self
             .first_tun_packet
             .as_deref()
@@ -361,6 +370,11 @@ where
         self.tun_drained = self.tun_drained.saturating_add(tun_drained);
         endpoint_drained.saturating_add(tun_drained)
     }
+}
+
+fn tun_packet_is_priority(packet: &[u8]) -> bool {
+    crate::node::endpoint_payload_is_liveness_probe(packet)
+        || crate::node::endpoint_payload_is_latency_sensitive(packet)
 }
 
 impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
