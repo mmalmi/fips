@@ -128,249 +128,255 @@ async fn test_session_direct_peer_data_transfer() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_endpoint_data_flushes_after_session_establishment() {
-    let edges = vec![(0, 1)];
-    let mut nodes = run_tree_test(2, &edges, false).await;
-    verify_tree_convergence(&nodes);
-    populate_all_coord_caches(&mut nodes);
+#[test]
+fn test_endpoint_data_flushes_after_session_establishment() {
+    run_large_stack_async_test("fips-endpoint-data-flushes", || async {
+        let edges = vec![(0, 1)];
+        let mut nodes = run_tree_test(2, &edges, false).await;
+        verify_tree_convergence(&nodes);
+        populate_all_coord_caches(&mut nodes);
 
-    let mut node0_endpoint = nodes[0]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("node 0 endpoint data I/O should attach");
-    let mut node1_endpoint = nodes[1]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("node 1 endpoint data I/O should attach");
+        let mut node0_endpoint = nodes[0]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("node 0 endpoint data I/O should attach");
+        let mut node1_endpoint = nodes[1]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("node 1 endpoint data I/O should attach");
 
-    let node0_addr = *nodes[0].node.node_addr();
-    let node1_addr = *nodes[1].node.node_addr();
-    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
-    let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+        let node0_addr = *nodes[0].node.node_addr();
+        let node1_addr = *nodes[1].node.node_addr();
+        let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+        let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
 
-    nodes[0]
-        .node
-        .send_endpoint_data(node1_identity, b"ping".to_vec())
-        .await
-        .expect("endpoint data should queue behind session establishment");
+        nodes[0]
+            .node
+            .send_endpoint_data(node1_identity, b"ping".to_vec())
+            .await
+            .expect("endpoint data should queue behind session establishment");
 
-    let event = recv_endpoint_event_while_draining(
-        &mut nodes,
-        &mut node1_endpoint.event_rx,
-        Duration::from_secs(10),
-        "node 1 endpoint data",
-    )
-    .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), node0_addr);
-            assert_eq!(source_peer.npub(), nodes[0].node.npub());
-            assert_eq!(payload, b"ping");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
-
-    nodes[1]
-        .node
-        .send_endpoint_data(node0_identity, b"pong".to_vec())
-        .await
-        .expect("reply data should send");
-
-    let event = recv_endpoint_event_while_draining(
-        &mut nodes,
-        &mut node0_endpoint.event_rx,
-        Duration::from_secs(10),
-        "node 0 endpoint data",
-    )
-    .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), node1_addr);
-            assert_eq!(source_peer.npub(), nodes[1].node.npub());
-            assert_eq!(payload, b"pong");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
-
-    cleanup_nodes(&mut nodes).await;
-}
-
-#[tokio::test]
-async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
-    // A-B-C: Alice and Bob are app endpoints. The middle node is only FIPS
-    // overlay transport and must not receive app-owned endpoint payloads.
-    let edges = vec![(0, 1), (1, 2)];
-    let mut nodes = run_tree_test(3, &edges, false).await;
-    verify_tree_convergence(&nodes);
-    populate_all_coord_caches(&mut nodes);
-
-    let mut alice_endpoint = nodes[0]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("alice endpoint data I/O should attach");
-    let mut transit_endpoint = nodes[1]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("transit endpoint data I/O should attach");
-    let mut bob_endpoint = nodes[2]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("bob endpoint data I/O should attach");
-
-    let alice_addr = *nodes[0].node.node_addr();
-    let bob_addr = *nodes[2].node.node_addr();
-    let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
-    let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
-
-    nodes[0]
-        .node
-        .send_endpoint_data(bob_identity, b"alice-to-bob".to_vec())
-        .await
-        .expect("alice endpoint data should send");
-
-    let event = recv_endpoint_event_while_draining(
-        &mut nodes,
-        &mut bob_endpoint.event_rx,
-        Duration::from_secs(10),
-        "alice to bob endpoint data",
-    )
-    .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), alice_addr);
-            assert_eq!(source_peer.npub(), nodes[0].node.npub());
-            assert_eq!(payload, b"alice-to-bob");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
-
-    assert!(
-        nodes[1].node.get_session(&alice_addr).is_none(),
-        "transit node must not create an app endpoint session for Alice"
-    );
-    assert!(
-        nodes[1].node.get_session(&bob_addr).is_none(),
-        "transit node must not create an app endpoint session for Bob"
-    );
-    assert!(
-        transit_endpoint.event_rx.try_recv().is_err(),
-        "transit node must not receive app endpoint data"
-    );
-
-    nodes[2]
-        .node
-        .send_endpoint_data(alice_identity, b"bob-to-alice".to_vec())
-        .await
-        .expect("bob endpoint data should send");
-
-    let event = recv_endpoint_event_while_draining(
-        &mut nodes,
-        &mut alice_endpoint.event_rx,
-        Duration::from_secs(10),
-        "bob to alice endpoint data",
-    )
-    .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), bob_addr);
-            assert_eq!(source_peer.npub(), nodes[2].node.npub());
-            assert_eq!(payload, b"bob-to-alice");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
-    assert!(
-        transit_endpoint.event_rx.try_recv().is_err(),
-        "transit node must stay outside the app endpoint flow"
-    );
-
-    cleanup_nodes(&mut nodes).await;
-}
-
-#[tokio::test]
-async fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary() {
-    // A-B-C with no preloaded coordinate cache. A must discover C through B,
-    // establish the end-to-end endpoint-data session over that route, and keep
-    // B as pure transit.
-    let edges = vec![(0, 1), (1, 2)];
-    let mut nodes = run_tree_test(3, &edges, false).await;
-    verify_tree_convergence(&nodes);
-    for node in &mut nodes {
-        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
-    }
-
-    let mut transit_endpoint = nodes[1]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("transit endpoint data I/O should attach");
-    let mut bob_endpoint = nodes[2]
-        .node
-        .attach_endpoint_data_io(8)
-        .expect("bob endpoint data I/O should attach");
-
-    let alice_addr = *nodes[0].node.node_addr();
-    let bob_addr = *nodes[2].node.node_addr();
-    let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
-
-    nodes[0]
-        .node
-        .send_endpoint_data(bob_identity, b"first-contact".to_vec())
-        .await
-        .expect("alice endpoint data should queue and trigger discovery");
-
-    for _ in 0..120 {
-        drain_to_quiescence(&mut nodes).await;
-        if let Ok(event) = bob_endpoint.event_rx.try_recv() {
-            match event {
-                NodeEndpointEvent::Data {
-                    source_peer,
-                    payload,
-                    ..
-                } => {
-                    assert_eq!(*source_peer.node_addr(), alice_addr);
-                    assert_eq!(source_peer.npub(), nodes[0].node.npub());
-                    assert_eq!(payload, b"first-contact");
-                }
-                NodeEndpointEvent::DataBatch { .. } => {
-                    panic!("expected single endpoint data event")
-                }
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut node1_endpoint.event_rx,
+            Duration::from_secs(10),
+            "node 1 endpoint data",
+        )
+        .await;
+        match event {
+            NodeEndpointEvent::Data {
+                source_peer,
+                payload,
+                ..
+            } => {
+                assert_eq!(*source_peer.node_addr(), node0_addr);
+                assert_eq!(source_peer.npub(), nodes[0].node.npub());
+                assert_eq!(payload, b"ping");
             }
-            assert!(
-                nodes[1].node.get_session(&alice_addr).is_none(),
-                "transit node must not create an app endpoint session for Alice"
-            );
-            assert!(
-                nodes[1].node.get_session(&bob_addr).is_none(),
-                "transit node must not create an app endpoint session for Bob"
-            );
-            assert!(
-                transit_endpoint.event_rx.try_recv().is_err(),
-                "transit node must not receive app endpoint data"
-            );
-            cleanup_nodes(&mut nodes).await;
-            return;
+            NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
 
-    cleanup_nodes(&mut nodes).await;
-    panic!("reply-learned first-contact endpoint data did not reach Bob");
+        nodes[1]
+            .node
+            .send_endpoint_data(node0_identity, b"pong".to_vec())
+            .await
+            .expect("reply data should send");
+
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut node0_endpoint.event_rx,
+            Duration::from_secs(10),
+            "node 0 endpoint data",
+        )
+        .await;
+        match event {
+            NodeEndpointEvent::Data {
+                source_peer,
+                payload,
+                ..
+            } => {
+                assert_eq!(*source_peer.node_addr(), node1_addr);
+                assert_eq!(source_peer.npub(), nodes[1].node.npub());
+                assert_eq!(payload, b"pong");
+            }
+            NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
+        }
+
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
+fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
+    run_large_stack_async_test("fips-endpoint-data-transit", || async {
+        // A-B-C: Alice and Bob are app endpoints. The middle node is only FIPS
+        // overlay transport and must not receive app-owned endpoint payloads.
+        let edges = vec![(0, 1), (1, 2)];
+        let mut nodes = run_tree_test(3, &edges, false).await;
+        verify_tree_convergence(&nodes);
+        populate_all_coord_caches(&mut nodes);
+
+        let mut alice_endpoint = nodes[0]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("alice endpoint data I/O should attach");
+        let mut transit_endpoint = nodes[1]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("transit endpoint data I/O should attach");
+        let mut bob_endpoint = nodes[2]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("bob endpoint data I/O should attach");
+
+        let alice_addr = *nodes[0].node.node_addr();
+        let bob_addr = *nodes[2].node.node_addr();
+        let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+        let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
+
+        nodes[0]
+            .node
+            .send_endpoint_data(bob_identity, b"alice-to-bob".to_vec())
+            .await
+            .expect("alice endpoint data should send");
+
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut bob_endpoint.event_rx,
+            Duration::from_secs(10),
+            "alice to bob endpoint data",
+        )
+        .await;
+        match event {
+            NodeEndpointEvent::Data {
+                source_peer,
+                payload,
+                ..
+            } => {
+                assert_eq!(*source_peer.node_addr(), alice_addr);
+                assert_eq!(source_peer.npub(), nodes[0].node.npub());
+                assert_eq!(payload, b"alice-to-bob");
+            }
+            NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
+        }
+
+        assert!(
+            nodes[1].node.get_session(&alice_addr).is_none(),
+            "transit node must not create an app endpoint session for Alice"
+        );
+        assert!(
+            nodes[1].node.get_session(&bob_addr).is_none(),
+            "transit node must not create an app endpoint session for Bob"
+        );
+        assert!(
+            transit_endpoint.event_rx.try_recv().is_err(),
+            "transit node must not receive app endpoint data"
+        );
+
+        nodes[2]
+            .node
+            .send_endpoint_data(alice_identity, b"bob-to-alice".to_vec())
+            .await
+            .expect("bob endpoint data should send");
+
+        let event = recv_endpoint_event_while_draining(
+            &mut nodes,
+            &mut alice_endpoint.event_rx,
+            Duration::from_secs(10),
+            "bob to alice endpoint data",
+        )
+        .await;
+        match event {
+            NodeEndpointEvent::Data {
+                source_peer,
+                payload,
+                ..
+            } => {
+                assert_eq!(*source_peer.node_addr(), bob_addr);
+                assert_eq!(source_peer.npub(), nodes[2].node.npub());
+                assert_eq!(payload, b"bob-to-alice");
+            }
+            NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
+        }
+        assert!(
+            transit_endpoint.event_rx.try_recv().is_err(),
+            "transit node must stay outside the app endpoint flow"
+        );
+
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
+fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary() {
+    run_large_stack_async_test("fips-endpoint-data-reply-learned", || async {
+        // A-B-C with no preloaded coordinate cache. A must discover C through B,
+        // establish the end-to-end endpoint-data session over that route, and keep
+        // B as pure transit.
+        let edges = vec![(0, 1), (1, 2)];
+        let mut nodes = run_tree_test(3, &edges, false).await;
+        verify_tree_convergence(&nodes);
+        for node in &mut nodes {
+            node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+        }
+
+        let mut transit_endpoint = nodes[1]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("transit endpoint data I/O should attach");
+        let mut bob_endpoint = nodes[2]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("bob endpoint data I/O should attach");
+
+        let alice_addr = *nodes[0].node.node_addr();
+        let bob_addr = *nodes[2].node.node_addr();
+        let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
+
+        nodes[0]
+            .node
+            .send_endpoint_data(bob_identity, b"first-contact".to_vec())
+            .await
+            .expect("alice endpoint data should queue and trigger discovery");
+
+        for _ in 0..120 {
+            drain_to_quiescence(&mut nodes).await;
+            if let Ok(event) = bob_endpoint.event_rx.try_recv() {
+                match event {
+                    NodeEndpointEvent::Data {
+                        source_peer,
+                        payload,
+                        ..
+                    } => {
+                        assert_eq!(*source_peer.node_addr(), alice_addr);
+                        assert_eq!(source_peer.npub(), nodes[0].node.npub());
+                        assert_eq!(payload, b"first-contact");
+                    }
+                    NodeEndpointEvent::DataBatch { .. } => {
+                        panic!("expected single endpoint data event")
+                    }
+                }
+                assert!(
+                    nodes[1].node.get_session(&alice_addr).is_none(),
+                    "transit node must not create an app endpoint session for Alice"
+                );
+                assert!(
+                    nodes[1].node.get_session(&bob_addr).is_none(),
+                    "transit node must not create an app endpoint session for Bob"
+                );
+                assert!(
+                    transit_endpoint.event_rx.try_recv().is_err(),
+                    "transit node must not receive app endpoint data"
+                );
+                cleanup_nodes(&mut nodes).await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        cleanup_nodes(&mut nodes).await;
+        panic!("reply-learned first-contact endpoint data did not reach Bob");
+    });
 }
 
 // ============================================================================
