@@ -56,11 +56,12 @@ impl LimitsConfig {
     }
 }
 
-/// Legacy connected UDP configuration (`node.connected_udp.*`).
+/// Test-only parser coverage for retired connected UDP config (`node.connected_udp.*`).
 ///
-/// Retained only so existing config files continue to parse. The scratch
-/// dataplane no longer has a connected-UDP runtime path or env-selected
-/// opener mode.
+/// Production config no longer exposes a connected-UDP runtime path or
+/// env-selected opener mode. Unknown `node.connected_udp` entries in old files
+/// are ignored by production deserialization.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectedUdpConfig {
     /// Legacy parse-only flag (`node.connected_udp.enabled`).
@@ -76,6 +77,7 @@ pub struct ConnectedUdpConfig {
     pub fd_reserve: usize,
 }
 
+#[cfg(test)]
 impl Default for ConnectedUdpConfig {
     fn default() -> Self {
         Self {
@@ -86,6 +88,7 @@ impl Default for ConnectedUdpConfig {
     }
 }
 
+#[cfg(test)]
 impl ConnectedUdpConfig {
     fn default_enabled() -> bool {
         false
@@ -748,7 +751,8 @@ pub struct NodeConfig {
     #[serde(default)]
     pub limits: LimitsConfig,
 
-    /// Legacy connected UDP config (`node.connected_udp.*`, parse-only).
+    /// Test-only parser coverage for retired connected UDP config.
+    #[cfg(test)]
     #[serde(default)]
     pub connected_udp: ConnectedUdpConfig,
 
@@ -837,6 +841,7 @@ impl Default for NodeConfig {
             link_dead_timeout_secs: 30,
             fast_link_dead_timeout_secs: 5,
             limits: LimitsConfig::default(),
+            #[cfg(test)]
             connected_udp: ConnectedUdpConfig::default(),
             rate_limit: RateLimitConfig::default(),
             retry: RetryConfig::default(),
