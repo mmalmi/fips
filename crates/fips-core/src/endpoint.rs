@@ -10,6 +10,7 @@ use crate::node::{
     EndpointCommandLane, EndpointDataPayload, EndpointEventSender, NodeEndpointCommand,
     NodeEndpointEvent,
 };
+use crate::upper::tun::TunOutboundTx;
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
@@ -235,7 +236,7 @@ pub struct FipsEndpoint {
     node_addr: NodeAddr,
     address: FipsAddress,
     discovery_scope: Option<String>,
-    outbound_packets: mpsc::Sender<Vec<u8>>,
+    outbound_packets: TunOutboundTx,
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
     endpoint_priority_commands: mpsc::Sender<NodeEndpointCommand>,
     endpoint_commands: mpsc::Sender<NodeEndpointCommand>,

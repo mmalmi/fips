@@ -58,7 +58,7 @@
         let unknown = tun_ipv6_packet(NodeAddr::from_bytes([0x62; 16]), 48);
         let invalid = vec![0u8; 39];
         let oversize = tun_ipv6_packet(dest, 65);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (tx, mut rx) = crate::upper::tun::tun_outbound_channel(8);
         tx.try_send(valid.clone()).expect("enqueue valid TUN packet");
         tx.try_send(unknown.clone())
             .expect("enqueue unknown TUN packet");
@@ -151,7 +151,7 @@
                 None,
             ))
             .expect("enqueue missing endpoint command");
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         drop(tun_tx);
         let mut source = PacketMover2RouteTableOutboundSource::new(
             &mut priority_rx,
@@ -226,7 +226,7 @@
             .expect("enqueue endpoint command");
 
         let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         drop((bulk_tx, tun_tx));
         let mut routes = PacketMover2LiveRouteTable::default();
         let mut source = PacketMover2RouteTableOutboundSource::new(
@@ -291,7 +291,7 @@
             )
             .expect("enqueue queued bulk endpoint command");
 
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         drop(tun_tx);
         let firsts = PacketMover2LiveOutboundFirsts::default()
             .with_endpoint_priority(Some(NodeEndpointCommand::send_oneway(
@@ -384,7 +384,7 @@
             })
             .expect("enqueue stale bulk command");
 
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         drop(tun_tx);
         let mut source = PacketMover2RouteTableOutboundSource::new(
             &mut priority_rx,
@@ -456,7 +456,7 @@
             })
             .expect("enqueue stale bulk command");
 
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         let tun_packet = tun_icmpv6_packet(tun_dest, 48);
         tun_tx
             .try_send(tun_packet.clone())
@@ -531,7 +531,7 @@
             })
             .expect("enqueue stale bulk command");
 
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         drop(tun_tx);
         let mut source = PacketMover2RouteTableOutboundSource::new(
             &mut priority_rx,
@@ -585,7 +585,7 @@
             })
             .expect("enqueue stale bulk command");
 
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         drop(tun_tx);
         let mut source = PacketMover2RouteTableOutboundSource::new(
             &mut priority_rx,
@@ -626,7 +626,7 @@
 
         let first_tun_packet = tun_ipv6_packet(dest, 48);
         let queued_tun_packet = tun_ipv6_packet(dest, 56);
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(2);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(2);
         tun_tx
             .try_send(queued_tun_packet.clone())
             .expect("enqueue queued TUN packet");
@@ -700,7 +700,7 @@
             .expect("enqueue endpoint batch");
         drop(priority_tx);
 
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         let tun_packet = tun_ipv6_packet(tun_dest, 48);
         tun_tx
             .try_send(tun_packet.clone())

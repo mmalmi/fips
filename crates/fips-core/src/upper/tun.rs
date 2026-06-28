@@ -37,6 +37,8 @@ use tracing::{error, warn};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::Layer;
 
+pub(crate) use super::tun_outbound::{TunOutboundAdmission, tun_outbound_channel};
+pub use super::tun_outbound::{TunOutboundRx, TunOutboundTx};
 pub use super::tun_write::TunTx;
 #[cfg(test)]
 pub(crate) use super::tun_write::write_channel_with_bulk_capacity;
@@ -141,11 +143,6 @@ pub(crate) fn per_flow_max_mss(
     );
     result
 }
-
-/// Channel sender for outbound packets from TUN reader to Node.
-pub type TunOutboundTx = tokio::sync::mpsc::Sender<Vec<u8>>;
-/// Channel receiver for outbound packets (consumed by Node's RX loop).
-pub type TunOutboundRx = tokio::sync::mpsc::Receiver<Vec<u8>>;
 
 /// Errors that can occur with TUN operations.
 #[derive(Debug, Error)]
@@ -720,8 +717,9 @@ fn handle_tun_packet(
         if clamp_tcp_mss(packet, effective_max_mss) {
             trace!(name = %name, max_mss = effective_max_mss, "Clamped TCP MSS in SYN packet");
         }
-        if outbound_tx.blocking_send(packet.to_vec()).is_err() {
-            return false; // Channel closed, shutdown
+        match outbound_tx.admit_from_tun_reader(packet.to_vec()) {
+            Ok(TunOutboundAdmission::Enqueued | TunOutboundAdmission::BulkDropped) => {}
+            Err(_) => return false, // Channel closed, shutdown
         }
     } else {
         // Non-FIPS destination: send ICMPv6 Destination Unreachable

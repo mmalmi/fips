@@ -484,7 +484,8 @@
         ]));
         let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
-        let (tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
         tun_outbound_tx
             .try_send(tun_ipv6_packet(fmp_source, 48))
             .expect("enqueue TUN outbound packet");
@@ -597,7 +598,8 @@
         );
         let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
-        let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
         let mut deferred_endpoint_commands = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut raw_ingress = PacketMover2FmpPacketRxSource::new(&mut packet_rx);

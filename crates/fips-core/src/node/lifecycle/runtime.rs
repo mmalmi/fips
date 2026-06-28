@@ -221,7 +221,8 @@ impl Node {
 
                     // Create outbound channel for TUN reader → Node
                     let tun_channel_size = self.config.node.buffers.tun_channel;
-                    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(tun_channel_size);
+                    let (outbound_tx, outbound_rx) =
+                        crate::upper::tun::tun_outbound_channel(tun_channel_size);
 
                     // Spawn reader thread
                     let transport_mtu = self.transport_mtu();

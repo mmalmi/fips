@@ -56,7 +56,7 @@ impl Node {
         let (mut tun_outbound_rx, _tun_guard) = match self.tun_outbound_rx.take() {
             Some(rx) => (rx, None),
             None => {
-                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                let (tx, rx) = crate::upper::tun::tun_outbound_channel(1);
                 (rx, Some(tx))
             }
         };

@@ -39,7 +39,7 @@
             })
             .expect("enqueue stale bulk command");
 
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         let tun_packet = tun_icmpv6_packet(tun_dest, 48);
         tun_tx
             .try_send(tun_packet.clone())

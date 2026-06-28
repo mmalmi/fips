@@ -30,7 +30,7 @@ impl Node {
         }
 
         let capacity = capacity.max(1);
-        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(capacity);
+        let (outbound_tx, outbound_rx) = crate::upper::tun::tun_outbound_channel(capacity);
         let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(capacity);
         self.tun_outbound_rx = Some(outbound_rx);
         self.external_packet_tx = Some(inbound_tx);

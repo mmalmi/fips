@@ -33,7 +33,7 @@
             })
             .expect("enqueue fresh bulk command");
 
-        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
         drop(tun_tx);
         let mut source = PacketMover2RouteTableOutboundSource::new(
             &mut priority_rx,

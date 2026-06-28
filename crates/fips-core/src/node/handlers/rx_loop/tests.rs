@@ -75,7 +75,7 @@ async fn side_queue_drain_preserves_tun_slice_after_endpoint_batch_overrun() {
     let (scratch_tun_tx, scratch_endpoint_tx) = closed_scratch_sinks();
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
-    let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+    let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
     let remote = crate::PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
@@ -160,7 +160,7 @@ async fn packet_mover2_scratch_turn_uses_rx_loop_owned_channels() {
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
         .attach_endpoint_data_io(1)
@@ -203,7 +203,7 @@ async fn packet_mover2_scratch_replays_deferred_endpoint_commands() {
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
         .attach_endpoint_data_io(1)
@@ -257,7 +257,7 @@ async fn packet_mover2_scratch_turn_reports_raw_ingress_failures() {
     let (packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
         .attach_endpoint_data_io(1)

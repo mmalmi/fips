@@ -55,7 +55,8 @@
         );
         let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
-        let (tun_outbound_tx, mut tun_outbound_rx) = tokio::sync::mpsc::channel(1);
+        let (tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
         let tun_packet = tun_ipv6_packet(fmp_source, 48);
         tun_outbound_tx
             .try_send(tun_packet.clone())
