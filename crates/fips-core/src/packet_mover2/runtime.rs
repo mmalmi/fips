@@ -309,7 +309,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         let mut summary = PacketMover2RuntimeSummary::default();
         let mut outbound_firsts = outbound_firsts;
         let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
-        if let Some(packet) = outbound_firsts.take_direct_outbound() {
+        if let Some(packet) = outbound_firsts.take_initial_outbound() {
             self.admit_outbound_packet(packet, &mut summary);
         }
 

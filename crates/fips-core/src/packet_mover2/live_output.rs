@@ -1,7 +1,7 @@
 
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveOutboundFirsts {
-    direct_outbound: Option<OutboundPacket>,
+    initial_outbound: Option<OutboundPacket>,
     endpoint_priority: Option<NodeEndpointCommand>,
     endpoint_bulk: Option<NodeEndpointCommand>,
     tun_packet: Option<Vec<u8>>,
@@ -9,13 +9,13 @@ pub(crate) struct PacketMover2LiveOutboundFirsts {
 }
 
 impl PacketMover2LiveOutboundFirsts {
-    pub(crate) fn with_direct_outbound(mut self, packet: Option<OutboundPacket>) -> Self {
-        self.direct_outbound = packet;
+    pub(crate) fn with_initial_outbound(mut self, packet: Option<OutboundPacket>) -> Self {
+        self.initial_outbound = packet;
         self
     }
 
-    pub(crate) fn take_direct_outbound(&mut self) -> Option<OutboundPacket> {
-        self.direct_outbound.take()
+    pub(crate) fn take_initial_outbound(&mut self) -> Option<OutboundPacket> {
+        self.initial_outbound.take()
     }
 
     pub(crate) fn with_endpoint_priority(mut self, command: Option<NodeEndpointCommand>) -> Self {
