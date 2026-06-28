@@ -1,14 +1,8 @@
-use super::budget::{
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
-    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget,
-};
+use super::budget::{NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, non_packet_drain_budget};
 use super::drain::{
-    DecryptReturnDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState,
-    SingleLaneDrainCursor,
+    RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
 use crate::control::protocol::Request;
-use crate::node::decrypt_worker::DecryptWorkerEvent;
 #[cfg(unix)]
 use crate::{
     Identity,
@@ -61,42 +55,6 @@ fn non_packet_drain_budget_caps_large_packet_turns() {
     assert_eq!(
         non_packet_drain_budget(PACKET_DRAIN_BUDGET),
         NON_PACKET_DRAIN_BUDGET
-    );
-}
-
-#[test]
-fn fallback_drain_plan_stays_bounded_under_return_pressure() {
-    let plan = fallback_drain_plan();
-    assert_eq!(
-        plan,
-        FallbackDrainPlan {
-            interleave_every: FALLBACK_INTERLEAVE_EVERY,
-            interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
-            trailing_budget: NON_PACKET_DRAIN_BUDGET,
-        }
-    );
-    assert!(
-        plan.interleave_budget <= NON_PACKET_DRAIN_BUDGET,
-        "fallback returns should keep a bounded normal turn even when bulk is backlogged"
-    );
-    assert!(
-        plan.trailing_budget <= NON_PACKET_DRAIN_BUDGET,
-        "trailing fallback returns should not grow into a pressure side path"
-    );
-    assert!(
-        NON_PACKET_DRAIN_BUDGET <= 16
-            && plan.interleave_budget <= 16
-            && super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET <= 16,
-        "non-packet turns must stay short so fresh transport priority is not held behind bulk work"
-    );
-}
-
-#[test]
-fn authenticated_bulk_yields_to_ready_transport_priority() {
-    assert!(authenticated_bulk_preempts_packet_rx(0));
-    assert!(
-        !authenticated_bulk_preempts_packet_rx(1),
-        "bulk endpoint delivery should not preempt a ready control-sized transport packet"
     );
 }
 
@@ -231,46 +189,6 @@ async fn drain_control_queries_answers_show_requests() {
     assert_eq!(response.status, "ok");
     assert!(response.data.is_some());
     assert!(control_rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
-    let mut node =
-        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
-    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (fallback_tx, mut fallback_rx) =
-        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
-    let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let (scratch_tun_tx, scratch_endpoint_tx) = closed_scratch_sinks();
-
-    assert!(fallback_tx.send_for_test(DecryptWorkerEvent::AuthenticatedSessionBatch(Vec::new())));
-    assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
-    assert!(!fallback_rx.authenticated_bulk.is_empty());
-
-    let drained = node
-        .drain_rx_loop_data_queues(
-            &mut packet_rx,
-            &mut fallback_rx,
-            &mut feedback_rx,
-            &mut tun_rx,
-            &mut endpoint_priority_rx,
-            &mut endpoint_rx,
-            &scratch_tun_tx,
-            &scratch_endpoint_tx,
-            NON_PACKET_DRAIN_BUDGET,
-        )
-        .await;
-
-    assert_eq!(drained.packets, 0);
-    assert_eq!(drained.decrypt, 1);
-    assert!(fallback_rx.authenticated_bulk.is_empty());
-    assert!(
-        drained.has_data_drained(),
-        "queued authenticated receive bookkeeping must be applied before link-dead maintenance"
-    );
 }
 
 #[tokio::test]
@@ -447,8 +365,6 @@ async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_livene
     assert!(node.sessions.insert(dest_addr, session).is_none());
 
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (_fallback_tx, mut fallback_rx) =
-        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
     let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
@@ -477,7 +393,6 @@ async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_livene
     let drained = node
         .drain_rx_loop_data_queues(
             &mut packet_rx,
-            &mut fallback_rx,
             &mut feedback_rx,
             &mut tun_rx,
             &mut endpoint_priority_rx,
@@ -611,101 +526,7 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
 }
 
 #[tokio::test]
-async fn fallback_drain_prefers_ready_priority_over_selected_bulk() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (_authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("priority-fallback").await.unwrap();
-    bulk_tx.send("queued-bulk-fallback").await.unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, None, Some("selected-bulk-fallback"), 4);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("priority-fallback")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("selected-bulk-fallback")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-bulk-fallback")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        None
-    );
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn decrypt_return_drain_prefers_authenticated_bulk_over_selected_fallback_bulk() {
-    let (_priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    authenticated_bulk_tx
-        .send("queued-authenticated-bulk")
-        .await
-        .unwrap();
-    bulk_tx.send("queued-fallback-bulk").await.unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, None, Some("selected-fallback-bulk"), 4);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-authenticated-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("selected-fallback-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-fallback-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        None
-    );
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn decrypt_return_drain_prefers_priority_over_selected_authenticated_bulk() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (_bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("queued-priority").await.unwrap();
-    authenticated_bulk_tx
-        .send("queued-authenticated-bulk")
-        .await
-        .unwrap();
-    let mut drain =
-        DecryptReturnDrainCursor::new(None, Some("selected-authenticated-bulk"), None, 4);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-priority")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("selected-authenticated-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-authenticated-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        None
-    );
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn priority_fallback_drain_leaves_bulk_for_lower_priority_turn() {
+async fn single_lane_drain_leaves_other_lanes_for_later_turns() {
     let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
     let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
 

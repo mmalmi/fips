@@ -10,6 +10,7 @@
 //! packet_mover2 and then `PeerLifecycleRegistry`, keeping liveness, link
 //! stats, path rotation, and MMP receive metrics in one lifecycle owner.
 
+#[cfg(test)]
 use crate::node::decrypt_worker::DecryptFailureReport;
 #[cfg(test)]
 use crate::node::decrypt_worker::{DecryptJob, DecryptSessionKey};
@@ -617,6 +618,7 @@ impl Node {
     /// us whether the current session has authenticated anything yet. That lets
     /// us ignore a bounded startup drain of stale ciphertext after peer restart
     /// or rekey while keeping the normal recovery path for established sessions.
+    #[cfg(test)]
     pub(in crate::node) async fn handle_decrypt_failure_report(
         &mut self,
         report: &DecryptFailureReport,

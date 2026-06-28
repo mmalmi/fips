@@ -102,6 +102,7 @@ impl Node {
         self.endpoint_events.deliver_endpoint_data(message)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn decrypt_direct_session_delivery_sink(
         &self,
     ) -> decrypt_worker::DecryptDirectSessionDeliverySink {

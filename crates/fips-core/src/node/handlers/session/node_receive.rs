@@ -1,10 +1,12 @@
 impl Node {
+    #[cfg(test)]
     async fn flush_pending_destinations(&mut self, dests: &mut Vec<NodeAddr>) {
         for dest_addr in std::mem::take(dests) {
             self.flush_pending_packets(&dest_addr).await;
         }
     }
 
+    #[cfg(test)]
     fn note_pending_flush_dest(dests: &mut Vec<NodeAddr>, finish: SessionDispatchFinish) {
         if let Some(dest_addr) = finish.pending_flush_dest() {
             if !dests.contains(&dest_addr) {
@@ -13,6 +15,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     fn apply_worker_fsp_receive_sync(
         &mut self,
         source_addr: NodeAddr,
@@ -319,6 +322,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn record_worker_authenticated_fmp_receive(
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
@@ -339,6 +343,7 @@ impl Node {
         );
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn process_authenticated_fmp_receive_from_worker(
         &mut self,
         receive: DecryptAuthenticatedFmpReceive,
@@ -352,6 +357,7 @@ impl Node {
         );
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn process_authenticated_session_from_worker(
         &mut self,
         authenticated: DecryptAuthenticatedSession,
@@ -389,6 +395,7 @@ impl Node {
         dispatch.dispatch(self).await;
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn process_authenticated_session_batch_from_worker(
         &mut self,
         sessions: Vec<DecryptAuthenticatedSession>,
@@ -434,6 +441,7 @@ impl Node {
             .await;
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn process_direct_session_data_from_worker(
         &mut self,
         direct: DecryptDirectSessionData,
@@ -459,6 +467,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     fn deliver_direct_session_delivery_from_worker(
         &mut self,
         source_addr: NodeAddr,
@@ -492,6 +501,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn process_direct_session_data_batch_from_worker(
         &mut self,
         directs: Vec<DecryptDirectSessionData>,
@@ -519,6 +529,7 @@ impl Node {
             .await;
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn process_direct_session_commit_from_worker(
         &mut self,
         commit: DecryptDirectSessionCommit,
@@ -542,6 +553,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn process_direct_session_commit_batch_from_worker(
         &mut self,
         commits: Vec<DecryptDirectSessionCommit>,
@@ -568,6 +580,7 @@ impl Node {
             .await;
     }
 
+    #[cfg(test)]
     fn commit_direct_session_data_from_worker(
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
@@ -604,6 +617,7 @@ impl Node {
         Some(finish)
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn process_fsp_decrypt_failure_from_worker(
         &mut self,
         report: DecryptFspFailureReport,

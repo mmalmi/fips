@@ -1,4 +1,3 @@
-use crate::node::decrypt_worker::DecryptWorkerFallbackReceivers;
 #[cfg(test)]
 use crate::{node::decrypt_worker::DecryptJob, transport::ReceivedPacket};
 use std::time::{Duration, Instant};
@@ -22,10 +21,6 @@ pub(super) enum PacketProcessAction {
         packet: ReceivedPacket,
         timer: crate::perf_profile::Timer,
     },
-}
-
-pub(super) fn decrypt_fallback_has_ready(rx: &DecryptWorkerFallbackReceivers) -> bool {
-    !rx.priority.is_empty() || !rx.authenticated_bulk.is_empty() || !rx.bulk.is_empty()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -220,6 +215,7 @@ impl RxLoopMaintenancePlan {
     }
 }
 
+#[cfg(test)]
 pub(super) struct DecryptReturnDrainCursor<T> {
     first_priority: Option<T>,
     first_authenticated_bulk: Option<T>,
@@ -228,6 +224,7 @@ pub(super) struct DecryptReturnDrainCursor<T> {
     drained: usize,
 }
 
+#[cfg(test)]
 impl<T> DecryptReturnDrainCursor<T> {
     pub(super) fn new(
         first_priority: Option<T>,

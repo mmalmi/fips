@@ -8,6 +8,7 @@ mod accessors_impl;
 mod acl;
 mod bloom;
 mod core_impl;
+#[cfg(test)]
 mod decrypt_worker;
 mod discovery_rate_limit;
 mod encrypt_worker;
@@ -338,12 +339,10 @@ pub struct Node {
     /// tests until those are retired.
     #[cfg(test)]
     decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
-    /// Decrypt-worker return channel. Compact authenticated receive metadata,
-    /// direct local FSP completions, and fallback plaintext all return here so
-    /// rx_loop can apply node-owned bookkeeping and any remaining legacy link
-    /// dispatch. Drained with a bounded priority lane ahead of bounded
-    /// authenticated and fallback bulk lanes.
+    /// Test-only decrypt-worker return channels for old direct-handler tests.
+    #[cfg(test)]
     decrypt_fallback_rx: Option<decrypt_worker::DecryptWorkerFallbackReceivers>,
+    #[cfg(test)]
     decrypt_fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,

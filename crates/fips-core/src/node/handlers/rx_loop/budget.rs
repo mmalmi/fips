@@ -1,12 +1,5 @@
 use std::time::Duration;
 
-/// How often the raw-packet drain loop yields a slice of work to the
-/// decrypt-fallback drain. Keeps TCP ACK / heartbeat / handshake
-/// progress steady under sustained inbound bursts.
-pub(super) const FALLBACK_INTERLEAVE_EVERY: usize = 32;
-/// Cap on the per-interleave fallback drain so a hot inbound spike
-/// can't starve the outer raw-packet drain in the opposite direction.
-pub(super) const FALLBACK_INTERLEAVE_BUDGET: usize = 16;
 /// Side-queue interleaves are a progress reserve, not a full drain. Keeping
 /// this smaller than the packet budget preserves raw receive throughput while
 /// avoiding tick-sized liveness stalls.
@@ -40,31 +33,6 @@ pub(super) fn split_side_queue_budget(budget: usize) -> (usize, usize) {
     let endpoint_budget = (budget / 2).max(1);
     let tun_budget = budget.saturating_sub(endpoint_budget).max(1);
     (endpoint_budget, tun_budget)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct FallbackDrainPlan {
-    pub(super) interleave_every: usize,
-    pub(super) interleave_budget: usize,
-    pub(super) trailing_budget: usize,
-}
-
-impl FallbackDrainPlan {
-    const fn normal() -> Self {
-        Self {
-            interleave_every: FALLBACK_INTERLEAVE_EVERY,
-            interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
-            trailing_budget: NON_PACKET_DRAIN_BUDGET,
-        }
-    }
-}
-
-pub(super) fn fallback_drain_plan() -> FallbackDrainPlan {
-    FallbackDrainPlan::normal()
-}
-
-pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {
-    transport_priority_packets == 0
 }
 
 pub(super) fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {

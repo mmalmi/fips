@@ -1,6 +1,7 @@
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
+#[cfg(test)]
 use crate::node::decrypt_worker::{
     DecryptAuthenticatedFmpReceive, DecryptAuthenticatedSession, DecryptDirectSessionCommit,
     DecryptDirectSessionData, DecryptDirectSessionDelivery, DecryptFspFailureReport,
