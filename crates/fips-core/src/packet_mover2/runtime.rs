@@ -696,27 +696,39 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         mut summary: PacketMover2RuntimeSummary,
         limit: usize,
     ) -> PacketMover2RuntimeSummary {
-        let dispatched = self.mover.run_aead_available_into(
-            limit,
-            &mut self.open_work,
-            &mut self.seal_work,
-            &mut self.retired,
-            &mut self.drops,
-        );
-        summary.dispatched = summary.dispatched.saturating_add(dispatched);
+        let mut remaining = limit;
+        while remaining > 0 {
+            let dispatched = self.mover.run_aead_available_into(
+                remaining,
+                &mut self.open_work,
+                &mut self.seal_work,
+                &mut self.retired,
+                &mut self.drops,
+            );
+            summary.dispatched = summary.dispatched.saturating_add(dispatched);
+            remaining = remaining.saturating_sub(dispatched);
 
-        let mut retired = std::mem::take(&mut self.retired);
-        for packet in retired.drain(..) {
-            match packet {
-                RetiredPacket::Output(mut output) => {
-                    output.promote_opened_latency_sensitive_payload();
-                    self.outputs.push(output);
+            let mut generated_outbound = 0usize;
+            let mut retired = std::mem::take(&mut self.retired);
+            for packet in retired.drain(..) {
+                match packet {
+                    RetiredPacket::Output(mut output) => {
+                        output.promote_opened_latency_sensitive_payload();
+                        self.outputs.push(output);
+                    }
+                    RetiredPacket::Outbound(packet) => {
+                        self.admit_outbound_packet(packet, &mut summary);
+                        generated_outbound = generated_outbound.saturating_add(1);
+                    }
+                    RetiredPacket::Drop(_) => {}
                 }
-                RetiredPacket::Outbound(packet) => self.admit_outbound_packet(packet, &mut summary),
-                RetiredPacket::Drop(_) => {}
+            }
+            self.retired = retired;
+
+            if dispatched == 0 || generated_outbound == 0 {
+                break;
             }
         }
-        self.retired = retired;
 
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();

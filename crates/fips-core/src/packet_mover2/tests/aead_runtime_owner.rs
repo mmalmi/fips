@@ -162,6 +162,68 @@
     }
 
     #[test]
+    fn aead_turn_runner_spends_remaining_budget_on_fsp_post_seal_wrap() {
+        let source = NodeAddr::from_bytes([0x31; 16]);
+        let dest = NodeAddr::from_bytes([0x32; 16]);
+        let next_hop = NodeAddr::from_bytes([0x33; 16]);
+        let fsp_owner = OwnerId::fsp_node(dest);
+        let fmp_owner = OwnerId::fmp_node(next_hop);
+        let fsp_key = 31;
+        let fmp_key = 32;
+        let fmp_path = TransportPath::new(3200);
+        let mut driver =
+            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8), CopyCryptoWorker);
+        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(90));
+        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(100));
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_active_path(fmp_path.clone());
+
+        let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 5151, source, dest)
+            .with_ttl(42)
+            .with_path_mtu(1280);
+        let packet = OutboundPacket::fsp(
+            fsp_owner,
+            1,
+            PacketClass::Liveness,
+            0x03,
+            b"session-priority".to_vec(),
+        )
+        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
+        .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
+
+        let turn = driver.run_aead_classified_turn(std::iter::empty(), [packet], 2);
+        assert_eq!(turn.summary().outbound_admitted(), 2);
+        assert_eq!(turn.summary().dispatched(), 2);
+        assert_eq!(turn.summary().outputs(), 1);
+        assert!(turn.drops().is_empty());
+
+        let output = &turn.outputs()[0];
+        assert_eq!(output.owner(), fmp_owner);
+        assert_eq!(output.counter(), 100);
+        assert_eq!(output.target(), OutputTarget::Transport);
+        assert_eq!(output.path(), Some(fmp_path));
+        let fmp_plaintext = open_sealed_output(output, fmp_key);
+        let datagram = crate::protocol::SessionDatagramRef::decode(&fmp_plaintext[1..])
+            .expect("wrapped session datagram");
+        let fsp_header = FspWireHeader::parse(datagram.payload).unwrap();
+        assert_eq!(fsp_header.counter(), 90);
+        assert_eq!(
+            open_fsp_wire_payload(datagram.payload, fsp_key),
+            b"session-priority"
+        );
+    }
+
+    #[test]
     fn aead_turn_runner_reserves_progress_for_outbound_priority_under_inbound_bulk() {
         let owner = OwnerId::fmp(701);
         let open_key = 13;
@@ -817,10 +879,11 @@
         fn send_tun(
             &mut self,
             output: &PacketOutput,
-            payload: &[u8],
+            payload: PacketBuffer,
         ) -> Result<(), PacketMover2OutputError> {
+            let payload = payload.into_vec();
             self.outputs
-                .push(LiveOutputRecord::from_opened(output, payload));
+                .push(LiveOutputRecord::from_opened(output, &payload));
             Ok(())
         }
     }
@@ -834,10 +897,11 @@
         fn send_endpoint(
             &mut self,
             output: &PacketOutput,
-            payload: &[u8],
+            payload: PacketBuffer,
         ) -> Result<(), PacketMover2OutputError> {
+            let payload = payload.into_vec();
             self.outputs
-                .push(LiveOutputRecord::from_opened(output, payload));
+                .push(LiveOutputRecord::from_opened(output, &payload));
             Ok(())
         }
     }

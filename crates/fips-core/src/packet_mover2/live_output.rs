@@ -564,18 +564,25 @@ impl PacketOutput {
     }
 
     pub(crate) fn into_opened_payload(mut self) -> Result<PacketBuffer, Self> {
+        match self.take_opened_payload() {
+            Some(payload) => Ok(payload),
+            None => Err(self),
+        }
+    }
+
+    fn take_opened_payload(&mut self) -> Option<PacketBuffer> {
         let header_len = match self.owner.protocol {
             PacketProtocol::Fmp => FMP_ESTABLISHED_HEADER_SIZE,
             PacketProtocol::Fsp => match FspWireHeader::parse(&self.payload) {
                 Ok(header) => header.ciphertext_offset(),
-                Err(_) => return Err(self),
+                Err(_) => return None,
             },
         };
         if self.payload.len() < header_len {
-            return Err(self);
+            return None;
         }
         self.payload.drain(..header_len);
-        Ok(self.payload)
+        Some(std::mem::take(&mut self.payload))
     }
 }
 
@@ -606,7 +613,7 @@ pub(crate) trait PacketMover2TunOutput {
     fn send_tun(
         &mut self,
         output: &PacketOutput,
-        payload: &[u8],
+        payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError>;
 }
 
@@ -614,7 +621,7 @@ impl<T: PacketMover2TunOutput + ?Sized> PacketMover2TunOutput for &mut T {
     fn send_tun(
         &mut self,
         output: &PacketOutput,
-        payload: &[u8],
+        payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError> {
         (**self).send_tun(output, payload)
     }
@@ -635,14 +642,14 @@ impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
     fn send_tun(
         &mut self,
         output: &PacketOutput,
-        payload: &[u8],
+        payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError> {
         let lane = match output.lane() {
             Lane::Priority => crate::upper::tun::TunWriteLane::Priority,
             Lane::Bulk => crate::upper::tun::TunWriteLane::Bulk,
         };
         self.tx
-            .send_with_lane(payload.to_vec(), lane)
+            .send_with_lane(payload.into_vec(), lane)
             .map_err(|error| match error.kind() {
                 crate::upper::tun::TunWriteErrorKind::Closed => {
                     PacketMover2OutputError::Unavailable
@@ -658,7 +665,7 @@ pub(crate) trait PacketMover2EndpointOutput {
     fn send_endpoint(
         &mut self,
         output: &PacketOutput,
-        payload: &[u8],
+        payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError>;
 }
 
@@ -666,7 +673,7 @@ impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut
     fn send_endpoint(
         &mut self,
         output: &PacketOutput,
-        payload: &[u8],
+        payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError> {
         (**self).send_endpoint(output, payload)
     }
@@ -704,7 +711,7 @@ where
     fn send_endpoint(
         &mut self,
         output: &PacketOutput,
-        payload: &[u8],
+        payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError> {
         let Some(source_addr) = output.owner().node_addr() else {
             return Err(PacketMover2OutputError::NoRoute);
@@ -719,7 +726,7 @@ where
         self.tx
             .send(NodeEndpointEvent::Data {
                 source_peer,
-                payload: payload.to_vec().into(),
+                payload: payload.into_vec().into(),
                 enqueued_at_ms: crate::time::now_ms(),
                 queued_at: crate::perf_profile::stamp(),
             })
@@ -759,7 +766,7 @@ where
     Endpoint: PacketMover2EndpointOutput,
     Transport: PacketMover2TransportOutput,
 {
-    fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError> {
+    fn send(&mut self, mut output: PacketOutput) -> Result<(), PacketMover2OutputError> {
         if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
             record_stale_bulk_output_drop(output.target());
             return Err(PacketMover2OutputError::StaleQueuedBulk);
@@ -768,13 +775,13 @@ where
         match output.target {
             OutputTarget::Tun => {
                 let payload = output
-                    .opened_payload()
+                    .take_opened_payload()
                     .ok_or(PacketMover2OutputError::Unavailable)?;
                 self.tun.send_tun(&output, payload)
             }
             OutputTarget::Endpoint => {
                 let payload = output
-                    .opened_payload()
+                    .take_opened_payload()
                     .ok_or(PacketMover2OutputError::Unavailable)?;
                 self.endpoint.send_endpoint(&output, payload)
             }
