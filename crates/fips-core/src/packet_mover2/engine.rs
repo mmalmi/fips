@@ -317,8 +317,8 @@ impl PacketMover2 {
         retired.clear();
         open_work.clear();
         seal_work.clear();
-        let mut aead_jobs = Vec::new();
-        let mut completions = Vec::new();
+        let opened = StatelessAeadOpenWorker;
+        let sealed = StatelessAeadSealWorker;
         let outbound_priority_reserve =
             outbound_priority_dispatch_limit(limit, self.outbound_admission.has_priority_pending());
         let pre_priority_inbound_limit =
@@ -329,8 +329,7 @@ impl PacketMover2 {
             self.dispatch_available_into(pre_priority_inbound_limit, open_work);
         self.execute_open_work_batch(
             open_work,
-            &mut aead_jobs,
-            &mut completions,
+            &opened,
             retired,
             &mut fsp_worker_open,
             &mut fsp_worker_open_bulk,
@@ -338,7 +337,10 @@ impl PacketMover2 {
 
         let priority_outbound_dispatched =
             self.dispatch_outbound_priority_available_into(outbound_priority_reserve, seal_work);
-        self.execute_seal_work_batch(seal_work.drain(..), &mut aead_jobs, &mut completions, retired);
+        for work in seal_work.drain(..) {
+            let completion = self.execute_seal_work(work, &sealed);
+            retired.extend(self.retire_completion(completion));
+        }
 
         let dispatched_before_bulk =
             pre_priority_inbound_dispatched.saturating_add(priority_outbound_dispatched);
@@ -353,24 +355,24 @@ impl PacketMover2 {
             .iter()
             .take_while(|work| work.reservation.lane == Lane::Priority)
             .count();
-        self.execute_seal_work_batch(
-            seal_work.drain(..leading_priority_seals),
-            &mut aead_jobs,
-            &mut completions,
-            retired,
-        );
+        for work in seal_work.drain(..leading_priority_seals) {
+            let completion = self.execute_seal_work(work, &sealed);
+            retired.extend(self.retire_completion(completion));
+        }
 
         self.execute_open_work_batch(
             open_work,
-            &mut aead_jobs,
-            &mut completions,
+            &opened,
             retired,
             &mut fsp_worker_open,
             &mut fsp_worker_open_bulk,
         );
         record_fsp_worker_open_dispatch(fsp_worker_open, fsp_worker_open_bulk);
 
-        self.execute_seal_work_batch(seal_work.drain(..), &mut aead_jobs, &mut completions, retired);
+        for work in seal_work.drain(..) {
+            let completion = self.execute_seal_work(work, &sealed);
+            retired.extend(self.retire_completion(completion));
+        }
 
         drops.extend(self.drain_drops());
         pre_priority_inbound_dispatched
@@ -383,63 +385,61 @@ impl PacketMover2 {
         std::mem::take(&mut self.drops)
     }
 
+    fn execute_seal_work(
+        &mut self,
+        work: OutboundCryptoWork,
+        sealed: &StatelessAeadSealWorker,
+    ) -> CryptoCompletion {
+        let reservation = work.reservation.clone();
+        match self.owner_crypto_keys(reservation.owner) {
+            Some(keys) => {
+                let _timer = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::PacketMover2AeadSeal,
+                );
+                match AeadSealWork::from_outbound_work(work, keys.seal) {
+                    Ok(work) => sealed.execute(work),
+                    Err(_) => CryptoCompletion {
+                        reservation,
+                        result: CryptoResult::Failed(CryptoFailureKind::Seal),
+                    },
+                }
+            }
+            None => CryptoCompletion {
+                reservation,
+                result: CryptoResult::Failed(CryptoFailureKind::Seal),
+            },
+        }
+    }
+
     fn execute_open_work_batch(
         &mut self,
         open_work: &mut Vec<CryptoWork>,
-        aead_jobs: &mut Vec<PacketMover2AeadJob>,
-        completions: &mut Vec<CryptoCompletion>,
+        opened: &StatelessAeadOpenWorker,
         retired: &mut Vec<RetiredPacket>,
         fsp_worker_open: &mut u64,
         fsp_worker_open_bulk: &mut u64,
     ) {
-        aead_jobs.clear();
-        completions.clear();
         for work in open_work.drain(..) {
             let reservation = work.reservation.clone();
             count_fsp_worker_open_dispatch(&reservation, fsp_worker_open, fsp_worker_open_bulk);
-            match self.owner_crypto_keys(reservation.owner) {
-                Some(keys) => aead_jobs.push(PacketMover2AeadJob::Open {
-                    work,
-                    cipher: keys.open,
-                }),
-                None => completions.push(CryptoCompletion {
+            let completion = match self.owner_crypto_keys(reservation.owner) {
+                Some(keys) => {
+                    let _timer = crate::perf_profile::Timer::start(
+                        crate::perf_profile::Stage::PacketMover2AeadOpen,
+                    );
+                    match AeadOpenWork::from_crypto_work(work, keys.open) {
+                        Ok(work) => opened.execute(work),
+                        Err(_) => CryptoCompletion {
+                            reservation,
+                            result: CryptoResult::Failed(CryptoFailureKind::Open),
+                        },
+                    }
+                }
+                None => CryptoCompletion {
                     reservation,
                     result: CryptoResult::Failed(CryptoFailureKind::Open),
-                }),
-            }
-        }
-        packet_mover2_aead_pool().execute_jobs_into(aead_jobs, completions);
-        for completion in completions.drain(..) {
-            retired.extend(self.retire_completion(completion));
-        }
-    }
-
-    fn execute_seal_work_batch<I>(
-        &mut self,
-        seal_work: I,
-        aead_jobs: &mut Vec<PacketMover2AeadJob>,
-        completions: &mut Vec<CryptoCompletion>,
-        retired: &mut Vec<RetiredPacket>,
-    ) where
-        I: IntoIterator<Item = OutboundCryptoWork>,
-    {
-        aead_jobs.clear();
-        completions.clear();
-        for work in seal_work {
-            let reservation = work.reservation.clone();
-            match self.owner_crypto_keys(reservation.owner) {
-                Some(keys) => aead_jobs.push(PacketMover2AeadJob::Seal {
-                    work,
-                    cipher: keys.seal,
-                }),
-                None => completions.push(CryptoCompletion {
-                    reservation,
-                    result: CryptoResult::Failed(CryptoFailureKind::Seal),
-                }),
-            }
-        }
-        packet_mover2_aead_pool().execute_jobs_into(aead_jobs, completions);
-        for completion in completions.drain(..) {
+                },
+            };
             retired.extend(self.retire_completion(completion));
         }
     }

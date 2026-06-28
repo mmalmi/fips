@@ -60,7 +60,6 @@ include!("turn.rs");
 include!("runtime.rs");
 include!("live_node.rs");
 include!("crypto.rs");
-include!("aead_worker_pool.rs");
 include!("engine.rs");
 
 #[cfg(test)]
