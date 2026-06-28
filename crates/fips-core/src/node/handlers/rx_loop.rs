@@ -232,7 +232,7 @@ impl Node {
                         0,
                         &scratch_tun_tx,
                         &scratch_endpoint_tx,
-                        PACKET_DRAIN_BUDGET,
+                        LATENCY_PACKET_DRAIN_BUDGET,
                     ).await;
                     let had_activity = turn.has_activity();
                     let control_drained = self
@@ -245,10 +245,27 @@ impl Node {
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => {
-                            let mut turn = self.drain_packet_mover2_scratch_turn_with_first(
+                            let latency_packet = p.is_priority_sized();
+                            let mut firsts = crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
+                                .with_raw_packet(Some(p));
+                            let mut side_latency_ready = false;
+                            if let Ok(command) = endpoint_priority_command_rx.try_recv() {
+                                firsts = firsts.with_endpoint_priority(Some(command));
+                                side_latency_ready = true;
+                            }
+                            if let Ok(packet) = tun_outbound_rx.try_recv() {
+                                firsts = firsts.with_tun_packet(Some(packet));
+                                side_latency_ready = true;
+                            }
+                            let packet_budget = packet_drain_budget(
+                                latency_packet
+                                    || packet_rx.priority_ready_packets() > 0
+                                    || side_latency_ready,
+                            );
+                            let mut turn = self.drain_packet_mover2_scratch_turn_with_firsts(
                                 &mut packet_rx,
-                                Some(p),
-                                PACKET_DRAIN_BUDGET,
+                                firsts,
+                                packet_budget,
                                 &mut endpoint_priority_command_rx,
                                 &mut endpoint_command_rx,
                                 NON_PACKET_DRAIN_BUDGET,
@@ -256,7 +273,7 @@ impl Node {
                                 NON_PACKET_DRAIN_BUDGET,
                                 &scratch_tun_tx,
                                 &scratch_endpoint_tx,
-                                PACKET_DRAIN_BUDGET,
+                                packet_budget,
                             ).await;
                             let had_activity = turn.has_activity();
                             let control_drained = self
@@ -287,7 +304,7 @@ impl Node {
                         NON_PACKET_DRAIN_BUDGET,
                         &scratch_tun_tx,
                         &scratch_endpoint_tx,
-                        PACKET_DRAIN_BUDGET,
+                        LATENCY_PACKET_DRAIN_BUDGET,
                     ).await;
                     let had_activity = turn.has_activity();
                     let control_drained = self
