@@ -610,7 +610,7 @@ impl crate::node::SessionRegistry {
         true
     }
 
-    fn session_fsp_send_context(
+    pub(in crate::node) fn session_fsp_send_context(
         &self,
         dest_addr: &NodeAddr,
         now_ms: u64,

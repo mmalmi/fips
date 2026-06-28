@@ -314,6 +314,7 @@ impl OwnerState {
         if self.owner.protocol() != PacketProtocol::Fsp
             || self.fsp_coords_warmup_remaining == 0
             || self.fsp_coords_prefix.is_empty()
+            || !packet.fsp_auto_coords_warmup
             || !packet.fsp_cleartext_prefix.is_empty()
         {
             return;

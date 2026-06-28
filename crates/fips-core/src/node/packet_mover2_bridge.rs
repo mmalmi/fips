@@ -1,17 +1,19 @@
 use super::endpoint_traffic::classify_fmp_plaintext_traffic;
 use super::*;
 use crate::packet_mover2::{
-    ActivityTick, OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
-    PacketMover2EndpointCommandRoute, PacketMover2FspWrapRoute, PacketMover2IngressRoute,
-    PacketMover2LiveEndpointRoute, PacketMover2LiveFmpIngressRoute,
+    ActivityTick, OutboundPacket, OutboundPostSeal, OutputTarget, OwnerConfig, OwnerCryptoKeys,
+    OwnerId, PacketClass, PacketMover2EndpointCommandRoute, PacketMover2FspWrapRoute,
+    PacketMover2IngressRoute, PacketMover2LiveEndpointRoute, PacketMover2LiveFmpIngressRoute,
     PacketMover2LiveFspIngressRoute, PacketMover2LiveNodeTurn, PacketMover2LiveOutboundFirsts,
     PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute, PacketMover2OutputDrop,
     PacketMover2OutputError, PacketMover2TunDestinationRoute, PacketMover2TunOutboundRoute,
     TransportPath,
 };
+use crate::protocol::SessionMessageType;
 
 const INITIAL_FMP_GENERATION: u64 = 1;
 const INITIAL_FSP_GENERATION: u64 = 1;
+const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
 
 struct PacketMover2FmpOwnerSeed {
     owner: OwnerId,
@@ -186,6 +188,55 @@ impl Node {
             .await
     }
 
+    pub(in crate::node) async fn send_packet_mover2_fsp_session_msg(
+        &mut self,
+        dest_addr: &NodeAddr,
+        msg_type: u8,
+        payload: &[u8],
+    ) -> Result<(), NodeError> {
+        let now_ms = Self::now_ms();
+        let send_context = self
+            .sessions
+            .session_fsp_send_context(dest_addr, now_ms)
+            .map_err(|error| error.into_node_error(*dest_addr))?;
+        self.send_packet_mover2_fsp_control_outbound(
+            dest_addr,
+            msg_type,
+            send_context.fsp_flags(false),
+            send_context.inner_flags_byte(),
+            payload,
+            None,
+            now_ms,
+            send_context.timestamp,
+            "FSP control message",
+        )
+        .await
+    }
+
+    pub(in crate::node) async fn send_packet_mover2_fsp_coords_warmup(
+        &mut self,
+        dest_addr: &NodeAddr,
+    ) -> Result<(), NodeError> {
+        let now_ms = Self::now_ms();
+        let send_context = self
+            .sessions
+            .session_fsp_send_context(dest_addr, now_ms)
+            .map_err(|error| error.into_node_error(*dest_addr))?;
+        let coords_prefix = self.packet_mover2_fsp_coords_prefix_for_dest(dest_addr);
+        self.send_packet_mover2_fsp_control_outbound(
+            dest_addr,
+            SessionMessageType::CoordsWarmup.to_byte(),
+            crate::node::session_wire::FSP_FLAG_CP,
+            send_context.inner_flags_byte(),
+            &[],
+            Some(coords_prefix),
+            now_ms,
+            send_context.timestamp,
+            "FSP coords warmup",
+        )
+        .await
+    }
+
     async fn pump_packet_mover2_pending_outbound_firsts(
         &mut self,
         firsts: PacketMover2LiveOutboundFirsts,
@@ -223,37 +274,172 @@ impl Node {
         turn
     }
 
+    async fn send_packet_mover2_live_outbound(
+        &mut self,
+        outbound: OutboundPacket,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn {
+        let tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            drop(rx);
+            tx
+        });
+        let endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
+            let (tx, rx) = EndpointEventSender::channel(1);
+            drop(rx);
+            tx
+        });
+        let endpoint_identities = self.packet_mover2_endpoint_identity_snapshot();
+        let endpoint_resolver =
+            |source_addr: &NodeAddr| endpoint_identities.get(source_addr).copied();
+
+        let turn = self
+            .packet_mover2
+            .send_live_outbound(
+                outbound,
+                &tun_tx,
+                &endpoint_tx,
+                endpoint_resolver,
+                &self.transports,
+                crypto_limit,
+            )
+            .await;
+        Self::observe_packet_mover2_scratch_turn(&turn);
+        turn
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_packet_mover2_fsp_control_outbound(
+        &mut self,
+        dest_addr: &NodeAddr,
+        msg_type: u8,
+        fsp_flags: u8,
+        inner_flags: u8,
+        payload: &[u8],
+        coords_prefix: Option<Vec<u8>>,
+        now_ms: u64,
+        timestamp: u32,
+        label: &str,
+    ) -> Result<(), NodeError> {
+        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("packet_mover2 FSP owner unavailable for {label}"),
+            });
+        }
+        let Some(counter) = self
+            .sessions
+            .get(dest_addr)
+            .and_then(|entry| entry.send_counter_authority())
+            .map(|authority| authority.current())
+        else {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("packet_mover2 FSP counter unavailable for {label}"),
+            });
+        };
+        let Some((wrap, _next_hop)) = self.packet_mover2_fsp_wrap_route(dest_addr) else {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("packet_mover2 FSP wrap route unavailable for {label}"),
+            });
+        };
+
+        let mut outbound = OutboundPacket::fsp(
+            OwnerId::fsp_node(*dest_addr),
+            INITIAL_FSP_GENERATION,
+            packet_mover2_fsp_control_class(msg_type),
+            fsp_flags,
+            payload.to_vec(),
+        )
+        .with_fsp_inner_header(msg_type, inner_flags)
+        .with_post_seal(OutboundPostSeal::FmpWrap(wrap))
+        .with_activity_tick(ActivityTick::new(now_ms));
+        if let Some(prefix) = coords_prefix {
+            outbound = outbound.with_fsp_cleartext_prefix(prefix);
+        } else {
+            outbound = outbound.without_fsp_auto_coords_warmup();
+        }
+
+        let turn = self.send_packet_mover2_live_outbound(outbound, 2).await;
+        self.finish_packet_mover2_pending_outbound_turn(dest_addr, label, turn)
+            .await?;
+        let frame_bytes = crate::node::session_wire::FSP_INNER_HEADER_SIZE
+            .saturating_add(payload.len())
+            .saturating_add(crate::noise::TAG_SIZE);
+        let _ = self.sessions.record_fsp_send_bookkeeping(
+            dest_addr,
+            FspSendBookkeepingInput::control(counter, timestamp, frame_bytes),
+        );
+        Ok(())
+    }
+
     async fn finish_packet_mover2_pending_outbound_turn(
         &mut self,
         dest_addr: &NodeAddr,
         label: &str,
         mut turn: PacketMover2LiveNodeTurn,
     ) -> Result<(), NodeError> {
-        let summary = turn.summary();
-        let sent = turn.transport_sent() > 0 || summary.outputs_sent() > 0;
-        let deferred = turn.endpoint_deferred_commands() > 0;
-        let failed = turn.has_failures();
-        self.process_packet_mover2_pending_outbound_bookkeeping(&mut turn)
-            .await;
+        for continuation in 0..=PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS {
+            let summary = turn.summary();
+            let sent = Self::packet_mover2_pending_outbound_sent(&turn);
+            let deferred = turn.endpoint_deferred_commands() > 0;
+            let failed = turn.has_failures();
+            let needs_continuation = Self::packet_mover2_pending_outbound_needs_continuation(&turn);
 
-        if failed {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: Self::packet_mover2_pending_outbound_failure(label, &turn),
-            });
+            self.process_packet_mover2_pending_outbound_bookkeeping(&mut turn)
+                .await;
+
+            if failed {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: Self::packet_mover2_pending_outbound_failure(label, &turn),
+                });
+            }
+            if sent {
+                return Ok(());
+            }
+            if deferred || !needs_continuation {
+                let reason = if deferred {
+                    "deferred without transport output"
+                } else {
+                    "made no transport output progress"
+                };
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: format!("packet_mover2 {label} {reason}: {:?}", summary),
+                });
+            }
+            if continuation == PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: format!(
+                        "packet_mover2 {label} exhausted pending outbound continuation turns: {:?}",
+                        summary
+                    ),
+                });
+            }
+
+            turn = self
+                .pump_packet_mover2_pending_outbound_firsts(
+                    PacketMover2LiveOutboundFirsts::default(),
+                    0,
+                    0,
+                )
+                .await;
         }
-        if sent {
-            return Ok(());
-        }
-        let reason = if deferred {
-            "deferred without transport output"
-        } else {
-            "made no transport output progress"
-        };
-        Err(NodeError::SendFailed {
-            node_addr: *dest_addr,
-            reason: format!("packet_mover2 {label} {reason}: {:?}", summary),
-        })
+
+        unreachable!("bounded pending outbound continuation loop must return")
+    }
+
+    fn packet_mover2_pending_outbound_sent(turn: &PacketMover2LiveNodeTurn) -> bool {
+        turn.transport_sent() > 0 || turn.summary().outputs_sent() > 0
+    }
+
+    fn packet_mover2_pending_outbound_needs_continuation(turn: &PacketMover2LiveNodeTurn) -> bool {
+        let summary = turn.summary();
+        summary.outbound_admitted() > summary.dispatched()
+            || (summary.outbound_admitted() > 0 && summary.outputs() == 0)
     }
 
     fn packet_mover2_pending_outbound_failure(
@@ -299,8 +485,16 @@ impl Node {
             }
         }
         for command in self.packet_mover2.take_deferred_endpoint_commands() {
-            self.handle_packet_mover2_deferred_endpoint_command(command)
-                .await;
+            if let NodeEndpointCommand::Send {
+                command,
+                response_tx,
+            } = command
+            {
+                let _ = response_tx.send(Err(NodeError::SendFailed {
+                    node_addr: command.data_send().dest_addr(),
+                    reason: "packet_mover2 pending flush endpoint route unavailable".into(),
+                }));
+            }
             processed += 1;
         }
         processed
@@ -491,7 +685,10 @@ impl Node {
         if coords_warmup_remaining == 0 {
             return Vec::new();
         }
+        self.packet_mover2_fsp_coords_prefix_for_dest(node_addr)
+    }
 
+    fn packet_mover2_fsp_coords_prefix_for_dest(&self, node_addr: &NodeAddr) -> Vec<u8> {
         let src = self.tree_state.my_coords().clone();
         let dst = self.get_dest_coords(node_addr);
         let mut prefix = Vec::with_capacity(
@@ -642,6 +839,17 @@ fn packet_mover2_fmp_link_class(plaintext: &[u8]) -> PacketClass {
         {
             PacketClass::Bulk
         }
+        _ => PacketClass::Control,
+    }
+}
+
+fn packet_mover2_fsp_control_class(msg_type: u8) -> PacketClass {
+    match SessionMessageType::from_byte(msg_type) {
+        Some(
+            SessionMessageType::SenderReport
+            | SessionMessageType::ReceiverReport
+            | SessionMessageType::PathMtuNotification,
+        ) => PacketClass::Mmp,
         _ => PacketClass::Control,
     }
 }

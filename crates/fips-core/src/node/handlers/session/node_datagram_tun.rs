@@ -33,29 +33,8 @@ impl Node {
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), NodeError> {
-        let now_ms = Self::now_ms();
-        let send_context = self
-            .sessions
-            .session_fsp_send_context(dest_addr, now_ms)
-            .map_err(|error| error.into_node_error(*dest_addr))?;
-        let timestamp = send_context.timestamp;
-
-        // Build inner flags with spin bit
-        let inner_flags = send_context.inner_flags_byte();
-        let k_flags = send_context.fsp_flags(false);
-
-        // FSP inner header + plaintext
-        let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload);
-
-        self.send_session_fsp_plan(SessionFspSendPlan::new(
-            *dest_addr,
-            timestamp,
-            k_flags,
-            &inner_plaintext,
-            None,
-            SessionFspSendBookkeeping::Control,
-        ))
-        .await
+        self.send_packet_mover2_fsp_session_msg(dest_addr, msg_type, payload)
+            .await
     }
 
     /// Send a standalone CoordsWarmup message to warm transit node caches.
@@ -69,30 +48,7 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
-        let now_ms = Self::now_ms();
-
-        let my_coords = self.tree_state.my_coords().clone();
-        let dest_coords = self.get_dest_coords(dest_addr);
-        let send_context = self
-            .sessions
-            .session_fsp_send_context(dest_addr, now_ms)
-            .map_err(|error| error.into_node_error(*dest_addr))?;
-        let timestamp = send_context.timestamp;
-
-        // FSP inner header only, no body payload
-        let msg_type = SessionMessageType::CoordsWarmup.to_byte();
-        let inner_flags = send_context.inner_flags_byte();
-        let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &[]);
-
-        self.send_session_fsp_plan(SessionFspSendPlan::new(
-            *dest_addr,
-            timestamp,
-            0,
-            &inner_plaintext,
-            Some((&my_coords, &dest_coords)),
-            SessionFspSendBookkeeping::Control,
-        ))
-        .await?;
+        self.send_packet_mover2_fsp_coords_warmup(dest_addr).await?;
 
         debug!(dest = %self.peer_display_name(dest_addr), "Sent standalone CoordsWarmup");
         Ok(())

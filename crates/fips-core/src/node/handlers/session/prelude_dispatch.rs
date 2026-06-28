@@ -120,13 +120,13 @@ enum SessionPathMtuApplySkip {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionFspSendContextError {
+pub(in crate::node) enum SessionFspSendContextError {
     NoSession,
     NotEstablished,
 }
 
 impl SessionFspSendContextError {
-    fn into_node_error(self, node_addr: NodeAddr) -> NodeError {
+    pub(in crate::node) fn into_node_error(self, node_addr: NodeAddr) -> NodeError {
         let reason = match self {
             Self::NoSession => "no session",
             Self::NotEstablished => "session not established",
@@ -139,8 +139,8 @@ impl SessionFspSendContextError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionFspSendContext {
-    timestamp: u32,
+pub(in crate::node) struct SessionFspSendContext {
+    pub(in crate::node) timestamp: u32,
     spin_bit: bool,
     current_k_bit: bool,
     coords_warmup_remaining: u8,
@@ -151,14 +151,14 @@ impl SessionFspSendContext {
         self.coords_warmup_remaining > 0
     }
 
-    fn inner_flags_byte(&self) -> u8 {
+    pub(in crate::node) fn inner_flags_byte(&self) -> u8 {
         FspInnerFlags {
             spin_bit: self.spin_bit,
         }
         .to_byte()
     }
 
-    fn fsp_flags(&self, include_coords: bool) -> u8 {
+    pub(in crate::node) fn fsp_flags(&self, include_coords: bool) -> u8 {
         let mut flags = if include_coords { FSP_FLAG_CP } else { 0 };
         if self.current_k_bit {
             flags |= FSP_FLAG_K;

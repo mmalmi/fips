@@ -418,6 +418,35 @@ impl<W: StatelessCryptoWorker> PacketMover2LiveNode<W> {
         (report, sent_output)
     }
 
+    pub(crate) async fn send_live_outbound<Resolver, Transports>(
+        &mut self,
+        outbound: OutboundPacket,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        self.driver.reset_turn_buffers();
+        let mut summary = PacketMover2RuntimeSummary::default();
+        self.driver.admit_outbound_packet(outbound, &mut summary);
+        self.driver
+            .finish_aead_live_node_output_turn(
+                summary,
+                &mut self.routes,
+                tun_tx,
+                endpoint_tx,
+                endpoint_resolver,
+                transports,
+                crypto_limit,
+            )
+            .await
+    }
+
     pub(crate) async fn pump_turn<RI, Resolver, Transports>(
         &mut self,
         raw_ingress: &mut RI,

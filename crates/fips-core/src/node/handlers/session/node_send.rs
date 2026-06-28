@@ -68,6 +68,7 @@ impl Node {
     /// The `src_port` and `dst_port` identify the service. A 4-byte port header
     /// `[src_port:2 LE][dst_port:2 LE]` is prepended to `payload` inside the
     /// AEAD envelope. The receiver dispatches by `dst_port`.
+    #[cfg(test)]
     pub(in crate::node) async fn send_session_data(
         &mut self,
         dest_addr: &NodeAddr,
@@ -141,6 +142,7 @@ impl Node {
         .await
     }
 
+    #[cfg(test)]
     async fn send_session_fsp_plan(
         &mut self,
         plan: SessionFspSendPlan<'_>,
