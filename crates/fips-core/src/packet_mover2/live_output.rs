@@ -42,6 +42,14 @@ pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
     endpoint_stale_bulk_drop_ms: u64,
 }
 
+#[derive(Default)]
+struct PacketMover2RouteTableOutboundBuffers {
+    endpoint_drops: Vec<PacketMover2EndpointCommandDrop>,
+    endpoint_deferred_commands: Vec<NodeEndpointCommand>,
+    endpoint_routed_destinations: Vec<PacketMover2EndpointRoutedDestination>,
+    tun_drops: Vec<PacketMover2TunOutboundDrop>,
+}
+
 impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
     pub(crate) fn new(
         endpoint_priority_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
@@ -78,10 +86,27 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         self
     }
 
+    fn with_report_buffers(mut self, buffers: PacketMover2RouteTableOutboundBuffers) -> Self {
+        self.endpoint_drops = buffers.endpoint_drops;
+        self.endpoint_deferred_commands = buffers.endpoint_deferred_commands;
+        self.endpoint_routed_destinations = buffers.endpoint_routed_destinations;
+        self.tun_drops = buffers.tun_drops;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn with_endpoint_stale_bulk_drop_ms(mut self, max_age_ms: u64) -> Self {
         self.endpoint_stale_bulk_drop_ms = max_age_ms;
         self
+    }
+
+    fn take_report_buffers(&mut self) -> PacketMover2RouteTableOutboundBuffers {
+        PacketMover2RouteTableOutboundBuffers {
+            endpoint_drops: std::mem::take(&mut self.endpoint_drops),
+            endpoint_deferred_commands: std::mem::take(&mut self.endpoint_deferred_commands),
+            endpoint_routed_destinations: std::mem::take(&mut self.endpoint_routed_destinations),
+            tun_drops: std::mem::take(&mut self.tun_drops),
+        }
     }
 
     fn take_endpoint_command_drops(&mut self) -> Vec<PacketMover2EndpointCommandDrop> {

@@ -302,10 +302,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         let outbound_limit = endpoint_limit.saturating_add(tun_limit);
         let reserved_outbound_limit =
             reserved_live_outbound_progress_limit(endpoint_limit, tun_limit, outbound_limit);
-        let mut endpoint_drops = Vec::new();
-        let mut endpoint_routed_destinations = Vec::new();
-        let mut deferred = Vec::new();
-        let mut tun_drops = Vec::new();
+        let mut outbound_buffers = PacketMover2RouteTableOutboundBuffers::default();
         let mut endpoint_drained = 0usize;
         let mut tun_drained = 0usize;
         let mut outbound_drained = 0usize;
@@ -320,19 +317,16 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 tun_limit,
                 routes,
             )
-            .with_firsts(outbound_firsts);
+            .with_firsts(outbound_firsts)
+            .with_report_buffers(outbound_buffers);
             outbound_drained = outbound_source.drain_outbound(reserved_outbound_limit, |packet| {
                 self.admit_outbound_packet(packet, &mut summary);
             });
-            endpoint_drops.extend(outbound_source.take_endpoint_command_drops());
             endpoint_drained =
                 endpoint_drained.saturating_add(outbound_source.endpoint_drained());
-            endpoint_routed_destinations
-                .extend(outbound_source.take_endpoint_routed_destinations());
-            deferred.extend(outbound_source.take_endpoint_deferred_commands());
-            tun_drops.extend(outbound_source.take_tun_outbound_drops());
             tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
             outbound_firsts = outbound_source.take_firsts();
+            outbound_buffers = outbound_source.take_report_buffers();
         }
 
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
@@ -350,18 +344,15 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 tun_limit,
                 routes,
             )
-            .with_firsts(outbound_firsts);
+            .with_firsts(outbound_firsts)
+            .with_report_buffers(outbound_buffers);
             outbound_source.drain_outbound(remaining_outbound_limit, |packet| {
                 self.admit_outbound_packet(packet, &mut summary);
             });
-            endpoint_drops.extend(outbound_source.take_endpoint_command_drops());
             endpoint_drained =
                 endpoint_drained.saturating_add(outbound_source.endpoint_drained());
-            endpoint_routed_destinations
-                .extend(outbound_source.take_endpoint_routed_destinations());
-            deferred.extend(outbound_source.take_endpoint_deferred_commands());
-            tun_drops.extend(outbound_source.take_tun_outbound_drops());
             tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
+            outbound_buffers = outbound_source.take_report_buffers();
         }
 
         let mut report = self
@@ -375,12 +366,13 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 crypto_limit,
             )
             .await;
-        report.set_endpoint_command_drops(endpoint_drops);
+        let endpoint_deferred_count = outbound_buffers.endpoint_deferred_commands.len();
+        deferred_endpoint_commands.append(&mut outbound_buffers.endpoint_deferred_commands);
+        report.set_endpoint_command_drops(outbound_buffers.endpoint_drops);
         report.set_endpoint_source_drained(endpoint_drained);
-        report.set_endpoint_routed_destinations(endpoint_routed_destinations);
-        report.set_endpoint_deferred_commands(deferred.len());
-        deferred_endpoint_commands.extend(deferred);
-        report.set_tun_outbound_drops(tun_drops);
+        report.set_endpoint_routed_destinations(outbound_buffers.endpoint_routed_destinations);
+        report.set_endpoint_deferred_commands(endpoint_deferred_count);
+        report.set_tun_outbound_drops(outbound_buffers.tun_drops);
         report.set_tun_source_drained(tun_drained);
         report
     }
