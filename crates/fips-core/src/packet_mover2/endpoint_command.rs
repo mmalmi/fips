@@ -33,6 +33,48 @@ impl<'a> PacketMover2EndpointCommandPayload<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2EndpointRoutedDestination {
+    dest_addr: NodeAddr,
+    packets: usize,
+    payload_bytes: usize,
+    routed_at_ms: u64,
+}
+
+impl PacketMover2EndpointRoutedDestination {
+    fn from_request(request: &PacketMover2EndpointCommandPayload<'_>, routed_at_ms: u64) -> Self {
+        Self {
+            dest_addr: request.dest_addr(),
+            packets: 1,
+            payload_bytes: request.payload().len(),
+            routed_at_ms,
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        debug_assert_eq!(self.dest_addr, other.dest_addr);
+        self.packets = self.packets.saturating_add(other.packets);
+        self.payload_bytes = self.payload_bytes.saturating_add(other.payload_bytes);
+        self.routed_at_ms = self.routed_at_ms.max(other.routed_at_ms);
+    }
+
+    pub(crate) fn dest_addr(&self) -> NodeAddr {
+        self.dest_addr
+    }
+
+    pub(crate) fn packets(&self) -> usize {
+        self.packets
+    }
+
+    pub(crate) fn payload_bytes(&self) -> usize {
+        self.payload_bytes
+    }
+
+    pub(crate) fn routed_at_ms(&self) -> u64 {
+        self.routed_at_ms
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2EndpointCommandRoute {
     owner: OwnerId,
@@ -190,16 +232,18 @@ fn route_endpoint_send_with_router<R, F>(
     send: &EndpointDataSend,
     router: &mut R,
     mut push: F,
-) -> Result<(), PacketMover2EndpointCommandDropReason>
+) -> Result<PacketMover2EndpointRoutedDestination, PacketMover2EndpointCommandDropReason>
 where
     R: PacketMover2EndpointCommandRouter,
     F: FnMut(OutboundPacket),
 {
     let request = PacketMover2EndpointCommandPayload::new(&send);
+    let routed_at_ms = crate::time::now_ms();
+    let routed = PacketMover2EndpointRoutedDestination::from_request(&request, routed_at_ms);
     match router.route_endpoint_command_payload(request) {
         Ok(packet) => {
-            push(packet.with_activity_tick(ActivityTick::new(crate::time::now_ms())));
-            Ok(())
+            push(packet.with_activity_tick(ActivityTick::new(routed_at_ms)));
+            Ok(routed)
         }
         Err(reason) => Err(reason),
     }
@@ -219,6 +263,7 @@ fn route_endpoint_command_with_router<R, F>(
     router: &mut R,
     drops: &mut Vec<PacketMover2EndpointCommandDrop>,
     deferred_commands: &mut Vec<NodeEndpointCommand>,
+    routed_destinations: &mut Vec<PacketMover2EndpointRoutedDestination>,
     mut push: F,
 ) where
     R: PacketMover2EndpointCommandRouter,
@@ -231,7 +276,8 @@ fn route_endpoint_command_with_router<R, F>(
         } => {
             let dest_addr = command.data_send().dest_addr();
             match route_endpoint_send_with_router(command.data_send(), router, &mut push) {
-                Ok(()) => {
+                Ok(routed) => {
+                    routed_destinations.push(routed);
                     let _ = response_tx.send(Ok(()));
                 }
                 Err(PacketMover2EndpointCommandDropReason::NoRoute) => {
@@ -251,7 +297,9 @@ fn route_endpoint_command_with_router<R, F>(
         }
         NodeEndpointCommand::SendOneway { command } => {
             match route_endpoint_send_with_router(command.data_send(), router, &mut push) {
-                Ok(()) => {}
+                Ok(routed) => {
+                    routed_destinations.push(routed);
+                }
                 Err(PacketMover2EndpointCommandDropReason::NoRoute) => {
                     deferred_commands.push(NodeEndpointCommand::SendOneway { command });
                 }
@@ -262,15 +310,20 @@ fn route_endpoint_command_with_router<R, F>(
         }
         NodeEndpointCommand::SendBatchOneway { command, lane } => {
             let (remote, payloads, queued_at) = command.into_parts();
-            let mut routed = false;
+            let mut any_routed = false;
+            let mut routed_destination: Option<PacketMover2EndpointRoutedDestination> = None;
             let mut defer_unrouted = false;
             for payload in &payloads {
                 let send = EndpointDataSend::new(remote, payload.clone());
                 match route_endpoint_send_with_router(&send, router, &mut push) {
-                    Ok(()) => {
-                        routed = true;
+                    Ok(routed) => {
+                        any_routed = true;
+                        match &mut routed_destination {
+                            Some(summary) => summary.merge(routed),
+                            None => routed_destination = Some(routed),
+                        }
                     }
-                    Err(PacketMover2EndpointCommandDropReason::NoRoute) if !routed => {
+                    Err(PacketMover2EndpointCommandDropReason::NoRoute) if !any_routed => {
                         defer_unrouted = true;
                         break;
                     }
@@ -283,6 +336,8 @@ fn route_endpoint_command_with_router<R, F>(
                 let command = EndpointSendBatchCommand::new(remote, payloads, queued_at)
                     .expect("deferred endpoint batch should remain non-empty");
                 deferred_commands.push(NodeEndpointCommand::SendBatchOneway { command, lane });
+            } else if let Some(routed) = routed_destination {
+                routed_destinations.push(routed);
             }
         }
         other => deferred_commands.push(other),

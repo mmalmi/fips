@@ -35,6 +35,7 @@ pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
     routes: &'a mut Routes,
     endpoint_drops: Vec<PacketMover2EndpointCommandDrop>,
     endpoint_deferred_commands: Vec<NodeEndpointCommand>,
+    endpoint_routed_destinations: Vec<PacketMover2EndpointRoutedDestination>,
     tun_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_drained: usize,
     tun_drained: usize,
@@ -61,6 +62,7 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
             routes,
             endpoint_drops: Vec::new(),
             endpoint_deferred_commands: Vec::new(),
+            endpoint_routed_destinations: Vec::new(),
             tun_drops: Vec::new(),
             endpoint_drained: 0,
             tun_drained: 0,
@@ -80,6 +82,12 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
 
     fn take_endpoint_deferred_commands(&mut self) -> Vec<NodeEndpointCommand> {
         std::mem::take(&mut self.endpoint_deferred_commands)
+    }
+
+    fn take_endpoint_routed_destinations(
+        &mut self,
+    ) -> Vec<PacketMover2EndpointRoutedDestination> {
+        std::mem::take(&mut self.endpoint_routed_destinations)
     }
 
     fn take_tun_outbound_drops(&mut self) -> Vec<PacketMover2TunOutboundDrop> {
@@ -112,6 +120,7 @@ where
                     self.routes,
                     &mut self.endpoint_drops,
                     &mut self.endpoint_deferred_commands,
+                    &mut self.endpoint_routed_destinations,
                     &mut push,
                 );
             }
@@ -126,6 +135,7 @@ where
                 self.routes,
                 &mut self.endpoint_drops,
                 &mut self.endpoint_deferred_commands,
+                &mut self.endpoint_routed_destinations,
                 &mut push,
             );
         }
@@ -137,6 +147,7 @@ where
                     self.routes,
                     &mut self.endpoint_drops,
                     &mut self.endpoint_deferred_commands,
+                    &mut self.endpoint_routed_destinations,
                     &mut push,
                 );
             }
@@ -151,6 +162,7 @@ where
                 self.routes,
                 &mut self.endpoint_drops,
                 &mut self.endpoint_deferred_commands,
+                &mut self.endpoint_routed_destinations,
                 &mut push,
             );
         }

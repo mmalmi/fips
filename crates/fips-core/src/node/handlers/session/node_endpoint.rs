@@ -44,6 +44,37 @@ impl Node {
         runtime.publish(lease);
     }
 
+    #[cfg(unix)]
+    pub(in crate::node) async fn refresh_endpoint_bulk_send_lease(
+        &mut self,
+        dest_addr: NodeAddr,
+    ) -> bool {
+        let Some(runtime) = self.endpoint_bulk_send_runtime.as_ref().cloned() else {
+            return false;
+        };
+        let Some(workers) = self.encrypt_workers.as_ref().cloned() else {
+            runtime.invalidate(&dest_addr);
+            return false;
+        };
+        let route = match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
+            Ok(route) => route,
+            Err(_) => {
+                runtime.invalidate(&dest_addr);
+                return false;
+            }
+        };
+        let batch_target = match route.batch_target(&self.transports).await {
+            Ok(Some(batch_target)) => batch_target,
+            _ => {
+                runtime.invalidate(&dest_addr);
+                return false;
+            }
+        };
+
+        self.publish_endpoint_bulk_send_lease(dest_addr, &route, &batch_target, &workers);
+        true
+    }
+
     async fn handle_endpoint_send_batch_slow_path(
         &mut self,
         dest_addr: NodeAddr,

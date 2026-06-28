@@ -10,6 +10,8 @@ use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::collections::HashSet;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, trace, warn};
 
@@ -181,6 +183,25 @@ impl Node {
                 .await
             {
                 processed += 1;
+            }
+        }
+        #[cfg(unix)]
+        let mut endpoint_bulk_lease_refreshes = HashSet::new();
+        for routed in turn.take_endpoint_routed_destinations() {
+            #[cfg(unix)]
+            let dest_addr = routed.dest_addr();
+            if self.sessions.record_packet_mover2_endpoint_routed(routed) {
+                processed += 1;
+            }
+            #[cfg(unix)]
+            {
+                const MAX_ENDPOINT_BULK_LEASE_REFRESHES_PER_TURN: usize = 8;
+                if endpoint_bulk_lease_refreshes.len() < MAX_ENDPOINT_BULK_LEASE_REFRESHES_PER_TURN
+                    && endpoint_bulk_lease_refreshes.insert(dest_addr)
+                    && self.refresh_endpoint_bulk_send_lease(dest_addr).await
+                {
+                    processed += 1;
+                }
             }
         }
         for command in self.packet_mover2.take_deferred_endpoint_commands() {

@@ -296,7 +296,14 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         });
 
         let outbound_limit = endpoint_limit.saturating_add(tun_limit);
-        let (endpoint_drops, endpoint_drained, deferred, tun_drops, tun_drained) = {
+        let (
+            endpoint_drops,
+            endpoint_drained,
+            endpoint_routed_destinations,
+            deferred,
+            tun_drops,
+            tun_drained,
+        ) = {
             let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
                 endpoint_priority_rx,
                 endpoint_bulk_rx,
@@ -312,6 +319,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             (
                 outbound_source.take_endpoint_command_drops(),
                 outbound_source.endpoint_drained(),
+                outbound_source.take_endpoint_routed_destinations(),
                 outbound_source.take_endpoint_deferred_commands(),
                 outbound_source.take_tun_outbound_drops(),
                 outbound_source.tun_drained(),
@@ -331,6 +339,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
             .await;
         report.set_endpoint_command_drops(endpoint_drops);
         report.set_endpoint_source_drained(endpoint_drained);
+        report.set_endpoint_routed_destinations(endpoint_routed_destinations);
         report.set_endpoint_deferred_commands(deferred.len());
         deferred_endpoint_commands.extend(deferred);
         report.set_tun_outbound_drops(tun_drops);

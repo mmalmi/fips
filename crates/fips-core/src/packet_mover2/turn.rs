@@ -382,6 +382,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
+    endpoint_routed_destinations: Vec<PacketMover2EndpointRoutedDestination>,
     tun_source_drained: usize,
     endpoint_source_drained: usize,
     endpoint_deferred_commands: usize,
@@ -404,6 +405,7 @@ impl PacketMover2LiveNodeTurn {
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
             endpoint_command_drops: Vec::new(),
+            endpoint_routed_destinations: Vec::new(),
             tun_source_drained: 0,
             endpoint_source_drained: 0,
             endpoint_deferred_commands: 0,
@@ -504,6 +506,23 @@ impl PacketMover2LiveNodeTurn {
         self.endpoint_command_drops = drops;
     }
 
+    pub(crate) fn endpoint_routed_destinations(&self) -> &[PacketMover2EndpointRoutedDestination] {
+        &self.endpoint_routed_destinations
+    }
+
+    fn set_endpoint_routed_destinations(
+        &mut self,
+        destinations: Vec<PacketMover2EndpointRoutedDestination>,
+    ) {
+        self.endpoint_routed_destinations = destinations;
+    }
+
+    pub(crate) fn take_endpoint_routed_destinations(
+        &mut self,
+    ) -> Vec<PacketMover2EndpointRoutedDestination> {
+        std::mem::take(&mut self.endpoint_routed_destinations)
+    }
+
     pub(crate) fn tun_source_drained(&self) -> usize {
         self.tun_source_drained
     }
@@ -558,6 +577,7 @@ impl PacketMover2LiveNodeTurn {
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_command_drops.is_empty()
+            || !self.endpoint_routed_destinations.is_empty()
             || self.tun_source_drained > 0
             || self.endpoint_source_drained > 0
             || self.endpoint_deferred_commands > 0

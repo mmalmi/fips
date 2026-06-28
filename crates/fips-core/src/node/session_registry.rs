@@ -93,6 +93,23 @@ impl SessionRegistry {
         Some(result)
     }
 
+    pub(in crate::node) fn record_packet_mover2_endpoint_routed(
+        &mut self,
+        routed: crate::packet_mover2::PacketMover2EndpointRoutedDestination,
+    ) -> bool {
+        let Some(entry) = self.sessions.get_mut(&routed.dest_addr()) else {
+            return false;
+        };
+        if routed.packets() == 0 {
+            return false;
+        }
+
+        entry.record_sent_batch(routed.packets(), routed.payload_bytes());
+        entry.touch(routed.routed_at_ms());
+        entry.touch_outbound_frame(routed.routed_at_ms());
+        true
+    }
+
     pub(in crate::node) fn record_fsp_send_bookkeeping_batch<I>(
         &mut self,
         node_addr: &NodeAddr,
