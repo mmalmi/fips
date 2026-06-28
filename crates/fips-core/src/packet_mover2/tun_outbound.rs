@@ -114,6 +114,7 @@ impl PacketMover2TunOutboundRoute {
         self,
         payload: Vec<u8>,
     ) -> Result<OutboundPacket, PacketMover2TunOutboundDropReason> {
+        let class = self.class_for_payload(&payload);
         let payload = self.encode_payload(payload)?;
         let packet = match self.wire {
             OutboundWire::Fmp {
@@ -122,7 +123,7 @@ impl PacketMover2TunOutboundRoute {
             } => OutboundPacket::fmp(
                 self.owner,
                 self.generation,
-                self.class,
+                class,
                 receiver_idx,
                 flags,
                 payload,
@@ -131,7 +132,7 @@ impl PacketMover2TunOutboundRoute {
             OutboundWire::Fsp { flags } => OutboundPacket::fsp(
                 self.owner,
                 self.generation,
-                self.class,
+                class,
                 flags,
                 payload,
             )
@@ -139,6 +140,19 @@ impl PacketMover2TunOutboundRoute {
             .with_post_seal(self.post_seal),
         };
         Ok(self.apply_payload_transform(packet))
+    }
+
+    fn class_for_payload(&self, payload: &[u8]) -> PacketClass {
+        if self.class != PacketClass::Bulk {
+            return self.class;
+        }
+        if crate::node::endpoint_payload_is_liveness_probe(payload) {
+            PacketClass::Liveness
+        } else if crate::node::endpoint_payload_is_latency_sensitive(payload) {
+            PacketClass::Control
+        } else {
+            PacketClass::Bulk
+        }
     }
 
     fn encode_payload(
