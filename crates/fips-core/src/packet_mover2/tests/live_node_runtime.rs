@@ -174,6 +174,41 @@
     }
 
     #[test]
+    fn live_output_sink_drops_stale_bulk_without_dropping_priority_or_fresh_bulk() {
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x46; 16]));
+        let mut endpoint = LiveEndpointRecorder::default();
+        let mut transport = LiveTransportRecorder::default();
+        let mut sink = PacketMover2LiveOutputSink::new(
+            PacketMover2TunTxOutput::new(&tun_tx),
+            &mut endpoint,
+            &mut transport,
+        )
+        .with_stale_bulk_output_drop_ms(1);
+
+        let mut stale_bulk = opened_output(owner, 46, 0, OutputTarget::Tun, b"stale-bulk");
+        stale_bulk.activity_tick = Some(ActivityTick::new(1));
+        assert_eq!(
+            sink.send(stale_bulk),
+            Err(PacketMover2OutputError::StaleQueuedBulk)
+        );
+
+        let mut stale_priority = opened_output(owner, 47, 1, OutputTarget::Tun, b"priority");
+        stale_priority.lane = Lane::Priority;
+        stale_priority.activity_tick = Some(ActivityTick::new(1));
+        assert_eq!(sink.send(stale_priority), Ok(()));
+
+        let fresh_bulk = opened_output(owner, 48, 2, OutputTarget::Tun, b"fresh-bulk");
+        assert_eq!(sink.send(fresh_bulk), Ok(()));
+
+        assert_eq!(tun_rx.try_recv().unwrap(), b"priority".to_vec());
+        assert_eq!(tun_rx.try_recv().unwrap(), b"fresh-bulk".to_vec());
+        assert!(tun_rx.try_recv().is_err());
+        assert!(endpoint.outputs.is_empty());
+        assert!(transport.outputs.is_empty());
+    }
+
+    #[test]
     fn tun_tx_output_reports_unavailable_when_node_tun_channel_is_closed() {
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         drop(tun_rx);

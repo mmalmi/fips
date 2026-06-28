@@ -432,6 +432,7 @@ impl PacketMover2RawIngressDrop {
 pub(crate) enum PacketMover2OutputError {
     Unavailable,
     Backpressure,
+    StaleQueuedBulk,
     NoRoute,
     InvalidPacket,
     MtuExceeded,
@@ -909,6 +910,7 @@ pub(crate) struct PacketMover2LiveOutputSink<Tun, Endpoint, Transport> {
     tun: Tun,
     endpoint: Endpoint,
     transport: Transport,
+    stale_bulk_output_drop_ms: u64,
 }
 
 impl<Tun, Endpoint, Transport> PacketMover2LiveOutputSink<Tun, Endpoint, Transport> {
@@ -917,7 +919,14 @@ impl<Tun, Endpoint, Transport> PacketMover2LiveOutputSink<Tun, Endpoint, Transpo
             tun,
             endpoint,
             transport,
+            stale_bulk_output_drop_ms: crate::node::endpoint_stale_bulk_drop_ms(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_stale_bulk_output_drop_ms(mut self, max_age_ms: u64) -> Self {
+        self.stale_bulk_output_drop_ms = max_age_ms;
+        self
     }
 }
 
@@ -929,6 +938,11 @@ where
     Transport: PacketMover2TransportOutput,
 {
     fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError> {
+        if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
+            record_stale_bulk_output_drop(output.target());
+            return Err(PacketMover2OutputError::StaleQueuedBulk);
+        }
+
         match output.target {
             OutputTarget::Tun => {
                 let payload = output
@@ -962,6 +976,26 @@ where
             }
         }
     }
+}
+
+fn stale_bulk_output(output: &PacketOutput, max_age_ms: u64) -> bool {
+    output.lane() == Lane::Bulk
+        && max_age_ms > 0
+        && output
+            .activity_tick
+            .is_some_and(|tick| crate::time::now_ms().saturating_sub(tick.get()) > max_age_ms)
+}
+
+fn record_stale_bulk_output_drop(target: OutputTarget) {
+    let event = match target {
+        OutputTarget::Tun => crate::perf_profile::Event::TunWriteBulkDropped,
+        OutputTarget::Endpoint => crate::perf_profile::Event::EndpointEventBulkDropped,
+        OutputTarget::Transport => crate::perf_profile::Event::TransportBulkDropped,
+        OutputTarget::SessionIngress { .. } | OutputTarget::SessionPayload { .. } => {
+            crate::perf_profile::Event::EndpointEventBulkDropped
+        }
+    };
+    crate::perf_profile::record_event(event);
 }
 
 fn packet_mover2_output_error_from_session_handoff(
