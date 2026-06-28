@@ -253,7 +253,7 @@ impl Node {
                                 firsts = firsts.with_endpoint_priority(Some(command));
                                 side_latency_ready = true;
                             }
-                            if let Ok(packet) = tun_outbound_rx.try_recv() {
+                            if let Ok(packet) = tun_outbound_rx.try_recv_priority_first() {
                                 firsts = firsts.with_tun_packet(Some(packet));
                                 side_latency_ready = true;
                             }
