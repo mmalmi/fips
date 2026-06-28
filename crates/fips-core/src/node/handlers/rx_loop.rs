@@ -251,12 +251,12 @@ impl Node {
                                 PACKET_DRAIN_BUDGET,
                                 &mut endpoint_priority_command_rx,
                                 &mut endpoint_command_rx,
-                                NON_PACKET_DRAIN_BUDGET,
+                                PACKET_TURN_SIDE_DRAIN_BUDGET,
                                 &mut tun_outbound_rx,
-                                NON_PACKET_DRAIN_BUDGET,
+                                PACKET_TURN_SIDE_DRAIN_BUDGET,
                                 &scratch_tun_tx,
                                 &scratch_endpoint_tx,
-                                PACKET_DRAIN_BUDGET,
+                                PACKET_TURN_CRYPTO_BUDGET,
                             ).await;
                             let had_activity = turn.has_activity();
                             let control_drained = self

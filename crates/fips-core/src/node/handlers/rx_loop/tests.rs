@@ -1,4 +1,7 @@
-use super::budget::{NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, non_packet_drain_budget};
+use super::budget::{
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, PACKET_TURN_CRYPTO_BUDGET,
+    PACKET_TURN_SIDE_DRAIN_BUDGET, non_packet_drain_budget,
+};
 use super::drain::{
     RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
@@ -28,6 +31,18 @@ fn endpoint_priority_pre_packet_turn_stays_bounded() {
     assert!(
         NON_PACKET_DRAIN_BUDGET <= 16,
         "endpoint-priority commands run before raw packet receive, so the turn must stay short"
+    );
+}
+
+#[test]
+fn hot_packet_turn_reserves_extra_side_queue_progress() {
+    assert!(
+        PACKET_TURN_SIDE_DRAIN_BUDGET > NON_PACKET_DRAIN_BUDGET,
+        "packet-triggered turns may retire more side work after the raw receive burst"
+    );
+    assert_eq!(
+        PACKET_TURN_CRYPTO_BUDGET,
+        PACKET_DRAIN_BUDGET + PACKET_TURN_SIDE_DRAIN_BUDGET
     );
 }
 
