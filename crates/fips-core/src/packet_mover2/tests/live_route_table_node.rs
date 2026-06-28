@@ -177,7 +177,9 @@
 
         let fsp_packet = received
             .iter()
-            .find(|packet| FspWireHeader::parse(&packet.data).is_ok())
+            .find(|packet| {
+                FspWireHeader::parse(&packet.data).is_ok_and(|header| header.counter() == 820)
+            })
             .expect("FSP endpoint transport output");
         let fsp_header = FspWireHeader::parse(&fsp_packet.data).unwrap();
         assert_eq!(fsp_header.counter(), 820);

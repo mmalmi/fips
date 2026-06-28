@@ -1,4 +1,5 @@
 include!("helpers_and_edges.rs");
+include!("aead_worker_pool.rs");
 include!("live_route_table_outbound_source.rs");
 include!("live_route_table.rs");
 include!("live_route_table_liveness.rs");
