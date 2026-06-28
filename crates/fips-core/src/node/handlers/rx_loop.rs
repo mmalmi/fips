@@ -154,7 +154,7 @@ impl Node {
                         &mut endpoint_command_rx,
                         &packet_mover2_tun_tx,
                         &packet_mover2_endpoint_tx,
-                        NON_PACKET_DRAIN_BUDGET,
+                        ENDPOINT_DRAIN_BUDGET,
                     ).await;
                     if drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -208,7 +208,7 @@ impl Node {
                     self.drain_control_queries(
                         &mut control_query_rx,
                         Some(message),
-                        NON_PACKET_DRAIN_BUDGET,
+                        ENDPOINT_DRAIN_BUDGET,
                     ).await;
                 }
                 // Endpoint priority is app-owned latency-sensitive traffic
@@ -225,7 +225,7 @@ impl Node {
                         0,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        NON_PACKET_DRAIN_BUDGET,
+                        ENDPOINT_DRAIN_BUDGET,
                         &mut tun_outbound_rx,
                         0,
                         &packet_mover2_tun_tx,
@@ -260,18 +260,25 @@ impl Node {
                                     || packet_rx.priority_ready_packets() > 0
                                     || side_latency_ready,
                             );
+                            let endpoint_budget = endpoint_drain_budget(packet_budget);
+                            let tun_budget = tun_drain_budget(packet_budget);
+                            let crypto_budget = mixed_dataplane_crypto_budget(
+                                packet_budget,
+                                endpoint_budget,
+                                tun_budget,
+                            );
                             let mut turn = self.drain_packet_mover2_turn_with_firsts(
                                 &mut packet_rx,
                                 firsts,
                                 packet_budget,
                                 &mut endpoint_priority_command_rx,
                                 &mut endpoint_command_rx,
-                                NON_PACKET_DRAIN_BUDGET,
+                                endpoint_budget,
                                 &mut tun_outbound_rx,
-                                NON_PACKET_DRAIN_BUDGET,
+                                tun_budget,
                                 &packet_mover2_tun_tx,
                                 &packet_mover2_endpoint_tx,
-                                packet_budget,
+                                crypto_budget,
                             ).await;
                             let had_activity = turn.has_activity();
                             let control_drained = self
@@ -290,6 +297,7 @@ impl Node {
                     }
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
+                    let tun_budget = tun_drain_budget(LATENCY_PACKET_DRAIN_BUDGET);
                     let mut turn = self.drain_packet_mover2_turn_with_firsts(
                         &mut packet_rx,
                         crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
@@ -299,10 +307,10 @@ impl Node {
                         &mut endpoint_command_rx,
                         0,
                         &mut tun_outbound_rx,
-                        NON_PACKET_DRAIN_BUDGET,
+                        tun_budget,
                         &packet_mover2_tun_tx,
                         &packet_mover2_endpoint_tx,
-                        LATENCY_PACKET_DRAIN_BUDGET,
+                        tun_budget,
                     ).await;
                     let had_activity = turn.has_activity();
                     let control_drained = self
@@ -327,7 +335,7 @@ impl Node {
                         0,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        NON_PACKET_DRAIN_BUDGET,
+                        ENDPOINT_DRAIN_BUDGET,
                         &mut tun_outbound_rx,
                         0,
                         &packet_mover2_tun_tx,
@@ -367,19 +375,21 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         budget: usize,
     ) -> RxLoopDataDrainStats {
-        let non_packet_budget = non_packet_drain_budget(budget);
+        let endpoint_budget = endpoint_drain_budget(budget);
+        let tun_budget = tun_drain_budget(budget);
+        let crypto_budget = mixed_dataplane_crypto_budget(budget, endpoint_budget, tun_budget);
         let mut turn = self
             .drain_packet_mover2_turn(
                 packet_rx,
                 budget,
                 endpoint_priority_command_rx,
                 endpoint_command_rx,
-                non_packet_budget,
+                endpoint_budget,
                 tun_outbound_rx,
-                non_packet_budget,
+                tun_budget,
                 tun_tx,
                 endpoint_tx,
-                budget,
+                crypto_budget,
             )
             .await;
         let drained_packets = Self::packet_mover2_packet_activity(&turn);

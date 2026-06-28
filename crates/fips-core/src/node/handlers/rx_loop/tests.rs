@@ -1,4 +1,7 @@
-use super::budget::{NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, non_packet_drain_budget};
+use super::budget::{
+    ENDPOINT_DRAIN_BUDGET, LATENCY_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, TUN_DRAIN_BUDGET,
+    endpoint_drain_budget, mixed_dataplane_crypto_budget, tun_drain_budget,
+};
 use super::drain::{
     RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
@@ -6,20 +9,48 @@ use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
 
 #[test]
-fn non_packet_drain_budget_caps_large_packet_turns() {
-    assert_eq!(non_packet_drain_budget(0), 0);
-    assert_eq!(non_packet_drain_budget(8), 8);
+fn endpoint_drain_budget_caps_large_packet_turns() {
+    assert_eq!(endpoint_drain_budget(0), 0);
+    assert_eq!(endpoint_drain_budget(8), 8);
     assert_eq!(
-        non_packet_drain_budget(PACKET_DRAIN_BUDGET),
-        NON_PACKET_DRAIN_BUDGET
+        endpoint_drain_budget(PACKET_DRAIN_BUDGET),
+        ENDPOINT_DRAIN_BUDGET
     );
 }
 
 #[test]
 fn endpoint_priority_pre_packet_turn_stays_bounded() {
     assert!(
-        NON_PACKET_DRAIN_BUDGET <= 16,
+        ENDPOINT_DRAIN_BUDGET <= 16,
         "endpoint-priority commands run before raw packet receive, so the turn must stay short"
+    );
+}
+
+#[test]
+fn tun_outbound_gets_dataplane_sized_packet_mover_turns() {
+    assert_eq!(
+        endpoint_drain_budget(PACKET_DRAIN_BUDGET),
+        ENDPOINT_DRAIN_BUDGET
+    );
+    assert_eq!(tun_drain_budget(PACKET_DRAIN_BUDGET), TUN_DRAIN_BUDGET);
+    assert_eq!(TUN_DRAIN_BUDGET, LATENCY_PACKET_DRAIN_BUDGET);
+    assert!(
+        TUN_DRAIN_BUDGET > ENDPOINT_DRAIN_BUDGET,
+        "canonical TUN packet ingress must not inherit the endpoint/control slice"
+    );
+}
+
+#[test]
+fn mixed_packet_and_tun_turn_crypto_budget_covers_admitted_sources() {
+    let crypto_budget = mixed_dataplane_crypto_budget(
+        LATENCY_PACKET_DRAIN_BUDGET,
+        ENDPOINT_DRAIN_BUDGET,
+        TUN_DRAIN_BUDGET,
+    );
+
+    assert_eq!(
+        crypto_budget,
+        LATENCY_PACKET_DRAIN_BUDGET + ENDPOINT_DRAIN_BUDGET + TUN_DRAIN_BUDGET
     );
 }
 
