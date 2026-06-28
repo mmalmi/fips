@@ -480,53 +480,51 @@ impl UdpTransport {
     ///
     /// On Linux this maps to `sendmmsg(2)` via `AsyncUdpSocket::send_batch`.
     /// Other platforms keep the same per-packet `send_async` behavior until
-    /// they grow a kernel batch primitive. Results are one-for-one with input
-    /// packets so callers can account drops without retry/fallback paths.
-    pub async fn send_batch_async(
-        &self,
-        packets: &[(&TransportAddr, &[u8])],
-    ) -> Vec<Result<usize, TransportError>> {
+    /// they grow a kernel batch primitive. The callback receives one indexed
+    /// result per input packet so callers can account drops without retries.
+    pub async fn send_batch_async<F>(&self, packets: &[(&TransportAddr, &[u8])], record: F)
+    where
+        F: FnMut(usize, Result<usize, TransportError>),
+    {
         #[cfg(not(target_os = "linux"))]
         {
-            let mut results = Vec::with_capacity(packets.len());
-            for (addr, data) in packets {
-                results.push(self.send_async(addr, data).await);
+            let mut record = record;
+            for (index, (addr, data)) in packets.iter().enumerate() {
+                record(index, self.send_async(addr, data).await);
             }
-            return results;
         }
 
         #[cfg(target_os = "linux")]
         {
-            self.send_batch_async_linux(packets).await
+            self.send_batch_async_linux(packets, record).await
         }
     }
 
     #[cfg(target_os = "linux")]
-    async fn send_batch_async_linux(
-        &self,
-        packets: &[(&TransportAddr, &[u8])],
-    ) -> Vec<Result<usize, TransportError>> {
-        let mut results: Vec<Option<Result<usize, TransportError>>> =
-            std::iter::repeat_with(|| None)
-                .take(packets.len())
-                .collect();
+    async fn send_batch_async_linux<F>(&self, packets: &[(&TransportAddr, &[u8])], mut record: F)
+    where
+        F: FnMut(usize, Result<usize, TransportError>),
+    {
         if packets.is_empty() {
-            return Vec::new();
+            return;
         }
         if !self.state.is_operational() {
-            return (0..packets.len())
-                .map(|_| Err(TransportError::NotStarted))
-                .collect();
+            for index in 0..packets.len() {
+                record(index, Err(TransportError::NotStarted));
+            }
+            return;
         }
         let Some(socket) = self.socket.as_ref() else {
-            return (0..packets.len())
-                .map(|_| Err(TransportError::NotStarted))
-                .collect();
+            for index in 0..packets.len() {
+                record(index, Err(TransportError::NotStarted));
+            }
+            return;
         };
         let Some(local_addr) = self.local_addr else {
-            return (0..packets.len())
-                .map(|_| Err(TransportError::NotStarted))
-                .collect();
+            for index in 0..packets.len() {
+                record(index, Err(TransportError::NotStarted));
+            }
+            return;
         };
 
         let mut socket_packets = Vec::with_capacity(packets.len());
@@ -535,23 +533,29 @@ impl UdpTransport {
         for (index, (addr, data)) in packets.iter().enumerate() {
             if data.len() > mtu {
                 self.stats.record_mtu_exceeded();
-                results[index] = Some(Err(TransportError::MtuExceeded {
-                    packet_size: data.len(),
-                    mtu: self.config.mtu(),
-                }));
+                record(
+                    index,
+                    Err(TransportError::MtuExceeded {
+                        packet_size: data.len(),
+                        mtu: self.config.mtu(),
+                    }),
+                );
                 continue;
             }
             let socket_addr = match self.resolve_cached(addr).await {
                 Ok(socket_addr) => socket_addr,
                 Err(error) => {
-                    results[index] = Some(Err(error));
+                    record(index, Err(error));
                     continue;
                 }
             };
             if !socket_addr_families_compatible(local_addr, socket_addr) {
-                results[index] = Some(Err(TransportError::InvalidAddress(format!(
-                    "remote address family {socket_addr} is incompatible with local UDP socket {local_addr}"
-                ))));
+                record(
+                    index,
+                    Err(TransportError::InvalidAddress(format!(
+                        "remote address family {socket_addr} is incompatible with local UDP socket {local_addr}"
+                    ))),
+                );
                 continue;
             }
             socket_packet_indexes.push(index);
@@ -564,9 +568,12 @@ impl UdpTransport {
                 Ok(0) => {
                     self.stats.record_send_error();
                     for index in socket_packet_indexes[offset..].iter().copied() {
-                        results[index] = Some(Err(TransportError::SendFailed(
-                            "sendmmsg made no packet progress".into(),
-                        )));
+                        record(
+                            index,
+                            Err(TransportError::SendFailed(
+                                "sendmmsg made no packet progress".into(),
+                            )),
+                        );
                     }
                     break;
                 }
@@ -575,7 +582,7 @@ impl UdpTransport {
                     for batch_index in offset..end {
                         let bytes_sent = socket_packets[batch_index].0.len();
                         self.stats.record_send(bytes_sent);
-                        results[socket_packet_indexes[batch_index]] = Some(Ok(bytes_sent));
+                        record(socket_packet_indexes[batch_index], Ok(bytes_sent));
                     }
                     offset = end;
                 }
@@ -583,23 +590,12 @@ impl UdpTransport {
                     self.stats.record_send_error();
                     let message = error.to_string();
                     for index in socket_packet_indexes[offset..].iter().copied() {
-                        results[index] = Some(Err(TransportError::SendFailed(message.clone())));
+                        record(index, Err(TransportError::SendFailed(message.clone())));
                     }
                     break;
                 }
             }
         }
-
-        results
-            .into_iter()
-            .map(|result| {
-                result.unwrap_or_else(|| {
-                    Err(TransportError::SendFailed(
-                        "UDP batch send did not complete packet".into(),
-                    ))
-                })
-            })
-            .collect()
     }
 }
 

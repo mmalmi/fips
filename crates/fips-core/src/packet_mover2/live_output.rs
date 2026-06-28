@@ -805,17 +805,18 @@ where
                 .iter()
                 .map(|plan| (plan.remote_addr(), plan.output().payload())),
         );
-        let results = transport.send_batch(&batch).await;
-        debug_assert_eq!(results.len(), end - start);
-        for (plan, result) in plans[start..end].iter().zip(results) {
-            match result {
-                Ok(_) => sent += 1,
-                Err(error) => drops.push(PacketMover2OutputDrop::from_output(
-                    plan.output(),
-                    packet_mover2_output_error_for_transport(&error),
-                )),
-            }
-        }
+        transport
+            .send_batch(&batch, |batch_index, result| {
+                let plan = &plans[start + batch_index];
+                match result {
+                    Ok(_) => sent += 1,
+                    Err(error) => drops.push(PacketMover2OutputDrop::from_output(
+                        plan.output(),
+                        packet_mover2_output_error_for_transport(&error),
+                    )),
+                }
+            })
+            .await;
         start = end;
     }
     sent
