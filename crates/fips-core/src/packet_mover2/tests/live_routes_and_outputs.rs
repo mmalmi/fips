@@ -81,7 +81,11 @@
         let header =
             PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
         assert_eq!(sourced_raw.fsp_source(), Some(source));
-        assert_eq!(routes.route(&sourced_raw, header), Some(old_route));
+        let routed = routes.route(&sourced_raw, header).expect("sourced FSP route");
+        assert_eq!(routed.owner, old_route.owner);
+        assert_eq!(routed.generation, old_route.generation);
+        assert_eq!(routed.output, old_route.output);
+        assert_eq!(routed.class, PacketClass::Control);
 
         assert_eq!(routes.register_fsp(source, new_route), Some(old_route));
         let header =
@@ -91,6 +95,64 @@
         let header =
             PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
         assert_eq!(routes.route(&sourced_raw, header), None);
+    }
+
+    #[test]
+    fn live_ingress_promotes_control_sized_fsp_before_decrypt() {
+        let source = NodeAddr::from_bytes([0x43; 16]);
+        let local = NodeAddr::from_bytes([0x44; 16]);
+        let owner = OwnerId::fsp_node(source);
+        let transport_id = TransportId::new(43);
+        let remote_addr = TransportAddr::from_string("198.51.100.43:9000");
+        let mut routes = PacketMover2LiveRouteTable::default();
+        let route = PacketMover2IngressRoute::new(
+            owner,
+            3,
+            OutputTarget::SessionPayload { local_addr: local },
+        )
+        .with_class(PacketClass::Bulk);
+        assert_eq!(routes.register_fsp(source, route), None);
+
+        let small_raw = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                fsp_wire(78, 0),
+                43_000,
+            ),
+        )
+        .with_fsp_source(source);
+        let header =
+            PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&small_raw.payload).unwrap());
+        let small_route = routes
+            .route(&small_raw, header)
+            .expect("small FSP route");
+        assert_eq!(small_route.owner, owner);
+        assert_eq!(small_route.generation, 3);
+        assert_eq!(small_route.output, OutputTarget::SessionPayload { local_addr: local });
+        assert_eq!(small_route.class, PacketClass::Control);
+
+        let mut large_wire = fsp_wire(79, 0);
+        large_wire.resize(
+            FSP_HEADER_SIZE
+                .saturating_add(FSP_INNER_HEADER_SIZE)
+                .saturating_add(crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN)
+                .saturating_add(AEAD_TAG_SIZE)
+                .saturating_add(1),
+            0,
+        );
+        let large_raw = PacketMover2RawIngress::from_live_received(
+            PacketProtocol::Fsp,
+            ReceivedPacket::with_timestamp(transport_id, remote_addr, large_wire, 43_001),
+        )
+        .with_fsp_source(source);
+        let header =
+            PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&large_raw.payload).unwrap());
+        assert_eq!(
+            routes.route(&large_raw, header).expect("large FSP route").class,
+            PacketClass::Bulk
+        );
     }
 
     #[test]

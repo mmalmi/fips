@@ -40,6 +40,7 @@ const FMP_ESTABLISHED_HEADER_SIZE: usize = crate::node::wire::ESTABLISHED_HEADER
 const FSP_VERSION: u8 = crate::node::session_wire::FSP_VERSION;
 const FSP_PHASE_ESTABLISHED: u8 = crate::node::session_wire::FSP_PHASE_ESTABLISHED;
 const FSP_HEADER_SIZE: usize = crate::node::session_wire::FSP_HEADER_SIZE;
+const FSP_INNER_HEADER_SIZE: usize = crate::node::session_wire::FSP_INNER_HEADER_SIZE;
 const FSP_FLAG_U: u8 = crate::node::session_wire::FSP_FLAG_U;
 const AEAD_TAG_SIZE: usize = crate::noise::TAG_SIZE;
 
