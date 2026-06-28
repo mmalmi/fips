@@ -184,6 +184,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
+        collect_transport_sent_outputs: bool,
     ) -> PacketMover2LiveNodeTurn
     where
         Resolver: PacketMover2EndpointIdentityResolver,
@@ -212,13 +213,17 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
         let plans = transport_output.plans();
         report.transport_planned = plans.len();
         let dropped_before = report.output_drops.len();
-        report.transport_sent = send_packet_mover2_transport_plans_collect_sent(
-            transports,
-            plans,
-            &mut report.output_drops,
-            &mut report.transport_sent_outputs,
-        )
-        .await;
+        report.transport_sent = if collect_transport_sent_outputs {
+            send_packet_mover2_transport_plans_collect_sent(
+                transports,
+                plans,
+                &mut report.output_drops,
+                &mut report.transport_sent_outputs,
+            )
+            .await
+        } else {
+            send_packet_mover2_transport_plans(transports, plans, &mut report.output_drops).await
+        };
         report.transport_dropped = report.output_drops.len().saturating_sub(dropped_before);
         debug_assert_eq!(
             report.transport_planned,
@@ -305,6 +310,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
 
         let mut summary = PacketMover2RuntimeSummary::default();
         let mut outbound_firsts = outbound_firsts;
+        let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
         if let Some(packet) = outbound_firsts.take_direct_outbound() {
             self.admit_outbound_packet(packet, &mut summary);
         }
@@ -374,6 +380,7 @@ impl<W: StatelessCryptoWorker> PacketMover2TurnDriver<W> {
                 endpoint_resolver,
                 transports,
                 crypto_limit,
+                collect_transport_sent_outputs,
             )
             .await;
         let endpoint_deferred_count = outbound_buffers.endpoint_deferred_commands.len();

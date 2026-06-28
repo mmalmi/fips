@@ -88,7 +88,9 @@ impl Node {
             plaintext.to_vec(),
         )
         .with_activity_tick(ActivityTick::new(Self::now_ms()));
-        let mut turn = self.pump_packet_mover2_direct_outbound(outbound, 1).await;
+        let mut turn = self
+            .pump_packet_mover2_direct_outbound(outbound, 1, true)
+            .await;
         let sent_output = if turn.transport_sent() == 1 && turn.transport_dropped() == 0 {
             let mut sent_outputs = turn.take_transport_sent_outputs();
             if sent_outputs.len() == 1 {
@@ -290,14 +292,13 @@ impl Node {
         &mut self,
         outbound: OutboundPacket,
         crypto_limit: usize,
+        collect_transport_sent_outputs: bool,
     ) -> PacketMover2LiveNodeTurn {
+        let firsts = PacketMover2LiveOutboundFirsts::default()
+            .with_direct_outbound(Some(outbound))
+            .with_transport_sent_output_collection(collect_transport_sent_outputs);
         let turn = self
-            .pump_packet_mover2_pending_outbound_firsts(
-                PacketMover2LiveOutboundFirsts::default().with_direct_outbound(Some(outbound)),
-                0,
-                0,
-                crypto_limit,
-            )
+            .pump_packet_mover2_pending_outbound_firsts(firsts, 0, 0, crypto_limit)
             .await;
         turn
     }
@@ -356,7 +357,9 @@ impl Node {
             outbound = outbound.without_fsp_auto_coords_warmup();
         }
 
-        let turn = self.pump_packet_mover2_direct_outbound(outbound, 2).await;
+        let turn = self
+            .pump_packet_mover2_direct_outbound(outbound, 2, false)
+            .await;
         if let Err(error) = self
             .finish_packet_mover2_pending_outbound_turn(dest_addr, label, turn)
             .await

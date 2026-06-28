@@ -5,6 +5,7 @@ pub(crate) struct PacketMover2LiveOutboundFirsts {
     endpoint_priority: Option<NodeEndpointCommand>,
     endpoint_bulk: Option<NodeEndpointCommand>,
     tun_packet: Option<Vec<u8>>,
+    collect_transport_sent_outputs: bool,
 }
 
 impl PacketMover2LiveOutboundFirsts {
@@ -30,6 +31,15 @@ impl PacketMover2LiveOutboundFirsts {
     pub(crate) fn with_tun_packet(mut self, packet: Option<Vec<u8>>) -> Self {
         self.tun_packet = packet;
         self
+    }
+
+    pub(crate) fn with_transport_sent_output_collection(mut self, collect: bool) -> Self {
+        self.collect_transport_sent_outputs = collect;
+        self
+    }
+
+    pub(crate) fn collect_transport_sent_outputs(&self) -> bool {
+        self.collect_transport_sent_outputs
     }
 }
 

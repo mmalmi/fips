@@ -88,9 +88,7 @@
         assert_eq!(turn.transport_planned(), 1);
         assert_eq!(turn.transport_sent(), 1);
         assert_eq!(turn.transport_dropped(), 0);
-        let sent_outputs = turn.take_transport_sent_outputs();
-        assert_eq!(sent_outputs.len(), 1);
-        assert_eq!(sent_outputs[0].counter(), 760);
+        assert!(turn.take_transport_sent_outputs().is_empty());
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());
