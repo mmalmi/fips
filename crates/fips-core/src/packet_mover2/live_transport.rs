@@ -18,6 +18,8 @@ impl<T: PacketMover2TransportOutput + ?Sized> PacketMover2TransportOutput for &m
     }
 }
 
+const TRANSPORT_PRIORITY_CUT_IN_PACKETS: usize = 32;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2TransportSendPlan {
     transport_id: TransportId,
@@ -160,68 +162,152 @@ where
 {
     let mut sent = 0;
     let mut batch = Vec::new();
-    for lane in [Lane::Priority, Lane::Bulk] {
-        let mut start = 0usize;
-        while let Some((range_start, range_end, transport_id)) =
-            next_transport_lane_batch_range(plans, start, lane)
-        {
-            batch.clear();
-            append_transport_batch_plans(plans, range_start, range_end, lane, &mut batch);
-
-            let Some(transport) = transports.resolve_packet_mover2_transport(transport_id) else {
-                for (plan_index, _, _) in batch.iter().copied() {
-                    drops.push(PacketMover2OutputDrop::from_output(
-                        plans[plan_index].output(),
-                        PacketMover2OutputError::NoRoute,
-                    ));
-                }
-                start = range_end;
-                continue;
-            };
-
-            if batch.len() == 1 {
-                let plan_index = batch[0].0;
-                let plan = &plans[plan_index];
-                let result = transport
-                    .send(plan.remote_addr(), plan.output().payload())
-                    .await;
-                record_transport_send_result(
-                    plans,
-                    plan_index,
-                    result,
-                    &mut sent,
-                    drops,
-                    &mut sent_outputs,
-                );
-                start = range_end;
-                continue;
-            }
-
-            transport
-                .send_batch(&batch, |plan_index, result| {
-                    record_transport_send_result(
-                        plans,
-                        plan_index,
-                        result,
-                        &mut sent,
-                        drops,
-                        &mut sent_outputs,
-                    );
-                })
-                .await;
-            start = range_end;
-        }
+    let priority_cut_in_end = send_transport_priority_cut_in(
+        transports,
+        plans,
+        drops,
+        &mut sent_outputs,
+        &mut sent,
+        &mut batch,
+    )
+    .await;
+    let mut start = 0usize;
+    while let Some((range_start, range_end, transport_id)) =
+        next_transport_batch_range(plans, start)
+    {
+        batch.clear();
+        append_transport_batch_plans_skipping_priority_before(
+            plans,
+            range_start,
+            range_end,
+            Lane::Priority,
+            priority_cut_in_end,
+            &mut batch,
+        );
+        append_transport_batch_plans(plans, range_start, range_end, Lane::Bulk, &mut batch);
+        send_transport_plan_batch(
+            transports,
+            plans,
+            transport_id,
+            &batch,
+            &mut sent,
+            drops,
+            &mut sent_outputs,
+        )
+        .await;
+        start = range_end;
     }
     sent
 }
 
-fn next_transport_lane_batch_range(
+async fn send_transport_priority_cut_in<'a, R>(
+    transports: &R,
+    plans: &'a [PacketMover2TransportSendPlan],
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+    sent: &mut usize,
+    batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
+) -> usize
+where
+    R: PacketMover2TransportResolver + ?Sized,
+{
+    let mut start = 0usize;
+    let mut remaining = TRANSPORT_PRIORITY_CUT_IN_PACKETS;
+    let mut priority_cut_in_end = 0usize;
+    while remaining > 0 {
+        let Some((range_start, range_end, transport_id)) =
+            next_transport_priority_cut_in_batch_range(plans, start, remaining)
+        else {
+            break;
+        };
+        batch.clear();
+        append_transport_batch_plans(plans, range_start, range_end, Lane::Priority, batch);
+        let priority_packets = batch.len();
+        send_transport_plan_batch(
+            transports,
+            plans,
+            transport_id,
+            batch,
+            sent,
+            drops,
+            sent_outputs,
+        )
+        .await;
+        remaining = remaining.saturating_sub(priority_packets);
+        priority_cut_in_end = range_end;
+        start = range_end;
+    }
+    priority_cut_in_end
+}
+
+async fn send_transport_plan_batch<'a, R>(
+    transports: &R,
+    plans: &'a [PacketMover2TransportSendPlan],
+    transport_id: TransportId,
+    batch: &[(usize, &'a TransportAddr, &'a [u8])],
+    sent: &mut usize,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+) where
+    R: PacketMover2TransportResolver + ?Sized,
+{
+    if batch.is_empty() {
+        return;
+    }
+    let Some(transport) = transports.resolve_packet_mover2_transport(transport_id) else {
+        for (plan_index, _, _) in batch.iter().copied() {
+            drops.push(PacketMover2OutputDrop::from_output(
+                plans[plan_index].output(),
+                PacketMover2OutputError::NoRoute,
+            ));
+        }
+        return;
+    };
+
+    if batch.len() == 1 {
+        let plan_index = batch[0].0;
+        let plan = &plans[plan_index];
+        let result = transport
+            .send(plan.remote_addr(), plan.output().payload())
+            .await;
+        record_transport_send_result(plans, plan_index, result, sent, drops, sent_outputs);
+        return;
+    }
+
+    transport
+        .send_batch(batch, |plan_index, result| {
+            record_transport_send_result(plans, plan_index, result, sent, drops, sent_outputs);
+        })
+        .await;
+}
+
+fn next_transport_batch_range(
     plans: &[PacketMover2TransportSendPlan],
     start: usize,
-    lane: Lane,
 ) -> Option<(usize, usize, TransportId)> {
+    let range_start = start;
+    if range_start == plans.len() {
+        return None;
+    }
+
+    let transport_id = plans[range_start].transport_id;
+    let mut range_end = range_start + 1;
+    while range_end < plans.len() && plans[range_end].transport_id == transport_id {
+        range_end += 1;
+    }
+    Some((range_start, range_end, transport_id))
+}
+
+fn next_transport_priority_cut_in_batch_range(
+    plans: &[PacketMover2TransportSendPlan],
+    start: usize,
+    max_packets: usize,
+) -> Option<(usize, usize, TransportId)> {
+    if max_packets == 0 {
+        return None;
+    }
     let mut range_start = start;
-    while range_start < plans.len() && plans[range_start].output().lane() != lane {
+    while range_start < plans.len() && plans[range_start].output().lane() != Lane::Priority {
         range_start += 1;
     }
     if range_start == plans.len() {
@@ -229,12 +315,15 @@ fn next_transport_lane_batch_range(
     }
 
     let transport_id = plans[range_start].transport_id;
+    let mut priority_packets = 1usize;
     let mut range_end = range_start + 1;
     while range_end < plans.len() {
-        if plans[range_end].output().lane() == lane
-            && plans[range_end].transport_id != transport_id
-        {
-            break;
+        let plan = &plans[range_end];
+        if plan.output().lane() == Lane::Priority {
+            if plan.transport_id != transport_id || priority_packets == max_packets {
+                break;
+            }
+            priority_packets += 1;
         }
         range_end += 1;
     }
@@ -271,15 +360,30 @@ fn append_transport_batch_plans<'a>(
     lane: Lane,
     batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
 ) {
+    append_transport_batch_plans_skipping_priority_before(plans, start, end, lane, 0, batch);
+}
+
+fn append_transport_batch_plans_skipping_priority_before<'a>(
+    plans: &'a [PacketMover2TransportSendPlan],
+    start: usize,
+    end: usize,
+    lane: Lane,
+    skip_priority_before: usize,
+    batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
+) {
     batch.extend(
         plans[start..end]
             .iter()
             .enumerate()
             .filter_map(|(relative_index, plan)| {
+                let plan_index = start + relative_index;
                 if plan.output().lane() != lane {
                     return None;
                 }
-                Some((start + relative_index, plan.remote_addr(), plan.output().payload()))
+                if lane == Lane::Priority && plan_index < skip_priority_before {
+                    return None;
+                }
+                Some((plan_index, plan.remote_addr(), plan.output().payload()))
             }),
     );
 }

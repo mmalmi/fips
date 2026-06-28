@@ -525,18 +525,18 @@
     }
 
     #[test]
-    fn transport_batch_mapper_sends_priority_before_bulk_with_original_indexes() {
+    fn transport_batch_mapper_prioritizes_within_transport_runs() {
         let transport_a = TransportId::new(60);
         let transport_b = TransportId::new(61);
         let remote_addr = TransportAddr::from_string("127.0.0.1:6000");
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x60; 16]));
-        let mut bulk_a = transport_output(
+        let mut bulk_a0 = transport_output(
             owner,
             600,
             10,
             transport_a,
             remote_addr.clone(),
-            b"bulk-a".to_vec(),
+            b"bulk-a0".to_vec(),
         );
         let mut priority_a = transport_output(
             owner,
@@ -546,13 +546,13 @@
             remote_addr.clone(),
             b"priority-a".to_vec(),
         );
-        let mut bulk_b = transport_output(
+        let mut bulk_a1 = transport_output(
             owner,
             602,
             12,
-            transport_b,
+            transport_a,
             remote_addr.clone(),
-            b"bulk-b".to_vec(),
+            b"bulk-a1".to_vec(),
         );
         let mut priority_b = transport_output(
             owner,
@@ -562,26 +562,38 @@
             remote_addr.clone(),
             b"priority-b".to_vec(),
         );
-        bulk_a.lane = Lane::Bulk;
+        let mut bulk_b = transport_output(
+            owner,
+            604,
+            14,
+            transport_b,
+            remote_addr.clone(),
+            b"bulk-b".to_vec(),
+        );
+        bulk_a0.lane = Lane::Bulk;
         priority_a.lane = Lane::Priority;
-        bulk_b.lane = Lane::Bulk;
+        bulk_a1.lane = Lane::Bulk;
         priority_b.lane = Lane::Priority;
+        bulk_b.lane = Lane::Bulk;
         let plans = vec![
-            PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), bulk_a),
-            PacketMover2TransportSendPlan::new(transport_b, remote_addr.clone(), priority_b),
+            PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), bulk_a0),
             PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), priority_a),
+            PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), bulk_a1),
+            PacketMover2TransportSendPlan::new(transport_b, remote_addr.clone(), priority_b),
             PacketMover2TransportSendPlan::new(transport_b, remote_addr, bulk_b),
         ];
         let mut batch = Vec::new();
 
-        append_transport_batch_plans(&plans, 0, plans.len(), Lane::Priority, &mut batch);
-        append_transport_batch_plans(&plans, 0, plans.len(), Lane::Bulk, &mut batch);
+        append_transport_batch_plans(&plans, 0, 3, Lane::Priority, &mut batch);
+        append_transport_batch_plans(&plans, 0, 3, Lane::Bulk, &mut batch);
+        append_transport_batch_plans(&plans, 3, plans.len(), Lane::Priority, &mut batch);
+        append_transport_batch_plans(&plans, 3, plans.len(), Lane::Bulk, &mut batch);
 
         let indexes = batch
             .iter()
             .map(|(index, _, _)| *index)
             .collect::<Vec<_>>();
-        assert_eq!(indexes, [1, 2, 0, 3]);
+        assert_eq!(indexes, [1, 0, 2, 3, 4]);
         let payloads = batch
             .iter()
             .map(|(_, _, payload)| *payload)
@@ -589,26 +601,28 @@
         assert_eq!(
             payloads,
             [
-                b"priority-b".as_slice(),
                 b"priority-a".as_slice(),
-                b"bulk-a".as_slice(),
+                b"bulk-a0".as_slice(),
+                b"bulk-a1".as_slice(),
+                b"priority-b".as_slice(),
                 b"bulk-b".as_slice()
             ]
         );
         assert_eq!(
-            next_transport_lane_batch_range(&plans, 0, Lane::Priority),
-            Some((1, 2, transport_b))
-        );
-        assert_eq!(
-            next_transport_lane_batch_range(&plans, 2, Lane::Priority),
-            Some((2, plans.len(), transport_a))
-        );
-        assert_eq!(
-            next_transport_lane_batch_range(&plans, 0, Lane::Bulk),
+            next_transport_batch_range(&plans, 0),
             Some((0, 3, transport_a))
         );
         assert_eq!(
-            next_transport_lane_batch_range(&plans, 3, Lane::Bulk),
+            next_transport_batch_range(&plans, 3),
+            Some((3, plans.len(), transport_b))
+        );
+        assert_eq!(next_transport_batch_range(&plans, plans.len()), None);
+        assert_eq!(
+            next_transport_priority_cut_in_batch_range(&plans, 0, 1),
+            Some((1, 3, transport_a))
+        );
+        assert_eq!(
+            next_transport_priority_cut_in_batch_range(&plans, 3, 32),
             Some((3, plans.len(), transport_b))
         );
     }
