@@ -11,8 +11,6 @@ use crate::packet_mover2::{
 };
 use crate::protocol::SessionMessageType;
 
-const INITIAL_FMP_GENERATION: u64 = 1;
-const INITIAL_FSP_GENERATION: u64 = 1;
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
 const PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT: usize = 64;
 
@@ -50,7 +48,7 @@ impl Node {
             };
         }
 
-        let (receiver_idx, mut flags) = {
+        let (receiver_idx, mut flags, generation) = {
             let peer = self
                 .peers
                 .get(node_addr)
@@ -67,7 +65,7 @@ impl Node {
             if peer.current_k_bit() {
                 flags |= FLAG_KEY_EPOCH;
             }
-            (receiver_idx.as_u32(), flags)
+            (receiver_idx.as_u32(), flags, peer.session_generation())
         };
         if ce_flag {
             flags |= FLAG_CE;
@@ -75,7 +73,7 @@ impl Node {
 
         let outbound = OutboundPacket::fmp(
             OwnerId::fmp_node(*node_addr),
-            INITIAL_FMP_GENERATION,
+            generation,
             packet_mover2_fmp_link_class(plaintext),
             receiver_idx,
             flags,
@@ -324,11 +322,17 @@ impl Node {
                 reason: format!("packet_mover2 FSP wrap route unavailable for {label}"),
             });
         };
+        let Some(generation) = self.packet_mover2_fsp_generation(dest_addr) else {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("packet_mover2 FSP generation unavailable for {label}"),
+            });
+        };
         let coords_prefix_len = coords_prefix.as_ref().map_or(0, Vec::len);
 
         let mut outbound = OutboundPacket::fsp(
             OwnerId::fsp_node(*dest_addr),
-            INITIAL_FSP_GENERATION,
+            generation,
             packet_mover2_fsp_control_class(msg_type),
             fsp_flags,
             payload.to_vec(),
@@ -523,11 +527,11 @@ impl Node {
         self.packet_mover2
             .register_owner_if_missing(seed.owner, seed.config.clone());
         self.packet_mover2
-            .set_owner_crypto_keys(seed.owner, seed.keys)
+            .apply_owner_live_config(seed.owner, seed.config)
             .is_ok()
             && self
                 .packet_mover2
-                .apply_owner_live_config(seed.owner, seed.config)
+                .set_owner_crypto_keys(seed.owner, seed.keys)
                 .is_ok()
             && self
                 .packet_mover2
@@ -556,11 +560,11 @@ impl Node {
             .next_hop
             .is_none_or(|next_hop| self.sync_packet_mover2_fmp_owner(&next_hop));
         self.packet_mover2
-            .set_owner_crypto_keys(seed.owner, seed.keys)
+            .apply_owner_live_config(seed.owner, seed.config)
             .is_ok()
             && self
                 .packet_mover2
-                .apply_owner_live_config(seed.owner, seed.config)
+                .set_owner_crypto_keys(seed.owner, seed.keys)
                 .is_ok()
             && self
                 .packet_mover2
@@ -583,6 +587,7 @@ impl Node {
         let transport_id = peer.transport_id()?;
         let remote_addr = peer.current_addr()?.clone();
         let receiver_idx = peer.our_index()?.as_u32();
+        let generation = peer.session_generation();
         let session_start_ms = Self::now_ms().wrapping_sub(u64::from(peer.session_elapsed_ms()));
         let open = Arc::new(session.recv_cipher_clone()?);
         let seal = Arc::new(session.send_cipher_clone()?);
@@ -593,7 +598,7 @@ impl Node {
             receiver_idx,
             PacketMover2IngressRoute::new(
                 OwnerId::fmp_node(*node_addr),
-                INITIAL_FMP_GENERATION,
+                generation,
                 OutputTarget::SessionIngress {
                     local_addr: *self.node_addr(),
                 },
@@ -604,7 +609,7 @@ impl Node {
         Some(PacketMover2FmpOwnerSeed {
             owner: OwnerId::fmp_node(*node_addr),
             config: self
-                .packet_mover2_owner_config(INITIAL_FMP_GENERATION)
+                .packet_mover2_owner_config(generation)
                 .with_send_counter_authority(counter_authority)
                 .with_fmp_session_start_ms(session_start_ms),
             keys: OwnerCryptoKeys::new(open, seal),
@@ -647,15 +652,16 @@ impl Node {
                 session.coords_warmup_remaining(),
             )
         };
+        let generation = Self::packet_mover2_generation_from_session_start_ms(session_start_ms);
         let coords_prefix =
             self.packet_mover2_fsp_coords_prefix(node_addr, coords_warmup_remaining);
         let (routes, next_hop) =
-            self.packet_mover2_fsp_owner_routes(node_addr, fsp_flags, inner_flags);
+            self.packet_mover2_fsp_owner_routes(node_addr, generation, fsp_flags, inner_flags);
 
         Some(PacketMover2FspOwnerSeed {
             owner: OwnerId::fsp_node(*node_addr),
             config: self
-                .packet_mover2_owner_config(INITIAL_FSP_GENERATION)
+                .packet_mover2_owner_config(generation)
                 .with_send_counter_authority(counter_authority)
                 .with_fsp_session_start_ms(session_start_ms)
                 .with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix),
@@ -690,6 +696,7 @@ impl Node {
     fn packet_mover2_fsp_owner_routes(
         &mut self,
         node_addr: &NodeAddr,
+        generation: u64,
         fsp_flags: u8,
         inner_flags: u8,
     ) -> (PacketMover2LiveOwnerRoutes, Option<NodeAddr>) {
@@ -703,7 +710,7 @@ impl Node {
             *node_addr,
             PacketMover2IngressRoute::new(
                 owner,
-                INITIAL_FSP_GENERATION,
+                generation,
                 OutputTarget::SessionPayload {
                     local_addr: *self.node_addr(),
                 },
@@ -712,7 +719,7 @@ impl Node {
         ));
         let tun = PacketMover2TunOutboundRoute::fsp_ipv6_shim(
             owner,
-            INITIAL_FSP_GENERATION,
+            generation,
             PacketClass::Bulk,
             fsp_flags,
             inner_flags,
@@ -723,13 +730,9 @@ impl Node {
             PacketMover2TunDestinationRoute::new(tun),
         ));
 
-        let endpoint = PacketMover2EndpointCommandRoute::fsp(
-            owner,
-            INITIAL_FSP_GENERATION,
-            fsp_flags,
-            inner_flags,
-        )
-        .with_fmp_wrap(wrap);
+        let endpoint =
+            PacketMover2EndpointCommandRoute::fsp(owner, generation, fsp_flags, inner_flags)
+                .with_fmp_wrap(wrap);
         routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(*node_addr, endpoint));
 
         (routes, Some(next_hop))
@@ -739,7 +742,7 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
     ) -> Option<(PacketMover2FspWrapRoute, NodeAddr)> {
-        let (next_hop, receiver_idx, transport_id, remote_addr, fmp_flags) = {
+        let (next_hop, generation, receiver_idx, transport_id, remote_addr, fmp_flags) = {
             let peer = self.find_next_hop(dest_addr)?;
             let mut fmp_flags = if peer.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()) {
                 FLAG_SP
@@ -751,6 +754,7 @@ impl Node {
             }
             (
                 *peer.node_addr(),
+                peer.session_generation(),
                 peer.their_index()?.as_u32(),
                 peer.transport_id()?,
                 peer.current_addr()?.clone(),
@@ -764,7 +768,7 @@ impl Node {
             .unwrap_or_else(|| self.transport_mtu());
         let wrap = PacketMover2FspWrapRoute::new(
             OwnerId::fmp_node(next_hop),
-            INITIAL_FMP_GENERATION,
+            generation,
             receiver_idx,
             *self.node_addr(),
             *dest_addr,
@@ -785,6 +789,16 @@ impl Node {
             PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT.min(in_flight_limit.max(1));
         OwnerConfig::new(generation, in_flight_limit)
             .with_bulk_in_flight_limit(bulk_in_flight_limit)
+    }
+
+    fn packet_mover2_fsp_generation(&self, node_addr: &NodeAddr) -> Option<u64> {
+        self.sessions.get(node_addr).map(|session| {
+            Self::packet_mover2_generation_from_session_start_ms(session.session_start_ms())
+        })
+    }
+
+    fn packet_mover2_generation_from_session_start_ms(session_start_ms: u64) -> u64 {
+        session_start_ms.max(1)
     }
 
     fn packet_mover2_fmp_output_drop_error(

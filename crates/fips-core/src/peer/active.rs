@@ -127,6 +127,8 @@ pub struct ActivePeer {
     /// Session start time for computing session-relative timestamps.
     /// Used as the epoch for the 4-byte inner header timestamp field.
     session_start: Instant,
+    /// Local current-session generation for dataplane owner state.
+    session_generation: u64,
 
     // === Statistics ===
     /// Link statistics.
@@ -224,6 +226,7 @@ impl ActivePeer {
             filter_received_at: 0,
             pending_filter_update: true, // Send filter on new connection
             session_start: now,
+            session_generation: authenticated_at.max(1),
             link_stats: LinkStats::new(),
             authenticated_at,
             last_seen: authenticated_at,
@@ -308,6 +311,7 @@ impl ActivePeer {
             filter_received_at: 0,
             pending_filter_update: true,
             session_start: now,
+            session_generation: authenticated_at.max(1),
             link_stats,
             authenticated_at,
             last_seen: authenticated_at,
@@ -676,6 +680,11 @@ impl ActivePeer {
     /// Wraps at ~49.7 days which is acceptable for session-relative timing.
     pub fn session_elapsed_ms(&self) -> u32 {
         self.session_start.elapsed().as_millis() as u32
+    }
+
+    /// Local dataplane generation for the current Noise session.
+    pub fn session_generation(&self) -> u64 {
+        self.session_generation
     }
 
     /// When this peer's session started (for link-dead fallback timing).

@@ -184,6 +184,9 @@ impl OwnerState {
     }
 
     pub(crate) fn apply_live_config(&mut self, config: OwnerConfig) {
+        if config.generation != self.generation {
+            self.rekey(config.generation);
+        }
         if let Some(authority) = config.send_counter_authority {
             self.set_send_counter_authority(authority);
         }
