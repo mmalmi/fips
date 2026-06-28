@@ -12,12 +12,6 @@ pub(super) const NON_PACKET_DRAIN_BUDGET: usize = 16;
 /// Raw receive burst cap. This amortizes select/scheduler hops across a hot
 /// transport queue; fallback/side interleaves reserve progress before the cap.
 pub(super) const PACKET_DRAIN_BUDGET: usize = 512;
-/// Extra endpoint/TUN work a hot packet turn may retire after the raw receive
-/// burst. This keeps latency-sensitive TUN traffic moving during loaded FSP
-/// receive without adding another receive path.
-pub(super) const PACKET_TURN_SIDE_DRAIN_BUDGET: usize = 64;
-pub(super) const PACKET_TURN_CRYPTO_BUDGET: usize =
-    PACKET_DRAIN_BUDGET + PACKET_TURN_SIDE_DRAIN_BUDGET;
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 pub(super) const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
