@@ -123,6 +123,13 @@ impl AdmissionQueue {
         self.priority.pop_front().or_else(|| self.bulk.pop_front())
     }
 
+    fn push_front(&mut self, queued: QueuedPacket) {
+        match queued.packet.lane() {
+            Lane::Priority => self.priority.push_front(queued),
+            Lane::Bulk => self.bulk.push_front(queued),
+        }
+    }
+
     #[cfg(test)]
     fn lens(&self) -> (usize, usize) {
         (self.priority.len(), self.bulk.len())
@@ -215,6 +222,13 @@ impl OutboundAdmissionQueue {
         self.priority.pop_front().or_else(|| self.bulk.pop_front())
     }
 
+    fn push_front(&mut self, queued: QueuedOutboundPacket) {
+        match queued.packet.lane() {
+            Lane::Priority => self.priority.push_front(queued),
+            Lane::Bulk => self.bulk.push_front(queued),
+        }
+    }
+
     fn has_priority_pending(&self) -> bool {
         !self.priority.is_empty()
     }
@@ -224,4 +238,3 @@ impl OutboundAdmissionQueue {
         (self.priority.len(), self.bulk.len())
     }
 }
-

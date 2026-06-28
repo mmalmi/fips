@@ -327,7 +327,7 @@
     }
 
     #[test]
-    fn owner_rejects_replay_and_in_flight_overflow_at_reservation() {
+    fn owner_defers_in_flight_overflow_and_still_rejects_replay() {
         let owner = OwnerId::fsp(3);
         let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4), CopyCryptoWorker);
         mover.register_owner(owner, OwnerConfig::new(1, 1));
@@ -348,20 +348,100 @@
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 1);
 
         let drops = mover.drain_drops();
-        assert_eq!(drops[0].owner(), owner);
-        assert_eq!(drops[0].reason(), PacketDropReason::OwnerInFlightFull);
-        assert_eq!(drops[0].counter(), Some(9));
-        assert_eq!(drops[0].ingress_seq(), Some(1));
-        assert_eq!(drops[0].lane(), Lane::Bulk);
-        assert_eq!(drops[1].owner(), owner);
-        assert_eq!(drops[1].reason(), PacketDropReason::Replay);
-        assert_eq!(drops[1].counter(), Some(8));
-        assert_eq!(drops[1].ingress_seq(), Some(2));
-        assert_eq!(drops[1].lane(), Lane::Bulk);
+        assert!(drops.is_empty());
 
         let completion = mover.execute_work(work[0].clone());
         assert_eq!(outputs(mover.retire_completion(completion)).len(), 1);
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 0);
+
+        let work = mover.dispatch_available(8);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].packet.counter, 9);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 1);
+
+        let drops = mover.drain_drops();
+        assert!(drops.is_empty());
+
+        let completion = mover.execute_work(work[0].clone());
+        assert_eq!(outputs(mover.retire_completion(completion)).len(), 1);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 0);
+
+        let work = mover.dispatch_available(8);
+        assert!(work.is_empty());
+
+        let drops = mover.drain_drops();
+        assert_eq!(drops.len(), 1);
+        assert_eq!(drops[0].owner(), owner);
+        assert_eq!(drops[0].reason(), PacketDropReason::Replay);
+        assert_eq!(drops[0].counter(), Some(8));
+        assert_eq!(drops[0].ingress_seq(), Some(2));
+        assert_eq!(drops[0].lane(), Lane::Bulk);
+    }
+
+    #[test]
+    fn owner_bulk_in_flight_cap_preserves_priority_reservations() {
+        let owner = OwnerId::fsp(33);
+        let mut inbound =
+            OwnerState::new(owner, OwnerConfig::new(1, 4).with_bulk_in_flight_limit(2));
+
+        inbound
+            .reserve(
+                &packet(owner, 1, 10, PacketClass::Bulk, OutputTarget::Tun),
+                0,
+            )
+            .unwrap();
+        inbound
+            .reserve(
+                &packet(owner, 1, 11, PacketClass::Bulk, OutputTarget::Tun),
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            inbound.reserve(
+                &packet(owner, 1, 12, PacketClass::Bulk, OutputTarget::Tun),
+                2,
+            ),
+            Err(OwnerReserveError::InFlightFull)
+        );
+
+        let liveness = inbound
+            .reserve(
+                &packet(owner, 1, 13, PacketClass::Liveness, OutputTarget::Tun),
+                3,
+            )
+            .unwrap();
+        assert_eq!(liveness.lane, Lane::Priority);
+        assert_eq!(liveness.counter, 13);
+        assert_eq!(inbound.in_flight(), 3);
+
+        let mut outbound =
+            OwnerState::new(owner, OwnerConfig::new(1, 4).with_bulk_in_flight_limit(2));
+        outbound
+            .reserve_outbound(
+                outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-1"),
+                0,
+            )
+            .unwrap();
+        outbound
+            .reserve_outbound(
+                outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-2"),
+                1,
+            )
+            .unwrap();
+        assert!(matches!(
+            outbound.reserve_outbound(
+                outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-3"),
+                2,
+            ),
+            Err(OwnerReserveError::InFlightFull)
+        ));
+
+        let (mmp, _) = outbound
+            .reserve_outbound(outbound_packet(owner, 1, PacketClass::Mmp, b"mmp"), 3)
+            .unwrap();
+        assert_eq!(mmp.lane, Lane::Priority);
+        assert_eq!(mmp.counter, 2);
+        assert_eq!(outbound.in_flight(), 3);
     }
 
     #[test]

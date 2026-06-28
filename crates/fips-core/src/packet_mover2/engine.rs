@@ -109,6 +109,10 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
                 ));
                 continue;
             };
+            if !owner.can_reserve_lane(queued.packet.lane()) {
+                self.admission.push_front(queued);
+                break;
+            }
 
             match owner.reserve(&queued.packet, queued.ingress_seq) {
                 Ok(reservation) => work.push(CryptoWork {
@@ -153,6 +157,10 @@ impl<W: StatelessCryptoWorker> PacketMover2<W> {
             let owner_id = queued.packet.owner;
             let lane = queued.packet.lane();
             let ingress_seq = queued.ingress_seq;
+            if !owner.can_reserve_lane(lane) {
+                self.outbound_admission.push_front(queued);
+                break;
+            }
             match owner.reserve_outbound(queued.packet, ingress_seq) {
                 Ok((reservation, packet)) => work.push(OutboundCryptoWork {
                     reservation,

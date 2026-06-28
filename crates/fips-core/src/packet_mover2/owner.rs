@@ -2,6 +2,7 @@
 pub(crate) struct OwnerConfig {
     generation: u64,
     in_flight_limit: usize,
+    bulk_in_flight_limit: usize,
     next_send_counter: u64,
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     fmp_session_start_ms: Option<u64>,
@@ -15,6 +16,7 @@ impl OwnerConfig {
         Self {
             generation,
             in_flight_limit,
+            bulk_in_flight_limit: in_flight_limit,
             next_send_counter: 0,
             send_counter_authority: None,
             fmp_session_start_ms: None,
@@ -22,6 +24,11 @@ impl OwnerConfig {
             fsp_coords_warmup_remaining: 0,
             fsp_coords_prefix: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_bulk_in_flight_limit(mut self, bulk_in_flight_limit: usize) -> Self {
+        self.bulk_in_flight_limit = bulk_in_flight_limit.min(self.in_flight_limit).max(1);
+        self
     }
 
     pub(crate) fn with_next_send_counter(mut self, next_send_counter: u64) -> Self {
@@ -107,7 +114,9 @@ pub(crate) struct OwnerState {
     owner: OwnerId,
     generation: u64,
     in_flight_limit: usize,
+    bulk_in_flight_limit: usize,
     in_flight: usize,
+    bulk_in_flight: usize,
     next_order: u64,
     next_retire: u64,
     next_send_counter: u64,
@@ -133,7 +142,9 @@ impl OwnerState {
             owner,
             generation: config.generation,
             in_flight_limit: config.in_flight_limit,
+            bulk_in_flight_limit: config.bulk_in_flight_limit,
             in_flight: 0,
+            bulk_in_flight: 0,
             next_order: 0,
             next_retire: 0,
             next_send_counter: config.next_send_counter,
@@ -204,6 +215,13 @@ impl OwnerState {
         self.active_path.clone()
     }
 
+    pub(crate) fn can_reserve_lane(&self, lane: Lane) -> bool {
+        if self.in_flight >= self.in_flight_limit {
+            return false;
+        }
+        lane != Lane::Bulk || self.bulk_in_flight < self.bulk_in_flight_limit
+    }
+
     pub(crate) fn last_rx_activity(&self) -> Option<ActivityTick> {
         self.last_rx_activity
     }
@@ -236,7 +254,8 @@ impl OwnerState {
         if self.replay_window.is_replay(packet.counter) {
             return Err(OwnerReserveError::Replay);
         }
-        if self.in_flight >= self.in_flight_limit {
+        let lane = packet.lane();
+        if !self.can_reserve_lane(lane) {
             return Err(OwnerReserveError::InFlightFull);
         }
 
@@ -249,7 +268,7 @@ impl OwnerState {
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_rx_activity, tick);
         }
-        self.in_flight += 1;
+        self.reserve_lane(lane);
         let order = OrderToken(self.next_order);
         self.next_order = self.next_order.wrapping_add(1);
         Ok(OwnerReservation {
@@ -258,7 +277,7 @@ impl OwnerState {
             order,
             ingress_seq,
             counter: packet.counter,
-            lane: packet.lane(),
+            lane,
             source_path: packet.source_path.clone(),
             previous_hop: packet.previous_hop,
             ce_flag: packet.ce_flag,
@@ -278,7 +297,8 @@ impl OwnerState {
         if packet.generation != self.generation {
             return Err(OwnerReserveError::StaleGeneration);
         }
-        if self.in_flight >= self.in_flight_limit {
+        let lane = packet.lane();
+        if !self.can_reserve_lane(lane) {
             return Err(OwnerReserveError::InFlightFull);
         }
 
@@ -290,7 +310,7 @@ impl OwnerState {
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_tx_activity, tick);
         }
-        self.in_flight += 1;
+        self.reserve_lane(lane);
         let order = OrderToken(self.next_order);
         self.next_order = self.next_order.wrapping_add(1);
         let reservation = OwnerReservation {
@@ -299,7 +319,7 @@ impl OwnerState {
             order,
             ingress_seq,
             counter,
-            lane: packet.lane(),
+            lane,
             source_path: None,
             previous_hop: None,
             ce_flag: false,
@@ -370,6 +390,9 @@ impl OwnerState {
         while let Some(completion) = self.pending.remove(&OrderToken(self.next_retire)) {
             self.next_retire = self.next_retire.wrapping_add(1);
             self.in_flight = self.in_flight.saturating_sub(1);
+            if completion.reservation.lane == Lane::Bulk {
+                self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
+            }
 
             if completion.reservation.generation != self.generation {
                 retired.push(RetiredPacket::Drop(PacketDrop::from_completion(
@@ -408,6 +431,13 @@ impl OwnerState {
     #[cfg(test)]
     fn in_flight(&self) -> usize {
         self.in_flight
+    }
+
+    fn reserve_lane(&mut self, lane: Lane) {
+        self.in_flight = self.in_flight.saturating_add(1);
+        if lane == Lane::Bulk {
+            self.bulk_in_flight = self.bulk_in_flight.saturating_add(1);
+        }
     }
 
     #[cfg(test)]
