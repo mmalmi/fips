@@ -66,14 +66,9 @@ impl Node {
             info!(count = self.transports.len(), "Transports initialized");
         }
 
-        // Spawn the off-task FMP-encrypt + UDP-send worker pool on Unix.
-        // Established receive is owned by packet_mover2 in production; the
-        // legacy decrypt worker pool is only kept alive for tests that call
-        // old encrypted-frame handlers directly.
-        //
-        // Worker count defaults to the number of CPUs, overridable via
-        // `FIPS_ENCRYPT_WORKERS=N` for debug/benchmarking.
-        #[cfg(unix)]
+        // Legacy worker pools are kept alive only for old direct handler/send
+        // tests. Production receive and output are owned by packet_mover2.
+        #[cfg(all(test, unix))]
         {
             let cpu_default = std::thread::available_parallelism()
                 .map(|n| n.get())
@@ -81,6 +76,8 @@ impl Node {
                 .max(1);
             if self.config.node.worker_pools_enabled {
                 node_start_debug_log("Node::start worker pools begin");
+                // Test worker count defaults to the number of CPUs, with an
+                // override for debug-only legacy worker tests.
                 let encrypt_worker_count: usize = std::env::var("FIPS_ENCRYPT_WORKERS")
                     .ok()
                     .and_then(|s| s.parse().ok())

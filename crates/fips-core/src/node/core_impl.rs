@@ -110,6 +110,7 @@ impl Node {
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
+            #[cfg(test)]
             encrypt_workers: None,
             #[cfg(test)]
             decrypt_workers: None,
@@ -261,6 +262,7 @@ impl Node {
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
+            #[cfg(test)]
             encrypt_workers: None,
             #[cfg(test)]
             decrypt_workers: None,

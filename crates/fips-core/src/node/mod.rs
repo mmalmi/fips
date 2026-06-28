@@ -313,11 +313,9 @@ pub struct Node {
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
     endpoint_events: EndpointEventRuntime,
-    /// Off-task FMP-encrypt + UDP-send worker pool. `None` if not yet
-    /// spawned (set up in `start()` once transports are running).
-    /// `Some(pool)` once available; the pool internally holds
-    /// per-worker mpsc senders and round-robins jobs across them.
-    /// See `node::encrypt_worker` for the rationale and layout.
+    /// Legacy off-task FMP-encrypt + UDP-send worker pool retained only for
+    /// old direct send tests. Production output is owned by packet_mover2.
+    #[cfg(test)]
     encrypt_workers: Option<encrypt_worker::EncryptWorkerPool>,
     /// Legacy off-task FMP + FSP decrypt + delivery worker pool. packet_mover2
     /// owns production receive; this pool remains only for old direct handler

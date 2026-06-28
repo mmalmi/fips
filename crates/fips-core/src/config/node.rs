@@ -813,13 +813,10 @@ pub struct NodeConfig {
     #[serde(default = "NodeConfig::default_system_files_enabled")]
     pub system_files_enabled: bool,
 
-    /// Enable the off-task Unix encrypt/send worker pool (`node.worker_pools_enabled`).
+    /// Legacy test-only off-task Unix encrypt/send worker pool switch.
     ///
-    /// Established receive always uses the decrypt-worker owner path; this flag
-    /// no longer selects an in-line decrypt mode.
-    /// Embedded/mobile endpoints can disable this to keep crypto/send work inline
-    /// with the rx loop when platform extension sandboxes make OS-thread pools
-    /// unsuitable.
+    /// Production receive and output are owned by packet_mover2; this retained
+    /// field no longer selects a production packet mover or opener mode.
     #[serde(default = "NodeConfig::default_worker_pools_enabled")]
     pub worker_pools_enabled: bool,
 
