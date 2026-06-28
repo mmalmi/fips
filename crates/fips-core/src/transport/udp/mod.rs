@@ -560,7 +560,7 @@ impl UdpTransport {
                 );
                 continue;
             }
-            socket_packets.push((index, *data, socket_addr));
+            socket_packets.push((index, data, socket_addr));
         }
 
         let mut offset = 0usize;
