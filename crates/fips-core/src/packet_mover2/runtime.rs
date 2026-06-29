@@ -235,6 +235,42 @@ impl PacketMover2TurnDriver {
         R: PacketMover2IngressRouter,
         S: PacketMover2OutputSink,
     {
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        self.pump_aead_output_completion_executor_turn(
+            completions,
+            completion_limit,
+            &mut executor,
+            raw_ingress,
+            router,
+            raw_ingress_limit,
+            outbound,
+            outbound_limit,
+            sink,
+            crypto_limit,
+        )
+    }
+
+    pub(crate) fn pump_aead_output_completion_executor_turn<C, E, RI, O, R, S>(
+        &mut self,
+        completions: &mut C,
+        completion_limit: usize,
+        executor: &mut E,
+        raw_ingress: &mut RI,
+        router: &mut R,
+        raw_ingress_limit: usize,
+        outbound: &mut O,
+        outbound_limit: usize,
+        sink: &mut S,
+        crypto_limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        C: PacketMover2CompletionSource,
+        E: PacketMover2CryptoExecutor,
+        RI: PacketMover2RawIngressSource,
+        O: PacketMover2OutboundSource,
+        R: PacketMover2IngressRouter,
+        S: PacketMover2OutputSink,
+    {
         self.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
@@ -250,7 +286,7 @@ impl PacketMover2TurnDriver {
             self.admit_outbound_packet(packet, &mut summary);
         });
 
-        self.finish_aead_output_turn(summary, sink, crypto_limit)
+        self.finish_aead_output_turn_with_executor(summary, sink, crypto_limit, executor)
     }
 
     async fn finish_aead_live_node_output_turn<Resolver, Transports>(
@@ -268,7 +304,40 @@ impl PacketMover2TurnDriver {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let mut summary = self.collect_live_session_outputs(summary, routes, crypto_limit);
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        self.finish_aead_live_node_output_turn_with_executor(
+            summary,
+            routes,
+            tun_tx,
+            endpoint_tx,
+            endpoint_resolver,
+            transports,
+            crypto_limit,
+            collect_transport_sent_outputs,
+            &mut executor,
+        )
+        .await
+    }
+
+    async fn finish_aead_live_node_output_turn_with_executor<Resolver, Transports, E>(
+        &mut self,
+        summary: PacketMover2RuntimeSummary,
+        routes: &mut PacketMover2LiveRouteTable,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+        collect_transport_sent_outputs: bool,
+        executor: &mut E,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+        E: PacketMover2CryptoExecutor,
+    {
+        let mut summary =
+            self.collect_live_session_outputs_with_executor(summary, routes, crypto_limit, executor);
         self.collect_fsp_session_payload_outputs(&mut summary);
         let mut transport_output = std::mem::take(&mut self.transport_output);
         transport_output.clear();
@@ -389,9 +458,74 @@ impl PacketMover2TurnDriver {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        let mut completions = PacketMover2NoCompletions;
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        self.pump_aead_live_node_route_table_completion_executor_turn_with_firsts(
+            &mut completions,
+            0,
+            &mut executor,
+            raw_ingress,
+            routes,
+            raw_ingress_limit,
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            outbound_firsts,
+            deferred_endpoint_commands,
+            deferred_tun_packets,
+            tun_tx,
+            endpoint_tx,
+            endpoint_resolver,
+            transports,
+            crypto_limit,
+        )
+        .await
+    }
+
+    async fn pump_aead_live_node_route_table_completion_executor_turn_with_firsts<
+        C,
+        E,
+        RI,
+        Resolver,
+        Transports,
+    >(
+        &mut self,
+        completions: &mut C,
+        completion_limit: usize,
+        executor: &mut E,
+        raw_ingress: &mut RI,
+        routes: &mut PacketMover2LiveRouteTable,
+        raw_ingress_limit: usize,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        C: PacketMover2CompletionSource,
+        E: PacketMover2CryptoExecutor,
+        RI: PacketMover2RawIngressSource,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
         self.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
+        completions.drain_completions(completion_limit, |completion| {
+            self.collect_completed_aead_output(&mut summary, completion);
+        });
+        summary = self.collect_retired_outputs(summary);
         let mut outbound_firsts = outbound_firsts;
         let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
         if let Some(packet) = outbound_firsts.take_initial_outbound() {
@@ -453,7 +587,7 @@ impl PacketMover2TurnDriver {
         }
 
         let mut report = self
-            .finish_aead_live_node_output_turn(
+            .finish_aead_live_node_output_turn_with_executor(
                 summary,
                 routes,
                 tun_tx,
@@ -462,6 +596,7 @@ impl PacketMover2TurnDriver {
                 transports,
                 crypto_limit,
                 collect_transport_sent_outputs,
+                executor,
             )
             .await;
         let endpoint_deferred_count = outbound_buffers.endpoint_deferred_commands.len();
@@ -618,7 +753,8 @@ impl PacketMover2TurnDriver {
         summary: PacketMover2RuntimeSummary,
         limit: usize,
     ) -> PacketMover2RuntimeTurn<'_> {
-        let summary = self.collect_aead_outputs(summary, limit);
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let summary = self.collect_aead_outputs_with_executor(summary, limit, &mut executor);
 
         PacketMover2RuntimeTurn {
             summary,
@@ -631,14 +767,29 @@ impl PacketMover2TurnDriver {
 
     fn finish_aead_output_turn<S>(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
+        summary: PacketMover2RuntimeSummary,
         sink: &mut S,
         limit: usize,
     ) -> PacketMover2RuntimeTurn<'_>
     where
         S: PacketMover2OutputSink,
     {
-        summary = self.collect_aead_outputs(summary, limit);
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        self.finish_aead_output_turn_with_executor(summary, sink, limit, &mut executor)
+    }
+
+    fn finish_aead_output_turn_with_executor<S, E>(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        sink: &mut S,
+        limit: usize,
+        executor: &mut E,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        S: PacketMover2OutputSink,
+        E: PacketMover2CryptoExecutor,
+    {
+        summary = self.collect_aead_outputs_with_executor(summary, limit, executor);
         self.send_collected_outputs(summary, sink)
     }
 
@@ -788,19 +939,21 @@ impl PacketMover2TurnDriver {
         summary.completions = summary.completions.saturating_add(1);
     }
 
-    fn collect_live_session_outputs<R>(
+    fn collect_live_session_outputs_with_executor<R, E>(
         &mut self,
         mut summary: PacketMover2RuntimeSummary,
         router: &mut R,
         crypto_limit: usize,
+        executor: &mut E,
     ) -> PacketMover2RuntimeSummary
     where
         R: PacketMover2IngressRouter,
+        E: PacketMover2CryptoExecutor,
     {
         let mut remaining = crypto_limit;
         loop {
             let dispatched_before = summary.dispatched;
-            summary = self.collect_aead_outputs(summary, remaining);
+            summary = self.collect_aead_outputs_with_executor(summary, remaining, executor);
             let dispatched = summary.dispatched.saturating_sub(dispatched_before);
             remaining = remaining.saturating_sub(dispatched);
             if remaining == 0 {
@@ -822,12 +975,25 @@ impl PacketMover2TurnDriver {
 
     fn collect_aead_outputs(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
+        summary: PacketMover2RuntimeSummary,
         limit: usize,
     ) -> PacketMover2RuntimeSummary {
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        self.collect_aead_outputs_with_executor(summary, limit, &mut executor)
+    }
+
+    fn collect_aead_outputs_with_executor<E>(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        limit: usize,
+        executor: &mut E,
+    ) -> PacketMover2RuntimeSummary
+    where
+        E: PacketMover2CryptoExecutor,
+    {
         let mut remaining = limit;
         while remaining > 0 {
-            let dispatched = self.mover.run_aead_available_into(
+            let dispatched = self.mover.run_aead_available_into_with_executor(
                 remaining,
                 &mut self.open_work,
                 &mut self.seal_work,
@@ -835,6 +1001,7 @@ impl PacketMover2TurnDriver {
                 &mut self.completion_work,
                 &mut self.retired,
                 &mut self.drops,
+                executor,
             );
             summary.dispatched = summary.dispatched.saturating_add(dispatched);
             remaining = remaining.saturating_sub(dispatched);

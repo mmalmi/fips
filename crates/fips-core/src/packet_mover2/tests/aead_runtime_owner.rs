@@ -77,6 +77,36 @@
         }
     }
 
+    #[derive(Debug, Default)]
+    struct DelayedChunkExecutor {
+        inline: InlinePacketMover2CryptoExecutor,
+        ready: VecDeque<Vec<CryptoCompletion>>,
+        nonempty_chunks: Vec<usize>,
+    }
+
+    impl DelayedChunkExecutor {
+        fn take_ready(&mut self) -> VecDeque<Vec<CryptoCompletion>> {
+            std::mem::take(&mut self.ready)
+        }
+    }
+
+    impl PacketMover2CryptoExecutor for DelayedChunkExecutor {
+        fn execute_prepared_chunk(
+            &mut self,
+            prepared: &mut Vec<PreparedCryptoWork>,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
+            if !prepared.is_empty() {
+                self.nonempty_chunks.push(prepared.len());
+            }
+            let count = self.inline.execute_prepared_chunk(prepared, completions);
+            if !completions.is_empty() {
+                self.ready.push_back(std::mem::take(completions));
+            }
+            count
+        }
+    }
+
     #[test]
     fn aead_turn_runner_hands_executor_prepared_crypto_chunks() {
         let owner = fmp_owner(702);
@@ -157,6 +187,89 @@
         assert_eq!(
             open_sealed_output(&outputs[5], seal_key),
             b"outbound-1"
+        );
+    }
+
+    #[test]
+    fn executor_turn_dispatches_chunk_and_retires_delayed_completion_later() {
+        let owner = fmp_owner(703);
+        let seal_key = 17;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(500));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(seal_key), test_key(seal_key)));
+
+        let mut raw_ingress = VecDeque::new();
+        let mut outbound = VecDeque::from([OutboundPacket::fmp(
+            owner,
+            1,
+            PacketClass::Bulk,
+            703,
+            0,
+            b"delayed-outbound".to_vec(),
+        )]);
+        let mut sink = BatchRecordingOutputSink::default();
+        let mut empty_completions: VecDeque<CryptoCompletion> = VecDeque::new();
+        let mut executor = DelayedChunkExecutor::default();
+
+        {
+            let turn = driver.pump_aead_output_completion_executor_turn(
+                &mut empty_completions,
+                8,
+                &mut executor,
+                &mut raw_ingress,
+                &mut NullIngressRouter,
+                0,
+                &mut outbound,
+                1,
+                &mut sink,
+                8,
+            );
+            assert_eq!(turn.summary().completions(), 0);
+            assert_eq!(turn.summary().outbound_admitted(), 1);
+            assert_eq!(turn.summary().dispatched(), 1);
+            assert_eq!(turn.summary().outputs_sent(), 0);
+            assert!(turn.outputs().is_empty());
+            assert!(turn.drops().is_empty());
+        }
+        assert!(empty_completions.is_empty());
+        assert!(outbound.is_empty());
+        assert!(sink.outputs.is_empty());
+        assert_eq!(executor.nonempty_chunks, vec![1]);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 1);
+
+        let mut ready_completions = executor.take_ready();
+        {
+            let turn = driver.pump_aead_output_completion_executor_turn(
+                &mut ready_completions,
+                8,
+                &mut executor,
+                &mut raw_ingress,
+                &mut NullIngressRouter,
+                0,
+                &mut outbound,
+                0,
+                &mut sink,
+                0,
+            );
+            assert_eq!(turn.summary().completions(), 1);
+            assert_eq!(turn.summary().dispatched(), 0);
+            assert_eq!(turn.summary().outputs_sent(), 1);
+            assert!(turn.outputs().is_empty());
+            assert!(turn.drops().is_empty());
+        }
+
+        assert!(ready_completions.is_empty());
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(sink.outputs.len(), 1);
+        assert_eq!(sink.outputs[0].owner(), owner);
+        assert_eq!(sink.outputs[0].counter(), 500);
+        assert_eq!(sink.outputs[0].target(), OutputTarget::Transport);
+        assert_eq!(
+            open_sealed_output(&sink.outputs[0], seal_key),
+            b"delayed-outbound"
         );
     }
 
