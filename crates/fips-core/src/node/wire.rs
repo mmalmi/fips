@@ -17,7 +17,9 @@
 //! | 0x1   | Noise IK msg1   | 114 bytes  | Handshake initiation           |
 //! | 0x2   | Noise IK msg2   | 69 bytes   | Handshake response             |
 
-use crate::noise::{HANDSHAKE_MSG1_SIZE, HANDSHAKE_MSG2_SIZE, TAG_SIZE};
+#[cfg(test)]
+use crate::noise::TAG_SIZE;
+use crate::noise::{HANDSHAKE_MSG1_SIZE, HANDSHAKE_MSG2_SIZE};
 use crate::utils::index::SessionIndex;
 
 // ============================================================================
@@ -49,6 +51,7 @@ pub const MSG1_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + 4 + HANDSHAKE_MSG1_SIZE; 
 pub const MSG2_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + 4 + 4 + HANDSHAKE_MSG2_SIZE; // 69 bytes
 
 /// Minimum size for encrypted frame: header + tag (no plaintext).
+#[cfg(test)]
 pub const ENCRYPTED_MIN_SIZE: usize = ESTABLISHED_HEADER_SIZE + TAG_SIZE; // 32 bytes
 
 /// Size of the encrypted inner header (timestamp + message type).

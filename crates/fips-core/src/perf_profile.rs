@@ -1235,6 +1235,7 @@ pub fn record_count(stage: Stage, elapsed_ns: u64, count: u64) {
 /// Record `count` equivalent samples from `start` until now into one stage.
 /// No-op when tracing was disabled at the producer or consumer.
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_since_count(stage: Stage, start: Option<TraceStamp>, count: u64) {
     if !enabled() || count == 0 {
         return;
@@ -1327,6 +1328,7 @@ pub(crate) fn record_linux_bulk_udp_pace_wait() {
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_encrypt_worker_queue_full(priority: bool) {
     record_event(Event::EncryptWorkerQueueFull);
     record_event(if priority {
@@ -1343,6 +1345,7 @@ pub(crate) fn record_encrypt_worker_queue_full(priority: bool) {
 /// point at wakeup or producer cadence rather than backlog, and lane packet
 /// counts show whether a hot turn was bulk-dominated or carrying priority work.
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fmp_worker_batch(
     packets: usize,
     priority_packets: usize,
@@ -1380,6 +1383,7 @@ pub(crate) fn record_fmp_worker_batch(
 /// mover is preserving dequeue order across mixed targets/policies rather than
 /// handing the kernel one large contiguous flow-shaped group.
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fmp_send_groups(groups: usize, packets: usize, single_groups: usize) {
     if !enabled() || groups == 0 || packets == 0 {
         return;
@@ -1396,27 +1400,32 @@ pub(crate) fn record_fmp_send_groups(groups: usize, packets: usize, single_group
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fmp_send_group_split_target() {
     record_fmp_send_group_split(Event::FmpSendGroupSplitTarget);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fmp_send_group_split_lane() {
     record_fmp_send_group_split(Event::FmpSendGroupSplitLane);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fmp_send_group_split_backpressure() {
     record_fmp_send_group_split(Event::FmpSendGroupSplitBackpressure);
 }
 
 #[inline]
+#[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) fn record_fmp_send_group_split_packet_cap() {
     record_fmp_send_group_split(Event::FmpSendGroupSplitPacketCap);
 }
 
 #[inline]
+#[cfg(test)]
 fn record_fmp_send_group_split(event: Event) {
     if !enabled() {
         return;
@@ -1431,6 +1440,7 @@ fn record_fmp_send_group_split(event: Event) {
 /// timestamp and shows whether a hot sender is spending material CPU time in
 /// hashing, fair admission, and channel submission before worker ownership.
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fmp_worker_dispatch(elapsed_ns: u64, packets: usize) {
     if !enabled() || packets == 0 {
         return;
@@ -1448,6 +1458,7 @@ pub(crate) fn record_fmp_worker_dispatch(elapsed_ns: u64, packets: usize) {
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fmp_worker_dispatch_target(worker_idx: usize, flow_keyed: bool) {
     if !enabled() {
         return;
@@ -1510,6 +1521,7 @@ pub(crate) fn record_linux_wg_batch_sender_wait(elapsed_ns: u64) {
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_bulk_input_wait(start: Option<TraceStamp>, count: u64) {
     if !enabled() || count == 0 {
         return;
@@ -1546,6 +1558,7 @@ pub(crate) fn record_decrypt_worker_bulk_input_wait(start: Option<TraceStamp>, c
 }
 
 #[inline]
+#[cfg(any(test, target_os = "linux"))]
 fn record_wait_threshold(event: Event, elapsed_ns: u64, count: u64, threshold_ns: u64) {
     if elapsed_ns >= threshold_ns {
         record_event_count_sample(event, count);
@@ -1559,6 +1572,7 @@ fn record_wait_threshold(event: Event, elapsed_ns: u64, count: u64, threshold_ns
 /// single turns point at wakeup/producer cadence, and lane packet counts show
 /// whether priority traffic is still getting mixed in under bulk pressure.
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_batch(
     packets: usize,
     priority_packets: usize,
@@ -1589,6 +1603,7 @@ pub(crate) fn record_decrypt_worker_batch(
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_batch_target(worker_idx: usize, packets: usize) {
     if !enabled() || packets == 0 {
         return;
@@ -1608,36 +1623,43 @@ pub(crate) fn record_decrypt_worker_batch_target(worker_idx: usize, packets: usi
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_select_priority() {
     record_event(Event::DecryptWorkerSelectPriority);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_select_control() {
     record_event(Event::DecryptWorkerSelectControl);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_select_bulk(packets: usize) {
     record_event_count(Event::DecryptWorkerSelectBulkPackets, packets as u64);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_drain_priority() {
     record_event(Event::DecryptWorkerDrainPriority);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_drain_control() {
     record_event(Event::DecryptWorkerDrainControl);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_worker_drain_bulk(packets: usize) {
     record_event_count(Event::DecryptWorkerDrainBulkPackets, packets as u64);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fsp_aead_completion_drain(
     ready: usize,
     accepted: usize,
@@ -1670,6 +1692,7 @@ pub(crate) fn record_fsp_aead_completion_drain(
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fsp_aead_completion_local_aead_failures(local: usize) {
     if !enabled() {
         return;
@@ -1680,16 +1703,19 @@ pub(crate) fn record_fsp_aead_completion_local_aead_failures(local: usize) {
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fsp_aead_completion_local_open_aead_failure() {
     record_event(Event::FspAeadCompletionAeadFailedLocalOpen);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fsp_aead_completion_accept_kbit_mismatch() {
     record_event(Event::FspAeadCompletionAeadFailedAcceptKbitMismatch);
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
@@ -1708,6 +1734,7 @@ pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
@@ -1726,6 +1753,7 @@ pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
 }
 
 #[inline]
+#[cfg(test)]
 fn record_fsp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
     let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
     if counter_lag >= window.saturating_mul(2) {
@@ -1743,6 +1771,7 @@ fn record_fsp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
 }
 
 #[inline]
+#[cfg(test)]
 fn record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag: u64) {
     let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
     if counter_lag >= window.saturating_mul(2) {

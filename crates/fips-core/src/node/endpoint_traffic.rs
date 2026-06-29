@@ -195,6 +195,7 @@ impl EndpointDataPayload {
         self.traffic_class.lane().command_lane()
     }
 
+    #[cfg(test)]
     pub(crate) fn bulk_endpoint_data(&self) -> bool {
         self.traffic_class.lane() == EndpointPayloadLane::Bulk
     }

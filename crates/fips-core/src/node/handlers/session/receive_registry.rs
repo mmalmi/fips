@@ -626,10 +626,12 @@ impl crate::node::SessionRegistry {
             timestamp: entry.session_timestamp(now_ms),
             spin_bit: entry.mmp().is_some_and(|m| m.spin_bit.tx_bit()),
             current_k_bit: entry.current_k_bit(),
+            #[cfg(test)]
             coords_warmup_remaining: entry.coords_warmup_remaining(),
         })
     }
 
+    #[cfg(test)]
     fn consume_coords_warmup_packet(&mut self, dest_addr: &NodeAddr) -> bool {
         let Some(entry) = self.get_mut(dest_addr) else {
             return false;

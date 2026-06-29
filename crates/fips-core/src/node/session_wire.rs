@@ -244,6 +244,7 @@ impl FspEncryptedHeader {
 /// Build the 12-byte cleartext header for an encrypted FSP message.
 ///
 /// Returns the header bytes for use as AEAD AAD.
+#[cfg(test)]
 pub fn build_fsp_header(counter: u64, flags: u8, payload_len: u16) -> [u8; FSP_HEADER_SIZE] {
     let mut header = [0u8; FSP_HEADER_SIZE];
     header[0] = FspCommonPrefix::ver_phase_byte(FSP_VERSION, FSP_PHASE_ESTABLISHED);
@@ -300,6 +301,7 @@ pub fn build_fsp_error_prefix(payload_len: u16) -> [u8; FSP_COMMON_PREFIX_SIZE] 
 /// The caller provides the message-type-specific payload (e.g., application
 /// data for msg_type 0x10, report fields for SenderReport). This function
 /// prepends the inner header.
+#[cfg(test)]
 pub fn fsp_prepend_inner_header(
     timestamp_ms: u32,
     msg_type: u8,

@@ -1,9 +1,10 @@
 use super::{CipherState, HandshakeRole, NoiseError, ReplayWindow};
 use ring::aead::LessSafeKey;
 use secp256k1::{PublicKey, XOnlyPublicKey};
+#[cfg(test)]
+use std::ops::Range;
 use std::{
     fmt,
-    ops::Range,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -48,6 +49,7 @@ impl SendCounterAuthority {
             .map_err(|_| NoiseError::NonceOverflow)
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve_range(&self, count: usize) -> Result<Range<u64>, NoiseError> {
         let count = u64::try_from(count).map_err(|_| NoiseError::NonceOverflow)?;
         if count == 0 {
