@@ -33,6 +33,27 @@ fn tun_write_channel_prioritizes_priority_and_bounds_bulk() {
     ));
 }
 
+#[test]
+fn tun_write_channel_returns_pooled_packets_after_write() {
+    let (packet_tx, _packet_rx) = crate::transport::packet_channel(4);
+    let mut raw = packet_tx.recv_buffer(1600);
+    raw.clear();
+    raw.extend_from_slice(&[1, 2, 3, 4]);
+    let ptr = raw.as_ptr();
+    let pooled = packet_tx.packet_buffer(raw);
+
+    let (tx, rx) = write_channel_with_bulk_capacity(2);
+    tx.send_with_lane(pooled, TunWriteLane::Bulk)
+        .expect("pooled packet fits");
+
+    let packet = rx.try_recv_packet().expect("queued pooled TUN packet");
+    assert_eq!(packet.as_slice(), &[1, 2, 3, 4]);
+    drop(packet);
+
+    let reused = packet_tx.recv_buffer(1600);
+    assert_eq!(reused.as_ptr(), ptr);
+}
+
 // Note: TUN device creation tests require elevated privileges
 // and are better suited for integration tests.
 

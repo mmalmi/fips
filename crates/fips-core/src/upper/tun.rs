@@ -434,12 +434,16 @@ impl TunWriter {
             // identifies the flow's remote end. If discovery has learned a
             // smaller path MTU for that peer, tighten the ceiling.
             let effective_max_mss = if packet.len() >= 24 {
-                per_flow_max_mss(&self.path_mtu_lookup, &packet[8..24], self.max_mss)
+                per_flow_max_mss(
+                    &self.path_mtu_lookup,
+                    &packet.as_slice()[8..24],
+                    self.max_mss,
+                )
             } else {
                 self.max_mss
             };
             // Clamp TCP MSS on inbound SYN-ACK packets
-            if clamp_tcp_mss(&mut packet, effective_max_mss) {
+            if clamp_tcp_mss(packet.as_mut_slice(), effective_max_mss) {
                 trace!(
                     name = %self.name,
                     max_mss = effective_max_mss,
@@ -461,7 +465,7 @@ impl TunWriter {
                         iov_len: 4,
                     },
                     libc::iovec {
-                        iov_base: packet.as_ptr() as *mut libc::c_void,
+                        iov_base: packet.as_slice().as_ptr() as *mut libc::c_void,
                         iov_len: packet.len(),
                     },
                 ];
@@ -481,7 +485,7 @@ impl TunWriter {
                 }
             };
             #[cfg(not(target_os = "macos"))]
-            let write_result = self.file.write_all(&packet);
+            let write_result = self.file.write_all(packet.as_slice());
 
             if let Err(e) = write_result {
                 // "Bad address" is expected during shutdown when interface is deleted

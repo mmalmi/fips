@@ -637,7 +637,7 @@ impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
             Lane::Bulk => crate::upper::tun::TunWriteLane::Bulk,
         };
         self.tx
-            .send_with_lane(payload.into_vec(), lane)
+            .send_with_lane(payload, lane)
             .map_err(|error| match error.kind() {
                 crate::upper::tun::TunWriteErrorKind::Closed => {
                     PacketMover2OutputError::Unavailable

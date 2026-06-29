@@ -201,12 +201,16 @@ impl TunWriter {
         for mut packet in self.rx {
             // Per-destination clamp (peer source IPv6 = bytes 8..24)
             let effective_max_mss = if packet.len() >= 24 {
-                per_flow_max_mss(&self.path_mtu_lookup, &packet[8..24], self.max_mss)
+                per_flow_max_mss(
+                    &self.path_mtu_lookup,
+                    &packet.as_slice()[8..24],
+                    self.max_mss,
+                )
             } else {
                 self.max_mss
             };
             // Clamp TCP MSS on inbound SYN-ACK packets
-            if clamp_tcp_mss(&mut packet, effective_max_mss) {
+            if clamp_tcp_mss(packet.as_mut_slice(), effective_max_mss) {
                 trace!(
                     name = %self.name,
                     max_mss = effective_max_mss,
@@ -223,7 +227,7 @@ impl TunWriter {
             };
             match self.session.allocate_send_packet(pkt_len) {
                 Ok(mut send_packet) => {
-                    send_packet.bytes_mut().copy_from_slice(&packet);
+                    send_packet.bytes_mut().copy_from_slice(packet.as_slice());
                     self.session.send_packet(send_packet);
                     trace!(name = %self.name, len = packet.len(), "TUN packet written");
                 }

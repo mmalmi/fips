@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 
+use crate::transport::PacketBuffer;
+
 const DEFAULT_TUN_WRITE_BULK_QUEUE_CAP: usize = 1024;
 const MAX_TUN_WRITE_BULK_QUEUE_CAP: usize = 65_536;
 
@@ -19,7 +21,7 @@ pub(crate) enum TunWriteErrorKind {
 
 #[derive(Debug)]
 pub(crate) struct TunWriteError {
-    packet: Vec<u8>,
+    packet: TunWritePacket,
     kind: TunWriteErrorKind,
 }
 
@@ -29,7 +31,7 @@ impl TunWriteError {
     }
 
     pub(crate) fn into_packet(self) -> Vec<u8> {
-        self.packet
+        self.packet.into_vec()
     }
 }
 
@@ -52,11 +54,68 @@ struct TunWriteQueue {
 
 #[derive(Debug)]
 struct TunWriteState {
-    priority: VecDeque<Vec<u8>>,
-    bulk: VecDeque<Vec<u8>>,
+    priority: VecDeque<TunWritePacket>,
+    bulk: VecDeque<TunWritePacket>,
     senders: usize,
     receiver_alive: bool,
     bulk_capacity: usize,
+}
+
+#[derive(Debug)]
+pub(crate) enum TunWritePacket {
+    Vec(Vec<u8>),
+    Pooled(PacketBuffer),
+}
+
+impl TunWritePacket {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Vec(packet) => packet,
+            Self::Pooled(packet) => packet,
+        }
+    }
+
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        match self {
+            Self::Vec(packet) => packet,
+            Self::Pooled(packet) => packet,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<u8> {
+        match self {
+            Self::Vec(packet) => packet,
+            Self::Pooled(packet) => packet.into_vec(),
+        }
+    }
+}
+
+impl From<Vec<u8>> for TunWritePacket {
+    fn from(packet: Vec<u8>) -> Self {
+        Self::Vec(packet)
+    }
+}
+
+impl From<PacketBuffer> for TunWritePacket {
+    fn from(packet: PacketBuffer) -> Self {
+        Self::Pooled(packet)
+    }
+}
+
+impl PartialEq<Vec<u8>> for TunWritePacket {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialEq<TunWritePacket> for Vec<u8> {
+    fn eq(&self, other: &TunWritePacket) -> bool {
+        self.as_slice() == other.as_slice()
+    }
 }
 
 /// Channel sender for packets to be written to TUN.
@@ -106,9 +165,10 @@ impl TunTx {
     /// Queue a packet for TUN delivery, allowing bulk to shed under pressure.
     pub(crate) fn send_with_lane(
         &self,
-        packet: Vec<u8>,
+        packet: impl Into<TunWritePacket>,
         lane: TunWriteLane,
     ) -> Result<(), TunWriteError> {
+        let packet = packet.into();
         let mut state = self.queue.lock();
         if !state.receiver_alive {
             return Err(TunWriteError {
@@ -146,7 +206,7 @@ impl TunTx {
 }
 
 impl TunRx {
-    pub(crate) fn recv(&self) -> Option<Vec<u8>> {
+    pub(crate) fn recv(&self) -> Option<TunWritePacket> {
         let mut state = self.queue.lock();
         loop {
             if let Some(packet) = state.priority.pop_front() {
@@ -169,6 +229,11 @@ impl TunRx {
 
     #[cfg(test)]
     pub(crate) fn try_recv(&self) -> Result<Vec<u8>, mpsc::TryRecvError> {
+        self.try_recv_packet().map(TunWritePacket::into_vec)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_recv_packet(&self) -> Result<TunWritePacket, mpsc::TryRecvError> {
         let mut state = self.queue.lock();
         if let Some(packet) = state.priority.pop_front() {
             return Ok(packet);
@@ -197,7 +262,7 @@ impl Drop for TunRx {
 }
 
 impl Iterator for TunRx {
-    type Item = Vec<u8>;
+    type Item = TunWritePacket;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.recv()
