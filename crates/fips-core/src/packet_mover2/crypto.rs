@@ -22,6 +22,88 @@ pub(crate) fn copy_crypto_completion(work: CryptoWork) -> CryptoCompletion {
     }
 }
 
+pub(crate) enum PreparedCryptoWork {
+    Open { work: CryptoWork, cipher: AeadKey },
+    Seal {
+        work: OutboundCryptoWork,
+        cipher: AeadKey,
+    },
+    Completed(CryptoCompletion),
+}
+
+impl PreparedCryptoWork {
+    pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
+        Self::Open { work, cipher }
+    }
+
+    pub(crate) fn seal(work: OutboundCryptoWork, cipher: AeadKey) -> Self {
+        Self::Seal { work, cipher }
+    }
+
+    pub(crate) fn failed(reservation: OwnerReservation, kind: CryptoFailureKind) -> Self {
+        Self::Completed(failed_crypto_completion(reservation, kind))
+    }
+
+    pub(crate) fn execute(
+        self,
+        opened: &StatelessAeadOpenWorker,
+        sealed: &StatelessAeadSealWorker,
+    ) -> CryptoCompletion {
+        match self {
+            Self::Open { work, cipher } => {
+                let reservation = work.reservation.clone();
+                let _timer = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::PacketMover2AeadOpen,
+                );
+                match AeadOpenWork::from_crypto_work(work, cipher) {
+                    Ok(work) => opened.execute(work),
+                    Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Open),
+                }
+            }
+            Self::Seal { work, cipher } => {
+                let reservation = work.reservation.clone();
+                let _timer = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::PacketMover2AeadSeal,
+                );
+                match AeadSealWork::from_outbound_work(work, cipher) {
+                    Ok(work) => sealed.execute(work),
+                    Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Seal),
+                }
+            }
+            Self::Completed(completion) => completion,
+        }
+    }
+}
+
+impl std::fmt::Debug for PreparedCryptoWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open { work, .. } => f
+                .debug_struct("PreparedCryptoWork::Open")
+                .field("reservation", &work.reservation)
+                .finish_non_exhaustive(),
+            Self::Seal { work, .. } => f
+                .debug_struct("PreparedCryptoWork::Seal")
+                .field("reservation", &work.reservation)
+                .finish_non_exhaustive(),
+            Self::Completed(completion) => f
+                .debug_tuple("PreparedCryptoWork::Completed")
+                .field(completion)
+                .finish(),
+        }
+    }
+}
+
+fn failed_crypto_completion(
+    reservation: OwnerReservation,
+    kind: CryptoFailureKind,
+) -> CryptoCompletion {
+    CryptoCompletion {
+        reservation,
+        result: CryptoResult::Failed(kind),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AeadHeader {
     Fmp([u8; FMP_ESTABLISHED_HEADER_SIZE]),

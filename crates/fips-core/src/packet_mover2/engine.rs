@@ -294,6 +294,7 @@ impl PacketMover2 {
         open_work: &mut Vec<CryptoWork>,
         seal_work: &mut Vec<OutboundCryptoWork>,
     ) -> PacketMoverTurn {
+        let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
         let mut retired = Vec::new();
         let mut drops = Vec::new();
@@ -301,6 +302,7 @@ impl PacketMover2 {
             limit,
             open_work,
             seal_work,
+            &mut prepared_work,
             &mut completion_work,
             &mut retired,
             &mut drops,
@@ -318,6 +320,7 @@ impl PacketMover2 {
         limit: usize,
         open_work: &mut Vec<CryptoWork>,
         seal_work: &mut Vec<OutboundCryptoWork>,
+        prepared_work: &mut Vec<PreparedCryptoWork>,
         completion_work: &mut Vec<CryptoCompletion>,
         retired: &mut Vec<RetiredPacket>,
         drops: &mut Vec<PacketDrop>,
@@ -325,6 +328,7 @@ impl PacketMover2 {
         retired.clear();
         open_work.clear();
         seal_work.clear();
+        prepared_work.clear();
         completion_work.clear();
         let opened = StatelessAeadOpenWorker;
         let sealed = StatelessAeadSealWorker;
@@ -336,18 +340,19 @@ impl PacketMover2 {
         let mut fsp_worker_open_bulk = 0u64;
         let pre_priority_inbound_dispatched =
             self.dispatch_available_into(pre_priority_inbound_limit, open_work);
-        self.execute_open_work_batch(
+        self.prepare_open_work_batch(
             open_work,
-            &opened,
-            completion_work,
+            prepared_work,
             &mut fsp_worker_open,
             &mut fsp_worker_open_bulk,
         );
+        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         let priority_outbound_dispatched =
             self.dispatch_outbound_priority_available_into(outbound_priority_reserve, seal_work);
-        self.execute_seal_work_batch(seal_work.drain(..), &sealed, completion_work);
+        self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
+        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         let dispatched_before_bulk =
@@ -363,24 +368,22 @@ impl PacketMover2 {
             .iter()
             .take_while(|work| work.reservation.lane == Lane::Priority)
             .count();
-        self.execute_seal_work_batch(
-            seal_work.drain(..leading_priority_seals),
-            &sealed,
-            completion_work,
-        );
+        self.prepare_seal_work_batch(seal_work.drain(..leading_priority_seals), prepared_work);
+        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
-        self.execute_open_work_batch(
+        self.prepare_open_work_batch(
             open_work,
-            &opened,
-            completion_work,
+            prepared_work,
             &mut fsp_worker_open,
             &mut fsp_worker_open_bulk,
         );
+        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
         self.retire_completion_batch(completion_work, retired);
         record_fsp_worker_open_dispatch(fsp_worker_open, fsp_worker_open_bulk);
 
-        self.execute_seal_work_batch(seal_work.drain(..), &sealed, completion_work);
+        self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
+        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         drops.extend(self.drain_drops());
@@ -394,77 +397,59 @@ impl PacketMover2 {
         std::mem::take(&mut self.drops)
     }
 
-    fn execute_seal_work(
+    fn prepare_seal_work(
         &mut self,
         work: OutboundCryptoWork,
-        sealed: &StatelessAeadSealWorker,
-    ) -> CryptoCompletion {
+    ) -> PreparedCryptoWork {
         let reservation = work.reservation.clone();
         match self.owner_crypto_keys(reservation.owner) {
-            Some(keys) => {
-                let _timer = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::PacketMover2AeadSeal,
-                );
-                match AeadSealWork::from_outbound_work(work, keys.seal) {
-                    Ok(work) => sealed.execute(work),
-                    Err(_) => CryptoCompletion {
-                        reservation,
-                        result: CryptoResult::Failed(CryptoFailureKind::Seal),
-                    },
-                }
-            }
-            None => CryptoCompletion {
-                reservation,
-                result: CryptoResult::Failed(CryptoFailureKind::Seal),
-            },
+            Some(keys) => PreparedCryptoWork::seal(work, keys.seal),
+            None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal),
         }
     }
 
-    fn execute_open_work_batch(
+    fn prepare_open_work_batch(
         &mut self,
         open_work: &mut Vec<CryptoWork>,
-        opened: &StatelessAeadOpenWorker,
-        completions: &mut Vec<CryptoCompletion>,
+        prepared: &mut Vec<PreparedCryptoWork>,
         fsp_worker_open: &mut u64,
         fsp_worker_open_bulk: &mut u64,
     ) {
-        completions.clear();
+        prepared.clear();
         for work in open_work.drain(..) {
             let reservation = work.reservation.clone();
             count_fsp_worker_open_dispatch(&reservation, fsp_worker_open, fsp_worker_open_bulk);
-            let completion = match self.owner_crypto_keys(reservation.owner) {
-                Some(keys) => {
-                    let _timer = crate::perf_profile::Timer::start(
-                        crate::perf_profile::Stage::PacketMover2AeadOpen,
-                    );
-                    match AeadOpenWork::from_crypto_work(work, keys.open) {
-                        Ok(work) => opened.execute(work),
-                        Err(_) => CryptoCompletion {
-                            reservation,
-                            result: CryptoResult::Failed(CryptoFailureKind::Open),
-                        },
-                    }
-                }
-                None => CryptoCompletion {
-                    reservation,
-                    result: CryptoResult::Failed(CryptoFailureKind::Open),
-                },
+            let prepared_work = match self.owner_crypto_keys(reservation.owner) {
+                Some(keys) => PreparedCryptoWork::open(work, keys.open),
+                None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open),
             };
-            completions.push(completion);
+            prepared.push(prepared_work);
         }
     }
 
-    fn execute_seal_work_batch<I>(
+    fn prepare_seal_work_batch<I>(
         &mut self,
         seal_work: I,
-        sealed: &StatelessAeadSealWorker,
-        completions: &mut Vec<CryptoCompletion>,
+        prepared: &mut Vec<PreparedCryptoWork>,
     ) where
         I: IntoIterator<Item = OutboundCryptoWork>,
     {
-        completions.clear();
+        prepared.clear();
         for work in seal_work {
-            completions.push(self.execute_seal_work(work, sealed));
+            let prepared_work = self.prepare_seal_work(work);
+            prepared.push(prepared_work);
+        }
+    }
+
+    fn execute_prepared_work_batch(
+        prepared: &mut Vec<PreparedCryptoWork>,
+        opened: &StatelessAeadOpenWorker,
+        sealed: &StatelessAeadSealWorker,
+        completions: &mut Vec<CryptoCompletion>,
+    ) {
+        completions.clear();
+        for work in prepared.drain(..) {
+            completions.push(work.execute(opened, sealed));
         }
     }
 
