@@ -110,6 +110,7 @@ impl SessionRegistry {
         true
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn record_fsp_send_bookkeeping_batch<I>(
         &mut self,
         node_addr: &NodeAddr,

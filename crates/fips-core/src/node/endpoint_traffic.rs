@@ -30,9 +30,11 @@ pub struct EndpointPayloadClass {
     drop_on_backpressure: bool,
 }
 
+#[cfg(all(test, unix))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::node) struct EndpointFlowDispatchKey(u64);
 
+#[cfg(all(test, unix))]
 impl EndpointFlowDispatchKey {
     pub(in crate::node) fn get(self) -> u64 {
         self.0
@@ -114,6 +116,7 @@ pub(in crate::node) fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) 
     })
 }
 
+#[cfg(all(test, unix))]
 pub(in crate::node) fn endpoint_flow_dispatch_key(
     payload: &[u8],
 ) -> Option<EndpointFlowDispatchKey> {
@@ -675,6 +678,7 @@ fn parse_endpoint_payload_ip_proto(payload: &[u8]) -> Option<(u8, usize)> {
     }
 }
 
+#[cfg(all(test, unix))]
 #[derive(Clone, Copy)]
 struct EndpointFlowParts<'a> {
     version: u8,
@@ -684,6 +688,7 @@ struct EndpointFlowParts<'a> {
     ports: Option<[u8; 4]>,
 }
 
+#[cfg(all(test, unix))]
 impl EndpointFlowParts<'_> {
     fn hash(self) -> u64 {
         let mut h = EndpointFlowHasher::default();
@@ -698,15 +703,18 @@ impl EndpointFlowParts<'_> {
     }
 }
 
+#[cfg(all(test, unix))]
 #[derive(Clone, Copy)]
 struct EndpointFlowHasher(u64);
 
+#[cfg(all(test, unix))]
 impl Default for EndpointFlowHasher {
     fn default() -> Self {
         Self(0x9ae1_6a3b_2f90_404f)
     }
 }
 
+#[cfg(all(test, unix))]
 impl EndpointFlowHasher {
     fn write_u8(&mut self, value: u8) {
         self.write(&[value]);
@@ -725,6 +733,7 @@ impl EndpointFlowHasher {
     }
 }
 
+#[cfg(all(test, unix))]
 fn endpoint_payload_flow_parts(payload: &[u8]) -> Option<EndpointFlowParts<'_>> {
     const IPV4_MIN_HEADER_LEN: usize = 20;
     const IPV6_HEADER_LEN: usize = 40;
@@ -773,6 +782,7 @@ fn endpoint_payload_flow_parts(payload: &[u8]) -> Option<EndpointFlowParts<'_>> 
     }
 }
 
+#[cfg(all(test, unix))]
 fn endpoint_transport_ports(payload: &[u8], proto: u8, transport_offset: usize) -> Option<[u8; 4]> {
     const IPPROTO_TCP: u8 = 6;
     const IPPROTO_UDP: u8 = 17;

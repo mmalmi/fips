@@ -446,6 +446,7 @@ impl PeerLifecycleRegistry {
         Some(result)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn record_fmp_send_bookkeeping_batch<I>(
         &mut self,
         node_addr: &NodeAddr,
@@ -864,6 +865,7 @@ pub(in crate::node) struct FspSendBookkeepingInput {
 }
 
 impl FspSendBookkeepingInput {
+    #[cfg(test)]
     pub(in crate::node) fn data(
         data_bytes: usize,
         counter: u64,
@@ -892,6 +894,7 @@ impl FspSendBookkeepingInput {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn with_next_hop(mut self, next_hop: NodeAddr) -> Self {
         self.next_hop = Some(next_hop);
         self
