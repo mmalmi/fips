@@ -597,3 +597,9 @@ pub(crate) trait PacketMover2OutboundSource {
     where
         F: FnMut(OutboundPacket);
 }
+
+pub(crate) trait PacketMover2CompletionSource {
+    fn drain_completions<F>(&mut self, limit: usize, push: F) -> usize
+    where
+        F: FnMut(CryptoCompletion);
+}

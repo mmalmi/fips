@@ -432,6 +432,23 @@ impl PacketMover2OutboundSource for VecDeque<OutboundPacket> {
     }
 }
 
+impl PacketMover2CompletionSource for VecDeque<CryptoCompletion> {
+    fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(CryptoCompletion),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Some(completion) = self.pop_front() else {
+                break;
+            };
+            push(completion);
+            drained += 1;
+        }
+        drained
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketMover2RawIngressDropReason {
     Wire(WirePreflightError),

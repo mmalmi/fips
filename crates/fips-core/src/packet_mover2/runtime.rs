@@ -17,6 +17,18 @@ pub(crate) struct PacketMover2TurnDriver {
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
 }
 
+#[derive(Debug, Default)]
+struct PacketMover2NoCompletions;
+
+impl PacketMover2CompletionSource for PacketMover2NoCompletions {
+    fn drain_completions<F>(&mut self, _limit: usize, _push: F) -> usize
+    where
+        F: FnMut(CryptoCompletion),
+    {
+        0
+    }
+}
+
 impl PacketMover2TurnDriver {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
@@ -184,9 +196,47 @@ impl PacketMover2TurnDriver {
         R: PacketMover2IngressRouter,
         S: PacketMover2OutputSink,
     {
+        let mut completions = PacketMover2NoCompletions;
+        self.pump_aead_output_completion_turn(
+            &mut completions,
+            0,
+            raw_ingress,
+            router,
+            raw_ingress_limit,
+            outbound,
+            outbound_limit,
+            sink,
+            crypto_limit,
+        )
+    }
+
+    pub(crate) fn pump_aead_output_completion_turn<C, RI, O, R, S>(
+        &mut self,
+        completions: &mut C,
+        completion_limit: usize,
+        raw_ingress: &mut RI,
+        router: &mut R,
+        raw_ingress_limit: usize,
+        outbound: &mut O,
+        outbound_limit: usize,
+        sink: &mut S,
+        crypto_limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        C: PacketMover2CompletionSource,
+        RI: PacketMover2RawIngressSource,
+        O: PacketMover2OutboundSource,
+        R: PacketMover2IngressRouter,
+        S: PacketMover2OutputSink,
+    {
         self.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
+        completions.drain_completions(completion_limit, |completion| {
+            self.collect_completed_aead_output(&mut summary, completion);
+        });
+        summary = self.collect_retired_outputs(summary);
+
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
             self.admit_raw_ingress_packet(packet, router, &mut summary);
         });
@@ -686,30 +736,39 @@ impl PacketMover2TurnDriver {
 
     fn collect_completed_aead_outputs<I>(
         &mut self,
-        summary: PacketMover2RuntimeSummary,
+        mut summary: PacketMover2RuntimeSummary,
         completions: I,
     ) -> PacketMover2RuntimeSummary
     where
         I: IntoIterator<Item = CryptoCompletion>,
     {
         for completion in completions {
-            let retired = self.mover.retire_completion(completion);
-            let mut mover_drops = self.mover.drain_drops();
-            let emitted_drop_start = self.drops.len();
-            self.drops.append(&mut mover_drops);
-            for item in &retired {
-                if let RetiredPacket::Drop(drop) = item {
-                    if !self.drops[emitted_drop_start..]
-                        .iter()
-                        .any(|emitted| emitted == drop)
-                    {
-                        self.drops.push(drop.clone());
-                    }
-                }
-            }
-            self.retired.extend(retired);
+            self.collect_completed_aead_output(&mut summary, completion);
         }
         self.collect_retired_outputs(summary)
+    }
+
+    fn collect_completed_aead_output(
+        &mut self,
+        summary: &mut PacketMover2RuntimeSummary,
+        completion: CryptoCompletion,
+    ) {
+        let retired = self.mover.retire_completion(completion);
+        let mut mover_drops = self.mover.drain_drops();
+        let emitted_drop_start = self.drops.len();
+        self.drops.append(&mut mover_drops);
+        for item in &retired {
+            if let RetiredPacket::Drop(drop) = item {
+                if !self.drops[emitted_drop_start..]
+                    .iter()
+                    .any(|emitted| emitted == drop)
+                {
+                    self.drops.push(drop.clone());
+                }
+            }
+        }
+        self.retired.extend(retired);
+        summary.completions = summary.completions.saturating_add(1);
     }
 
     fn collect_live_session_outputs<R>(

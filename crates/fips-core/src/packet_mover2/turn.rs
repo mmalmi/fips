@@ -5,6 +5,7 @@ pub(crate) struct PacketMover2RuntimeSummary {
     inbound_dropped: usize,
     outbound_admitted: usize,
     outbound_dropped: usize,
+    completions: usize,
     dispatched: usize,
     outputs: usize,
     outputs_sent: usize,
@@ -33,6 +34,10 @@ impl PacketMover2RuntimeSummary {
         self.outbound_dropped
     }
 
+    pub(crate) fn completions(self) -> usize {
+        self.completions
+    }
+
     pub(crate) fn dispatched(self) -> usize {
         self.dispatched
     }
@@ -59,6 +64,7 @@ impl PacketMover2RuntimeSummary {
             || self.inbound_dropped > 0
             || self.outbound_admitted > 0
             || self.outbound_dropped > 0
+            || self.completions > 0
             || self.dispatched > 0
             || self.outputs > 0
             || self.outputs_sent > 0

@@ -947,6 +947,7 @@
                 inbound_dropped: 0,
                 outbound_admitted: 1,
                 outbound_dropped: 0,
+                completions: 0,
                 dispatched: 2,
                 outputs: 2,
                 outputs_sent: 2,
