@@ -12,6 +12,7 @@ use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
 #[cfg(all(test, unix))]
 use crate::node::session_wire::{FSP_HEADER_SIZE, build_fsp_header};
+#[cfg(test)]
 use crate::noise::ReplayWindow;
 use crate::noise::{HandshakeState, NoiseSession};
 use crate::{NodeAddr, PeerIdentity};
@@ -70,6 +71,7 @@ pub(crate) struct FspSendReservation {
 }
 
 /// Recv-side epoch state exported to the decrypt worker.
+#[cfg(test)]
 pub(crate) struct FspRecvEpochSnapshot {
     pub(crate) cipher: LessSafeKey,
     pub(crate) replay: ReplayWindow,
@@ -80,6 +82,7 @@ pub(crate) struct FspRecvEpochSnapshot {
 /// The worker owns replay admission for packet auth, while the rx-loop mirrors
 /// successful counters via [`FspReceiveSync`] and keeps a final canonical replay
 /// guard so slow paths, rekey cutover, and observability stay coherent.
+#[cfg(test)]
 pub(crate) struct FspRecvSessionSnapshot {
     pub(crate) source_peer: PeerIdentity,
     pub(crate) current_k_bit: bool,
@@ -332,6 +335,7 @@ impl SessionEntry {
     }
 
     /// Get mutable access to the session state.
+    #[cfg(test)]
     pub(crate) fn state_mut(&mut self) -> &mut EndToEndState {
         self.state
             .as_mut()
@@ -624,6 +628,7 @@ impl SessionEntry {
         }
     }
 
+    #[cfg(test)]
     fn fsp_recv_epoch_snapshot(session: &NoiseSession) -> Option<FspRecvEpochSnapshot> {
         Some(FspRecvEpochSnapshot {
             cipher: session.recv_cipher_clone()?,
@@ -632,6 +637,7 @@ impl SessionEntry {
     }
 
     /// Export established-FSP recv state for an owning decrypt-worker shard.
+    #[cfg(test)]
     pub(crate) fn fsp_recv_snapshot(&self) -> Option<FspRecvSessionSnapshot> {
         Some(FspRecvSessionSnapshot {
             source_peer: self.remote_identity?,

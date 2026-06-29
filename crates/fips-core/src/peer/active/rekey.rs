@@ -81,6 +81,7 @@ impl ActivePeer {
     /// The peer's K-bit is only a hint that it may have cut over. The
     /// authenticated decrypt against `pending_new_session` is the real cutover
     /// signal; failed trials leave the pending replay window untouched.
+    #[cfg(test)]
     pub(crate) fn trial_decrypt_pending_new_session(
         &mut self,
         ciphertext: &[u8],

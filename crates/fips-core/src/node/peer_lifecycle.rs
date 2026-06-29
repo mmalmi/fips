@@ -822,6 +822,7 @@ impl PeerLifecycleRegistry {
         self.active.remove_session_index_with_owner_state(key)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn lookup_session_index(
         &self,
         key: (TransportId, u32),
