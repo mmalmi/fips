@@ -151,6 +151,75 @@ fn test_endpoint_data_flushes_after_session_establishment() {
 }
 
 #[test]
+fn test_endpoint_data_batch_flushes_after_session_establishment() {
+    run_large_stack_async_test("fips-endpoint-data-batch-flushes", || async {
+        let edges = vec![(0, 1)];
+        let mut nodes = run_tree_test(2, &edges, false).await;
+        verify_tree_convergence(&nodes);
+        populate_all_coord_caches(&mut nodes);
+
+        let mut node1_endpoint = nodes[1]
+            .node
+            .attach_endpoint_data_io(8)
+            .expect("node 1 endpoint data I/O should attach");
+
+        let node0_addr = *nodes[0].node.node_addr();
+        let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+        let payloads = vec![
+            crate::node::EndpointDataPayload::new(b"ping-1".to_vec()),
+            crate::node::EndpointDataPayload::new(b"ping-2".to_vec()),
+        ];
+        let lane = payloads[0].lane();
+        assert!(payloads.iter().all(|payload| payload.lane() == lane));
+
+        let command = crate::node::NodeEndpointCommand::send_batch_oneway_with_enqueued_at_ms(
+            node1_identity,
+            payloads,
+            None,
+            lane,
+            1_234,
+        )
+        .expect("endpoint batch command");
+        nodes[0]
+            .node
+            .handle_endpoint_data_command_no_established_flush(command)
+            .await;
+
+        let mut observed = Vec::new();
+        while observed.len() < 2 {
+            let event = recv_endpoint_event_while_draining(
+                &mut nodes,
+                &mut node1_endpoint.event_rx,
+                Duration::from_secs(10),
+                "node 1 endpoint data batch",
+            )
+            .await;
+            match event {
+                NodeEndpointEvent::Data {
+                    source_peer,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(*source_peer.node_addr(), node0_addr);
+                    assert_eq!(source_peer.npub(), nodes[0].node.npub());
+                    observed.push(payload.as_slice().to_vec());
+                }
+                NodeEndpointEvent::DataBatch { messages, .. } => {
+                    for message in messages {
+                        assert_eq!(*message.source_peer.node_addr(), node0_addr);
+                        assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
+                        observed.push(message.payload.as_slice().to_vec());
+                    }
+                }
+            }
+        }
+        assert_eq!(observed, vec![b"ping-1".to_vec(), b"ping-2".to_vec()]);
+
+        cleanup_nodes(&mut nodes).await;
+    });
+}
+
+#[test]
 fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
     run_large_stack_async_test("fips-endpoint-data-transit", || async {
         // A-B-C: Alice and Bob are app endpoints. The middle node is only FIPS

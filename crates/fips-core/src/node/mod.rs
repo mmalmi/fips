@@ -69,8 +69,8 @@ pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
 #[cfg(test)]
 pub(in crate::node) use endpoint_traffic::fmp_plaintext_is_bulk_session_datagram;
 pub(crate) use endpoint_traffic::{
-    EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingSessionTrafficQueues,
-    endpoint_payload_is_liveness_probe,
+    EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingEndpointData,
+    PendingSessionTrafficQueues, endpoint_payload_is_liveness_probe,
 };
 pub(in crate::node) use identity_cache::IdentityCache;
 #[cfg(test)]

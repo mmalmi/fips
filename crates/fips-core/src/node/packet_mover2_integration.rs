@@ -202,11 +202,17 @@ impl Node {
             .map(|_| ())
     }
 
-    pub(in crate::node) async fn send_packet_mover2_pending_endpoint_payload(
+    pub(in crate::node) async fn send_packet_mover2_pending_endpoint_payloads(
         &mut self,
         dest_addr: &NodeAddr,
-        payload: EndpointDataPayload,
+        payloads: Vec<EndpointDataPayload>,
+        lane: EndpointCommandLane,
+        enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
+        if payloads.is_empty() {
+            return Ok(());
+        }
+        debug_assert!(payloads.iter().all(|payload| payload.lane() == lane));
         if !self.sync_packet_mover2_fsp_owner(dest_addr) {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
@@ -221,8 +227,28 @@ impl Node {
             });
         };
 
-        let lane = payload.lane();
-        let command = NodeEndpointCommand::send_payload_oneway(remote, payload, None);
+        let payload_count = payloads.len();
+        let command = if payload_count == 1 {
+            let payload = payloads
+                .into_iter()
+                .next()
+                .expect("checked pending endpoint payload");
+            NodeEndpointCommand::send_payload_oneway_with_enqueued_at_ms(
+                remote,
+                payload,
+                None,
+                enqueued_at_ms,
+            )
+        } else {
+            NodeEndpointCommand::send_batch_oneway_with_enqueued_at_ms(
+                remote,
+                payloads,
+                None,
+                lane,
+                enqueued_at_ms,
+            )
+            .expect("checked pending endpoint payload batch")
+        };
         let firsts = match lane {
             EndpointCommandLane::Priority => {
                 PacketMover2LiveOutboundFirsts::default().with_endpoint_priority(Some(command))
@@ -232,7 +258,7 @@ impl Node {
             }
         };
         let turn = self
-            .pump_packet_mover2_pending_outbound_firsts(firsts, 1, 0, 1)
+            .pump_packet_mover2_pending_outbound_firsts(firsts, payload_count, 0, payload_count)
             .await;
         self.finish_packet_mover2_pending_outbound_turn(dest_addr, "queued endpoint data", turn)
             .await

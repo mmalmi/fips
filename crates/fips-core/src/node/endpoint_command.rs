@@ -94,14 +94,6 @@ impl EndpointSendCommand {
         Self::new_with_enqueued_at_ms(remote, payload, queued_at, crate::time::now_ms())
     }
 
-    pub(crate) fn from_payload(
-        remote: PeerIdentity,
-        payload: EndpointDataPayload,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-    ) -> Self {
-        Self::from_payload_with_enqueued_at_ms(remote, payload, queued_at, crate::time::now_ms())
-    }
-
     pub(crate) fn from_payload_with_enqueued_at_ms(
         remote: PeerIdentity,
         payload: EndpointDataPayload,
@@ -158,10 +150,6 @@ impl EndpointSendCommand {
 
     pub(crate) fn triggers_stale_bulk_drop(&self) -> bool {
         self.send.payload().triggers_stale_bulk_drop()
-    }
-
-    pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<crate::perf_profile::TraceStamp>) {
-        (self.send, self.queued_at)
     }
 
     pub(crate) fn into_deferred_parts(
@@ -290,13 +278,19 @@ impl NodeEndpointCommand {
         }
     }
 
-    pub(crate) fn send_payload_oneway(
+    pub(crate) fn send_payload_oneway_with_enqueued_at_ms(
         remote: PeerIdentity,
         payload: EndpointDataPayload,
         queued_at: Option<crate::perf_profile::TraceStamp>,
+        enqueued_at_ms: u64,
     ) -> Self {
         Self::SendOneway {
-            command: EndpointSendCommand::from_payload(remote, payload, queued_at),
+            command: EndpointSendCommand::from_payload_with_enqueued_at_ms(
+                remote,
+                payload,
+                queued_at,
+                enqueued_at_ms,
+            ),
         }
     }
 
@@ -308,6 +302,24 @@ impl NodeEndpointCommand {
     ) -> Option<Self> {
         debug_assert!(payloads.iter().all(|payload| payload.lane() == lane));
         let command = EndpointSendBatchCommand::new(remote, payloads, queued_at)?;
+        debug_assert_eq!(command.lane(), lane);
+        Some(Self::SendBatchOneway { command, lane })
+    }
+
+    pub(crate) fn send_batch_oneway_with_enqueued_at_ms(
+        remote: PeerIdentity,
+        payloads: Vec<EndpointDataPayload>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+        lane: EndpointCommandLane,
+        enqueued_at_ms: u64,
+    ) -> Option<Self> {
+        debug_assert!(payloads.iter().all(|payload| payload.lane() == lane));
+        let command = EndpointSendBatchCommand::new_with_enqueued_at_ms(
+            remote,
+            payloads,
+            queued_at,
+            enqueued_at_ms,
+        )?;
         debug_assert_eq!(command.lane(), lane);
         Some(Self::SendBatchOneway { command, lane })
     }

@@ -301,16 +301,23 @@ fn endpoint_send_command_owns_payload_lane_and_queue_stamp() {
     let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
     let payload = ipv6_tcp_packet(0x18, 512);
     let queued_at = Some(crate::perf_profile::test_stamp());
+    let enqueued_at_ms = 1_234;
 
-    let command = crate::node::EndpointSendCommand::new(remote, payload.clone(), queued_at);
+    let command = crate::node::EndpointSendCommand::new_with_enqueued_at_ms(
+        remote,
+        payload.clone(),
+        queued_at,
+        enqueued_at_ms,
+    );
     assert_eq!(command.lane(), EndpointCommandLane::Bulk);
 
-    let (owned_send, owned_queued_at) = command.into_parts();
+    let (owned_send, owned_queued_at, owned_enqueued_at_ms) = command.into_deferred_parts();
     assert_eq!(owned_send.dest_addr(), *remote.node_addr());
     assert_eq!(owned_send.dest_pubkey(), remote.pubkey_full());
     assert_eq!(owned_send.payload().as_slice(), payload.as_slice());
     assert_eq!(owned_send.payload().lane(), EndpointCommandLane::Bulk);
     assert_eq!(owned_queued_at, queued_at);
+    assert_eq!(owned_enqueued_at_ms, enqueued_at_ms);
 }
 
 #[test]

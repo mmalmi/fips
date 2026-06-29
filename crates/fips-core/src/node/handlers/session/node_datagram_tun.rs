@@ -1,5 +1,6 @@
 impl Node {
     const PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS: u64 = 2_000;
+    const PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX: usize = 16;
 
     fn deliver_endpoint_data(&mut self, delivery: EndpointDataDelivery) {
         let src_addr = *delivery.source_peer.node_addr();
@@ -325,17 +326,20 @@ impl Node {
         }
     }
 
-    /// Queue endpoint data while waiting for session establishment.
-    fn queue_pending_endpoint_data(
+    fn queue_pending_endpoint_data_with_enqueued_at_ms(
         &mut self,
         dest_addr: NodeAddr,
         payload: impl Into<EndpointDataPayload>,
+        enqueued_at_ms: u64,
     ) {
-        let admission = self.pending_session_traffic.push_endpoint_data(
+        let admission = self
+            .pending_session_traffic
+            .push_endpoint_data_with_enqueued_at_ms(
             dest_addr,
             payload,
             self.config.node.session.pending_max_destinations,
             self.config.node.session.pending_packets_per_dest,
+            enqueued_at_ms,
         );
         if admission.destination_dropped() {
             crate::perf_profile::record_event(
@@ -386,16 +390,44 @@ impl Node {
         }
 
         if let Some(payloads) = self.pending_session_traffic.take_endpoint_data(dest_addr) {
-            let mut payloads = payloads.into_payloads();
-            while let Some(payload) = payloads.pop_front() {
+            let mut payloads = payloads.into_pending_payloads();
+            while let Some(first) = payloads.pop_front() {
+                let lane = first.payload().lane();
+                let enqueued_at_ms = first.enqueued_at_ms();
+                let mut batch = vec![first.into_payload()];
+                while batch.len() < Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX
+                    && payloads.front().is_some_and(|payload| {
+                        payload.payload().lane() == lane
+                            && payload.enqueued_at_ms() == enqueued_at_ms
+                    })
+                {
+                    let payload = payloads
+                        .pop_front()
+                        .expect("checked pending endpoint payload")
+                        .into_payload();
+                    batch.push(payload);
+                }
+
                 if let Err(e) = self
-                    .send_packet_mover2_pending_endpoint_payload(dest_addr, payload.clone())
+                    .send_packet_mover2_pending_endpoint_payloads(
+                        dest_addr,
+                        batch.clone(),
+                        lane,
+                        enqueued_at_ms,
+                    )
                     .await
                 {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
-                    payloads.push_front(payload);
+                    let mut restore = std::collections::VecDeque::new();
+                    for payload in batch {
+                        restore.push_back(crate::node::PendingEndpointData::new(
+                            payload,
+                            enqueued_at_ms,
+                        ));
+                    }
+                    restore.append(&mut payloads);
                     self.pending_session_traffic
-                        .restore_endpoint_data(*dest_addr, payloads);
+                        .restore_endpoint_data(*dest_addr, restore);
                     break;
                 }
             }

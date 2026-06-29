@@ -11,7 +11,7 @@ impl Node {
         &mut self,
         command: EndpointSendCommand,
     ) -> Result<(), NodeError> {
-        let (send, _) = command.into_parts();
+        let (send, _, enqueued_at_ms) = command.into_deferred_parts();
         let dest_addr = send.dest_addr();
         let dest_pubkey = send.dest_pubkey();
         self.register_identity(dest_addr, dest_pubkey);
@@ -19,6 +19,7 @@ impl Node {
             dest_addr,
             dest_pubkey,
             vec![send.into_payload()],
+            enqueued_at_ms,
         )
         .await
     }
@@ -27,12 +28,17 @@ impl Node {
         &mut self,
         command: EndpointSendBatchCommand,
     ) {
-        let (remote, payloads, _) = command.into_parts();
+        let (remote, payloads, _, enqueued_at_ms) = command.into_deferred_parts();
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
         let _ = self
-            .queue_packet_mover2_unrouted_endpoint_payloads(dest_addr, dest_pubkey, payloads)
+            .queue_packet_mover2_unrouted_endpoint_payloads(
+                dest_addr,
+                dest_pubkey,
+                payloads,
+                enqueued_at_ms,
+            )
             .await;
     }
 
@@ -41,6 +47,7 @@ impl Node {
         dest_addr: NodeAddr,
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
+        enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
         if payloads.is_empty() {
             return Ok(());
@@ -50,7 +57,11 @@ impl Node {
             OutboundSessionState::Established => {
                 let route_available = self.find_next_hop(&dest_addr).is_some();
                 for payload in payloads {
-                    self.queue_pending_endpoint_data(dest_addr, payload);
+                    self.queue_pending_endpoint_data_with_enqueued_at_ms(
+                        dest_addr,
+                        payload,
+                        enqueued_at_ms,
+                    );
                 }
                 if !route_available {
                     self.maybe_initiate_path_recovery_lookup(&dest_addr).await;
@@ -59,7 +70,11 @@ impl Node {
             }
             OutboundSessionState::Pending => {
                 for payload in payloads {
-                    self.queue_pending_endpoint_data(dest_addr, payload);
+                    self.queue_pending_endpoint_data_with_enqueued_at_ms(
+                        dest_addr,
+                        payload,
+                        enqueued_at_ms,
+                    );
                 }
                 let should_discover = self.config.node.routing.mode
                     == crate::config::RoutingMode::ReplyLearned
@@ -72,7 +87,11 @@ impl Node {
             OutboundSessionState::Missing => {
                 if self.find_next_hop(&dest_addr).is_none() {
                     for payload in payloads {
-                        self.queue_pending_endpoint_data(dest_addr, payload);
+                        self.queue_pending_endpoint_data_with_enqueued_at_ms(
+                            dest_addr,
+                            payload,
+                            enqueued_at_ms,
+                        );
                     }
                     self.maybe_initiate_lookup(&dest_addr).await;
                     return Ok(());
@@ -84,7 +103,11 @@ impl Node {
                         if node_addr == dest_addr && reason == "no route to destination" =>
                     {
                         for payload in payloads {
-                            self.queue_pending_endpoint_data(dest_addr, payload);
+                            self.queue_pending_endpoint_data_with_enqueued_at_ms(
+                                dest_addr,
+                                payload,
+                                enqueued_at_ms,
+                            );
                         }
                         self.maybe_initiate_lookup(&dest_addr).await;
                         return Ok(());
@@ -92,7 +115,11 @@ impl Node {
                     Err(error) => return Err(error),
                 }
                 for payload in payloads {
-                    self.queue_pending_endpoint_data(dest_addr, payload);
+                    self.queue_pending_endpoint_data_with_enqueued_at_ms(
+                        dest_addr,
+                        payload,
+                        enqueued_at_ms,
+                    );
                 }
                 Ok(())
             }

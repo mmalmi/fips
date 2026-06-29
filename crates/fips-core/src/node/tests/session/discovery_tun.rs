@@ -204,12 +204,16 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
         .coord_cache_mut()
         .insert(dest_addr, stale_coords.clone(), now_ms);
     insert_initiating_session_for(&mut nodes[0].node, dest_addr, dest_pubkey);
-    nodes[0].node.pending_session_traffic.push_endpoint_data(
-        dest_addr,
-        crate::node::EndpointDataPayload::new(b"queued".to_vec()),
-        usize::MAX,
-        usize::MAX,
-    );
+    nodes[0]
+        .node
+        .pending_session_traffic
+        .push_endpoint_data_with_enqueued_at_ms(
+            dest_addr,
+            crate::node::EndpointDataPayload::new(b"queued".to_vec()),
+            usize::MAX,
+            usize::MAX,
+            crate::time::now_ms(),
+        );
 
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
     nodes[0]
