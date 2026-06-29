@@ -261,7 +261,7 @@
             .try_send(tun_packet.clone())
             .expect("enqueue post-rekey TUN packet");
 
-        let turn = live_node
+        let first = live_node
             .pump_turn(
                 &mut raw_source,
                 8,
@@ -278,19 +278,42 @@
             )
             .await;
 
-        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
-        assert_eq!(turn.summary().inbound_admitted(), 1);
-        assert_eq!(turn.summary().outbound_admitted(), 1);
+        assert_eq!(first.summary().raw_ingress_dropped(), 0);
+        assert_eq!(first.summary().inbound_admitted(), 1);
+        assert_eq!(first.summary().outbound_admitted(), 1);
+        assert_eq!(first.summary().dispatched(), 2);
+        assert_eq!(first.summary().outputs(), 0);
+        assert_eq!(first.summary().outputs_sent(), 0);
+        assert_eq!(first.summary().outputs_dropped(), 0);
+        assert_eq!(first.transport_planned(), 0);
+        assert_eq!(first.transport_sent(), 0);
+        assert!(first.raw_ingress_drops().is_empty());
+        assert!(first.output_drops().is_empty());
+        assert!(first.drops().is_empty());
+        assert!(first.tun_outbound_drops().is_empty());
+        assert!(first.endpoint_command_drops().is_empty());
+        assert!(tun_rx.try_recv().is_err());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+
+        wait_for_live_worker_completion(&live_node).await;
+        let turn = live_node
+            .pump_outbound_firsts(
+                PacketMover2LiveOutboundFirsts::default(),
+                0,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                8,
+            )
+            .await;
+        assert_eq!(turn.summary().completions(), 2);
         assert_eq!(turn.summary().outputs(), 2);
         assert_eq!(turn.summary().outputs_sent(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 0);
         assert_eq!(turn.transport_planned(), 1);
         assert_eq!(turn.transport_sent(), 1);
-        assert!(turn.raw_ingress_drops().is_empty());
-        assert!(turn.output_drops().is_empty());
-        assert!(turn.drops().is_empty());
-        assert!(turn.tun_outbound_drops().is_empty());
-        assert!(turn.endpoint_command_drops().is_empty());
         assert_eq!(tun_rx.try_recv().unwrap(), b"after-rekey-in".to_vec());
         assert!(endpoint_io.event_rx.try_recv().is_err());
 

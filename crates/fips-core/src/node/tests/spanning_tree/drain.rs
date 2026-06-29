@@ -73,17 +73,58 @@ async fn process_packet_mover2_turn(
             64,
         )
         .await;
+    let mut active_turns = 0usize;
     let had_activity = turn.has_activity();
+    let mut dispatched = turn.summary().dispatched();
     let processed = node
         .node
         .process_packet_mover2_control_ingress(&mut turn)
         .await;
+    if had_activity || processed > 0 {
+        active_turns = active_turns.saturating_add(1);
+    }
+
+    for _ in 0..4 {
+        if dispatched == 0 {
+            break;
+        }
+        let notify = node.node.packet_mover2.completion_notify();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified()).await;
+
+        let mut completion_turn = node
+            .node
+            .drain_packet_mover2_turn_with_first(
+                &mut empty_packet_rx,
+                None,
+                0,
+                endpoint_priority_rx,
+                endpoint_rx,
+                64,
+                tun_outbound_rx,
+                64,
+                &tun_tx,
+                &endpoint_tx,
+                64,
+            )
+            .await;
+        let completion_had_activity = completion_turn.has_activity();
+        dispatched = completion_turn.summary().dispatched();
+        let completion_processed = node
+            .node
+            .process_packet_mover2_control_ingress(&mut completion_turn)
+            .await;
+        if completion_had_activity || completion_processed > 0 {
+            active_turns = active_turns.saturating_add(1);
+        } else {
+            break;
+        }
+    }
 
     node.node.endpoint_priority_command_rx = endpoint_priority_rx_slot.take();
     node.node.endpoint_command_rx = endpoint_rx_slot.take();
     node.node.tun_outbound_rx = tun_outbound_rx_slot.take();
 
-    usize::from(had_activity || processed > 0)
+    active_turns
 }
 
 /// Drain all packet channels across all nodes until quiescence.

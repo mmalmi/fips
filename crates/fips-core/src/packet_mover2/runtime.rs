@@ -301,13 +301,78 @@ impl PacketMover2TurnDriver {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        self.reset_turn_buffers();
+        let summary = self.start_aead_completion_turn(completions, completion_limit);
+        self.pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+            summary,
+            executor,
+            raw_ingress,
+            routes,
+            raw_ingress_limit,
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            outbound_firsts,
+            deferred_endpoint_commands,
+            deferred_tun_packets,
+            tun_tx,
+            endpoint_tx,
+            endpoint_resolver,
+            transports,
+            crypto_limit,
+        )
+        .await
+    }
 
+    fn start_aead_completion_turn<C>(
+        &mut self,
+        completions: &mut C,
+        completion_limit: usize,
+    ) -> PacketMover2RuntimeSummary
+    where
+        C: PacketMover2CompletionSource,
+    {
+        self.reset_turn_buffers();
         let mut summary = PacketMover2RuntimeSummary::default();
         completions.drain_completions(completion_limit, |completion| {
             self.collect_completed_aead_output(&mut summary, completion);
         });
-        summary = self.collect_retired_outputs(summary);
+        self.collect_retired_outputs(summary)
+    }
+
+    async fn pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts<
+        E,
+        RI,
+        Resolver,
+        Transports,
+    >(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        executor: &mut E,
+        raw_ingress: &mut RI,
+        routes: &mut PacketMover2LiveRouteTable,
+        raw_ingress_limit: usize,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        E: PacketMover2CryptoExecutor,
+        RI: PacketMover2RawIngressSource,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
         let mut outbound_firsts = outbound_firsts;
         let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
         if let Some(packet) = outbound_firsts.take_initial_outbound() {

@@ -96,17 +96,17 @@ impl PacketMover2CryptoExecutor for InlinePacketMover2CryptoExecutor {
     }
 }
 
-#[allow(dead_code)]
+#[derive(Debug)]
 pub(crate) struct PacketMover2AeadWorkerPool {
     work_tx: Option<crossbeam_channel::Sender<Vec<PreparedCryptoWork>>>,
     completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletion>>>,
+    completion_notify: Arc<tokio::sync::Notify>,
     pending_completions: VecDeque<CryptoCompletion>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     max_in_flight: usize,
     workers: Vec<std::thread::JoinHandle<()>>,
 }
 
-#[allow(dead_code)]
 impl PacketMover2AeadWorkerPool {
     pub(crate) fn new(worker_count: usize, max_in_flight: usize) -> Self {
         let worker_count = worker_count.max(1);
@@ -120,11 +120,13 @@ impl PacketMover2AeadWorkerPool {
             crossbeam_channel::Receiver<Vec<CryptoCompletion>>,
         ) = crossbeam_channel::bounded(max_in_flight);
         let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let completion_notify = Arc::new(tokio::sync::Notify::new());
         let mut workers = Vec::with_capacity(worker_count);
         for worker_idx in 0..worker_count {
             let work_rx = work_rx.clone();
             let completion_tx = completion_tx.clone();
             let in_flight = Arc::clone(&in_flight);
+            let completion_notify = Arc::clone(&completion_notify);
             workers.push(
                 std::thread::Builder::new()
                     .name(format!("pm2-aeadw-{worker_idx}"))
@@ -142,6 +144,7 @@ impl PacketMover2AeadWorkerPool {
                                     .fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
                                 break;
                             }
+                            completion_notify.notify_one();
                         }
                     })
                     .expect("spawn packet_mover2 AEAD worker"),
@@ -151,11 +154,16 @@ impl PacketMover2AeadWorkerPool {
         Self {
             work_tx: Some(work_tx),
             completion_rx: Some(completion_rx),
+            completion_notify,
             pending_completions: VecDeque::new(),
             in_flight,
             max_in_flight,
             workers,
         }
+    }
+
+    pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.completion_notify)
     }
 }
 

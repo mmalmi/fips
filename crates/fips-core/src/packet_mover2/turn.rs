@@ -616,6 +616,13 @@ impl PacketMover2LiveNodeTurn {
         std::mem::take(&mut self.wrapped_outbound_receipts)
     }
 
+    pub(crate) fn extend_wrapped_outbound_receipts(
+        &mut self,
+        receipts: impl IntoIterator<Item = PacketMover2WrappedOutboundReceipt>,
+    ) {
+        self.wrapped_outbound_receipts.extend(receipts);
+    }
+
     pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
         &self.tun_outbound_drops
     }

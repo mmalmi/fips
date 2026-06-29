@@ -11,6 +11,10 @@ impl AdmissionConfig {
             bulk_capacity,
         }
     }
+
+    pub(crate) fn total_capacity(self) -> usize {
+        self.priority_capacity.saturating_add(self.bulk_capacity)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

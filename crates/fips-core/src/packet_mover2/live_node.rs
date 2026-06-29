@@ -196,6 +196,7 @@ impl PacketMover2LiveTurnFirsts {
 #[derive(Debug)]
 pub(crate) struct PacketMover2LiveNode {
     driver: PacketMover2TurnDriver,
+    crypto_worker: PacketMover2AeadWorkerPool,
     routes: PacketMover2LiveRouteTable,
     deferred_endpoint_commands: Vec<NodeEndpointCommand>,
     deferred_tun_packets: Vec<Vec<u8>>,
@@ -210,8 +211,13 @@ impl PacketMover2LiveNode {
         let (_, empty_endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
         let (_, empty_endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_, empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+        let worker_capacity = config.total_capacity().max(1);
         Self {
             driver: PacketMover2TurnDriver::new(config),
+            crypto_worker: PacketMover2AeadWorkerPool::new(
+                packet_mover2_aead_worker_count(),
+                worker_capacity,
+            ),
             routes: PacketMover2LiveRouteTable::default(),
             deferred_endpoint_commands: Vec::new(),
             deferred_tun_packets: Vec::new(),
@@ -220,6 +226,10 @@ impl PacketMover2LiveNode {
             empty_endpoint_bulk_rx,
             empty_tun_outbound_rx,
         }
+    }
+
+    pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.crypto_worker.completion_notify()
     }
 
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
@@ -406,12 +416,7 @@ impl PacketMover2LiveNode {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let mut completions = PacketMover2NoCompletions;
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
-        self.pump_turn_with_completion_executor(
-            &mut completions,
-            0,
-            &mut executor,
+        self.pump_turn_with_live_worker(
             raw_ingress,
             raw_ingress_limit,
             outbound_firsts,
@@ -427,6 +432,54 @@ impl PacketMover2LiveNode {
             crypto_limit,
         )
         .await
+    }
+
+    async fn pump_turn_with_live_worker<RI, Resolver, Transports>(
+        &mut self,
+        raw_ingress: &mut RI,
+        raw_ingress_limit: usize,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        RI: PacketMover2RawIngressSource,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let summary = self
+            .driver
+            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
+        self.driver
+            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+                summary,
+                &mut self.crypto_worker,
+                raw_ingress,
+                &mut self.routes,
+                raw_ingress_limit,
+                endpoint_priority_rx,
+                endpoint_bulk_rx,
+                endpoint_limit,
+                tun_outbound_rx,
+                tun_limit,
+                outbound_firsts,
+                &mut self.deferred_endpoint_commands,
+                &mut self.deferred_tun_packets,
+                tun_tx,
+                endpoint_tx,
+                endpoint_resolver,
+                transports,
+                crypto_limit,
+            )
+            .await
     }
 
     pub(crate) async fn pump_turn_with_completion_executor<C, E, RI, Resolver, Transports>(
@@ -495,12 +548,7 @@ impl PacketMover2LiveNode {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let mut completions = PacketMover2NoCompletions;
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
-        self.pump_outbound_firsts_with_completion_executor(
-            &mut completions,
-            0,
-            &mut executor,
+        self.pump_outbound_firsts_with_live_worker(
             outbound_firsts,
             endpoint_limit,
             tun_limit,
@@ -511,6 +559,60 @@ impl PacketMover2LiveNode {
             crypto_limit,
         )
         .await
+    }
+
+    async fn pump_outbound_firsts_with_live_worker<Resolver, Transports>(
+        &mut self,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        endpoint_limit: usize,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let Self {
+            driver,
+            crypto_worker,
+            routes,
+            deferred_endpoint_commands,
+            deferred_tun_packets,
+            empty_raw_ingress,
+            empty_endpoint_priority_rx,
+            empty_endpoint_bulk_rx,
+            empty_tun_outbound_rx,
+            ..
+        } = self;
+        empty_raw_ingress.clear();
+
+        let summary = driver.start_aead_completion_turn(crypto_worker, crypto_limit);
+        driver
+            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+                summary,
+                crypto_worker,
+                empty_raw_ingress,
+                routes,
+                0,
+                empty_endpoint_priority_rx,
+                empty_endpoint_bulk_rx,
+                endpoint_limit,
+                empty_tun_outbound_rx,
+                tun_limit,
+                outbound_firsts,
+                deferred_endpoint_commands,
+                deferred_tun_packets,
+                tun_tx,
+                endpoint_tx,
+                endpoint_resolver,
+                transports,
+                crypto_limit,
+            )
+            .await
     }
 
     pub(crate) async fn pump_outbound_firsts_with_completion_executor<
@@ -702,4 +804,12 @@ impl PacketMover2LiveNode {
         turn.set_fmp_control_ingress(raw_ingress.take_control_ingress());
         turn
     }
+}
+
+fn packet_mover2_aead_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .min(4)
+        .max(1)
 }

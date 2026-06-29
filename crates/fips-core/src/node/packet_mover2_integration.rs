@@ -12,6 +12,8 @@ use crate::packet_mover2::{
 use crate::protocol::SessionMessageType;
 
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
+const PACKET_MOVER2_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(100);
 const PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT: usize = 16;
 
 struct PacketMover2FmpOwnerSeed {
@@ -158,6 +160,9 @@ impl Node {
                 });
             }
 
+            if needs_continuation && summary.outputs() == 0 {
+                self.wait_for_packet_mover2_completion().await;
+            }
             turn = self
                 .pump_packet_mover2_pending_outbound_firsts(
                     PacketMover2LiveOutboundFirsts::default()
@@ -432,7 +437,9 @@ impl Node {
         label: &str,
         mut turn: PacketMover2LiveNodeTurn,
     ) -> Result<PacketMover2LiveNodeTurn, NodeError> {
+        let mut wrapped_outbound_receipts = Vec::new();
         for continuation in 0..=PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS {
+            wrapped_outbound_receipts.extend(turn.take_wrapped_outbound_receipts());
             let summary = turn.summary();
             let sent = Self::packet_mover2_pending_outbound_sent(&turn);
             let deferred = turn.endpoint_deferred_commands() > 0 || turn.tun_deferred_packets() > 0;
@@ -449,6 +456,7 @@ impl Node {
                 });
             }
             if sent {
+                turn.extend_wrapped_outbound_receipts(wrapped_outbound_receipts);
                 return Ok(turn);
             }
             if deferred || !needs_continuation {
@@ -472,6 +480,9 @@ impl Node {
                 });
             }
 
+            if needs_continuation && summary.outputs() == 0 {
+                self.wait_for_packet_mover2_completion().await;
+            }
             turn = self
                 .pump_packet_mover2_pending_outbound_firsts(
                     PacketMover2LiveOutboundFirsts::default(),
@@ -483,6 +494,15 @@ impl Node {
         }
 
         unreachable!("bounded pending outbound continuation loop must return")
+    }
+
+    async fn wait_for_packet_mover2_completion(&self) {
+        let notify = self.packet_mover2.completion_notify();
+        let _ = tokio::time::timeout(
+            PACKET_MOVER2_PENDING_OUTBOUND_COMPLETION_TIMEOUT,
+            notify.notified(),
+        )
+        .await;
     }
 
     fn packet_mover2_wrapped_fsp_counter(

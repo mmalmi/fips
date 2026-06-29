@@ -123,6 +123,7 @@ impl Node {
             drop(rx);
             tx
         });
+        let packet_mover2_completion_notify = self.packet_mover2.completion_notify();
 
         info!("RX event loop started");
         // Optional perf profiler (FIPS_PERF=1). No-op otherwise.
@@ -218,6 +219,28 @@ impl Node {
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         ENDPOINT_DRAIN_BUDGET,
+                        &mut tun_outbound_rx,
+                        0,
+                        &packet_mover2_tun_tx,
+                        &packet_mover2_endpoint_tx,
+                        LATENCY_PACKET_DRAIN_BUDGET,
+                    ).await;
+                    let had_activity = turn.has_activity();
+                    let control_drained = self
+                        .process_packet_mover2_control_ingress(&mut turn)
+                        .await;
+                    if had_activity || control_drained > 0 {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                }
+                _ = packet_mover2_completion_notify.notified() => {
+                    let mut turn = self.drain_packet_mover2_turn_with_firsts(
+                        &mut packet_rx,
+                        crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
+                        0,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        0,
                         &mut tun_outbound_rx,
                         0,
                         &packet_mover2_tun_tx,

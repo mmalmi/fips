@@ -270,6 +270,13 @@
         }
     }
 
+    async fn wait_for_live_worker_completion(live_node: &PacketMover2LiveNode) {
+        let notify = live_node.completion_notify();
+        tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+            .await
+            .expect("live packet_mover2 worker completion");
+    }
+
     fn run_aead_classified_turn<I, O>(
         driver: &mut PacketMover2TurnDriver,
         inbound: I,

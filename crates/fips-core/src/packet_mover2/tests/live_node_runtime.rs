@@ -60,7 +60,7 @@
             .try_send(tun_packet.clone())
             .expect("enqueue TUN outbound packet");
 
-        let mut turn = live_node
+        let first = live_node
             .pump_turn(
                 &mut raw_source,
                 8,
@@ -77,25 +77,46 @@
             )
             .await;
 
-        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
-        assert_eq!(turn.summary().inbound_admitted(), 0);
-        assert_eq!(turn.summary().outbound_admitted(), 1);
+        assert_eq!(first.summary().raw_ingress_dropped(), 0);
+        assert_eq!(first.summary().inbound_admitted(), 0);
+        assert_eq!(first.summary().outbound_admitted(), 1);
+        assert_eq!(first.summary().dispatched(), 1);
+        assert_eq!(first.summary().outputs(), 0);
+        assert_eq!(first.summary().outputs_sent(), 0);
+        assert_eq!(first.summary().outputs_dropped(), 0);
+        assert_eq!(first.transport_planned(), 0);
+        assert_eq!(first.transport_sent(), 0);
+        assert_eq!(first.transport_dropped(), 0);
+        assert!(first.raw_ingress_drops().is_empty());
+        assert!(first.output_drops().is_empty());
+        assert!(first.drops().is_empty());
+        assert!(raw_source.source.is_empty());
+        assert!(first.endpoint_command_drops().is_empty());
+        assert!(first.tun_outbound_drops().is_empty());
+        assert!(tun_outbound_rx.try_recv().is_err());
+        assert!(tun_rx.try_recv().is_err());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+
+        wait_for_live_worker_completion(&live_node).await;
+        let mut turn = live_node
+            .pump_outbound_firsts(
+                PacketMover2LiveOutboundFirsts::default(),
+                0,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                8,
+            )
+            .await;
+        assert_eq!(turn.summary().completions(), 1);
         assert_eq!(turn.summary().outputs(), 1);
         assert_eq!(turn.summary().outputs_sent(), 1);
-        assert_eq!(turn.summary().outputs_dropped(), 0);
         assert_eq!(turn.transport_planned(), 1);
         assert_eq!(turn.transport_sent(), 1);
         assert_eq!(turn.transport_dropped(), 0);
         assert!(turn.take_transport_sent_outputs().is_empty());
-        assert!(turn.raw_ingress_drops().is_empty());
-        assert!(turn.output_drops().is_empty());
-        assert!(turn.drops().is_empty());
-        assert!(raw_source.source.is_empty());
-        assert!(turn.endpoint_command_drops().is_empty());
-        assert!(turn.tun_outbound_drops().is_empty());
-        assert!(tun_outbound_rx.try_recv().is_err());
-        assert!(tun_rx.try_recv().is_err());
-        assert!(endpoint_io.event_rx.try_recv().is_err());
 
         let received =
             tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
@@ -305,9 +326,29 @@
             )
             .await;
         assert_eq!(second.summary().dispatched(), 1);
-        assert_eq!(second.transport_sent(), 1);
+        assert_eq!(second.summary().outputs(), 0);
+        assert_eq!(second.transport_sent(), 0);
         assert_eq!(second.transport_dropped(), 0);
-        let mut sent_outputs = second.take_transport_sent_outputs();
+        assert!(second.take_transport_sent_outputs().is_empty());
+
+        wait_for_live_worker_completion(&live_node).await;
+        let mut third = live_node
+            .pump_outbound_firsts(
+                PacketMover2LiveOutboundFirsts::default()
+                    .with_transport_sent_output_collection(true),
+                0,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                1,
+            )
+            .await;
+        assert_eq!(third.summary().completions(), 1);
+        assert_eq!(third.transport_sent(), 1);
+        assert_eq!(third.transport_dropped(), 0);
+        let mut sent_outputs = third.take_transport_sent_outputs();
         assert_eq!(sent_outputs.len(), 1);
         let sent = sent_outputs.pop().unwrap();
         assert_eq!(sent.owner(), owner);
