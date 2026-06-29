@@ -158,7 +158,6 @@
     fn authenticated_fmp_receive_clears_direct_probe_retry_on_direct_path() {
         use crate::PeerIdentity;
         use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
-        use crate::node::decrypt_worker::DecryptFmpBookkeeping;
         use crate::node::retry::RetryState;
         use crate::peer::ActivePeer;
         use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
@@ -206,17 +205,17 @@
         retry.reconnect = true;
         node.retry_pending.insert(peer_addr, retry);
 
-        node.record_worker_authenticated_fmp_receive(
-            &DecryptFmpBookkeeping {
-                source_peer: peer_identity,
+        node.record_authenticated_fmp_receive_facts(
+            crate::node::AuthenticatedFmpReceiveFacts::new(
+                peer_identity,
                 transport_id,
-                remote_addr: transport_addr,
-                packet_timestamp_ms: Node::now_ms(),
-                packet_len: 256,
-                fmp_counter: 11,
-                inner_timestamp_ms: 22,
-                fmp_flags: 0,
-            },
+                &transport_addr,
+                Node::now_ms(),
+                256,
+                11,
+                22,
+                0,
+            ),
             Some(&peer_addr),
         );
 
@@ -230,7 +229,6 @@
     fn authenticated_fmp_receive_keeps_direct_probe_retry_for_forwarded_path() {
         use crate::PeerIdentity;
         use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
-        use crate::node::decrypt_worker::DecryptFmpBookkeeping;
         use crate::node::retry::RetryState;
         use crate::peer::ActivePeer;
         use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
@@ -280,17 +278,17 @@
         retry.reconnect = true;
         node.retry_pending.insert(peer_addr, retry);
 
-        node.record_worker_authenticated_fmp_receive(
-            &DecryptFmpBookkeeping {
-                source_peer: peer_identity,
+        node.record_authenticated_fmp_receive_facts(
+            crate::node::AuthenticatedFmpReceiveFacts::new(
+                peer_identity,
                 transport_id,
-                remote_addr: transport_addr,
-                packet_timestamp_ms: Node::now_ms(),
-                packet_len: 256,
-                fmp_counter: 11,
-                inner_timestamp_ms: 22,
-                fmp_flags: 0,
-            },
+                &transport_addr,
+                Node::now_ms(),
+                256,
+                11,
+                22,
+                0,
+            ),
             Some(&relay_addr),
         );
 
@@ -821,48 +819,6 @@
             node.pending_session_traffic.has_traffic_for(&source_addr),
             "fast dispatch should report, not synchronously drain, pending traffic"
         );
-    }
-
-    #[tokio::test]
-    async fn reserved_link_type_0x03_does_not_deliver_endpoint_data() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-        let source_addr = *peer.node_addr();
-        let payload = b"reserved endpoint-shaped payload".to_vec();
-        let mut plaintext = 0x0102_0304u32.to_le_bytes().to_vec();
-        plaintext.push(0x03);
-        plaintext.extend_from_slice(&payload);
-        let remote_addr = crate::transport::TransportAddr::from_string("127.0.0.1:1234");
-
-        let mut node = Node::new(crate::config::Config::new()).expect("node");
-        let mut endpoint_io = node
-            .attach_endpoint_data_io(8)
-            .expect("endpoint I/O should attach");
-
-        node.sessions
-            .insert(source_addr, established_entry(&local, &peer));
-        node.process_authentic_fmp_plaintext(crate::node::AuthenticatedFmpPlaintext::new(
-            source_peer,
-            crate::transport::TransportId::new(1),
-            &remote_addr,
-            2_100,
-            plaintext.len() + crate::node::wire::ESTABLISHED_HEADER_SIZE + crate::noise::TAG_SIZE,
-            12,
-            0,
-            &plaintext,
-        ))
-        .await;
-
-        assert!(
-            endpoint_io.event_rx.try_recv().is_err(),
-            "reserved 0x03 link payload must not bypass FSP session data"
-        );
-        let entry = node
-            .sessions
-            .get(&source_addr)
-            .expect("session should remain");
-        assert_eq!(entry.traffic_counters(), (0, 0, 0, 0));
     }
 
     #[test]

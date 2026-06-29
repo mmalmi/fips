@@ -478,31 +478,6 @@ impl PeerLifecycleRegistry {
     }
 
     #[cfg(all(test, unix))]
-    pub(in crate::node) fn prepare_fmp_send(
-        &self,
-        node_addr: &NodeAddr,
-        ce_flag: bool,
-        payload_len: u16,
-    ) -> Result<FmpSendPreparation, FmpSendPreparationError> {
-        let peer = self
-            .active
-            .get(node_addr)
-            .ok_or(FmpSendPreparationError::MissingPeer)?;
-        Self::fmp_send_preparation_from_peer(peer, ce_flag, payload_len)
-    }
-
-    #[cfg(all(test, unix))]
-    fn fmp_send_preparation_from_peer(
-        peer: &ActivePeer,
-        ce_flag: bool,
-        payload_len: u16,
-    ) -> Result<FmpSendPreparation, FmpSendPreparationError> {
-        let snapshot = Self::peer_runtime_route_snapshot_from_peer(*peer.node_addr(), peer)?
-            .prepare_send_snapshot(ce_flag, payload_len);
-        Ok(snapshot.fmp_prepared().clone())
-    }
-
-    #[cfg(all(test, unix))]
     fn peer_runtime_route_snapshot_from_peer(
         node_addr: NodeAddr,
         peer: &ActivePeer,
@@ -521,7 +496,6 @@ impl PeerLifecycleRegistry {
             .noise_session()
             .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
 
-        let timestamp_ms = peer.session_elapsed_ms();
         let sp_flag = peer.mmp().map(|mmp| mmp.spin_bit.tx_bit()).unwrap_or(false);
         let mut base_flags = if sp_flag { FLAG_SP } else { 0 };
         if peer.current_k_bit() {
@@ -533,7 +507,6 @@ impl PeerLifecycleRegistry {
             their_index,
             transport_id,
             remote_addr,
-            timestamp_ms,
             base_flags,
             noise_session.has_send_cipher(),
         ))
@@ -590,56 +563,9 @@ impl PeerLifecycleRegistry {
             PreparedFmpWorkerReservation {
                 counter: reservation.counter,
                 header: reservation.header,
-                cipher: reservation.cipher,
                 predicted_bytes,
             }
         }))
-    }
-
-    #[cfg(all(test, unix))]
-    pub(in crate::node) fn reserve_prepared_fmp_worker_send_batch<'a, I>(
-        &mut self,
-        node_addr: &NodeAddr,
-        prepared: I,
-    ) -> Result<Option<Vec<PreparedFmpWorkerReservation>>, FmpSendPreparationError>
-    where
-        I: IntoIterator<Item = &'a FmpSendPreparation>,
-    {
-        let peer = self
-            .active
-            .get_mut(node_addr)
-            .ok_or(FmpSendPreparationError::MissingPeer)?;
-        let session = peer
-            .noise_session_mut()
-            .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
-        let Some(cipher) = session.send_cipher_clone() else {
-            return Ok(None);
-        };
-        let counter_authority = session.send_counter_authority();
-
-        let prepared = prepared.into_iter().collect::<Vec<_>>();
-        let counters = counter_authority
-            .reserve_range(prepared.len())
-            .map_err(|_| FmpSendPreparationError::CounterReservationFailed)?;
-        let mut reservations = Vec::with_capacity(prepared.len());
-        for (prepared, counter) in prepared.into_iter().zip(counters) {
-            let header = build_established_header(
-                prepared.their_index,
-                counter,
-                prepared.flags,
-                prepared.payload_len,
-            );
-            let predicted_bytes =
-                ESTABLISHED_HEADER_SIZE + prepared.payload_len as usize + crate::noise::TAG_SIZE;
-            reservations.push(PreparedFmpWorkerReservation {
-                counter,
-                header,
-                cipher: cipher.clone(),
-                predicted_bytes,
-            });
-        }
-
-        Ok(Some(reservations))
     }
 
     #[cfg(all(test, unix))]
@@ -648,95 +574,6 @@ impl PeerLifecycleRegistry {
         snapshot: &PeerRuntimeSendSnapshot,
     ) -> Result<Option<PreparedFmpWorkerReservation>, FmpSendPreparationError> {
         self.reserve_prepared_fmp_worker_send(&snapshot.node_addr(), snapshot.fmp_prepared())
-    }
-
-    #[cfg(all(test, unix))]
-    pub(in crate::node) fn reserve_peer_runtime_fmp_worker_send_batch<'a, I>(
-        &mut self,
-        node_addr: &NodeAddr,
-        snapshots: I,
-    ) -> Result<Option<Vec<PreparedFmpWorkerReservation>>, FmpSendPreparationError>
-    where
-        I: IntoIterator<Item = &'a PeerRuntimeSendSnapshot>,
-    {
-        self.reserve_prepared_fmp_worker_send_batch(
-            node_addr,
-            snapshots.into_iter().map(|snapshot| {
-                debug_assert_eq!(snapshot.node_addr(), *node_addr);
-                snapshot.fmp_prepared()
-            }),
-        )
-    }
-
-    #[cfg(all(test, unix))]
-    pub(in crate::node) fn prepare_fmp_worker_send(
-        &mut self,
-        node_addr: &NodeAddr,
-        prepared: &FmpSendPreparation,
-        plaintext: &[u8],
-    ) -> Result<Option<PreparedFmpWorkerSend>, FmpSendPreparationError> {
-        const INNER_TS_LEN: usize = 4;
-        let expected_payload_len = INNER_TS_LEN + plaintext.len();
-        if prepared.payload_len as usize != expected_payload_len {
-            return Err(FmpSendPreparationError::PayloadLengthMismatch);
-        }
-
-        Ok(self
-            .reserve_prepared_fmp_worker_send(node_addr, prepared)?
-            .map(|reservation| {
-                let header = reservation.header;
-                let wire_len = ESTABLISHED_HEADER_SIZE + prepared.payload_len as usize;
-                let mut wire_buf = Vec::with_capacity(reservation.predicted_bytes);
-                wire_buf.extend_from_slice(&header);
-                wire_buf.extend_from_slice(&prepared.timestamp_ms.to_le_bytes());
-                wire_buf.extend_from_slice(plaintext);
-                debug_assert_eq!(wire_buf.len(), wire_len);
-
-                PreparedFmpWorkerSend {
-                    counter: reservation.counter,
-                    #[cfg(test)]
-                    header,
-                    cipher: reservation.cipher,
-                    wire_buf,
-                    predicted_bytes: reservation.predicted_bytes,
-                }
-            }))
-    }
-
-    #[cfg(all(test, unix))]
-    pub(in crate::node) fn seal_prepared_fmp_inline_send(
-        &mut self,
-        node_addr: &NodeAddr,
-        prepared: &FmpSendPreparation,
-        inner_plaintext: &[u8],
-    ) -> Result<PreparedFmpInlineSend, FmpSendPreparationError> {
-        let peer = self
-            .active
-            .get_mut(node_addr)
-            .ok_or(FmpSendPreparationError::MissingPeer)?;
-        let session = peer
-            .noise_session_mut()
-            .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
-        let counter = session.current_send_counter();
-        let header = build_established_header(
-            prepared.their_index,
-            counter,
-            prepared.flags,
-            prepared.payload_len,
-        );
-        let ciphertext = {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
-            session
-                .encrypt_with_aad(inner_plaintext, &header)
-                .map_err(|_| FmpSendPreparationError::EncryptionFailed)?
-        };
-        let wire_packet = build_encrypted(&header, &ciphertext);
-        Ok(PreparedFmpInlineSend {
-            counter,
-            #[cfg(test)]
-            header,
-            wire_packet,
-        })
     }
 
     pub(in crate::node) fn mark_link_dead_direct_path(

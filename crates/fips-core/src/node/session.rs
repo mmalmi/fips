@@ -12,8 +12,6 @@ use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
 #[cfg(all(test, unix))]
 use crate::node::session_wire::{FSP_HEADER_SIZE, build_fsp_header};
-#[cfg(test)]
-use crate::noise::ReplayWindow;
 use crate::noise::{HandshakeState, NoiseSession};
 use crate::{NodeAddr, PeerIdentity};
 use rand::RngExt;
@@ -70,28 +68,7 @@ pub(crate) struct FspSendReservation {
     pub(crate) cipher: LessSafeKey,
 }
 
-/// Recv-side epoch state exported to the decrypt worker.
-#[cfg(test)]
-pub(crate) struct FspRecvEpochSnapshot {
-    pub(crate) cipher: LessSafeKey,
-    pub(crate) replay: ReplayWindow,
-}
-
-/// Recv-side established-FSP state exported to the decrypt worker.
-///
-/// The worker owns replay admission for packet auth, while the rx-loop mirrors
-/// successful counters via [`FspReceiveSync`] and keeps a final canonical replay
-/// guard so slow paths, rekey cutover, and observability stay coherent.
-#[cfg(test)]
-pub(crate) struct FspRecvSessionSnapshot {
-    pub(crate) source_peer: PeerIdentity,
-    pub(crate) current_k_bit: bool,
-    pub(crate) current: FspRecvEpochSnapshot,
-    pub(crate) pending: Option<FspRecvEpochSnapshot>,
-    pub(crate) previous: Option<FspRecvEpochSnapshot>,
-}
-
-/// Authenticated FSP receive metadata produced by the decrypt worker.
+/// Authenticated FSP receive metadata produced by packet_mover2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FspReceiveSync {
     pub(crate) counter: u64,
@@ -628,32 +605,6 @@ impl SessionEntry {
         }
     }
 
-    #[cfg(test)]
-    fn fsp_recv_epoch_snapshot(session: &NoiseSession) -> Option<FspRecvEpochSnapshot> {
-        Some(FspRecvEpochSnapshot {
-            cipher: session.recv_cipher_clone()?,
-            replay: session.recv_replay_snapshot_owned(),
-        })
-    }
-
-    /// Export established-FSP recv state for an owning decrypt-worker shard.
-    #[cfg(test)]
-    pub(crate) fn fsp_recv_snapshot(&self) -> Option<FspRecvSessionSnapshot> {
-        Some(FspRecvSessionSnapshot {
-            source_peer: self.remote_identity?,
-            current_k_bit: self.current_k_bit,
-            current: Self::fsp_recv_epoch_snapshot(self.current_noise_session()?)?,
-            pending: self
-                .pending_new_session
-                .as_ref()
-                .and_then(Self::fsp_recv_epoch_snapshot),
-            previous: self
-                .previous_noise_session
-                .as_ref()
-                .and_then(Self::fsp_recv_epoch_snapshot),
-        })
-    }
-
     /// Snapshot the current established-FSP open/seal keys for packet mover owner state.
     pub(crate) fn fsp_crypto_keys(&self) -> Option<(LessSafeKey, LessSafeKey)> {
         let session = self.current_noise_session()?;
@@ -720,39 +671,6 @@ impl SessionEntry {
             header,
             cipher,
         }))
-    }
-
-    /// Reserve a contiguous batch of FSP send counters for worker-side
-    /// encryption under one mutable borrow of the session-owned send state.
-    #[cfg(all(test, unix))]
-    pub(crate) fn reserve_fsp_worker_send_batch<I>(
-        &mut self,
-        inputs: I,
-    ) -> Result<Option<Vec<FspSendReservation>>, crate::noise::NoiseError>
-    where
-        I: IntoIterator<Item = (u8, u16)>,
-    {
-        let Some(session) = self.current_noise_session_mut() else {
-            return Ok(None);
-        };
-        let Some(cipher) = session.send_cipher_clone() else {
-            return Ok(None);
-        };
-        let counter_authority = session.send_counter_authority();
-
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
-        let counters = counter_authority.reserve_range(inputs.len())?;
-        let mut reservations = Vec::with_capacity(inputs.len());
-        for ((flags, payload_len), counter) in inputs.into_iter().zip(counters) {
-            let header = build_fsp_header(counter, flags, payload_len);
-            reservations.push(FspSendReservation {
-                counter,
-                header,
-                cipher: cipher.clone(),
-            });
-        }
-
-        Ok(Some(reservations))
     }
 
     /// When the FSP rekey handshake completed (initiator sent msg3).

@@ -1,9 +1,6 @@
 use super::*;
 use crate::discovery::nostr::{BootstrapEvent, NostrDiscovery};
-use crate::node::wire::{
-    EncryptedHeader, FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, Msg1Header, build_encrypted,
-    build_established_header, build_msg2,
-};
+use crate::node::wire::{FLAG_CE, Msg1Header, build_established_header, build_msg2};
 use crate::peer::{ActivePeer, PromotionResult};
 use crate::transport::ReceivedPacket;
 use crate::transport::udp::UdpTransport;
@@ -11,13 +8,11 @@ use crate::transport::{TransportHandle, packet_channel};
 
 mod config_capacity_classifiers;
 mod endpoint_events;
-mod fmp_worker;
 mod link_registry_rx;
 mod liveness_reconnect;
 mod liveness_window;
 mod node_lifecycle;
 mod path_mtu;
-mod peer_runtime_receive;
 mod peer_runtime_route;
 mod promotion_paths;
 mod registries_core;
@@ -60,19 +55,6 @@ fn make_test_fmp_session_pair(
         initiator.into_session().unwrap(),
         responder.into_session().unwrap(),
     )
-}
-
-fn seal_test_fmp_packet(
-    sender: &mut crate::noise::NoiseSession,
-    receiver_idx: SessionIndex,
-    plaintext: &[u8],
-    k_bit: bool,
-) -> Vec<u8> {
-    let flags = if k_bit { FLAG_KEY_EPOCH } else { 0 };
-    let counter = sender.current_send_counter();
-    let header = build_established_header(receiver_idx, counter, flags, plaintext.len() as u16);
-    let ciphertext = sender.encrypt_with_aad(plaintext, &header).unwrap();
-    build_encrypted(&header, &ciphertext)
 }
 
 #[allow(clippy::too_many_arguments)]

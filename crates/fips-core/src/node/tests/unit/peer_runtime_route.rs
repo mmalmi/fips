@@ -274,7 +274,7 @@ fn peer_runtime_route_decision_owns_next_hop_snapshot_weight_and_policy() {
     assert_eq!(decision.next_hop_addr(), peer_addr);
     assert_eq!(
         decision.scheduling_weight(),
-        crate::node::encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
+        2,
         "route decision should carry configured-peer send weight"
     );
     assert!(

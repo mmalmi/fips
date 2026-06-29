@@ -59,7 +59,6 @@ impl EndpointPayloadClass {
 pub(in crate::node) struct FmpWorkerSendReservation {
     pub(in crate::node) counter: u64,
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
-    pub(in crate::node) cipher: ring::aead::LessSafeKey,
 }
 
 #[cfg(all(test, unix))]
@@ -69,16 +68,12 @@ pub(in crate::node) fn reserve_fmp_worker_send(
     flags: u8,
     payload_len: u16,
 ) -> Result<Option<FmpWorkerSendReservation>, crate::noise::NoiseError> {
-    let Some(cipher) = session.send_cipher_clone() else {
+    if !session.has_send_cipher() {
         return Ok(None);
-    };
+    }
     let counter = session.take_send_counter()?;
     let header = build_established_header(their_index, counter, flags, payload_len);
-    Ok(Some(FmpWorkerSendReservation {
-        counter,
-        header,
-        cipher,
-    }))
+    Ok(Some(FmpWorkerSendReservation { counter, header }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,11 +188,6 @@ impl EndpointDataPayload {
 
     pub(crate) fn lane(&self) -> EndpointCommandLane {
         self.traffic_class.lane().command_lane()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn bulk_endpoint_data(&self) -> bool {
-        self.traffic_class.lane() == EndpointPayloadLane::Bulk
     }
 
     pub(crate) fn drop_on_backpressure(&self) -> bool {

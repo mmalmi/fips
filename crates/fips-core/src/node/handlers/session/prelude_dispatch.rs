@@ -1,10 +1,6 @@
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
-#[cfg(test)]
-use crate::node::decrypt_worker::{
-    DecryptAuthenticatedFmpReceive, DecryptAuthenticatedSession, DecryptFspFailureReport,
-};
 use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
@@ -12,8 +8,6 @@ use crate::node::session_wire::{
     FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, fsp_strip_inner_header,
     parse_encrypted_coords,
 };
-#[cfg(all(test, unix))]
-use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
     EncryptedSessionPayload, EndpointDataDelivery, EndpointDataPayload, EndpointSendBatchCommand,
@@ -31,8 +25,6 @@ use crate::protocol::{
     SessionDatagram, SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport,
     SessionSetup,
 };
-#[cfg(all(test, unix))]
-use crate::transport::TransportHandle;
 use crate::transport::PacketBuffer;
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;

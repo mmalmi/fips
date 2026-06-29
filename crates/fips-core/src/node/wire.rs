@@ -184,11 +184,6 @@ impl EncryptedHeader {
         })
     }
 
-    /// Offset where ciphertext begins in the original packet.
-    pub fn ciphertext_offset(&self) -> usize {
-        ESTABLISHED_HEADER_SIZE
-    }
-
     /// Get the ciphertext slice from the original packet.
     #[cfg(test)]
     pub fn ciphertext<'a>(&self, data: &'a [u8]) -> &'a [u8] {
@@ -404,9 +399,7 @@ pub fn prepend_inner_header(timestamp_ms: u32, plaintext: &[u8]) -> Vec<u8> {
 /// Strip the 4-byte timestamp from a decrypted inner payload.
 ///
 /// Returns `(timestamp, &payload_starting_at_msg_type)` or None if too short.
-#[allow(dead_code)] // kept for symmetry with `prepend_inner_header`; the worker reads
-// the timestamp inline now, but the legacy decrypt test path + any
-// future non-worker dispatcher still want this helper.
+#[allow(dead_code)] // kept for symmetry with `prepend_inner_header` and wire tests.
 pub fn strip_inner_header(plaintext: &[u8]) -> Option<(u32, &[u8])> {
     if plaintext.len() < INNER_HEADER_SIZE {
         return None;

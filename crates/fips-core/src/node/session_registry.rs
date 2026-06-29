@@ -4,8 +4,6 @@ use super::*;
 #[derive(Default)]
 pub(in crate::node) struct SessionRegistry {
     sessions: HashMap<NodeAddr, SessionEntry>,
-    #[cfg(test)]
-    worker_registrations: DecryptSessionRegistrations,
 }
 
 impl SessionRegistry {
@@ -159,24 +157,6 @@ impl SessionRegistry {
     }
 
     #[cfg(all(test, unix))]
-    pub(in crate::node) fn seed_endpoint_data_fsp_path_mtu_batch<I>(
-        &mut self,
-        node_addr: &NodeAddr,
-        path_mtus: I,
-    ) -> Option<()>
-    where
-        I: IntoIterator<Item = u16>,
-    {
-        let entry = self.sessions.get_mut(node_addr)?;
-        if let Some(mmp) = entry.mmp_mut() {
-            for path_mtu in path_mtus {
-                mmp.path_mtu.seed_source_mtu(path_mtu);
-            }
-        }
-        Some(())
-    }
-
-    #[cfg(all(test, unix))]
     pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send(
         &mut self,
         node_addr: &NodeAddr,
@@ -196,60 +176,6 @@ impl SessionRegistry {
             .reserve_fsp_worker_send(input.flags, input.payload_len)
             .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
     }
-
-    #[cfg(all(test, unix))]
-    pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send_batch(
-        &mut self,
-        node_addr: &NodeAddr,
-        inputs: &[FspWorkerSendReservationInput],
-    ) -> Result<Option<Vec<FspSendReservation>>, FspWorkerSendReservationError> {
-        let entry = self
-            .sessions
-            .get_mut(node_addr)
-            .ok_or(FspWorkerSendReservationError::MissingSession)?;
-        if let Some(mmp) = entry.mmp_mut() {
-            for input in inputs {
-                mmp.path_mtu.seed_source_mtu(input.path_mtu);
-            }
-        }
-        if !entry.is_established() {
-            return Err(FspWorkerSendReservationError::NotEstablished);
-        }
-        entry
-            .reserve_fsp_worker_send_batch(
-                inputs.iter().map(|input| (input.flags, input.payload_len)),
-            )
-            .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn record_worker_registration(
-        &mut self,
-        session_key: DecryptSessionKey,
-        accepted: bool,
-    ) -> bool {
-        self.worker_registrations
-            .record_worker_registration(session_key, accepted)
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn unregister_worker_session_if_registered(
-        &mut self,
-        session_key: &DecryptSessionKey,
-    ) -> bool {
-        self.worker_registrations
-            .unregister_if_registered(session_key)
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn is_worker_registered(&self, session_key: &DecryptSessionKey) -> bool {
-        self.worker_registrations.is_registered(session_key)
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn worker_registration_is_empty(&self) -> bool {
-        self.worker_registrations.is_empty()
-    }
 }
 
 impl<'a> IntoIterator for &'a SessionRegistry {
@@ -258,44 +184,6 @@ impl<'a> IntoIterator for &'a SessionRegistry {
 
     fn into_iter(self) -> Self::IntoIter {
         self.sessions.iter()
-    }
-}
-
-/// Rx-loop mirror of sessions accepted by decrypt-worker shards.
-#[cfg(test)]
-#[derive(Debug, Default)]
-pub(in crate::node) struct DecryptSessionRegistrations {
-    sessions: HashSet<DecryptSessionKey>,
-}
-
-#[cfg(test)]
-impl DecryptSessionRegistrations {
-    pub(in crate::node) fn record_worker_registration(
-        &mut self,
-        session_key: DecryptSessionKey,
-        accepted: bool,
-    ) -> bool {
-        if !accepted {
-            return false;
-        }
-        self.sessions.insert(session_key);
-        true
-    }
-
-    pub(in crate::node) fn unregister_if_registered(
-        &mut self,
-        session_key: &DecryptSessionKey,
-    ) -> bool {
-        self.sessions.remove(session_key)
-    }
-
-    pub(in crate::node) fn is_registered(&self, session_key: &DecryptSessionKey) -> bool {
-        self.sessions.contains(session_key)
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn is_empty(&self) -> bool {
-        self.sessions.is_empty()
     }
 }
 

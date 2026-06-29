@@ -692,17 +692,19 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
     assert!(active.can_send());
     node.peers.insert(peer_node_addr, active);
 
-    node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
-        peer_identity,
-        transport_id,
-        &public_addr,
-        2_000,
-        64,
-        1,
-        0,
-        &[0, 0, 0, 0],
-    ))
-    .await;
+    node.record_authenticated_fmp_receive_facts(
+        AuthenticatedFmpReceiveFacts::new(
+            peer_identity,
+            transport_id,
+            &public_addr,
+            2_000,
+            64,
+            1,
+            0,
+            0,
+        ),
+        Some(&peer_node_addr),
+    );
 
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert_eq!(
@@ -717,17 +719,19 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
     );
 
     node.mark_session_direct_path_degraded(peer_node_addr, 3_000);
-    node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
-        peer_identity,
-        transport_id,
-        &public_addr,
-        3_100,
-        64,
-        2,
-        0,
-        &[0, 0, 0, 0],
-    ))
-    .await;
+    node.record_authenticated_fmp_receive_facts(
+        AuthenticatedFmpReceiveFacts::new(
+            peer_identity,
+            transport_id,
+            &public_addr,
+            3_100,
+            64,
+            2,
+            0,
+            0,
+        ),
+        Some(&peer_node_addr),
+    );
 
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert_eq!(
@@ -738,17 +742,19 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
     assert_eq!(active.idle_time(3_100), 0);
 
     node.config.peers[0].addresses[0].seen_at_ms = Some(2_000);
-    node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
-        peer_identity,
-        transport_id,
-        &public_addr,
-        3_200,
-        64,
-        3,
-        0,
-        &[0, 0, 0, 0],
-    ))
-    .await;
+    node.record_authenticated_fmp_receive_facts(
+        AuthenticatedFmpReceiveFacts::new(
+            peer_identity,
+            transport_id,
+            &public_addr,
+            3_200,
+            64,
+            3,
+            0,
+            0,
+        ),
+        Some(&peer_node_addr),
+    );
 
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert_eq!(

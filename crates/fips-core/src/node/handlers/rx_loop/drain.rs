@@ -182,69 +182,6 @@ impl RxLoopMaintenancePlan {
     }
 }
 
-#[cfg(test)]
-pub(super) struct DecryptReturnDrainCursor<T> {
-    first_priority: Option<T>,
-    first_authenticated_bulk: Option<T>,
-    first_bulk: Option<T>,
-    remaining: usize,
-    drained: usize,
-}
-
-#[cfg(test)]
-impl<T> DecryptReturnDrainCursor<T> {
-    pub(super) fn new(
-        first_priority: Option<T>,
-        first_authenticated_bulk: Option<T>,
-        first_bulk: Option<T>,
-        budget: usize,
-    ) -> Self {
-        Self {
-            first_priority,
-            first_authenticated_bulk,
-            first_bulk,
-            remaining: budget,
-            drained: 0,
-        }
-    }
-
-    pub(super) fn next(
-        &mut self,
-        priority_rx: &mut Receiver<T>,
-        authenticated_bulk_rx: &mut Receiver<T>,
-        bulk_rx: &mut Receiver<T>,
-    ) -> Option<T> {
-        if self.remaining == 0 {
-            return None;
-        }
-
-        let item = if let Some(item) = self.first_priority.take() {
-            Some(item)
-        } else {
-            priority_rx
-                .try_recv()
-                .ok()
-                .or_else(|| self.first_authenticated_bulk.take())
-                .or_else(|| authenticated_bulk_rx.try_recv().ok())
-                .or_else(|| self.first_bulk.take())
-                .or_else(|| bulk_rx.try_recv().ok())
-        }?;
-
-        self.remaining -= 1;
-        self.drained += 1;
-        Some(item)
-    }
-
-    pub(super) fn drained(&self) -> usize {
-        self.drained
-    }
-
-    pub(super) fn charge_extra(&mut self, extra: usize) {
-        self.remaining = self.remaining.saturating_sub(extra);
-        self.drained = self.drained.saturating_add(extra);
-    }
-}
-
 pub(super) struct SingleLaneDrainCursor<T> {
     first_item: Option<T>,
     remaining: usize,

@@ -12,12 +12,6 @@ impl Node {
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();
 
-        #[cfg(test)]
-        let (decrypt_fallback_tx, decrypt_fallback_rx) =
-            decrypt_worker::decrypt_worker_fallback_channels();
-        #[cfg(test)]
-        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
-
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
 
@@ -110,14 +104,6 @@ impl Node {
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
-            #[cfg(test)]
-            encrypt_workers: None,
-            #[cfg(test)]
-            decrypt_workers: None,
-            #[cfg(test)]
-            decrypt_fallback_tx,
-            #[cfg(test)]
-            decrypt_fallback_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -171,12 +157,6 @@ impl Node {
     pub fn with_identity(identity: Identity, config: Config) -> Result<Self, NodeError> {
         config.validate()?;
         let node_addr = *identity.node_addr();
-
-        #[cfg(test)]
-        let (decrypt_fallback_tx, decrypt_fallback_rx) =
-            decrypt_worker::decrypt_worker_fallback_channels();
-        #[cfg(test)]
-        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -263,14 +243,6 @@ impl Node {
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
-            #[cfg(test)]
-            encrypt_workers: None,
-            #[cfg(test)]
-            decrypt_workers: None,
-            #[cfg(test)]
-            decrypt_fallback_tx,
-            #[cfg(test)]
-            decrypt_fallback_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]

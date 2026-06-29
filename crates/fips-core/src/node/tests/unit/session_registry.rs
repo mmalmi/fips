@@ -1,15 +1,13 @@
 use super::*;
 
 #[test]
-fn session_registry_owns_endpoint_session_storage_and_worker_registration_mirror() {
+fn session_registry_owns_endpoint_session_storage() {
     use crate::node::session::{EndToEndState, SessionEntry};
 
     let local = Identity::generate();
     let peer = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
     let peer_addr = *peer_identity.node_addr();
-    let session_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(1), 10);
-    let other_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(2), 10);
 
     let mut registry = SessionRegistry::default();
     let first = SessionEntry::new(
@@ -26,16 +24,6 @@ fn session_registry_owns_endpoint_session_storage_and_worker_registration_mirror
         registry.get(&peer_addr).map(SessionEntry::remote_pubkey),
         Some(&peer.pubkey_full())
     );
-    assert!(
-        !registry.record_worker_registration(session_key, false),
-        "a rejected worker registration must not mark the session worker-owned"
-    );
-    assert!(!registry.is_worker_registered(&session_key));
-    assert!(!registry.unregister_worker_session_if_registered(&session_key));
-
-    assert!(registry.record_worker_registration(session_key, true));
-    assert!(registry.is_worker_registered(&session_key));
-    assert!(!registry.is_worker_registered(&other_key));
 
     let replacement = SessionEntry::new(
         peer_addr,
@@ -65,14 +53,8 @@ fn session_registry_owns_endpoint_session_storage_and_worker_registration_mirror
         .remove(&peer_addr)
         .expect("session storage should live in the session owner");
     assert_eq!(removed.remote_pubkey(), &peer.pubkey_full());
-    assert!(
-        registry.unregister_worker_session_if_registered(&session_key),
-        "worker registration mirror should be cleaned through the session owner"
-    );
-    assert!(!registry.is_worker_registered(&session_key));
     assert!(!registry.contains_key(&peer_addr));
     assert!(registry.is_empty());
-    assert!(registry.worker_registration_is_empty());
 }
 
 #[test]
@@ -376,31 +358,6 @@ fn session_registry_owns_endpoint_fsp_worker_reservation_and_path_mtu_seed() {
 }
 
 #[test]
-fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
-    let session_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(1), 10);
-    let other_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(2), 10);
-    let mut registrations = DecryptSessionRegistrations::default();
-
-    assert!(!registrations.record_worker_registration(session_key, false));
-    assert!(
-        !registrations.is_registered(&session_key),
-        "a full worker queue must not make rx-loop dispatch to an unregistered shard"
-    );
-    assert!(
-        !registrations.unregister_if_registered(&session_key),
-        "worker unregister should be skipped when local registration never succeeded"
-    );
-
-    assert!(registrations.record_worker_registration(session_key, true));
-    assert!(registrations.is_registered(&session_key));
-    assert!(!registrations.is_registered(&other_key));
-
-    assert!(registrations.unregister_if_registered(&session_key));
-    assert!(!registrations.is_registered(&session_key));
-    assert!(registrations.is_empty());
-}
-
-#[test]
 fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
     let configured = Identity::generate();
     let configured_npub = configured.npub();
@@ -435,12 +392,12 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
 
     assert_eq!(
         weights.weight_for(&configured_addr),
-        encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
+        2,
         "configured peers reserve the explicit send-scheduling lane"
     );
     assert_eq!(
         weights.weight_for(&unknown_addr),
-        encrypt_worker::DEFAULT_SEND_WEIGHT,
+        1,
         "unconfigured peers must stay on the default send-scheduling lane"
     );
     assert_eq!(

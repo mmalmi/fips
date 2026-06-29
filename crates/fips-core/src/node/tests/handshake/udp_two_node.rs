@@ -3,9 +3,7 @@ use super::*;
 #[tokio::test]
 async fn test_two_node_handshake_udp() {
     use crate::config::UdpConfig;
-    use crate::node::wire::{
-        build_encrypted, build_established_header, build_msg1, prepend_inner_header,
-    };
+    use crate::node::wire::build_msg1;
     use crate::transport::udp::UdpTransport;
     use tokio::time::{Duration, timeout};
 
@@ -32,10 +30,8 @@ async fn test_two_node_handshake_udp() {
     transport_a.start_async().await.unwrap();
     transport_b.start_async().await.unwrap();
 
-    let addr_a = transport_a.local_addr().unwrap();
     let addr_b = transport_b.local_addr().unwrap();
     let remote_addr_b = TransportAddr::from_string(&addr_b.to_string());
-    let remote_addr_a = TransportAddr::from_string(&addr_a.to_string());
 
     node_a
         .transports
@@ -152,75 +148,6 @@ async fn test_two_node_handshake_udp() {
             .peers
             .contains_session_index(&(transport_id_a, our_index_a.as_u32())),
         "Node A active peer registry session-index dispatch should be populated"
-    );
-
-    // === Phase 4: Encrypted frame A → B ===
-
-    // A encrypts a test message and sends to B
-    // Prepend inner header (timestamp + msg_type) as the real send path does
-    let msg_a = b"\x10test from A"; // msg_type 0x10 (TreeAnnounce) + dummy payload
-    let inner_a = prepend_inner_header(0, msg_a);
-    let peer_b = node_a.get_peer_mut(&peer_b_node_addr).unwrap();
-    let their_index_b = peer_b.their_index().expect("A should know B's index");
-    let session_a = peer_b.noise_session_mut().unwrap();
-    let counter_a = session_a.current_send_counter();
-    let header_a = build_established_header(their_index_b, counter_a, 0, inner_a.len() as u16);
-    let ciphertext_a = session_a.encrypt_with_aad(&inner_a, &header_a).unwrap();
-
-    let wire_encrypted = build_encrypted(&header_a, &ciphertext_a);
-    let transport = node_a.transports.get(&transport_id_a).unwrap();
-    transport
-        .send(&remote_addr_b, &wire_encrypted)
-        .await
-        .expect("Failed to send encrypted frame");
-
-    // B receives and decrypts
-    let encrypted_packet_b = timeout(Duration::from_secs(1), packet_rx_b.recv())
-        .await
-        .expect("Timeout waiting for encrypted frame")
-        .expect("Channel closed");
-
-    node_b.handle_encrypted_frame(encrypted_packet_b).await;
-
-    // Verify B's peer was touched (last_seen updated)
-    let peer_a = node_b.get_peer(&peer_a_node_addr).unwrap();
-    assert!(
-        peer_a.is_healthy(),
-        "Peer A on B should still be healthy after receiving encrypted frame"
-    );
-
-    // === Phase 5: Encrypted frame B → A ===
-
-    // Prepend inner header (timestamp + msg_type) as the real send path does
-    let msg_b = b"\x10test from B"; // msg_type 0x10 (TreeAnnounce) + dummy payload
-    let inner_b = prepend_inner_header(0, msg_b);
-    let peer_a = node_b.get_peer_mut(&peer_a_node_addr).unwrap();
-    let their_index_a = peer_a.their_index().expect("B should know A's index");
-    let session_b = peer_a.noise_session_mut().unwrap();
-    let counter_b = session_b.current_send_counter();
-    let header_b = build_established_header(their_index_a, counter_b, 0, inner_b.len() as u16);
-    let ciphertext_b = session_b.encrypt_with_aad(&inner_b, &header_b).unwrap();
-
-    let wire_encrypted_b = build_encrypted(&header_b, &ciphertext_b);
-    let transport = node_b.transports.get(&transport_id_b).unwrap();
-    transport
-        .send(&remote_addr_a, &wire_encrypted_b)
-        .await
-        .expect("Failed to send encrypted frame B→A");
-
-    // A receives and decrypts
-    let encrypted_packet_a = timeout(Duration::from_secs(1), packet_rx_a.recv())
-        .await
-        .expect("Timeout waiting for encrypted frame B→A")
-        .expect("Channel closed");
-
-    node_a.handle_encrypted_frame(encrypted_packet_a).await;
-
-    // Verify A's peer was touched
-    let peer_b = node_a.get_peer(&peer_b_node_addr).unwrap();
-    assert!(
-        peer_b.is_healthy(),
-        "Peer B on A should still be healthy after receiving encrypted frame"
     );
 
     // Clean up transports

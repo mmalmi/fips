@@ -8,11 +8,7 @@ mod accessors_impl;
 mod acl;
 mod bloom;
 mod core_impl;
-#[cfg(test)]
-mod decrypt_worker;
 mod discovery_rate_limit;
-#[cfg(test)]
-mod encrypt_worker;
 mod endpoint_command;
 mod endpoint_event;
 mod endpoint_traffic;
@@ -100,16 +96,12 @@ pub(in crate::node) use support_state::{
     BootstrapTransports, DiscoveryFallbackTransit, LocalSendFailures, SessionDirectDegradation,
 };
 
-#[cfg(test)]
-use self::decrypt_worker::DecryptSessionKey;
 use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
-#[cfg(test)]
-use self::wire::prepend_inner_header;
 #[cfg(all(test, unix))]
-use self::wire::{ESTABLISHED_HEADER_SIZE, build_encrypted, build_established_header};
+use self::wire::{ESTABLISHED_HEADER_SIZE, build_established_header};
 use self::wire::{FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP};
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
@@ -316,20 +308,6 @@ pub struct Node {
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
     endpoint_events: EndpointEventRuntime,
-    /// Legacy off-task FMP-encrypt + UDP-send worker pool retained only for
-    /// old direct send tests. Production output is owned by packet_mover2.
-    #[cfg(test)]
-    encrypt_workers: Option<encrypt_worker::EncryptWorkerPool>,
-    /// Legacy off-task FMP + FSP decrypt + delivery worker pool. packet_mover2
-    /// owns production receive; this pool remains only for old direct handler
-    /// tests until those are retired.
-    #[cfg(test)]
-    decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
-    /// Test-only decrypt-worker return channels for old direct-handler tests.
-    #[cfg(test)]
-    decrypt_fallback_rx: Option<decrypt_worker::DecryptWorkerFallbackReceivers>,
-    #[cfg(test)]
-    decrypt_fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.

@@ -172,7 +172,6 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     populate_all_coord_caches(&mut nodes);
     for node in &mut nodes {
         node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
-        node.node.encrypt_workers = Some(crate::node::encrypt_worker::EncryptWorkerPool::spawn(1));
     }
 
     let mut alice_endpoint = nodes[0]

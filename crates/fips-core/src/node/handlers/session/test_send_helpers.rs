@@ -1,25 +1,8 @@
 use crate::node::FspSendBookkeepingInput;
-#[cfg(unix)]
-use crate::node::endpoint_flow_dispatch_key;
 use crate::node::session_wire::{build_fsp_header, fsp_prepend_inner_header};
-#[cfg(unix)]
-use crate::protocol::{LinkMessageType, SESSION_DATAGRAM_HEADER_SIZE};
 use crate::protocol::{coords_wire_size, encode_coords};
 use crate::upper::icmp::FIPS_OVERHEAD;
 use std::borrow::Cow;
-
-#[cfg_attr(not(unix), allow(dead_code))]
-#[derive(Clone, Copy)]
-struct PipelinedEndpointSend<'a> {
-    dest_addr: &'a NodeAddr,
-    payload: &'a EndpointDataPayload,
-    now_ms: u64,
-    timestamp: u32,
-    fsp_flags: u8,
-    body: PipelinedEndpointWireBody<'a>,
-    my_coords: Option<&'a crate::tree::TreeCoordinate>,
-    dest_coords: Option<&'a crate::tree::TreeCoordinate>,
-}
 
 struct PreparedEndpointSessionMeta {
     dest_addr: NodeAddr,
@@ -35,18 +18,6 @@ struct PreparedEndpointSessionMeta {
 struct PreparedEndpointSessionData<'a> {
     meta: PreparedEndpointSessionMeta,
     payload: &'a EndpointDataPayload,
-}
-
-#[derive(Clone, Copy)]
-enum PipelinedEndpointWireBody<'a> {
-    #[cfg_attr(not(test), allow(dead_code))]
-    InnerPlaintext(&'a [u8]),
-    EndpointPayload {
-        timestamp: u32,
-        msg_type: u8,
-        inner_flags: u8,
-        payload: &'a [u8],
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,24 +48,6 @@ struct SealedSessionFspSend {
 }
 
 impl PreparedEndpointSessionMeta {
-    fn pipelined<'a>(&'a self, payload: &'a EndpointDataPayload) -> PipelinedEndpointSend<'a> {
-        PipelinedEndpointSend {
-            dest_addr: &self.dest_addr,
-            payload,
-            now_ms: self.now_ms,
-            timestamp: self.timestamp,
-            fsp_flags: self.fsp_flags,
-            body: PipelinedEndpointWireBody::EndpointPayload {
-                timestamp: self.timestamp,
-                msg_type: self.msg_type,
-                inner_flags: self.inner_flags,
-                payload: payload.as_slice(),
-            },
-            my_coords: self.my_coords.as_ref(),
-            dest_coords: self.dest_coords.as_ref(),
-        }
-    }
-
     fn fallback_plan<'a>(&'a self, payload: &'a EndpointDataPayload) -> SessionFspSendPlan<'a> {
         let inner_plaintext = fsp_prepend_inner_header(
             self.timestamp,
@@ -117,10 +70,6 @@ impl PreparedEndpointSessionMeta {
 }
 
 impl<'a> PreparedEndpointSessionData<'a> {
-    fn pipelined(&self) -> PipelinedEndpointSend<'_> {
-        self.meta.pipelined(self.payload)
-    }
-
     fn fallback_plan(&self) -> SessionFspSendPlan<'_> {
         self.meta.fallback_plan(self.payload)
     }
