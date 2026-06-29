@@ -122,6 +122,119 @@
         recv_transport.stop().await.expect("stop recv udp");
     }
 
+    #[tokio::test]
+    async fn live_node_outbound_continuation_collects_transport_sent_outputs() {
+        let send_transport_id = TransportId::new(176);
+        let recv_transport_id = TransportId::new(177);
+        let peer = NodeAddr::from_bytes([0x76; 16]);
+        let owner = OwnerId::fmp_node(peer);
+        let key = 176;
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(4);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let live_path = TransportPath::live(send_transport_id, remote_addr.clone());
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
+        live_node.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(1760));
+        live_node
+            .owner_mut(owner)
+            .unwrap()
+            .set_active_path(live_path);
+        live_node
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let outbound = OutboundPacket::fmp(
+            owner,
+            1,
+            PacketClass::Liveness,
+            1761,
+            0,
+            b"continuation".to_vec(),
+        );
+        let mut first = live_node
+            .pump_outbound_firsts(
+                PacketMover2LiveOutboundFirsts::default()
+                    .with_initial_outbound(Some(outbound))
+                    .with_transport_sent_output_collection(true),
+                0,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                0,
+            )
+            .await;
+        assert_eq!(first.summary().outbound_admitted(), 1);
+        assert_eq!(first.summary().dispatched(), 0);
+        assert_eq!(first.transport_sent(), 0);
+        assert!(first.take_transport_sent_outputs().is_empty());
+
+        let mut second = live_node
+            .pump_outbound_firsts(
+                PacketMover2LiveOutboundFirsts::default()
+                    .with_transport_sent_output_collection(true),
+                0,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                1,
+            )
+            .await;
+        assert_eq!(second.summary().dispatched(), 1);
+        assert_eq!(second.transport_sent(), 1);
+        assert_eq!(second.transport_dropped(), 0);
+        let mut sent_outputs = second.take_transport_sent_outputs();
+        assert_eq!(sent_outputs.len(), 1);
+        let sent = sent_outputs.pop().unwrap();
+        assert_eq!(sent.owner(), owner);
+        assert_eq!(sent.counter(), 1760);
+        assert_eq!(open_sealed_output(&sent, key), b"continuation");
+        assert!(tun_rx.try_recv().is_err());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+
+        let received =
+            tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                .await
+                .expect("receive continuation transport output")
+                .expect("packet channel open");
+        assert_eq!(received.transport_id, recv_transport_id);
+        let header = FmpWireHeader::parse(&received.data).unwrap();
+        assert_eq!(header.receiver_idx(), 1761);
+        assert_eq!(header.counter(), 1760);
+        assert_eq!(
+            open_fmp_wire_payload(&received.data, key),
+            b"continuation"
+        );
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
+    }
+
     #[test]
     fn tun_tx_output_sends_opened_payload_to_node_tun_channel() {
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();

@@ -83,52 +83,93 @@ impl Node {
         let mut turn = self
             .pump_packet_mover2_initial_outbound(outbound, 1, true)
             .await;
-        let sent_output = if turn.transport_sent() == 1 && turn.transport_dropped() == 0 {
-            let mut sent_outputs = turn.take_transport_sent_outputs();
-            if sent_outputs.len() == 1 {
-                sent_outputs.pop()
-            } else {
-                None
+        for continuation in 0..=PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS {
+            if turn.transport_sent() == 1 && turn.transport_dropped() == 0 {
+                let mut sent_outputs = turn.take_transport_sent_outputs();
+                if sent_outputs.len() != 1 {
+                    return Err(NodeError::SendFailed {
+                        node_addr: *node_addr,
+                        reason: format!(
+                            "packet_mover2 FMP send transport receipt mismatch: {:?}",
+                            turn.summary()
+                        ),
+                    });
+                }
+                let output = sent_outputs.pop().expect("checked one sent output");
+                let timestamp_ms =
+                    output
+                        .fmp_timestamp_ms()
+                        .ok_or_else(|| NodeError::SendFailed {
+                            node_addr: *node_addr,
+                            reason: "packet_mover2 FMP timestamp missing".into(),
+                        })?;
+                let bytes_sent = output.payload_len();
+                let _ = self.peers.record_fmp_send_bookkeeping(
+                    node_addr,
+                    output.counter(),
+                    timestamp_ms,
+                    bytes_sent,
+                );
+                let send_result: Result<usize, TransportError> = Ok(bytes_sent);
+                self.note_local_send_outcome(node_addr, &send_result);
+                return Ok(());
             }
-        } else {
-            None
-        };
 
-        if let Some(output) = sent_output {
-            let timestamp_ms = output
-                .fmp_timestamp_ms()
-                .ok_or_else(|| NodeError::SendFailed {
+            if turn.transport_sent() > 0 || turn.summary().outputs_sent() > 0 {
+                return Err(NodeError::SendFailed {
                     node_addr: *node_addr,
-                    reason: "packet_mover2 FMP timestamp missing".into(),
-                })?;
-            let bytes_sent = output.payload_len();
-            let _ = self.peers.record_fmp_send_bookkeeping(
-                node_addr,
-                output.counter(),
-                timestamp_ms,
-                bytes_sent,
-            );
-            let send_result: Result<usize, TransportError> = Ok(bytes_sent);
-            self.note_local_send_outcome(node_addr, &send_result);
-            return Ok(());
+                    reason: format!(
+                        "packet_mover2 FMP send unexpected output shape: {:?}",
+                        turn.summary()
+                    ),
+                });
+            }
+            if let Some(drop) = turn.output_drops().first() {
+                return Err(self.packet_mover2_fmp_output_drop_error(*node_addr, drop));
+            }
+            if let Some(drop) = turn.drops().first() {
+                return Err(NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!("packet_mover2 FMP send drop: {:?}", drop.reason()),
+                });
+            }
+
+            let summary = turn.summary();
+            let deferred = turn.endpoint_deferred_commands() > 0;
+            let needs_continuation = Self::packet_mover2_pending_outbound_needs_continuation(&turn);
+            if deferred || !needs_continuation {
+                let reason = if deferred {
+                    "deferred without transport output"
+                } else {
+                    "made no transport output progress"
+                };
+                return Err(NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!("packet_mover2 FMP send {reason}: {:?}", summary),
+                });
+            }
+            if continuation == PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS {
+                return Err(NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!(
+                        "packet_mover2 FMP send exhausted pending outbound continuation turns: {:?}",
+                        summary
+                    ),
+                });
+            }
+
+            turn = self
+                .pump_packet_mover2_pending_outbound_firsts(
+                    PacketMover2LiveOutboundFirsts::default()
+                        .with_transport_sent_output_collection(true),
+                    0,
+                    0,
+                    1,
+                )
+                .await;
         }
 
-        if let Some(drop) = turn.output_drops().first() {
-            return Err(self.packet_mover2_fmp_output_drop_error(*node_addr, drop));
-        }
-        if let Some(drop) = turn.drops().first() {
-            return Err(NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: format!("packet_mover2 FMP send drop: {:?}", drop.reason()),
-            });
-        }
-        Err(NodeError::SendFailed {
-            node_addr: *node_addr,
-            reason: format!(
-                "packet_mover2 FMP send made no progress: {:?}",
-                turn.summary()
-            ),
-        })
+        unreachable!("bounded FMP outbound continuation loop must return")
     }
 
     pub(in crate::node) async fn send_packet_mover2_pending_tun_packet(
