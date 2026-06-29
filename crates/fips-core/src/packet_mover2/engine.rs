@@ -425,6 +425,7 @@ impl PacketMover2 {
             };
             prepared.push(prepared_work);
         }
+        crate::perf_profile::record_packet_mover2_crypto_open_batch(prepared.len());
     }
 
     fn prepare_seal_work_batch<I>(
@@ -439,6 +440,7 @@ impl PacketMover2 {
             let prepared_work = self.prepare_seal_work(work);
             prepared.push(prepared_work);
         }
+        crate::perf_profile::record_packet_mover2_crypto_seal_batch(prepared.len());
     }
 
     fn execute_prepared_work_batch(

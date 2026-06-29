@@ -2,8 +2,8 @@
 use super::udp_send_batch_tail_bucket_flags;
 use super::{
     EVENTS, Event, HIST_BUCKETS, N_EVENTS, N_STAGES, Stage, TraceStamp, bucket_upper_ns,
-    event_from_index, fmt_rate_per_sec, percentile_ns, record_event_count_sample,
-    record_wait_threshold, stage_from_index,
+    event_from_index, fmt_rate_per_sec, packet_mover2_crypto_batch_bucket_flags, percentile_ns,
+    record_event_count_sample, record_wait_threshold, stage_from_index,
 };
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
@@ -347,36 +347,36 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "reserved_event_94"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent191 as usize).name(),
-        "reserved_event_191"
+        event_from_index(Event::PacketMover2CryptoOpenBatch as usize).name(),
+        "packet_mover2_crypto_open_batch"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent192 as usize).name(),
-        "reserved_event_192"
+        event_from_index(Event::PacketMover2CryptoOpenPackets as usize).name(),
+        "packet_mover2_crypto_open_packets"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent193 as usize).name(),
-        "reserved_event_193"
+        event_from_index(Event::PacketMover2CryptoSealBatch as usize).name(),
+        "packet_mover2_crypto_seal_batch"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent194 as usize).name(),
-        "reserved_event_194"
+        event_from_index(Event::PacketMover2CryptoSealPackets as usize).name(),
+        "packet_mover2_crypto_seal_packets"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent195 as usize).name(),
-        "reserved_event_195"
+        event_from_index(Event::PacketMover2CryptoBatchSingle as usize).name(),
+        "packet_mover2_crypto_batch_single"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent196 as usize).name(),
-        "reserved_event_196"
+        event_from_index(Event::PacketMover2CryptoBatchGe8 as usize).name(),
+        "packet_mover2_crypto_batch_ge8"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent197 as usize).name(),
-        "reserved_event_197"
+        event_from_index(Event::PacketMover2CryptoBatchGe32 as usize).name(),
+        "packet_mover2_crypto_batch_ge32"
     );
     assert_eq!(
-        event_from_index(Event::ReservedEvent198 as usize).name(),
-        "reserved_event_198"
+        event_from_index(Event::PacketMover2CryptoBatchGe64 as usize).name(),
+        "packet_mover2_crypto_batch_ge64"
     );
     assert_eq!(
         event_from_index(Event::ReservedEvent95 as usize).name(),
@@ -786,6 +786,38 @@ fn udp_send_batch_buckets_classify_large_bursts() {
     assert_eq!(udp_send_batch_tail_bucket_flags(48), (true, true, false));
     assert_eq!(udp_send_batch_tail_bucket_flags(63), (true, true, false));
     assert_eq!(udp_send_batch_tail_bucket_flags(64), (true, true, true));
+}
+
+#[test]
+fn packet_mover2_crypto_batch_buckets_classify_worker_chunks() {
+    assert_eq!(
+        packet_mover2_crypto_batch_bucket_flags(0),
+        (false, false, false, false)
+    );
+    assert_eq!(
+        packet_mover2_crypto_batch_bucket_flags(1),
+        (true, false, false, false)
+    );
+    assert_eq!(
+        packet_mover2_crypto_batch_bucket_flags(7),
+        (false, false, false, false)
+    );
+    assert_eq!(
+        packet_mover2_crypto_batch_bucket_flags(8),
+        (false, true, false, false)
+    );
+    assert_eq!(
+        packet_mover2_crypto_batch_bucket_flags(31),
+        (false, true, false, false)
+    );
+    assert_eq!(
+        packet_mover2_crypto_batch_bucket_flags(32),
+        (false, true, true, false)
+    );
+    assert_eq!(
+        packet_mover2_crypto_batch_bucket_flags(64),
+        (false, true, true, true)
+    );
 }
 
 #[test]

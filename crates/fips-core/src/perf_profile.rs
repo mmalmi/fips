@@ -621,14 +621,14 @@ pub enum Event {
     DecryptFspPathWorkerOpen = 188,
     DecryptFspPathWorkerOpenBulk = 189,
     DecryptFspOwnerHandoffDropped = 190,
-    ReservedEvent191 = 191,
-    ReservedEvent192 = 192,
-    ReservedEvent193 = 193,
-    ReservedEvent194 = 194,
-    ReservedEvent195 = 195,
-    ReservedEvent196 = 196,
-    ReservedEvent197 = 197,
-    ReservedEvent198 = 198,
+    PacketMover2CryptoOpenBatch = 191,
+    PacketMover2CryptoOpenPackets = 192,
+    PacketMover2CryptoSealBatch = 193,
+    PacketMover2CryptoSealPackets = 194,
+    PacketMover2CryptoBatchSingle = 195,
+    PacketMover2CryptoBatchGe8 = 196,
+    PacketMover2CryptoBatchGe32 = 197,
+    PacketMover2CryptoBatchGe64 = 198,
     DecryptFspMalformedDropped = 199,
     FspAeadCompletionAeadFailedLocal = 200,
     ReservedEvent201 = 201,
@@ -877,14 +877,14 @@ impl Event {
             Event::DecryptFspPathWorkerOpen => "decrypt_fsp_path_worker_open",
             Event::DecryptFspPathWorkerOpenBulk => "decrypt_fsp_path_worker_open_bulk",
             Event::DecryptFspOwnerHandoffDropped => "decrypt_fsp_owner_handoff_dropped",
-            Event::ReservedEvent191 => "reserved_event_191",
-            Event::ReservedEvent192 => "reserved_event_192",
-            Event::ReservedEvent193 => "reserved_event_193",
-            Event::ReservedEvent194 => "reserved_event_194",
-            Event::ReservedEvent195 => "reserved_event_195",
-            Event::ReservedEvent196 => "reserved_event_196",
-            Event::ReservedEvent197 => "reserved_event_197",
-            Event::ReservedEvent198 => "reserved_event_198",
+            Event::PacketMover2CryptoOpenBatch => "packet_mover2_crypto_open_batch",
+            Event::PacketMover2CryptoOpenPackets => "packet_mover2_crypto_open_packets",
+            Event::PacketMover2CryptoSealBatch => "packet_mover2_crypto_seal_batch",
+            Event::PacketMover2CryptoSealPackets => "packet_mover2_crypto_seal_packets",
+            Event::PacketMover2CryptoBatchSingle => "packet_mover2_crypto_batch_single",
+            Event::PacketMover2CryptoBatchGe8 => "packet_mover2_crypto_batch_ge8",
+            Event::PacketMover2CryptoBatchGe32 => "packet_mover2_crypto_batch_ge32",
+            Event::PacketMover2CryptoBatchGe64 => "packet_mover2_crypto_batch_ge64",
             Event::DecryptFspMalformedDropped => "decrypt_fsp_malformed_dropped",
             Event::FspAeadCompletionAeadFailedLocal => "fsp_aead_completion_aead_failed_local",
             Event::ReservedEvent201 => "reserved_event_201",
@@ -1108,14 +1108,14 @@ fn event_from_index(idx: usize) -> Event {
         188 => Event::DecryptFspPathWorkerOpen,
         189 => Event::DecryptFspPathWorkerOpenBulk,
         190 => Event::DecryptFspOwnerHandoffDropped,
-        191 => Event::ReservedEvent191,
-        192 => Event::ReservedEvent192,
-        193 => Event::ReservedEvent193,
-        194 => Event::ReservedEvent194,
-        195 => Event::ReservedEvent195,
-        196 => Event::ReservedEvent196,
-        197 => Event::ReservedEvent197,
-        198 => Event::ReservedEvent198,
+        191 => Event::PacketMover2CryptoOpenBatch,
+        192 => Event::PacketMover2CryptoOpenPackets,
+        193 => Event::PacketMover2CryptoSealBatch,
+        194 => Event::PacketMover2CryptoSealPackets,
+        195 => Event::PacketMover2CryptoBatchSingle,
+        196 => Event::PacketMover2CryptoBatchGe8,
+        197 => Event::PacketMover2CryptoBatchGe32,
+        198 => Event::PacketMover2CryptoBatchGe64,
         199 => Event::DecryptFspMalformedDropped,
         200 => Event::FspAeadCompletionAeadFailedLocal,
         201 => Event::ReservedEvent201,
@@ -1309,6 +1309,57 @@ pub(crate) fn record_udp_namespace_rcvbuf_errors(drops: u64) {
 #[cfg(target_os = "linux")]
 pub(crate) fn record_linux_bulk_udp_pace_wait() {
     record_event(Event::LinuxBulkUdpPaceWait);
+}
+
+/// Record the prepared PM2 open chunk width before inline AEAD execution.
+///
+/// These counters describe the natural work unit available to a future
+/// stateless crypto worker pool. They stay trace-gated and do not imply a
+/// second packet path.
+#[inline]
+pub(crate) fn record_packet_mover2_crypto_open_batch(packets: usize) {
+    record_packet_mover2_crypto_batch(
+        Event::PacketMover2CryptoOpenBatch,
+        Event::PacketMover2CryptoOpenPackets,
+        packets,
+    );
+}
+
+/// Record the prepared PM2 seal chunk width before inline AEAD execution.
+#[inline]
+pub(crate) fn record_packet_mover2_crypto_seal_batch(packets: usize) {
+    record_packet_mover2_crypto_batch(
+        Event::PacketMover2CryptoSealBatch,
+        Event::PacketMover2CryptoSealPackets,
+        packets,
+    );
+}
+
+#[inline]
+fn record_packet_mover2_crypto_batch(batch_event: Event, packet_event: Event, packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(batch_event, 1);
+    record_event_count_sample(packet_event, packets as u64);
+    let (single, ge8, ge32, ge64) = packet_mover2_crypto_batch_bucket_flags(packets);
+    if single {
+        record_event_count_sample(Event::PacketMover2CryptoBatchSingle, 1);
+    }
+    if ge8 {
+        record_event_count_sample(Event::PacketMover2CryptoBatchGe8, 1);
+    }
+    if ge32 {
+        record_event_count_sample(Event::PacketMover2CryptoBatchGe32, 1);
+    }
+    if ge64 {
+        record_event_count_sample(Event::PacketMover2CryptoBatchGe64, 1);
+    }
+}
+
+#[inline]
+fn packet_mover2_crypto_batch_bucket_flags(packets: usize) -> (bool, bool, bool, bool) {
+    (packets == 1, packets >= 8, packets >= 32, packets >= 64)
 }
 
 /// Record Linux WG-batch worker chunk width before crypto starts.
