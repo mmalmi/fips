@@ -708,7 +708,6 @@
                 outbound_admitted: 1,
                 outbound_dropped: 0,
                 dispatched: 2,
-                pending_crypto: 0,
                 outputs: 2,
                 outputs_sent: 0,
                 outputs_dropped: 0,

@@ -206,19 +206,11 @@ pub(crate) struct PacketMover2LiveNode {
 
 impl PacketMover2LiveNode {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
-        Self::with_driver(PacketMover2TurnDriver::new(config))
-    }
-
-    pub(crate) fn new_with_aead_workers(config: AdmissionConfig) -> Self {
-        Self::with_driver(PacketMover2TurnDriver::new_with_aead_workers(config))
-    }
-
-    fn with_driver(driver: PacketMover2TurnDriver) -> Self {
         let (_, empty_endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
         let (_, empty_endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_, empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         Self {
-            driver,
+            driver: PacketMover2TurnDriver::new(config),
             routes: PacketMover2LiveRouteTable::default(),
             deferred_endpoint_commands: Vec::new(),
             empty_raw_ingress: VecDeque::new(),
@@ -226,42 +218,6 @@ impl PacketMover2LiveNode {
             empty_endpoint_bulk_rx,
             empty_tun_outbound_rx,
         }
-    }
-
-    pub(crate) fn aead_completion_notify(&self) -> Arc<tokio::sync::Notify> {
-        self.driver.aead_completion_notify()
-    }
-
-    pub(crate) fn pending_aead_work(&self) -> usize {
-        self.driver.pending_aead_work()
-    }
-
-    pub(crate) fn has_ready_aead_completions(&self) -> bool {
-        self.driver.has_ready_aead_completions()
-    }
-
-    pub(crate) async fn wait_for_aead_completion(&self, timeout: std::time::Duration) -> bool {
-        if self.has_ready_aead_completions() {
-            return true;
-        }
-        if self.pending_aead_work() == 0 {
-            return false;
-        }
-
-        let notify = self.aead_completion_notify();
-        tokio::time::timeout(timeout, async {
-            loop {
-                notify.notified().await;
-                if self.has_ready_aead_completions() {
-                    return true;
-                }
-                if self.pending_aead_work() == 0 {
-                    return false;
-                }
-            }
-        })
-        .await
-        .unwrap_or_else(|_| self.has_ready_aead_completions())
     }
 
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
@@ -520,51 +476,6 @@ impl PacketMover2LiveNode {
             transports,
             crypto_limit,
         )
-            .await
-    }
-
-    pub(crate) async fn pump_raw_ingress<Resolver, Transports>(
-        &mut self,
-        mut raw_ingress: VecDeque<PacketMover2RawIngress>,
-        raw_ingress_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        let Self {
-            driver,
-            routes,
-            deferred_endpoint_commands,
-            empty_endpoint_priority_rx,
-            empty_endpoint_bulk_rx,
-            empty_tun_outbound_rx,
-            ..
-        } = self;
-
-        driver
-            .pump_aead_live_node_route_table_turn_with_firsts(
-                &mut raw_ingress,
-                routes,
-                raw_ingress_limit,
-                empty_endpoint_priority_rx,
-                empty_endpoint_bulk_rx,
-                0,
-                empty_tun_outbound_rx,
-                0,
-                PacketMover2LiveOutboundFirsts::default(),
-                deferred_endpoint_commands,
-                tun_tx,
-                endpoint_tx,
-                endpoint_resolver,
-                transports,
-                crypto_limit,
-            )
             .await
     }
 

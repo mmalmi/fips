@@ -1,4 +1,3 @@
-use super::LATENCY_PACKET_DRAIN_BUDGET;
 use crate::discovery::is_punch_packet;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
@@ -10,14 +9,8 @@ use crate::node::{
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
-use std::collections::VecDeque;
-use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use tracing::{debug, trace, warn};
-
-const PACKET_MOVER2_DEFERRED_RAW_REPLAY_TURNS: usize = 8;
-const PACKET_MOVER2_DEFERRED_RAW_COMPLETION_WAIT_MS: u64 = 10;
-const PACKET_MOVER2_PENDING_CONTROL_TURN_DRAIN_LIMIT: usize = 64;
 
 impl Node {
     pub(in crate::node) async fn drain_packet_mover2_turn(
@@ -126,195 +119,6 @@ impl Node {
         &mut self,
         turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) -> usize {
-        let mut processed = self.process_packet_mover2_control_ingress_turn(turn).await;
-        processed += self.drain_pending_packet_mover2_control_turns().await;
-        processed
-    }
-
-    async fn drain_pending_packet_mover2_control_turns(&mut self) -> usize {
-        let mut processed = 0usize;
-        for _ in 0..PACKET_MOVER2_PENDING_CONTROL_TURN_DRAIN_LIMIT {
-            let Some(mut turn) = self.pending_packet_mover2_control_turns.pop_front() else {
-                break;
-            };
-            processed += self
-                .process_packet_mover2_control_ingress_turn(&mut turn)
-                .await;
-        }
-        processed
-    }
-
-    async fn process_packet_mover2_control_ingress_turn(
-        &mut self,
-        turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
-    ) -> usize {
-        let mut processed = 0usize;
-        let fmp_crypto_failures: Vec<_> = turn
-            .drops()
-            .iter()
-            .filter_map(Self::packet_mover2_fmp_crypto_failure)
-            .collect();
-        for (source_addr, counter, authenticated_highest) in fmp_crypto_failures {
-            if self
-                .handle_packet_mover2_fmp_decrypt_failure(
-                    &source_addr,
-                    counter,
-                    authenticated_highest,
-                )
-                .await
-            {
-                processed += 1;
-            }
-        }
-        for receipt in turn.take_fmp_ingress_receipts() {
-            if self.record_packet_mover2_fmp_ingress_receipt(&receipt) {
-                processed += 1;
-            }
-        }
-        for ingress in turn.take_fmp_link_ingress() {
-            if self.process_packet_mover2_fmp_link_ingress(ingress).await {
-                processed += 1;
-            }
-        }
-        processed += self.process_packet_mover2_deferred_raw_ingress(turn).await;
-        let fsp_crypto_failures: Vec<_> = turn
-            .drops()
-            .iter()
-            .filter_map(Self::packet_mover2_fsp_crypto_failure)
-            .collect();
-        for (source_addr, counter, received_k_bit) in fsp_crypto_failures {
-            if self
-                .handle_packet_mover2_fsp_decrypt_failure(source_addr, counter, received_k_bit)
-                .await
-            {
-                processed += 1;
-            }
-        }
-        for ingress in turn.take_fsp_local_session_ingress() {
-            if self
-                .process_packet_mover2_local_session_ingress(ingress)
-                .await
-            {
-                processed += 1;
-            }
-        }
-        for ingress in turn.take_fsp_session_ingress() {
-            if self
-                .process_packet_mover2_authenticated_session(ingress)
-                .await
-            {
-                processed += 1;
-            }
-        }
-        for control in turn.take_fmp_control_ingress() {
-            if self
-                .process_packet_mover2_fmp_control_ingress(control)
-                .await
-            {
-                processed += 1;
-            }
-        }
-        for routed in turn.take_endpoint_routed_destinations() {
-            if self.sessions.record_packet_mover2_endpoint_routed(routed) {
-                processed += 1;
-            }
-        }
-        for command in self.packet_mover2.take_deferred_endpoint_commands() {
-            self.handle_packet_mover2_deferred_endpoint_command(command)
-                .await;
-            processed += 1;
-        }
-        processed
-    }
-
-    async fn process_packet_mover2_deferred_raw_ingress(
-        &mut self,
-        turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
-    ) -> usize {
-        let deferred = turn.take_deferred_raw_ingress();
-        if deferred.is_empty() {
-            return 0;
-        }
-
-        let mut processed = deferred.len();
-        let raw_limit = deferred.len();
-        let mut replay_turn = self
-            .pump_packet_mover2_deferred_raw_ingress(
-                deferred,
-                raw_limit,
-                LATENCY_PACKET_DRAIN_BUDGET,
-            )
-            .await;
-        processed += self
-            .process_packet_mover2_deferred_replay_turn(&mut replay_turn)
-            .await;
-
-        for _ in 0..PACKET_MOVER2_DEFERRED_RAW_REPLAY_TURNS {
-            if self.packet_mover2.pending_aead_work() == 0
-                && !self.packet_mover2.has_ready_aead_completions()
-            {
-                break;
-            }
-            let _ = self
-                .packet_mover2
-                .wait_for_aead_completion(Duration::from_millis(
-                    PACKET_MOVER2_DEFERRED_RAW_COMPLETION_WAIT_MS,
-                ))
-                .await;
-            let mut completion_turn = self
-                .pump_packet_mover2_deferred_raw_ingress(Vec::new(), 0, LATENCY_PACKET_DRAIN_BUDGET)
-                .await;
-            processed += self
-                .process_packet_mover2_deferred_replay_turn(&mut completion_turn)
-                .await;
-        }
-
-        processed
-    }
-
-    async fn pump_packet_mover2_deferred_raw_ingress(
-        &mut self,
-        deferred: Vec<crate::packet_mover2::PacketMover2RawIngress>,
-        raw_limit: usize,
-        crypto_limit: usize,
-    ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        let tun_tx = self.tun_tx.clone().unwrap_or_else(|| {
-            let (tx, rx) = crate::upper::tun::write_channel();
-            drop(rx);
-            tx
-        });
-        let endpoint_tx = self.endpoint_events.sender().unwrap_or_else(|| {
-            let (tx, rx) = EndpointEventSender::channel(1);
-            drop(rx);
-            tx
-        });
-        let sessions = &self.sessions;
-        let identity_cache = &self.identity_cache;
-        let endpoint_resolver = |source_addr: &NodeAddr| {
-            Self::packet_mover2_endpoint_peer_from_stores(sessions, identity_cache, source_addr)
-        };
-        let raw_ingress: VecDeque<_> = deferred.into_iter().collect();
-
-        let turn = self
-            .packet_mover2
-            .pump_raw_ingress(
-                raw_ingress,
-                raw_limit,
-                &tun_tx,
-                &endpoint_tx,
-                endpoint_resolver,
-                &self.transports,
-                crypto_limit,
-            )
-            .await;
-        Self::observe_packet_mover2_turn(&turn);
-        turn
-    }
-
-    async fn process_packet_mover2_deferred_replay_turn(
-        &mut self,
-        turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
-    ) -> usize {
         let mut processed = 0usize;
         let fmp_crypto_failures: Vec<_> = turn
             .drops()
@@ -382,13 +186,6 @@ impl Node {
         }
         for routed in turn.take_endpoint_routed_destinations() {
             if self.sessions.record_packet_mover2_endpoint_routed(routed) {
-                processed += 1;
-            }
-        }
-        for packet in turn.take_deferred_raw_ingress() {
-            if let Some(source_addr) = packet.fsp_source() {
-                self.resend_handshake_after_early_encrypted_data(&source_addr)
-                    .await;
                 processed += 1;
             }
         }
@@ -639,7 +436,6 @@ impl Node {
             .saturating_add(turn.fmp_link_ingress().len())
             .saturating_add(turn.fsp_local_session_ingress().len())
             .saturating_add(turn.fsp_session_ingress().len())
-            .saturating_add(turn.deferred_raw_ingress().len())
             .saturating_add(turn.endpoint_deferred_commands())
     }
 

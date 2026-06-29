@@ -23,6 +23,64 @@ impl Node {
             .await
     }
 
+    pub(super) fn map_fmp_send_preparation_error(
+        node_addr: NodeAddr,
+        error: FmpSendPreparationError,
+    ) -> NodeError {
+        match error {
+            FmpSendPreparationError::MissingPeer => NodeError::PeerNotFound(node_addr),
+            FmpSendPreparationError::MissingTheirIndex => NodeError::SendFailed {
+                node_addr,
+                reason: "no their_index".into(),
+            },
+            FmpSendPreparationError::MissingTransportId => NodeError::SendFailed {
+                node_addr,
+                reason: "no transport_id".into(),
+            },
+            FmpSendPreparationError::MissingCurrentAddr => NodeError::SendFailed {
+                node_addr,
+                reason: "no current_addr".into(),
+            },
+            FmpSendPreparationError::MissingNoiseSession => NodeError::SendFailed {
+                node_addr,
+                reason: "no noise session".into(),
+            },
+            FmpSendPreparationError::PayloadLengthMismatch => NodeError::SendFailed {
+                node_addr,
+                reason: "payload length mismatch".into(),
+            },
+            FmpSendPreparationError::CounterReservationFailed => NodeError::SendFailed {
+                node_addr,
+                reason: "counter reservation failed".into(),
+            },
+            FmpSendPreparationError::EncryptionFailed => NodeError::SendFailed {
+                node_addr,
+                reason: "encryption failed".into(),
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    pub(super) fn map_fsp_worker_send_reservation_error(
+        node_addr: NodeAddr,
+        error: FspWorkerSendReservationError,
+    ) -> NodeError {
+        match error {
+            FspWorkerSendReservationError::MissingSession => NodeError::SendFailed {
+                node_addr,
+                reason: "no session".into(),
+            },
+            FspWorkerSendReservationError::NotEstablished => NodeError::SendFailed {
+                node_addr,
+                reason: "session not established".into(),
+            },
+            FspWorkerSendReservationError::CounterReservationFailed => NodeError::SendFailed {
+                node_addr,
+                reason: "session counter reservation failed".into(),
+            },
+        }
+    }
+
     /// Like `send_encrypted_link_message` but allows setting the FMP CE flag.
     ///
     /// Used by the forwarding path to relay congestion signals hop-by-hop.

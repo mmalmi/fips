@@ -77,6 +77,24 @@ struct SealedSessionFspSend {
 }
 
 impl PreparedEndpointSessionMeta {
+    fn pipelined<'a>(&'a self, payload: &'a EndpointDataPayload) -> PipelinedEndpointSend<'a> {
+        PipelinedEndpointSend {
+            dest_addr: &self.dest_addr,
+            payload,
+            now_ms: self.now_ms,
+            timestamp: self.timestamp,
+            fsp_flags: self.fsp_flags,
+            body: PipelinedEndpointWireBody::EndpointPayload {
+                timestamp: self.timestamp,
+                msg_type: self.msg_type,
+                inner_flags: self.inner_flags,
+                payload: payload.as_slice(),
+            },
+            my_coords: self.my_coords.as_ref(),
+            dest_coords: self.dest_coords.as_ref(),
+        }
+    }
+
     fn fallback_plan<'a>(&'a self, payload: &'a EndpointDataPayload) -> SessionFspSendPlan<'a> {
         let inner_plaintext = fsp_prepend_inner_header(
             self.timestamp,
@@ -99,6 +117,10 @@ impl PreparedEndpointSessionMeta {
 }
 
 impl<'a> PreparedEndpointSessionData<'a> {
+    fn pipelined(&self) -> PipelinedEndpointSend<'_> {
+        self.meta.pipelined(self.payload)
+    }
+
     fn fallback_plan(&self) -> SessionFspSendPlan<'_> {
         self.meta.fallback_plan(self.payload)
     }

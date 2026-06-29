@@ -15,7 +15,6 @@ pub(crate) struct PacketMover2TurnDriver {
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
-    deferred_raw_ingress: Vec<PacketMover2RawIngress>,
 }
 
 impl PacketMover2TurnDriver {
@@ -36,26 +35,7 @@ impl PacketMover2TurnDriver {
             fmp_link_ingress: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
-            deferred_raw_ingress: Vec::new(),
         }
-    }
-
-    pub(crate) fn new_with_aead_workers(config: AdmissionConfig) -> Self {
-        let mut driver = Self::new(config);
-        driver.mover = PacketMover2::new_with_aead_workers(config);
-        driver
-    }
-
-    pub(crate) fn aead_completion_notify(&self) -> Arc<tokio::sync::Notify> {
-        self.mover.aead_completion_notify()
-    }
-
-    pub(crate) fn pending_aead_work(&self) -> usize {
-        self.mover.pending_aead_work()
-    }
-
-    pub(crate) fn has_ready_aead_completions(&self) -> bool {
-        self.mover.has_ready_aead_completions()
     }
 
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
@@ -225,7 +205,6 @@ impl PacketMover2TurnDriver {
         report.set_fmp_link_ingress(std::mem::take(&mut self.fmp_link_ingress));
         report.set_fsp_local_session_ingress(std::mem::take(&mut self.fsp_local_session_ingress));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
-        report.set_deferred_raw_ingress(std::mem::take(&mut self.deferred_raw_ingress));
         report.set_wrapped_outbound_receipts(std::mem::take(
             &mut self.wrapped_outbound_receipts,
         ));
@@ -446,7 +425,6 @@ impl PacketMover2TurnDriver {
         self.fmp_link_ingress.clear();
         self.fsp_local_session_ingress.clear();
         self.fsp_session_ingress.clear();
-        self.deferred_raw_ingress.clear();
     }
 
     fn admit_raw_ingress_packet<R>(
@@ -485,10 +463,6 @@ impl PacketMover2TurnDriver {
         };
 
         let Some(route) = router.route(&packet, header) else {
-            if should_defer_unrouted_raw_ingress(&packet) {
-                self.deferred_raw_ingress.push(packet);
-                return;
-            }
             summary.raw_ingress_dropped += 1;
             self.raw_ingress_drops
                 .push(PacketMover2RawIngressDrop::from_packet(
@@ -701,11 +675,11 @@ impl PacketMover2TurnDriver {
             summary = self.collect_aead_outputs(summary, remaining);
             let dispatched = summary.dispatched.saturating_sub(dispatched_before);
             remaining = remaining.saturating_sub(dispatched);
-
-            if self.admit_session_ingress_outputs(router, &mut summary) == 0 {
+            if remaining == 0 {
                 break;
             }
-            if remaining == 0 {
+
+            if self.admit_session_ingress_outputs(router, &mut summary) == 0 {
                 break;
             }
         }
@@ -736,7 +710,6 @@ impl PacketMover2TurnDriver {
             remaining = remaining.saturating_sub(dispatched);
 
             let mut retired = std::mem::take(&mut self.retired);
-            let mut outbound_admitted_from_retire = 0usize;
             for packet in retired.drain(..) {
                 match packet {
                     RetiredPacket::Output(mut output) => {
@@ -746,26 +719,19 @@ impl PacketMover2TurnDriver {
                     RetiredPacket::Outbound(packet) => {
                         self.wrapped_outbound_receipts.push(packet.receipt());
                         self.admit_outbound_packet(packet.into_packet(), &mut summary);
-                        outbound_admitted_from_retire =
-                            outbound_admitted_from_retire.saturating_add(1);
                     }
                     RetiredPacket::Drop(_) => {}
                 }
             }
             self.retired = retired;
 
-            if dispatched == 0 && outbound_admitted_from_retire == 0 {
+            if dispatched == 0 {
                 break;
             }
         }
 
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
-        summary.pending_crypto = self.mover.pending_aead_work();
         summary
     }
-}
-
-fn should_defer_unrouted_raw_ingress(packet: &PacketMover2RawIngress) -> bool {
-    packet.protocol == PacketProtocol::Fsp && packet.fsp_source.is_some()
 }

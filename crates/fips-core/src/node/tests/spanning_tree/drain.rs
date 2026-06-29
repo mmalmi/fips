@@ -10,7 +10,6 @@ pub(in crate::node::tests) async fn process_available_packets(nodes: &mut [TestN
             count += process_packet_mover2_packet(node, packet).await;
         }
         count += process_packet_mover2_side_queues(node).await;
-        count += drain_packet_mover2_completion_turns(node).await;
     }
     count
 }
@@ -21,24 +20,6 @@ async fn process_packet_mover2_packet(node: &mut TestNode, packet: ReceivedPacke
 
 async fn process_packet_mover2_side_queues(node: &mut TestNode) -> usize {
     process_packet_mover2_turn(node, None, 0).await
-}
-
-async fn drain_packet_mover2_completion_turns(node: &mut TestNode) -> usize {
-    let mut count = 0usize;
-    for _ in 0..8 {
-        if node.node.packet_mover2.pending_aead_work() == 0
-            && !node.node.packet_mover2.has_ready_aead_completions()
-        {
-            break;
-        }
-        let _ = node
-            .node
-            .packet_mover2
-            .wait_for_aead_completion(Duration::from_millis(10))
-            .await;
-        count += process_packet_mover2_side_queues(node).await;
-    }
-    count
 }
 
 async fn process_packet_mover2_turn(
