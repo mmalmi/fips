@@ -144,6 +144,30 @@ impl PacketMover2TurnDriver {
         self.finish_aead_output_turn(summary, sink, limit)
     }
 
+    #[cfg(test)]
+    pub(crate) fn run_aead_completion_turn<I>(
+        &mut self,
+        completions: I,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        I: IntoIterator<Item = CryptoCompletion>,
+    {
+        self.reset_turn_buffers();
+
+        let summary =
+            self.collect_completed_aead_outputs(PacketMover2RuntimeSummary::default(), completions);
+        let summary = self.collect_aead_outputs(summary, limit);
+
+        PacketMover2RuntimeTurn {
+            summary,
+            raw_ingress_drops: &self.raw_ingress_drops,
+            output_drops: &self.output_drops,
+            outputs: &self.outputs,
+            drops: &self.drops,
+        }
+    }
+
     pub(crate) fn pump_aead_output_turn<RI, O, R, S>(
         &mut self,
         raw_ingress: &mut RI,
@@ -660,6 +684,21 @@ impl PacketMover2TurnDriver {
             .saturating_add(self.output_drops.len().saturating_sub(dropped_before));
     }
 
+    fn collect_completed_aead_outputs<I>(
+        &mut self,
+        summary: PacketMover2RuntimeSummary,
+        completions: I,
+    ) -> PacketMover2RuntimeSummary
+    where
+        I: IntoIterator<Item = CryptoCompletion>,
+    {
+        for completion in completions {
+            self.retired
+                .extend(self.mover.retire_completion(completion));
+        }
+        self.collect_retired_outputs(summary)
+    }
+
     fn collect_live_session_outputs<R>(
         &mut self,
         mut summary: PacketMover2RuntimeSummary,
@@ -709,27 +748,37 @@ impl PacketMover2TurnDriver {
             summary.dispatched = summary.dispatched.saturating_add(dispatched);
             remaining = remaining.saturating_sub(dispatched);
 
-            let mut retired = std::mem::take(&mut self.retired);
-            for packet in retired.drain(..) {
-                match packet {
-                    RetiredPacket::Output(mut output) => {
-                        output.promote_opened_latency_sensitive_payload();
-                        self.outputs.push(output);
-                    }
-                    RetiredPacket::Outbound(packet) => {
-                        self.wrapped_outbound_receipts.push(packet.receipt());
-                        self.admit_outbound_packet(packet.into_packet(), &mut summary);
-                    }
-                    RetiredPacket::Drop(_) => {}
-                }
-            }
-            self.retired = retired;
+            summary = self.collect_retired_outputs(summary);
 
             if dispatched == 0 {
                 break;
             }
         }
 
+        summary.outputs = self.outputs.len();
+        summary.drops = self.drops.len();
+        summary
+    }
+
+    fn collect_retired_outputs(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+    ) -> PacketMover2RuntimeSummary {
+        let mut retired = std::mem::take(&mut self.retired);
+        for packet in retired.drain(..) {
+            match packet {
+                RetiredPacket::Output(mut output) => {
+                    output.promote_opened_latency_sensitive_payload();
+                    self.outputs.push(output);
+                }
+                RetiredPacket::Outbound(packet) => {
+                    self.wrapped_outbound_receipts.push(packet.receipt());
+                    self.admit_outbound_packet(packet.into_packet(), &mut summary);
+                }
+                RetiredPacket::Drop(_) => {}
+            }
+        }
+        self.retired = retired;
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
         summary

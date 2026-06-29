@@ -737,6 +737,154 @@
     }
 
     #[test]
+    fn completion_only_turn_retires_worker_completion_without_new_dispatch() {
+        let owner = OwnerId::fmp(80);
+        let open_key = 80;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+
+        driver
+            .mover
+            .submit_socket_packet(
+                SocketPacket::from_fmp_established_wire(
+                    owner,
+                    1,
+                    OutputTarget::Tun,
+                    fmp_encrypted_wire(80, 100, 0, b"completion-only", open_key),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let mut work = Vec::new();
+        assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 1);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 1);
+
+        let worker = StatelessAeadOpenWorker;
+        let open_work =
+            AeadOpenWork::from_crypto_work(work.pop().unwrap(), test_key(open_key)).unwrap();
+        let completion = worker.execute(open_work);
+
+        {
+            let turn = driver.run_aead_completion_turn([completion], 8);
+            assert_eq!(
+                turn.summary(),
+                PacketMover2RuntimeSummary {
+                    raw_ingress_dropped: 0,
+                    inbound_admitted: 0,
+                    inbound_dropped: 0,
+                    outbound_admitted: 0,
+                    outbound_dropped: 0,
+                    dispatched: 0,
+                    outputs: 1,
+                    outputs_sent: 0,
+                    outputs_dropped: 0,
+                    drops: 0,
+                }
+            );
+            assert!(turn.drops().is_empty());
+            assert_eq!(turn.outputs().len(), 1);
+            assert_eq!(turn.outputs()[0].owner(), owner);
+            assert_eq!(turn.outputs()[0].counter(), 100);
+            assert_eq!(turn.outputs()[0].target(), OutputTarget::Tun);
+            assert_eq!(
+                &turn.outputs()[0].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
+                b"completion-only"
+            );
+        }
+
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+    }
+
+    #[test]
+    fn completion_only_turn_continues_fsp_post_seal_wrap_to_fmp_output() {
+        let source = NodeAddr::from_bytes([0x80; 16]);
+        let dest = NodeAddr::from_bytes([0x81; 16]);
+        let next_hop = NodeAddr::from_bytes([0x82; 16]);
+        let fsp_owner = OwnerId::fsp_node(dest);
+        let fmp_owner = OwnerId::fmp_node(next_hop);
+        let fsp_key = 81;
+        let fmp_key = 82;
+        let fmp_path = TransportPath::new(8200);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
+        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(70));
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_active_path(fmp_path.clone());
+
+        let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 8282, source, dest)
+            .with_ttl(42)
+            .with_path_mtu(1280);
+        let packet = OutboundPacket::fsp(
+            fsp_owner,
+            1,
+            PacketClass::Liveness,
+            0x03,
+            b"wake-wrap".to_vec(),
+        )
+        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
+        .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
+
+        driver.mover.submit_outbound_packet(packet).unwrap();
+        let mut seal_work = Vec::new();
+        assert_eq!(
+            driver
+                .mover
+                .dispatch_outbound_available_into(1, &mut seal_work),
+            1
+        );
+        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight(), 1);
+
+        let worker = StatelessAeadSealWorker;
+        let completion = worker.execute(
+            AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(fsp_key)).unwrap(),
+        );
+
+        {
+            let turn = driver.run_aead_completion_turn([completion], 1);
+            assert_eq!(turn.summary().outbound_admitted(), 1);
+            assert_eq!(turn.summary().dispatched(), 1);
+            assert_eq!(turn.summary().outputs(), 1);
+            assert!(turn.drops().is_empty());
+
+            let output = &turn.outputs()[0];
+            assert_eq!(output.owner(), fmp_owner);
+            assert_eq!(output.counter(), 70);
+            assert_eq!(output.target(), OutputTarget::Transport);
+            assert_eq!(output.path(), Some(fmp_path));
+
+            let fmp_plaintext = open_sealed_output(output, fmp_key);
+            assert_eq!(
+                fmp_plaintext[0],
+                crate::protocol::LinkMessageType::SessionDatagram.to_byte()
+            );
+            let datagram = crate::protocol::SessionDatagramRef::decode(&fmp_plaintext[1..])
+                .expect("wrapped session datagram");
+            assert_eq!(datagram.src_addr, source);
+            assert_eq!(datagram.dest_addr, dest);
+            assert_eq!(datagram.ttl, 42);
+            assert_eq!(datagram.path_mtu, 1280);
+            assert_eq!(
+                open_fsp_wire_payload(datagram.payload, fsp_key),
+                b"wake-wrap"
+            );
+        }
+
+        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight(), 0);
+    }
+
+    #[test]
     fn runtime_turn_driver_reports_admission_and_crypto_drops() {
         let owner = OwnerId::fsp(79);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(1, 1));
