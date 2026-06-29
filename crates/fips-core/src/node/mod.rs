@@ -104,7 +104,7 @@ use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 use self::wire::ESTABLISHED_HEADER_SIZE;
 #[cfg(test)]
 use self::wire::prepend_inner_header;
@@ -112,7 +112,7 @@ use self::wire::{FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_establ
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 use crate::node::session::FspSendReservation;
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};

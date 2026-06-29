@@ -83,10 +83,12 @@ pub(in crate::node) struct AuthenticatedFmpReceiveFacts<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub(in crate::node) enum PeerRuntimeReceiveError {
     MissingInnerTimestamp,
 }
 
+#[cfg(test)]
 pub(in crate::node) struct AuthenticatedFmpPlaintext<'a> {
     source_peer: PeerIdentity,
     transport_id: TransportId,
@@ -98,6 +100,7 @@ pub(in crate::node) struct AuthenticatedFmpPlaintext<'a> {
     plaintext: &'a [u8],
 }
 
+#[cfg(test)]
 pub(in crate::node) struct PeerRuntimeReceive<'a> {
     source_peer: PeerIdentity,
     transport_id: TransportId,
@@ -111,6 +114,7 @@ pub(in crate::node) struct PeerRuntimeReceive<'a> {
     link_message: &'a [u8],
 }
 
+#[cfg(test)]
 pub(in crate::node) struct PeerRuntimeReceiveDispatch<'a> {
     source_peer: PeerIdentity,
     ce_flag: bool,
@@ -118,8 +122,8 @@ pub(in crate::node) struct PeerRuntimeReceiveDispatch<'a> {
     bookkeeping: Option<AuthenticatedFmpReceiveBookkeeping>,
 }
 
+#[cfg(test)]
 pub(in crate::node) struct PeerRuntimeReceiveAction<'a> {
-    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     source_peer: PeerIdentity,
     address_changed: bool,
     link_message: Option<AuthenticatedLinkMessage<'a>>,
@@ -241,6 +245,7 @@ impl<'a> AuthenticatedFmpReceiveFacts<'a> {
     }
 }
 
+#[cfg(test)]
 impl<'a> AuthenticatedFmpPlaintext<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::node) fn new(
@@ -282,6 +287,7 @@ impl<'a> AuthenticatedFmpPlaintext<'a> {
     }
 }
 
+#[cfg(test)]
 impl<'a> PeerRuntimeReceive<'a> {
     const INNER_TIMESTAMP_LEN: usize = 4;
 
@@ -351,23 +357,20 @@ impl<'a> PeerRuntimeReceive<'a> {
     }
 }
 
+#[cfg(test)]
 impl<'a> PeerRuntimeReceiveDispatch<'a> {
-    #[cfg(test)]
     pub(in crate::node) fn source_peer(&self) -> PeerIdentity {
         self.source_peer
     }
 
-    #[cfg(test)]
     pub(in crate::node) fn ce_flag(&self) -> bool {
         self.ce_flag
     }
 
-    #[cfg(test)]
     pub(in crate::node) fn link_message(&self) -> &'a [u8] {
         self.link_message
     }
 
-    #[cfg(test)]
     pub(in crate::node) fn bookkeeping(&self) -> Option<AuthenticatedFmpReceiveBookkeeping> {
         self.bookkeeping
     }
@@ -383,7 +386,6 @@ impl<'a> PeerRuntimeReceiveDispatch<'a> {
                     ce_flag: self.ce_flag,
                 });
         PeerRuntimeReceiveAction {
-            #[cfg(any(test, target_os = "linux", target_os = "macos"))]
             source_peer: self.source_peer,
             address_changed: self
                 .bookkeeping
@@ -393,8 +395,8 @@ impl<'a> PeerRuntimeReceiveDispatch<'a> {
     }
 }
 
+#[cfg(test)]
 impl<'a> PeerRuntimeReceiveAction<'a> {
-    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     pub(in crate::node) fn node_addr(&self) -> &NodeAddr {
         self.source_peer.node_addr()
     }
@@ -403,7 +405,6 @@ impl<'a> PeerRuntimeReceiveAction<'a> {
         self.address_changed
     }
 
-    #[cfg(test)]
     pub(in crate::node) fn link_message(&self) -> Option<&AuthenticatedLinkMessage<'a>> {
         self.link_message.as_ref()
     }

@@ -10,15 +10,18 @@
 //! packet_mover2 and then `PeerLifecycleRegistry`, keeping liveness, link
 //! stats, path rotation, and MMP receive metrics in one lifecycle owner.
 
+use crate::node::Node;
 #[cfg(test)]
 use crate::node::decrypt_worker::DecryptFailureReport;
 #[cfg(test)]
 use crate::node::decrypt_worker::{DecryptJob, DecryptSessionKey};
 #[cfg(test)]
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
-use crate::node::{AuthenticatedFmpPlaintext, Node, PeerRuntimeReceive, PeerRuntimeReceiveError};
+#[cfg(test)]
+use crate::node::{AuthenticatedFmpPlaintext, PeerRuntimeReceive, PeerRuntimeReceiveError};
 #[cfg(test)]
 use crate::transport::ReceivedPacket;
+#[cfg(test)]
 use std::time::Instant;
 #[cfg(test)]
 use tracing::info;
@@ -339,9 +342,8 @@ impl Node {
         );
     }
 
-    /// Single canonical site for "the FMP layer authenticated and
-    /// accepted this packet" side-effects. Called from the worker-bounce arm
-    /// in rx_loop and the bounded pending-rekey trial above.
+    /// Test-only site for old direct receive tests where the FMP layer already
+    /// authenticated and accepted a packet outside packet_mover2.
     ///
     /// Performs the per-peer bookkeeping (last-seen, MMP receiver,
     /// link stats, address-rotation) and then dispatches the
@@ -353,6 +355,7 @@ impl Node {
     /// `fmp_plaintext` is the post-FMP-decrypt buffer with the
     /// 4-byte inner timestamp still at the front (i.e. the same
     /// layout the legacy `strip_inner_header` consumed).
+    #[cfg(test)]
     pub(in crate::node) async fn process_authentic_fmp_plaintext(
         &mut self,
         receive: AuthenticatedFmpPlaintext<'_>,
