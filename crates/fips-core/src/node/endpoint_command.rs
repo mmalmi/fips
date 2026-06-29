@@ -217,6 +217,7 @@ impl EndpointSendBatchCommand {
         self.payloads.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn can_coalesce_with(&self, other: &Self, max_payloads: usize) -> bool {
         self.remote == other.remote
             && self.lane() == other.lane()

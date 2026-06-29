@@ -74,10 +74,12 @@ impl Node {
         })
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn begin_endpoint_event_batch(&mut self) {
         self.endpoint_events.begin_batch();
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn finish_endpoint_event_batch(&mut self) {
         self.endpoint_events.finish_batch();
     }

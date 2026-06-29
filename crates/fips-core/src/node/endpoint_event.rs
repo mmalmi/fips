@@ -140,7 +140,9 @@ fn try_reserve_endpoint_event_bulk_messages(
 #[derive(Debug, Default)]
 pub(in crate::node) struct EndpointEventRuntime {
     sender: Option<EndpointEventSender>,
+    #[cfg(test)]
     batch_depth: usize,
+    #[cfg(test)]
     batch: Vec<EndpointDataDelivery>,
 }
 
@@ -173,6 +175,7 @@ impl EndpointEventSender {
         )
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn same_channels(&self, other: &Self) -> bool {
         self.priority.same_channel(&other.priority)
             && self.bulk.same_channel(&other.bulk)
@@ -411,8 +414,11 @@ impl Drop for EndpointEventSender {
 impl EndpointEventRuntime {
     pub(in crate::node) fn attach(&mut self, sender: EndpointEventSender) {
         self.sender = Some(sender);
-        self.batch_depth = 0;
-        self.batch.clear();
+        #[cfg(test)]
+        {
+            self.batch_depth = 0;
+            self.batch.clear();
+        }
     }
 
     pub(in crate::node) fn is_attached(&self) -> bool {
@@ -423,12 +429,14 @@ impl EndpointEventRuntime {
         self.sender.clone()
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn begin_batch(&mut self) {
         if self.is_attached() {
             self.batch_depth = self.batch_depth.saturating_add(1);
         }
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn finish_batch(&mut self) {
         if self.batch_depth == 0 {
             return;
@@ -444,9 +452,12 @@ impl EndpointEventRuntime {
         &mut self,
         message: EndpointDataDelivery,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        if self.batch_depth > 0 {
-            self.batch.push(message);
-            return Ok(());
+        #[cfg(test)]
+        {
+            if self.batch_depth > 0 {
+                self.batch.push(message);
+                return Ok(());
+            }
         }
 
         self.send(NodeEndpointEvent::Data {
@@ -457,6 +468,7 @@ impl EndpointEventRuntime {
         })
     }
 
+    #[cfg(test)]
     fn flush_batch(&mut self) {
         let count = self.batch.len();
         if count == 0 {
