@@ -699,6 +699,7 @@ impl crate::node::SessionRegistry {
         }
     }
 
+    #[cfg(test)]
     fn tun_outbound_session_decision(
         &self,
         dest_addr: &NodeAddr,

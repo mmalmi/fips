@@ -269,6 +269,7 @@ impl Node {
     ///
     /// Rate-limited per source address to prevent ICMP floods from
     /// misconfigured applications sending repeated oversized packets.
+    #[cfg(test)]
     pub(in crate::node) fn send_icmpv6_packet_too_big(&mut self, original_packet: &[u8], mtu: u32) {
         use crate::upper::icmp::build_packet_too_big;
         use std::net::Ipv6Addr;
@@ -308,6 +309,7 @@ impl Node {
     }
 
     /// Queue a packet while waiting for session establishment.
+    #[cfg(test)]
     fn queue_pending_packet(&mut self, dest_addr: NodeAddr, packet: Vec<u8>) {
         let admission = self.pending_session_traffic.push_tun_packet(
             dest_addr,
