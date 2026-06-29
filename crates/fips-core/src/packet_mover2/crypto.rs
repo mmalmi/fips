@@ -52,6 +52,10 @@ impl PreparedCryptoWork {
 }
 
 pub(crate) trait PacketMover2CryptoExecutor {
+    fn available_capacity(&self) -> usize {
+        usize::MAX
+    }
+
     fn execute_prepared_chunk(
         &mut self,
         prepared: &mut Vec<PreparedCryptoWork>,

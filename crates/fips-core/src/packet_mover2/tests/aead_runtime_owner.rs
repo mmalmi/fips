@@ -107,6 +107,119 @@
         }
     }
 
+    #[derive(Debug)]
+    struct BoundedDelayedChunkExecutor {
+        inline: InlinePacketMover2CryptoExecutor,
+        ready: VecDeque<Vec<CryptoCompletion>>,
+        nonempty_chunks: Vec<usize>,
+        remaining_capacity: usize,
+    }
+
+    impl BoundedDelayedChunkExecutor {
+        fn new(capacity: usize) -> Self {
+            Self {
+                inline: InlinePacketMover2CryptoExecutor::default(),
+                ready: VecDeque::new(),
+                nonempty_chunks: Vec::new(),
+                remaining_capacity: capacity,
+            }
+        }
+
+        fn take_ready(&mut self) -> VecDeque<Vec<CryptoCompletion>> {
+            std::mem::take(&mut self.ready)
+        }
+    }
+
+    impl PacketMover2CryptoExecutor for BoundedDelayedChunkExecutor {
+        fn available_capacity(&self) -> usize {
+            self.remaining_capacity
+        }
+
+        fn execute_prepared_chunk(
+            &mut self,
+            prepared: &mut Vec<PreparedCryptoWork>,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
+            assert!(
+                prepared.len() <= self.remaining_capacity,
+                "owner-reserved chunk exceeded executor capacity"
+            );
+            if !prepared.is_empty() {
+                self.nonempty_chunks.push(prepared.len());
+            }
+            self.remaining_capacity = self.remaining_capacity.saturating_sub(prepared.len());
+            let count = self.inline.execute_prepared_chunk(prepared, completions);
+            if !completions.is_empty() {
+                self.ready.push_back(std::mem::take(completions));
+            }
+            count
+        }
+    }
+
+    fn register_owner_with_test_keys(
+        mover: &mut PacketMover2,
+        owner: OwnerId,
+        open_key: u8,
+        seal_key: u8,
+    ) {
+        mover.register_owner(owner, OwnerConfig::new(1, 8));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+    }
+
+    fn submit_fmp_inbound_range<I>(
+        mover: &mut PacketMover2,
+        owner: OwnerId,
+        receiver_idx: u32,
+        open_key: u8,
+        counters: I,
+        payload: &'static [u8],
+    ) where
+        I: IntoIterator<Item = u64>,
+    {
+        for counter in counters {
+            mover
+                .submit_socket_packet(
+                    SocketPacket::from_fmp_established_wire(
+                        owner,
+                        1,
+                        OutputTarget::Tun,
+                        fmp_encrypted_wire(receiver_idx, counter, 0, payload, open_key),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+    }
+
+    fn run_with_executor<E>(
+        mover: &mut PacketMover2,
+        executor: &mut E,
+    ) -> (usize, Vec<RetiredPacket>, Vec<PacketDrop>)
+    where
+        E: PacketMover2CryptoExecutor,
+    {
+        let mut open_work = Vec::new();
+        let mut seal_work = Vec::new();
+        let mut prepared_work = Vec::new();
+        let mut completion_work = Vec::new();
+        let mut retired = Vec::new();
+        let mut drops = Vec::new();
+        let dispatched = mover.run_aead_available_into_with_executor(
+            8,
+            &mut open_work,
+            &mut seal_work,
+            &mut prepared_work,
+            &mut completion_work,
+            &mut retired,
+            &mut drops,
+            executor,
+        );
+        (dispatched, retired, drops)
+    }
+
     #[test]
     fn aead_turn_runner_hands_executor_prepared_crypto_chunks() {
         let owner = fmp_owner(702);
@@ -188,6 +301,62 @@
             open_sealed_output(&outputs[5], seal_key),
             b"outbound-1"
         );
+    }
+
+    #[test]
+    fn executor_capacity_zero_does_not_reserve_owner_work() {
+        let owner = fmp_owner(704);
+        let open_key = 18;
+        let mut mover = mover();
+        register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
+        submit_fmp_inbound_range(&mut mover, owner, 704, open_key, 100..102, b"queued");
+
+        let mut bounded = BoundedDelayedChunkExecutor::new(0);
+        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut bounded);
+
+        assert_eq!(dispatched, 0);
+        assert!(bounded.nonempty_chunks.is_empty());
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
+
+        let mut inline = InlinePacketMover2CryptoExecutor::default();
+        let (dispatched, retired, _) = run_with_executor(&mut mover, &mut inline);
+        assert_eq!(dispatched, 2);
+        assert_eq!(outputs(retired).len(), 2);
+    }
+
+    #[test]
+    fn executor_capacity_bounds_owner_in_flight_reservations() {
+        let owner = fmp_owner(705);
+        let open_key = 19;
+        let mut mover = mover();
+        register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
+        submit_fmp_inbound_range(&mut mover, owner, 705, open_key, 100..104, b"bounded");
+
+        let mut bounded = BoundedDelayedChunkExecutor::new(2);
+        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut bounded);
+
+        assert_eq!(dispatched, 2);
+        assert_eq!(bounded.nonempty_chunks, vec![2]);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
+
+        let mut retired_ready = Vec::new();
+        for completions in bounded.take_ready() {
+            for completion in completions {
+                retired_ready.extend(mover.retire_completion(completion));
+            }
+        }
+        assert_eq!(outputs(retired_ready).len(), 2);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
+
+        let mut inline = InlinePacketMover2CryptoExecutor::default();
+        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut inline);
+        assert_eq!(dispatched, 2);
+        assert_eq!(outputs(retired).len(), 2);
+        assert!(drops.is_empty());
     }
 
     #[test]

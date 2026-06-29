@@ -241,44 +241,58 @@ impl PacketMover2 {
         seal_work.clear();
         prepared_work.clear();
         completion_work.clear();
+        let available_limit = limit.min(executor.available_capacity());
         let outbound_priority_reserve =
-            outbound_priority_dispatch_limit(limit, self.outbound_admission.has_priority_pending());
+            outbound_priority_dispatch_limit(
+                available_limit,
+                self.outbound_admission.has_priority_pending(),
+            );
         let pre_priority_inbound_limit =
-            inbound_before_outbound_priority_limit(limit, outbound_priority_reserve);
+            inbound_before_outbound_priority_limit(available_limit, outbound_priority_reserve);
+        let mut dispatched_total = 0usize;
         let mut fsp_path_open = 0u64;
         let mut fsp_path_open_bulk = 0u64;
-        let pre_priority_inbound_dispatched =
-            self.dispatch_available_into(pre_priority_inbound_limit, open_work);
+        let pre_priority_inbound_dispatched = self.dispatch_available_into(
+            pre_priority_inbound_limit.min(executor.available_capacity()),
+            open_work,
+        );
+        dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
         self.prepare_open_work_batch(
             open_work,
             prepared_work,
             &mut fsp_path_open,
             &mut fsp_path_open_bulk,
         );
-        executor.execute_prepared_chunk(prepared_work, completion_work);
+        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
+        let priority_outbound_limit = outbound_priority_reserve
+            .min(limit.saturating_sub(dispatched_total))
+            .min(executor.available_capacity());
         let priority_outbound_dispatched =
-            self.dispatch_outbound_priority_available_into(outbound_priority_reserve, seal_work);
+            self.dispatch_outbound_priority_available_into(priority_outbound_limit, seal_work);
+        dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
         self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
-        executor.execute_prepared_chunk(prepared_work, completion_work);
+        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
-        let dispatched_before_bulk =
-            pre_priority_inbound_dispatched.saturating_add(priority_outbound_dispatched);
-        let inbound_dispatched =
-            self.dispatch_available_into(limit.saturating_sub(dispatched_before_bulk), open_work);
+        let bulk_dispatch_capacity = limit
+            .saturating_sub(dispatched_total)
+            .min(executor.available_capacity());
+        let inbound_dispatched = self.dispatch_available_into(bulk_dispatch_capacity, open_work);
+        dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
         let outbound_dispatched = self.dispatch_outbound_available_into(
-            limit.saturating_sub(dispatched_before_bulk + inbound_dispatched),
+            bulk_dispatch_capacity.saturating_sub(inbound_dispatched),
             seal_work,
         );
+        dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
 
         let leading_priority_seals = seal_work
             .iter()
             .take_while(|work| work.reservation.lane == Lane::Priority)
             .count();
         self.prepare_seal_work_batch(seal_work.drain(..leading_priority_seals), prepared_work);
-        executor.execute_prepared_chunk(prepared_work, completion_work);
+        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         self.prepare_open_work_batch(
@@ -287,19 +301,16 @@ impl PacketMover2 {
             &mut fsp_path_open,
             &mut fsp_path_open_bulk,
         );
-        executor.execute_prepared_chunk(prepared_work, completion_work);
+        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
         record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
 
         self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
-        executor.execute_prepared_chunk(prepared_work, completion_work);
+        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         drops.extend(self.drain_drops());
-        pre_priority_inbound_dispatched
-            + priority_outbound_dispatched
-            + inbound_dispatched
-            + outbound_dispatched
+        dispatched_total
     }
 
     pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
@@ -362,6 +373,23 @@ impl PacketMover2 {
         }
     }
 
+}
+
+fn execute_prepared_crypto_chunk<E>(
+    executor: &mut E,
+    prepared: &mut Vec<PreparedCryptoWork>,
+    completions: &mut Vec<CryptoCompletion>,
+) -> usize
+where
+    E: PacketMover2CryptoExecutor,
+{
+    let prepared_len = prepared.len();
+    let accepted = executor.execute_prepared_chunk(prepared, completions);
+    debug_assert_eq!(
+        accepted, prepared_len,
+        "PM2 crypto executor must accept an entire owner-reserved prepared chunk"
+    );
+    accepted
 }
 
 fn outbound_priority_dispatch_limit(limit: usize, has_priority_pending: bool) -> usize {
