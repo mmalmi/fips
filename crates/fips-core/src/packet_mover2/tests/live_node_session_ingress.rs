@@ -93,8 +93,7 @@
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let resolver = |addr: &NodeAddr| (addr == &source_addr).then_some(source_peer);
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
+        let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_source,
                 &mut routes,
                 8,
@@ -246,8 +245,7 @@
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let resolver = |addr: &NodeAddr| (addr == &source_addr).then_some(source_peer);
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
+        let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_source,
                 &mut routes,
                 8,
@@ -356,8 +354,7 @@
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
+        let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_source,
                 &mut routes,
                 8,
@@ -457,8 +454,7 @@
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
+        let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_source,
                 &mut routes,
                 8,

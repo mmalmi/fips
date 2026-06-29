@@ -127,6 +127,202 @@
         }
     }
 
+    fn run_aead_classified_turn<I, O>(
+        driver: &mut PacketMover2TurnDriver,
+        inbound: I,
+        outbound: O,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        I: IntoIterator<Item = SocketPacket>,
+        O: IntoIterator<Item = OutboundPacket>,
+    {
+        driver.reset_turn_buffers();
+
+        let mut summary = PacketMover2RuntimeSummary::default();
+        for packet in inbound {
+            driver.admit_socket_packet(packet, &mut summary);
+        }
+        for packet in outbound {
+            driver.admit_outbound_packet(packet, &mut summary);
+        }
+
+        driver.finish_aead_turn(summary, limit)
+    }
+
+    fn run_aead_classified_output_turn<'a, I, O, S>(
+        driver: &'a mut PacketMover2TurnDriver,
+        inbound: I,
+        outbound: O,
+        sink: &mut S,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'a>
+    where
+        I: IntoIterator<Item = SocketPacket>,
+        O: IntoIterator<Item = OutboundPacket>,
+        S: PacketMover2OutputSink,
+    {
+        driver.reset_turn_buffers();
+
+        let mut summary = PacketMover2RuntimeSummary::default();
+        for packet in inbound {
+            driver.admit_socket_packet(packet, &mut summary);
+        }
+        for packet in outbound {
+            driver.admit_outbound_packet(packet, &mut summary);
+        }
+
+        driver.finish_aead_output_turn(summary, sink, limit)
+    }
+
+    fn run_aead_raw_ingress_turn<'a, I, O, R>(
+        driver: &'a mut PacketMover2TurnDriver,
+        inbound: I,
+        router: &mut R,
+        outbound: O,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'a>
+    where
+        I: IntoIterator<Item = PacketMover2RawIngress>,
+        O: IntoIterator<Item = OutboundPacket>,
+        R: PacketMover2IngressRouter,
+    {
+        driver.reset_turn_buffers();
+
+        let summary = driver.admit_raw_ingress_turn(inbound, router, outbound);
+        driver.finish_aead_turn(summary, limit)
+    }
+
+    fn run_aead_raw_ingress_output_turn<'a, I, O, R, S>(
+        driver: &'a mut PacketMover2TurnDriver,
+        inbound: I,
+        router: &mut R,
+        outbound: O,
+        sink: &mut S,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'a>
+    where
+        I: IntoIterator<Item = PacketMover2RawIngress>,
+        O: IntoIterator<Item = OutboundPacket>,
+        R: PacketMover2IngressRouter,
+        S: PacketMover2OutputSink,
+    {
+        driver.reset_turn_buffers();
+
+        let summary = driver.admit_raw_ingress_turn(inbound, router, outbound);
+        driver.finish_aead_output_turn(summary, sink, limit)
+    }
+
+    fn pump_aead_output_completion_turn<'a, C, RI, O, R, S>(
+        driver: &'a mut PacketMover2TurnDriver,
+        completions: &mut C,
+        completion_limit: usize,
+        raw_ingress: &mut RI,
+        router: &mut R,
+        raw_ingress_limit: usize,
+        outbound: &mut O,
+        outbound_limit: usize,
+        sink: &mut S,
+        crypto_limit: usize,
+    ) -> PacketMover2RuntimeTurn<'a>
+    where
+        C: PacketMover2CompletionSource,
+        RI: PacketMover2RawIngressSource,
+        O: PacketMover2OutboundSource,
+        R: PacketMover2IngressRouter,
+        S: PacketMover2OutputSink,
+    {
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        driver.pump_aead_output_completion_executor_turn(
+            completions,
+            completion_limit,
+            &mut executor,
+            raw_ingress,
+            router,
+            raw_ingress_limit,
+            outbound,
+            outbound_limit,
+            sink,
+            crypto_limit,
+        )
+    }
+
+    fn pump_aead_output_turn<'a, RI, O, R, S>(
+        driver: &'a mut PacketMover2TurnDriver,
+        raw_ingress: &mut RI,
+        router: &mut R,
+        raw_ingress_limit: usize,
+        outbound: &mut O,
+        outbound_limit: usize,
+        sink: &mut S,
+        crypto_limit: usize,
+    ) -> PacketMover2RuntimeTurn<'a>
+    where
+        RI: PacketMover2RawIngressSource,
+        O: PacketMover2OutboundSource,
+        R: PacketMover2IngressRouter,
+        S: PacketMover2OutputSink,
+    {
+        let mut completions = PacketMover2NoCompletions;
+        pump_aead_output_completion_turn(
+            driver,
+            &mut completions,
+            0,
+            raw_ingress,
+            router,
+            raw_ingress_limit,
+            outbound,
+            outbound_limit,
+            sink,
+            crypto_limit,
+        )
+    }
+
+    async fn pump_aead_live_node_route_table_turn<RI, Resolver, Transports>(
+        driver: &mut PacketMover2TurnDriver,
+        raw_ingress: &mut RI,
+        routes: &mut PacketMover2LiveRouteTable,
+        raw_ingress_limit: usize,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        endpoint_resolver: Resolver,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        RI: PacketMover2RawIngressSource,
+        Resolver: PacketMover2EndpointIdentityResolver,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        driver
+            .pump_aead_live_node_route_table_turn_with_firsts(
+                raw_ingress,
+                routes,
+                raw_ingress_limit,
+                endpoint_priority_rx,
+                endpoint_bulk_rx,
+                endpoint_limit,
+                tun_outbound_rx,
+                tun_limit,
+                PacketMover2LiveOutboundFirsts::default(),
+                deferred_endpoint_commands,
+                deferred_tun_packets,
+                tun_tx,
+                endpoint_tx,
+                endpoint_resolver,
+                transports,
+                crypto_limit,
+            )
+            .await
+    }
+
     fn test_node_addr(id: u64) -> NodeAddr {
         let mut bytes = [0u8; 16];
         bytes[8..16].copy_from_slice(&id.to_be_bytes());

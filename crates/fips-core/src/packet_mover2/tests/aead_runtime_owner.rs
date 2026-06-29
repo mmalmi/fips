@@ -328,14 +328,14 @@
             b"queued-bulk".to_vec(),
         );
 
-        let first = driver.run_aead_classified_turn(std::iter::empty(), [packet, queued_bulk], 1);
+        let first = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet, queued_bulk], 1);
         assert_eq!(first.summary().outbound_admitted(), 3);
         assert_eq!(first.summary().dispatched(), 1);
         assert_eq!(first.summary().outputs(), 0);
         assert!(first.outputs().is_empty());
         assert!(first.drops().is_empty());
 
-        let second = driver.run_aead_classified_turn(
+        let second = run_aead_classified_turn(&mut driver,
             std::iter::empty::<SocketPacket>(),
             std::iter::empty::<OutboundPacket>(),
             8,
@@ -416,7 +416,7 @@
         .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
         .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
 
-        let turn = driver.run_aead_classified_turn(std::iter::empty(), [packet], 2);
+        let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet], 2);
         assert_eq!(turn.summary().outbound_admitted(), 2);
         assert_eq!(turn.summary().dispatched(), 2);
         assert_eq!(turn.summary().outputs(), 1);
@@ -490,7 +490,7 @@
             .with_post_seal(OutboundPostSeal::FmpWrap(wrap))
         });
 
-        let turn = driver.run_aead_classified_turn(std::iter::empty(), packets, 8);
+        let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), packets, 8);
         assert_eq!(turn.summary().outbound_admitted(), 8);
         assert_eq!(turn.summary().dispatched(), 8);
         assert_eq!(turn.summary().outputs(), 4);
@@ -913,7 +913,7 @@
         )
         .with_activity_tick(ActivityTick::new(11));
 
-        let turn = driver.run_aead_classified_turn([inbound], [outbound], 8);
+        let turn = run_aead_classified_turn(&mut driver, [inbound], [outbound], 8);
         assert_eq!(
             turn.summary(),
             PacketMover2RuntimeSummary {
@@ -1056,7 +1056,7 @@
         let mut completion_source = VecDeque::from([third]);
 
         {
-            let turn = driver.pump_aead_output_completion_turn(
+            let turn = pump_aead_output_completion_turn(&mut driver,
                 &mut completion_source,
                 8,
                 &mut raw_ingress,
@@ -1079,7 +1079,7 @@
 
         completion_source.extend([first, second]);
         {
-            let turn = driver.pump_aead_output_completion_turn(
+            let turn = pump_aead_output_completion_turn(&mut driver,
                 &mut completion_source,
                 8,
                 &mut raw_ingress,
@@ -1157,7 +1157,7 @@
         let mut completion_source = VecDeque::from([completions]);
 
         {
-            let turn = driver.pump_aead_output_completion_turn(
+            let turn = pump_aead_output_completion_turn(&mut driver,
                 &mut completion_source,
                 2,
                 &mut raw_ingress,
@@ -1184,7 +1184,7 @@
         );
 
         {
-            let turn = driver.pump_aead_output_completion_turn(
+            let turn = pump_aead_output_completion_turn(&mut driver,
                 &mut completion_source,
                 8,
                 &mut raw_ingress,
@@ -1575,7 +1575,7 @@
         )
         .unwrap();
 
-        let turn = driver.run_aead_classified_turn([first, second], std::iter::empty(), 8);
+        let turn = run_aead_classified_turn(&mut driver, [first, second], std::iter::empty(), 8);
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().inbound_dropped(), 1);
         assert_eq!(turn.summary().outbound_admitted(), 0);
@@ -1628,7 +1628,7 @@
         .unwrap();
         let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"out".to_vec());
         {
-            let turn = driver.run_aead_classified_turn([inbound], [outbound], 8);
+            let turn = run_aead_classified_turn(&mut driver, [inbound], [outbound], 8);
             assert_eq!(turn.outputs().len(), 2);
             assert!(turn.drops().is_empty());
         }
@@ -1641,7 +1641,7 @@
             driver.outputs.capacity(),
             driver.drops.capacity(),
         );
-        let turn = driver.run_aead_classified_turn(std::iter::empty(), std::iter::empty(), 8);
+        let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), std::iter::empty(), 8);
         assert_eq!(turn.summary(), PacketMover2RuntimeSummary::default());
         assert!(turn.outputs().is_empty());
         assert!(turn.drops().is_empty());

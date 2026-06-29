@@ -777,7 +777,7 @@
 
         let turn = {
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
-            driver.run_aead_classified_output_turn(std::iter::empty(), [outbound], &mut sink, 8)
+            run_aead_classified_output_turn(&mut driver, std::iter::empty(), [outbound], &mut sink, 8)
         };
 
         assert_eq!(turn.summary().outputs(), 1);
@@ -821,7 +821,7 @@
             ),
         };
 
-        let turn = driver.run_aead_raw_ingress_turn([raw], &mut router, std::iter::empty(), 8);
+        let turn = run_aead_raw_ingress_turn(&mut driver, [raw], &mut router, std::iter::empty(), 8);
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().dispatched(), 1);
@@ -871,7 +871,7 @@
         );
         let mut router = NullIngressRouter;
 
-        let turn = driver.run_aead_raw_ingress_turn(
+        let turn = run_aead_raw_ingress_turn(&mut driver,
             [bad_wire, unrouted],
             &mut router,
             std::iter::empty(),
@@ -929,7 +929,7 @@
         let mut sink = BatchRecordingOutputSink::default();
 
         let turn =
-            driver.run_aead_raw_ingress_output_turn([raw], &mut router, [outbound], &mut sink, 8);
+            run_aead_raw_ingress_output_turn(&mut driver, [raw], &mut router, [outbound], &mut sink, 8);
         assert_eq!(
             turn.summary(),
             PacketMover2RuntimeSummary {

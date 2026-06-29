@@ -47,7 +47,7 @@
         };
         let mut sink = BatchRecordingOutputSink::default();
 
-        let first = driver.pump_aead_output_turn(
+        let first = pump_aead_output_turn(&mut driver,
             &mut raw_source,
             &mut router,
             1,
@@ -68,7 +68,7 @@
         assert_eq!(outbound_source.len(), 1);
         assert_eq!(sink.batch_calls, 1);
 
-        let second = driver.pump_aead_output_turn(
+        let second = pump_aead_output_turn(&mut driver,
             &mut raw_source,
             &mut router,
             1,
@@ -143,7 +143,7 @@
         let mut sink = RecordingOutputSink::default();
 
         let turn =
-            driver.run_aead_classified_output_turn(std::iter::empty(), [outbound], &mut sink, 8);
+            run_aead_classified_output_turn(&mut driver, std::iter::empty(), [outbound], &mut sink, 8);
 
         assert_eq!(turn.summary().outputs(), 1);
         assert_eq!(turn.summary().outputs_sent(), 1);
@@ -190,7 +190,7 @@
             OutboundPacket::fmp(owner, 1, PacketClass::Bulk, 830, 0, b"transport".to_vec());
         let mut sink = RecordingOutputSink::default();
 
-        let turn = driver.run_aead_classified_output_turn(
+        let turn = run_aead_classified_output_turn(&mut driver,
             [inbound_tun, inbound_endpoint],
             [outbound],
             &mut sink,
@@ -245,7 +245,7 @@
         let mut sink = RecordingOutputSink::default();
 
         let turn =
-            driver.run_aead_classified_output_turn([packet], std::iter::empty(), &mut sink, 8);
+            run_aead_classified_output_turn(&mut driver, [packet], std::iter::empty(), &mut sink, 8);
 
         assert_eq!(turn.summary().outputs_sent(), 1);
         assert!(turn.output_drops().is_empty());
@@ -294,7 +294,7 @@
         };
 
         let turn =
-            driver.run_aead_classified_output_turn(packets, std::iter::empty(), &mut sink, 8);
+            run_aead_classified_output_turn(&mut driver, packets, std::iter::empty(), &mut sink, 8);
         assert_eq!(turn.summary().outputs(), 3);
         assert_eq!(turn.summary().outputs_sent(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 1);

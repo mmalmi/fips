@@ -303,7 +303,7 @@
         )
         .with_fsp_source(fsp_source);
 
-        let turn = driver.run_aead_raw_ingress_turn(
+        let turn = run_aead_raw_ingress_turn(&mut driver,
             [fmp_raw, fsp_raw],
             &mut routes,
             std::iter::empty(),
@@ -416,7 +416,7 @@
 
         let turn = {
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
-            driver.pump_aead_output_turn(
+            pump_aead_output_turn(&mut driver,
                 &mut raw_source,
                 &mut routes,
                 8,
@@ -562,8 +562,7 @@
             }
         };
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
+        let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_source,
                 &mut routes,
                 8,
@@ -670,8 +669,7 @@
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(&mut packet_rx, None);
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
+        let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_ingress,
                 &mut routes,
                 8,

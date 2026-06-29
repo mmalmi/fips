@@ -272,8 +272,7 @@
             }
         };
 
-        let turn = driver
-            .pump_aead_live_node_route_table_turn(
+        let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_source,
                 &mut routes,
                 8,
