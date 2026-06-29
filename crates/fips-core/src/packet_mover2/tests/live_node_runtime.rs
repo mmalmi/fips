@@ -121,6 +121,115 @@
     }
 
     #[tokio::test]
+    async fn live_node_completion_executor_turn_retires_ready_completion_without_new_input() {
+        let transport_id = TransportId::new(181);
+        let remote_addr = TransportAddr::from_string("198.51.100.181:18100");
+        let path = TransportPath::live(transport_id, remote_addr.clone());
+        let source = NodeAddr::from_bytes([0x81; 16]);
+        let owner = OwnerId::fmp_node(source);
+        let open_key = 181;
+        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
+        live_node.register_owner(owner, OwnerConfig::new(1, 8));
+        live_node
+            .driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+        live_node.routes.register_fmp(
+            transport_id,
+            181,
+            PacketMover2IngressRoute::new(owner, 1, OutputTarget::Tun)
+                .with_class(PacketClass::Liveness),
+        );
+
+        let received = ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr,
+            fmp_encrypted_wire(181, 1200, 0, b"completion-wake", open_key),
+            181_000,
+        );
+        let mut raw_ingress = VecDeque::from([PacketMover2RawIngress::from_received(
+            PacketProtocol::Fmp,
+            path.clone(),
+            received,
+        )]);
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+        let transports: HashMap<TransportId, TransportHandle> = HashMap::new();
+        let mut empty_completions: VecDeque<CryptoCompletion> = VecDeque::new();
+        let mut executor = DelayedChunkExecutor::default();
+
+        let first = live_node
+            .pump_turn_with_completion_executor(
+                &mut empty_completions,
+                8,
+                &mut executor,
+                &mut raw_ingress,
+                1,
+                PacketMover2LiveOutboundFirsts::default(),
+                &mut endpoint_priority_rx,
+                &mut endpoint_bulk_rx,
+                0,
+                &mut tun_outbound_rx,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                8,
+            )
+            .await;
+        assert_eq!(first.summary().raw_ingress_dropped(), 0);
+        assert_eq!(first.summary().inbound_admitted(), 1);
+        assert_eq!(first.summary().dispatched(), 1);
+        assert_eq!(first.summary().completions(), 0);
+        assert_eq!(first.summary().outputs_sent(), 0);
+        assert!(first.output_drops().is_empty());
+        assert!(first.drops().is_empty());
+        assert!(raw_ingress.is_empty());
+        assert!(tun_rx.try_recv().is_err());
+        assert_eq!(executor.nonempty_chunks, vec![1]);
+        assert_eq!(live_node.driver.owner_mut(owner).unwrap().in_flight, 1);
+
+        let mut ready_completions = executor.take_ready();
+        let second = live_node
+            .pump_turn_with_completion_executor(
+                &mut ready_completions,
+                8,
+                &mut executor,
+                &mut raw_ingress,
+                0,
+                PacketMover2LiveOutboundFirsts::default(),
+                &mut endpoint_priority_rx,
+                &mut endpoint_bulk_rx,
+                0,
+                &mut tun_outbound_rx,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                missing_endpoint_peer,
+                &transports,
+                0,
+            )
+            .await;
+        assert_eq!(second.summary().completions(), 1);
+        assert_eq!(second.summary().dispatched(), 0);
+        assert_eq!(second.summary().outputs_sent(), 1);
+        assert_eq!(second.summary().outputs_dropped(), 0);
+        assert!(second.output_drops().is_empty());
+        assert!(second.drops().is_empty());
+        assert!(ready_completions.is_empty());
+        assert_eq!(live_node.driver.owner_mut(owner).unwrap().in_flight, 0);
+        assert_eq!(live_node.driver.owner_active_path(owner), Some(path));
+        assert_eq!(tun_rx.try_recv().unwrap(), b"completion-wake".to_vec());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn live_node_outbound_continuation_collects_transport_sent_outputs() {
         let send_transport_id = TransportId::new(176);
         let recv_transport_id = TransportId::new(177);
