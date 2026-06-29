@@ -3,6 +3,7 @@ pub(crate) struct PacketMover2TurnDriver {
     mover: PacketMover2,
     open_work: Vec<CryptoWork>,
     seal_work: Vec<OutboundCryptoWork>,
+    completion_work: Vec<CryptoCompletion>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
@@ -35,6 +36,7 @@ impl PacketMover2TurnDriver {
             mover: PacketMover2::new(config),
             open_work: Vec::new(),
             seal_work: Vec::new(),
+            completion_work: Vec::new(),
             raw_ingress_drops: Vec::new(),
             output_drops: Vec::new(),
             outputs: Vec::new(),
@@ -814,6 +816,7 @@ impl PacketMover2TurnDriver {
                 remaining,
                 &mut self.open_work,
                 &mut self.seal_work,
+                &mut self.completion_work,
                 &mut self.retired,
                 &mut self.drops,
             );
