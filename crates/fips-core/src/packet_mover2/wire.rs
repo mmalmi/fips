@@ -139,7 +139,7 @@ impl FspWireHeader {
     }
 }
 
-fn build_fmp_established_header(
+pub(crate) fn build_fmp_established_header(
     receiver_idx: u32,
     counter: u64,
     flags: u8,

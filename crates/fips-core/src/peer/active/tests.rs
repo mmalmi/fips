@@ -43,11 +43,17 @@ fn seal_fmp(
     plaintext: &[u8],
     k_bit: bool,
 ) -> (Vec<u8>, u64, [u8; 16]) {
-    use crate::node::wire::{FLAG_KEY_EPOCH, build_established_header};
+    use crate::node::wire::FLAG_KEY_EPOCH;
+    use crate::packet_mover2::build_fmp_established_header;
 
     let counter = sender.current_send_counter();
     let flags = if k_bit { FLAG_KEY_EPOCH } else { 0 };
-    let header = build_established_header(receiver_idx, counter, flags, plaintext.len() as u16);
+    let header = build_fmp_established_header(
+        receiver_idx.as_u32(),
+        counter,
+        flags,
+        plaintext.len() as u16,
+    );
     let ciphertext = sender.encrypt_with_aad(plaintext, &header).unwrap();
     (ciphertext, counter, header)
 }
