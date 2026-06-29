@@ -769,9 +769,7 @@ where
         output: &PacketOutput,
         payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError> {
-        let Some(source_addr) = output.owner().node_addr() else {
-            return Err(PacketMover2OutputError::NoRoute);
-        };
+        let source_addr = output.owner().node_addr();
         let Some(source_peer) = self.resolver.resolve_endpoint_peer(&source_addr) else {
             return Err(PacketMover2OutputError::NoRoute);
         };
@@ -848,8 +846,6 @@ where
                             transport_id,
                             remote_addr,
                         } => Some((*transport_id, remote_addr.clone())),
-                        #[cfg(test)]
-                        TransportPath::Fixture(_) => None,
                     })
                 else {
                     return Err(PacketMover2OutputError::NoRoute);

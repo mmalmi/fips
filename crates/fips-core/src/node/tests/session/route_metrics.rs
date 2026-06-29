@@ -127,7 +127,7 @@ fn test_stale_direct_session_trust_prefers_fallback_before_loss_sample() {
     node.learn_reverse_route(remote_addr, fallback_next_hop);
 
     let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent(128);
+    session.record_sent_batch(1, 128);
     session.touch_outbound_frame(Node::now_ms());
     session.record_outbound_next_hop(remote_addr);
     assert!(
@@ -164,7 +164,7 @@ fn test_stale_direct_session_trust_without_fallback_uses_direct_last_resort() {
     install_established_session_with_mmp(&mut node, &remote);
 
     let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent(128);
+    session.record_sent_batch(1, 128);
     session.touch_outbound_frame(Node::now_ms());
     session.record_outbound_next_hop(remote_addr);
 
@@ -205,7 +205,7 @@ fn test_stale_discovered_direct_session_trust_without_fallback_queues_payload() 
     install_established_session_with_mmp(&mut node, &remote);
 
     let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent(128);
+    session.record_sent_batch(1, 128);
     session.touch_outbound_frame(Node::now_ms());
     session.record_outbound_next_hop(remote_addr);
     assert!(
@@ -287,7 +287,7 @@ fn test_unreturned_session_traffic_prefers_fallback_during_direct_probe() {
     {
         let now_ms = Node::now_ms();
         let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent(512);
+        session.record_sent_batch(1, 512);
         session.touch_outbound_frame(now_ms);
         session.record_outbound_next_hop(remote_addr);
     }
@@ -334,7 +334,7 @@ fn test_active_session_keeps_learned_fallback_next_hop_affinity() {
     node.mark_session_direct_path_degraded(remote_addr, Node::now_ms());
     {
         let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent(128);
+        session.record_sent_batch(1, 128);
         session.touch_outbound_frame(Node::now_ms());
         session.record_outbound_next_hop(first_fallback);
     }
@@ -374,7 +374,7 @@ fn test_active_fallback_affinity_periodically_retries_direct_payload() {
     {
         let now_ms = Node::now_ms();
         let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent(128);
+        session.record_sent_batch(1, 128);
         session.touch_outbound_frame(now_ms);
         session.record_outbound_next_hop(fallback_next_hop);
     }
@@ -448,7 +448,7 @@ fn test_stale_cost_fallback_periodically_retries_healthy_direct_payload() {
     {
         let now_ms = Node::now_ms();
         let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent(128);
+        session.record_sent_batch(1, 128);
         session.touch_outbound_frame(now_ms);
         session.record_outbound_next_hop(fallback_next_hop);
     }
@@ -525,7 +525,7 @@ fn test_recent_direct_payload_return_prefers_direct_over_cheaper_fallback() {
     {
         let now_ms = Node::now_ms();
         let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent(128);
+        session.record_sent_batch(1, 128);
         session.record_recv(128);
         session.touch_inbound_data_frame(now_ms);
         session.touch_outbound_frame(now_ms);
@@ -596,7 +596,7 @@ fn test_historical_outbound_session_counter_does_not_deprioritize_direct() {
     node.learn_reverse_route(remote_addr, fallback_next_hop);
 
     let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent(128);
+    session.record_sent_batch(1, 128);
     session.record_outbound_next_hop(remote_addr);
 
     assert_eq!(
@@ -630,7 +630,7 @@ async fn test_stale_direct_session_trust_does_not_reprobe_healthy_link() {
     node.learn_reverse_route(remote_addr, fallback_next_hop);
 
     let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent(128);
+    session.record_sent_batch(1, 128);
     session.touch_outbound_frame(Node::now_ms());
     session.record_outbound_next_hop(remote_addr);
 

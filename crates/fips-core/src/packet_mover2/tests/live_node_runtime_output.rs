@@ -1,9 +1,9 @@
     #[test]
     fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
-        let owner = OwnerId::fmp(86);
+        let owner = fmp_owner(86);
         let open_key = 75;
         let seal_key = 76;
-        let path = TransportPath::new(8600);
+        let path = live_path(8600);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(3, 8).with_next_send_counter(700));
         driver
@@ -158,9 +158,9 @@
 
     #[test]
     fn runtime_output_sink_sends_ordered_outputs_once() {
-        let owner = OwnerId::fmp(83);
+        let owner = fmp_owner(83);
         let key = 71;
-        let path = TransportPath::new(8300);
+        let path = live_path(8300);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(400));
         driver
@@ -225,7 +225,7 @@
 
     #[test]
     fn runtime_promotes_opened_latency_sensitive_fsp_outputs() {
-        let owner = OwnerId::fsp(88);
+        let owner = fsp_owner(88);
         let key = 88;
         let payload = priority_endpoint_payload();
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
@@ -257,7 +257,7 @@
 
     #[test]
     fn runtime_output_sink_reports_failures_without_retrying() {
-        let owner = OwnerId::fsp(84);
+        let owner = fsp_owner(84);
         let key = 72;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));

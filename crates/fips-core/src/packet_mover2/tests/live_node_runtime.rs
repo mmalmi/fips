@@ -767,13 +767,8 @@
     fn live_output_sink_drops_transport_without_live_path() {
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let key = 47;
-        let fixture_path = TransportPath::new(4700);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(470));
-        driver
-            .owner_mut(owner)
-            .unwrap()
-            .set_active_path(fixture_path.clone());
         driver
             .owner_mut(owner)
             .unwrap()
@@ -798,7 +793,7 @@
             turn.output_drops()[0].reason(),
             PacketMover2OutputError::NoRoute
         );
-        assert_eq!(turn.output_drops()[0].path(), Some(fixture_path));
+        assert_eq!(turn.output_drops()[0].path(), None);
         assert!(tun.outputs.is_empty());
         assert!(endpoint.outputs.is_empty());
         assert!(transport.outputs.is_empty());
@@ -806,9 +801,9 @@
 
     #[test]
     fn runtime_raw_ingress_turn_parses_received_packet_before_owner_admission() {
-        let owner = OwnerId::fmp(81);
+        let owner = fmp_owner(81);
         let open_key = 51;
-        let path = TransportPath::new(9005);
+        let path = live_path(9005);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(7, 8));
         driver
@@ -854,8 +849,8 @@
 
     #[test]
     fn runtime_raw_ingress_turn_drops_wire_and_unrouted_packets_before_admission() {
-        let owner = OwnerId::fsp(82);
-        let path = TransportPath::new(9105);
+        let owner = fsp_owner(82);
+        let path = live_path(9105);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
         let bad_wire = PacketMover2RawIngress::from_received(
@@ -909,10 +904,10 @@
 
     #[test]
     fn runtime_raw_ingress_output_turn_batches_ordered_outputs_once() {
-        let owner = OwnerId::fmp(85);
+        let owner = fmp_owner(85);
         let open_key = 73;
         let seal_key = 74;
-        let path = TransportPath::new(9005);
+        let path = live_path(9005);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(7, 8).with_next_send_counter(500));
         driver

@@ -4,7 +4,6 @@ use tokio::sync::mpsc::Receiver;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct RxLoopDataDrainStats {
     pub(super) packets: usize,
-    pub(super) decrypt: usize,
     pub(super) tun: usize,
     pub(super) endpoint: usize,
     pub(super) control: usize,
@@ -15,33 +14,15 @@ impl RxLoopDataDrainStats {
     pub(super) fn new(packets: usize, tun: usize, endpoint: usize) -> Self {
         Self {
             packets,
-            decrypt: 0,
             tun,
             endpoint,
             control: 0,
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn with_decrypt(
-        packets: usize,
-        decrypt: usize,
-        tun: usize,
-        endpoint: usize,
-    ) -> Self {
+    pub(super) fn with_data(packets: usize, tun: usize, endpoint: usize) -> Self {
         Self {
             packets,
-            decrypt,
-            tun,
-            endpoint,
-            control: 0,
-        }
-    }
-
-    pub(super) fn with_data(packets: usize, decrypt: usize, tun: usize, endpoint: usize) -> Self {
-        Self {
-            packets,
-            decrypt,
             tun,
             endpoint,
             control: 0,
@@ -57,7 +38,6 @@ impl RxLoopDataDrainStats {
     ) -> Self {
         Self {
             packets,
-            decrypt: 0,
             tun,
             endpoint,
             control,
@@ -65,7 +45,7 @@ impl RxLoopDataDrainStats {
     }
 
     pub(super) fn data_total(&self) -> usize {
-        self.packets + self.decrypt + self.tun + self.endpoint
+        self.packets + self.tun + self.endpoint
     }
 
     pub(super) fn total(&self) -> usize {

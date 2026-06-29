@@ -30,10 +30,7 @@ fn packet_mover2_session_ingress_from_output(
         + FMP_LINK_MSG_TYPE_LEN
         + crate::protocol::SessionDatagramRef::HEADER_LEN;
 
-    let previous_hop = match output.owner.node_addr() {
-        Some(previous_hop) => previous_hop,
-        None => return Err((output, PacketMover2SessionHandoffError::NoRoute)),
-    };
+    let previous_hop = output.owner.node_addr();
     let fmp_header = match FmpWireHeader::parse(output.payload()) {
         Ok(header) => header,
         Err(_) => return Err((output, PacketMover2SessionHandoffError::InvalidPacket)),
@@ -110,8 +107,6 @@ fn packet_mover2_session_ingress_from_output(
             transport_id,
             remote_addr,
         } => (transport_id, remote_addr),
-        #[cfg(test)]
-        TransportPath::Fixture(_) => unreachable!("source path was validated as live"),
     };
     let path = TransportPath::Live {
         transport_id,

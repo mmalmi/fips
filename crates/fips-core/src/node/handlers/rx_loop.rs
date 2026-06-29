@@ -155,7 +155,6 @@ impl Node {
                         debug!(
                             drained = drained.total(),
                             drained_packets = drained.packets,
-                            drained_decrypt = drained.decrypt,
                             drained_tun = drained.tun,
                             drained_endpoint = drained.endpoint,
                             "Drained queued packets before rx-loop maintenance"
@@ -191,7 +190,6 @@ impl Node {
                         debug!(
                             drained = post_drained.total(),
                             drained_packets = post_drained.packets,
-                            drained_decrypt = post_drained.decrypt,
                             drained_tun = post_drained.tun,
                             drained_endpoint = post_drained.endpoint,
                             "Drained queued packets after rx-loop maintenance"
@@ -390,7 +388,6 @@ impl Node {
         self.process_packet_mover2_control_ingress(&mut turn).await;
         RxLoopDataDrainStats::with_data(
             drained_packets,
-            0,
             turn.tun_source_drained(),
             turn.endpoint_source_drained(),
         )

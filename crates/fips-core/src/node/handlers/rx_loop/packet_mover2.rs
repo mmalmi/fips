@@ -224,7 +224,7 @@ impl Node {
             return None;
         }
         Some((
-            drop.owner().node_addr()?,
+            drop.owner().node_addr(),
             drop.counter()?,
             drop.authenticated_counter_highest().unwrap_or(0),
         ))
@@ -241,7 +241,7 @@ impl Node {
         }
         let received_k_bit =
             drop.wire_flags().unwrap_or(0) & crate::node::session_wire::FSP_FLAG_K != 0;
-        Some((drop.owner().node_addr()?, drop.counter()?, received_k_bit))
+        Some((drop.owner().node_addr(), drop.counter()?, received_k_bit))
     }
 
     async fn process_packet_mover2_local_session_ingress(

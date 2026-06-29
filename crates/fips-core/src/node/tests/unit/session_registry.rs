@@ -39,7 +39,7 @@ fn session_registry_owns_endpoint_session_storage() {
     registry
         .get_mut(&peer_addr)
         .expect("mutable access should stay behind the same owner")
-        .record_sent(123);
+        .record_sent_batch(1, 123);
 
     assert_eq!(
         registry
@@ -65,7 +65,6 @@ fn session_registry_owns_fsp_send_bookkeeping() {
     let peer = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
     let peer_addr = *peer_identity.node_addr();
-    let next_hop = make_node_addr(77);
 
     let mut registry = SessionRegistry::default();
     let mut entry = SessionEntry::new(
@@ -78,87 +77,32 @@ fn session_registry_owns_fsp_send_bookkeeping() {
     entry.init_mmp(&crate::config::SessionMmpConfig::default());
     assert!(registry.insert(peer_addr, entry).is_none());
 
-    let data_update =
-        FspSendBookkeepingInput::data(123, 7, 1_234, 256, 2_000).with_next_hop(next_hop);
-    let data_result = registry
-        .record_fsp_send_bookkeeping(&peer_addr, data_update)
-        .expect("FSP data send bookkeeping should find session entry");
-    assert!(data_result.data_recorded);
-    assert!(data_result.mmp_recorded);
-    assert!(data_result.touched);
-    assert!(data_result.next_hop_recorded);
-
-    let entry = registry
-        .get(&peer_addr)
-        .expect("send bookkeeping must keep session storage");
-    assert_eq!(entry.traffic_counters(), (1, 0, 123, 0));
-    assert_eq!(entry.last_activity(), 2_000);
-    assert_eq!(entry.last_outbound_frame_ms(), 2_000);
-    assert_eq!(entry.last_outbound_next_hop(), Some(next_hop));
-    let mmp = entry.mmp().expect("session should have MMP state");
-    assert_eq!(mmp.sender.cumulative_packets_sent(), 1);
-    assert_eq!(mmp.sender.cumulative_bytes_sent(), 256);
-
     let control_result = registry
-        .record_fsp_send_bookkeeping(&peer_addr, FspSendBookkeepingInput::control(8, 1_300, 64))
+        .record_fsp_send_bookkeeping(&peer_addr, FspSendBookkeepingInput::control(7, 1_300, 64))
         .expect("FSP control send bookkeeping should find session entry");
-    assert!(!control_result.data_recorded);
     assert!(control_result.mmp_recorded);
-    assert!(!control_result.touched);
-    assert!(!control_result.next_hop_recorded);
     let entry = registry
         .get(&peer_addr)
         .expect("control bookkeeping must keep session storage");
     assert_eq!(
         entry.traffic_counters(),
-        (1, 0, 123, 0),
+        (0, 0, 0, 0),
         "control/MMP bookkeeping must not inflate data counters"
     );
     assert_eq!(
         entry.last_activity(),
-        2_000,
+        1_000,
         "control/MMP bookkeeping must not reset idle activity"
     );
     assert_eq!(
         entry.last_outbound_frame_ms(),
-        2_000,
+        0,
         "control/MMP bookkeeping must not refresh outbound data activity"
     );
+    assert_eq!(entry.last_outbound_next_hop(), None);
     let mmp = entry.mmp().expect("session should have MMP state");
-    assert_eq!(mmp.sender.cumulative_packets_sent(), 2);
-    assert_eq!(mmp.sender.cumulative_bytes_sent(), 320);
-
-    let legacy_full = Identity::generate();
-    let legacy_identity = PeerIdentity::from_pubkey_full(legacy_full.pubkey_full());
-    let legacy_addr = *legacy_identity.node_addr();
-    let legacy_entry = SessionEntry::new(
-        legacy_addr,
-        legacy_full.pubkey_full(),
-        EndToEndState::Established(make_test_fmp_session(
-            &local,
-            &legacy_full,
-            [0x03; 8],
-            [0x04; 8],
-        )),
-        3_000,
-        true,
-    );
-    assert!(registry.insert(legacy_addr, legacy_entry).is_none());
-    let legacy_result = registry
-        .record_fsp_send_bookkeeping(
-            &legacy_addr,
-            FspSendBookkeepingInput::data(10, 9, 1_400, 32, 4_000),
-        )
-        .expect("legacy session without MMP should still record data bookkeeping");
-    assert!(legacy_result.data_recorded);
-    assert!(!legacy_result.mmp_recorded);
-    assert!(legacy_result.touched);
-    let entry = registry
-        .get(&legacy_addr)
-        .expect("legacy bookkeeping must keep session storage");
-    assert_eq!(entry.traffic_counters(), (1, 0, 10, 0));
-    assert_eq!(entry.last_activity(), 4_000);
-    assert_eq!(entry.last_outbound_frame_ms(), 4_000);
+    assert_eq!(mmp.sender.cumulative_packets_sent(), 1);
+    assert_eq!(mmp.sender.cumulative_bytes_sent(), 64);
 
     assert!(
         registry
@@ -168,67 +112,6 @@ fn session_registry_owns_fsp_send_bookkeeping() {
             )
             .is_none(),
         "missing sessions should not record FSP send bookkeeping"
-    );
-}
-
-#[test]
-fn session_registry_owns_batched_fsp_send_bookkeeping() {
-    use crate::node::session::{EndToEndState, SessionEntry};
-
-    let local = Identity::generate();
-    let peer = Identity::generate();
-    let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-    let peer_addr = *peer_identity.node_addr();
-    let first_next_hop = make_node_addr(77);
-    let second_next_hop = make_node_addr(88);
-
-    let mut registry = SessionRegistry::default();
-    let mut entry = SessionEntry::new(
-        peer_addr,
-        peer.pubkey_full(),
-        EndToEndState::Established(make_test_fmp_session(&local, &peer, [0x01; 8], [0x02; 8])),
-        1_000,
-        true,
-    );
-    entry.init_mmp(&crate::config::SessionMmpConfig::default());
-    assert!(registry.insert(peer_addr, entry).is_none());
-
-    let recorded = registry
-        .record_fsp_send_bookkeeping_batch(
-            &peer_addr,
-            [
-                FspSendBookkeepingInput::data(10, 9, 3_000, 40, 4_000)
-                    .with_next_hop(first_next_hop),
-                FspSendBookkeepingInput::control(11, 3_100, 24),
-                FspSendBookkeepingInput::data(20, 12, 3_200, 60, 5_000)
-                    .with_next_hop(second_next_hop),
-            ],
-        )
-        .expect("batched FSP send bookkeeping should find session entry");
-    assert_eq!(
-        recorded, 2,
-        "only data frames should contribute to data counter batch size"
-    );
-
-    let entry = registry
-        .get(&peer_addr)
-        .expect("batched bookkeeping must keep session storage");
-    assert_eq!(entry.traffic_counters(), (2, 0, 30, 0));
-    assert_eq!(entry.last_activity(), 5_000);
-    assert_eq!(entry.last_outbound_frame_ms(), 5_000);
-    assert_eq!(entry.last_outbound_next_hop(), Some(second_next_hop));
-    let mmp = entry.mmp().expect("session should have MMP state");
-    assert_eq!(mmp.sender.cumulative_packets_sent(), 3);
-    assert_eq!(mmp.sender.cumulative_bytes_sent(), 124);
-
-    assert!(
-        registry
-            .record_fsp_send_bookkeeping_batch(
-                &make_node_addr(99),
-                [FspSendBookkeepingInput::data(10, 1, 3_300, 32, 6_000)],
-            )
-            .is_none(),
-        "missing sessions should not record batched FSP send bookkeeping"
     );
 }
 
@@ -244,9 +127,6 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
     let on_demand_addr = *PeerIdentity::from_npub(&on_demand_npub)
         .expect("on-demand peer identity")
         .node_addr();
-    let unknown_addr =
-        *PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full()).node_addr();
-
     let mut config = Config::new();
     config.peers.push(crate::config::PeerConfig::new(
         configured_npub.clone(),
@@ -265,16 +145,6 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
 
     let weights = ConfiguredPeerSendWeights::from_config(&config);
 
-    assert_eq!(
-        weights.weight_for(&configured_addr),
-        2,
-        "configured peers reserve the explicit send-scheduling lane"
-    );
-    assert_eq!(
-        weights.weight_for(&unknown_addr),
-        1,
-        "unconfigured peers must stay on the default send-scheduling lane"
-    );
     assert_eq!(
         weights.len(),
         2,
@@ -309,7 +179,11 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "runtime auto-connect iteration must preserve Config::auto_connect_peers semantics"
     );
     assert!(
-        weights.peer_config(&unknown_addr).is_none(),
+        weights
+            .peer_config(
+                PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full()).node_addr()
+            )
+            .is_none(),
         "unconfigured peers must not have cached peer metadata"
     );
 }

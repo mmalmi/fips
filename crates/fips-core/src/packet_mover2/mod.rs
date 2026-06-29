@@ -1,8 +1,6 @@
 //! Packet mover for the straight dataplane.
 //!
-//! This module is intentionally separate from `packet_mover`: it models the
-//! final ownership shape first, then old runtime edges can adapt into it. The
-//! path is:
+//! This module owns the canonical FIPS dataplane. The path is:
 //!
 //! ```text
 //! UDP/socket drain

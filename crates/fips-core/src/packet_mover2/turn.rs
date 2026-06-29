@@ -142,7 +142,7 @@ impl PacketMover2FmpIngressReceipt {
         if output.owner().protocol() != PacketProtocol::Fmp {
             return None;
         }
-        let source_addr = output.owner().node_addr()?;
+        let source_addr = output.owner().node_addr();
         let Some(TransportPath::Live {
             transport_id,
             remote_addr,
@@ -369,9 +369,7 @@ pub(crate) struct PacketMover2FspSessionIngress {
 
 impl PacketMover2FspSessionIngress {
     fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
-        let Some(source_addr) = output.owner().node_addr() else {
-            return Err(output);
-        };
+        let source_addr = output.owner().node_addr();
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
         let header = match FspWireHeader::parse(output.payload()) {

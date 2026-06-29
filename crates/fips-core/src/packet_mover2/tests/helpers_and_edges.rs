@@ -6,6 +6,37 @@
         PacketMover2::new(AdmissionConfig::new(4, 8))
     }
 
+    fn test_node_addr(id: u64) -> NodeAddr {
+        let mut bytes = [0u8; 16];
+        bytes[8..16].copy_from_slice(&id.to_be_bytes());
+        NodeAddr::from_bytes(bytes)
+    }
+
+    fn fmp_owner(id: u64) -> OwnerId {
+        OwnerId::fmp_node(test_node_addr(id))
+    }
+
+    fn fsp_owner(id: u64) -> OwnerId {
+        OwnerId::fsp_node(test_node_addr(id))
+    }
+
+    fn test_receiver_idx(owner: OwnerId) -> u32 {
+        let node_addr = owner.node_addr();
+        let bytes: [u8; 4] = node_addr.as_bytes()[12..16]
+            .try_into()
+            .expect("test owner embeds receiver index");
+        u32::from_be_bytes(bytes)
+    }
+
+    fn live_path(id: u32) -> TransportPath {
+        let port = 10_000 + id % 50_000;
+        let remote_addr = format!("198.51.100.1:{port}");
+        TransportPath::live(
+            TransportId::new(id),
+            TransportAddr::from_string(&remote_addr),
+        )
+    }
+
     fn packet(
         owner: OwnerId,
         generation: u64,
@@ -202,16 +233,7 @@
             counter,
             class,
             output,
-            fmp_encrypted_wire(
-                owner
-                    .fixture_peer()
-                    .expect("encrypted_fmp_packet requires a fixture owner")
-                    as u32,
-                counter,
-                0,
-                &[counter as u8],
-                key,
-            ),
+            fmp_encrypted_wire(test_receiver_idx(owner), counter, 0, &[counter as u8], key),
         )
     }
 
@@ -331,10 +353,7 @@
                 owner,
                 generation,
                 class,
-                owner
-                    .fixture_peer()
-                    .expect("test outbound FMP helper requires fixture owner")
-                    as u32,
+                test_receiver_idx(owner),
                 0,
                 payload.to_vec(),
             ),
@@ -367,19 +386,15 @@
     }
 
     #[test]
-    fn owner_id_supports_real_node_addr_owners() {
+    fn owner_id_uses_real_node_addr_owners() {
         let node_addr = NodeAddr::from_bytes([0x42; 16]);
         let fmp = OwnerId::fmp_node(node_addr);
         let fsp = OwnerId::fsp_node(node_addr);
 
-        assert_eq!(fmp.peer_id(), OwnerPeerId::Node(node_addr));
-        assert_eq!(fmp.node_addr(), Some(node_addr));
+        assert_eq!(fmp.node_addr(), node_addr);
         assert_eq!(fmp.protocol(), PacketProtocol::Fmp);
         assert_eq!(fsp.protocol(), PacketProtocol::Fsp);
         assert_ne!(fmp, fsp);
-        assert_ne!(fmp, OwnerId::fmp(0x42));
-        assert_eq!(OwnerId::fmp(0x42).fixture_peer(), Some(0x42));
-        assert_eq!(OwnerId::fmp(0x42).node_addr(), None);
     }
 
     #[test]

@@ -81,14 +81,6 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
         !control_only.data_pressure(false),
         "read-only control progress must not look like dataplane pressure"
     );
-
-    let decrypt_only = RxLoopDataDrainStats::with_decrypt(0, 1, 0, 0);
-    assert_eq!(decrypt_only.data_total(), 1);
-    assert!(decrypt_only.has_data_drained());
-    assert!(
-        decrypt_only.data_pressure(false),
-        "decrypt-worker receive bookkeeping must count as dataplane progress"
-    );
 }
 
 #[tokio::test]

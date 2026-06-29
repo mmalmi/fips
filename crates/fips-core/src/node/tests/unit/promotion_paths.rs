@@ -565,7 +565,7 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
         now_ms - trust_timeout_ms - 1,
         true,
     );
-    endpoint_entry.record_sent(128);
+    endpoint_entry.record_sent_batch(1, 128);
     endpoint_entry.touch_outbound_frame(now_ms);
     endpoint_entry.record_outbound_next_hop(peer_node_addr);
     node.sessions.insert(peer_node_addr, endpoint_entry);

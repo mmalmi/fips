@@ -294,7 +294,7 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
         1_000,
         true,
     );
-    session.record_sent(512);
+    session.record_sent_batch(1, 512);
     session.touch_outbound_frame(Node::now_ms());
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(peer_addr, session);
@@ -558,7 +558,7 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
         1_000,
         true,
     );
-    session.record_sent(512);
+    session.record_sent_batch(1, 512);
     session.touch_outbound_frame(now_ms);
     session.touch_inbound_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
@@ -650,7 +650,7 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
         1_000,
         true,
     );
-    session.record_sent(512);
+    session.record_sent_batch(1, 512);
     session.touch_outbound_frame(now_ms);
     session.touch_inbound_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
@@ -817,7 +817,7 @@ async fn fresh_bootstrap_endpoint_data_clears_static_direct_refresh_pending() {
         1_000,
         true,
     );
-    session.record_sent(512);
+    session.record_sent_batch(1, 512);
     session.touch_outbound_frame(now_ms);
     session.record_recv(512);
     session.touch_inbound_data_frame(now_ms);
@@ -902,7 +902,7 @@ async fn fresh_control_with_unreturned_endpoint_data_keeps_direct_without_fallba
         1_000,
         true,
     );
-    session.record_sent(512);
+    session.record_sent_batch(1, 512);
     session.touch_outbound_frame(now_ms);
     session.touch_inbound_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
@@ -999,7 +999,7 @@ async fn endpoint_return_via_direct_next_hop_keeps_link_liveness_fresh() {
         1_000,
         true,
     );
-    session.record_sent(512);
+    session.record_sent_batch(1, 512);
     session.touch_outbound_frame(now_ms);
     session.record_recv(512);
     session.touch_inbound_data_frame(now_ms);
@@ -1088,7 +1088,7 @@ async fn authenticated_endpoint_return_clears_static_retry_on_fresh_discovered_u
         1_000,
         true,
     );
-    session.record_sent(512);
+    session.record_sent_batch(1, 512);
     session.touch_outbound_frame(now_ms);
     session.record_recv(512);
     session.touch_inbound_data_frame(now_ms);

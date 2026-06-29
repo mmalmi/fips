@@ -446,37 +446,6 @@ impl PeerLifecycleRegistry {
         Some(result)
     }
 
-    #[cfg(test)]
-    pub(in crate::node) fn record_fmp_send_bookkeeping_batch<I>(
-        &mut self,
-        node_addr: &NodeAddr,
-        records: I,
-    ) -> Option<usize>
-    where
-        I: IntoIterator<Item = (u64, u32, usize)>,
-    {
-        let peer = self.active.get_mut(node_addr)?;
-        let mut packets = 0usize;
-        let mut bytes = 0usize;
-
-        {
-            let mut mmp = peer.mmp_mut();
-            for (fmp_counter, timestamp_ms, bytes_sent) in records {
-                packets += 1;
-                bytes += bytes_sent;
-                if let Some(mmp) = mmp.as_mut() {
-                    mmp.sender
-                        .record_sent(fmp_counter, timestamp_ms, bytes_sent);
-                }
-            }
-        }
-
-        if packets > 0 {
-            peer.link_stats_mut().record_sent_batch(packets, bytes);
-        }
-        Some(packets)
-    }
-
     pub(in crate::node) fn mark_link_dead_direct_path(
         &mut self,
         node_addr: &NodeAddr,
@@ -595,55 +564,22 @@ impl<'a> IntoIterator for &'a PeerLifecycleRegistry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct FspSendBookkeepingInput {
-    pub(in crate::node) data_bytes: Option<usize>,
     pub(in crate::node) counter: u64,
     pub(in crate::node) timestamp: u32,
     pub(in crate::node) frame_bytes: usize,
-    pub(in crate::node) touch_ms: Option<u64>,
-    pub(in crate::node) next_hop: Option<NodeAddr>,
 }
 
 impl FspSendBookkeepingInput {
-    #[cfg(test)]
-    pub(in crate::node) fn data(
-        data_bytes: usize,
-        counter: u64,
-        timestamp: u32,
-        frame_bytes: usize,
-        touch_ms: u64,
-    ) -> Self {
-        Self {
-            data_bytes: Some(data_bytes),
-            counter,
-            timestamp,
-            frame_bytes,
-            touch_ms: Some(touch_ms),
-            next_hop: None,
-        }
-    }
-
     pub(in crate::node) fn control(counter: u64, timestamp: u32, frame_bytes: usize) -> Self {
         Self {
-            data_bytes: None,
             counter,
             timestamp,
             frame_bytes,
-            touch_ms: None,
-            next_hop: None,
         }
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn with_next_hop(mut self, next_hop: NodeAddr) -> Self {
-        self.next_hop = Some(next_hop);
-        self
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct FspSendBookkeeping {
-    pub(in crate::node) data_recorded: bool,
     pub(in crate::node) mmp_recorded: bool,
-    pub(in crate::node) touched: bool,
-    pub(in crate::node) next_hop_recorded: bool,
 }

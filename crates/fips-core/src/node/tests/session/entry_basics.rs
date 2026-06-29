@@ -126,7 +126,7 @@ fn test_control_frame_does_not_refresh_data_return_trust() {
         true,
     );
 
-    entry.record_sent(128);
+    entry.record_sent_batch(1, 128);
     entry.touch_outbound_frame(20_000);
     entry.touch_inbound_frame(20_000);
 

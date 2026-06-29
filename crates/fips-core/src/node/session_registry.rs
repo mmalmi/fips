@@ -61,31 +61,13 @@ impl SessionRegistry {
     ) -> Option<FspSendBookkeeping> {
         let entry = self.sessions.get_mut(node_addr)?;
         let mut result = FspSendBookkeeping {
-            data_recorded: false,
             mmp_recorded: false,
-            touched: false,
-            next_hop_recorded: false,
         };
 
-        if let Some(next_hop) = input.next_hop {
-            entry.record_outbound_next_hop(next_hop);
-            result.next_hop_recorded = true;
-        }
-        if let Some(data_bytes) = input.data_bytes {
-            entry.record_sent(data_bytes);
-            result.data_recorded = true;
-        }
         if let Some(mmp) = entry.mmp_mut() {
             mmp.sender
                 .record_sent(input.counter, input.timestamp, input.frame_bytes);
             result.mmp_recorded = true;
-        }
-        if let Some(touch_ms) = input.touch_ms {
-            entry.touch(touch_ms);
-            if result.data_recorded {
-                entry.touch_outbound_frame(touch_ms);
-            }
-            result.touched = true;
         }
 
         Some(result)
@@ -107,54 +89,6 @@ impl SessionRegistry {
         entry.touch_outbound_frame(routed.routed_at_ms());
         true
     }
-
-    #[cfg(test)]
-    pub(in crate::node) fn record_fsp_send_bookkeeping_batch<I>(
-        &mut self,
-        node_addr: &NodeAddr,
-        inputs: I,
-    ) -> Option<usize>
-    where
-        I: IntoIterator<Item = FspSendBookkeepingInput>,
-    {
-        let entry = self.sessions.get_mut(node_addr)?;
-        let mut data_packets = 0usize;
-        let mut data_bytes = 0usize;
-        let mut last_touch_ms = None;
-        let mut last_next_hop = None;
-
-        for input in inputs {
-            if let Some(next_hop) = input.next_hop {
-                last_next_hop = Some(next_hop);
-            }
-            if let Some(bytes) = input.data_bytes {
-                data_packets += 1;
-                data_bytes += bytes;
-            }
-            if let Some(mmp) = entry.mmp_mut() {
-                mmp.sender
-                    .record_sent(input.counter, input.timestamp, input.frame_bytes);
-            }
-            if input.touch_ms.is_some() {
-                last_touch_ms = input.touch_ms;
-            }
-        }
-
-        if let Some(next_hop) = last_next_hop {
-            entry.record_outbound_next_hop(next_hop);
-        }
-        if data_packets > 0 {
-            entry.record_sent_batch(data_packets, data_bytes);
-        }
-        if let Some(touch_ms) = last_touch_ms {
-            entry.touch(touch_ms);
-            if data_packets > 0 {
-                entry.touch_outbound_frame(touch_ms);
-            }
-        }
-
-        Some(data_packets)
-    }
 }
 
 impl<'a> IntoIterator for &'a SessionRegistry {
@@ -166,24 +100,15 @@ impl<'a> IntoIterator for &'a SessionRegistry {
     }
 }
 
-/// Send-scheduling policy derived from the configured peer roster.
-#[cfg(test)]
-const DEFAULT_SEND_WEIGHT: u8 = 1;
-#[cfg(test)]
-const EXPLICIT_PEER_SEND_WEIGHT: u8 = 2;
-
+/// Configured peer lookup cache derived from the peer roster.
 #[derive(Debug, Default)]
 pub(in crate::node) struct ConfiguredPeerSendWeights {
-    #[cfg(test)]
-    entries: HashMap<NodeAddr, u8>,
     peer_configs: HashMap<NodeAddr, PeerConfig>,
     peer_addrs_by_npub: HashMap<String, NodeAddr>,
 }
 
 impl ConfiguredPeerSendWeights {
     pub(in crate::node) fn from_config(config: &Config) -> Self {
-        #[cfg(test)]
-        let mut entries = HashMap::with_capacity(config.peers().len());
         let mut peer_configs = HashMap::with_capacity(config.peers().len());
         let mut peer_addrs_by_npub = HashMap::with_capacity(config.peers().len());
         for peer in config.peers() {
@@ -191,25 +116,13 @@ impl ConfiguredPeerSendWeights {
                 continue;
             };
             let node_addr = *identity.node_addr();
-            #[cfg(test)]
-            entries.insert(node_addr, EXPLICIT_PEER_SEND_WEIGHT);
             peer_addrs_by_npub.insert(peer.npub.clone(), node_addr);
             peer_configs.insert(node_addr, peer.clone());
         }
         Self {
-            #[cfg(test)]
-            entries,
             peer_configs,
             peer_addrs_by_npub,
         }
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn weight_for(&self, peer_addr: &NodeAddr) -> u8 {
-        self.entries
-            .get(peer_addr)
-            .copied()
-            .unwrap_or(DEFAULT_SEND_WEIGHT)
     }
 
     pub(in crate::node) fn peer_config(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {

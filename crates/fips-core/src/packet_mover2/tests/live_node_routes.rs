@@ -14,7 +14,7 @@
             Err(PacketMover2LiveOwnerError::UnknownOwner)
         );
         assert_eq!(
-            live_node.set_owner_active_path(owner, TransportPath::new(91)),
+            live_node.set_owner_active_path(owner, live_path(91)),
             Err(PacketMover2LiveOwnerError::UnknownOwner)
         );
         assert_eq!(
@@ -139,7 +139,7 @@
     #[test]
     fn live_node_register_owner_if_missing_preserves_existing_owner_state() {
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x93; 16]));
-        let active_path = TransportPath::new(93);
+        let active_path = live_path(93);
         let mut live_node =
             PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
 

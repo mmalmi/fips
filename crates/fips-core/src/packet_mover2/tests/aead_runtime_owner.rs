@@ -1,6 +1,6 @@
     #[test]
     fn aead_turn_runner_uses_owner_keys_for_inbound_and_outbound_work() {
-        let owner = OwnerId::fmp(70);
+        let owner = fmp_owner(70);
         let open_key = 11;
         let seal_key = 12;
         let mut mover = mover();
@@ -79,7 +79,7 @@
 
     #[test]
     fn aead_turn_runner_hands_executor_prepared_crypto_chunks() {
-        let owner = OwnerId::fmp(702);
+        let owner = fmp_owner(702);
         let open_key = 15;
         let seal_key = 16;
         let mut mover = mover();
@@ -169,7 +169,7 @@
         let fmp_owner = OwnerId::fmp_node(next_hop);
         let fsp_key = 21;
         let fmp_key = 22;
-        let fmp_path = TransportPath::new(2200);
+        let fmp_path = live_path(2200);
         let mut driver =
             PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
@@ -272,7 +272,7 @@
         let fmp_owner = OwnerId::fmp_node(next_hop);
         let fsp_key = 31;
         let fmp_key = 32;
-        let fmp_path = TransportPath::new(3200);
+        let fmp_path = live_path(3200);
         let mut driver =
             PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(90));
@@ -334,7 +334,7 @@
         let fmp_owner = OwnerId::fmp_node(next_hop);
         let fsp_key = 41;
         let fmp_key = 42;
-        let fmp_path = TransportPath::new(4200);
+        let fmp_path = live_path(4200);
         let mut driver =
             PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
@@ -400,10 +400,10 @@
 
     #[test]
     fn aead_turn_runner_reserves_progress_for_outbound_priority_under_inbound_bulk() {
-        let owner = OwnerId::fmp(701);
+        let owner = fmp_owner(701);
         let open_key = 13;
         let seal_key = 14;
-        let path = TransportPath::new(7010);
+        let path = live_path(7010);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(900));
         mover
@@ -461,7 +461,7 @@
 
     #[test]
     fn aead_turn_runner_missing_keys_retires_failed_work_and_releases_in_flight() {
-        let owner = OwnerId::fsp(71);
+        let owner = fsp_owner(71);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
         mover
@@ -493,7 +493,7 @@
 
     #[test]
     fn rekey_clears_owner_crypto_keys_and_restarts_send_counter() {
-        let owner = OwnerId::fmp(72);
+        let owner = fmp_owner(72);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(99));
         mover
@@ -529,11 +529,11 @@
 
     #[test]
     fn owner_tracks_inbound_path_drift_and_uses_latest_path_for_outbound_transport() {
-        let owner = OwnerId::fmp(73);
+        let owner = fmp_owner(73);
         let open_key = 21;
         let seal_key = 22;
-        let path_a = TransportPath::new(100);
-        let path_b = TransportPath::new(200);
+        let path_a = live_path(100);
+        let path_b = live_path(200);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(500));
         mover
@@ -611,9 +611,9 @@
 
     #[test]
     fn stale_generation_does_not_move_owner_path() {
-        let owner = OwnerId::fsp(74);
-        let old_path = TransportPath::new(10);
-        let stale_path = TransportPath::new(11);
+        let owner = fsp_owner(74);
+        let old_path = live_path(10);
+        let stale_path = live_path(11);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(2, 8));
         mover
@@ -647,7 +647,7 @@
 
     #[test]
     fn owner_tracks_inbound_activity_only_for_reserved_packets() {
-        let owner = OwnerId::fsp(75);
+        let owner = fsp_owner(75);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
 
@@ -700,7 +700,7 @@
 
     #[test]
     fn owner_tracks_outbound_activity_only_for_reserved_packets() {
-        let owner = OwnerId::fmp(76);
+        let owner = fmp_owner(76);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(7));
 
@@ -753,7 +753,7 @@
 
     #[test]
     fn hard_event_liveness_state_stays_owner_owned_across_rekey() {
-        let owner = OwnerId::fmp(77);
+        let owner = fmp_owner(77);
         let mut state = OwnerState::new(owner, OwnerConfig::new(1, 8));
 
         state.record_hard_event(ActivityTick::new(100));
@@ -770,10 +770,10 @@
 
     #[test]
     fn runtime_turn_driver_runs_classified_inbound_and_outbound_once() {
-        let owner = OwnerId::fmp(78);
+        let owner = fmp_owner(78);
         let open_key = 31;
         let seal_key = 32;
-        let path = TransportPath::new(7800);
+        let path = live_path(7800);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(300));
         driver
@@ -841,7 +841,7 @@
 
     #[test]
     fn completion_only_turn_retires_worker_completion_without_new_dispatch() {
-        let owner = OwnerId::fmp(80);
+        let owner = fmp_owner(80);
         let open_key = 80;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
@@ -902,7 +902,7 @@
 
     #[test]
     fn completion_source_pump_reports_completion_activity_before_output_is_ready() {
-        let owner = OwnerId::fmp(84);
+        let owner = fmp_owner(84);
         let open_key = 84;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
@@ -1006,7 +1006,7 @@
 
     #[test]
     fn completion_batch_source_preserves_leftover_batch_order_when_limited() {
-        let owner = OwnerId::fmp(85);
+        let owner = fmp_owner(85);
         let open_key = 85;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
@@ -1099,7 +1099,7 @@
 
     #[test]
     fn completion_only_turn_retires_out_of_order_completions_in_owner_order() {
-        let owner = OwnerId::fmp(81);
+        let owner = fmp_owner(81);
         let open_key = 81;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
@@ -1186,7 +1186,7 @@
 
     #[test]
     fn completion_only_turn_drops_stale_generation_and_unblocks_newer_completion() {
-        let owner = OwnerId::fmp(82);
+        let owner = fmp_owner(82);
         let open_key = 82;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
@@ -1263,9 +1263,9 @@
 
     #[test]
     fn completion_only_turn_reserves_priority_progress_after_bulk_completion() {
-        let owner = OwnerId::fmp(83);
+        let owner = fmp_owner(83);
         let seal_key = 83;
-        let path = TransportPath::new(8300);
+        let path = live_path(8300);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             owner,
@@ -1362,7 +1362,7 @@
         let fmp_owner = OwnerId::fmp_node(next_hop);
         let fsp_key = 81;
         let fmp_key = 82;
-        let fmp_path = TransportPath::new(8200);
+        let fmp_path = live_path(8200);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(70));
@@ -1443,7 +1443,7 @@
 
     #[test]
     fn runtime_turn_driver_reports_admission_and_crypto_drops() {
-        let owner = OwnerId::fsp(79);
+        let owner = fsp_owner(79);
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(1, 1));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
 
@@ -1497,7 +1497,7 @@
 
     #[test]
     fn runtime_turn_driver_reuses_work_and_output_buffers() {
-        let owner = OwnerId::fsp(80);
+        let owner = fsp_owner(80);
         let key = 41;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(20));
@@ -1560,7 +1560,7 @@
                 packet.remote_addr(),
                 &TransportAddr::from_string("198.51.100.9:9000")
             );
-            assert_eq!(packet.path(), TransportPath::new(9005));
+            assert_eq!(packet.path(), live_path(9005));
             assert_eq!(packet.activity_tick(), Some(ActivityTick::new(123_456)));
             assert_eq!(
                 packet.payload_len(),

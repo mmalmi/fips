@@ -883,7 +883,7 @@ async fn poll_nostr_discovery_established_fresh_bootstrap_data_skips_redundant_t
         1_000,
         true,
     );
-    session.record_sent(512);
+    session.record_sent_batch(1, 512);
     session.touch_outbound_frame(now_ms);
     session.record_recv(512);
     session.touch_inbound_data_frame(now_ms);

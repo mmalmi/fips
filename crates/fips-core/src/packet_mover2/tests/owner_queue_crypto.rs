@@ -1,7 +1,7 @@
     #[test]
     fn happy_path_dispatches_fmp_and_fsp_packets() {
-        let fmp = OwnerId::fmp(7);
-        let fsp = OwnerId::fsp(7);
+        let fmp = fmp_owner(7);
+        let fsp = fsp_owner(7);
         let key = 7;
         let mut mover = mover();
         mover.register_owner(fmp, OwnerConfig::new(1, 8));
@@ -67,7 +67,7 @@
             FSP_HEADER_SIZE + 2 * std::mem::size_of::<u16>()
         );
 
-        let owner = OwnerId::fmp(77);
+        let owner = fmp_owner(77);
         let packet = SocketPacket::from_fmp_established_wire(
             owner,
             5,
@@ -211,7 +211,7 @@
 
     #[test]
     fn priority_admission_keeps_reserved_progress_when_bulk_is_full() {
-        let owner = OwnerId::fsp(1);
+        let owner = fsp_owner(1);
         let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1));
         mover.register_owner(owner, OwnerConfig::new(1, 8));
 
@@ -254,7 +254,7 @@
 
     #[test]
     fn turn_runner_batches_admission_and_reuses_work_buffer() {
-        let owner = OwnerId::fsp(11);
+        let owner = fsp_owner(11);
         let key = 11;
         let mut mover = PacketMover2::new(AdmissionConfig::new(2, 4));
         mover.register_owner(owner, OwnerConfig::new(1, 8));
@@ -308,7 +308,7 @@
 
     #[test]
     fn owner_retires_worker_completions_in_owner_order() {
-        let owner = OwnerId::fsp(9);
+        let owner = fsp_owner(9);
         let key = 9;
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
@@ -357,7 +357,7 @@
 
     #[test]
     fn owner_defers_in_flight_overflow_and_still_rejects_replay() {
-        let owner = OwnerId::fsp(3);
+        let owner = fsp_owner(3);
         let key = 3;
         let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
         mover.register_owner(owner, OwnerConfig::new(1, 1));
@@ -435,7 +435,7 @@
 
     #[test]
     fn owner_bulk_in_flight_cap_preserves_priority_reservations() {
-        let owner = OwnerId::fsp(33);
+        let owner = fsp_owner(33);
         let mut inbound =
             OwnerState::new(owner, OwnerConfig::new(1, 4).with_bulk_in_flight_limit(2));
 
@@ -501,7 +501,7 @@
 
     #[test]
     fn outbound_dispatch_preserves_priority_when_bulk_in_flight_cap_is_full() {
-        let owner = OwnerId::fsp(36);
+        let owner = fsp_owner(36);
         let mut mover = PacketMover2::new(AdmissionConfig::new(8, 8));
         mover.register_owner(
             owner,
@@ -545,7 +545,7 @@
 
     #[test]
     fn stale_generation_is_dropped_before_dispatch_and_at_retire() {
-        let owner = OwnerId::fmp(4);
+        let owner = fmp_owner(4);
         let key = 4;
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
@@ -602,7 +602,7 @@
 
     #[test]
     fn tun_endpoint_and_transport_outputs_keep_owner_order() {
-        let owner = OwnerId::fsp(42);
+        let owner = fsp_owner(42);
         let key = 42;
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
@@ -652,8 +652,8 @@
 
     #[test]
     fn stateless_aead_worker_opens_fmp_and_fsp_packets() {
-        let fmp = OwnerId::fmp(77);
-        let fsp = OwnerId::fsp(88);
+        let fmp = fmp_owner(77);
+        let fsp = fsp_owner(88);
         let key = 9;
         let mut mover = mover();
         mover.register_owner(fmp, OwnerConfig::new(1, 8));
@@ -707,7 +707,7 @@
 
     #[test]
     fn stateless_aead_worker_crypto_failure_retires_in_owner_order() {
-        let owner = OwnerId::fmp(91);
+        let owner = fmp_owner(91);
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
         mover
@@ -763,8 +763,8 @@
 
     #[test]
     fn outbound_seal_worker_builds_fmp_and_fsp_wire_from_owner_reserved_counters() {
-        let fmp = OwnerId::fmp(77);
-        let fsp = OwnerId::fsp(88);
+        let fmp = fmp_owner(77);
+        let fsp = fsp_owner(88);
         let key = 6;
         let mut mover = mover();
         mover.register_owner(fmp, OwnerConfig::new(1, 8).with_next_send_counter(10));
@@ -835,7 +835,7 @@
 
     #[test]
     fn outbound_owner_spends_fsp_coords_warmup_on_reserved_packets() {
-        let owner = OwnerId::fsp(89);
+        let owner = fsp_owner(89);
         let coords_prefix = empty_fsp_coords_prefix();
         let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
         mover.register_owner(
@@ -877,7 +877,7 @@
 
     #[test]
     fn outbound_owner_reserves_counters_after_priority_overtakes_bulk() {
-        let owner = OwnerId::fsp(33);
+        let owner = fsp_owner(33);
         let mut mover = PacketMover2::new(AdmissionConfig::new(2, 1));
         mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(40));
 
@@ -924,7 +924,7 @@
 
     #[test]
     fn outbound_owner_uses_shared_send_counter_authority() {
-        let owner = OwnerId::fsp(34);
+        let owner = fsp_owner(34);
         let authority = crate::noise::SendCounterAuthority::new_for_test(90);
         let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
         mover.register_owner(
@@ -957,7 +957,7 @@
 
     #[test]
     fn outbound_owner_live_config_refresh_updates_existing_owner() {
-        let owner = OwnerId::fsp(35);
+        let owner = fsp_owner(35);
         let stale_authority = crate::noise::SendCounterAuthority::new_for_test(35);
         let refreshed_authority = crate::noise::SendCounterAuthority::new_for_test(350);
         let coords_prefix = empty_fsp_coords_prefix();
@@ -993,7 +993,7 @@
 
     #[test]
     fn outbound_completions_retire_in_owner_order() {
-        let owner = OwnerId::fmp(44);
+        let owner = fmp_owner(44);
         let key = 7;
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(5));
@@ -1040,8 +1040,8 @@
 
     #[test]
     fn outbound_wire_build_rejects_mismatched_protocol_and_plaintext_fsp() {
-        let fmp_owner = OwnerId::fmp(12);
-        let fsp_owner = OwnerId::fsp(12);
+        let fmp_owner = fmp_owner(12);
+        let fsp_owner = fsp_owner(12);
         let mut fmp_state =
             OwnerState::new(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(1));
         let mismatch = OutboundPacket::fsp(fmp_owner, 1, PacketClass::Bulk, 0, b"body".to_vec());
