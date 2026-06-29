@@ -35,7 +35,7 @@ fn test_identity_cache_populated_on_promote() {
 #[tokio::test]
 async fn test_tun_outbound_established_session() {
     // Two directly connected nodes, session established.
-    // Inject IPv6 packet via handle_tun_outbound on Node 0,
+    // Inject IPv6 packet via PM2's TUN outbound queue on Node 0,
     // verify plaintext arrives at Node 1's tun_tx.
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
@@ -72,7 +72,7 @@ async fn test_tun_outbound_established_session() {
     let test_payload = b"data-plane-test-12345";
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, test_payload);
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
 
     // Verify plaintext arrived at Node 1's TUN
     let delivered = recv_tun_packet_while_draining(
@@ -117,7 +117,7 @@ async fn test_tun_outbound_triggers_session_initiation() {
     let test_payload = b"trigger-session-test";
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, test_payload);
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
 
     // Session should now be initiating
     assert_eq!(nodes[0].node.session_count(), 1);

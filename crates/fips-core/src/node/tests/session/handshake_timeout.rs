@@ -177,7 +177,7 @@ async fn test_session_awaiting_msg3_timeout() {
 async fn test_tun_outbound_path_mtu_generates_ptb() {
     // When a session's PathMtuState reports a lower MTU than the local
     // transport (simulating a bottleneck learned via MtuExceeded signals),
-    // handle_tun_outbound should generate ICMPv6 Packet Too Big for
+    // PM2 TUN outbound should generate ICMPv6 Packet Too Big for
     // oversized packets instead of forwarding them.
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
@@ -243,7 +243,7 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
         "packet must fit local MTU"
     );
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet).await;
 
     // Verify ICMPv6 Packet Too Big was generated
     let ptb_messages: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
@@ -289,7 +289,7 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     let fitting_packet = build_ipv6_packet(&src_fips, &dst_fips, &fitting_payload);
     assert!(fitting_packet.len() <= reduced_ipv6_mtu);
 
-    nodes[0].node.handle_tun_outbound(fitting_packet).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, fitting_packet).await;
 
     // No PTB should be generated for a fitting packet
     let ptb_messages2: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx2.try_recv().ok()).collect();

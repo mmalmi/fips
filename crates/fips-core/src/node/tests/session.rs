@@ -168,6 +168,18 @@ async fn send_endpoint_data_via_pm2(
     Ok(())
 }
 
+fn enqueue_tun_packet_via_pm2(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
+    nodes[index]
+        .tun_outbound_tx
+        .try_send(packet)
+        .expect("enqueue TUN outbound packet");
+}
+
+async fn send_tun_packet_via_pm2(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
+    enqueue_tun_packet_via_pm2(nodes, index, packet);
+    process_available_packets(nodes).await;
+}
+
 async fn recv_tun_packet_while_draining(
     nodes: &mut [TestNode],
     rx: &crate::upper::tun::TunRx,

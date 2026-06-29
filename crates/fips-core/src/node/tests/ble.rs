@@ -52,6 +52,9 @@ async fn make_test_node_ble(node_num: u8) -> TestNode {
 
     let io = MockBleIo::new("hci0", addr.clone());
     let (packet_tx, packet_rx) = packet_channel(256);
+    let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);
+    node.tun_outbound_rx = Some(tun_outbound_rx);
+
     let mut transport = BleTransport::new(transport_id, None, config, io, packet_tx);
     transport.start_async().await.unwrap();
 
@@ -64,6 +67,7 @@ async fn make_test_node_ble(node_num: u8) -> TestNode {
         node,
         transport_id,
         packet_rx,
+        tun_outbound_tx,
         addr: ta,
     }
 }
@@ -299,11 +303,14 @@ async fn test_ble_discovery() {
     let ta = addr.to_transport_addr();
     node.transports
         .insert(transport_id, TransportHandle::Ble(transport));
+    let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);
+    node.tun_outbound_rx = Some(tun_outbound_rx);
 
     let mut nodes = vec![TestNode {
         node,
         transport_id,
         packet_rx,
+        tun_outbound_tx,
         addr: ta,
     }];
     cleanup_nodes(&mut nodes).await;

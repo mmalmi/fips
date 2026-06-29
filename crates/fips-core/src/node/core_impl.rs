@@ -113,7 +113,6 @@ impl Node {
             index_allocator: IndexAllocator::new(),
             pending_outbound: PendingOutboundHandshakes::default(),
             msg1_rate_limiter,
-            #[cfg(test)]
             icmp_rate_limiter: IcmpRateLimiter::new(),
             routing_error_rate_limiter: RoutingErrorRateLimiter::new(),
             coords_response_rate_limiter: RoutingErrorRateLimiter::with_interval(
@@ -252,7 +251,6 @@ impl Node {
             index_allocator: IndexAllocator::new(),
             pending_outbound: PendingOutboundHandshakes::default(),
             msg1_rate_limiter,
-            #[cfg(test)]
             icmp_rate_limiter: IcmpRateLimiter::new(),
             routing_error_rate_limiter: RoutingErrorRateLimiter::new(),
             coords_response_rate_limiter: RoutingErrorRateLimiter::with_interval(

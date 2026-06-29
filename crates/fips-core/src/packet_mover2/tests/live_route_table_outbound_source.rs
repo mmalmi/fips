@@ -97,6 +97,8 @@
             }
         );
         assert_eq!(outbound[0].payload.as_ref(), valid.as_slice());
+        let deferred = source.take_tun_deferred_packets();
+        assert_eq!(deferred, vec![unknown.clone()]);
         let drops = source.take_tun_outbound_drops();
         assert_eq!(
             drops
@@ -104,14 +106,13 @@
                 .map(PacketMover2TunOutboundDrop::reason)
                 .collect::<Vec<_>>(),
             vec![
-                PacketMover2TunOutboundDropReason::NoRoute,
                 PacketMover2TunOutboundDropReason::InvalidPacket,
-                PacketMover2TunOutboundDropReason::MtuExceeded,
+                PacketMover2TunOutboundDropReason::MtuExceeded { mtu: 64 },
             ]
         );
-        assert_eq!(drops[0].payload_len(), unknown.len());
-        assert_eq!(drops[1].payload_len(), invalid.len());
-        assert_eq!(drops[2].payload_len(), oversize.len());
+        assert_eq!(drops[0].payload_len(), invalid.len());
+        assert_eq!(drops[1].payload_len(), oversize.len());
+        assert_eq!(drops[1].packet(), oversize.as_slice());
     }
 
     #[test]
@@ -825,4 +826,3 @@
         assert!(source.take_endpoint_deferred_commands().is_empty());
         assert!(source.take_tun_outbound_drops().is_empty());
     }
-

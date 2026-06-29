@@ -87,6 +87,10 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
+        if endpoint_limit > 0 || tun_limit > 0 {
+            self.sync_packet_mover2_established_fsp_owners();
+        }
+
         let sessions = &self.sessions;
         let identity_cache = &self.identity_cache;
         let endpoint_resolver = |source_addr: &NodeAddr| {
@@ -192,6 +196,15 @@ impl Node {
             if self.sessions.record_packet_mover2_endpoint_routed(routed) {
                 processed += 1;
             }
+        }
+        for drop in turn.tun_outbound_drops() {
+            if self.process_packet_mover2_tun_outbound_drop(drop) {
+                processed += 1;
+            }
+        }
+        for packet in self.packet_mover2.take_deferred_tun_packets() {
+            self.handle_packet_mover2_deferred_tun_packet(packet).await;
+            processed += 1;
         }
         for command in self.packet_mover2.take_deferred_endpoint_commands() {
             self.handle_packet_mover2_deferred_endpoint_command(command)
@@ -345,6 +358,26 @@ impl Node {
         true
     }
 
+    fn process_packet_mover2_tun_outbound_drop(
+        &mut self,
+        drop: &crate::packet_mover2::PacketMover2TunOutboundDrop,
+    ) -> bool {
+        if drop.packet().is_empty() {
+            return false;
+        }
+        match drop.reason() {
+            crate::packet_mover2::PacketMover2TunOutboundDropReason::MtuExceeded { mtu } => {
+                self.send_icmpv6_packet_too_big(drop.packet(), mtu);
+                true
+            }
+            crate::packet_mover2::PacketMover2TunOutboundDropReason::NoRoute => {
+                self.send_icmpv6_dest_unreachable(drop.packet());
+                true
+            }
+            crate::packet_mover2::PacketMover2TunOutboundDropReason::InvalidPacket => false,
+        }
+    }
+
     async fn process_packet_mover2_fmp_link_ingress(
         &mut self,
         ingress: crate::packet_mover2::PacketMover2FmpLinkIngress,
@@ -431,6 +464,7 @@ impl Node {
             .saturating_add(turn.fsp_local_session_ingress().len())
             .saturating_add(turn.fsp_session_ingress().len())
             .saturating_add(turn.endpoint_deferred_commands())
+            .saturating_add(turn.tun_deferred_packets())
     }
 
     pub(in crate::node) fn observe_packet_mover2_turn(
@@ -454,6 +488,7 @@ impl Node {
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
                 tun_outbound_drops = turn.tun_outbound_drops().len(),
                 endpoint_command_drops = turn.endpoint_command_drops().len(),
+                tun_deferred_packets = turn.tun_deferred_packets(),
                 packet_drops = turn.drops().len(),
                 transport_dropped = turn.transport_dropped(),
                 "packet mover2 turn reported drops"
@@ -486,6 +521,7 @@ impl Node {
             outputs_sent = summary.outputs_sent(),
             transport_sent = turn.transport_sent(),
             endpoint_deferred = turn.endpoint_deferred_commands(),
+            tun_deferred = turn.tun_deferred_packets(),
             fmp_control_ingress = turn.fmp_control_ingress().len(),
             fmp_link_ingress = turn.fmp_link_ingress().len(),
             fsp_coord_warmups = turn.fsp_coord_warmups().len(),

@@ -486,6 +486,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     tun_source_drained: usize,
     endpoint_source_drained: usize,
     endpoint_deferred_commands: usize,
+    tun_deferred_packets: usize,
     output_drops: Vec<PacketMover2OutputDrop>,
     drops: Vec<PacketDrop>,
     transport_planned: usize,
@@ -512,6 +513,7 @@ impl PacketMover2LiveNodeTurn {
             tun_source_drained: 0,
             endpoint_source_drained: 0,
             endpoint_deferred_commands: 0,
+            tun_deferred_packets: 0,
             output_drops: turn.output_drops().to_vec(),
             drops: turn.drops().to_vec(),
             transport_planned: 0,
@@ -673,6 +675,14 @@ impl PacketMover2LiveNodeTurn {
         self.endpoint_deferred_commands = count;
     }
 
+    pub(crate) fn tun_deferred_packets(&self) -> usize {
+        self.tun_deferred_packets
+    }
+
+    fn set_tun_deferred_packets(&mut self, count: usize) {
+        self.tun_deferred_packets = count;
+    }
+
     pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {
         &self.output_drops
     }
@@ -713,6 +723,7 @@ impl PacketMover2LiveNodeTurn {
             || self.tun_source_drained > 0
             || self.endpoint_source_drained > 0
             || self.endpoint_deferred_commands > 0
+            || self.tun_deferred_packets > 0
             || !self.output_drops.is_empty()
             || !self.drops.is_empty()
             || self.transport_planned > 0

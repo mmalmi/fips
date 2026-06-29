@@ -98,14 +98,4 @@ impl Node {
             }
         }
     }
-
-    #[cfg(test)]
-    fn session_send_needs_path_recovery(error: &NodeError, dest_addr: &NodeAddr) -> bool {
-        matches!(
-            error,
-            NodeError::SendFailed { node_addr, reason }
-                if node_addr == dest_addr && reason == "no route to destination"
-        ) || error.is_local_route_unavailable()
-    }
-
 }

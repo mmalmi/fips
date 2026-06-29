@@ -57,6 +57,7 @@ pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
     endpoint_deferred_commands: Vec<NodeEndpointCommand>,
     endpoint_routed_destinations: Vec<PacketMover2EndpointRoutedDestination>,
     tun_drops: Vec<PacketMover2TunOutboundDrop>,
+    tun_deferred_packets: Vec<Vec<u8>>,
     endpoint_drained: usize,
     tun_drained: usize,
     endpoint_stale_bulk_drop_ms: u64,
@@ -68,6 +69,7 @@ struct PacketMover2RouteTableOutboundBuffers {
     endpoint_deferred_commands: Vec<NodeEndpointCommand>,
     endpoint_routed_destinations: Vec<PacketMover2EndpointRoutedDestination>,
     tun_drops: Vec<PacketMover2TunOutboundDrop>,
+    tun_deferred_packets: Vec<Vec<u8>>,
 }
 
 impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
@@ -93,6 +95,7 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
             endpoint_deferred_commands: Vec::new(),
             endpoint_routed_destinations: Vec::new(),
             tun_drops: Vec::new(),
+            tun_deferred_packets: Vec::new(),
             endpoint_drained: 0,
             tun_drained: 0,
             endpoint_stale_bulk_drop_ms: crate::node::endpoint_stale_bulk_drop_ms(),
@@ -111,6 +114,7 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         self.endpoint_deferred_commands = buffers.endpoint_deferred_commands;
         self.endpoint_routed_destinations = buffers.endpoint_routed_destinations;
         self.tun_drops = buffers.tun_drops;
+        self.tun_deferred_packets = buffers.tun_deferred_packets;
         self
     }
 
@@ -126,6 +130,7 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
             endpoint_deferred_commands: std::mem::take(&mut self.endpoint_deferred_commands),
             endpoint_routed_destinations: std::mem::take(&mut self.endpoint_routed_destinations),
             tun_drops: std::mem::take(&mut self.tun_drops),
+            tun_deferred_packets: std::mem::take(&mut self.tun_deferred_packets),
         }
     }
 
@@ -145,6 +150,10 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
 
     fn take_tun_outbound_drops(&mut self) -> Vec<PacketMover2TunOutboundDrop> {
         std::mem::take(&mut self.tun_drops)
+    }
+
+    fn take_tun_deferred_packets(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.tun_deferred_packets)
     }
 
     fn take_firsts(&mut self) -> PacketMover2LiveOutboundFirsts {
@@ -352,6 +361,7 @@ where
                     packet,
                     self.routes,
                     &mut self.tun_drops,
+                    &mut self.tun_deferred_packets,
                     &mut push,
                 );
                 drained += 1;
@@ -365,6 +375,7 @@ where
                 packet,
                 self.routes,
                 &mut self.tun_drops,
+                &mut self.tun_deferred_packets,
                 &mut push,
             );
             drained += 1;

@@ -332,6 +332,7 @@ impl PacketMover2TurnDriver {
         tun_outbound_rx: &mut TunOutboundRx,
         tun_limit: usize,
         deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         endpoint_resolver: Resolver,
@@ -354,6 +355,7 @@ impl PacketMover2TurnDriver {
             tun_limit,
             PacketMover2LiveOutboundFirsts::default(),
             deferred_endpoint_commands,
+            deferred_tun_packets,
             tun_tx,
             endpoint_tx,
             endpoint_resolver,
@@ -375,6 +377,7 @@ impl PacketMover2TurnDriver {
         tun_limit: usize,
         outbound_firsts: PacketMover2LiveOutboundFirsts,
         deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         endpoint_resolver: Resolver,
@@ -463,11 +466,14 @@ impl PacketMover2TurnDriver {
             .await;
         let endpoint_deferred_count = outbound_buffers.endpoint_deferred_commands.len();
         deferred_endpoint_commands.append(&mut outbound_buffers.endpoint_deferred_commands);
+        let tun_deferred_count = outbound_buffers.tun_deferred_packets.len();
+        deferred_tun_packets.append(&mut outbound_buffers.tun_deferred_packets);
         report.set_endpoint_command_drops(outbound_buffers.endpoint_drops);
         report.set_endpoint_source_drained(endpoint_drained);
         report.set_endpoint_routed_destinations(outbound_buffers.endpoint_routed_destinations);
         report.set_endpoint_deferred_commands(endpoint_deferred_count);
         report.set_tun_outbound_drops(outbound_buffers.tun_drops);
+        report.set_tun_deferred_packets(tun_deferred_count);
         report.set_tun_source_drained(tun_drained);
         report
     }

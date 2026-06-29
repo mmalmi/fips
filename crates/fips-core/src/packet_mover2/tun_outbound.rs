@@ -225,7 +225,9 @@ impl PacketMover2TunDestinationRoute {
             .max_packet_len
             .is_some_and(|max_packet_len| packet.len() > max_packet_len)
         {
-            return Err(PacketMover2TunOutboundDropReason::MtuExceeded);
+            return Err(PacketMover2TunOutboundDropReason::MtuExceeded {
+                mtu: self.max_packet_len.unwrap_or_default() as u32,
+            });
         }
         Ok(self.route.clone())
     }
@@ -235,21 +237,36 @@ impl PacketMover2TunDestinationRoute {
 pub(crate) enum PacketMover2TunOutboundDropReason {
     InvalidPacket,
     NoRoute,
-    MtuExceeded,
+    MtuExceeded { mtu: u32 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2TunOutboundDrop {
+    packet: Vec<u8>,
     payload_len: usize,
     reason: PacketMover2TunOutboundDropReason,
 }
 
 impl PacketMover2TunOutboundDrop {
-    fn new(payload_len: usize, reason: PacketMover2TunOutboundDropReason) -> Self {
+    fn new(packet: Vec<u8>, reason: PacketMover2TunOutboundDropReason) -> Self {
+        let payload_len = packet.len();
+        Self::with_payload_len(packet, payload_len, reason)
+    }
+
+    fn with_payload_len(
+        packet: Vec<u8>,
+        payload_len: usize,
+        reason: PacketMover2TunOutboundDropReason,
+    ) -> Self {
         Self {
+            packet,
             payload_len,
             reason,
         }
+    }
+
+    pub(crate) fn packet(&self) -> &[u8] {
+        &self.packet
     }
 
     pub(crate) fn payload_len(&self) -> usize {
@@ -284,6 +301,7 @@ fn route_tun_outbound_packet_with_router<R, F>(
     packet: Vec<u8>,
     router: &mut R,
     drops: &mut Vec<PacketMover2TunOutboundDrop>,
+    deferred_packets: &mut Vec<Vec<u8>>,
     mut push: F,
 ) where
     R: PacketMover2TunOutboundRouter,
@@ -293,8 +311,21 @@ fn route_tun_outbound_packet_with_router<R, F>(
     match router.route_tun_outbound(&packet) {
         Ok(route) => match route.into_outbound_packet(packet) {
             Ok(packet) => push(packet.with_activity_tick(ActivityTick::new(crate::time::now_ms()))),
-            Err(reason) => drops.push(PacketMover2TunOutboundDrop::new(payload_len, reason)),
+            Err(reason) => {
+                drops.push(PacketMover2TunOutboundDrop::with_payload_len(
+                    Vec::new(),
+                    payload_len,
+                    reason,
+                ));
+            }
         },
-        Err(reason) => drops.push(PacketMover2TunOutboundDrop::new(packet.len(), reason)),
+        Err(PacketMover2TunOutboundDropReason::NoRoute) if tun_packet_can_defer_no_route(&packet) => {
+            deferred_packets.push(packet);
+        }
+        Err(reason) => drops.push(PacketMover2TunOutboundDrop::new(packet, reason)),
     }
+}
+
+fn tun_packet_can_defer_no_route(packet: &[u8]) -> bool {
+    FipsTunDestinationPrefix::from_ipv6_packet(packet).is_ok()
 }

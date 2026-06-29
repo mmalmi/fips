@@ -172,7 +172,6 @@ impl Node {
         unreachable!("bounded FMP outbound continuation loop must return")
     }
 
-    #[cfg(test)]
     pub(in crate::node) async fn send_packet_mover2_pending_tun_packet(
         &mut self,
         dest_addr: &NodeAddr,
@@ -436,7 +435,7 @@ impl Node {
         for continuation in 0..=PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS {
             let summary = turn.summary();
             let sent = Self::packet_mover2_pending_outbound_sent(&turn);
-            let deferred = turn.endpoint_deferred_commands() > 0;
+            let deferred = turn.endpoint_deferred_commands() > 0 || turn.tun_deferred_packets() > 0;
             let failed = turn.has_failures();
             let needs_continuation = Self::packet_mover2_pending_outbound_needs_continuation(&turn);
 
@@ -552,6 +551,11 @@ impl Node {
                 processed += 1;
             }
         }
+        // Pending flush callers already own the packet they are trying to send.
+        // If PM2 defers it again, drain it here and let the caller queue/recover.
+        for _packet in self.packet_mover2.take_deferred_tun_packets() {
+            processed += 1;
+        }
         for command in self.packet_mover2.take_deferred_endpoint_commands() {
             self.handle_packet_mover2_deferred_endpoint_command(command)
                 .await;
@@ -618,6 +622,17 @@ impl Node {
     pub(in crate::node) fn remove_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) {
         self.packet_mover2
             .unregister_owner(OwnerId::fsp_node(*node_addr));
+    }
+
+    pub(in crate::node) fn sync_packet_mover2_established_fsp_owners(&mut self) {
+        let established: Vec<NodeAddr> = self
+            .sessions
+            .iter()
+            .filter_map(|(node_addr, session)| session.is_established().then_some(*node_addr))
+            .collect();
+        for node_addr in established {
+            self.sync_packet_mover2_fsp_owner(&node_addr);
+        }
     }
 
     fn packet_mover2_fmp_owner_seed(
@@ -769,7 +784,8 @@ impl Node {
         .with_fmp_wrap(wrap);
         routes.push_tun_destination(PacketMover2LiveTunRoute::new(
             *node_addr,
-            PacketMover2TunDestinationRoute::new(tun),
+            PacketMover2TunDestinationRoute::new(tun)
+                .with_max_packet_len(self.packet_mover2_tun_max_packet_len(node_addr)),
         ));
 
         let endpoint =
@@ -819,6 +835,16 @@ impl Node {
         .with_ttl(self.config.node.session.default_ttl)
         .with_path_mtu(path_mtu);
         Some((wrap, next_hop))
+    }
+
+    fn packet_mover2_tun_max_packet_len(&self, dest_addr: &NodeAddr) -> usize {
+        let effective_mtu = self.effective_ipv6_mtu() as usize;
+        self.sessions
+            .get(dest_addr)
+            .and_then(|entry| entry.mmp())
+            .map(|mmp| crate::upper::icmp::effective_ipv6_mtu(mmp.path_mtu.current_mtu()) as usize)
+            .filter(|path_ipv6_mtu| *path_ipv6_mtu < effective_mtu)
+            .unwrap_or(effective_mtu)
     }
 
     fn packet_mover2_owner_in_flight_limit(&self) -> usize {

@@ -27,15 +27,15 @@ mod pending_queue_tests {
         node.config.node.session.pending_packets_per_dest = 2;
 
         let tun_dest = make_node_addr(0x41);
-        node.queue_pending_packet(tun_dest, vec![1]);
-        node.queue_pending_packet(tun_dest, vec![2]);
-        node.queue_pending_packet(tun_dest, vec![3]);
+        node.queue_pending_tun_packet(tun_dest, vec![1]);
+        node.queue_pending_tun_packet(tun_dest, vec![2]);
+        node.queue_pending_tun_packet(tun_dest, vec![3]);
         let tun_packets: Vec<Vec<u8>> = node
             .pending_session_traffic
-            .tun_packets_for(&tun_dest)
+            .take_tun_packets(&tun_dest)
             .expect("tun queue")
-            .iter()
-            .cloned()
+            .into_packets()
+            .into_iter()
             .collect();
         assert_eq!(tun_packets, vec![vec![2], vec![3]]);
 
@@ -69,18 +69,18 @@ mod pending_queue_tests {
 
     #[test]
     fn pending_tun_packet_queue_owns_drop_oldest_policy() {
-        let mut queue = crate::node::PendingTunPacketQueue::default();
+        let mut queue = crate::node::endpoint_traffic::PendingTunPacketQueue::default();
         assert!(!queue.push_bounded(vec![1], 1_000, 2).dropped_oldest());
         assert!(!queue.push_bounded(vec![2], 1_001, 2).dropped_oldest());
         assert!(queue.push_bounded(vec![3], 1_002, 2).dropped_oldest());
 
-        let packets: Vec<Vec<u8>> = queue.iter().cloned().collect();
+        let packets: Vec<Vec<u8>> = queue.into_packets().into_iter().collect();
         assert_eq!(packets, vec![vec![2], vec![3]]);
     }
 
     #[test]
     fn pending_tun_packet_queue_drops_stale_packets_on_fresh_drain() {
-        let mut queue = crate::node::PendingTunPacketQueue::default();
+        let mut queue = crate::node::endpoint_traffic::PendingTunPacketQueue::default();
         assert!(!queue.push_bounded(vec![1], 1_000, 8).dropped_oldest());
         assert!(!queue.push_bounded(vec![2], 3_500, 8).dropped_oldest());
 
@@ -141,16 +141,14 @@ mod pending_queue_tests {
                 .dropped_oldest()
         );
 
-        let packets: Vec<Vec<u8>> = queues
-            .tun_packets_for(&tun_dest)
-            .expect("accepted TUN queue")
-            .iter()
-            .cloned()
-            .collect();
-        assert_eq!(packets, vec![vec![5], vec![6]]);
-
         let removed = queues.remove_destination(&tun_dest);
-        assert_eq!(removed.tun_packets().map(|queue| queue.len()), Some(2));
+        let removed_tun: Vec<Vec<u8>> = removed
+            .into_tun_packets()
+            .expect("accepted TUN queue")
+            .into_packets()
+            .into_iter()
+            .collect();
+        assert_eq!(removed_tun, vec![vec![5], vec![6]]);
         assert!(queues.tun_packets_for(&tun_dest).is_none());
         assert!(!queues.has_traffic_for(&tun_dest));
         assert!(queues.endpoint_data_for(&endpoint_dest).is_some());
@@ -209,10 +207,10 @@ mod pending_queue_tests {
         assert_eq!(packets.pop_front().map(|packet| packet.into_packet()), Some(vec![1]));
         queues.restore_tun_packets(dest, packets);
         let restored_tun: Vec<Vec<u8>> = queues
-            .tun_packets_for(&dest)
+            .take_tun_packets(&dest)
             .expect("restored TUN queue")
-            .iter()
-            .cloned()
+            .into_packets()
+            .into_iter()
             .collect();
         assert_eq!(restored_tun, vec![vec![2]]);
 
@@ -248,8 +246,8 @@ mod pending_queue_tests {
 
         let accepted_tun_dest = make_node_addr(0x51);
         let rejected_tun_dest = make_node_addr(0x52);
-        node.queue_pending_packet(accepted_tun_dest, vec![1]);
-        node.queue_pending_packet(rejected_tun_dest, vec![2]);
+        node.queue_pending_tun_packet(accepted_tun_dest, vec![1]);
+        node.queue_pending_tun_packet(rejected_tun_dest, vec![2]);
         assert!(
             node.pending_session_traffic
                 .tun_packets_for(&accepted_tun_dest)

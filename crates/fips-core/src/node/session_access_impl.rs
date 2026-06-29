@@ -125,27 +125,13 @@ impl Node {
     }
 
     /// Count of destinations with queued TUN packets awaiting session setup.
-    #[cfg(test)]
     pub fn pending_tun_destinations(&self) -> usize {
         self.pending_session_traffic.tun_destination_count()
     }
 
-    /// Count of destinations with queued TUN packets awaiting session setup.
-    #[cfg(not(test))]
-    pub fn pending_tun_destinations(&self) -> usize {
-        0
-    }
-
     /// Total TUN packets queued across all destinations.
-    #[cfg(test)]
     pub fn pending_tun_total_packets(&self) -> usize {
         self.pending_session_traffic.tun_packet_count()
-    }
-
-    /// Total TUN packets queued across all destinations.
-    #[cfg(not(test))]
-    pub fn pending_tun_total_packets(&self) -> usize {
-        0
     }
 
     /// Iterate over retry state for diagnostics.

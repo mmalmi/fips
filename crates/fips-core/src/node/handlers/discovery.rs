@@ -311,13 +311,10 @@ impl Node {
                         .pending_session_traffic
                         .endpoint_data_for(&target)
                         .map_or(0, |p| p.len());
-                    #[cfg(test)]
                     let tun_packets = self
                         .pending_session_traffic
                         .tun_packets_for(&target)
                         .map_or(0, |p| p.len());
-                    #[cfg(not(test))]
-                    let tun_packets = 0usize;
                     debug!(
                         dest = %self.peer_display_name(&target),
                         queued_tun_packets = tun_packets,
@@ -902,10 +899,7 @@ impl Node {
             let failures = self.discovery_backoff.failure_count(&addr);
 
             let queued = self.pending_session_traffic.remove_destination(&addr);
-            #[cfg(test)]
             let pkt_count = queued.tun_packets().map_or(0, |p| p.len());
-            #[cfg(not(test))]
-            let pkt_count = 0usize;
             let endpoint_count = queued.endpoint_data().map_or(0, |p| p.len());
             info!(
                 target_node = %self.peer_display_name(&addr),
@@ -914,7 +908,6 @@ impl Node {
                 failures = failures,
                 "Discovery lookup timed out, destination unreachable"
             );
-            #[cfg(test)]
             if let Some(packets) = queued.into_tun_packets() {
                 for pkt in packets.into_packets() {
                     self.send_icmpv6_dest_unreachable(&pkt);

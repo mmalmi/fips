@@ -112,7 +112,6 @@ enum OutboundSessionState {
     Missing,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TunOutboundSessionDecision {
     Established,

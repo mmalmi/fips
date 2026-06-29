@@ -89,6 +89,7 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let resolver = |addr: &NodeAddr| (addr == &source_addr).then_some(source_peer);
 
@@ -103,6 +104,7 @@
                 &mut tun_outbound_rx,
                 0,
                 &mut deferred_endpoint_commands,
+                &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 resolver,
@@ -114,6 +116,7 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(deferred_tun_packets.is_empty());
         assert_eq!(turn.fmp_ingress_receipts().len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
         let receipt = &turn.fmp_ingress_receipts()[0];
@@ -239,6 +242,7 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let resolver = |addr: &NodeAddr| (addr == &source_addr).then_some(source_peer);
 
@@ -253,6 +257,7 @@
                 &mut tun_outbound_rx,
                 0,
                 &mut deferred_endpoint_commands,
+                &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 resolver,
@@ -348,6 +353,7 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
         let turn = driver
@@ -361,6 +367,7 @@
                 &mut tun_outbound_rx,
                 0,
                 &mut deferred_endpoint_commands,
+                &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 missing_endpoint_peer,
@@ -372,6 +379,7 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(deferred_tun_packets.is_empty());
         assert_eq!(turn.fmp_ingress_receipts().len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
         assert!(turn.fsp_session_ingress().is_empty());
@@ -446,6 +454,7 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
         let turn = driver
@@ -459,6 +468,7 @@
                 &mut tun_outbound_rx,
                 0,
                 &mut deferred_endpoint_commands,
+                &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 missing_endpoint_peer,
@@ -471,6 +481,7 @@
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outputs(), 0);
         assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(deferred_tun_packets.is_empty());
         assert!(turn.fmp_ingress_receipts().is_empty());
         assert_eq!(turn.fmp_link_ingress().len(), 1);
         let ingress = &turn.fmp_link_ingress()[0];

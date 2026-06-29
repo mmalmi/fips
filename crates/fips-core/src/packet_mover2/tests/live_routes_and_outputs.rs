@@ -552,6 +552,7 @@
             .try_send(tun_ipv6_packet(fmp_source, 48))
             .expect("enqueue TUN outbound packet");
         let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let resolver = |addr: &NodeAddr| {
             if addr == &fsp_source {
@@ -572,6 +573,7 @@
                 &mut tun_outbound_rx,
                 8,
                 &mut deferred_endpoint_commands,
+                &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 resolver,
@@ -586,6 +588,7 @@
         assert_eq!(turn.summary().outputs(), 3);
         assert_eq!(turn.summary().outputs_sent(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 1);
+        assert!(deferred_tun_packets.is_empty());
         assert_eq!(turn.transport_planned(), 1);
         assert_eq!(turn.transport_sent(), 0);
         assert_eq!(turn.transport_dropped(), 1);
@@ -663,6 +666,7 @@
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
         let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut raw_ingress = PacketMover2FmpPacketRxSource::new(&mut packet_rx);
 
@@ -677,6 +681,7 @@
                 &mut tun_outbound_rx,
                 8,
                 &mut deferred_endpoint_commands,
+                &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 missing_endpoint_peer,
@@ -691,6 +696,7 @@
         assert_eq!(turn.summary().outputs(), 1);
         assert_eq!(turn.summary().outputs_sent(), 1);
         assert_eq!(turn.summary().outputs_dropped(), 0);
+        assert!(deferred_tun_packets.is_empty());
         assert_eq!(turn.transport_planned(), 0);
         assert_eq!(turn.transport_sent(), 0);
         assert_eq!(turn.transport_dropped(), 0);

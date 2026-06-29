@@ -141,7 +141,7 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
     let dest_fips = crate::FipsAddress::from_node_addr(&dest_addr);
     let ipv6_packet = build_ipv6_packet(&src_fips, &dest_fips, b"link-dead-fallback-data");
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
     drain_to_quiescence(&mut nodes).await;
 
     let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();

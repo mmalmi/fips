@@ -198,6 +198,7 @@ pub(crate) struct PacketMover2LiveNode {
     driver: PacketMover2TurnDriver,
     routes: PacketMover2LiveRouteTable,
     deferred_endpoint_commands: Vec<NodeEndpointCommand>,
+    deferred_tun_packets: Vec<Vec<u8>>,
     empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
     empty_endpoint_priority_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
     empty_endpoint_bulk_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
@@ -213,6 +214,7 @@ impl PacketMover2LiveNode {
             driver: PacketMover2TurnDriver::new(config),
             routes: PacketMover2LiveRouteTable::default(),
             deferred_endpoint_commands: Vec::new(),
+            deferred_tun_packets: Vec::new(),
             empty_raw_ingress: VecDeque::new(),
             empty_endpoint_priority_rx,
             empty_endpoint_bulk_rx,
@@ -351,6 +353,10 @@ impl PacketMover2LiveNode {
         std::mem::take(&mut self.deferred_endpoint_commands)
     }
 
+    pub(crate) fn take_deferred_tun_packets(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.deferred_tun_packets)
+    }
+
     pub(crate) async fn pump_turn<RI, Resolver, Transports>(
         &mut self,
         raw_ingress: &mut RI,
@@ -422,6 +428,7 @@ impl PacketMover2LiveNode {
                 tun_limit,
                 outbound_firsts,
                 &mut self.deferred_endpoint_commands,
+                &mut self.deferred_tun_packets,
                 tun_tx,
                 endpoint_tx,
                 endpoint_resolver,
@@ -450,6 +457,7 @@ impl PacketMover2LiveNode {
             driver,
             routes,
             deferred_endpoint_commands,
+            deferred_tun_packets,
             empty_raw_ingress,
             empty_endpoint_priority_rx,
             empty_endpoint_bulk_rx,
@@ -470,6 +478,7 @@ impl PacketMover2LiveNode {
             tun_limit,
             outbound_firsts,
             deferred_endpoint_commands,
+            deferred_tun_packets,
             tun_tx,
             endpoint_tx,
             endpoint_resolver,

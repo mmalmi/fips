@@ -65,8 +65,6 @@ pub(crate) use endpoint_event::{
 };
 #[cfg(test)]
 pub(crate) use endpoint_traffic::PendingEndpointDataQueue;
-#[cfg(test)]
-pub(crate) use endpoint_traffic::PendingTunPacketQueue;
 #[cfg(all(test, unix))]
 pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
 pub(crate) use endpoint_traffic::{
@@ -116,7 +114,6 @@ use crate::transport::{
 };
 use crate::tree::TreeState;
 use crate::upper::hosts::HostMap;
-#[cfg(test)]
 use crate::upper::icmp_rate_limit::IcmpRateLimiter;
 use crate::upper::tun::{TunError, TunOutboundRx, TunState, TunTx};
 use crate::utils::index::{IndexAllocator, SessionIndex};
@@ -326,7 +323,6 @@ pub struct Node {
     /// Rate limiter for msg1 processing (DoS protection).
     msg1_rate_limiter: HandshakeRateLimiter,
     /// Rate limiter for ICMP Packet Too Big messages.
-    #[cfg(test)]
     icmp_rate_limiter: IcmpRateLimiter,
     /// Rate limiter for routing error signals (CoordsRequired / PathBroken).
     routing_error_rate_limiter: RoutingErrorRateLimiter,

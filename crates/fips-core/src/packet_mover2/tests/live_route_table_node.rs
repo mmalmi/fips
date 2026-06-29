@@ -266,6 +266,7 @@
                 .with_class(PacketClass::Mmp),
         );
         let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let resolver = |addr: &NodeAddr| {
             if addr == &fsp_source {
@@ -286,6 +287,7 @@
                 &mut tun_outbound_rx,
                 8,
                 &mut deferred_endpoint_commands,
+                &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 resolver,
@@ -297,6 +299,7 @@
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outbound_admitted(), 0);
+        assert!(deferred_tun_packets.is_empty());
         assert_eq!(turn.summary().outputs(), 1);
         assert_eq!(turn.summary().outputs_sent(), 1);
         assert_eq!(turn.summary().outputs_dropped(), 0);

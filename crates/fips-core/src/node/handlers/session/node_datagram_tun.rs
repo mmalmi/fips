@@ -1,5 +1,4 @@
 impl Node {
-    #[cfg(test)]
     const PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS: u64 = 2_000;
 
     fn deliver_endpoint_data(&mut self, delivery: EndpointDataDelivery) {
@@ -157,37 +156,22 @@ impl Node {
         crate::time::now_ms()
     }
 
-    // === Legacy Test TUN Outbound ===
-
-    #[cfg(test)]
-    /// Handle an outbound IPv6 packet from the TUN reader.
-    ///
-    /// Extracts the destination FipsAddress, looks up the NodeAddr and PublicKey
-    /// from the identity cache, and either sends through an established session
-    /// or initiates a new one (queuing the packet until established).
-    ///
-    /// Also performs MTU checking: if the packet (plus FIPS overhead) exceeds
-    /// the transport MTU, an ICMP Packet Too Big message is sent back to the
-    /// source and the packet is dropped.
-    pub(in crate::node) async fn handle_tun_outbound(&mut self, ipv6_packet: Vec<u8>) {
-        // Validate IPv6 header
+    pub(in crate::node) async fn handle_packet_mover2_deferred_tun_packet(
+        &mut self,
+        ipv6_packet: Vec<u8>,
+    ) {
         if ipv6_packet.len() < 40 || ipv6_packet[0] >> 4 != 6 {
             return;
         }
 
-        // Check if packet will fit after FIPS encapsulation
         let effective_mtu = self.effective_ipv6_mtu() as usize;
         if ipv6_packet.len() > effective_mtu {
             self.send_icmpv6_packet_too_big(&ipv6_packet, effective_mtu as u32);
             return;
         }
 
-        // Extract destination FipsAddress prefix (IPv6 dest bytes 1-15)
-        // IPv6 header: bytes 24-39 are dest addr, so prefix = bytes 25-39
         let mut prefix = [0u8; 15];
         prefix.copy_from_slice(&ipv6_packet[25..40]);
-
-        // Look up in identity cache
         let (dest_addr, dest_pubkey) = match self.lookup_by_fips_prefix(&prefix) {
             Some((addr, pk)) => (addr, pk),
             None => {
@@ -196,67 +180,71 @@ impl Node {
             }
         };
 
+        self.queue_packet_mover2_unrouted_tun_packet(dest_addr, dest_pubkey, ipv6_packet)
+            .await;
+    }
+
+    async fn queue_packet_mover2_unrouted_tun_packet(
+        &mut self,
+        dest_addr: NodeAddr,
+        dest_pubkey: secp256k1::PublicKey,
+        ipv6_packet: Vec<u8>,
+    ) {
         match self.sessions.tun_outbound_session_decision(
             &dest_addr,
-            effective_mtu,
+            self.effective_ipv6_mtu() as usize,
             ipv6_packet.len(),
         ) {
             TunOutboundSessionDecision::Established => {
-                if self.find_next_hop(&dest_addr).is_none() {
-                    self.queue_pending_packet(dest_addr, ipv6_packet);
-                    self.maybe_initiate_path_recovery_lookup(&dest_addr).await;
+                if self.find_next_hop(&dest_addr).is_some()
+                    && self
+                        .send_packet_mover2_pending_tun_packet(&dest_addr, ipv6_packet.clone())
+                        .await
+                        .is_ok()
+                {
                     return;
                 }
-                if let Err(e) = self
-                    .send_packet_mover2_pending_tun_packet(&dest_addr, ipv6_packet.clone())
-                    .await
-                {
-                    if Self::session_send_needs_path_recovery(&e, &dest_addr) {
-                        debug!(
-                            dest = %self.peer_display_name(&dest_addr),
-                            error = %e,
-                            "Established TUN session lost route; queueing packet and probing fallback"
-                        );
-                        self.queue_pending_packet(dest_addr, ipv6_packet);
-                        self.maybe_initiate_path_recovery_lookup(&dest_addr)
-                            .await;
-                    } else {
-                        debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Failed to send TUN packet via session");
-                    }
-                }
-                return;
+                self.queue_pending_tun_packet(dest_addr, ipv6_packet);
+                self.maybe_initiate_path_recovery_lookup(&dest_addr).await;
             }
             TunOutboundSessionDecision::EstablishedPathMtuExceeded { path_ipv6_mtu } => {
                 self.send_icmpv6_packet_too_big(&ipv6_packet, path_ipv6_mtu);
-                return;
             }
             TunOutboundSessionDecision::Pending => {
-                self.queue_pending_packet(dest_addr, ipv6_packet);
+                self.queue_pending_tun_packet(dest_addr, ipv6_packet);
                 let should_discover = self.config.node.routing.mode
                     == crate::config::RoutingMode::ReplyLearned
                     || self.find_next_hop(&dest_addr).is_none();
                 if should_discover {
                     self.maybe_initiate_lookup(&dest_addr).await;
                 }
-                return;
             }
-            TunOutboundSessionDecision::Missing => {}
+            TunOutboundSessionDecision::Missing => {
+                if self.find_next_hop(&dest_addr).is_none() {
+                    self.queue_pending_tun_packet(dest_addr, ipv6_packet);
+                    self.maybe_initiate_lookup(&dest_addr).await;
+                    return;
+                }
+                match self.initiate_session(dest_addr, dest_pubkey).await {
+                    Ok(()) => {}
+                    Err(NodeError::SendFailed { node_addr, reason })
+                        if node_addr == dest_addr && reason == "no route to destination" =>
+                    {
+                        self.queue_pending_tun_packet(dest_addr, ipv6_packet);
+                        self.maybe_initiate_lookup(&dest_addr).await;
+                        return;
+                    }
+                    Err(error) => {
+                        debug!(dest = %self.peer_display_name(&dest_addr), error = %error, "Failed to initiate deferred TUN session");
+                        return;
+                    }
+                }
+                self.queue_pending_tun_packet(dest_addr, ipv6_packet);
+            }
         }
-
-        // No session: initiate one and queue the packet.
-        // If session initiation fails (no route), trigger discovery and
-        // queue the packet for retry when discovery completes.
-        if let Err(e) = self.initiate_session(dest_addr, dest_pubkey).await {
-            debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Failed to initiate session, trying discovery");
-            self.maybe_initiate_lookup(&dest_addr).await;
-            self.queue_pending_packet(dest_addr, ipv6_packet);
-            return;
-        }
-        self.queue_pending_packet(dest_addr, ipv6_packet);
     }
 
     /// Send ICMPv6 Destination Unreachable back through TUN.
-    #[cfg(test)]
     pub(in crate::node) fn send_icmpv6_dest_unreachable(&self, original_packet: &[u8]) {
         use crate::FipsAddress;
         use crate::upper::icmp::{
@@ -280,7 +268,6 @@ impl Node {
     ///
     /// Rate-limited per source address to prevent ICMP floods from
     /// misconfigured applications sending repeated oversized packets.
-    #[cfg(test)]
     pub(in crate::node) fn send_icmpv6_packet_too_big(&mut self, original_packet: &[u8], mtu: u32) {
         use crate::upper::icmp::build_packet_too_big;
         use std::net::Ipv6Addr;
@@ -320,8 +307,7 @@ impl Node {
     }
 
     /// Queue a packet while waiting for session establishment.
-    #[cfg(test)]
-    fn queue_pending_packet(&mut self, dest_addr: NodeAddr, packet: Vec<u8>) {
+    fn queue_pending_tun_packet(&mut self, dest_addr: NodeAddr, packet: Vec<u8>) {
         let admission = self.pending_session_traffic.push_tun_packet(
             dest_addr,
             packet,
@@ -370,34 +356,31 @@ impl Node {
             return;
         }
 
-        #[cfg(test)]
-        {
-            if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
-                let (mut packets, stale_count) = packets.into_fresh_packets(
-                    Self::now_ms(),
-                    Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
+        if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
+            let (mut packets, stale_count) = packets.into_fresh_packets(
+                Self::now_ms(),
+                Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
+            );
+            if stale_count > 0 {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::PendingTunPacketDropped,
+                    stale_count as u64,
                 );
-                if stale_count > 0 {
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::PendingTunPacketDropped,
-                        stale_count as u64,
-                    );
-                    debug!(
-                        dest = %self.peer_display_name(dest_addr),
-                        dropped = stale_count,
-                        "Dropped stale queued TUN packets before session flush"
-                    );
-                }
-                while let Some(packet) = packets.pop_front() {
-                    if let Err(e) = self
-                        .send_packet_mover2_pending_tun_packet(dest_addr, packet.into_packet())
-                        .await
-                    {
-                        debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
-                        self.pending_session_traffic
-                            .restore_tun_packets(*dest_addr, packets);
-                        break;
-                    }
+                debug!(
+                    dest = %self.peer_display_name(dest_addr),
+                    dropped = stale_count,
+                    "Dropped stale queued TUN packets before session flush"
+                );
+            }
+            while let Some(packet) = packets.pop_front() {
+                if let Err(e) = self
+                    .send_packet_mover2_pending_tun_packet(dest_addr, packet.into_packet())
+                    .await
+                {
+                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+                    self.pending_session_traffic
+                        .restore_tun_packets(*dest_addr, packets);
+                    break;
                 }
             }
         }

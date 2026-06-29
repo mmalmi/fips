@@ -676,7 +676,7 @@ async fn session_100_nodes() {
         // Forward: initiator → responder
         let fwd_payload = format!("fwd-{}", pair_idx).into_bytes();
         let fwd_ipv6 = build_ipv6_packet(&src_fips, &dst_fips, &fwd_payload);
-        nodes[src].node.handle_tun_outbound(fwd_ipv6).await;
+        send_tun_packet_via_pm2(&mut nodes, src, fwd_ipv6).await;
         send_forward_ok += 1;
 
         drain_to_quiescence(&mut nodes).await;
@@ -685,7 +685,7 @@ async fn session_100_nodes() {
         // (Responder should already be Established after XK msg3)
         let rev_payload = format!("rev-{}", pair_idx).into_bytes();
         let rev_ipv6 = build_ipv6_packet(&dst_fips, &src_fips, &rev_payload);
-        nodes[dst].node.handle_tun_outbound(rev_ipv6).await;
+        send_tun_packet_via_pm2(&mut nodes, dst, rev_ipv6).await;
         send_reverse_ok += 1;
 
         drain_to_quiescence(&mut nodes).await;
