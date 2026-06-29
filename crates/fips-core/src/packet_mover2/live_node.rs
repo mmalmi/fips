@@ -697,6 +697,5 @@ fn packet_mover2_aead_worker_count() -> usize {
     std::thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(1)
-        .min(4)
         .max(1)
 }
