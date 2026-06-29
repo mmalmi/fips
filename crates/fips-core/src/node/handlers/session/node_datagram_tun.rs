@@ -1,4 +1,5 @@
 impl Node {
+    #[cfg(test)]
     const PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS: u64 = 2_000;
 
     fn deliver_endpoint_data(&mut self, delivery: EndpointDataDelivery) {
@@ -246,6 +247,7 @@ impl Node {
     }
 
     /// Send ICMPv6 Destination Unreachable back through TUN.
+    #[cfg(test)]
     pub(in crate::node) fn send_icmpv6_dest_unreachable(&self, original_packet: &[u8]) {
         use crate::FipsAddress;
         use crate::upper::icmp::{
@@ -359,31 +361,34 @@ impl Node {
             return;
         }
 
-        if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
-            let (mut packets, stale_count) = packets.into_fresh_packets(
-                Self::now_ms(),
-                Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
-            );
-            if stale_count > 0 {
-                crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::PendingTunPacketDropped,
-                    stale_count as u64,
+        #[cfg(test)]
+        {
+            if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
+                let (mut packets, stale_count) = packets.into_fresh_packets(
+                    Self::now_ms(),
+                    Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
                 );
-                debug!(
-                    dest = %self.peer_display_name(dest_addr),
-                    dropped = stale_count,
-                    "Dropped stale queued TUN packets before session flush"
-                );
-            }
-            while let Some(packet) = packets.pop_front() {
-                if let Err(e) = self
-                    .send_packet_mover2_pending_tun_packet(dest_addr, packet.into_packet())
-                    .await
-                {
-                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
-                    self.pending_session_traffic
-                        .restore_tun_packets(*dest_addr, packets);
-                    break;
+                if stale_count > 0 {
+                    crate::perf_profile::record_event_count(
+                        crate::perf_profile::Event::PendingTunPacketDropped,
+                        stale_count as u64,
+                    );
+                    debug!(
+                        dest = %self.peer_display_name(dest_addr),
+                        dropped = stale_count,
+                        "Dropped stale queued TUN packets before session flush"
+                    );
+                }
+                while let Some(packet) = packets.pop_front() {
+                    if let Err(e) = self
+                        .send_packet_mover2_pending_tun_packet(dest_addr, packet.into_packet())
+                        .await
+                    {
+                        debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+                        self.pending_session_traffic
+                            .restore_tun_packets(*dest_addr, packets);
+                        break;
+                    }
                 }
             }
         }

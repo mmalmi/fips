@@ -311,11 +311,13 @@ impl PendingEndpointDataQueue {
 }
 
 /// Admission result for a bounded pending TUN packet queue.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingTunPacketQueueAdmission {
     dropped_oldest: bool,
 }
 
+#[cfg(test)]
 impl PendingTunPacketQueueAdmission {
     pub(crate) fn dropped_oldest(&self) -> bool {
         self.dropped_oldest
@@ -323,12 +325,14 @@ impl PendingTunPacketQueueAdmission {
 }
 
 /// Per-destination TUN packets waiting for session establishment.
+#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct PendingTunPacket {
     packet: Vec<u8>,
     queued_at_ms: u64,
 }
 
+#[cfg(test)]
 impl PendingTunPacket {
     fn new(packet: Vec<u8>, queued_at_ms: u64) -> Self {
         Self {
@@ -347,11 +351,13 @@ impl PendingTunPacket {
 }
 
 /// Per-destination TUN packets waiting for session establishment.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub(crate) struct PendingTunPacketQueue {
     packets: VecDeque<PendingTunPacket>,
 }
 
+#[cfg(test)]
 impl PendingTunPacketQueue {
     pub(crate) fn push_bounded(
         &mut self,
@@ -426,15 +432,18 @@ impl PendingSessionTrafficAdmission {
 /// Queued TUN and endpoint traffic removed for one destination.
 #[derive(Debug, Default)]
 pub(crate) struct PendingDestinationTraffic {
+    #[cfg(test)]
     tun_packets: Option<PendingTunPacketQueue>,
     endpoint_data: Option<PendingEndpointDataQueue>,
 }
 
 impl PendingDestinationTraffic {
+    #[cfg(test)]
     pub(crate) fn tun_packets(&self) -> Option<&PendingTunPacketQueue> {
         self.tun_packets.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn into_tun_packets(self) -> Option<PendingTunPacketQueue> {
         self.tun_packets
     }
@@ -448,11 +457,13 @@ impl PendingDestinationTraffic {
 #[derive(Debug, Default)]
 pub(crate) struct PendingSessionTrafficQueues {
     pending_destinations: HashSet<NodeAddr>,
+    #[cfg(test)]
     tun_packets: HashMap<NodeAddr, PendingTunPacketQueue>,
     endpoint_data: HashMap<NodeAddr, PendingEndpointDataQueue>,
 }
 
 impl PendingSessionTrafficQueues {
+    #[cfg(test)]
     pub(crate) fn push_tun_packet(
         &mut self,
         dest_addr: NodeAddr,
@@ -511,11 +522,13 @@ impl PendingSessionTrafficQueues {
     pub(crate) fn remove_destination(&mut self, dest_addr: &NodeAddr) -> PendingDestinationTraffic {
         self.pending_destinations.remove(dest_addr);
         PendingDestinationTraffic {
+            #[cfg(test)]
             tun_packets: self.tun_packets.remove(dest_addr),
             endpoint_data: self.endpoint_data.remove(dest_addr),
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn take_tun_packets(
         &mut self,
         dest_addr: &NodeAddr,
@@ -527,6 +540,7 @@ impl PendingSessionTrafficQueues {
         packets
     }
 
+    #[cfg(test)]
     pub(crate) fn restore_tun_packets(
         &mut self,
         dest_addr: NodeAddr,
@@ -547,8 +561,17 @@ impl PendingSessionTrafficQueues {
         dest_addr: &NodeAddr,
     ) -> Option<PendingEndpointDataQueue> {
         let payloads = self.endpoint_data.remove(dest_addr);
-        if payloads.is_some() && !self.tun_packets.contains_key(dest_addr) {
-            self.pending_destinations.remove(dest_addr);
+        if payloads.is_some() {
+            #[cfg(test)]
+            {
+                if !self.tun_packets.contains_key(dest_addr) {
+                    self.pending_destinations.remove(dest_addr);
+                }
+            }
+            #[cfg(not(test))]
+            {
+                self.pending_destinations.remove(dest_addr);
+            }
         }
         payloads
     }
@@ -572,6 +595,7 @@ impl PendingSessionTrafficQueues {
         self.pending_destinations.contains(dest_addr)
     }
 
+    #[cfg(test)]
     pub(crate) fn tun_packets_for(&self, dest_addr: &NodeAddr) -> Option<&PendingTunPacketQueue> {
         self.tun_packets.get(dest_addr)
     }
@@ -583,10 +607,12 @@ impl PendingSessionTrafficQueues {
         self.endpoint_data.get(dest_addr)
     }
 
+    #[cfg(test)]
     pub(crate) fn tun_destination_count(&self) -> usize {
         self.tun_packets.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn tun_packet_count(&self) -> usize {
         self.tun_packets.values().map(|q| q.len()).sum()
     }

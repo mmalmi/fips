@@ -67,6 +67,10 @@ pub(crate) use endpoint_event::{
     EndpointDataDelivery, EndpointDataIo, EndpointEventReceiver, EndpointEventSender,
     NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome,
 };
+#[cfg(test)]
+pub(crate) use endpoint_traffic::PendingEndpointDataQueue;
+#[cfg(test)]
+pub(crate) use endpoint_traffic::PendingTunPacketQueue;
 #[cfg(all(test, unix))]
 pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
 #[cfg(all(test, unix))]
@@ -77,8 +81,6 @@ pub(crate) use endpoint_traffic::{
     EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingSessionTrafficQueues,
     endpoint_payload_is_liveness_probe,
 };
-#[cfg(test)]
-pub(crate) use endpoint_traffic::{PendingEndpointDataQueue, PendingTunPacketQueue};
 #[cfg(test)]
 pub(in crate::node) use endpoint_traffic::{
     endpoint_command_lane_for_payload, endpoint_payload_is_tcp,

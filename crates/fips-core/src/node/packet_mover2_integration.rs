@@ -172,6 +172,7 @@ impl Node {
         unreachable!("bounded FMP outbound continuation loop must return")
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn send_packet_mover2_pending_tun_packet(
         &mut self,
         dest_addr: &NodeAddr,
