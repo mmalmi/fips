@@ -148,6 +148,26 @@ async fn recv_endpoint_event_while_draining(
     .unwrap_or_else(|_| panic!("{context}: endpoint data should not time out"))
 }
 
+async fn send_endpoint_data_via_pm2(
+    node: &mut Node,
+    remote: PeerIdentity,
+    payload: Vec<u8>,
+) -> Result<(), NodeError> {
+    let dest_addr = *remote.node_addr();
+    node.handle_endpoint_data_command_no_established_flush(
+        crate::node::NodeEndpointCommand::send_oneway(remote, payload, None),
+    )
+    .await;
+    if node
+        .get_session(&dest_addr)
+        .is_some_and(|entry| entry.state().is_established())
+        && node.find_next_hop(&dest_addr).is_some()
+    {
+        node.flush_pending_packets(&dest_addr).await;
+    }
+    Ok(())
+}
+
 async fn recv_tun_packet_while_draining(
     nodes: &mut [TestNode],
     rx: &crate::upper::tun::TunRx,

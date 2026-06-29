@@ -188,9 +188,7 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
     let bob_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
 
-    nodes[0]
-        .node
-        .send_endpoint_data(bob_identity, b"direct-first".to_vec())
+    send_endpoint_data_via_pm2(&mut nodes[0].node, bob_identity, b"direct-first".to_vec())
         .await
         .expect("initial endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
@@ -249,14 +247,10 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     assert_ne!(alice_next_hop, bob_addr);
     assert_ne!(bob_next_hop, alice_addr);
 
-    nodes[0]
-        .node
-        .send_endpoint_data(bob_identity, b"alice-fallback".to_vec())
+    send_endpoint_data_via_pm2(&mut nodes[0].node, bob_identity, b"alice-fallback".to_vec())
         .await
         .expect("alice fallback endpoint data should send");
-    nodes[1]
-        .node
-        .send_endpoint_data(alice_identity, b"bob-fallback".to_vec())
+    send_endpoint_data_via_pm2(&mut nodes[1].node, alice_identity, b"bob-fallback".to_vec())
         .await
         .expect("bob fallback endpoint data should send");
     drain_to_quiescence(&mut nodes).await;

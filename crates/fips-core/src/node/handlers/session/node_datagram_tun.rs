@@ -397,10 +397,11 @@ impl Node {
             let mut payloads = payloads.into_payloads();
             while let Some(payload) = payloads.pop_front() {
                 if let Err(e) = self
-                    .send_packet_mover2_pending_endpoint_payload(dest_addr, payload)
+                    .send_packet_mover2_pending_endpoint_payload(dest_addr, payload.clone())
                     .await
                 {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
+                    payloads.push_front(payload);
                     self.pending_session_traffic
                         .restore_endpoint_data(*dest_addr, payloads);
                     break;

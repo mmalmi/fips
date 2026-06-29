@@ -184,8 +184,7 @@ impl Node {
         .await
     }
 
-    /// Handle an embedded endpoint data command.
-    pub(in crate::node) async fn handle_endpoint_data_command(
+    pub(in crate::node) async fn handle_endpoint_data_command_no_established_flush(
         &mut self,
         command: NodeEndpointCommand,
     ) {
@@ -194,19 +193,14 @@ impl Node {
                 command,
                 response_tx,
             } => {
-                let result = self
-                    .queue_packet_mover2_unrouted_endpoint_send(command)
-                    .await;
+                let result = self.queue_packet_mover2_unrouted_endpoint_send(command).await;
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::SendOneway { command } => {
-                let _ = self
-                    .queue_packet_mover2_unrouted_endpoint_send(command)
-                    .await;
+                let _ = self.queue_packet_mover2_unrouted_endpoint_send(command).await;
             }
             NodeEndpointCommand::SendBatchOneway { command, .. } => {
-                self.queue_packet_mover2_unrouted_endpoint_batch(command)
-                    .await;
+                self.queue_packet_mover2_unrouted_endpoint_batch(command).await;
             }
             NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;

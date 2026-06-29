@@ -4,22 +4,6 @@ use crate::protocol::{coords_wire_size, encode_coords};
 use crate::upper::icmp::FIPS_OVERHEAD;
 use std::borrow::Cow;
 
-struct PreparedEndpointSessionMeta {
-    dest_addr: NodeAddr,
-    now_ms: u64,
-    timestamp: u32,
-    msg_type: u8,
-    inner_flags: u8,
-    fsp_flags: u8,
-    my_coords: Option<crate::tree::TreeCoordinate>,
-    dest_coords: Option<crate::tree::TreeCoordinate>,
-}
-
-struct PreparedEndpointSessionData<'a> {
-    meta: PreparedEndpointSessionMeta,
-    payload: &'a EndpointDataPayload,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionFspSendBookkeeping {
     Data { payload_len: usize, now_ms: u64 },
@@ -47,34 +31,6 @@ struct SealedSessionFspSend {
     bookkeeping: SessionFspSendBookkeeping,
 }
 
-impl PreparedEndpointSessionMeta {
-    fn fallback_plan<'a>(&'a self, payload: &'a EndpointDataPayload) -> SessionFspSendPlan<'a> {
-        let inner_plaintext = fsp_prepend_inner_header(
-            self.timestamp,
-            self.msg_type,
-            self.inner_flags,
-            payload.as_slice(),
-        );
-        SessionFspSendPlan::new_owned(
-            self.dest_addr,
-            self.timestamp,
-            self.fsp_flags,
-            inner_plaintext,
-            self.my_coords.as_ref().zip(self.dest_coords.as_ref()),
-            SessionFspSendBookkeeping::Data {
-                payload_len: payload.len(),
-                now_ms: self.now_ms,
-            },
-        )
-    }
-}
-
-impl<'a> PreparedEndpointSessionData<'a> {
-    fn fallback_plan(&self) -> SessionFspSendPlan<'_> {
-        self.meta.fallback_plan(self.payload)
-    }
-}
-
 impl<'a> SessionFspSendPlan<'a> {
     fn new(
         dest_addr: NodeAddr,
@@ -92,27 +48,6 @@ impl<'a> SessionFspSendPlan<'a> {
             timestamp,
             fsp_flags,
             Cow::Borrowed(inner_plaintext),
-            coords,
-            bookkeeping,
-        )
-    }
-
-    fn new_owned(
-        dest_addr: NodeAddr,
-        timestamp: u32,
-        fsp_flags: u8,
-        inner_plaintext: Vec<u8>,
-        coords: Option<(
-            &'a crate::tree::TreeCoordinate,
-            &'a crate::tree::TreeCoordinate,
-        )>,
-        bookkeeping: SessionFspSendBookkeeping,
-    ) -> Self {
-        Self::from_inner_plaintext(
-            dest_addr,
-            timestamp,
-            fsp_flags,
-            Cow::Owned(inner_plaintext),
             coords,
             bookkeeping,
         )

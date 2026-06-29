@@ -167,7 +167,7 @@ async fn test_endpoint_data_for_pending_session_triggers_reply_learned_discovery
     let baseline = node.stats().discovery.req_initiated;
     let remote = crate::PeerIdentity::from_pubkey_full(dest.pubkey_full());
 
-    node.send_endpoint_data(remote, b"status-probe".to_vec())
+    send_endpoint_data_via_pm2(&mut node, remote, b"status-probe".to_vec())
         .await
         .unwrap();
 
@@ -203,7 +203,7 @@ async fn test_endpoint_data_for_established_session_with_no_route_queues_and_dis
     let baseline = node.stats().discovery.req_initiated;
     let remote = crate::PeerIdentity::from_pubkey_full(dest.pubkey_full());
 
-    node.send_endpoint_data(remote, b"status-probe".to_vec())
+    send_endpoint_data_via_pm2(&mut node, remote, b"status-probe".to_vec())
         .await
         .unwrap();
 
