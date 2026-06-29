@@ -972,12 +972,12 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         "reserved_stage_66"
     );
     assert_eq!(
-        stage_from_index(Stage::DecryptDirectSessionCommitWait as usize).name(),
-        "decrypt_direct_session_commit_wait"
+        stage_from_index(Stage::ReservedStage67 as usize).name(),
+        "reserved_stage_67"
     );
     assert_eq!(
-        stage_from_index(Stage::DecryptDirectSessionDataWait as usize).name(),
-        "decrypt_direct_session_data_wait"
+        stage_from_index(Stage::ReservedStage68 as usize).name(),
+        "reserved_stage_68"
     );
 }
 

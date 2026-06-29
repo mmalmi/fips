@@ -552,7 +552,7 @@ impl Node {
 
         for report in batch.sender_reports {
             if let Err(e) = self
-                .send_encrypted_link_message(&report.node_addr, &report.encoded)
+                .send_packet_mover2_fmp_link_plaintext(&report.node_addr, &report.encoded, false)
                 .await
             {
                 debug!(peer = %self.peer_display_name(&report.node_addr), error = %e, "Failed to send SenderReport");
@@ -561,7 +561,7 @@ impl Node {
 
         for report in batch.receiver_reports {
             if let Err(e) = self
-                .send_encrypted_link_message(&report.node_addr, &report.encoded)
+                .send_packet_mover2_fmp_link_plaintext(&report.node_addr, &report.encoded, false)
                 .await
             {
                 debug!(peer = %self.peer_display_name(&report.node_addr), error = %e, "Failed to send ReceiverReport");
@@ -1064,7 +1064,7 @@ impl Node {
                 continue;
             }
             match self
-                .send_encrypted_link_message(&addr, &heartbeat_msg)
+                .send_packet_mover2_fmp_link_plaintext(&addr, &heartbeat_msg, false)
                 .await
             {
                 Ok(()) => {

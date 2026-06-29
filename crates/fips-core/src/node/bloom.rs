@@ -68,7 +68,10 @@ impl Node {
         })?;
 
         // Send
-        if let Err(e) = self.send_encrypted_link_message(peer_addr, &encoded).await {
+        if let Err(e) = self
+            .send_packet_mover2_fmp_link_plaintext(peer_addr, &encoded, false)
+            .await
+        {
             self.stats_mut().bloom.send_failed += 1;
             return Err(e);
         }

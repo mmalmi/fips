@@ -141,7 +141,7 @@ async fn test_session_ack_for_unknown_session() {
     let encoded = datagram.encode();
     nodes[1]
         .node
-        .send_encrypted_link_message(&node0_addr, &encoded)
+        .send_packet_mover2_fmp_link_plaintext(&node0_addr, &encoded, false)
         .await
         .unwrap();
 

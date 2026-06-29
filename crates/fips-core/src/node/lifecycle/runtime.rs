@@ -543,7 +543,7 @@ impl Node {
     ) -> bool {
         let plaintext = Disconnect::new(reason).encode();
         match self
-            .send_encrypted_link_message(node_addr, &plaintext)
+            .send_packet_mover2_fmp_link_plaintext(node_addr, &plaintext, false)
             .await
         {
             Ok(()) => true,

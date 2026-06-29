@@ -65,7 +65,7 @@ fn test_coords_warmup_counter_decrement() {
 
     entry.set_coords_warmup_remaining(3);
 
-    // Simulate the decrement pattern used in send_session_data
+    // Simulate the decrement pattern used when PM2 sends session data.
     for expected in (0..3).rev() {
         assert!(entry.coords_warmup_remaining() > 0);
         entry.set_coords_warmup_remaining(entry.coords_warmup_remaining() - 1);

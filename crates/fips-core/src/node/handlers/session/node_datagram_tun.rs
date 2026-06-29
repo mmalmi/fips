@@ -66,7 +66,7 @@ impl Node {
 
         let encoded = datagram.encode();
         if let Err(err) = self
-            .send_encrypted_link_message(&runtime_route.next_hop_addr, &encoded)
+            .send_packet_mover2_fmp_link_plaintext(&runtime_route.next_hop_addr, &encoded, false)
             .await
         {
             let dest_addr = runtime_route.dest_addr;

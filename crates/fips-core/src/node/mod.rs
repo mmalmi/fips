@@ -27,7 +27,6 @@ mod retry;
 mod route_impl;
 mod routing;
 mod routing_error_rate_limit;
-mod send_impl;
 pub(crate) mod session;
 mod session_access_impl;
 mod session_registry;

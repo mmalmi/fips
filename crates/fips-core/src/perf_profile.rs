@@ -21,8 +21,8 @@
 //!   * `TUN_WRITE` — IPv6 shim decompress + tun_tx.send
 //!
 //! Stages tracked, outbound:
-//!   * `FSP_ENCRYPT` — inner AEAD seal (`send_session_data`)
-//!   * `FMP_ENCRYPT` — outer AEAD seal (`send_encrypted_link_message`)
+//!   * `FSP_ENCRYPT` — inner AEAD seal
+//!   * `FMP_ENCRYPT` — outer AEAD seal
 //!   * `ENDPOINT_SEND_PREPARE` — rx_loop sender-side session/FSP context preparation
 //!   * `ENDPOINT_SEND_PLAN` — rx_loop sender-side runtime route/target/reservation planning
 //!   * `ENDPOINT_SEND_COMMIT` — rx_loop sender-side bookkeeping commit + worker dispatch
@@ -62,8 +62,6 @@
 //!   * `DECRYPT_AUTHENTICATED_SESSION_WAIT` — FSP-authenticated worker completion → rx_loop dispatch
 //!   * `DECRYPT_AUTHENTICATED_SESSION_PRIORITY_WAIT` — priority FSP-authenticated completions
 //!   * `DECRYPT_AUTHENTICATED_SESSION_BULK_WAIT` — bulk FSP-authenticated completions
-//!   * `DECRYPT_DIRECT_SESSION_COMMIT_WAIT` — direct worker session commit → rx_loop bookkeeping
-//!   * `DECRYPT_DIRECT_SESSION_DATA_WAIT` — direct worker session data → rx_loop delivery
 //!   * `DECRYPT_FSP_WORKER_QUEUE_WAIT` — FMP worker → FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_PRIORITY_QUEUE_WAIT` — priority FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_BULK_QUEUE_WAIT` — bulk FSP owner-worker handoff
@@ -110,9 +108,7 @@ pub enum Stage {
     /// Just the `endpoint_event_tx.send()` for inbound application
     /// payloads — wakes the embedded-endpoint consumer task.
     EndpointDeliver = 9,
-    /// Retired direct FSP receive handler span. Kept as a stable profile
-    /// bucket so old trace decoders do not need index remapping.
-    FspHandle = 10,
+    ReservedStage10 = 10,
     /// Whole `handle_endpoint_data_command` body — the SENDER's
     /// per-packet "do everything to push one outbound packet"
     /// dispatch. Compare against the sum of `FspEncrypt`,
@@ -258,14 +254,8 @@ pub enum Stage {
     DecryptAuthenticatedFmpReceiveWait = 64,
     ReservedStage65 = 65,
     ReservedStage66 = 66,
-    /// Direct session commit residence before the rx loop applies receive-sync
-    /// and session/peer bookkeeping. Recorded in addition to the aggregate
-    /// `decrypt_authenticated_session_wait` to keep old bench comparisons intact.
-    DecryptDirectSessionCommitWait = 67,
-    /// Direct session data residence before the rx loop applies bookkeeping and
-    /// delivers payloads through the configured direct sink. Recorded in
-    /// addition to the aggregate `decrypt_authenticated_session_wait`.
-    DecryptDirectSessionDataWait = 68,
+    ReservedStage67 = 67,
+    ReservedStage68 = 68,
 }
 
 impl Stage {
@@ -281,7 +271,7 @@ impl Stage {
             Stage::UdpSend => "udp_send",
             Stage::ProcessPacket => "process_packet",
             Stage::EndpointDeliver => "endpoint_deliver",
-            Stage::FspHandle => "fsp_handle",
+            Stage::ReservedStage10 => "reserved_stage_10",
             Stage::EndpointSend => "endpoint_send",
             Stage::EndpointCommandWait => "endpoint_command_wait",
             Stage::FmpWorkerQueueWait => "fmp_worker_queue_wait",
@@ -340,8 +330,8 @@ impl Stage {
             Stage::DecryptAuthenticatedFmpReceiveWait => "decrypt_authenticated_fmp_receive_wait",
             Stage::ReservedStage65 => "reserved_stage_65",
             Stage::ReservedStage66 => "reserved_stage_66",
-            Stage::DecryptDirectSessionCommitWait => "decrypt_direct_session_commit_wait",
-            Stage::DecryptDirectSessionDataWait => "decrypt_direct_session_data_wait",
+            Stage::ReservedStage67 => "reserved_stage_67",
+            Stage::ReservedStage68 => "reserved_stage_68",
         }
     }
 }
@@ -358,7 +348,7 @@ fn stage_from_index(idx: usize) -> Stage {
         7 => Stage::UdpSend,
         8 => Stage::ProcessPacket,
         9 => Stage::EndpointDeliver,
-        10 => Stage::FspHandle,
+        10 => Stage::ReservedStage10,
         11 => Stage::EndpointSend,
         12 => Stage::EndpointCommandWait,
         13 => Stage::FmpWorkerQueueWait,
@@ -415,8 +405,8 @@ fn stage_from_index(idx: usize) -> Stage {
         64 => Stage::DecryptAuthenticatedFmpReceiveWait,
         65 => Stage::ReservedStage65,
         66 => Stage::ReservedStage66,
-        67 => Stage::DecryptDirectSessionCommitWait,
-        68 => Stage::DecryptDirectSessionDataWait,
+        67 => Stage::ReservedStage67,
+        68 => Stage::ReservedStage68,
         _ => unreachable!(),
     }
 }

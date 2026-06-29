@@ -137,7 +137,7 @@ impl Node {
         // rare error paths only.
         let encoded = encode_forwarded_session_datagram(&datagram_ref, new_ttl, path_mtu);
         if let Err(e) = self
-            .send_encrypted_link_message_with_ce(&next_hop_addr, &encoded, outgoing_ce)
+            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, outgoing_ce)
             .await
         {
             self.record_route_failure(datagram_ref.dest_addr, next_hop_addr);
@@ -308,7 +308,7 @@ impl Node {
 
         let encoded = error_dg.encode();
         if let Err(e) = self
-            .send_encrypted_link_message(&next_hop_addr, &encoded)
+            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(
@@ -327,7 +327,7 @@ impl Node {
 
     /// Generate and send an MtuExceeded error signal back to the datagram's source.
     ///
-    /// Called when `send_encrypted_link_message()` fails with
+    /// Called when PM2 FMP-link output fails with
     /// `NodeError::MtuExceeded` during forwarding. The signal tells the
     /// source the bottleneck MTU so it can immediately reduce its path MTU.
     async fn send_mtu_exceeded_error(&mut self, original: &SessionDatagram, bottleneck_mtu: u16) {
@@ -360,7 +360,7 @@ impl Node {
 
         let encoded = error_dg.encode();
         if let Err(e) = self
-            .send_encrypted_link_message(&next_hop_addr, &encoded)
+            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(

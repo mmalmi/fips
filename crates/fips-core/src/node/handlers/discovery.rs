@@ -164,7 +164,10 @@ impl Node {
                 );
 
                 let encoded = response.encode();
-                if let Err(e) = self.send_encrypted_link_message(&from_peer, &encoded).await {
+                if let Err(e) = self
+                    .send_packet_mover2_fmp_link_plaintext(&from_peer, &encoded, false)
+                    .await
+                {
                     debug!(
                         next_hop = %self.peer_display_name(&from_peer),
                         error = %e,
@@ -377,7 +380,7 @@ impl Node {
 
         let encoded = response.encode();
         if let Err(e) = self
-            .send_encrypted_link_message(&next_hop_addr, &encoded)
+            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(
@@ -418,7 +421,7 @@ impl Node {
         {
             let encoded = request.encode();
             match self
-                .send_encrypted_link_message(&request.target, &encoded)
+                .send_packet_mover2_fmp_link_plaintext(&request.target, &encoded, false)
                 .await
             {
                 Ok(()) => {
@@ -533,7 +536,10 @@ impl Node {
         let encoded = request.encode();
 
         for peer_addr in forward_to {
-            if let Err(e) = self.send_encrypted_link_message(&peer_addr, &encoded).await {
+            if let Err(e) = self
+                .send_packet_mover2_fmp_link_plaintext(&peer_addr, &encoded, false)
+                .await
+            {
                 debug!(
                     peer = %self.peer_display_name(&peer_addr),
                     error = %e,
@@ -609,7 +615,10 @@ impl Node {
         let encoded = request.encode();
 
         for peer_addr in peer_addrs {
-            if let Err(e) = self.send_encrypted_link_message(&peer_addr, &encoded).await {
+            if let Err(e) = self
+                .send_packet_mover2_fmp_link_plaintext(&peer_addr, &encoded, false)
+                .await
+            {
                 debug!(
                     peer = %self.peer_display_name(&peer_addr),
                     error = %e,
