@@ -60,6 +60,147 @@
         work
     }
 
+    impl PacketMover2OutboundSource for VecDeque<OutboundPacket> {
+        fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
+        where
+            F: FnMut(OutboundPacket),
+        {
+            let mut drained = 0;
+            while drained < limit {
+                let Some(packet) = self.pop_front() else {
+                    break;
+                };
+                push(packet);
+                drained += 1;
+            }
+            drained
+        }
+    }
+
+    impl PacketMover2CompletionSource for VecDeque<CryptoCompletion> {
+        fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
+        where
+            F: FnMut(CryptoCompletion),
+        {
+            let mut drained = 0;
+            while drained < limit {
+                let Some(completion) = self.pop_front() else {
+                    break;
+                };
+                push(completion);
+                drained += 1;
+            }
+            drained
+        }
+    }
+
+    impl PacketMover2CompletionSource for VecDeque<Vec<CryptoCompletion>> {
+        fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
+        where
+            F: FnMut(CryptoCompletion),
+        {
+            let mut drained = 0;
+            while drained < limit {
+                let Some(mut batch) = self.pop_front() else {
+                    break;
+                };
+                if batch.is_empty() {
+                    continue;
+                }
+
+                let remaining = limit - drained;
+                if batch.len() > remaining {
+                    let rest = batch.split_off(remaining);
+                    self.push_front(rest);
+                }
+                drained += batch.len();
+                for completion in batch {
+                    push(completion);
+                }
+            }
+            drained
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct PacketMover2LiveIngressPacket {
+        protocol: PacketProtocol,
+        fsp_source: Option<NodeAddr>,
+        packet: ReceivedPacket,
+    }
+
+    impl PacketMover2LiveIngressPacket {
+        fn fmp(packet: ReceivedPacket) -> Self {
+            Self {
+                protocol: PacketProtocol::Fmp,
+                fsp_source: None,
+                packet,
+            }
+        }
+
+        fn fsp(packet: ReceivedPacket, source_addr: NodeAddr) -> Self {
+            Self {
+                protocol: PacketProtocol::Fsp,
+                fsp_source: Some(source_addr),
+                packet,
+            }
+        }
+
+        fn into_raw_ingress(self) -> PacketMover2RawIngress {
+            let raw = PacketMover2RawIngress::from_live_received(self.protocol, self.packet);
+            match self.fsp_source {
+                Some(source_addr) => raw.with_fsp_source(source_addr),
+                None => raw,
+            }
+        }
+    }
+
+    trait PacketMover2LiveIngressDrain {
+        fn drain_live_ingress<F>(&mut self, limit: usize, push: F) -> usize
+        where
+            F: FnMut(PacketMover2LiveIngressPacket);
+    }
+
+    impl PacketMover2LiveIngressDrain for VecDeque<PacketMover2LiveIngressPacket> {
+        fn drain_live_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+        where
+            F: FnMut(PacketMover2LiveIngressPacket),
+        {
+            let mut drained = 0;
+            while drained < limit {
+                let Some(packet) = self.pop_front() else {
+                    break;
+                };
+                push(packet);
+                drained += 1;
+            }
+            drained
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct PacketMover2LiveRawIngressSource<S> {
+        source: S,
+    }
+
+    impl<S> PacketMover2LiveRawIngressSource<S> {
+        fn new(source: S) -> Self {
+            Self { source }
+        }
+    }
+
+    impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
+        for PacketMover2LiveRawIngressSource<S>
+    {
+        fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+        where
+            F: FnMut(PacketMover2RawIngress),
+        {
+            self.source
+                .drain_live_ingress(limit, |packet| push(packet.into_raw_ingress()))
+        }
+    }
+
     fn run_aead_available(mover: &mut PacketMover2, limit: usize) -> PacketMoverTurn {
         let mut open_work = Vec::new();
         let mut seal_work = Vec::new();
@@ -76,7 +217,8 @@
         let mut completion_work = Vec::new();
         let mut retired = Vec::new();
         let mut drops = Vec::new();
-        let dispatched = mover.run_aead_available_into(
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let dispatched = mover.run_aead_available_into_with_executor(
             limit,
             open_work,
             seal_work,
@@ -84,6 +226,7 @@
             &mut completion_work,
             &mut retired,
             &mut drops,
+            &mut executor,
         );
 
         PacketMoverTurn {

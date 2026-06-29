@@ -420,68 +420,6 @@ impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
     }
 }
 
-impl PacketMover2OutboundSource for VecDeque<OutboundPacket> {
-    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
-    where
-        F: FnMut(OutboundPacket),
-    {
-        let mut drained = 0;
-        while drained < limit {
-            let Some(packet) = self.pop_front() else {
-                break;
-            };
-            push(packet);
-            drained += 1;
-        }
-        drained
-    }
-}
-
-impl PacketMover2CompletionSource for VecDeque<CryptoCompletion> {
-    fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
-    where
-        F: FnMut(CryptoCompletion),
-    {
-        let mut drained = 0;
-        while drained < limit {
-            let Some(completion) = self.pop_front() else {
-                break;
-            };
-            push(completion);
-            drained += 1;
-        }
-        drained
-    }
-}
-
-impl PacketMover2CompletionSource for VecDeque<Vec<CryptoCompletion>> {
-    fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
-    where
-        F: FnMut(CryptoCompletion),
-    {
-        let mut drained = 0;
-        while drained < limit {
-            let Some(mut batch) = self.pop_front() else {
-                break;
-            };
-            if batch.is_empty() {
-                continue;
-            }
-
-            let remaining = limit - drained;
-            if batch.len() > remaining {
-                let rest = batch.split_off(remaining);
-                self.push_front(rest);
-            }
-            drained += batch.len();
-            for completion in batch {
-                push(completion);
-            }
-        }
-        drained
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketMover2RawIngressDropReason {
     Wire(WirePreflightError),

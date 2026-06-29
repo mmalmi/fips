@@ -330,19 +330,3 @@ impl From<OwnerReserveError> for PacketDropReason {
         }
     }
 }
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct AdmissionBatchSummary {
-    admitted: usize,
-    dropped: usize,
-}
-
-impl AdmissionBatchSummary {
-    pub(crate) fn admitted(self) -> usize {
-        self.admitted
-    }
-
-    pub(crate) fn dropped(self) -> usize {
-        self.dropped
-    }
-}

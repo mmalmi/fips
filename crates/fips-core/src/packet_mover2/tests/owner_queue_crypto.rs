@@ -262,7 +262,7 @@
             .owner_mut(owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
-        let summary = mover.submit_socket_batch([
+        for packet in [
             encrypted_fsp_packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun, key),
             encrypted_fsp_packet(
                 owner,
@@ -273,9 +273,9 @@
                 key,
             ),
             encrypted_fsp_packet(owner, 1, 3, PacketClass::Bulk, OutputTarget::Transport, key),
-        ]);
-        assert_eq!(summary.admitted(), 3);
-        assert_eq!(summary.dropped(), 0);
+        ] {
+            assert!(mover.submit_socket_packet(packet).is_ok());
+        }
 
         let mut open_work = Vec::with_capacity(8);
         let mut seal_work = Vec::with_capacity(8);

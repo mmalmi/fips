@@ -55,20 +55,6 @@ impl PacketMover2 {
         }
     }
 
-    pub(crate) fn submit_socket_batch<I>(&mut self, packets: I) -> AdmissionBatchSummary
-    where
-        I: IntoIterator<Item = SocketPacket>,
-    {
-        let mut summary = AdmissionBatchSummary::default();
-        for packet in packets {
-            match self.submit_socket_packet(packet) {
-                Ok(_) => summary.admitted += 1,
-                Err(_) => summary.dropped += 1,
-            }
-        }
-        summary
-    }
-
     pub(crate) fn submit_outbound_packet(
         &mut self,
         packet: OutboundPacket,
@@ -234,29 +220,6 @@ impl PacketMover2 {
                 RetiredPacket::Outbound(_) => None,
             }));
         retired
-    }
-
-    pub(crate) fn run_aead_available_into(
-        &mut self,
-        limit: usize,
-        open_work: &mut Vec<CryptoWork>,
-        seal_work: &mut Vec<OutboundCryptoWork>,
-        prepared_work: &mut Vec<PreparedCryptoWork>,
-        completion_work: &mut Vec<CryptoCompletion>,
-        retired: &mut Vec<RetiredPacket>,
-        drops: &mut Vec<PacketDrop>,
-    ) -> usize {
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
-        self.run_aead_available_into_with_executor(
-            limit,
-            open_work,
-            seal_work,
-            prepared_work,
-            completion_work,
-            retired,
-            drops,
-            &mut executor,
-        )
     }
 
     pub(crate) fn run_aead_available_into_with_executor<E>(
