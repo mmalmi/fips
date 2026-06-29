@@ -903,6 +903,99 @@
     }
 
     #[test]
+    fn completion_batch_source_preserves_leftover_batch_order_when_limited() {
+        let owner = OwnerId::fmp(85);
+        let open_key = 85;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+
+        let packets: [(u64, &[u8]); 3] = [(100, b"first"), (101, b"second"), (102, b"third")];
+        for (counter, payload) in packets {
+            driver
+                .mover
+                .submit_socket_packet(
+                    SocketPacket::from_fmp_established_wire(
+                        owner,
+                        1,
+                        OutputTarget::Tun,
+                        fmp_encrypted_wire(85, counter, 0, payload, open_key),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let mut work = Vec::new();
+        assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 3);
+
+        let worker = StatelessAeadOpenWorker;
+        let completions = work
+            .drain(..)
+            .map(|work| {
+                worker.execute(AeadOpenWork::from_crypto_work(work, test_key(open_key)).unwrap())
+            })
+            .collect::<Vec<_>>();
+
+        let mut raw_ingress = VecDeque::new();
+        let mut outbound = VecDeque::new();
+        let mut sink = BatchRecordingOutputSink::default();
+        let mut completion_source = VecDeque::from([completions]);
+
+        {
+            let turn = driver.pump_aead_output_completion_turn(
+                &mut completion_source,
+                2,
+                &mut raw_ingress,
+                &mut NullIngressRouter,
+                0,
+                &mut outbound,
+                0,
+                &mut sink,
+                8,
+            );
+            assert_eq!(turn.summary().completions(), 2);
+            assert_eq!(turn.summary().outputs_sent(), 2);
+            assert!(turn.drops().is_empty());
+        }
+        assert_eq!(completion_source.len(), 1);
+        assert_eq!(completion_source[0].len(), 1);
+        assert_eq!(completion_source[0][0].reservation.counter, 102);
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::counter)
+                .collect::<Vec<_>>(),
+            vec![100, 101]
+        );
+
+        {
+            let turn = driver.pump_aead_output_completion_turn(
+                &mut completion_source,
+                8,
+                &mut raw_ingress,
+                &mut NullIngressRouter,
+                0,
+                &mut outbound,
+                0,
+                &mut sink,
+                8,
+            );
+            assert_eq!(turn.summary().completions(), 1);
+            assert_eq!(turn.summary().outputs_sent(), 1);
+            assert!(turn.drops().is_empty());
+        }
+        assert!(completion_source.is_empty());
+        assert_eq!(
+            sink.outputs
+                .iter()
+                .map(PacketOutput::counter)
+                .collect::<Vec<_>>(),
+            vec![100, 101, 102]
+        );
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+    }
+
+    #[test]
     fn completion_only_turn_retires_out_of_order_completions_in_owner_order() {
         let owner = OwnerId::fmp(81);
         let open_key = 81;
