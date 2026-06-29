@@ -1,8 +1,6 @@
 use super::*;
 
 use crate::node::session_wire::FSP_INNER_HEADER_SIZE;
-#[cfg(unix)]
-use crate::node::session_wire::{FSP_FLAG_K, build_fsp_header};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 
 fn keypair(seed: u8) -> Keypair {
@@ -158,68 +156,6 @@ fn apply_fsp_receive_sync_previous_refreshes_drain_progress() {
 
     assert!(!entry.drain_expired(34_999, DRAIN_MS));
     assert!(entry.drain_expired(35_000, DRAIN_MS));
-}
-
-#[cfg(unix)]
-#[test]
-fn reserve_fsp_worker_send_owns_counter_header_and_cipher() {
-    use ring::aead::Aad;
-
-    let (send_session, mut recv_session) = xk_pair(1, 2);
-    let mut entry = entry_with_current(send_session);
-    let flags = FSP_FLAG_K;
-    let plaintext = b"worker-sealed-fsp-frame";
-
-    let reservation = entry
-        .reserve_fsp_worker_send(flags, plaintext.len() as u16)
-        .expect("counter reservation should succeed")
-        .expect("established session should expose a send cipher");
-
-    assert_eq!(reservation.counter, 0);
-    assert_eq!(
-        entry.send_counter(),
-        1,
-        "reservation is the only session mutation before worker dispatch"
-    );
-    assert_eq!(
-        reservation.header,
-        build_fsp_header(reservation.counter, flags, plaintext.len() as u16)
-    );
-
-    let mut ciphertext = plaintext.to_vec();
-    reservation
-        .cipher
-        .seal_in_place_append_tag(
-            crate::noise::CipherState::counter_to_nonce(reservation.counter),
-            Aad::from(&reservation.header),
-            &mut ciphertext,
-        )
-        .expect("worker-style FSP seal should succeed");
-    assert_eq!(
-        entry.send_counter(),
-        1,
-        "worker cipher use must not mutate the owning session"
-    );
-    assert_eq!(
-        recv_session
-            .decrypt_with_replay_check_and_aad(
-                &ciphertext,
-                reservation.counter,
-                &reservation.header,
-            )
-            .expect("receiver should accept worker-sealed FSP frame"),
-        plaintext
-    );
-
-    let next = entry
-        .reserve_fsp_worker_send(flags, plaintext.len() as u16)
-        .expect("second counter reservation should succeed")
-        .expect("established session should still expose a send cipher");
-    assert_eq!(next.counter, 1);
-    assert_eq!(
-        next.header,
-        build_fsp_header(next.counter, flags, plaintext.len() as u16)
-    );
 }
 
 #[test]

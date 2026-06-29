@@ -53,14 +53,6 @@ pub(crate) enum EpochSlot {
     Previous,
 }
 
-/// Reserved FSP send state for off-task worker encryption.
-#[cfg(all(test, unix))]
-pub(crate) struct FspSendReservation {
-    pub(crate) counter: u64,
-    pub(crate) header: [u8; crate::node::session_wire::FSP_HEADER_SIZE],
-    pub(crate) cipher: LessSafeKey,
-}
-
 /// Authenticated FSP receive metadata produced by packet_mover2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FspReceiveSync {
@@ -638,32 +630,6 @@ impl SessionEntry {
     /// Clone the established FSP send-counter authority for off-task packet movers.
     pub(crate) fn send_counter_authority(&self) -> Option<crate::noise::SendCounterAuthority> {
         Some(self.current_noise_session()?.send_counter_authority())
-    }
-
-    /// Reserve FSP send state for worker-side encryption.
-    ///
-    /// The session entry owns the send counter sequence. Worker paths receive a
-    /// clone of the AEAD key plus the already-reserved counter/header pair, so
-    /// worker encryption cannot advance or rebuild session-owned sequencing.
-    #[cfg(all(test, unix))]
-    pub(crate) fn reserve_fsp_worker_send(
-        &mut self,
-        flags: u8,
-        payload_len: u16,
-    ) -> Result<Option<FspSendReservation>, crate::noise::NoiseError> {
-        let Some(session) = self.current_noise_session_mut() else {
-            return Ok(None);
-        };
-        let Some(cipher) = session.send_cipher_clone() else {
-            return Ok(None);
-        };
-        let counter = session.take_send_counter()?;
-        let header = crate::node::session_wire::build_fsp_header(counter, flags, payload_len);
-        Ok(Some(FspSendReservation {
-            counter,
-            header,
-            cipher,
-        }))
     }
 
     /// When the FSP rekey handshake completed (initiator sent msg3).

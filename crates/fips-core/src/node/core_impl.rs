@@ -319,43 +319,6 @@ impl Node {
         (Arc::new(host_map), peer_acl)
     }
 
-    #[cfg(all(test, unix))]
-    pub(super) fn send_weight_for_peer(&self, peer_addr: &NodeAddr) -> u8 {
-        self.configured_peer_send_weights.weight_for(peer_addr)
-    }
-
-    #[cfg(all(test, unix))]
-    pub(in crate::node) fn resolve_peer_runtime_route_decision(
-        &mut self,
-        dest_addr: &NodeAddr,
-        now_ms: u64,
-    ) -> Result<PeerRuntimeRouteDecision, PeerRuntimeRouteDecisionError> {
-        let Some(next_hop_addr) = self.find_next_hop(dest_addr).map(|peer| *peer.node_addr())
-        else {
-            return Err(PeerRuntimeRouteDecisionError::NoRoute {
-                dest_addr: *dest_addr,
-            });
-        };
-
-        let peer_snapshot = self
-            .peers
-            .prepare_peer_runtime_route_snapshot(&next_hop_addr)
-            .map_err(|error| PeerRuntimeRouteDecisionError::FmpPreparation {
-                next_hop_addr,
-                error,
-            })?;
-        let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
-        let direct_path_blocks_direct_payload = next_hop_addr == *dest_addr
-            && self.session_direct_path_blocks_direct_payload(dest_addr, now_ms);
-
-        Ok(PeerRuntimeRouteDecision::new(
-            next_hop_addr,
-            peer_snapshot,
-            scheduling_weight,
-            direct_path_blocks_direct_payload,
-        ))
-    }
-
     /// Create transport instances from configuration.
     ///
     /// Returns a vector of TransportHandles for all configured transports.

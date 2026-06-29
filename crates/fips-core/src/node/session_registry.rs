@@ -155,27 +155,6 @@ impl SessionRegistry {
 
         Some(data_packets)
     }
-
-    #[cfg(all(test, unix))]
-    pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send(
-        &mut self,
-        node_addr: &NodeAddr,
-        input: FspWorkerSendReservationInput,
-    ) -> Result<Option<FspSendReservation>, FspWorkerSendReservationError> {
-        let entry = self
-            .sessions
-            .get_mut(node_addr)
-            .ok_or(FspWorkerSendReservationError::MissingSession)?;
-        if let Some(mmp) = entry.mmp_mut() {
-            mmp.path_mtu.seed_source_mtu(input.path_mtu);
-        }
-        if !entry.is_established() {
-            return Err(FspWorkerSendReservationError::NotEstablished);
-        }
-        entry
-            .reserve_fsp_worker_send(input.flags, input.payload_len)
-            .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
-    }
 }
 
 impl<'a> IntoIterator for &'a SessionRegistry {

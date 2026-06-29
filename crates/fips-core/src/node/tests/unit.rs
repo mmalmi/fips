@@ -1,6 +1,6 @@
 use super::*;
 use crate::discovery::nostr::{BootstrapEvent, NostrDiscovery};
-use crate::node::wire::{FLAG_CE, Msg1Header, build_established_header, build_msg2};
+use crate::node::wire::{Msg1Header, build_msg2};
 use crate::peer::{ActivePeer, PromotionResult};
 use crate::transport::ReceivedPacket;
 use crate::transport::udp::UdpTransport;
@@ -13,7 +13,6 @@ mod liveness_reconnect;
 mod liveness_window;
 mod node_lifecycle;
 mod path_mtu;
-mod peer_runtime_route;
 mod promotion_paths;
 mod registries_core;
 mod rekey;

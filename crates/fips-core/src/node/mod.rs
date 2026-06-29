@@ -71,8 +71,6 @@ pub(crate) use endpoint_traffic::PendingTunPacketQueue;
 pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
 #[cfg(all(test, unix))]
 pub(in crate::node) use endpoint_traffic::endpoint_flow_dispatch_key;
-#[cfg(all(test, unix))]
-pub(in crate::node) use endpoint_traffic::reserve_fmp_worker_send;
 pub(crate) use endpoint_traffic::{
     EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingSessionTrafficQueues,
     endpoint_payload_is_liveness_probe,
@@ -100,14 +98,10 @@ use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
-#[cfg(all(test, unix))]
-use self::wire::{ESTABLISHED_HEADER_SIZE, build_established_header};
 use self::wire::{FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP};
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
-#[cfg(all(test, unix))]
-use crate::node::session::FspSendReservation;
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
 use crate::packet_mover2::{AdmissionConfig, PacketMover2LiveNode};
