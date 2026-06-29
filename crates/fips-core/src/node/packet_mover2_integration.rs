@@ -356,7 +356,7 @@ impl Node {
         timestamp: u32,
         label: &str,
     ) -> Result<(), NodeError> {
-        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+        if !self.sync_packet_mover2_fsp_owner_preserving_coords_warmup(dest_addr) {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
                 reason: format!("packet_mover2 FSP owner unavailable for {label}"),
@@ -615,7 +615,23 @@ impl Node {
     }
 
     pub(in crate::node) fn sync_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) -> bool {
-        let Some(seed) = self.packet_mover2_fsp_owner_seed(node_addr) else {
+        self.sync_packet_mover2_fsp_owner_with_coords_transfer(node_addr, true)
+    }
+
+    fn sync_packet_mover2_fsp_owner_preserving_coords_warmup(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        self.sync_packet_mover2_fsp_owner_with_coords_transfer(node_addr, false)
+    }
+
+    fn sync_packet_mover2_fsp_owner_with_coords_transfer(
+        &mut self,
+        node_addr: &NodeAddr,
+        transfer_coords_warmup: bool,
+    ) -> bool {
+        let Some(seed) = self.packet_mover2_fsp_owner_seed(node_addr, transfer_coords_warmup)
+        else {
             self.remove_packet_mover2_fsp_owner(node_addr);
             return false;
         };
@@ -698,6 +714,7 @@ impl Node {
     fn packet_mover2_fsp_owner_seed(
         &mut self,
         node_addr: &NodeAddr,
+        transfer_coords_warmup: bool,
     ) -> Option<PacketMover2FspOwnerSeed> {
         let (
             open,
@@ -730,18 +747,33 @@ impl Node {
             )
         };
         let generation = Self::packet_mover2_generation_from_session_start_ms(session_start_ms);
+        let coords_warmup_remaining = if transfer_coords_warmup {
+            coords_warmup_remaining
+        } else {
+            0
+        };
         let coords_prefix =
             self.packet_mover2_fsp_coords_prefix(node_addr, coords_warmup_remaining);
+        if transfer_coords_warmup
+            && coords_warmup_remaining > 0
+            && !coords_prefix.is_empty()
+            && let Some(session) = self.sessions.get_mut(node_addr)
+        {
+            session.set_coords_warmup_remaining(0);
+        }
         let (routes, next_hop) =
             self.packet_mover2_fsp_owner_routes(node_addr, generation, fsp_flags, inner_flags);
 
+        let mut config = self
+            .packet_mover2_owner_config(generation)
+            .with_send_counter_authority(counter_authority)
+            .with_fsp_session_start_ms(session_start_ms);
+        if coords_warmup_remaining > 0 {
+            config = config.with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix);
+        }
         Some(PacketMover2FspOwnerSeed {
             owner: OwnerId::fsp_node(*node_addr),
-            config: self
-                .packet_mover2_owner_config(generation)
-                .with_send_counter_authority(counter_authority)
-                .with_fsp_session_start_ms(session_start_ms)
-                .with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix),
+            config,
             keys: OwnerCryptoKeys::new(Arc::new(open), Arc::new(seal)),
             routes,
             next_hop,

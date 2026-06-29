@@ -992,6 +992,33 @@
     }
 
     #[test]
+    fn outbound_owner_live_config_without_coords_keeps_transferred_warmup() {
+        let owner = fsp_owner(36);
+        let coords_prefix = empty_fsp_coords_prefix();
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_fsp_coords_warmup(2, coords_prefix.clone()),
+        );
+
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .apply_live_config(OwnerConfig::new(1, 8));
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"first"))
+            .unwrap();
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"second"))
+            .unwrap();
+
+        let work = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(work.len(), 2);
+        assert_eq!(work[0].packet.fsp_cleartext_prefix, coords_prefix);
+        assert_eq!(work[1].packet.fsp_cleartext_prefix, coords_prefix);
+    }
+
+    #[test]
     fn outbound_completions_retire_in_owner_order() {
         let owner = fmp_owner(44);
         let key = 7;

@@ -7,8 +7,7 @@ pub(crate) struct OwnerConfig {
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
-    fsp_coords_warmup_remaining: u8,
-    fsp_coords_prefix: Vec<u8>,
+    fsp_coords_warmup: Option<(u8, Vec<u8>)>,
 }
 
 impl OwnerConfig {
@@ -21,8 +20,7 @@ impl OwnerConfig {
             send_counter_authority: None,
             fmp_session_start_ms: None,
             fsp_session_start_ms: None,
-            fsp_coords_warmup_remaining: 0,
-            fsp_coords_prefix: Vec::new(),
+            fsp_coords_warmup: None,
         }
     }
 
@@ -56,8 +54,11 @@ impl OwnerConfig {
     }
 
     pub(crate) fn with_fsp_coords_warmup(mut self, remaining: u8, prefix: Vec<u8>) -> Self {
-        self.fsp_coords_warmup_remaining = remaining;
-        self.fsp_coords_prefix = prefix;
+        if remaining == 0 || prefix.is_empty() {
+            self.fsp_coords_warmup = None;
+        } else {
+            self.fsp_coords_warmup = Some((remaining, prefix));
+        }
         self
     }
 }
@@ -154,8 +155,13 @@ impl OwnerState {
             active_path: None,
             fmp_session_start_ms: config.fmp_session_start_ms,
             fsp_session_start_ms: config.fsp_session_start_ms,
-            fsp_coords_warmup_remaining: config.fsp_coords_warmup_remaining,
-            fsp_coords_prefix: config.fsp_coords_prefix,
+            fsp_coords_warmup_remaining: config
+                .fsp_coords_warmup
+                .as_ref()
+                .map_or(0, |(remaining, _)| *remaining),
+            fsp_coords_prefix: config
+                .fsp_coords_warmup
+                .map_or_else(Vec::new, |(_, prefix)| prefix),
             last_rx_activity: None,
             last_tx_activity: None,
             last_hard_event: None,
@@ -196,8 +202,12 @@ impl OwnerState {
         if let Some(session_start_ms) = config.fsp_session_start_ms {
             self.fsp_session_start_ms = Some(session_start_ms);
         }
-        self.fsp_coords_warmup_remaining = config.fsp_coords_warmup_remaining;
-        self.fsp_coords_prefix = config.fsp_coords_prefix;
+        // Coords warmup is transferred into the owner once; ordinary live
+        // refreshes must not reload or erase the owner-local budget.
+        if let Some((remaining, prefix)) = config.fsp_coords_warmup {
+            self.fsp_coords_warmup_remaining = remaining;
+            self.fsp_coords_prefix = prefix;
+        }
     }
 
     pub(crate) fn set_send_counter_authority(
