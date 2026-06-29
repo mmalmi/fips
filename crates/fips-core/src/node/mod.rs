@@ -69,8 +69,6 @@ pub(crate) use endpoint_traffic::PendingEndpointDataQueue;
 pub(crate) use endpoint_traffic::PendingTunPacketQueue;
 #[cfg(all(test, unix))]
 pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
-#[cfg(all(test, unix))]
-pub(in crate::node) use endpoint_traffic::endpoint_flow_dispatch_key;
 pub(crate) use endpoint_traffic::{
     EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingSessionTrafficQueues,
     endpoint_payload_is_liveness_probe,

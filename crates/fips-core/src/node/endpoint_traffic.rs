@@ -30,17 +30,6 @@ pub struct EndpointPayloadClass {
     drop_on_backpressure: bool,
 }
 
-#[cfg(all(test, unix))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::node) struct EndpointFlowDispatchKey(u64);
-
-#[cfg(all(test, unix))]
-impl EndpointFlowDispatchKey {
-    pub(in crate::node) fn get(self) -> u64 {
-        self.0
-    }
-}
-
 impl EndpointPayloadClass {
     pub fn lane(self) -> EndpointPayloadLane {
         self.lane
@@ -88,13 +77,6 @@ pub(in crate::node) fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) 
     FspCommonPrefix::parse(fsp_payload).is_some_and(|prefix| {
         prefix.phase == FSP_PHASE_ESTABLISHED && !prefix.is_unencrypted() && !prefix.has_coords()
     })
-}
-
-#[cfg(all(test, unix))]
-pub(in crate::node) fn endpoint_flow_dispatch_key(
-    payload: &[u8],
-) -> Option<EndpointFlowDispatchKey> {
-    endpoint_payload_flow_parts(payload).map(|parts| EndpointFlowDispatchKey(parts.hash()))
 }
 
 /// Classify an app-owned endpoint payload for queue admission and pressure policy.
@@ -672,123 +654,6 @@ fn parse_endpoint_payload_ip_proto(payload: &[u8]) -> Option<(u8, usize)> {
         6 => ipv6_payload_next_header(payload),
         _ => None,
     }
-}
-
-#[cfg(all(test, unix))]
-#[derive(Clone, Copy)]
-struct EndpointFlowParts<'a> {
-    version: u8,
-    proto: u8,
-    src: &'a [u8],
-    dst: &'a [u8],
-    ports: Option<[u8; 4]>,
-}
-
-#[cfg(all(test, unix))]
-impl EndpointFlowParts<'_> {
-    fn hash(self) -> u64 {
-        let mut h = EndpointFlowHasher::default();
-        h.write_u8(self.version);
-        h.write_u8(self.proto);
-        h.write(self.src);
-        h.write(self.dst);
-        if let Some(ports) = self.ports {
-            h.write(&ports);
-        }
-        h.finish()
-    }
-}
-
-#[cfg(all(test, unix))]
-#[derive(Clone, Copy)]
-struct EndpointFlowHasher(u64);
-
-#[cfg(all(test, unix))]
-impl Default for EndpointFlowHasher {
-    fn default() -> Self {
-        Self(0x9ae1_6a3b_2f90_404f)
-    }
-}
-
-#[cfg(all(test, unix))]
-impl EndpointFlowHasher {
-    fn write_u8(&mut self, value: u8) {
-        self.write(&[value]);
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 ^= u64::from(*byte);
-            self.0 = self.0.wrapping_mul(0x1000_0000_01b3);
-            self.0 ^= self.0 >> 32;
-        }
-    }
-
-    fn finish(self) -> u64 {
-        self.0
-    }
-}
-
-#[cfg(all(test, unix))]
-fn endpoint_payload_flow_parts(payload: &[u8]) -> Option<EndpointFlowParts<'_>> {
-    const IPV4_MIN_HEADER_LEN: usize = 20;
-    const IPV6_HEADER_LEN: usize = 40;
-
-    let version = payload.first().copied()? >> 4;
-    match version {
-        4 => {
-            if payload.len() < IPV4_MIN_HEADER_LEN {
-                return None;
-            }
-            let header_len = usize::from(payload[0] & 0x0f) * 4;
-            if header_len < IPV4_MIN_HEADER_LEN || payload.len() < header_len {
-                return None;
-            }
-            let fragment_bits = u16::from_be_bytes([payload[6], payload[7]]) & 0x3fff;
-            Some(EndpointFlowParts {
-                version,
-                proto: payload[9],
-                src: &payload[12..16],
-                dst: &payload[16..20],
-                ports: if fragment_bits == 0 {
-                    endpoint_transport_ports(payload, payload[9], header_len)
-                } else {
-                    None
-                },
-            })
-        }
-        6 => {
-            if payload.len() < IPV6_HEADER_LEN {
-                return None;
-            }
-            let (proto, offset, fragmented) = ipv6_payload_next_header_with_fragment(payload)?;
-            Some(EndpointFlowParts {
-                version,
-                proto,
-                src: &payload[8..24],
-                dst: &payload[24..40],
-                ports: if fragmented {
-                    None
-                } else {
-                    endpoint_transport_ports(payload, proto, offset)
-                },
-            })
-        }
-        _ => None,
-    }
-}
-
-#[cfg(all(test, unix))]
-fn endpoint_transport_ports(payload: &[u8], proto: u8, transport_offset: usize) -> Option<[u8; 4]> {
-    const IPPROTO_TCP: u8 = 6;
-    const IPPROTO_UDP: u8 = 17;
-    const IPPROTO_SCTP: u8 = 132;
-
-    if !matches!(proto, IPPROTO_TCP | IPPROTO_UDP | IPPROTO_SCTP) {
-        return None;
-    }
-    let ports = payload.get(transport_offset..transport_offset + 4)?;
-    Some([ports[0], ports[1], ports[2], ports[3]])
 }
 
 #[cfg(test)]
