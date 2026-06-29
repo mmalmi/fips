@@ -1279,41 +1279,41 @@ fn endpoint_payload_tcp_classifier_handles_common_ip_packets() {
     let mut ipv4_tcp = [0u8; 20];
     ipv4_tcp[0] = 0x45;
     ipv4_tcp[9] = 6;
-    assert!(endpoint_payload_is_tcp(&ipv4_tcp));
+    assert!(!classify_endpoint_payload(&ipv4_tcp).drop_on_backpressure());
 
     let mut ipv4_udp = ipv4_tcp;
     ipv4_udp[9] = 17;
-    assert!(!endpoint_payload_is_tcp(&ipv4_udp));
+    assert!(classify_endpoint_payload(&ipv4_udp).drop_on_backpressure());
 
     let mut ipv4_tcp_with_options = [0u8; 24];
     ipv4_tcp_with_options[0] = 0x46;
     ipv4_tcp_with_options[9] = 6;
-    assert!(endpoint_payload_is_tcp(&ipv4_tcp_with_options));
+    assert!(!classify_endpoint_payload(&ipv4_tcp_with_options).drop_on_backpressure());
 
     let mut ipv6_tcp = [0u8; 40];
     ipv6_tcp[0] = 0x60;
     ipv6_tcp[6] = 6;
-    assert!(endpoint_payload_is_tcp(&ipv6_tcp));
+    assert!(!classify_endpoint_payload(&ipv6_tcp).drop_on_backpressure());
 
     let mut ipv6_udp = ipv6_tcp;
     ipv6_udp[6] = 17;
-    assert!(!endpoint_payload_is_tcp(&ipv6_udp));
+    assert!(classify_endpoint_payload(&ipv6_udp).drop_on_backpressure());
 
     let mut ipv6_hop_tcp = vec![0u8; 48];
     ipv6_hop_tcp[0] = 0x60;
     ipv6_hop_tcp[6] = 0;
     ipv6_hop_tcp[40] = 6;
     ipv6_hop_tcp[41] = 0;
-    assert!(endpoint_payload_is_tcp(&ipv6_hop_tcp));
+    assert!(!classify_endpoint_payload(&ipv6_hop_tcp).drop_on_backpressure());
 
     let mut ipv6_frag_tcp = vec![0u8; 48];
     ipv6_frag_tcp[0] = 0x60;
     ipv6_frag_tcp[6] = 44;
     ipv6_frag_tcp[40] = 6;
-    assert!(endpoint_payload_is_tcp(&ipv6_frag_tcp));
+    assert!(!classify_endpoint_payload(&ipv6_frag_tcp).drop_on_backpressure());
 
-    assert!(!endpoint_payload_is_tcp(&[]));
-    assert!(!endpoint_payload_is_tcp(&[0x60; 8]));
+    assert!(classify_endpoint_payload(&[]).drop_on_backpressure());
+    assert!(classify_endpoint_payload(&[0x60; 8]).drop_on_backpressure());
 }
 
 #[test]
@@ -1333,37 +1333,21 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
     let tcp_ack = classify_endpoint_payload(&tcp_ack_packet);
     assert_eq!(tcp_ack.lane(), EndpointPayloadLane::Priority);
     assert!(!tcp_ack.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&tcp_ack_packet),
-        EndpointCommandLane::Priority
-    );
 
     let tcp_syn_packet = ipv6_tcp_packet(0x02, 0);
     let tcp_syn = classify_endpoint_payload(&tcp_syn_packet);
     assert_eq!(tcp_syn.lane(), EndpointPayloadLane::Priority);
     assert!(!tcp_syn.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&tcp_syn_packet),
-        EndpointCommandLane::Priority
-    );
 
     let tiny_tcp_data_packet = ipv6_tcp_packet(0x18, 64);
     let tiny_tcp_data = classify_endpoint_payload(&tiny_tcp_data_packet);
     assert_eq!(tiny_tcp_data.lane(), EndpointPayloadLane::Priority);
     assert!(!tiny_tcp_data.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&tiny_tcp_data_packet),
-        EndpointCommandLane::Priority
-    );
 
     let bulk_tcp_data_packet = ipv6_tcp_packet(0x18, 512);
     let bulk_tcp_data = classify_endpoint_payload(&bulk_tcp_data_packet);
     assert_eq!(bulk_tcp_data.lane(), EndpointPayloadLane::Bulk);
     assert!(!bulk_tcp_data.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&bulk_tcp_data_packet),
-        EndpointCommandLane::Bulk
-    );
 
     let mut icmpv6_packet = vec![0u8; 48];
     icmpv6_packet[0] = 0x60;
@@ -1372,10 +1356,6 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
     let icmpv6 = classify_endpoint_payload(&icmpv6_packet);
     assert_eq!(icmpv6.lane(), EndpointPayloadLane::Priority);
     assert!(!icmpv6.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&icmpv6_packet),
-        EndpointCommandLane::Priority
-    );
 
     let mut udp_packet = vec![0u8; 48];
     udp_packet[0] = 0x60;
@@ -1384,10 +1364,6 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
     let udp = classify_endpoint_payload(&udp_packet);
     assert_eq!(udp.lane(), EndpointPayloadLane::Bulk);
     assert!(udp.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&udp_packet),
-        EndpointCommandLane::Bulk
-    );
 }
 
 #[test]
@@ -1406,10 +1382,6 @@ fn endpoint_payload_traffic_classifier_prioritizes_ipv4_icmp_ping() {
     assert!(
         !icmpv4.drop_on_backpressure(),
         "IPv4 tunnel ping is the interactive canary and must not be bulk-dropped"
-    );
-    assert_eq!(
-        endpoint_command_lane_for_payload(&icmpv4_packet),
-        EndpointCommandLane::Priority
     );
 }
 

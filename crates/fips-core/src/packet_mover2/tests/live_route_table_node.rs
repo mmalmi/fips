@@ -119,8 +119,9 @@
         );
 
         let first = live_node
-            .pump_packet_rx_turn(
+            .pump_packet_rx_turn_with_firsts(
                 &mut packet_rx,
+                PacketMover2LiveTurnFirsts::default(),
                 8,
                 &mut endpoint_priority_rx,
                 &mut endpoint_bulk_rx,

@@ -357,44 +357,6 @@ impl PacketMover2LiveNode {
         std::mem::take(&mut self.deferred_tun_packets)
     }
 
-    pub(crate) async fn pump_turn<RI, Resolver, Transports>(
-        &mut self,
-        raw_ingress: &mut RI,
-        raw_ingress_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        RI: PacketMover2RawIngressSource,
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.pump_turn_with_firsts(
-            raw_ingress,
-            raw_ingress_limit,
-            PacketMover2LiveOutboundFirsts::default(),
-            endpoint_priority_rx,
-            endpoint_bulk_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-        )
-        .await
-    }
-
     pub(crate) async fn pump_turn_with_firsts<RI, Resolver, Transports>(
         &mut self,
         raw_ingress: &mut RI,
@@ -676,81 +638,6 @@ impl PacketMover2LiveNode {
                 crypto_limit,
             )
             .await
-    }
-
-    pub(crate) async fn pump_packet_rx_turn<Resolver, Transports>(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        packet_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.pump_packet_rx_turn_with_firsts(
-            packet_rx,
-            PacketMover2LiveTurnFirsts::default(),
-            packet_limit,
-            endpoint_priority_rx,
-            endpoint_bulk_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-        )
-        .await
-    }
-
-    pub(crate) async fn pump_packet_rx_turn_with_first<Resolver, Transports>(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        first_packet: Option<ReceivedPacket>,
-        packet_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.pump_packet_rx_turn_with_firsts(
-            packet_rx,
-            PacketMover2LiveTurnFirsts::default().with_raw_packet(first_packet),
-            packet_limit,
-            endpoint_priority_rx,
-            endpoint_bulk_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-        )
-        .await
     }
 
     pub(crate) async fn pump_packet_rx_turn_with_firsts<Resolver, Transports>(

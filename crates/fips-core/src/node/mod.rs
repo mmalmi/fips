@@ -66,14 +66,11 @@ pub(crate) use endpoint_event::{
 pub(crate) use endpoint_traffic::PendingEndpointDataQueue;
 #[cfg(all(test, unix))]
 pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
+#[cfg(test)]
+pub(in crate::node) use endpoint_traffic::fmp_plaintext_is_bulk_session_datagram;
 pub(crate) use endpoint_traffic::{
     EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingSessionTrafficQueues,
     endpoint_payload_is_liveness_probe,
-};
-#[cfg(test)]
-pub(in crate::node) use endpoint_traffic::{
-    endpoint_command_lane_for_payload, endpoint_payload_is_tcp,
-    fmp_plaintext_is_bulk_session_datagram,
 };
 pub(in crate::node) use identity_cache::IdentityCache;
 #[cfg(test)]

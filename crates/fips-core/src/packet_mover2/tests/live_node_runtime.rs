@@ -61,9 +61,10 @@
             .expect("enqueue TUN outbound packet");
 
         let first = live_node
-            .pump_turn(
+            .pump_turn_with_firsts(
                 &mut raw_source,
                 8,
+                PacketMover2LiveOutboundFirsts::default(),
                 &mut endpoint_priority_rx,
                 &mut endpoint_bulk_rx,
                 0,

@@ -115,15 +115,6 @@ pub fn endpoint_payload_is_latency_sensitive(payload: &[u8]) -> bool {
     classify_endpoint_payload(payload).is_latency_sensitive()
 }
 
-#[cfg(test)]
-pub(crate) fn endpoint_command_lane_for_payload(payload: &[u8]) -> EndpointCommandLane {
-    if endpoint_payload_is_latency_sensitive(payload) {
-        EndpointCommandLane::Priority
-    } else {
-        EndpointCommandLane::Bulk
-    }
-}
-
 /// Endpoint payload bytes plus the traffic policy selected at app ingress.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EndpointDataPayload {
@@ -623,12 +614,6 @@ fn parse_endpoint_payload_ip_proto(payload: &[u8]) -> Option<(u8, usize)> {
         6 => ipv6_payload_next_header(payload),
         _ => None,
     }
-}
-
-#[cfg(test)]
-pub(in crate::node) fn endpoint_payload_is_tcp(payload: &[u8]) -> bool {
-    const IPPROTO_TCP: u8 = 6;
-    parse_endpoint_payload_ip_proto(payload).is_some_and(|(proto, _)| proto == IPPROTO_TCP)
 }
 
 fn ipv6_payload_next_header(payload: &[u8]) -> Option<(u8, usize)> {
