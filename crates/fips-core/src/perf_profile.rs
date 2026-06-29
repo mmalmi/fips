@@ -110,9 +110,8 @@ pub enum Stage {
     /// Just the `endpoint_event_tx.send()` for inbound application
     /// payloads — wakes the embedded-endpoint consumer task.
     EndpointDeliver = 9,
-    /// Whole `handle_encrypted_session_msg` (FSP receive path) minus
-    /// the `FspDecrypt` sub-span. Surfaces dispatch + ipv6_shim +
-    /// `Vec::drain` cost on the inner session layer.
+    /// Retired direct FSP receive handler span. Kept as a stable profile
+    /// bucket so old trace decoders do not need index remapping.
     FspHandle = 10,
     /// Whole `handle_endpoint_data_command` body — the SENDER's
     /// per-packet "do everything to push one outbound packet"

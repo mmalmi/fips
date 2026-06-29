@@ -145,6 +145,145 @@
     }
 
     #[tokio::test]
+    async fn live_node_session_ingress_reports_fsp_coord_warmup_before_fsp_delivery() {
+        let local_addr = NodeAddr::from_bytes([0xc1; 16]);
+        let source_identity = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source_identity.pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let next_hop = NodeAddr::from_bytes([0xc3; 16]);
+        let root_addr = NodeAddr::from_bytes([0xcf; 16]);
+        let source_coords =
+            crate::tree::TreeCoordinate::from_addrs(vec![source_addr, root_addr]).unwrap();
+        let local_coords =
+            crate::tree::TreeCoordinate::from_addrs(vec![local_addr, root_addr]).unwrap();
+        let mut coords_prefix = Vec::new();
+        crate::protocol::encode_coords(&source_coords, &mut coords_prefix);
+        crate::protocol::encode_coords(&local_coords, &mut coords_prefix);
+
+        let fmp_owner = OwnerId::fmp_node(next_hop);
+        let fsp_owner = OwnerId::fsp_node(source_addr);
+        let fmp_key = 0xc4;
+        let fsp_key = 0xc5;
+        let transport_id = TransportId::new(0xc6);
+        let remote_addr = TransportAddr::from_string("198.51.100.198:9000");
+        let fmp_timestamp = 198_001;
+        let fmp_inner_timestamp = 198_002_u32;
+        let fsp_inner_timestamp = 198_003_u32;
+        let endpoint_payload = b"coord-warm-endpoint";
+        let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            fsp_inner_timestamp,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            endpoint_payload,
+        );
+        let fsp_wire = fsp_encrypted_wire_with_coords(
+            198,
+            crate::node::session_wire::FSP_FLAG_CP,
+            &fsp_inner,
+            fsp_key,
+            &coords_prefix,
+        );
+        let datagram = crate::protocol::SessionDatagram::new(source_addr, local_addr, fsp_wire)
+            .with_ttl(8)
+            .with_path_mtu(1280)
+            .encode();
+        let mut fmp_plaintext = fmp_inner_timestamp.to_le_bytes().to_vec();
+        fmp_plaintext.extend_from_slice(&datagram);
+        let fmp_wire = fmp_encrypted_wire(0xc7, 199, 0, &fmp_plaintext, fmp_key);
+
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
+        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_fmp(
+            transport_id,
+            0xc7,
+            PacketMover2IngressRoute::new(
+                fmp_owner,
+                1,
+                OutputTarget::SessionIngress { local_addr },
+            )
+            .with_class(PacketClass::Liveness),
+        );
+        routes.register_fsp(
+            source_addr,
+            PacketMover2IngressRoute::new(
+                fsp_owner,
+                1,
+                OutputTarget::SessionPayload { local_addr },
+            )
+            .with_class(PacketClass::Liveness),
+        );
+        let mut raw_source =
+            PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fmp(
+                ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr,
+                    fmp_wire,
+                    fmp_timestamp,
+                ),
+            )]));
+        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
+        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let mut deferred_endpoint_commands = Vec::new();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let resolver = |addr: &NodeAddr| (addr == &source_addr).then_some(source_peer);
+
+        let turn = driver
+            .pump_aead_live_node_route_table_turn(
+                &mut raw_source,
+                &mut routes,
+                8,
+                &mut endpoint_priority_rx,
+                &mut endpoint_bulk_rx,
+                0,
+                &mut tun_outbound_rx,
+                0,
+                &mut deferred_endpoint_commands,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                resolver,
+                &transports,
+                8,
+            )
+            .await;
+
+        assert_eq!(turn.summary().raw_ingress_dropped(), 0);
+        assert_eq!(turn.summary().inbound_admitted(), 2);
+        assert_eq!(turn.fsp_coord_warmups().len(), 1);
+        assert_eq!(
+            turn.fsp_coord_warmups()[0].source(),
+            Some((source_addr, &source_coords))
+        );
+        assert_eq!(
+            turn.fsp_coord_warmups()[0].local(),
+            Some((local_addr, &local_coords))
+        );
+        let mut coord_cache = crate::cache::CoordCache::new(8, 1_000);
+        turn.fsp_coord_warmups()[0]
+            .clone()
+            .apply_to(&mut coord_cache, 10);
+        assert_eq!(coord_cache.get(&source_addr, 10), Some(&source_coords));
+        assert_eq!(coord_cache.get(&local_addr, 10), Some(&local_coords));
+        assert_eq!(turn.fsp_session_ingress().len(), 1);
+        assert!(turn.fsp_local_session_ingress().is_empty());
+        assert!(turn.fmp_link_ingress().is_empty());
+    }
+
+    #[tokio::test]
     async fn live_node_session_ingress_keeps_fsp_handshake_on_local_session_path() {
         let local_addr = NodeAddr::from_bytes([0xac; 16]);
         let source_addr = NodeAddr::from_bytes([0xad; 16]);

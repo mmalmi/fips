@@ -10,8 +10,6 @@ use std::time::Instant;
 use crate::config::SessionMmpConfig;
 use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
-#[cfg(all(test, unix))]
-use crate::node::session_wire::{FSP_HEADER_SIZE, build_fsp_header};
 use crate::noise::{HandshakeState, NoiseSession};
 use crate::{NodeAddr, PeerIdentity};
 use rand::RngExt;
@@ -48,23 +46,18 @@ pub(crate) enum EpochSlot {
     /// The current active session.
     Current,
     /// A completed rekey session that has not yet been promoted.
+    #[allow(dead_code)]
     Pending,
     /// The old session retained during the drain window after cutover.
+    #[allow(dead_code)]
     Previous,
-}
-
-/// Why an established FSP frame could not be opened by any live epoch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FspOpenError {
-    /// Current, pending, and previous epochs all rejected the frame.
-    NoLiveEpochAccepted,
 }
 
 /// Reserved FSP send state for off-task worker encryption.
 #[cfg(all(test, unix))]
 pub(crate) struct FspSendReservation {
     pub(crate) counter: u64,
-    pub(crate) header: [u8; FSP_HEADER_SIZE],
+    pub(crate) header: [u8; crate::node::session_wire::FSP_HEADER_SIZE],
     pub(crate) cipher: LessSafeKey,
 }
 
@@ -665,7 +658,7 @@ impl SessionEntry {
             return Ok(None);
         };
         let counter = session.take_send_counter()?;
-        let header = build_fsp_header(counter, flags, payload_len);
+        let header = crate::node::session_wire::build_fsp_header(counter, flags, payload_len);
         Ok(Some(FspSendReservation {
             counter,
             header,
@@ -733,47 +726,6 @@ impl SessionEntry {
     pub(crate) fn confirm_peer_new_epoch(&mut self) {
         self.peer_new_epoch_confirmed = true;
         self.clear_rekey_msg3_payload();
-    }
-
-    /// Open an established FSP frame against every live key epoch.
-    ///
-    /// This is the receive-side ownership boundary for FSP replay acceptance:
-    /// each epoch checks, decrypts, and accepts its own replay state. Failed
-    /// candidates leave their replay windows untouched; only the epoch that
-    /// authenticates the frame is returned to the session handler.
-    pub(crate) fn open_fsp_established_frame(
-        &mut self,
-        ciphertext: &[u8],
-        counter: u64,
-        aad: &[u8],
-        received_k_bit: bool,
-        now_ms: u64,
-    ) -> Result<(Vec<u8>, EpochSlot), FspOpenError> {
-        let pending_first =
-            received_k_bit != self.current_k_bit && self.pending_new_session.is_some();
-        let order = if pending_first {
-            [EpochSlot::Pending, EpochSlot::Current, EpochSlot::Previous]
-        } else {
-            [EpochSlot::Current, EpochSlot::Pending, EpochSlot::Previous]
-        };
-
-        for slot in order {
-            let session = match slot {
-                EpochSlot::Current => self.current_noise_session_mut(),
-                EpochSlot::Pending => self.pending_new_session.as_mut(),
-                EpochSlot::Previous => self.previous_noise_session.as_mut(),
-            };
-            if let Some(session) = session
-                && let Ok(plaintext) =
-                    session.decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
-            {
-                if slot == EpochSlot::Previous {
-                    self.refresh_previous_use(now_ms);
-                }
-                return Ok((plaintext, slot));
-            }
-        }
-        Err(FspOpenError::NoLiveEpochAccepted)
     }
 
     /// Mirror a frame authenticated by the decrypt worker into rx-loop-owned
@@ -998,13 +950,6 @@ impl SessionEntry {
     #[cfg(test)]
     pub(crate) fn previous_highest_counter(&self) -> Option<u64> {
         self.previous_noise_session
-            .as_ref()
-            .map(|session| session.highest_received_counter())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_highest_counter(&self) -> Option<u64> {
-        self.pending_new_session
             .as_ref()
             .map(|session| session.highest_received_counter())
     }

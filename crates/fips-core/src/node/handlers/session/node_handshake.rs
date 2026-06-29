@@ -444,49 +444,6 @@ impl Node {
         info!(src = %self.peer_display_name(src_addr), "Session established (initiator, XK)");
     }
 
-    async fn resend_handshake_after_early_encrypted_data(&mut self, src_addr: &NodeAddr) {
-        let max_resends = self.config.node.rate_limit.handshake_max_resends;
-        let payload = match self
-            .sessions
-            .prepare_handshake_resend_after_early_encrypted_data(src_addr, max_resends)
-        {
-            EarlyEncryptedHandshakeResend::Resend { payload } => payload,
-            EarlyEncryptedHandshakeResend::BudgetExhausted => {
-                debug!(
-                    src = %self.peer_display_name(src_addr),
-                    "Early encrypted data arrived after handshake resend budget was exhausted"
-                );
-                return;
-            }
-            EarlyEncryptedHandshakeResend::NoPayload => return,
-        };
-
-        let my_addr = *self.node_addr();
-        let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
-            .with_ttl(self.config.node.session.default_ttl);
-        let sent = match self.send_session_datagram(&mut datagram).await {
-            Ok(()) => true,
-            Err(e) => {
-                debug!(
-                    src = %self.peer_display_name(src_addr),
-                    error = %e,
-                    "Failed to resend session handshake after early encrypted data"
-                );
-                false
-            }
-        };
-        if sent {
-            let now_ms = Self::now_ms();
-            let interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-            self.sessions
-                .record_handshake_resend(src_addr, now_ms + interval);
-            debug!(
-                src = %self.peer_display_name(src_addr),
-                "Resent session handshake after early encrypted data"
-            );
-        }
-    }
-
     /// Handle an incoming SessionMsg3 (Noise XK msg3).
     ///
     /// The initiator reveals their encrypted static key. The responder

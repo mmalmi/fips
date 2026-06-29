@@ -73,11 +73,9 @@ impl Node {
         // no copy — `handle_session_payload` takes `payload` by borrow.
         if datagram_ref.dest_addr == *self.node_addr() {
             self.stats_mut().forwarding.record_delivered(payload.len());
-            self.handle_session_payload(datagram.local_session_payload(
-                datagram_ref.src_addr,
-                datagram_ref.payload,
-                datagram_ref.path_mtu,
-            ))
+            self.handle_session_payload(
+                datagram.local_session_payload(datagram_ref.src_addr, datagram_ref.payload),
+            )
             .await;
             return;
         }

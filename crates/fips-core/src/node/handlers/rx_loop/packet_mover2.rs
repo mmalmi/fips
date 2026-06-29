@@ -147,6 +147,10 @@ impl Node {
                 processed += 1;
             }
         }
+        for warmup in turn.take_fsp_coord_warmups() {
+            warmup.apply_to(self.coord_cache_mut(), Self::now_ms());
+            processed += 1;
+        }
         let fsp_crypto_failures: Vec<_> = turn
             .drops()
             .iter()
@@ -231,19 +235,8 @@ impl Node {
         &mut self,
         ingress: crate::packet_mover2::PacketMover2FspLocalSessionIngress,
     ) -> bool {
-        let (source_addr, previous_hop_addr, ce_flag, path_mtu, payload) = ingress.into_parts();
-        let Some(previous_hop_peer) = self.packet_mover2_peer_identity(&previous_hop_addr) else {
-            debug!(
-                src = %self.peer_display_name(&source_addr),
-                previous_hop = %self.peer_display_name(&previous_hop_addr),
-                payload_len = payload.len(),
-                "Dropping packet-mover2 local session payload for unknown previous hop identity"
-            );
-            return false;
-        };
-
-        let delivery =
-            LocalSessionPayload::new(source_addr, previous_hop_peer, &payload, path_mtu, ce_flag);
+        let (source_addr, _previous_hop_addr, _ce_flag, _path_mtu, payload) = ingress.into_parts();
+        let delivery = LocalSessionPayload::new(source_addr, &payload);
         self.handle_session_payload(delivery).await;
         true
     }
@@ -434,6 +427,7 @@ impl Node {
             .saturating_add(summary.inbound_dropped())
             .saturating_add(turn.fmp_control_ingress().len())
             .saturating_add(turn.fmp_link_ingress().len())
+            .saturating_add(turn.fsp_coord_warmups().len())
             .saturating_add(turn.fsp_local_session_ingress().len())
             .saturating_add(turn.fsp_session_ingress().len())
             .saturating_add(turn.endpoint_deferred_commands())
@@ -454,6 +448,7 @@ impl Node {
                 outbound_dropped = summary.outbound_dropped(),
                 output_drops = turn.output_drops().len(),
                 fmp_control_ingress = turn.fmp_control_ingress().len(),
+                fsp_coord_warmups = turn.fsp_coord_warmups().len(),
                 fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
                 fsp_session_ingress = turn.fsp_session_ingress().len(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
@@ -493,6 +488,7 @@ impl Node {
             endpoint_deferred = turn.endpoint_deferred_commands(),
             fmp_control_ingress = turn.fmp_control_ingress().len(),
             fmp_link_ingress = turn.fmp_link_ingress().len(),
+            fsp_coord_warmups = turn.fsp_coord_warmups().len(),
             fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
             fsp_session_ingress = turn.fsp_session_ingress().len(),
             "packet mover2 turn completed"

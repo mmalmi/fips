@@ -15,6 +15,7 @@ pub(crate) struct PacketMover2TurnDriver {
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
+    fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
 }
@@ -49,6 +50,7 @@ impl PacketMover2TurnDriver {
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
+            fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
         }
@@ -281,6 +283,7 @@ impl PacketMover2TurnDriver {
         };
         report.set_fmp_ingress_receipts(std::mem::take(&mut self.fmp_ingress_receipts));
         report.set_fmp_link_ingress(std::mem::take(&mut self.fmp_link_ingress));
+        report.set_fsp_coord_warmups(std::mem::take(&mut self.fsp_coord_warmups));
         report.set_fsp_local_session_ingress(std::mem::take(&mut self.fsp_local_session_ingress));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
         report.set_wrapped_outbound_receipts(std::mem::take(
@@ -501,6 +504,7 @@ impl PacketMover2TurnDriver {
         self.output_drops.clear();
         self.fmp_ingress_receipts.clear();
         self.fmp_link_ingress.clear();
+        self.fsp_coord_warmups.clear();
         self.fsp_local_session_ingress.clear();
         self.fsp_session_ingress.clear();
     }
@@ -670,9 +674,12 @@ impl PacketMover2TurnDriver {
                 OutputTarget::SessionIngress { local_addr } => {
                     let receipt = PacketMover2FmpIngressReceipt::from_output(&output);
                     match packet_mover2_session_ingress_from_output(output, local_addr) {
-                        Ok(PacketMover2SessionIngressHandoff::Raw(raw)) => {
+                        Ok(PacketMover2SessionIngressHandoff::Raw { raw, coord_warmup }) => {
                             if let Some(receipt) = receipt {
                                 self.fmp_ingress_receipts.push(receipt);
+                            }
+                            if !coord_warmup.is_empty() {
+                                self.fsp_coord_warmups.push(coord_warmup);
                             }
                             self.admit_raw_ingress_packet(raw, router, summary);
                         }

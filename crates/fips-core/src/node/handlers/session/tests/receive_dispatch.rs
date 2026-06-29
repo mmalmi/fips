@@ -1,65 +1,4 @@
     #[test]
-    fn session_runtime_receive_owns_fsp_open_bookkeeping_and_dispatch_metadata() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let (local_session, mut peer_sender) = make_xk_session_pair(&local, &peer);
-        let mut entry = SessionEntry::new(
-            *peer.node_addr(),
-            peer.pubkey_full(),
-            EndToEndState::Established(local_session),
-            1_000,
-            true,
-        );
-        entry.mark_established(1_000);
-        entry.touch_inbound_frame(1_000);
-        entry.record_decrypt_failure();
-
-        let endpoint_payload = b"endpoint runtime receive".to_vec();
-        let plaintext = fsp_prepend_inner_header(
-            0x0102_0304,
-            SessionMessageType::EndpointData.to_byte(),
-            0,
-            &endpoint_payload,
-        );
-        let counter = peer_sender.current_send_counter();
-        let header = build_fsp_header(counter, 0, plaintext.len() as u16);
-        let ciphertext = peer_sender
-            .encrypt_with_aad(&plaintext, &header)
-            .expect("test frame should encrypt");
-        let mut wire = header.to_vec();
-        wire.extend_from_slice(&ciphertext);
-        let parsed = FspEncryptedHeader::parse(&wire).expect("test frame should parse");
-
-        let outcome = SessionRuntimeReceive::new(
-            &mut entry,
-            &parsed,
-            &wire[FSP_HEADER_SIZE..],
-            1_280,
-            true,
-            2_000,
-        )
-        .open_established();
-
-        match outcome {
-            FspFrameOutcome::Authentic(message) => {
-                assert_eq!(message.source_peer().node_addr(), peer.node_addr());
-                assert_eq!(message.plaintext(), plaintext);
-                assert_eq!(
-                    message.msg_type(),
-                    SessionMessageType::EndpointData.to_byte()
-                );
-                assert_eq!(message.inner_flags_byte(), 0);
-                assert_eq!(message.timestamp(), 0x0102_0304);
-                assert_eq!(message.body(), endpoint_payload);
-                assert!(message.is_application_data());
-            }
-            other => panic!("expected authentic FSP frame, got {other:?}"),
-        }
-        assert_eq!(entry.consecutive_decrypt_failures(), 0);
-        assert_eq!(entry.last_inbound_frame_ms(), 2_000);
-    }
-
-    #[test]
     fn application_receive_refreshes_previous_hop_peer_without_direct_source_trust() {
         use crate::PeerIdentity;
         use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
@@ -310,7 +249,7 @@
         let promoted = entry.apply_fsp_receive_sync_result(
             crate::node::session::FspReceiveSync {
                 counter: 7,
-                slot: EpochSlot::Pending,
+                slot: crate::node::session::EpochSlot::Pending,
                 received_k_bit: !initial_k_bit,
                 timestamp: 0x0102_0304,
                 plaintext_len: FSP_INNER_HEADER_SIZE + 16,
@@ -334,7 +273,7 @@
         let current = entry.apply_fsp_receive_sync_result(
             crate::node::session::FspReceiveSync {
                 counter: 8,
-                slot: EpochSlot::Current,
+                slot: crate::node::session::EpochSlot::Current,
                 received_k_bit: entry.current_k_bit(),
                 timestamp: 0x0102_0305,
                 plaintext_len: FSP_INNER_HEADER_SIZE + 16,
@@ -351,187 +290,6 @@
             !current.refresh_worker_session(),
             "ordinary current-epoch replay mirroring must not re-register workers"
         );
-    }
-
-    #[test]
-    fn established_fsp_wire_owns_ciphertext_offset_and_coord_warmup() {
-        use crate::tree::TreeCoordinate;
-
-        let source_addr = node_addr(0x01);
-        let local_addr = node_addr(0x02);
-        let root_addr = node_addr(0xf0);
-        let source_coords = TreeCoordinate::from_addrs(vec![source_addr, root_addr]).unwrap();
-        let local_coords = TreeCoordinate::from_addrs(vec![local_addr, root_addr]).unwrap();
-
-        let header = build_fsp_header(42, FSP_FLAG_CP | FSP_FLAG_K, 20);
-        let mut wire_bytes = header.to_vec();
-        encode_coords(&source_coords, &mut wire_bytes);
-        encode_coords(&local_coords, &mut wire_bytes);
-        let ciphertext_offset = wire_bytes.len();
-        wire_bytes.extend_from_slice(&[0xcc; 36]);
-
-        let mut wire = EstablishedFspWire::parse(&wire_bytes, source_addr, local_addr)
-            .expect("wire should parse with coord warmup");
-        assert_eq!(wire.header.counter, 42);
-        assert_eq!(wire.header.flags, FSP_FLAG_CP | FSP_FLAG_K);
-        assert_eq!(wire.ciphertext, &wire_bytes[ciphertext_offset..]);
-        assert!(wire.has_coord_warmup());
-
-        let receive = wire.receive(1_280, true, 2_000);
-        assert_eq!(receive.header.counter, 42);
-        assert_eq!(receive.ciphertext, &wire_bytes[ciphertext_offset..]);
-        assert_eq!(receive.path_mtu, 1_280);
-        assert!(receive.ce_flag);
-        assert_eq!(receive.now_ms, 2_000);
-
-        let mut coord_cache = crate::cache::CoordCache::new(16, 1_000);
-        wire.apply_coord_warmup(&mut coord_cache, 1_500);
-        assert!(!wire.has_coord_warmup());
-        assert_eq!(
-            coord_cache
-                .get(&source_addr, 1_500)
-                .expect("source coords should be cached")
-                .root_id(),
-            &root_addr
-        );
-        assert_eq!(
-            coord_cache
-                .get(&local_addr, 1_500)
-                .expect("local coords should be cached")
-                .root_id(),
-            &root_addr
-        );
-
-        assert!(matches!(
-            EstablishedFspWire::parse(&wire_bytes[..FSP_HEADER_SIZE - 1], source_addr, local_addr),
-            Err(EstablishedFspWireError::BadHeader)
-        ));
-        let mut truncated_coords = build_fsp_header(43, FSP_FLAG_CP, 20).to_vec();
-        truncated_coords.extend_from_slice(&2u16.to_le_bytes());
-        truncated_coords.extend_from_slice(&[0u8; 14]);
-        assert!(matches!(
-            EstablishedFspWire::parse(&truncated_coords, source_addr, local_addr),
-            Err(EstablishedFspWireError::BadCoords(_))
-        ));
-    }
-
-    #[test]
-    fn session_registry_owns_early_encrypted_handshake_resend_budget() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let handshake = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
-        let mut entry = SessionEntry::new(
-            *peer.node_addr(),
-            peer.pubkey_full(),
-            EndToEndState::Initiating(handshake),
-            1_000,
-            true,
-        );
-        let payload = vec![0x10, 0x20, 0x30];
-        entry.set_handshake_payload(payload.clone(), 1_500);
-
-        let mut sessions = crate::node::SessionRegistry::default();
-        sessions.insert(*peer.node_addr(), entry);
-
-        match sessions.prepare_handshake_resend_after_early_encrypted_data(peer.node_addr(), 2) {
-            EarlyEncryptedHandshakeResend::Resend { payload: resend } => {
-                assert_eq!(resend, payload);
-            }
-            other => panic!("expected resend decision, got {other:?}"),
-        }
-        assert!(sessions.record_handshake_resend(peer.node_addr(), 2_000));
-        let entry = sessions
-            .get(peer.node_addr())
-            .expect("session should remain");
-        assert_eq!(entry.resend_count(), 1);
-        assert_eq!(entry.next_resend_at_ms(), 2_000);
-        assert_eq!(entry.handshake_payload(), Some(payload.as_slice()));
-
-        assert!(matches!(
-            sessions.prepare_handshake_resend_after_early_encrypted_data(peer.node_addr(), 1),
-            EarlyEncryptedHandshakeResend::BudgetExhausted
-        ));
-        let entry = sessions
-            .get(peer.node_addr())
-            .expect("session should remain");
-        assert!(entry.handshake_payload().is_none());
-        assert_eq!(entry.next_resend_at_ms(), 0);
-        assert_eq!(
-            entry.resend_count(),
-            1,
-            "clearing an exhausted payload must not rewrite resend history"
-        );
-
-        let missing = node_addr(0x77);
-        assert!(matches!(
-            sessions.prepare_handshake_resend_after_early_encrypted_data(&missing, 2),
-            EarlyEncryptedHandshakeResend::NoPayload
-        ));
-        assert!(!sessions.record_handshake_resend(&missing, 3_000));
-    }
-
-    #[test]
-    fn session_registry_owns_established_fsp_open_lookup_and_bookkeeping() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let (local_session, mut peer_sender) = make_xk_session_pair(&local, &peer);
-        let mut entry = SessionEntry::new(
-            *peer.node_addr(),
-            peer.pubkey_full(),
-            EndToEndState::Established(local_session),
-            1_000,
-            true,
-        );
-        entry.mark_established(1_000);
-        entry.record_decrypt_failure();
-
-        let endpoint_payload = b"registry runtime receive".to_vec();
-        let plaintext = fsp_prepend_inner_header(
-            0x0102_0304,
-            SessionMessageType::EndpointData.to_byte(),
-            0,
-            &endpoint_payload,
-        );
-        let counter = peer_sender.current_send_counter();
-        let header = build_fsp_header(counter, 0, plaintext.len() as u16);
-        let ciphertext = peer_sender
-            .encrypt_with_aad(&plaintext, &header)
-            .expect("test frame should encrypt");
-        let mut wire = header.to_vec();
-        wire.extend_from_slice(&ciphertext);
-        let parsed = FspEncryptedHeader::parse(&wire).expect("test frame should parse");
-
-        let mut sessions = crate::node::SessionRegistry::default();
-        sessions.insert(*peer.node_addr(), entry);
-
-        let outcome = sessions.open_established_fsp_frame(
-            peer.node_addr(),
-            EstablishedFspReceive::new(&parsed, &wire[FSP_HEADER_SIZE..], 1_280, true, 2_000),
-        );
-
-        match outcome {
-            FspFrameOutcome::Authentic(message) => {
-                assert_eq!(message.source_peer().node_addr(), peer.node_addr());
-                assert_eq!(
-                    message.msg_type(),
-                    SessionMessageType::EndpointData.to_byte()
-                );
-                assert_eq!(message.body(), endpoint_payload);
-            }
-            other => panic!("expected authentic FSP frame, got {other:?}"),
-        }
-        let entry = sessions
-            .get(peer.node_addr())
-            .expect("session should remain");
-        assert_eq!(entry.consecutive_decrypt_failures(), 0);
-        assert_eq!(entry.last_inbound_frame_ms(), 2_000);
-
-        let missing = node_addr(0x77);
-        let outcome = sessions.open_established_fsp_frame(
-            &missing,
-            EstablishedFspReceive::new(&parsed, &wire[FSP_HEADER_SIZE..], 1_280, false, 2_001),
-        );
-        assert!(matches!(outcome, FspFrameOutcome::UnknownSession));
     }
 
     #[test]
@@ -819,47 +577,4 @@
             node.pending_session_traffic.has_traffic_for(&source_addr),
             "fast dispatch should report, not synchronously drain, pending traffic"
         );
-    }
-
-    #[test]
-    fn session_runtime_receive_owns_decrypt_failure_recovery_gate() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-        entry.mark_established(1_000);
-        let plaintext_len = FSP_INNER_HEADER_SIZE + 32;
-        let forged_ciphertext = vec![0u8; plaintext_len + crate::noise::TAG_SIZE];
-
-        for attempt in 1..=DECRYPT_FAILURE_RECOVERY_THRESHOLD {
-            let header = build_fsp_header(attempt as u64, 0, plaintext_len as u16);
-            let mut wire = header.to_vec();
-            wire.extend_from_slice(&forged_ciphertext);
-            let parsed = FspEncryptedHeader::parse(&wire).expect("forged frame should parse");
-            let outcome = SessionRuntimeReceive::new(
-                &mut entry,
-                &parsed,
-                &wire[FSP_HEADER_SIZE..],
-                1_280,
-                false,
-                1_000 + DECRYPT_FAILURE_RECOVERY_QUIET_MS + attempt as u64,
-            )
-            .open_established();
-
-            match outcome {
-                FspFrameOutcome::DecryptFailed {
-                    counter,
-                    consecutive,
-                    recover_session,
-                    ..
-                } => {
-                    assert_eq!(counter, attempt as u64);
-                    assert_eq!(consecutive, attempt);
-                    assert_eq!(
-                        recover_session,
-                        attempt == DECRYPT_FAILURE_RECOVERY_THRESHOLD
-                    );
-                }
-                other => panic!("expected decrypt failure, got {other:?}"),
-            }
-        }
     }

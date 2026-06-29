@@ -66,12 +66,6 @@ pub const FSP_HEADER_SIZE: usize = 12;
 /// Size of the encrypted inner header (timestamp + msg_type + inner_flags).
 pub const FSP_INNER_HEADER_SIZE: usize = 6;
 
-/// AEAD authentication tag size (ChaCha20-Poly1305).
-const TAG_SIZE: usize = 16;
-
-/// Minimum size for an encrypted FSP message: header + tag (no plaintext).
-pub const FSP_ENCRYPTED_MIN_SIZE: usize = FSP_HEADER_SIZE + TAG_SIZE; // 28 bytes
-
 // FSP DataPacket port header constants.
 
 /// Size of the FSP DataPacket port header (src_port + dst_port).
@@ -159,85 +153,6 @@ impl FspCommonPrefix {
 }
 
 // ============================================================================
-// Encrypted Message Header
-// ============================================================================
-
-/// Parsed FSP encrypted message header (phase 0x0, U flag clear).
-///
-/// Wire format (12 bytes):
-/// ```text
-/// [ver+phase:1][flags:1][payload_len:2 LE][counter:8 LE]
-/// ```
-///
-/// The full 12-byte header is used as AAD for the AEAD construction.
-/// No receiver_idx — unlike FMP, FSP is end-to-end (dispatched by src_addr
-/// from the SessionDatagram envelope, not by index).
-#[derive(Clone, Debug)]
-pub struct FspEncryptedHeader {
-    /// Per-message flags (CP, K).
-    pub flags: u8,
-    /// Length of encrypted payload (excluding AEAD tag).
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub payload_len: u16,
-    /// Monotonic counter used as AEAD nonce.
-    pub counter: u64,
-    /// Raw 12-byte header for use as AEAD AAD.
-    pub header_bytes: [u8; FSP_HEADER_SIZE],
-}
-
-impl FspEncryptedHeader {
-    /// Parse an encrypted message header from FSP message data.
-    ///
-    /// Returns None if the data is too short or has wrong version/phase,
-    /// or if the U flag is set (plaintext messages use a different path).
-    pub fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() < FSP_ENCRYPTED_MIN_SIZE {
-            return None;
-        }
-
-        let version = data[0] >> 4;
-        let phase = data[0] & 0x0F;
-
-        if version != FSP_VERSION || phase != FSP_PHASE_ESTABLISHED {
-            return None;
-        }
-
-        let flags = data[1];
-
-        // U flag means plaintext — not an encrypted message
-        if flags & FSP_FLAG_U != 0 {
-            return None;
-        }
-
-        let payload_len = u16::from_le_bytes([data[2], data[3]]);
-        let counter = u64::from_le_bytes([
-            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
-        ]);
-
-        let mut header_bytes = [0u8; FSP_HEADER_SIZE];
-        header_bytes.copy_from_slice(&data[..FSP_HEADER_SIZE]);
-
-        Some(Self {
-            flags,
-            payload_len,
-            counter,
-            header_bytes,
-        })
-    }
-
-    /// Check if the Coords Present flag is set.
-    pub fn has_coords(&self) -> bool {
-        self.flags & FSP_FLAG_CP != 0
-    }
-
-    /// Offset where ciphertext (or coords if CP) begins in the original data.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn data_offset(&self) -> usize {
-        FSP_HEADER_SIZE
-    }
-}
-
-// ============================================================================
 // Serialization Helpers
 // ============================================================================
 
@@ -252,17 +167,6 @@ pub fn build_fsp_header(counter: u64, flags: u8, payload_len: u16) -> [u8; FSP_H
     header[2..4].copy_from_slice(&payload_len.to_le_bytes());
     header[4..12].copy_from_slice(&counter.to_le_bytes());
     header
-}
-
-/// Assemble a wire-format encrypted FSP message.
-///
-/// Format: `[header:12][ciphertext+tag]`
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn build_fsp_encrypted(header: &[u8; FSP_HEADER_SIZE], ciphertext: &[u8]) -> Vec<u8> {
-    let mut packet = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len());
-    packet.extend_from_slice(header);
-    packet.extend_from_slice(ciphertext);
-    packet
 }
 
 /// Build a 4-byte common prefix for a handshake message.
@@ -368,7 +272,6 @@ mod tests {
         assert_eq!(FSP_COMMON_PREFIX_SIZE, 4);
         assert_eq!(FSP_HEADER_SIZE, 12);
         assert_eq!(FSP_INNER_HEADER_SIZE, 6);
-        assert_eq!(FSP_ENCRYPTED_MIN_SIZE, 28); // 12 + 16
     }
 
     // ===== Common Prefix Tests =====
@@ -409,55 +312,6 @@ mod tests {
         assert!(FspCommonPrefix::parse(&[0, 0, 0]).is_none());
     }
 
-    // ===== Encrypted Header Tests =====
-
-    #[test]
-    fn test_encrypted_header_parse() {
-        let counter = 42u64;
-        let flags = FSP_FLAG_CP;
-        let payload_len = 100u16;
-        let header = build_fsp_header(counter, flags, payload_len);
-
-        // Build a minimal packet: header + 16 bytes of fake ciphertext (tag)
-        let mut packet = Vec::from(header);
-        packet.extend_from_slice(&[0xaa; TAG_SIZE]);
-
-        let parsed = FspEncryptedHeader::parse(&packet).unwrap();
-        assert_eq!(parsed.counter, 42);
-        assert_eq!(parsed.flags, FSP_FLAG_CP);
-        assert_eq!(parsed.payload_len, 100);
-        assert!(parsed.has_coords());
-        assert_eq!(parsed.header_bytes, header);
-        assert_eq!(parsed.data_offset(), FSP_HEADER_SIZE);
-    }
-
-    #[test]
-    fn test_encrypted_header_too_short() {
-        let packet = vec![0x00; FSP_ENCRYPTED_MIN_SIZE - 1];
-        assert!(FspEncryptedHeader::parse(&packet).is_none());
-    }
-
-    #[test]
-    fn test_encrypted_header_wrong_phase() {
-        let mut packet = vec![0x00; FSP_ENCRYPTED_MIN_SIZE];
-        packet[0] = 0x01; // phase 1 (msg1), not established
-        assert!(FspEncryptedHeader::parse(&packet).is_none());
-    }
-
-    #[test]
-    fn test_encrypted_header_wrong_version() {
-        let mut packet = vec![0x00; FSP_ENCRYPTED_MIN_SIZE];
-        packet[0] = 0x10; // version 1, phase 0
-        assert!(FspEncryptedHeader::parse(&packet).is_none());
-    }
-
-    #[test]
-    fn test_encrypted_header_u_flag_rejected() {
-        let mut packet = vec![0x00; FSP_ENCRYPTED_MIN_SIZE];
-        packet[1] = FSP_FLAG_U; // U flag set → not encrypted
-        assert!(FspEncryptedHeader::parse(&packet).is_none());
-    }
-
     // ===== Build Header Tests =====
 
     #[test]
@@ -473,16 +327,6 @@ mod tests {
             ]),
             1000
         );
-    }
-
-    #[test]
-    fn test_build_fsp_encrypted() {
-        let header = build_fsp_header(0, 0, 10);
-        let ciphertext = vec![0xCC; 26]; // 10 payload + 16 tag
-        let packet = build_fsp_encrypted(&header, &ciphertext);
-        assert_eq!(packet.len(), FSP_HEADER_SIZE + 26);
-        assert_eq!(&packet[..FSP_HEADER_SIZE], &header);
-        assert_eq!(&packet[FSP_HEADER_SIZE..], &ciphertext[..]);
     }
 
     // ===== Handshake Prefix Tests =====
@@ -576,24 +420,6 @@ mod tests {
         assert_eq!(FSP_FLAG_CP & FSP_FLAG_K, 0);
         assert_eq!(FSP_FLAG_CP & FSP_FLAG_U, 0);
         assert_eq!(FSP_FLAG_K & FSP_FLAG_U, 0);
-    }
-
-    #[test]
-    fn test_header_roundtrip() {
-        let counter = 0xDEADBEEF_12345678u64;
-        let flags = FSP_FLAG_CP | FSP_FLAG_K;
-        let payload_len = 1234u16;
-
-        let header = build_fsp_header(counter, flags, payload_len);
-        let ciphertext = vec![0xFF; payload_len as usize + TAG_SIZE];
-        let packet = build_fsp_encrypted(&header, &ciphertext);
-
-        let parsed = FspEncryptedHeader::parse(&packet).unwrap();
-        assert_eq!(parsed.counter, counter);
-        assert_eq!(parsed.flags, flags);
-        assert_eq!(parsed.payload_len, payload_len);
-        assert!(parsed.has_coords());
-        assert_eq!(parsed.header_bytes, header);
     }
 
     #[test]

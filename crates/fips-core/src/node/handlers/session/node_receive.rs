@@ -26,7 +26,7 @@ impl Node {
     /// - Phase 0x2 → SessionAck (handshake msg2)
     /// - Phase 0x3 → SessionMsg3 (XK handshake msg3)
     /// - Phase 0x0 + U flag → plaintext error signal (CoordsRequired/PathBroken)
-    /// - Phase 0x0 + !U → encrypted session message (data, reports, etc.)
+    /// - Phase 0x0 + !U → packet_mover2 authenticated receive only
     pub(in crate::node) async fn handle_session_payload(
         &mut self,
         delivery: LocalSessionPayload<'_>,
@@ -80,136 +80,16 @@ impl Node {
                 }
             }
             FSP_PHASE_ESTABLISHED => {
-                self.handle_encrypted_session_msg(delivery.into_encrypted())
-                    .await;
+                debug!(
+                    src = %self.peer_display_name(&src_addr),
+                    "Dropping established FSP payload outside packet_mover2 receive path"
+                );
+                return;
             }
             _ => {
                 debug!(phase = prefix.phase, "Unknown FSP phase");
             }
         }
-    }
-
-    /// Handle an encrypted session message (phase 0x0, U flag clear).
-    ///
-    /// Full FSP receive pipeline:
-    /// 1. Parse FspEncryptedHeader (12 bytes) → counter, flags, header_bytes
-    /// 2. If CP flag: parse cleartext coords, cache them
-    /// 3. Session lookup (must be Established)
-    /// 4. AEAD decrypt with AAD = header_bytes
-    /// 5. Strip FSP inner header → timestamp, msg_type, inner_flags
-    /// 6. Dispatch by msg_type
-    async fn handle_encrypted_session_msg(&mut self, delivery: EncryptedSessionPayload<'_>) {
-        let _t_fsp_handle =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspHandle);
-        let src_addr = delivery.source_addr();
-        let payload = delivery.payload();
-        let mut wire = match EstablishedFspWire::parse(payload, *src_addr, *self.node_addr()) {
-            Ok(wire) => wire,
-            Err(EstablishedFspWireError::BadHeader) => {
-                debug!(
-                    len = payload.len(),
-                    "Encrypted session message too short for FSP header"
-                );
-                return;
-            }
-            Err(EstablishedFspWireError::BadCoords(e)) => {
-                debug!(error = %e, "Failed to parse coords from encrypted session message");
-                return;
-            }
-        };
-
-        if wire.has_coord_warmup() {
-            wire.apply_coord_warmup(&mut self.coord_cache, Self::now_ms());
-        }
-
-        // The session registry owns the mutable lookup plus FSP open/replay,
-        // K-bit handling, failure accounting, MMP receive bookkeeping, and
-        // dispatch metadata. The rx loop supplies the parsed wire facts but no
-        // longer peeks into the session map directly on this hot edge.
-        let outcome = self.sessions.open_established_fsp_frame(
-            src_addr,
-            wire.receive(delivery.path_mtu(), delivery.ce_flag(), Self::now_ms()),
-        );
-
-        // The &mut entry borrow on self.sessions has dropped. Handle
-        // slow-path outcomes and dispatch by msg_type (which calls
-        // other &mut self handlers).
-        let session_message = match outcome {
-            FspFrameOutcome::Authentic(session_message) => session_message,
-            FspFrameOutcome::UnknownSession => {
-                debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
-                return;
-            }
-            FspFrameOutcome::NotEstablished => {
-                debug!(
-                    src = %self.peer_display_name(src_addr),
-                    "Encrypted message but session not established (awaiting handshake completion)"
-                );
-                self.resend_handshake_after_early_encrypted_data(src_addr)
-                    .await;
-                return;
-            }
-            FspFrameOutcome::BadInnerHeader => {
-                debug!(src = %self.peer_display_name(src_addr), "Decrypted payload too short for FSP inner header");
-                return;
-            }
-            FspFrameOutcome::MissingRemoteIdentity => {
-                debug!(
-                    src = %self.peer_display_name(src_addr),
-                    "Established session missing authenticated remote identity"
-                );
-                return;
-            }
-            FspFrameOutcome::DecryptFailed {
-                error,
-                counter,
-                consecutive,
-                recover_session,
-            } => {
-                debug!(
-                    error = %error, src = %self.peer_display_name(src_addr),
-                    counter, consecutive_failures = consecutive,
-                    "Session AEAD decryption failed"
-                );
-                if recover_session {
-                    warn!(
-                        peer = %self.peer_display_name(src_addr),
-                        consecutive_failures = consecutive,
-                        "Session AEAD failures exceeded threshold; starting recovery rekey"
-                    );
-                    if !self.initiate_session_rekey(src_addr).await {
-                        debug!(
-                            peer = %self.peer_display_name(src_addr),
-                            "Failed to start recovery rekey after decrypt-failure threshold"
-                        );
-                    }
-                }
-                return;
-            }
-            FspFrameOutcome::StaleEpochDrainFailure { counter } => {
-                trace!(
-                    src = %self.peer_display_name(src_addr),
-                    counter,
-                    "Ignoring stale FSP packet from previous key epoch during drain"
-                );
-                return;
-            }
-        };
-        self.register_packet_mover2_fsp_owner(src_addr);
-        let dispatch = AuthenticatedSessionDispatch::new(
-            *src_addr,
-            *delivery.previous_hop_addr(),
-            delivery.ce_flag(),
-            session_message,
-        );
-        if dispatch.is_endpoint_data() {
-            let finish = dispatch.dispatch_endpoint_data_fast(self);
-            if let Some(dest_addr) = finish.pending_flush_dest() {
-                self.flush_pending_packets(&dest_addr).await;
-            }
-            return;
-        }
-        dispatch.dispatch(self).await;
     }
 
     pub(in crate::node) async fn process_packet_mover2_authenticated_session(

@@ -249,6 +249,56 @@ impl PacketMover2FmpLinkIngress {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspCoordWarmup {
+    source: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
+    local: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
+}
+
+impl PacketMover2FspCoordWarmup {
+    fn from_parsed(
+        source_addr: NodeAddr,
+        local_addr: NodeAddr,
+        source_coords: Option<crate::tree::TreeCoordinate>,
+        local_coords: Option<crate::tree::TreeCoordinate>,
+    ) -> Self {
+        Self {
+            source: source_coords.map(|coords| (source_addr, coords)),
+            local: local_coords.map(|coords| (local_addr, coords)),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.source.is_none() && self.local.is_none()
+    }
+
+    pub(crate) fn source(&self) -> Option<(NodeAddr, &crate::tree::TreeCoordinate)> {
+        self.source.as_ref().map(|(addr, coords)| (*addr, coords))
+    }
+
+    pub(crate) fn local(&self) -> Option<(NodeAddr, &crate::tree::TreeCoordinate)> {
+        self.local.as_ref().map(|(addr, coords)| (*addr, coords))
+    }
+
+    pub(crate) fn apply_to(self, coord_cache: &mut crate::cache::CoordCache, now_ms: u64) {
+        if let Some((addr, coords)) = self.source {
+            coord_cache.insert(addr, coords, now_ms);
+        }
+        if let Some((addr, coords)) = self.local {
+            coord_cache.insert(addr, coords, now_ms);
+        }
+    }
+}
+
+impl Default for PacketMover2FspCoordWarmup {
+    fn default() -> Self {
+        Self {
+            source: None,
+            local: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2FspLocalSessionIngress {
     source_addr: NodeAddr,
     previous_hop_addr: NodeAddr,
@@ -425,6 +475,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fmp_control_ingress: Vec<PacketMover2FmpControlIngress>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
+    fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     wrapped_outbound_receipts: Vec<PacketMover2WrappedOutboundReceipt>,
@@ -450,6 +501,7 @@ impl PacketMover2LiveNodeTurn {
             fmp_control_ingress: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
+            fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
             wrapped_outbound_receipts: Vec::new(),
@@ -511,6 +563,18 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn take_fmp_link_ingress(&mut self) -> Vec<PacketMover2FmpLinkIngress> {
         std::mem::take(&mut self.fmp_link_ingress)
+    }
+
+    pub(crate) fn fsp_coord_warmups(&self) -> &[PacketMover2FspCoordWarmup] {
+        &self.fsp_coord_warmups
+    }
+
+    fn set_fsp_coord_warmups(&mut self, warmups: Vec<PacketMover2FspCoordWarmup>) {
+        self.fsp_coord_warmups = warmups;
+    }
+
+    pub(crate) fn take_fsp_coord_warmups(&mut self) -> Vec<PacketMover2FspCoordWarmup> {
+        std::mem::take(&mut self.fsp_coord_warmups)
     }
 
     pub(crate) fn fsp_local_session_ingress(&self) -> &[PacketMover2FspLocalSessionIngress] {
@@ -638,6 +702,7 @@ impl PacketMover2LiveNodeTurn {
             || !self.fmp_control_ingress.is_empty()
             || !self.fmp_ingress_receipts.is_empty()
             || !self.fmp_link_ingress.is_empty()
+            || !self.fsp_coord_warmups.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
             || !self.fsp_session_ingress.is_empty()
             || !self.wrapped_outbound_receipts.is_empty()

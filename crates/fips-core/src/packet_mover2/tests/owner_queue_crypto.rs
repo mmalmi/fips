@@ -131,10 +131,11 @@
 
         let handoff = packet_mover2_session_ingress_from_output(output, local_addr)
             .expect("session datagram should route to sourced FSP ingress");
-        let PacketMover2SessionIngressHandoff::Raw(raw) = handoff else {
+        let PacketMover2SessionIngressHandoff::Raw { raw, coord_warmup } = handoff else {
             panic!("established encrypted FSP should use raw fast path");
         };
 
+        assert!(coord_warmup.is_empty());
         assert_eq!(raw.protocol, PacketProtocol::Fsp);
         assert_eq!(raw.transport_id, transport_id);
         assert_eq!(raw.remote_addr, remote_addr);

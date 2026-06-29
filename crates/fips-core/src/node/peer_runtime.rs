@@ -97,18 +97,7 @@ pub(in crate::node) struct AuthenticatedSessionDatagram<'a> {
 
 pub(in crate::node) struct LocalSessionPayload<'a> {
     source_addr: NodeAddr,
-    previous_hop_peer: PeerIdentity,
     payload: &'a [u8],
-    path_mtu: u16,
-    ce_flag: bool,
-}
-
-pub(in crate::node) struct EncryptedSessionPayload<'a> {
-    source_addr: NodeAddr,
-    previous_hop_peer: PeerIdentity,
-    payload: &'a [u8],
-    path_mtu: u16,
-    ce_flag: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,32 +248,16 @@ impl<'a> AuthenticatedSessionDatagram<'a> {
         &self,
         source_addr: NodeAddr,
         payload: &'a [u8],
-        path_mtu: u16,
     ) -> LocalSessionPayload<'a> {
-        LocalSessionPayload::new(
-            source_addr,
-            self.previous_hop_peer,
-            payload,
-            path_mtu,
-            self.ce_flag,
-        )
+        LocalSessionPayload::new(source_addr, payload)
     }
 }
 
 impl<'a> LocalSessionPayload<'a> {
-    pub(in crate::node) fn new(
-        source_addr: NodeAddr,
-        previous_hop_peer: PeerIdentity,
-        payload: &'a [u8],
-        path_mtu: u16,
-        ce_flag: bool,
-    ) -> Self {
+    pub(in crate::node) fn new(source_addr: NodeAddr, payload: &'a [u8]) -> Self {
         Self {
             source_addr,
-            previous_hop_peer,
             payload,
-            path_mtu,
-            ce_flag,
         }
     }
 
@@ -294,38 +267,6 @@ impl<'a> LocalSessionPayload<'a> {
 
     pub(in crate::node) fn payload(&self) -> &'a [u8] {
         self.payload
-    }
-
-    pub(in crate::node) fn into_encrypted(self) -> EncryptedSessionPayload<'a> {
-        EncryptedSessionPayload {
-            source_addr: self.source_addr,
-            previous_hop_peer: self.previous_hop_peer,
-            payload: self.payload,
-            path_mtu: self.path_mtu,
-            ce_flag: self.ce_flag,
-        }
-    }
-}
-
-impl<'a> EncryptedSessionPayload<'a> {
-    pub(in crate::node) fn source_addr(&self) -> &NodeAddr {
-        &self.source_addr
-    }
-
-    pub(in crate::node) fn previous_hop_addr(&self) -> &NodeAddr {
-        self.previous_hop_peer.node_addr()
-    }
-
-    pub(in crate::node) fn payload(&self) -> &'a [u8] {
-        self.payload
-    }
-
-    pub(in crate::node) fn path_mtu(&self) -> u16 {
-        self.path_mtu
-    }
-
-    pub(in crate::node) fn ce_flag(&self) -> bool {
-        self.ce_flag
     }
 }
 

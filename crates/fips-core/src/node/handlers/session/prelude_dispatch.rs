@@ -1,18 +1,17 @@
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
-use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
+use crate::node::session::{EndToEndState, SessionEntry};
 use crate::node::session_wire::{
-    FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
-    FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE,
-    FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, fsp_strip_inner_header,
-    parse_encrypted_coords,
+    FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_INNER_HEADER_SIZE,
+    FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3,
+    FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM, FspCommonPrefix,
 };
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
-    EncryptedSessionPayload, EndpointDataDelivery, EndpointDataPayload, EndpointSendBatchCommand,
-    EndpointSendCommand, LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer,
-    NodeEndpointRelayStatus, NodeError,
+    EndpointDataDelivery, EndpointDataPayload, EndpointSendBatchCommand, EndpointSendCommand,
+    LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
+    NodeError,
     SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
@@ -30,46 +29,6 @@ use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
-
-/// Output of the single-borrow steady-state block in
-/// [`Node::handle_encrypted_session_msg`]. Carries the small amount of
-/// state the post-borrow path needs (the decrypted plaintext +
-/// inner-header fields), or which slow path (UnknownSession,
-/// NotEstablished, BadInnerHeader, DecryptFailed) to take after the
-/// `&mut entry` borrow on `self.sessions` drops. Lets the steady-state
-/// AEAD + MMP + path-MTU work all run under one `get_mut(src_addr)`
-/// instead of seven `self.sessions` operations per packet.
-#[derive(Debug)]
-enum FspFrameOutcome {
-    /// FSP frame decrypted successfully; ready to dispatch by msg_type.
-    /// `plaintext` is the full inner-decoded payload — the per-msg_type
-    /// payload starts at offset `FSP_INNER_HEADER_SIZE`.
-    Authentic(AuthenticatedSessionMessage),
-    /// `self.sessions` had no entry for the source address.
-    UnknownSession,
-    /// Session entry exists but the XK handshake hasn't completed yet.
-    NotEstablished,
-    /// Decrypted payload was shorter than `FSP_INNER_HEADER_SIZE`.
-    BadInnerHeader,
-    /// Established session does not yet have an authenticated remote identity.
-    MissingRemoteIdentity,
-    /// All live epoch AEAD attempts failed.
-    /// `consecutive` tracks the post-failure counter; if it crossed the
-    /// threshold, `recover_session` is true so the post-borrow path can
-    /// start an in-place recovery rekey against the same peer. The old
-    /// session stays usable while the new XK handshake completes.
-    DecryptFailed {
-        error: crate::noise::NoiseError,
-        counter: u64,
-        consecutive: u32,
-        recover_session: bool,
-    },
-    /// A packet from the previous key epoch arrived during the drain window,
-    /// but it could not be authenticated by the retained previous session
-    /// either. This is normally replayed or very stale post-cutover traffic,
-    /// not evidence that the current session diverged.
-    StaleEpochDrainFailure { counter: u64 },
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ProcessedSessionReceiverReport {
@@ -246,11 +205,6 @@ impl AuthenticatedSessionMessage {
     }
 
     #[cfg(test)]
-    fn source_peer(&self) -> PeerIdentity {
-        self.source_peer
-    }
-
-    #[cfg(test)]
     fn plaintext(&self) -> &[u8] {
         debug_assert!(self.plaintext_len >= FSP_INNER_HEADER_SIZE);
         &self.buffer[self.plaintext_offset..self.plaintext_offset + self.plaintext_len]
@@ -258,16 +212,6 @@ impl AuthenticatedSessionMessage {
 
     pub(in crate::node) fn msg_type(&self) -> u8 {
         self.msg_type
-    }
-
-    #[cfg(test)]
-    fn inner_flags_byte(&self) -> u8 {
-        self.inner_flags_byte
-    }
-
-    #[cfg(test)]
-    fn timestamp(&self) -> u32 {
-        self.timestamp
     }
 
     pub(in crate::node) fn body(&self) -> &[u8] {

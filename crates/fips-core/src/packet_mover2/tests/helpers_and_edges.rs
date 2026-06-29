@@ -155,6 +155,22 @@
     }
 
     fn fsp_encrypted_wire(counter: u64, flags: u8, plaintext: &[u8], key: u8) -> Vec<u8> {
+        fsp_encrypted_wire_with_coords(
+            counter,
+            flags,
+            plaintext,
+            key,
+            &empty_fsp_coords_prefix(),
+        )
+    }
+
+    fn fsp_encrypted_wire_with_coords(
+        counter: u64,
+        flags: u8,
+        plaintext: &[u8],
+        key: u8,
+        coords_prefix: &[u8],
+    ) -> Vec<u8> {
         let mut data = fsp_wire(counter, flags);
         data.truncate(FSP_HEADER_SIZE);
         let mut ciphertext = plaintext.to_vec();
@@ -166,7 +182,7 @@
             )
             .unwrap();
         if flags & crate::node::session_wire::FSP_FLAG_CP != 0 {
-            data.extend_from_slice(&empty_fsp_coords_prefix());
+            data.extend_from_slice(coords_prefix);
         }
         data.extend_from_slice(&ciphertext);
         data

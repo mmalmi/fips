@@ -1,5 +1,5 @@
 use crate::node::FspSendBookkeepingInput;
-use crate::node::session_wire::{build_fsp_header, fsp_prepend_inner_header};
+use crate::node::session_wire::{FSP_HEADER_SIZE, build_fsp_header, fsp_prepend_inner_header};
 use crate::protocol::{coords_wire_size, encode_coords};
 use crate::upper::icmp::FIPS_OVERHEAD;
 use std::borrow::Cow;

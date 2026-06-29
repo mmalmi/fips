@@ -6,7 +6,10 @@ enum PacketMover2SessionHandoffError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PacketMover2SessionIngressHandoff {
-    Raw(PacketMover2RawIngress),
+    Raw {
+        raw: PacketMover2RawIngress,
+        coord_warmup: PacketMover2FspCoordWarmup,
+    },
     Local(PacketMover2FspLocalSessionIngress),
 }
 
@@ -40,7 +43,7 @@ fn packet_mover2_session_ingress_from_output(
         return Err((output, PacketMover2SessionHandoffError::NoRoute));
     }
 
-    let (source_addr, path_mtu, local_delivery) = {
+    let handoff_facts = {
         let Some(link_payload) = output.opened_payload() else {
             return Err((output, PacketMover2SessionHandoffError::InvalidPacket));
         };
@@ -66,11 +69,24 @@ fn packet_mover2_session_ingress_from_output(
         else {
             return Err((output, PacketMover2SessionHandoffError::InvalidPacket));
         };
-        (
+        let coord_warmup = packet_mover2_fsp_coord_warmup(
             datagram.src_addr,
-            datagram.path_mtu,
-            prefix.phase != FSP_PHASE_ESTABLISHED || prefix.is_unencrypted(),
-        )
+            local_addr,
+            datagram.payload,
+            &prefix,
+        );
+        coord_warmup.map(|coord_warmup| {
+            (
+                datagram.src_addr,
+                datagram.path_mtu,
+                prefix.phase != FSP_PHASE_ESTABLISHED || prefix.is_unencrypted(),
+                coord_warmup,
+            )
+        })
+    };
+    let (source_addr, path_mtu, local_delivery, coord_warmup) = match handoff_facts {
+        Ok(facts) => facts,
+        Err(error) => return Err((output, error)),
     };
 
     let source_path = match output.take_source_path() {
@@ -114,8 +130,8 @@ fn packet_mover2_session_ingress_from_output(
         ));
     }
 
-    Ok(PacketMover2SessionIngressHandoff::Raw(
-        PacketMover2RawIngress {
+    Ok(PacketMover2SessionIngressHandoff::Raw {
+        raw: PacketMover2RawIngress {
             protocol: PacketProtocol::Fsp,
             transport_id,
             remote_addr,
@@ -127,5 +143,32 @@ fn packet_mover2_session_ingress_from_output(
             activity_tick,
             payload,
         },
+        coord_warmup,
+    })
+}
+
+fn packet_mover2_fsp_coord_warmup(
+    source_addr: NodeAddr,
+    local_addr: NodeAddr,
+    payload: &[u8],
+    prefix: &crate::node::session_wire::FspCommonPrefix,
+) -> Result<PacketMover2FspCoordWarmup, PacketMover2SessionHandoffError> {
+    if prefix.phase != FSP_PHASE_ESTABLISHED
+        || prefix.is_unencrypted()
+        || prefix.flags & crate::node::session_wire::FSP_FLAG_CP == 0
+    {
+        return Ok(PacketMover2FspCoordWarmup::default());
+    }
+    if payload.len() < FSP_HEADER_SIZE {
+        return Err(PacketMover2SessionHandoffError::InvalidPacket);
+    }
+    let (source_coords, local_coords, _coords_len) =
+        crate::node::session_wire::parse_encrypted_coords(&payload[FSP_HEADER_SIZE..])
+            .map_err(|_| PacketMover2SessionHandoffError::InvalidPacket)?;
+    Ok(PacketMover2FspCoordWarmup::from_parsed(
+        source_addr,
+        local_addr,
+        source_coords,
+        local_coords,
     ))
 }
