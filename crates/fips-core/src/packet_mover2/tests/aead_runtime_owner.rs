@@ -797,6 +797,262 @@
     }
 
     #[test]
+    fn completion_only_turn_retires_out_of_order_completions_in_owner_order() {
+        let owner = OwnerId::fmp(81);
+        let open_key = 81;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+
+        let packets: [(u64, &[u8]); 3] = [(100, b"first"), (101, b"second"), (102, b"third")];
+        for (counter, payload) in packets {
+            driver
+                .mover
+                .submit_socket_packet(
+                    SocketPacket::from_fmp_established_wire(
+                        owner,
+                        1,
+                        OutputTarget::Tun,
+                        fmp_encrypted_wire(81, counter, 0, payload, open_key),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let mut work = Vec::new();
+        assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 3);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 3);
+
+        let worker = StatelessAeadOpenWorker;
+        let mut completions = work
+            .drain(..)
+            .map(|work| {
+                worker.execute(AeadOpenWork::from_crypto_work(work, test_key(open_key)).unwrap())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.reservation.counter)
+                .collect::<Vec<_>>(),
+            vec![100, 101, 102]
+        );
+
+        let third = completions.pop().unwrap();
+        let first = completions.remove(0);
+        let second = completions.remove(0);
+
+        {
+            let turn = driver.run_aead_completion_turn([third], 8);
+            assert_eq!(turn.summary().dispatched(), 0);
+            assert_eq!(turn.summary().outputs(), 0);
+            assert!(turn.outputs().is_empty());
+            assert!(turn.drops().is_empty());
+        }
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 3);
+
+        {
+            let turn = driver.run_aead_completion_turn([first], 8);
+            assert_eq!(turn.summary().dispatched(), 0);
+            assert_eq!(turn.summary().outputs(), 1);
+            assert_eq!(turn.outputs()[0].counter(), 100);
+            assert_eq!(
+                &turn.outputs()[0].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
+                b"first"
+            );
+            assert!(turn.drops().is_empty());
+        }
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 2);
+
+        {
+            let turn = driver.run_aead_completion_turn([second], 8);
+            assert_eq!(turn.summary().dispatched(), 0);
+            assert_eq!(turn.summary().outputs(), 2);
+            assert_eq!(turn.outputs()[0].counter(), 101);
+            assert_eq!(turn.outputs()[1].counter(), 102);
+            assert_eq!(
+                &turn.outputs()[0].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
+                b"second"
+            );
+            assert_eq!(
+                &turn.outputs()[1].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
+                b"third"
+            );
+            assert!(turn.drops().is_empty());
+        }
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+    }
+
+    #[test]
+    fn completion_only_turn_drops_stale_generation_and_unblocks_newer_completion() {
+        let owner = OwnerId::fmp(82);
+        let open_key = 82;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+
+        driver
+            .mover
+            .submit_socket_packet(
+                SocketPacket::from_fmp_established_wire(
+                    owner,
+                    1,
+                    OutputTarget::Tun,
+                    fmp_encrypted_wire(82, 100, 0, b"stale", open_key),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut old_work = Vec::new();
+        assert_eq!(driver.mover.dispatch_available_into(8, &mut old_work), 1);
+
+        driver.owner_mut(owner).unwrap().rekey(2);
+        driver
+            .mover
+            .submit_socket_packet(
+                SocketPacket::from_fmp_established_wire(
+                    owner,
+                    2,
+                    OutputTarget::Tun,
+                    fmp_encrypted_wire(82, 101, 0, b"new", open_key),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut new_work = Vec::new();
+        assert_eq!(driver.mover.dispatch_available_into(8, &mut new_work), 1);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 2);
+
+        let worker = StatelessAeadOpenWorker;
+        let old_completion = worker.execute(
+            AeadOpenWork::from_crypto_work(old_work.pop().unwrap(), test_key(open_key)).unwrap(),
+        );
+        let new_completion = worker.execute(
+            AeadOpenWork::from_crypto_work(new_work.pop().unwrap(), test_key(open_key)).unwrap(),
+        );
+
+        {
+            let turn = driver.run_aead_completion_turn([new_completion], 8);
+            assert_eq!(turn.summary().dispatched(), 0);
+            assert_eq!(turn.summary().outputs(), 0);
+            assert_eq!(turn.summary().drops(), 0);
+            assert!(turn.outputs().is_empty());
+            assert!(turn.drops().is_empty());
+        }
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 2);
+
+        {
+            let turn = driver.run_aead_completion_turn([old_completion], 8);
+            assert_eq!(turn.summary().dispatched(), 0);
+            assert_eq!(turn.summary().outputs(), 1);
+            assert_eq!(turn.summary().drops(), 1);
+            assert_eq!(turn.outputs()[0].counter(), 101);
+            assert_eq!(
+                &turn.outputs()[0].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
+                b"new"
+            );
+            assert_eq!(turn.drops().len(), 1);
+            assert_eq!(
+                turn.drops()[0].reason(),
+                PacketDropReason::StaleCompletionGeneration
+            );
+            assert_eq!(turn.drops()[0].counter(), Some(100));
+        }
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+    }
+
+    #[test]
+    fn completion_only_turn_reserves_priority_progress_after_bulk_completion() {
+        let owner = OwnerId::fmp(83);
+        let seal_key = 83;
+        let path = TransportPath::new(8300);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(
+            owner,
+            OwnerConfig::new(1, 3)
+                .with_bulk_in_flight_limit(1)
+                .with_next_send_counter(10),
+        );
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_active_path(path.clone());
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(seal_key), test_key(seal_key)));
+
+        driver
+            .mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                830,
+                0,
+                b"bulk-1".to_vec(),
+            ))
+            .unwrap();
+        let mut seal_work = Vec::new();
+        assert_eq!(
+            driver
+                .mover
+                .dispatch_outbound_available_into(1, &mut seal_work),
+            1
+        );
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 1);
+
+        driver
+            .mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                830,
+                0,
+                b"bulk-2".to_vec(),
+            ))
+            .unwrap();
+        driver
+            .mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Liveness,
+                830,
+                0,
+                b"priority".to_vec(),
+            ))
+            .unwrap();
+
+        let worker = StatelessAeadSealWorker;
+        let completion = worker.execute(
+            AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(seal_key))
+                .unwrap(),
+        );
+
+        {
+            let turn = driver.run_aead_completion_turn([completion], 1);
+            assert_eq!(turn.summary().dispatched(), 1);
+            assert_eq!(turn.summary().outputs(), 2);
+            assert!(turn.drops().is_empty());
+            assert_eq!(turn.outputs()[0].counter(), 10);
+            assert_eq!(turn.outputs()[0].target(), OutputTarget::Transport);
+            assert_eq!(turn.outputs()[0].path(), Some(path.clone()));
+            assert_eq!(open_sealed_output(&turn.outputs()[0], seal_key), b"bulk-1");
+            assert_eq!(turn.outputs()[1].counter(), 11);
+            assert_eq!(turn.outputs()[1].target(), OutputTarget::Transport);
+            assert_eq!(turn.outputs()[1].path(), Some(path));
+            assert_eq!(
+                open_sealed_output(&turn.outputs()[1], seal_key),
+                b"priority"
+            );
+        }
+
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.mover.outbound_queue_lens(), (0, 1));
+    }
+
+    #[test]
     fn completion_only_turn_continues_fsp_post_seal_wrap_to_fmp_output() {
         let source = NodeAddr::from_bytes([0x80; 16]);
         let dest = NodeAddr::from_bytes([0x81; 16]);

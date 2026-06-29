@@ -693,8 +693,21 @@ impl PacketMover2TurnDriver {
         I: IntoIterator<Item = CryptoCompletion>,
     {
         for completion in completions {
-            self.retired
-                .extend(self.mover.retire_completion(completion));
+            let retired = self.mover.retire_completion(completion);
+            let mut mover_drops = self.mover.drain_drops();
+            let emitted_drop_start = self.drops.len();
+            self.drops.append(&mut mover_drops);
+            for item in &retired {
+                if let RetiredPacket::Drop(drop) = item {
+                    if !self.drops[emitted_drop_start..]
+                        .iter()
+                        .any(|emitted| emitted == drop)
+                    {
+                        self.drops.push(drop.clone());
+                    }
+                }
+            }
+            self.retired.extend(retired);
         }
         self.collect_retired_outputs(summary)
     }
