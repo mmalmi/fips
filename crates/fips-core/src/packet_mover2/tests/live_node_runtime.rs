@@ -197,17 +197,12 @@
 
         let mut ready_completions = executor.take_ready();
         let second = live_node
-            .pump_turn_with_completion_executor(
+            .pump_outbound_firsts_with_completion_executor(
                 &mut ready_completions,
                 8,
                 &mut executor,
-                &mut raw_ingress,
-                0,
                 PacketMover2LiveOutboundFirsts::default(),
-                &mut endpoint_priority_rx,
-                &mut endpoint_bulk_rx,
                 0,
-                &mut tun_outbound_rx,
                 0,
                 &tun_tx,
                 &endpoint_io.event_tx,
