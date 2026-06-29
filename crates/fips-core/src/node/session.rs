@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::config::SessionMmpConfig;
 use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 use crate::node::session_wire::{FSP_HEADER_SIZE, build_fsp_header};
 use crate::noise::ReplayWindow;
 use crate::noise::{HandshakeState, NoiseSession};
@@ -62,7 +62,7 @@ pub(crate) enum FspOpenError {
 }
 
 /// Reserved FSP send state for off-task worker encryption.
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(crate) struct FspSendReservation {
     pub(crate) counter: u64,
     pub(crate) header: [u8; FSP_HEADER_SIZE],
@@ -695,7 +695,7 @@ impl SessionEntry {
     /// The session entry owns the send counter sequence. Worker paths receive a
     /// clone of the AEAD key plus the already-reserved counter/header pair, so
     /// worker encryption cannot advance or rebuild session-owned sequencing.
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(crate) fn reserve_fsp_worker_send(
         &mut self,
         flags: u8,
@@ -718,7 +718,7 @@ impl SessionEntry {
 
     /// Reserve a contiguous batch of FSP send counters for worker-side
     /// encryption under one mutable borrow of the session-owned send state.
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(crate) fn reserve_fsp_worker_send_batch<I>(
         &mut self,
         inputs: I,

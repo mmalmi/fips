@@ -476,6 +476,7 @@ impl PeerLifecycleRegistry {
         Some(packets)
     }
 
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn prepare_fmp_send(
         &self,
         node_addr: &NodeAddr,
@@ -489,6 +490,7 @@ impl PeerLifecycleRegistry {
         Self::fmp_send_preparation_from_peer(peer, ce_flag, payload_len)
     }
 
+    #[cfg(all(test, unix))]
     fn fmp_send_preparation_from_peer(
         peer: &ActivePeer,
         ce_flag: bool,
@@ -499,6 +501,7 @@ impl PeerLifecycleRegistry {
         Ok(snapshot.fmp_prepared().clone())
     }
 
+    #[cfg(all(test, unix))]
     fn peer_runtime_route_snapshot_from_peer(
         node_addr: NodeAddr,
         peer: &ActivePeer,
@@ -535,7 +538,7 @@ impl PeerLifecycleRegistry {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn prepare_peer_runtime_route_snapshot(
         &self,
         node_addr: &NodeAddr,
@@ -699,6 +702,7 @@ impl PeerLifecycleRegistry {
             }))
     }
 
+    #[cfg(all(test, unix))]
     pub(in crate::node) fn seal_prepared_fmp_inline_send(
         &mut self,
         node_addr: &NodeAddr,
@@ -902,7 +906,7 @@ pub(in crate::node) struct FspSendBookkeeping {
     pub(in crate::node) next_hop_recorded: bool,
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct FspWorkerSendReservationInput {
     pub(in crate::node) flags: u8,
@@ -910,7 +914,7 @@ pub(in crate::node) struct FspWorkerSendReservationInput {
     pub(in crate::node) path_mtu: u16,
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) enum FspWorkerSendReservationError {
     MissingSession,

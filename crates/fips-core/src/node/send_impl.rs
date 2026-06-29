@@ -23,6 +23,7 @@ impl Node {
             .await
     }
 
+    #[cfg(all(test, unix))]
     pub(super) fn map_fmp_send_preparation_error(
         node_addr: NodeAddr,
         error: FmpSendPreparationError,
@@ -60,7 +61,7 @@ impl Node {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     pub(super) fn map_fsp_worker_send_reservation_error(
         node_addr: NodeAddr,
         error: FspWorkerSendReservationError,

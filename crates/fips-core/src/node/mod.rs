@@ -104,11 +104,11 @@ use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
-#[cfg(all(test, unix))]
-use self::wire::ESTABLISHED_HEADER_SIZE;
 #[cfg(test)]
 use self::wire::prepend_inner_header;
-use self::wire::{FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header};
+#[cfg(all(test, unix))]
+use self::wire::{ESTABLISHED_HEADER_SIZE, build_encrypted, build_established_header};
+use self::wire::{FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP};
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};

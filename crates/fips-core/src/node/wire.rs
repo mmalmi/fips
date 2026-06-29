@@ -129,6 +129,7 @@ impl CommonPrefix {
 ///
 /// The full 16-byte header is used as AAD for the AEAD construction.
 #[derive(Clone, Debug)]
+#[cfg(test)]
 pub struct EncryptedHeader {
     /// Per-packet flags (K, CE, SP).
     #[allow(dead_code)]
@@ -144,6 +145,7 @@ pub struct EncryptedHeader {
     pub header_bytes: [u8; ESTABLISHED_HEADER_SIZE],
 }
 
+#[cfg(test)]
 impl EncryptedHeader {
     /// Parse an established frame header from packet data.
     ///
@@ -349,6 +351,7 @@ pub fn build_msg2(
 /// Build the 16-byte outer header for an established frame.
 ///
 /// Returns the header bytes (for use as AAD) separately from the construction.
+#[cfg(test)]
 pub fn build_established_header(
     receiver_idx: SessionIndex,
     counter: u64,
@@ -371,6 +374,7 @@ pub fn build_established_header(
 /// The header is constructed from the parameters and used as AAD during
 /// encryption. The caller should use `build_established_header` to construct
 /// the header, encrypt with it as AAD, then call this to assemble the packet.
+#[cfg(test)]
 pub fn build_encrypted(header: &[u8; ESTABLISHED_HEADER_SIZE], ciphertext: &[u8]) -> Vec<u8> {
     let mut packet = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + ciphertext.len());
     packet.extend_from_slice(header);
@@ -386,6 +390,7 @@ pub fn build_encrypted(header: &[u8; ESTABLISHED_HEADER_SIZE], ciphertext: &[u8]
 ///
 /// The caller provides the original plaintext starting with `[msg_type][payload...]`.
 /// This prepends `[timestamp:4 LE]` before the msg_type byte.
+#[cfg(test)]
 pub fn prepend_inner_header(timestamp_ms: u32, plaintext: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(4 + plaintext.len());
     buf.extend_from_slice(&timestamp_ms.to_le_bytes());

@@ -164,6 +164,7 @@ pub(in crate::node) struct FmpSendBookkeeping {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(all(test, unix))]
 pub(in crate::node) enum FmpSendPreparationError {
     MissingPeer,
     MissingTheirIndex,
@@ -175,7 +176,7 @@ pub(in crate::node) enum FmpSendPreparationError {
     EncryptionFailed,
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) enum PeerRuntimeRouteDecisionError {
     NoRoute {
@@ -188,6 +189,7 @@ pub(in crate::node) enum PeerRuntimeRouteDecisionError {
 }
 
 #[derive(Clone)]
+#[cfg(all(test, unix))]
 pub(in crate::node) struct FmpSendPreparation {
     pub(in crate::node) their_index: SessionIndex,
     pub(in crate::node) transport_id: TransportId,
@@ -198,6 +200,7 @@ pub(in crate::node) struct FmpSendPreparation {
 }
 
 #[derive(Clone)]
+#[cfg(all(test, unix))]
 pub(in crate::node) struct PeerRuntimeRouteSnapshot {
     node_addr: NodeAddr,
     their_index: SessionIndex,
@@ -208,7 +211,7 @@ pub(in crate::node) struct PeerRuntimeRouteSnapshot {
     fmp_worker_send_available: bool,
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(in crate::node) struct PeerRuntimeRouteDecision {
     next_hop_addr: NodeAddr,
     peer_snapshot: PeerRuntimeRouteSnapshot,
@@ -556,6 +559,7 @@ impl<'a> EncryptedSessionPayload<'a> {
     }
 }
 
+#[cfg(all(test, unix))]
 impl PeerRuntimeRouteSnapshot {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::node) fn new(
@@ -621,7 +625,7 @@ impl PeerRuntimeRouteSnapshot {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 impl PeerRuntimeRouteDecision {
     pub(in crate::node) fn new(
         next_hop_addr: NodeAddr,
@@ -674,12 +678,14 @@ impl PeerRuntimeRouteDecision {
     }
 }
 
+#[cfg(all(test, unix))]
 pub(in crate::node) struct PeerRuntimeSendSnapshot {
     node_addr: NodeAddr,
     fmp_prepared: FmpSendPreparation,
     fmp_worker_send_available: bool,
 }
 
+#[cfg(all(test, unix))]
 impl PeerRuntimeSendSnapshot {
     pub(in crate::node) fn new(
         node_addr: NodeAddr,
@@ -706,6 +712,7 @@ impl PeerRuntimeSendSnapshot {
     }
 }
 
+#[cfg(all(test, unix))]
 pub(in crate::node) struct PreparedFmpInlineSend {
     pub(in crate::node) counter: u64,
     #[cfg(test)]
