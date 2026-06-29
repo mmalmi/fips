@@ -220,6 +220,23 @@
         (dispatched, retired, drops)
     }
 
+    fn drain_worker_pool_completions(
+        pool: &mut PacketMover2AeadWorkerPool,
+        expected: usize,
+    ) -> Vec<CryptoCompletion> {
+        let mut completions = Vec::new();
+        for _ in 0..100 {
+            pool.drain_completions(expected.saturating_sub(completions.len()), |completion| {
+                completions.push(completion);
+            });
+            if completions.len() >= expected {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        completions
+    }
+
     #[test]
     fn aead_turn_runner_hands_executor_prepared_crypto_chunks() {
         let owner = fmp_owner(702);
@@ -356,6 +373,76 @@
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut inline);
         assert_eq!(dispatched, 2);
         assert_eq!(outputs(retired).len(), 2);
+        assert!(drops.is_empty());
+    }
+
+    #[test]
+    fn aead_worker_pool_returns_completions_through_completion_source() {
+        let owner = fmp_owner(706);
+        let open_key = 20;
+        let mut mover = mover();
+        register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
+        submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..104, b"worker");
+
+        let mut pool = PacketMover2AeadWorkerPool::new(2, 8);
+        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+
+        assert_eq!(dispatched, 4);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 4);
+
+        let completions = drain_worker_pool_completions(&mut pool, 4);
+        assert_eq!(completions.len(), 4);
+        let mut retired = Vec::new();
+        for completion in completions {
+            retired.extend(mover.retire_completion(completion));
+        }
+        let outputs = outputs(retired);
+        assert_eq!(
+            outputs
+                .iter()
+                .map(PacketOutput::counter)
+                .collect::<Vec<_>>(),
+            vec![100, 101, 102, 103]
+        );
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
+        assert_eq!(pool.available_capacity(), 8);
+    }
+
+    #[test]
+    fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
+        let owner = fmp_owner(707);
+        let open_key = 21;
+        let mut mover = mover();
+        register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
+        submit_fmp_inbound_range(&mut mover, owner, 707, open_key, 100..104, b"worker-cap");
+
+        let mut pool = PacketMover2AeadWorkerPool::new(1, 2);
+        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        assert_eq!(dispatched, 2);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(pool.available_capacity(), 0);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
+
+        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        assert_eq!(dispatched, 0);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
+
+        let completions = drain_worker_pool_completions(&mut pool, 2);
+        assert_eq!(completions.len(), 2);
+        for completion in completions {
+            mover.retire_completion(completion);
+        }
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
+        assert_eq!(pool.available_capacity(), 2);
+
+        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        assert_eq!(dispatched, 2);
+        assert!(retired.is_empty());
         assert!(drops.is_empty());
     }
 

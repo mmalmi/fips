@@ -49,6 +49,18 @@ impl PreparedCryptoWork {
             Self::Completed(completion) => completion,
         }
     }
+
+    fn into_executor_failed_completion(self) -> CryptoCompletion {
+        match self {
+            Self::Open { work, .. } => {
+                failed_crypto_completion(work.reservation, CryptoFailureKind::Open)
+            }
+            Self::Seal { work, .. } => {
+                failed_crypto_completion(work.reservation, CryptoFailureKind::Seal)
+            }
+            Self::Completed(completion) => completion,
+        }
+    }
 }
 
 pub(crate) trait PacketMover2CryptoExecutor {
@@ -81,6 +93,160 @@ impl PacketMover2CryptoExecutor for InlinePacketMover2CryptoExecutor {
             completions.push(work.execute(&self.opened, &self.sealed));
         }
         count
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct PacketMover2AeadWorkerPool {
+    work_tx: Option<crossbeam_channel::Sender<Vec<PreparedCryptoWork>>>,
+    completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletion>>>,
+    pending_completions: VecDeque<CryptoCompletion>,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    max_in_flight: usize,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+#[allow(dead_code)]
+impl PacketMover2AeadWorkerPool {
+    pub(crate) fn new(worker_count: usize, max_in_flight: usize) -> Self {
+        let worker_count = worker_count.max(1);
+        let max_in_flight = max_in_flight.max(1);
+        let (work_tx, work_rx): (
+            crossbeam_channel::Sender<Vec<PreparedCryptoWork>>,
+            crossbeam_channel::Receiver<Vec<PreparedCryptoWork>>,
+        ) = crossbeam_channel::bounded(max_in_flight);
+        let (completion_tx, completion_rx): (
+            crossbeam_channel::Sender<Vec<CryptoCompletion>>,
+            crossbeam_channel::Receiver<Vec<CryptoCompletion>>,
+        ) = crossbeam_channel::bounded(max_in_flight);
+        let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut workers = Vec::with_capacity(worker_count);
+        for worker_idx in 0..worker_count {
+            let work_rx = work_rx.clone();
+            let completion_tx = completion_tx.clone();
+            let in_flight = Arc::clone(&in_flight);
+            workers.push(
+                std::thread::Builder::new()
+                    .name(format!("pm2-aeadw-{worker_idx}"))
+                    .spawn(move || {
+                        let opened = StatelessAeadOpenWorker;
+                        let sealed = StatelessAeadSealWorker;
+                        while let Ok(mut prepared) = work_rx.recv() {
+                            let count = prepared.len();
+                            let mut completions = Vec::with_capacity(count);
+                            for work in prepared.drain(..) {
+                                completions.push(work.execute(&opened, &sealed));
+                            }
+                            if completion_tx.send(completions).is_err() {
+                                in_flight
+                                    .fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
+                                break;
+                            }
+                        }
+                    })
+                    .expect("spawn packet_mover2 AEAD worker"),
+            );
+        }
+
+        Self {
+            work_tx: Some(work_tx),
+            completion_rx: Some(completion_rx),
+            pending_completions: VecDeque::new(),
+            in_flight,
+            max_in_flight,
+            workers,
+        }
+    }
+}
+
+impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
+    fn available_capacity(&self) -> usize {
+        if self.work_tx.is_none() {
+            return 0;
+        }
+        self.max_in_flight.saturating_sub(
+            self.in_flight
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    }
+
+    fn execute_prepared_chunk(
+        &mut self,
+        prepared: &mut Vec<PreparedCryptoWork>,
+        completions: &mut Vec<CryptoCompletion>,
+    ) -> usize {
+        completions.clear();
+        let count = prepared.len();
+        if count == 0 {
+            return 0;
+        }
+
+        let mut chunk = Vec::new();
+        std::mem::swap(prepared, &mut chunk);
+        let Some(work_tx) = &self.work_tx else {
+            completions.extend(
+                chunk
+                    .drain(..)
+                    .map(PreparedCryptoWork::into_executor_failed_completion),
+            );
+            return count;
+        };
+
+        match work_tx.try_send(chunk) {
+            Ok(()) => {
+                self.in_flight
+                    .fetch_add(count, std::sync::atomic::Ordering::AcqRel);
+            }
+            Err(crossbeam_channel::TrySendError::Full(mut chunk))
+            | Err(crossbeam_channel::TrySendError::Disconnected(mut chunk)) => {
+                completions.extend(
+                    chunk
+                        .drain(..)
+                        .map(PreparedCryptoWork::into_executor_failed_completion),
+                );
+            }
+        }
+        count
+    }
+}
+
+impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
+    fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(CryptoCompletion),
+    {
+        let mut drained = 0usize;
+        while drained < limit {
+            if let Some(completion) = self.pending_completions.pop_front() {
+                push(completion);
+                self.in_flight
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                drained += 1;
+                continue;
+            }
+
+            let Some(completion_rx) = &self.completion_rx else {
+                break;
+            };
+            match completion_rx.try_recv() {
+                Ok(completions) => {
+                    self.pending_completions.extend(completions);
+                }
+                Err(crossbeam_channel::TryRecvError::Empty)
+                | Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+            }
+        }
+        drained
+    }
+}
+
+impl Drop for PacketMover2AeadWorkerPool {
+    fn drop(&mut self) {
+        self.work_tx.take();
+        self.completion_rx.take();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
     }
 }
 
