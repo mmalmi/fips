@@ -75,6 +75,35 @@ impl PreparedCryptoWork {
     }
 }
 
+pub(crate) trait PacketMover2CryptoExecutor {
+    fn execute_prepared_chunk(
+        &mut self,
+        prepared: &mut Vec<PreparedCryptoWork>,
+        completions: &mut Vec<CryptoCompletion>,
+    ) -> usize;
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct InlinePacketMover2CryptoExecutor {
+    opened: StatelessAeadOpenWorker,
+    sealed: StatelessAeadSealWorker,
+}
+
+impl PacketMover2CryptoExecutor for InlinePacketMover2CryptoExecutor {
+    fn execute_prepared_chunk(
+        &mut self,
+        prepared: &mut Vec<PreparedCryptoWork>,
+        completions: &mut Vec<CryptoCompletion>,
+    ) -> usize {
+        completions.clear();
+        let count = prepared.len();
+        for work in prepared.drain(..) {
+            completions.push(work.execute(&self.opened, &self.sealed));
+        }
+        count
+    }
+}
+
 impl std::fmt::Debug for PreparedCryptoWork {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

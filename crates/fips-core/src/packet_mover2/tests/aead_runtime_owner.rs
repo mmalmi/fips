@@ -58,6 +58,108 @@
         assert_eq!(seal_work_buffer.capacity(), 4);
     }
 
+    #[derive(Debug, Default)]
+    struct RecordingChunkExecutor {
+        inline: InlinePacketMover2CryptoExecutor,
+        nonempty_chunks: Vec<usize>,
+    }
+
+    impl PacketMover2CryptoExecutor for RecordingChunkExecutor {
+        fn execute_prepared_chunk(
+            &mut self,
+            prepared: &mut Vec<PreparedCryptoWork>,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
+            if !prepared.is_empty() {
+                self.nonempty_chunks.push(prepared.len());
+            }
+            self.inline.execute_prepared_chunk(prepared, completions)
+        }
+    }
+
+    #[test]
+    fn aead_turn_runner_hands_executor_prepared_crypto_chunks() {
+        let owner = OwnerId::fmp(702);
+        let open_key = 15;
+        let seal_key = 16;
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(300));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+
+        for counter in 100..104 {
+            mover
+                .submit_socket_packet(
+                    SocketPacket::from_fmp_established_wire(
+                        owner,
+                        1,
+                        OutputTarget::Tun,
+                        fmp_encrypted_wire(70, counter, 0, b"inbound", open_key),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        for idx in 0..2 {
+            mover
+                .submit_outbound_packet(OutboundPacket::fmp(
+                    owner,
+                    1,
+                    PacketClass::Bulk,
+                    702,
+                    0,
+                    format!("outbound-{idx}").into_bytes(),
+                ))
+                .unwrap();
+        }
+
+        let mut open_work = Vec::new();
+        let mut seal_work = Vec::new();
+        let mut prepared_work = Vec::new();
+        let mut completion_work = Vec::new();
+        let mut retired = Vec::new();
+        let mut drops = Vec::new();
+        let mut executor = RecordingChunkExecutor::default();
+        let dispatched = mover.run_aead_available_into_with_executor(
+            6,
+            &mut open_work,
+            &mut seal_work,
+            &mut prepared_work,
+            &mut completion_work,
+            &mut retired,
+            &mut drops,
+            &mut executor,
+        );
+
+        assert_eq!(dispatched, 6);
+        assert_eq!(executor.nonempty_chunks, vec![4, 2]);
+        assert!(drops.is_empty());
+        assert!(open_work.is_empty());
+        assert!(seal_work.is_empty());
+        assert!(prepared_work.is_empty());
+        assert!(completion_work.is_empty());
+
+        let outputs = outputs(retired);
+        assert_eq!(outputs.len(), 6);
+        assert_eq!(
+            outputs
+                .iter()
+                .map(PacketOutput::counter)
+                .collect::<Vec<_>>(),
+            vec![100, 101, 102, 103, 300, 301]
+        );
+        assert_eq!(
+            open_sealed_output(&outputs[4], seal_key),
+            b"outbound-0"
+        );
+        assert_eq!(
+            open_sealed_output(&outputs[5], seal_key),
+            b"outbound-1"
+        );
+    }
+
     #[test]
     fn aead_turn_runner_wraps_fsp_post_seal_into_next_hop_fmp() {
         let source = NodeAddr::from_bytes([0x21; 16]);

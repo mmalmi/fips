@@ -325,13 +325,38 @@ impl PacketMover2 {
         retired: &mut Vec<RetiredPacket>,
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        self.run_aead_available_into_with_executor(
+            limit,
+            open_work,
+            seal_work,
+            prepared_work,
+            completion_work,
+            retired,
+            drops,
+            &mut executor,
+        )
+    }
+
+    pub(crate) fn run_aead_available_into_with_executor<E>(
+        &mut self,
+        limit: usize,
+        open_work: &mut Vec<CryptoWork>,
+        seal_work: &mut Vec<OutboundCryptoWork>,
+        prepared_work: &mut Vec<PreparedCryptoWork>,
+        completion_work: &mut Vec<CryptoCompletion>,
+        retired: &mut Vec<RetiredPacket>,
+        drops: &mut Vec<PacketDrop>,
+        executor: &mut E,
+    ) -> usize
+    where
+        E: PacketMover2CryptoExecutor,
+    {
         retired.clear();
         open_work.clear();
         seal_work.clear();
         prepared_work.clear();
         completion_work.clear();
-        let opened = StatelessAeadOpenWorker;
-        let sealed = StatelessAeadSealWorker;
         let outbound_priority_reserve =
             outbound_priority_dispatch_limit(limit, self.outbound_admission.has_priority_pending());
         let pre_priority_inbound_limit =
@@ -346,13 +371,13 @@ impl PacketMover2 {
             &mut fsp_worker_open,
             &mut fsp_worker_open_bulk,
         );
-        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
+        executor.execute_prepared_chunk(prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         let priority_outbound_dispatched =
             self.dispatch_outbound_priority_available_into(outbound_priority_reserve, seal_work);
         self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
-        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
+        executor.execute_prepared_chunk(prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         let dispatched_before_bulk =
@@ -369,7 +394,7 @@ impl PacketMover2 {
             .take_while(|work| work.reservation.lane == Lane::Priority)
             .count();
         self.prepare_seal_work_batch(seal_work.drain(..leading_priority_seals), prepared_work);
-        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
+        executor.execute_prepared_chunk(prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         self.prepare_open_work_batch(
@@ -378,12 +403,12 @@ impl PacketMover2 {
             &mut fsp_worker_open,
             &mut fsp_worker_open_bulk,
         );
-        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
+        executor.execute_prepared_chunk(prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
         record_fsp_worker_open_dispatch(fsp_worker_open, fsp_worker_open_bulk);
 
         self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
-        Self::execute_prepared_work_batch(prepared_work, &opened, &sealed, completion_work);
+        executor.execute_prepared_chunk(prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
         drops.extend(self.drain_drops());
@@ -441,18 +466,6 @@ impl PacketMover2 {
             prepared.push(prepared_work);
         }
         crate::perf_profile::record_packet_mover2_crypto_seal_batch(prepared.len());
-    }
-
-    fn execute_prepared_work_batch(
-        prepared: &mut Vec<PreparedCryptoWork>,
-        opened: &StatelessAeadOpenWorker,
-        sealed: &StatelessAeadSealWorker,
-        completions: &mut Vec<CryptoCompletion>,
-    ) {
-        completions.clear();
-        for work in prepared.drain(..) {
-            completions.push(work.execute(opened, sealed));
-        }
     }
 
     fn retire_completion_batch(
