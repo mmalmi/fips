@@ -6,6 +6,7 @@ pub(crate) struct PacketMover2RuntimeSummary {
     outbound_admitted: usize,
     outbound_dropped: usize,
     dispatched: usize,
+    pending_crypto: usize,
     outputs: usize,
     outputs_sent: usize,
     outputs_dropped: usize,
@@ -37,6 +38,10 @@ impl PacketMover2RuntimeSummary {
         self.dispatched
     }
 
+    pub(crate) fn pending_crypto(self) -> usize {
+        self.pending_crypto
+    }
+
     pub(crate) fn outputs(self) -> usize {
         self.outputs
     }
@@ -60,6 +65,7 @@ impl PacketMover2RuntimeSummary {
             || self.outbound_admitted > 0
             || self.outbound_dropped > 0
             || self.dispatched > 0
+            || self.pending_crypto > 0
             || self.outputs > 0
             || self.outputs_sent > 0
             || self.outputs_dropped > 0
@@ -421,6 +427,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
+    deferred_raw_ingress: Vec<PacketMover2RawIngress>,
     wrapped_outbound_receipts: Vec<PacketMover2WrappedOutboundReceipt>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
@@ -446,6 +453,7 @@ impl PacketMover2LiveNodeTurn {
             fmp_link_ingress: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
+            deferred_raw_ingress: Vec::new(),
             wrapped_outbound_receipts: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
@@ -533,6 +541,18 @@ impl PacketMover2LiveNodeTurn {
         std::mem::take(&mut self.fsp_session_ingress)
     }
 
+    pub(crate) fn deferred_raw_ingress(&self) -> &[PacketMover2RawIngress] {
+        &self.deferred_raw_ingress
+    }
+
+    fn set_deferred_raw_ingress(&mut self, ingress: Vec<PacketMover2RawIngress>) {
+        self.deferred_raw_ingress = ingress;
+    }
+
+    pub(crate) fn take_deferred_raw_ingress(&mut self) -> Vec<PacketMover2RawIngress> {
+        std::mem::take(&mut self.deferred_raw_ingress)
+    }
+
     fn set_wrapped_outbound_receipts(
         &mut self,
         receipts: Vec<PacketMover2WrappedOutboundReceipt>,
@@ -544,6 +564,13 @@ impl PacketMover2LiveNodeTurn {
         &mut self,
     ) -> Vec<PacketMover2WrappedOutboundReceipt> {
         std::mem::take(&mut self.wrapped_outbound_receipts)
+    }
+
+    pub(crate) fn extend_wrapped_outbound_receipts(
+        &mut self,
+        receipts: impl IntoIterator<Item = PacketMover2WrappedOutboundReceipt>,
+    ) {
+        self.wrapped_outbound_receipts.extend(receipts);
     }
 
     pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
@@ -627,6 +654,19 @@ impl PacketMover2LiveNodeTurn {
         std::mem::take(&mut self.transport_sent_outputs)
     }
 
+    pub(crate) fn take_control_ingress_turn(&mut self) -> Option<Self> {
+        let mut control = Self::default();
+        control.fmp_control_ingress = std::mem::take(&mut self.fmp_control_ingress);
+        control.fmp_ingress_receipts = std::mem::take(&mut self.fmp_ingress_receipts);
+        control.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
+        control.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
+        control.fsp_session_ingress = std::mem::take(&mut self.fsp_session_ingress);
+        control.deferred_raw_ingress = std::mem::take(&mut self.deferred_raw_ingress);
+        control.endpoint_routed_destinations =
+            std::mem::take(&mut self.endpoint_routed_destinations);
+        control.has_activity().then_some(control)
+    }
+
     pub(crate) fn has_activity(&self) -> bool {
         self.summary.has_activity()
             || !self.fmp_control_ingress.is_empty()
@@ -634,6 +674,7 @@ impl PacketMover2LiveNodeTurn {
             || !self.fmp_link_ingress.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
             || !self.fsp_session_ingress.is_empty()
+            || !self.deferred_raw_ingress.is_empty()
             || !self.wrapped_outbound_receipts.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()

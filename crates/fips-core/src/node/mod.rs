@@ -23,6 +23,7 @@ mod io_impl;
 mod lifecycle;
 mod link_registry;
 mod packet_mover2_integration;
+mod packet_mover2_owner_sync;
 mod peer_lifecycle;
 mod peer_runtime;
 mod rate_limit;
@@ -104,7 +105,7 @@ use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 use self::wire::ESTABLISHED_HEADER_SIZE;
 #[cfg(test)]
 use self::wire::prepend_inner_header;
@@ -112,7 +113,7 @@ use self::wire::{FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_establ
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 use crate::node::session::FspSendReservation;
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
@@ -253,6 +254,9 @@ pub struct Node {
     /// Canonical packet_mover2 dataplane state owned by the node.
     #[allow(dead_code)]
     packet_mover2: PacketMover2Node,
+    /// Ingress side effects retired by PM2 while a synchronous send helper was
+    /// driving outbound completions. The RX/control owner drains these turns.
+    pending_packet_mover2_control_turns: VecDeque<crate::packet_mover2::PacketMover2LiveNodeTurn>,
 
     // === Peer Lifecycle ===
     /// Pending handshake connections plus authenticated peers.

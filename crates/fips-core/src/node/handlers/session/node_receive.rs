@@ -273,7 +273,6 @@ impl Node {
             endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte(),
             "Dispatching packet mover2 authenticated session"
         );
-
         let message =
             AuthenticatedSessionMessage::new(source_peer, plaintext, msg_type, inner_flags, timestamp_ms);
         let dispatch =

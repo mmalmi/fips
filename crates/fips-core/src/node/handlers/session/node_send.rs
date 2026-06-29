@@ -147,16 +147,42 @@ impl Node {
         &mut self,
         plan: SessionFspSendPlan<'_>,
     ) -> Result<(), NodeError> {
-        let dest_addr = plan.dest_addr();
-        let sealed = self.sessions.seal_session_fsp_send(plan)?;
-        let (mut datagram, bookkeeping) =
-            sealed.into_datagram(*self.node_addr(), self.config.node.session.default_ttl);
-        self.send_session_datagram(&mut datagram).await?;
+        let SessionFspSendPlan {
+            dest_addr,
+            timestamp,
+            fsp_flags,
+            inner_plaintext,
+            coords,
+            bookkeeping,
+        } = plan;
+        let coords_prefix = coords.map(|(src, dst)| {
+            let mut prefix = Vec::with_capacity(coords_wire_size(src) + coords_wire_size(dst));
+            encode_coords(src, &mut prefix);
+            encode_coords(dst, &mut prefix);
+            prefix
+        });
+        let SessionFspSendBookkeeping::Data {
+            payload_len,
+            now_ms,
+        } = bookkeeping
+        else {
+            return Err(NodeError::SendFailed {
+                node_addr: dest_addr,
+                reason: "packet_mover2 session FSP plan requires data bookkeeping".into(),
+            });
+        };
 
-        let _ = self
-            .sessions
-            .record_fsp_send_bookkeeping(&dest_addr, bookkeeping);
-        Ok(())
+        self.send_packet_mover2_fsp_data_plaintext(
+            &dest_addr,
+            fsp_flags,
+            inner_plaintext.as_ref(),
+            coords_prefix,
+            now_ms,
+            timestamp,
+            payload_len,
+            "session FSP data",
+        )
+        .await
     }
 
     /// Send an IPv6 packet through the IPv6 shim (port 256) with header compression.

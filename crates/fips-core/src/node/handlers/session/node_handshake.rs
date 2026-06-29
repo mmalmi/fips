@@ -444,7 +444,10 @@ impl Node {
         info!(src = %self.peer_display_name(src_addr), "Session established (initiator, XK)");
     }
 
-    async fn resend_handshake_after_early_encrypted_data(&mut self, src_addr: &NodeAddr) {
+    pub(in crate::node) async fn resend_handshake_after_early_encrypted_data(
+        &mut self,
+        src_addr: &NodeAddr,
+    ) {
         let max_resends = self.config.node.rate_limit.handshake_max_resends;
         let payload = match self
             .sessions

@@ -2,7 +2,7 @@ use super::*;
 
 impl Node {
     fn new_packet_mover2_node() -> PacketMover2Node {
-        PacketMover2LiveNode::new(AdmissionConfig::new(1024, 4096))
+        PacketMover2LiveNode::new_with_aead_workers(AdmissionConfig::new(1024, 4096))
     }
 
     /// Create a new node from configuration.
@@ -90,6 +90,7 @@ impl Node {
             packet_tx: None,
             packet_rx: None,
             packet_mover2: Self::new_packet_mover2_node(),
+            pending_packet_mover2_control_turns: VecDeque::new(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
@@ -242,6 +243,7 @@ impl Node {
             packet_tx: None,
             packet_rx: None,
             packet_mover2: Self::new_packet_mover2_node(),
+            pending_packet_mover2_control_turns: VecDeque::new(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
