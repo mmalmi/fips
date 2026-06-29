@@ -124,6 +124,10 @@ fn event_table_exposes_current_pm2_and_queue_events() {
             "packet_mover2_fsp_path_open_bulk",
         ),
         (
+            Event::PacketMover2FspOwnerSyncCall,
+            "packet_mover2_fsp_owner_sync_call",
+        ),
+        (
             Event::PacketMover2CryptoOpenBatch,
             "packet_mover2_crypto_open_batch",
         ),
@@ -155,6 +159,14 @@ fn event_table_exposes_current_pm2_and_queue_events() {
             Event::PacketMover2CryptoBatchGe64,
             "packet_mover2_crypto_batch_ge64",
         ),
+        (
+            Event::PacketMover2FspOwnerSyncEstablished,
+            "packet_mover2_fsp_owner_sync_established",
+        ),
+        (
+            Event::PacketMover2FspOwnerSyncApplied,
+            "packet_mover2_fsp_owner_sync_applied",
+        ),
     ];
     for (event, name) in live_events {
         assert_eq!(event_from_index(event as usize).name(), name);
@@ -169,7 +181,7 @@ fn event_table_exposes_current_pm2_and_queue_events() {
         (Event::ReservedEvent96, "reserved_event_96"),
         (Event::ReservedEvent108, "reserved_event_108"),
         (Event::ReservedEvent171, "reserved_event_171"),
-        (Event::ReservedEvent199, "reserved_event_199"),
+        (Event::ReservedEvent201, "reserved_event_201"),
         (Event::ReservedEvent219, "reserved_event_219"),
         (Event::ReservedEvent220, "reserved_event_220"),
     ] {
@@ -248,6 +260,10 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
         (Stage::PacketMover2AeadOpen, "packet_mover2_aead_open"),
         (Stage::PacketMover2AeadSeal, "packet_mover2_aead_seal"),
         (Stage::PacketMover2Retire, "packet_mover2_retire"),
+        (
+            Stage::PacketMover2FspOwnerSync,
+            "packet_mover2_fsp_owner_sync",
+        ),
     ] {
         assert_eq!(stage_from_index(stage as usize).name(), name);
     }
@@ -289,8 +305,11 @@ fn live_event_counters_increment() {
         (Event::UdpSendSendmmsgBatchGe32, 43),
         (Event::PacketMover2FspPathOpen, 47),
         (Event::PacketMover2FspPathOpenBulk, 53),
+        (Event::PacketMover2FspOwnerSyncCall, 57),
         (Event::PacketMover2CryptoOpenBatch, 59),
         (Event::PacketMover2CryptoSealPackets, 61),
+        (Event::PacketMover2FspOwnerSyncEstablished, 63),
+        (Event::PacketMover2FspOwnerSyncApplied, 65),
         (Event::PacketBatchPoolReuse, 67),
         (Event::PacketBufferPoolFresh, 71),
         (Event::UdpKernelDropped, 73),

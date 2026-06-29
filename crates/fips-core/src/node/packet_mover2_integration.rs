@@ -661,14 +661,28 @@ impl Node {
     }
 
     pub(in crate::node) fn sync_packet_mover2_established_fsp_owners(&mut self) {
+        let _timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2FspOwnerSync);
+        crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2FspOwnerSyncCall);
         let established: Vec<NodeAddr> = self
             .sessions
             .iter()
             .filter_map(|(node_addr, session)| session.is_established().then_some(*node_addr))
             .collect();
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::PacketMover2FspOwnerSyncEstablished,
+            established.len() as u64,
+        );
+        let mut applied = 0u64;
         for node_addr in established {
-            self.sync_packet_mover2_fsp_owner(&node_addr);
+            if self.sync_packet_mover2_fsp_owner(&node_addr) {
+                applied += 1;
+            }
         }
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::PacketMover2FspOwnerSyncApplied,
+            applied,
+        );
     }
 
     fn packet_mover2_fmp_owner_seed(
