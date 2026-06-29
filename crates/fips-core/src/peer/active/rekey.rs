@@ -76,25 +76,6 @@ impl ActivePeer {
         self.pending_new_session.as_ref()
     }
 
-    /// Trial-decrypt a peer K-bit flip frame against the pending FMP session.
-    ///
-    /// The peer's K-bit is only a hint that it may have cut over. The
-    /// authenticated decrypt against `pending_new_session` is the real cutover
-    /// signal; failed trials leave the pending replay window untouched.
-    #[cfg(test)]
-    pub(crate) fn trial_decrypt_pending_new_session(
-        &mut self,
-        ciphertext: &[u8],
-        counter: u64,
-        aad: &[u8],
-    ) -> Option<Vec<u8>> {
-        self.pending_new_session.as_mut().and_then(|session| {
-            session
-                .decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
-                .ok()
-        })
-    }
-
     /// Whether this node should drive the K-bit cutover for the pending FMP rekey.
     pub fn pending_rekey_initiator(&self) -> bool {
         self.pending_rekey_initiator
