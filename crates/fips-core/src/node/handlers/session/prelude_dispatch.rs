@@ -86,16 +86,9 @@ pub(in crate::node) struct SessionFspSendContext {
     pub(in crate::node) timestamp: u32,
     spin_bit: bool,
     current_k_bit: bool,
-    #[cfg(test)]
-    coords_warmup_remaining: u8,
 }
 
 impl SessionFspSendContext {
-    #[cfg(test)]
-    fn wants_coords(&self) -> bool {
-        self.coords_warmup_remaining > 0
-    }
-
     pub(in crate::node) fn inner_flags_byte(&self) -> u8 {
         FspInnerFlags {
             spin_bit: self.spin_bit,
@@ -544,5 +537,4 @@ struct SessionDatagramRuntimeRoute {
     dest_addr: NodeAddr,
     next_hop_addr: NodeAddr,
     path_mtu: u16,
-    source_mmp_seeded: bool,
 }

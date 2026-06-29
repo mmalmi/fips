@@ -1,3 +1,5 @@
+    use crate::node::session_wire::fsp_prepend_inner_header;
+
     #[test]
     fn application_receive_refreshes_previous_hop_peer_without_direct_source_trust() {
         use crate::PeerIdentity;

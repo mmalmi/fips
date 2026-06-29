@@ -93,13 +93,36 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
         "responder should establish from the resent SessionMsg3"
     );
 
-    nodes[1]
+    let mut node0_endpoint = nodes[0]
         .node
-        .send_session_data(&node0_addr, 0, 0, b"responder-proof")
-        .await
-        .expect("responder should send data after establishment");
-    let count = wait_process_packets_for_node(&mut nodes, 0).await;
-    assert!(count > 0, "initiator should receive responder proof data");
+        .attach_endpoint_data_io(8)
+        .expect("initiator endpoint data I/O should attach");
+    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    send_endpoint_data_via_pm2(
+        &mut nodes[1].node,
+        node0_identity,
+        b"responder-proof".to_vec(),
+    )
+    .await
+    .expect("responder should send endpoint data after establishment");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator responder-proof endpoint data",
+    )
+    .await;
+    match event {
+        NodeEndpointEvent::Data {
+            source_peer,
+            payload,
+            ..
+        } => {
+            assert_eq!(*source_peer.node_addr(), node1_addr);
+            assert_eq!(payload, b"responder-proof");
+        }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
+    }
     assert!(
         nodes[0]
             .node
@@ -222,13 +245,36 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         "responder should not have the new session before msg3 is resent"
     );
 
-    nodes[1]
+    let mut node0_endpoint = nodes[0]
         .node
-        .send_session_data(&node0_addr, 0, 0, b"old-session-proof")
-        .await
-        .expect("old session should remain usable while rekey msg3 is pending");
-    let count = wait_process_packets_for_node(&mut nodes, 0).await;
-    assert!(count > 0, "old-session proof should reach initiator");
+        .attach_endpoint_data_io(8)
+        .expect("initiator endpoint data I/O should attach");
+    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    send_endpoint_data_via_pm2(
+        &mut nodes[1].node,
+        node0_identity,
+        b"old-session-proof".to_vec(),
+    )
+    .await
+    .expect("old session should carry endpoint data while rekey msg3 is pending");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator old-session-proof endpoint data",
+    )
+    .await;
+    match event {
+        NodeEndpointEvent::Data {
+            source_peer,
+            payload,
+            ..
+        } => {
+            assert_eq!(*source_peer.node_addr(), node1_addr);
+            assert_eq!(payload, b"old-session-proof");
+        }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
+    }
     assert!(
         nodes[0]
             .node
@@ -525,6 +571,13 @@ async fn session_100_nodes() {
         .iter()
         .map(|tn| (*tn.node.node_addr(), tn.node.identity().pubkey_full()))
         .collect();
+    for node_idx in 0..NUM_NODES {
+        for &(addr, pubkey) in &all_info {
+            if addr != *nodes[node_idx].node.node_addr() {
+                nodes[node_idx].node.register_identity(addr, pubkey);
+            }
+        }
+    }
 
     // Each node picks one random target for its outbound session.
     // Use deterministic RNG so failures are reproducible.
@@ -608,9 +661,9 @@ async fn session_100_nodes() {
 
     let data_start = Instant::now();
     let mut send_forward_ok = 0usize;
-    let mut send_forward_err = 0usize;
     let mut send_reverse_ok = 0usize;
-    let mut send_reverse_err = 0usize;
+    let send_forward_err = 0usize;
+    let send_reverse_err = 0usize;
 
     for (pair_idx, &(src, dst)) in session_pairs.iter().enumerate() {
         let dest_addr = all_info[dst].0;
@@ -623,14 +676,8 @@ async fn session_100_nodes() {
         // Forward: initiator → responder
         let fwd_payload = format!("fwd-{}", pair_idx).into_bytes();
         let fwd_ipv6 = build_ipv6_packet(&src_fips, &dst_fips, &fwd_payload);
-        match nodes[src]
-            .node
-            .send_ipv6_packet(&dest_addr, &fwd_ipv6)
-            .await
-        {
-            Ok(()) => send_forward_ok += 1,
-            Err(_) => send_forward_err += 1,
-        }
+        nodes[src].node.handle_tun_outbound(fwd_ipv6).await;
+        send_forward_ok += 1;
 
         drain_to_quiescence(&mut nodes).await;
 
@@ -638,10 +685,8 @@ async fn session_100_nodes() {
         // (Responder should already be Established after XK msg3)
         let rev_payload = format!("rev-{}", pair_idx).into_bytes();
         let rev_ipv6 = build_ipv6_packet(&dst_fips, &src_fips, &rev_payload);
-        match nodes[dst].node.send_ipv6_packet(&src_addr, &rev_ipv6).await {
-            Ok(()) => send_reverse_ok += 1,
-            Err(_) => send_reverse_err += 1,
-        }
+        nodes[dst].node.handle_tun_outbound(rev_ipv6).await;
+        send_reverse_ok += 1;
 
         drain_to_quiescence(&mut nodes).await;
     }

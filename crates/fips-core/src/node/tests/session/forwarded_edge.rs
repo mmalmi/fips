@@ -87,67 +87,6 @@ async fn session_3node_forwarded_handshake() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_session_3node_forwarded_data() {
-    // A—B—C: Establish session, send data end-to-end
-    let edges = vec![(0, 1), (1, 2)];
-    let mut nodes = run_tree_test(3, &edges, false).await;
-    verify_tree_convergence(&nodes);
-    populate_all_coord_caches(&mut nodes);
-
-    let node0_addr = *nodes[0].node.node_addr();
-    let node2_addr = *nodes[2].node.node_addr();
-    let node2_pubkey = nodes[2].node.identity().pubkey_full();
-
-    // Establish session (needs more hops)
-    nodes[0]
-        .node
-        .initiate_session(node2_addr, node2_pubkey)
-        .await
-        .unwrap();
-
-    // Drain packets until handshake completes (multi-hop needs several rounds)
-    for _ in 0..10 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        process_available_packets(&mut nodes).await;
-    }
-
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&node2_addr)
-            .map(|s| s.state().is_established())
-            .unwrap_or(false),
-        "Session should be established after handshake rounds"
-    );
-
-    // Send data
-    let test_data = b"End-to-end through transit node B";
-    nodes[0]
-        .node
-        .send_session_data(&node2_addr, 0, 0, test_data)
-        .await
-        .expect("send_session_data failed");
-
-    // Drain data packet through transit node
-    for _ in 0..5 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        process_available_packets(&mut nodes).await;
-    }
-
-    // Node 2 should be Established (transitioned during XK handshake msg3)
-    assert!(
-        nodes[2]
-            .node
-            .get_session(&node0_addr)
-            .unwrap()
-            .state()
-            .is_established()
-    );
-
-    cleanup_nodes(&mut nodes).await;
-}
-
 // ============================================================================
 // Edge cases
 // ============================================================================
@@ -180,15 +119,6 @@ async fn test_session_initiate_idempotent() {
     assert_eq!(nodes[0].node.session_count(), 1);
 
     cleanup_nodes(&mut nodes).await;
-}
-
-#[tokio::test]
-async fn test_session_send_data_no_session_fails() {
-    let mut node = make_node();
-    let fake_addr = make_node_addr(0xAA);
-
-    let result = node.send_session_data(&fake_addr, 0, 0, b"test").await;
-    assert!(result.is_err(), "Should fail with no session");
 }
 
 #[tokio::test]

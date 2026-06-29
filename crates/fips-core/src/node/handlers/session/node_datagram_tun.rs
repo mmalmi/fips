@@ -23,7 +23,7 @@ impl Node {
 
     /// Send a non-data session message (reports, notifications) over an established session.
     ///
-    /// Similar to `send_session_data()` but:
+    /// Similar to endpoint/TUN PM2 data sends, but:
     /// - Takes an explicit `msg_type` byte (0x11, 0x12, 0x13, etc.)
     /// - Never includes COORDS_PRESENT (reports are lightweight)
     /// - Reads spin bit from MMP state for the inner header
@@ -67,16 +67,18 @@ impl Node {
 
         let encoded = datagram.encode();
         if let Err(err) = self
-            .send_encrypted_link_message(&runtime_route.next_hop_addr(), &encoded)
+            .send_encrypted_link_message(&runtime_route.next_hop_addr, &encoded)
             .await
         {
-            let dest_addr = runtime_route.dest_addr();
-            let next_hop_addr = runtime_route.next_hop_addr();
-            runtime_route.record_failure(self);
+            let dest_addr = runtime_route.dest_addr;
+            let next_hop_addr = runtime_route.next_hop_addr;
+            self.record_route_failure(dest_addr, next_hop_addr);
             self.recover_direct_payload_send_failure(dest_addr, next_hop_addr, &err);
             return Err(err);
         }
-        runtime_route.record_success(self, encoded.len());
+        self.sessions
+            .record_session_datagram_next_hop(&runtime_route.dest_addr, runtime_route.next_hop_addr);
+        self.stats_mut().forwarding.record_originated(encoded.len());
         Ok(())
     }
 
@@ -122,16 +124,15 @@ impl Node {
         }
         datagram.path_mtu = path_mtu;
 
-        let source_mmp_seeded = self
+        let _ = self
             .sessions
             .seed_session_datagram_path_mtu(&dest_addr, path_mtu);
 
-        Ok(SessionDatagramRuntimeRoute::new(
+        Ok(SessionDatagramRuntimeRoute {
             dest_addr,
             next_hop_addr,
             path_mtu,
-            source_mmp_seeded,
-        ))
+        })
     }
 
     /// Look up destination coordinates from available caches.
@@ -201,7 +202,15 @@ impl Node {
             ipv6_packet.len(),
         ) {
             TunOutboundSessionDecision::Established => {
-                if let Err(e) = self.send_ipv6_packet(&dest_addr, &ipv6_packet).await {
+                if self.find_next_hop(&dest_addr).is_none() {
+                    self.queue_pending_packet(dest_addr, ipv6_packet);
+                    self.maybe_initiate_path_recovery_lookup(&dest_addr).await;
+                    return;
+                }
+                if let Err(e) = self
+                    .send_packet_mover2_pending_tun_packet(&dest_addr, ipv6_packet.clone())
+                    .await
+                {
                     if Self::session_send_needs_path_recovery(&e, &dest_addr) {
                         debug!(
                             dest = %self.peer_display_name(&dest_addr),

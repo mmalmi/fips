@@ -76,58 +76,6 @@ async fn test_session_direct_peer_handshake() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_session_direct_peer_data_transfer() {
-    // Two nodes: establish session, then send data
-    let edges = vec![(0, 1)];
-    let mut nodes = run_tree_test(2, &edges, false).await;
-    verify_tree_convergence(&nodes);
-    populate_all_coord_caches(&mut nodes);
-
-    let node0_addr = *nodes[0].node.node_addr();
-    let node1_addr = *nodes[1].node.node_addr();
-    let node1_pubkey = nodes[1].node.identity().pubkey_full();
-
-    // Establish session (XK: Setup, Ack, Msg3)
-    nodes[0]
-        .node
-        .initiate_session(node1_addr, node1_pubkey)
-        .await
-        .unwrap();
-    drain_to_quiescence(&mut nodes).await;
-
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&node1_addr)
-            .unwrap()
-            .state()
-            .is_established()
-    );
-    assert!(
-        nodes[1]
-            .node
-            .get_session(&node0_addr)
-            .unwrap()
-            .state()
-            .is_established()
-    );
-
-    // Send data from Node 0 to Node 1
-    let test_data = b"Hello, FIPS session!";
-    nodes[0]
-        .node
-        .send_session_data(&node1_addr, 0, 0, test_data)
-        .await
-        .expect("send_session_data failed");
-
-    // Process packets: encrypted data arrives at Node 1
-    let count = wait_process_packets_for_node(&mut nodes, 1).await;
-    assert!(count > 0, "Expected encrypted data to arrive");
-
-    cleanup_nodes(&mut nodes).await;
-}
-
 #[test]
 fn test_endpoint_data_flushes_after_session_establishment() {
     run_large_stack_async_test("fips-endpoint-data-flushes", || async {

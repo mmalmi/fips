@@ -322,40 +322,7 @@ impl crate::node::SessionRegistry {
             timestamp: entry.session_timestamp(now_ms),
             spin_bit: entry.mmp().is_some_and(|m| m.spin_bit.tx_bit()),
             current_k_bit: entry.current_k_bit(),
-            #[cfg(test)]
-            coords_warmup_remaining: entry.coords_warmup_remaining(),
         })
-    }
-
-    #[cfg(test)]
-    fn consume_coords_warmup_packet(&mut self, dest_addr: &NodeAddr) -> bool {
-        let Some(entry) = self.get_mut(dest_addr) else {
-            return false;
-        };
-        let remaining = entry.coords_warmup_remaining();
-        if remaining == 0 {
-            return false;
-        }
-        entry.set_coords_warmup_remaining(remaining - 1);
-        true
-    }
-
-    #[cfg(test)]
-    fn seal_session_fsp_send(
-        &mut self,
-        plan: SessionFspSendPlan<'_>,
-    ) -> Result<SealedSessionFspSend, NodeError> {
-        let dest_addr = plan.dest_addr();
-        let Some(entry) = self.get_mut(&dest_addr) else {
-            return Err(SessionFspSendContextError::NoSession.into_node_error(dest_addr));
-        };
-        let session = match entry.state_mut() {
-            EndToEndState::Established(session) => session,
-            _ => {
-                return Err(SessionFspSendContextError::NotEstablished.into_node_error(dest_addr));
-            }
-        };
-        plan.seal(session)
     }
 
     fn seed_session_datagram_path_mtu(&mut self, dest_addr: &NodeAddr, path_mtu: u16) -> bool {

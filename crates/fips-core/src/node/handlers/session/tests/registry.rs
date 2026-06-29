@@ -418,14 +418,13 @@
     }
 
     #[test]
-    fn session_registry_owns_fsp_send_context_and_coords_warmup_consumption() {
+    fn session_registry_owns_fsp_send_context_flags() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let peer_addr = *peer.node_addr();
         let now_ms = 0x0102_0304_0506_0708;
         let mut entry = established_entry(&local, &peer);
         let expected_timestamp = entry.session_timestamp(now_ms);
-        entry.set_coords_warmup_remaining(2);
         entry.init_mmp(&crate::config::SessionMmpConfig::default());
 
         let mut sessions = crate::node::SessionRegistry::default();
@@ -435,31 +434,12 @@
             .session_fsp_send_context(&peer_addr, now_ms)
             .expect("established context");
         assert_eq!(context.timestamp, expected_timestamp);
-        assert!(context.wants_coords());
         assert_eq!(
             context.inner_flags_byte(),
             FspInnerFlags { spin_bit: false }.to_byte()
         );
         assert_eq!(context.fsp_flags(false), 0);
         assert_eq!(context.fsp_flags(true), FSP_FLAG_CP);
-
-        assert!(sessions.consume_coords_warmup_packet(&peer_addr));
-        assert_eq!(
-            sessions
-                .get(&peer_addr)
-                .expect("session")
-                .coords_warmup_remaining(),
-            1
-        );
-        assert!(sessions.consume_coords_warmup_packet(&peer_addr));
-        assert_eq!(
-            sessions
-                .get(&peer_addr)
-                .expect("session")
-                .coords_warmup_remaining(),
-            0
-        );
-        assert!(!sessions.consume_coords_warmup_packet(&peer_addr));
     }
 
     #[test]
@@ -483,83 +463,19 @@
             sessions.session_fsp_send_context(&peer_addr, 123),
             Err(SessionFspSendContextError::NotEstablished)
         );
-
-        let inner_plaintext =
-            fsp_prepend_inner_header(123, SessionMessageType::EndpointData.to_byte(), 0, b"hello");
-        let plan = SessionFspSendPlan::new(
-            peer_addr,
-            123,
-            0,
-            &inner_plaintext,
-            None,
-            SessionFspSendBookkeeping::Control,
-        );
-        let error = match sessions.seal_session_fsp_send(plan) {
-            Ok(_) => panic!("initiating session must not seal established FSP data"),
-            Err(error) => error,
-        };
-        assert!(
-            matches!(
-                error,
-                NodeError::SendFailed { node_addr, ref reason }
-                    if node_addr == peer_addr && reason == "session not established"
-            ),
-            "unexpected error: {error}"
-        );
     }
 
     #[test]
-    fn session_registry_owns_fsp_sealing_and_datagram_bookkeeping() {
+    fn session_registry_owns_datagram_path_bookkeeping() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let peer_addr = *peer.node_addr();
         let next_hop = node_addr(0x55);
         let mut entry = established_entry(&local, &peer);
         entry.init_mmp(&crate::config::SessionMmpConfig::default());
-        let counter_before = entry.send_counter();
 
         let mut sessions = crate::node::SessionRegistry::default();
         assert!(sessions.insert(peer_addr, entry).is_none());
-
-        let inner_plaintext = fsp_prepend_inner_header(
-            0x0102_0304,
-            SessionMessageType::EndpointData.to_byte(),
-            0,
-            b"hello",
-        );
-        let plan = SessionFspSendPlan::new(
-            peer_addr,
-            0x0102_0304,
-            FSP_FLAG_K,
-            &inner_plaintext,
-            None,
-            SessionFspSendBookkeeping::Data {
-                payload_len: 5,
-                now_ms: 0x5566_7788,
-            },
-        );
-
-        let sealed = sessions
-            .seal_session_fsp_send(plan)
-            .expect("established session should seal");
-        assert_eq!(sealed.dest_addr(), peer_addr);
-        assert_eq!(sealed.counter(), counter_before);
-        assert_eq!(
-            sessions.get(&peer_addr).expect("session").send_counter(),
-            counter_before + 1
-        );
-
-        let (_datagram, bookkeeping) = sealed.into_datagram(node_addr(0xaa), 7);
-        assert_eq!(
-            bookkeeping,
-            FspSendBookkeepingInput::data(
-                5,
-                counter_before,
-                0x0102_0304,
-                inner_plaintext.len() + crate::noise::TAG_SIZE,
-                0x5566_7788,
-            )
-        );
 
         assert!(sessions.seed_session_datagram_path_mtu(&peer_addr, 1280));
         assert_eq!(

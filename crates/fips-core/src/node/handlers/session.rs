@@ -6,9 +6,6 @@
 //! encrypted data, and error signals (CoordsRequired, PathBroken).
 
 include!("session/prelude_dispatch.rs");
-#[cfg(test)]
-include!("session/test_send_helpers.rs");
-include!("session/send_plan_core.rs");
 include!("session/receive_registry.rs");
 include!("session/node_receive.rs");
 include!("session/node_handshake.rs");

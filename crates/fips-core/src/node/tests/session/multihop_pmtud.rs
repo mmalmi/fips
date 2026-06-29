@@ -51,17 +51,16 @@ fn test_multihop_pmtud_heterogeneous_mtu() {
             "Session A→C should be established"
         );
 
+        let (dest_tun_tx, _dest_tun_rx) = crate::upper::tun::write_channel();
+        nodes[2].node.tun_tx = Some(dest_tun_tx);
+
         // Exhaust coord warmup by sending small packets first.
         // Without piggybacked coords, the wire packet is ~106 + IPv6 bytes,
         // which fits B's receive buffer (mtu+100=900) for reasonable sizes.
         // With coords (~66 extra), the wire could exceed B's recv buffer.
         for _ in 0..5 {
             let small = build_ipv6_packet(&src_fips, &dst_fips, &[0u8; 10]);
-            nodes[0]
-                .node
-                .send_ipv6_packet(&node2_addr, &small)
-                .await
-                .unwrap();
+            nodes[0].node.handle_tun_outbound(small).await;
         }
         drain_to_quiescence(&mut nodes).await;
 
@@ -81,11 +80,7 @@ fn test_multihop_pmtud_heterogeneous_mtu() {
 
         // Send the oversized packet — B should fail to forward and send
         // MtuExceeded signal back.
-        nodes[0]
-            .node
-            .send_ipv6_packet(&node2_addr, &ipv6_packet)
-            .await
-            .unwrap();
+        nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
         drain_to_quiescence(&mut nodes).await;
 
         // Verify PathMtuState was updated on A
