@@ -118,12 +118,6 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_endpoint_stale_bulk_drop_ms(mut self, max_age_ms: u64) -> Self {
-        self.endpoint_stale_bulk_drop_ms = max_age_ms;
-        self
-    }
-
     fn take_report_buffers(&mut self) -> PacketMover2RouteTableOutboundBuffers {
         PacketMover2RouteTableOutboundBuffers {
             endpoint_drops: std::mem::take(&mut self.endpoint_drops),
@@ -806,11 +800,6 @@ impl<Tun, Endpoint, Transport> PacketMover2LiveOutputSink<Tun, Endpoint, Transpo
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_stale_bulk_output_drop_ms(mut self, max_age_ms: u64) -> Self {
-        self.stale_bulk_output_drop_ms = max_age_ms;
-        self
-    }
 }
 
 impl<Tun, Endpoint, Transport> PacketMover2OutputSink

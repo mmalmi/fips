@@ -439,21 +439,11 @@ impl OwnerState {
         retired
     }
 
-    #[cfg(test)]
-    fn in_flight(&self) -> usize {
-        self.in_flight
-    }
-
     fn reserve_lane(&mut self, lane: Lane) {
         self.in_flight = self.in_flight.saturating_add(1);
         if lane == Lane::Bulk {
             self.bulk_in_flight = self.bulk_in_flight.saturating_add(1);
         }
-    }
-
-    #[cfg(test)]
-    fn next_send_counter(&self) -> u64 {
-        self.next_send_counter
     }
 }
 

@@ -162,30 +162,6 @@ impl PacketMover2TurnDriver {
         self.finish_aead_output_turn(summary, sink, limit)
     }
 
-    #[cfg(test)]
-    pub(crate) fn run_aead_completion_turn<I>(
-        &mut self,
-        completions: I,
-        limit: usize,
-    ) -> PacketMover2RuntimeTurn<'_>
-    where
-        I: IntoIterator<Item = CryptoCompletion>,
-    {
-        self.reset_turn_buffers();
-
-        let summary =
-            self.collect_completed_aead_outputs(PacketMover2RuntimeSummary::default(), completions);
-        let summary = self.collect_aead_outputs(summary, limit);
-
-        PacketMover2RuntimeTurn {
-            summary,
-            raw_ingress_drops: &self.raw_ingress_drops,
-            output_drops: &self.output_drops,
-            outputs: &self.outputs,
-            drops: &self.drops,
-        }
-    }
-
     pub(crate) fn pump_aead_output_turn<RI, O, R, S>(
         &mut self,
         raw_ingress: &mut RI,

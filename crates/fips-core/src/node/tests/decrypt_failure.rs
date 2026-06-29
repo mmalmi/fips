@@ -26,8 +26,8 @@ async fn make_started_udp_transport(id: u32) -> TransportHandle {
 }
 
 /// Drive a fully-promoted peer to the decrypt-failure threshold with no usable
-/// transport and verify the old force-removal fallback still cleans up both
-/// active peer storage and session-index dispatch.
+/// transport and verify forced removal still cleans up both active peer storage
+/// and session-index dispatch.
 ///
 /// Setup uses the `make_completed_connection` harness so the peer has a
 /// real `our_index`/`transport_id`, ensuring `remove_active_peer` exercises

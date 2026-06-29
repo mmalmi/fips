@@ -1,8 +1,7 @@
 //! Established-frame recovery hooks used by packet_mover2.
 //!
 //! Production established receive is owned by packet_mover2. This module keeps
-//! the shared decrypt-failure recovery policy and the small owner-sync adapters
-//! called from handshake, rekey, and session lifecycle code.
+//! the shared decrypt-failure recovery policy.
 
 use crate::node::Node;
 use tracing::{debug, trace, warn};
@@ -27,27 +26,6 @@ enum DecryptFailureAction {
 }
 
 impl Node {
-    pub(in crate::node) fn register_packet_mover2_fmp_owner(
-        &mut self,
-        node_addr: &crate::NodeAddr,
-    ) {
-        self.sync_packet_mover2_fmp_owner(node_addr);
-    }
-
-    pub(in crate::node) fn register_packet_mover2_fsp_owner(
-        &mut self,
-        node_addr: &crate::NodeAddr,
-    ) {
-        self.sync_packet_mover2_fsp_owner(node_addr);
-    }
-
-    pub(in crate::node) fn unregister_packet_mover2_fsp_owner(
-        &mut self,
-        node_addr: &crate::NodeAddr,
-    ) {
-        self.remove_packet_mover2_fsp_owner(node_addr);
-    }
-
     /// Increment decrypt failure counter and recover stale FMP sessions.
     ///
     /// Stale encrypted packets can arrive after sleep/wake, network roaming,

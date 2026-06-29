@@ -437,7 +437,7 @@
         assert!(turn.output_drops().is_empty());
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.drops().is_empty());
-        assert!(raw_source.source_mut().is_empty());
+        assert!(raw_source.source.is_empty());
         assert!(outbound_source.is_empty());
 
         assert_eq!(
@@ -605,7 +605,7 @@
         );
         assert!(turn.endpoint_command_drops().is_empty());
         assert!(turn.tun_outbound_drops().is_empty());
-        assert!(raw_source.source_mut().is_empty());
+        assert!(raw_source.source.is_empty());
         assert!(tun_outbound_rx.try_recv().is_err());
 
         assert_eq!(tun_rx.try_recv().unwrap(), b"tun-live-node".to_vec());
@@ -668,7 +668,7 @@
         let mut deferred_endpoint_commands = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
-        let mut raw_ingress = PacketMover2FmpPacketRxSource::new(&mut packet_rx);
+        let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(&mut packet_rx, None);
 
         let turn = driver
             .pump_aead_live_node_route_table_turn(

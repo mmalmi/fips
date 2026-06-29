@@ -67,7 +67,7 @@
         let old_header =
             PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&old_raw.payload).unwrap());
         assert_eq!(
-            live_node.routes_mut().route(&old_raw, old_header).unwrap(),
+            live_node.routes.route(&old_raw, old_header).unwrap(),
             PacketMover2IngressRoute::new(owner, 1, OutputTarget::Tun)
                 .with_class(PacketClass::Liveness)
         );
@@ -98,7 +98,7 @@
 
         let old_header =
             PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&old_raw.payload).unwrap());
-        assert_eq!(live_node.routes_mut().route(&old_raw, old_header), None);
+        assert_eq!(live_node.routes.route(&old_raw, old_header), None);
 
         let new_raw = PacketMover2RawIngress::from_live_received(
             PacketProtocol::Fmp,
@@ -112,7 +112,7 @@
         let new_header =
             PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&new_raw.payload).unwrap());
         assert_eq!(
-            live_node.routes_mut().route(&new_raw, new_header).unwrap(),
+            live_node.routes.route(&new_raw, new_header).unwrap(),
             PacketMover2IngressRoute::new(owner, 2, OutputTarget::Endpoint)
                 .with_class(PacketClass::Mmp)
         );
@@ -121,7 +121,7 @@
         let new_header =
             PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&new_raw.payload).unwrap());
         assert_eq!(
-            live_node.routes_mut().route(&new_raw, new_header).unwrap(),
+            live_node.routes.route(&new_raw, new_header).unwrap(),
             PacketMover2IngressRoute::new(owner, 9, OutputTarget::Endpoint)
                 .with_class(PacketClass::Mmp)
         );

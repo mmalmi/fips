@@ -339,16 +339,6 @@ impl PacketMover2LiveNode {
         Ok(self.routes.refresh_owner_generation(owner, generation))
     }
 
-    #[cfg(test)]
-    pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
-        self.driver.owner_mut(owner)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn routes_mut(&mut self) -> &mut PacketMover2LiveRouteTable {
-        &mut self.routes
-    }
-
     pub(crate) fn take_deferred_endpoint_commands(&mut self) -> Vec<NodeEndpointCommand> {
         std::mem::take(&mut self.deferred_endpoint_commands)
     }

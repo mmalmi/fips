@@ -224,11 +224,10 @@ impl AuthenticatedSessionMessage {
 
     pub(in crate::node) fn into_endpoint_data_delivery(mut self) -> EndpointDataDelivery {
         debug_assert_eq!(self.msg_type, SessionMessageType::EndpointData.to_byte());
-        // Keep the receive hot path allocation-free after AEAD open. Slow
-        // paths store plaintext at offset 0; worker fast paths may store it
-        // inside the original FMP packet buffer. In both cases, move the
-        // endpoint body to the front of the existing Vec and truncate the
-        // trailing wire bytes instead of allocating a fresh payload Vec.
+        // Keep the receive hot path allocation-free after AEAD open. Plaintext
+        // may start at offset 0 or inside a retained packet buffer; in both
+        // cases, move the endpoint body to the front of the existing Vec and
+        // truncate the trailing bytes instead of allocating a fresh payload Vec.
         let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
         let body_len = self.body_len();
         if body_offset > 0 {

@@ -52,8 +52,8 @@
             &mut tun_rx,
             1,
             &mut routes,
-        )
-        .with_endpoint_stale_bulk_drop_ms(50);
+        );
+        source.endpoint_stale_bulk_drop_ms = 50;
         let mut outbound = Vec::new();
 
         assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 8);
@@ -113,8 +113,8 @@
             &mut tun_rx,
             8,
             &mut routes,
-        )
-        .with_endpoint_stale_bulk_drop_ms(50);
+        );
+        source.endpoint_stale_bulk_drop_ms = 50;
         let mut outbound = Vec::new();
 
         assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 2);

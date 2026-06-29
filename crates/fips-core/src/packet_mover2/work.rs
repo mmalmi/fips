@@ -4,24 +4,10 @@ pub(crate) struct CryptoWork {
     packet: SocketPacket,
 }
 
-impl CryptoWork {
-    #[cfg(test)]
-    fn order(&self) -> u64 {
-        self.reservation.order.0
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OutboundCryptoWork {
     reservation: OwnerReservation,
     packet: OutboundPacket,
-}
-
-impl OutboundCryptoWork {
-    #[cfg(test)]
-    fn order(&self) -> u64 {
-        self.reservation.order.0
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -358,40 +344,5 @@ impl AdmissionBatchSummary {
 
     pub(crate) fn dropped(self) -> usize {
         self.dropped
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PacketMoverTurn {
-    dispatched: usize,
-    retired: Vec<RetiredPacket>,
-    drops: Vec<PacketDrop>,
-}
-
-#[cfg(test)]
-impl PacketMoverTurn {
-    pub(crate) fn dispatched(&self) -> usize {
-        self.dispatched
-    }
-
-    pub(crate) fn retired(&self) -> &[RetiredPacket] {
-        &self.retired
-    }
-
-    pub(crate) fn drops(&self) -> &[PacketDrop] {
-        &self.drops
-    }
-
-    #[cfg(test)]
-    fn outputs(&self) -> Vec<&PacketOutput> {
-        self.retired
-            .iter()
-            .filter_map(|item| match item {
-                RetiredPacket::Output(output) => Some(output),
-                RetiredPacket::Outbound(_) => None,
-                RetiredPacket::Drop(_) => None,
-            })
-            .collect()
     }
 }

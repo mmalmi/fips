@@ -6,6 +6,127 @@
         PacketMover2::new(AdmissionConfig::new(4, 8))
     }
 
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct PacketMoverTurn {
+        dispatched: usize,
+        retired: Vec<RetiredPacket>,
+        drops: Vec<PacketDrop>,
+    }
+
+    impl PacketMoverTurn {
+        fn dispatched(&self) -> usize {
+            self.dispatched
+        }
+
+        fn retired(&self) -> &[RetiredPacket] {
+            &self.retired
+        }
+
+        fn drops(&self) -> &[PacketDrop] {
+            &self.drops
+        }
+
+        fn outputs(&self) -> Vec<&PacketOutput> {
+            self.retired
+                .iter()
+                .filter_map(|item| match item {
+                    RetiredPacket::Output(output) => Some(output),
+                    RetiredPacket::Outbound(_) | RetiredPacket::Drop(_) => None,
+                })
+                .collect()
+        }
+    }
+
+    fn crypto_work_order(work: &CryptoWork) -> u64 {
+        work.reservation.order.0
+    }
+
+    fn outbound_crypto_work_order(work: &OutboundCryptoWork) -> u64 {
+        work.reservation.order.0
+    }
+
+    fn dispatch_available(mover: &mut PacketMover2, limit: usize) -> Vec<CryptoWork> {
+        let mut work = Vec::new();
+        mover.dispatch_available_into(limit, &mut work);
+        work
+    }
+
+    fn dispatch_outbound_available(
+        mover: &mut PacketMover2,
+        limit: usize,
+    ) -> Vec<OutboundCryptoWork> {
+        let mut work = Vec::new();
+        mover.dispatch_outbound_available_into(limit, &mut work);
+        work
+    }
+
+    fn run_aead_available(mover: &mut PacketMover2, limit: usize) -> PacketMoverTurn {
+        let mut open_work = Vec::new();
+        let mut seal_work = Vec::new();
+        run_aead_available_with_work_buffers(mover, limit, &mut open_work, &mut seal_work)
+    }
+
+    fn run_aead_available_with_work_buffers(
+        mover: &mut PacketMover2,
+        limit: usize,
+        open_work: &mut Vec<CryptoWork>,
+        seal_work: &mut Vec<OutboundCryptoWork>,
+    ) -> PacketMoverTurn {
+        let mut prepared_work = Vec::new();
+        let mut completion_work = Vec::new();
+        let mut retired = Vec::new();
+        let mut drops = Vec::new();
+        let dispatched = mover.run_aead_available_into(
+            limit,
+            open_work,
+            seal_work,
+            &mut prepared_work,
+            &mut completion_work,
+            &mut retired,
+            &mut drops,
+        );
+
+        PacketMoverTurn {
+            dispatched,
+            retired,
+            drops,
+        }
+    }
+
+    fn queue_lens(mover: &PacketMover2) -> (usize, usize) {
+        (mover.admission.priority.len(), mover.admission.bulk.len())
+    }
+
+    fn outbound_queue_lens(mover: &PacketMover2) -> (usize, usize) {
+        (
+            mover.outbound_admission.priority.len(),
+            mover.outbound_admission.bulk.len(),
+        )
+    }
+
+    fn run_aead_completion_turn<I>(
+        driver: &mut PacketMover2TurnDriver,
+        completions: I,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_>
+    where
+        I: IntoIterator<Item = CryptoCompletion>,
+    {
+        driver.reset_turn_buffers();
+
+        let summary = driver
+            .collect_completed_aead_outputs(PacketMover2RuntimeSummary::default(), completions);
+        let summary = driver.collect_aead_outputs(summary, limit);
+
+        PacketMover2RuntimeTurn {
+            summary,
+            raw_ingress_drops: &driver.raw_ingress_drops,
+            output_drops: &driver.output_drops,
+            outputs: &driver.outputs,
+            drops: &driver.drops,
+        }
+    }
+
     fn test_node_addr(id: u64) -> NodeAddr {
         let mut bytes = [0u8; 16];
         bytes[8..16].copy_from_slice(&id.to_be_bytes());
@@ -447,7 +568,7 @@
         );
 
         assert_eq!(drained.len(), 1);
-        assert_eq!(source.source_mut().len(), 1);
+        assert_eq!(source.source.len(), 1);
         assert_eq!(drained[0].protocol(), PacketProtocol::Fmp);
         assert_eq!(drained[0].transport_id(), TransportId::new(18));
         assert_eq!(drained[0].remote_addr(), &fmp_addr);
@@ -458,7 +579,7 @@
             source.drain_raw_ingress(8, |packet| drained.push(packet)),
             1
         );
-        assert!(source.source_mut().is_empty());
+        assert!(source.source.is_empty());
         assert_eq!(drained[1].protocol(), PacketProtocol::Fsp);
         assert_eq!(drained[1].transport_id(), TransportId::new(19));
         assert_eq!(drained[1].remote_addr(), &fsp_addr);

@@ -182,7 +182,7 @@ impl Node {
         //   2. initiate_session() finds is_established() == true on the stale
         //      entry and silently returns Ok(()), preventing a new session over
         //      fallback or a recovered direct link.
-        self.unregister_packet_mover2_fsp_owner(node_addr);
+        self.remove_packet_mover2_fsp_owner(node_addr);
         if let Some(session_entry) = self.sessions.remove(node_addr)
             && let Some(mmp) = session_entry.mmp()
         {

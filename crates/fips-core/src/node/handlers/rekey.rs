@@ -537,7 +537,7 @@ impl Node {
                     "Rekey cutover complete (initiator), K-bit flipped"
                 );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
-                self.register_packet_mover2_fmp_owner(&node_addr);
+                self.sync_packet_mover2_fmp_owner(&node_addr);
             }
         }
 
@@ -809,7 +809,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP rekey cutover complete (initiator), K-bit flipped"
                 );
-                self.register_packet_mover2_fsp_owner(&node_addr);
+                self.sync_packet_mover2_fsp_owner(&node_addr);
             }
         }
 
@@ -823,7 +823,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP drain complete, previous session erased"
                 );
-                self.register_packet_mover2_fsp_owner(&node_addr);
+                self.sync_packet_mover2_fsp_owner(&node_addr);
             }
         }
 

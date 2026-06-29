@@ -205,10 +205,10 @@ impl Node {
                 }
                 // Endpoint priority is app-owned latency-sensitive traffic
                 // (ICMP, TCP ACK/SYN, tiny TCP data). On platforms without the
-                // unix encrypt-worker fast path, this branch is the outbound
-                // dataplane path, so give it an explicit turn before hot raw
-                // receive. Bulk endpoint commands intentionally remain below
-                // packet_rx.
+                // endpoint channel producing a steady wake stream, this branch
+                // is the outbound dataplane path, so give it an explicit turn
+                // before hot raw receive. Bulk endpoint commands intentionally
+                // remain below packet_rx.
                 Some(command) = endpoint_priority_command_rx.recv() => {
                     let mut turn = self.drain_packet_mover2_turn_with_firsts(
                         &mut packet_rx,

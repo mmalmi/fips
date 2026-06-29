@@ -236,55 +236,6 @@ impl PacketMover2 {
         retired
     }
 
-    #[cfg(test)]
-    pub(crate) fn dispatch_available(&mut self, limit: usize) -> Vec<CryptoWork> {
-        let mut work = Vec::new();
-        self.dispatch_available_into(limit, &mut work);
-        work
-    }
-
-    #[cfg(test)]
-    pub(crate) fn dispatch_outbound_available(&mut self, limit: usize) -> Vec<OutboundCryptoWork> {
-        let mut work = Vec::new();
-        self.dispatch_outbound_available_into(limit, &mut work);
-        work
-    }
-
-    #[cfg(test)]
-    pub(crate) fn run_aead_available(&mut self, limit: usize) -> PacketMoverTurn {
-        let mut open_work = Vec::new();
-        let mut seal_work = Vec::new();
-        self.run_aead_available_with_work_buffers(limit, &mut open_work, &mut seal_work)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn run_aead_available_with_work_buffers(
-        &mut self,
-        limit: usize,
-        open_work: &mut Vec<CryptoWork>,
-        seal_work: &mut Vec<OutboundCryptoWork>,
-    ) -> PacketMoverTurn {
-        let mut prepared_work = Vec::new();
-        let mut completion_work = Vec::new();
-        let mut retired = Vec::new();
-        let mut drops = Vec::new();
-        let dispatched = self.run_aead_available_into(
-            limit,
-            open_work,
-            seal_work,
-            &mut prepared_work,
-            &mut completion_work,
-            &mut retired,
-            &mut drops,
-        );
-
-        PacketMoverTurn {
-            dispatched,
-            retired,
-            drops,
-        }
-    }
-
     pub(crate) fn run_aead_available_into(
         &mut self,
         limit: usize,
@@ -448,15 +399,6 @@ impl PacketMover2 {
         }
     }
 
-    #[cfg(test)]
-    fn queue_lens(&self) -> (usize, usize) {
-        self.admission.lens()
-    }
-
-    #[cfg(test)]
-    fn outbound_queue_lens(&self) -> (usize, usize) {
-        self.outbound_admission.lens()
-    }
 }
 
 fn outbound_priority_dispatch_limit(limit: usize, has_priority_pending: bool) -> usize {

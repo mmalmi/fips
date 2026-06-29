@@ -67,20 +67,16 @@
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(830),
         );
-        live_node
-            .owner_mut(fsp_owner)
+        live_node.driver.owner_mut(fsp_owner)
             .unwrap()
             .set_active_path(live_path.clone());
-        live_node
-            .owner_mut(fmp_owner)
+        live_node.driver.owner_mut(fmp_owner)
             .unwrap()
             .set_active_path(live_path.clone());
-        live_node
-            .owner_mut(fsp_owner)
+        live_node.driver.owner_mut(fsp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
-        live_node
-            .owner_mut(fmp_owner)
+        live_node.driver.owner_mut(fmp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
         let fsp_session_start_ms = crate::time::now_ms().saturating_sub(8_200);
@@ -210,11 +206,11 @@
             tun_packet
         );
         assert_eq!(
-            live_node.owner_mut(fsp_owner).unwrap().active_path(),
+            live_node.driver.owner_mut(fsp_owner).unwrap().active_path(),
             Some(live_path.clone())
         );
         assert_eq!(
-            live_node.owner_mut(fmp_owner).unwrap().active_path(),
+            live_node.driver.owner_mut(fmp_owner).unwrap().active_path(),
             Some(live_path)
         );
 
@@ -309,7 +305,7 @@
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());
         assert!(deferred_endpoint_commands.is_empty());
-        assert!(raw_source.source_mut().is_empty());
+        assert!(raw_source.source.is_empty());
         assert!(tun_rx.try_recv().is_err());
 
         match endpoint_io.event_rx.try_recv().expect("endpoint event") {

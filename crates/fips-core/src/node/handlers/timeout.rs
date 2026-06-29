@@ -296,7 +296,7 @@ impl Node {
         for addr in &timed_out {
             let name = self.peer_display_name(addr);
             info!(dest = %name, "Session handshake timed out, removing");
-            self.unregister_packet_mover2_fsp_owner(addr);
+            self.remove_packet_mover2_fsp_owner(addr);
             self.sessions.remove(addr);
             self.pending_session_traffic.remove_destination(addr);
         }
@@ -409,7 +409,7 @@ impl Node {
             {
                 Self::log_session_mmp_teardown(&name, mmp);
             }
-            self.unregister_packet_mover2_fsp_owner(&addr);
+            self.remove_packet_mover2_fsp_owner(&addr);
             self.sessions.remove(&addr);
             self.pending_session_traffic.remove_destination(&addr);
             debug!(

@@ -34,7 +34,7 @@
 
         let mut open_work_buffer = Vec::with_capacity(4);
         let mut seal_work_buffer = Vec::with_capacity(4);
-        let turn = mover.run_aead_available_with_work_buffers(8, &mut open_work_buffer, &mut seal_work_buffer);
+        let turn = run_aead_available_with_work_buffers(&mut mover, 8, &mut open_work_buffer, &mut seal_work_buffer);
         assert_eq!(turn.dispatched(), 2);
         assert!(turn.drops().is_empty());
         assert!(open_work_buffer.is_empty());
@@ -238,7 +238,7 @@
         assert!(outbound.is_empty());
         assert!(sink.outputs.is_empty());
         assert_eq!(executor.nonempty_chunks, vec![1]);
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 1);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 1);
 
         let mut ready_completions = executor.take_ready();
         {
@@ -262,7 +262,7 @@
         }
 
         assert!(ready_completions.is_empty());
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
         assert_eq!(sink.outputs.len(), 1);
         assert_eq!(sink.outputs[0].owner(), owner);
         assert_eq!(sink.outputs[0].counter(), 500);
@@ -554,7 +554,7 @@
 
         let mut open_work_buffer = Vec::new();
         let mut seal_work_buffer = Vec::new();
-        let turn = mover.run_aead_available_with_work_buffers(2, &mut open_work_buffer, &mut seal_work_buffer);
+        let turn = run_aead_available_with_work_buffers(&mut mover, 2, &mut open_work_buffer, &mut seal_work_buffer);
 
         assert_eq!(turn.dispatched(), 2);
         let outputs = turn.outputs();
@@ -568,8 +568,8 @@
             open_sealed_output(outputs[1], seal_key),
             b"outbound-liveness"
         );
-        assert_eq!(mover.queue_lens(), (0, 3));
-        assert_eq!(mover.outbound_queue_lens(), (0, 0));
+        assert_eq!(queue_lens(&mover), (0, 3));
+        assert_eq!(outbound_queue_lens(&mover), (0, 0));
     }
 
     #[test]
@@ -587,7 +587,7 @@
             ))
             .unwrap();
 
-        let turn = mover.run_aead_available(8);
+        let turn = run_aead_available(&mut mover, 8);
         assert_eq!(turn.dispatched(), 1);
         assert_eq!(turn.retired().len(), 1);
         match &turn.retired()[0] {
@@ -601,7 +601,7 @@
         }
         assert_eq!(turn.drops().len(), 1);
         assert_eq!(turn.drops()[0].reason, PacketDropReason::CryptoFailed);
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
     }
 
     #[test]
@@ -625,7 +625,7 @@
             ))
             .unwrap();
 
-        let turn = mover.run_aead_available(8);
+        let turn = run_aead_available(&mut mover, 8);
         assert_eq!(turn.dispatched(), 1);
         match &turn.retired()[0] {
             RetiredPacket::Drop(drop) => {
@@ -636,8 +636,8 @@
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
         }
         let owner = mover.owner_mut(owner).unwrap();
-        assert_eq!(owner.next_send_counter(), 1);
-        assert_eq!(owner.in_flight(), 0);
+        assert_eq!(owner.next_send_counter, 1);
+        assert_eq!(owner.in_flight, 0);
     }
 
     #[test]
@@ -663,7 +663,7 @@
         .unwrap()
         .with_source_path(path_a.clone());
         mover.submit_socket_packet(inbound_a).unwrap();
-        let turn = mover.run_aead_available(8);
+        let turn = run_aead_available(&mut mover, 8);
         assert!(turn.drops().is_empty());
         assert_eq!(turn.outputs()[0].path(), None);
         assert_eq!(
@@ -681,7 +681,7 @@
                 b"out-a".to_vec(),
             ))
             .unwrap();
-        let turn = mover.run_aead_available(8);
+        let turn = run_aead_available(&mut mover, 8);
         let output = turn.outputs()[0];
         assert_eq!(output.counter, 500);
         assert_eq!(output.target, OutputTarget::Transport);
@@ -697,7 +697,7 @@
         .unwrap()
         .with_source_path(path_b.clone());
         mover.submit_socket_packet(inbound_b).unwrap();
-        let turn = mover.run_aead_available(8);
+        let turn = run_aead_available(&mut mover, 8);
         assert!(turn.drops().is_empty());
         assert_eq!(turn.outputs()[0].path(), None);
         assert_eq!(
@@ -715,7 +715,7 @@
                 b"out-b".to_vec(),
             ))
             .unwrap();
-        let turn = mover.run_aead_available(8);
+        let turn = run_aead_available(&mut mover, 8);
         let output = turn.outputs()[0];
         assert_eq!(output.counter, 501);
         assert_eq!(output.path(), Some(path_b));
@@ -747,7 +747,7 @@
             )
             .unwrap();
 
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         assert!(work.is_empty());
         let drops = mover.drain_drops();
         assert_eq!(drops.len(), 1);
@@ -770,7 +770,7 @@
                     .with_activity_tick(ActivityTick::new(10)),
             )
             .unwrap();
-        assert_eq!(mover.dispatch_available(8).len(), 1);
+        assert_eq!(dispatch_available(&mut mover, 8).len(), 1);
         assert_eq!(
             mover.owner_mut(owner).unwrap().last_rx_activity(),
             Some(ActivityTick::new(10))
@@ -782,7 +782,7 @@
                     .with_activity_tick(ActivityTick::new(20)),
             )
             .unwrap();
-        assert!(mover.dispatch_available(8).is_empty());
+        assert!(dispatch_available(&mut mover, 8).is_empty());
         assert_eq!(
             mover.owner_mut(owner).unwrap().last_rx_activity(),
             Some(ActivityTick::new(10))
@@ -794,7 +794,7 @@
                     .with_activity_tick(ActivityTick::new(30)),
             )
             .unwrap();
-        assert!(mover.dispatch_available(8).is_empty());
+        assert!(dispatch_available(&mut mover, 8).is_empty());
         assert_eq!(
             mover.owner_mut(owner).unwrap().last_rx_activity(),
             Some(ActivityTick::new(10))
@@ -823,7 +823,7 @@
                     .with_activity_tick(ActivityTick::new(50)),
             )
             .unwrap();
-        let work = mover.dispatch_outbound_available(8);
+        let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].reservation.counter, 7);
         assert_eq!(
@@ -837,7 +837,7 @@
                     .with_activity_tick(ActivityTick::new(40)),
             )
             .unwrap();
-        assert_eq!(mover.dispatch_outbound_available(8).len(), 1);
+        assert_eq!(dispatch_outbound_available(&mut mover, 8).len(), 1);
         assert_eq!(
             mover.owner_mut(owner).unwrap().last_tx_activity(),
             Some(ActivityTick::new(50))
@@ -849,7 +849,7 @@
                     .with_activity_tick(ActivityTick::new(60)),
             )
             .unwrap();
-        assert!(mover.dispatch_outbound_available(8).is_empty());
+        assert!(dispatch_outbound_available(&mut mover, 8).is_empty());
         assert_eq!(
             mover.owner_mut(owner).unwrap().last_tx_activity(),
             Some(ActivityTick::new(50))
@@ -974,7 +974,7 @@
 
         let mut work = Vec::new();
         assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 1);
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 1);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 1);
 
         let worker = StatelessAeadOpenWorker;
         let open_work =
@@ -982,7 +982,7 @@
         let completion = worker.execute(open_work);
 
         {
-            let turn = driver.run_aead_completion_turn([completion], 8);
+            let turn = run_aead_completion_turn(&mut driver, [completion], 8);
             assert_eq!(
                 turn.summary(),
                 PacketMover2RuntimeSummary {
@@ -1010,7 +1010,7 @@
             );
         }
 
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
     }
 
     #[test]
@@ -1114,7 +1114,7 @@
             &sink.outputs[2].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
             b"third"
         );
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
     }
 
     #[test]
@@ -1207,7 +1207,7 @@
                 .collect::<Vec<_>>(),
             vec![100, 101, 102]
         );
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
     }
 
     #[test]
@@ -1235,7 +1235,7 @@
 
         let mut work = Vec::new();
         assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 3);
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 3);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 3);
 
         let worker = StatelessAeadOpenWorker;
         let mut completions = work
@@ -1257,16 +1257,16 @@
         let second = completions.remove(0);
 
         {
-            let turn = driver.run_aead_completion_turn([third], 8);
+            let turn = run_aead_completion_turn(&mut driver, [third], 8);
             assert_eq!(turn.summary().dispatched(), 0);
             assert_eq!(turn.summary().outputs(), 0);
             assert!(turn.outputs().is_empty());
             assert!(turn.drops().is_empty());
         }
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 3);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 3);
 
         {
-            let turn = driver.run_aead_completion_turn([first], 8);
+            let turn = run_aead_completion_turn(&mut driver, [first], 8);
             assert_eq!(turn.summary().dispatched(), 0);
             assert_eq!(turn.summary().outputs(), 1);
             assert_eq!(turn.outputs()[0].counter(), 100);
@@ -1276,10 +1276,10 @@
             );
             assert!(turn.drops().is_empty());
         }
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 2);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 2);
 
         {
-            let turn = driver.run_aead_completion_turn([second], 8);
+            let turn = run_aead_completion_turn(&mut driver, [second], 8);
             assert_eq!(turn.summary().dispatched(), 0);
             assert_eq!(turn.summary().outputs(), 2);
             assert_eq!(turn.outputs()[0].counter(), 101);
@@ -1294,7 +1294,7 @@
             );
             assert!(turn.drops().is_empty());
         }
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
     }
 
     #[test]
@@ -1334,7 +1334,7 @@
             .unwrap();
         let mut new_work = Vec::new();
         assert_eq!(driver.mover.dispatch_available_into(8, &mut new_work), 1);
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 2);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 2);
 
         let worker = StatelessAeadOpenWorker;
         let old_completion = worker.execute(
@@ -1345,17 +1345,17 @@
         );
 
         {
-            let turn = driver.run_aead_completion_turn([new_completion], 8);
+            let turn = run_aead_completion_turn(&mut driver, [new_completion], 8);
             assert_eq!(turn.summary().dispatched(), 0);
             assert_eq!(turn.summary().outputs(), 0);
             assert_eq!(turn.summary().drops(), 0);
             assert!(turn.outputs().is_empty());
             assert!(turn.drops().is_empty());
         }
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 2);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 2);
 
         {
-            let turn = driver.run_aead_completion_turn([old_completion], 8);
+            let turn = run_aead_completion_turn(&mut driver, [old_completion], 8);
             assert_eq!(turn.summary().dispatched(), 0);
             assert_eq!(turn.summary().outputs(), 1);
             assert_eq!(turn.summary().drops(), 1);
@@ -1371,7 +1371,7 @@
             );
             assert_eq!(turn.drops()[0].counter(), Some(100));
         }
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
     }
 
     #[test]
@@ -1413,7 +1413,7 @@
                 .dispatch_outbound_available_into(1, &mut seal_work),
             1
         );
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 1);
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 1);
 
         driver
             .mover
@@ -1445,7 +1445,7 @@
         );
 
         {
-            let turn = driver.run_aead_completion_turn([completion], 1);
+            let turn = run_aead_completion_turn(&mut driver, [completion], 1);
             assert_eq!(turn.summary().dispatched(), 1);
             assert_eq!(turn.summary().outputs(), 2);
             assert!(turn.drops().is_empty());
@@ -1462,8 +1462,8 @@
             );
         }
 
-        assert_eq!(driver.owner_mut(owner).unwrap().in_flight(), 0);
-        assert_eq!(driver.mover.outbound_queue_lens(), (0, 1));
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
+        assert_eq!(outbound_queue_lens(&driver.mover), (0, 1));
     }
 
     #[test]
@@ -1513,7 +1513,7 @@
                 .dispatch_outbound_available_into(1, &mut seal_work),
             1
         );
-        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight(), 1);
+        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
 
         let worker = StatelessAeadSealWorker;
         let completion = worker.execute(
@@ -1521,7 +1521,7 @@
         );
 
         {
-            let turn = driver.run_aead_completion_turn([completion], 1);
+            let turn = run_aead_completion_turn(&mut driver, [completion], 1);
             assert_eq!(turn.summary().outbound_admitted(), 1);
             assert_eq!(turn.summary().dispatched(), 1);
             assert_eq!(turn.summary().outputs(), 1);
@@ -1550,8 +1550,8 @@
             );
         }
 
-        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight(), 0);
-        assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight(), 0);
+        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 0);
+        assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 0);
     }
 
     #[test]

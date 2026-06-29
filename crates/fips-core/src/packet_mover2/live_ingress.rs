@@ -440,10 +440,6 @@ impl<S> PacketMover2LiveRawIngressSource<S> {
         Self { source }
     }
 
-    #[cfg(test)]
-    pub(crate) fn source_mut(&mut self) -> &mut S {
-        &mut self.source
-    }
 }
 
 impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
@@ -493,14 +489,6 @@ pub(crate) struct PacketMover2FmpPacketRxSource<'a> {
 }
 
 impl<'a> PacketMover2FmpPacketRxSource<'a> {
-    pub(crate) fn new(rx: &'a mut PacketRx) -> Self {
-        Self {
-            rx,
-            first: None,
-            control_ingress: Vec::new(),
-        }
-    }
-
     pub(crate) fn with_first(rx: &'a mut PacketRx, first: Option<ReceivedPacket>) -> Self {
         Self {
             rx,

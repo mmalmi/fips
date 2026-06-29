@@ -121,7 +121,7 @@ impl Node {
                         );
 
                         if remote_epoch_changed {
-                            self.unregister_packet_mover2_fsp_owner(&peer_node_addr);
+                            self.remove_packet_mover2_fsp_owner(&peer_node_addr);
                             if self.sessions.remove(&peer_node_addr).is_some() {
                                 debug!(
                                     peer = %display_name,
@@ -378,10 +378,10 @@ impl Node {
                 );
                 self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
                 self.register_identity(peer_node_addr, peer_identity.pubkey_full());
-                self.register_packet_mover2_fmp_owner(&peer_node_addr);
+                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
 
                 if remote_epoch_changed {
-                    self.unregister_packet_mover2_fsp_owner(&peer_node_addr);
+                    self.remove_packet_mover2_fsp_owner(&peer_node_addr);
                     if self.sessions.remove(&peer_node_addr).is_some() {
                         debug!(
                             peer = %display_name,
@@ -476,7 +476,7 @@ impl Node {
                 }
                 self.links
                     .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
-                self.register_packet_mover2_fmp_owner(&peer_node_addr);
+                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
 
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),

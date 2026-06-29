@@ -28,7 +28,7 @@
             ))
             .unwrap();
 
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         assert_eq!(work.len(), 2);
         assert_eq!(work[0].packet.owner, fmp);
         assert_eq!(work[1].packet.owner, fsp);
@@ -237,8 +237,8 @@
         assert_eq!(bulk_drop.lane(), Lane::Bulk);
         assert_eq!(bulk_drop.payload_len(), 1);
         assert_eq!(bulk_drop.reason(), AdmissionDropReason::BulkFull);
-        assert_eq!(mover.queue_lens(), (1, 1));
-        let work = mover.dispatch_available(1);
+        assert_eq!(queue_lens(&mover), (1, 1));
+        let work = dispatch_available(&mut mover, 1);
         assert_eq!(work[0].packet.counter, 3);
 
         let drops = mover.drain_drops();
@@ -279,7 +279,7 @@
 
         let mut open_work = Vec::with_capacity(8);
         let mut seal_work = Vec::with_capacity(8);
-        let turn = mover.run_aead_available_with_work_buffers(2, &mut open_work, &mut seal_work);
+        let turn = run_aead_available_with_work_buffers(&mut mover, 2, &mut open_work, &mut seal_work);
         assert!(open_work.is_empty());
         assert!(seal_work.is_empty());
         assert_eq!(turn.dispatched(), 2);
@@ -299,7 +299,7 @@
             2
         );
 
-        let turn = mover.run_aead_available_with_work_buffers(2, &mut open_work, &mut seal_work);
+        let turn = run_aead_available_with_work_buffers(&mut mover, 2, &mut open_work, &mut seal_work);
         assert_eq!(turn.dispatched(), 1);
         assert_eq!(turn.outputs()[0].counter, 3);
         assert_eq!(open_work.capacity(), 8);
@@ -325,9 +325,9 @@
                 .unwrap();
         }
 
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         assert_eq!(
-            work.iter().map(CryptoWork::order).collect::<Vec<_>>(),
+            work.iter().map(crypto_work_order).collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
 
@@ -393,10 +393,10 @@
             ))
             .unwrap();
 
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].packet.counter, 8);
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 1);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 1);
 
         let drops = mover.drain_drops();
         assert!(drops.is_empty());
@@ -405,12 +405,12 @@
             outputs(retire_open_aead(&mut mover, work[0].clone(), key)).len(),
             1
         );
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
 
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].packet.counter, 9);
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 1);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 1);
 
         let drops = mover.drain_drops();
         assert!(drops.is_empty());
@@ -419,9 +419,9 @@
             outputs(retire_open_aead(&mut mover, work[0].clone(), key)).len(),
             1
         );
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 0);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
 
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         assert!(work.is_empty());
 
         let drops = mover.drain_drops();
@@ -467,7 +467,7 @@
             .unwrap();
         assert_eq!(liveness.lane, Lane::Priority);
         assert_eq!(liveness.counter, 13);
-        assert_eq!(inbound.in_flight(), 3);
+        assert_eq!(inbound.in_flight, 3);
 
         let mut outbound =
             OwnerState::new(owner, OwnerConfig::new(1, 4).with_bulk_in_flight_limit(2));
@@ -496,7 +496,7 @@
             .unwrap();
         assert_eq!(mmp.lane, Lane::Priority);
         assert_eq!(mmp.counter, 2);
-        assert_eq!(outbound.in_flight(), 3);
+        assert_eq!(outbound.in_flight, 3);
     }
 
     #[test]
@@ -516,11 +516,11 @@
         mover
             .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-2"))
             .unwrap();
-        let work = mover.dispatch_outbound_available(8);
+        let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(work.len(), 2);
         assert_eq!(work[0].reservation.counter, 10);
         assert_eq!(work[1].reservation.counter, 11);
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 2);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
         mover
             .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-3"))
@@ -534,12 +534,12 @@
             ))
             .unwrap();
 
-        let work = mover.dispatch_outbound_available(8);
+        let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].packet.class, PacketClass::Liveness);
         assert_eq!(work[0].reservation.counter, 12);
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 3);
-        assert_eq!(mover.outbound_queue_lens(), (0, 1));
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 3);
+        assert_eq!(outbound_queue_lens(&mover), (0, 1));
         assert!(mover.drain_drops().is_empty());
     }
 
@@ -560,7 +560,7 @@
             ))
             .unwrap();
 
-        let mut work = mover.dispatch_available(8);
+        let mut work = dispatch_available(&mut mover, 8);
         assert_eq!(work.len(), 1);
         mover.owner_mut(owner).unwrap().rekey(2);
         let stale_retire = retire_open_aead(&mut mover, work.pop().unwrap(), key);
@@ -590,7 +590,7 @@
                 key,
             ))
             .unwrap();
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].packet.counter, 3);
 
@@ -624,7 +624,7 @@
                 .unwrap();
         }
 
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         let mut retired = Vec::new();
         for work in work.into_iter().rev() {
             retired.extend(retire_open_aead(&mut mover, work, key));
@@ -679,7 +679,7 @@
 
         let worker = StatelessAeadOpenWorker;
         let mut retired = Vec::new();
-        for work in mover.dispatch_available(8) {
+        for work in dispatch_available(&mut mover, 8) {
             let work = AeadOpenWork::from_crypto_work(work, test_key(key)).unwrap();
             retired.extend(mover.retire_completion(worker.execute(work)));
         }
@@ -734,7 +734,7 @@
             .unwrap();
 
         let worker = StatelessAeadOpenWorker;
-        let work = mover.dispatch_available(8);
+        let work = dispatch_available(&mut mover, 8);
         assert_eq!(work.len(), 2);
 
         let second = AeadOpenWork::from_crypto_work(work[1].clone(), test_key(1)).unwrap();
@@ -792,7 +792,7 @@
 
         let worker = StatelessAeadSealWorker;
         let mut retired = Vec::new();
-        for work in mover.dispatch_outbound_available(8) {
+        for work in dispatch_outbound_available(&mut mover, 8) {
             let work = AeadSealWork::from_outbound_work(work, test_key(key)).unwrap();
             retired.extend(mover.retire_completion(worker.execute(work)));
         }
@@ -862,7 +862,7 @@
             ))
             .unwrap();
 
-        let work = mover.dispatch_outbound_available(8);
+        let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(work.len(), 2);
         assert_eq!(work[0].packet.fsp_cleartext_prefix, coords_prefix);
         assert_eq!(
@@ -901,15 +901,15 @@
         assert_eq!(bulk_drop.lane(), Lane::Bulk);
         assert_eq!(bulk_drop.payload_len(), b"bulk-b".len());
         assert_eq!(bulk_drop.reason(), AdmissionDropReason::BulkFull);
-        assert_eq!(mover.outbound_queue_lens(), (1, 1));
+        assert_eq!(outbound_queue_lens(&mover), (1, 1));
 
-        let work = mover.dispatch_outbound_available(8);
+        let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(work.len(), 2);
         assert_eq!(work[0].packet.class, PacketClass::Liveness);
         assert_eq!(work[0].reservation.counter, 40);
         assert_eq!(work[1].packet.class, PacketClass::Bulk);
         assert_eq!(work[1].reservation.counter, 41);
-        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter(), 42);
+        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter, 42);
 
         let drops = mover.drain_drops();
         assert_eq!(
@@ -945,13 +945,13 @@
             ))
             .unwrap();
 
-        let work = mover.dispatch_outbound_available(8);
+        let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(work.len(), 2);
         assert_eq!(work[0].packet.class, PacketClass::Liveness);
         assert_eq!(work[0].reservation.counter, 91);
         assert_eq!(work[1].packet.class, PacketClass::Bulk);
         assert_eq!(work[1].reservation.counter, 92);
-        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter(), 93);
+        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter, 93);
         assert_eq!(authority.reserve().unwrap(), 93);
     }
 
@@ -977,7 +977,7 @@
             .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"refreshed"))
             .unwrap();
 
-        let work = mover.dispatch_outbound_available(8);
+        let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].reservation.counter, 350);
         assert_eq!(work[0].packet.fsp_cleartext_prefix, coords_prefix);
@@ -987,7 +987,7 @@
                 flags: crate::node::session_wire::FSP_FLAG_CP
             }
         );
-        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter(), 351);
+        assert_eq!(mover.owner_mut(owner).unwrap().next_send_counter, 351);
         assert_eq!(refreshed_authority.reserve().unwrap(), 351);
     }
 
@@ -1007,10 +1007,10 @@
                 .unwrap();
         }
 
-        let work = mover.dispatch_outbound_available(8);
+        let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(
             work.iter()
-                .map(OutboundCryptoWork::order)
+                .map(outbound_crypto_work_order)
                 .collect::<Vec<_>>(),
             vec![0, 1, 2]
         );

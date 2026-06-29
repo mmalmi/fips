@@ -130,10 +130,6 @@ impl AdmissionQueue {
         }
     }
 
-    #[cfg(test)]
-    fn lens(&self) -> (usize, usize) {
-        (self.priority.len(), self.bulk.len())
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -237,8 +233,4 @@ impl OutboundAdmissionQueue {
         !self.priority.is_empty()
     }
 
-    #[cfg(test)]
-    fn lens(&self) -> (usize, usize) {
-        (self.priority.len(), self.bulk.len())
-    }
 }

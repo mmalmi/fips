@@ -34,16 +34,14 @@
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(760),
         );
-        live_node
-            .owner_mut(fmp_owner)
+        live_node.driver.owner_mut(fmp_owner)
             .unwrap()
             .set_active_path(live_path.clone());
-        live_node
-            .owner_mut(fmp_owner)
+        live_node.driver.owner_mut(fmp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
         let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::new());
-        live_node.routes_mut().register_tun_destination(
+        live_node.routes.register_tun_destination(
             fmp_source,
             PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
                 fmp_owner,
@@ -92,7 +90,7 @@
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());
-        assert!(raw_source.source_mut().is_empty());
+        assert!(raw_source.source.is_empty());
         assert!(turn.endpoint_command_drops().is_empty());
         assert!(turn.tun_outbound_drops().is_empty());
         assert!(tun_outbound_rx.try_recv().is_err());
@@ -113,7 +111,7 @@
             tun_packet
         );
         assert_eq!(
-            live_node.owner_mut(fmp_owner).unwrap().active_path(),
+            live_node.driver.owner_mut(fmp_owner).unwrap().active_path(),
             Some(live_path)
         );
 
@@ -155,12 +153,10 @@
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
         live_node.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(1760));
-        live_node
-            .owner_mut(owner)
+        live_node.driver.owner_mut(owner)
             .unwrap()
             .set_active_path(live_path);
-        live_node
-            .owner_mut(owner)
+        live_node.driver.owner_mut(owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
 
@@ -297,8 +293,8 @@
             PacketMover2TunTxOutput::new(&tun_tx),
             &mut endpoint,
             &mut transport,
-        )
-        .with_stale_bulk_output_drop_ms(1);
+        );
+        sink.stale_bulk_output_drop_ms = 1;
 
         let mut stale_bulk = opened_output(owner, 46, 0, OutputTarget::Tun, b"stale-bulk");
         stale_bulk.activity_tick = Some(ActivityTick::new(1));

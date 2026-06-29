@@ -12,7 +12,7 @@ impl Node {
             entry.apply_fsp_receive_sync_result(sync, Self::now_ms(), now)
         };
         if apply.refresh_worker_session() {
-            self.register_packet_mover2_fsp_owner(&source_addr);
+            self.sync_packet_mover2_fsp_owner(&source_addr);
         }
         apply.is_applied()
     }
