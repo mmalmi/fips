@@ -331,15 +331,15 @@ impl PacketMover2 {
             outbound_priority_dispatch_limit(limit, self.outbound_admission.has_priority_pending());
         let pre_priority_inbound_limit =
             inbound_before_outbound_priority_limit(limit, outbound_priority_reserve);
-        let mut fsp_worker_open = 0u64;
-        let mut fsp_worker_open_bulk = 0u64;
+        let mut fsp_path_open = 0u64;
+        let mut fsp_path_open_bulk = 0u64;
         let pre_priority_inbound_dispatched =
             self.dispatch_available_into(pre_priority_inbound_limit, open_work);
         self.prepare_open_work_batch(
             open_work,
             prepared_work,
-            &mut fsp_worker_open,
-            &mut fsp_worker_open_bulk,
+            &mut fsp_path_open,
+            &mut fsp_path_open_bulk,
         );
         executor.execute_prepared_chunk(prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
@@ -370,12 +370,12 @@ impl PacketMover2 {
         self.prepare_open_work_batch(
             open_work,
             prepared_work,
-            &mut fsp_worker_open,
-            &mut fsp_worker_open_bulk,
+            &mut fsp_path_open,
+            &mut fsp_path_open_bulk,
         );
         executor.execute_prepared_chunk(prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
-        record_fsp_worker_open_dispatch(fsp_worker_open, fsp_worker_open_bulk);
+        record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
 
         self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
         executor.execute_prepared_chunk(prepared_work, completion_work);
@@ -407,13 +407,13 @@ impl PacketMover2 {
         &mut self,
         open_work: &mut Vec<CryptoWork>,
         prepared: &mut Vec<PreparedCryptoWork>,
-        fsp_worker_open: &mut u64,
-        fsp_worker_open_bulk: &mut u64,
+        fsp_path_open: &mut u64,
+        fsp_path_open_bulk: &mut u64,
     ) {
         prepared.clear();
         for work in open_work.drain(..) {
             let reservation = work.reservation.clone();
-            count_fsp_worker_open_dispatch(&reservation, fsp_worker_open, fsp_worker_open_bulk);
+            count_fsp_path_open_dispatch(&reservation, fsp_path_open, fsp_path_open_bulk);
             let prepared_work = match self.owner_crypto_keys(reservation.owner) {
                 Some(keys) => PreparedCryptoWork::open(work, keys.open),
                 None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open),
@@ -475,7 +475,7 @@ fn inbound_before_outbound_priority_limit(limit: usize, outbound_priority_reserv
     limit.saturating_sub(outbound_priority_reserve).min(1)
 }
 
-fn count_fsp_worker_open_dispatch(
+fn count_fsp_path_open_dispatch(
     reservation: &OwnerReservation,
     total: &mut u64,
     bulk: &mut u64,
@@ -490,22 +490,18 @@ fn count_fsp_worker_open_dispatch(
     }
 }
 
-fn record_fsp_worker_open_dispatch(total: u64, bulk: u64) {
+fn record_fsp_path_open_dispatch(total: u64, bulk: u64) {
     if total == 0 {
         return;
     }
 
     crate::perf_profile::record_event_count(
-        crate::perf_profile::Event::DecryptFspOwnerSame,
-        total,
-    );
-    crate::perf_profile::record_event_count(
-        crate::perf_profile::Event::DecryptFspPathWorkerOpen,
+        crate::perf_profile::Event::PacketMover2FspPathOpen,
         total,
     );
     if bulk > 0 {
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::DecryptFspPathWorkerOpenBulk,
+            crate::perf_profile::Event::PacketMover2FspPathOpenBulk,
             bulk,
         );
     }
