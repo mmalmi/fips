@@ -2,20 +2,29 @@
     fn happy_path_dispatches_fmp_and_fsp_packets() {
         let fmp = OwnerId::fmp(7);
         let fsp = OwnerId::fsp(7);
+        let key = 7;
         let mut mover = mover();
         mover.register_owner(fmp, OwnerConfig::new(1, 8));
         mover.register_owner(fsp, OwnerConfig::new(1, 8));
 
         mover
-            .submit_socket_packet(packet(fsp, 1, 10, PacketClass::Bulk, OutputTarget::Tun))
+            .submit_socket_packet(encrypted_fsp_packet(
+                fsp,
+                1,
+                10,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+                key,
+            ))
             .unwrap();
         mover
-            .submit_socket_packet(packet(
+            .submit_socket_packet(encrypted_fmp_packet(
                 fmp,
                 1,
                 20,
                 PacketClass::Control,
                 OutputTarget::Transport,
+                key,
             ))
             .unwrap();
 
@@ -26,14 +35,13 @@
 
         let mut retired = Vec::new();
         for item in work {
-            let completion = mover.execute_work(item);
-            retired.extend(mover.retire_completion(completion));
+            retired.extend(retire_open_aead(&mut mover, item, key));
         }
         let outputs = outputs(retired);
         assert_eq!(outputs[0].target, OutputTarget::Transport);
         assert_eq!(outputs[1].target, OutputTarget::Tun);
-        assert_eq!(outputs[0].payload, vec![20]);
-        assert_eq!(outputs[1].payload, vec![10]);
+        assert_eq!(&outputs[0].payload[FMP_ESTABLISHED_HEADER_SIZE..], &[20]);
+        assert_eq!(&outputs[1].payload[FSP_HEADER_SIZE..], &[10]);
     }
 
     #[test]
@@ -247,19 +255,33 @@
     #[test]
     fn turn_runner_batches_admission_and_reuses_work_buffer() {
         let owner = OwnerId::fsp(11);
+        let key = 11;
         let mut mover = PacketMover2::new(AdmissionConfig::new(2, 4));
         mover.register_owner(owner, OwnerConfig::new(1, 8));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
         let summary = mover.submit_socket_batch([
-            packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun),
-            packet(owner, 1, 2, PacketClass::Liveness, OutputTarget::Endpoint),
-            packet(owner, 1, 3, PacketClass::Bulk, OutputTarget::Transport),
+            encrypted_fsp_packet(owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun, key),
+            encrypted_fsp_packet(
+                owner,
+                1,
+                2,
+                PacketClass::Liveness,
+                OutputTarget::Endpoint,
+                key,
+            ),
+            encrypted_fsp_packet(owner, 1, 3, PacketClass::Bulk, OutputTarget::Transport, key),
         ]);
         assert_eq!(summary.admitted(), 3);
         assert_eq!(summary.dropped(), 0);
 
-        let mut work = Vec::with_capacity(8);
-        let turn = mover.run_available_with_work_buffer(2, &mut work);
-        assert!(work.is_empty());
+        let mut open_work = Vec::with_capacity(8);
+        let mut seal_work = Vec::with_capacity(8);
+        let turn = mover.run_aead_available_with_work_buffers(2, &mut open_work, &mut seal_work);
+        assert!(open_work.is_empty());
+        assert!(seal_work.is_empty());
         assert_eq!(turn.dispatched(), 2);
         assert!(turn.drops().is_empty());
         assert_eq!(
@@ -277,25 +299,28 @@
             2
         );
 
-        let turn = mover.run_available_with_work_buffer(2, &mut work);
+        let turn = mover.run_aead_available_with_work_buffers(2, &mut open_work, &mut seal_work);
         assert_eq!(turn.dispatched(), 1);
         assert_eq!(turn.outputs()[0].counter, 3);
-        assert_eq!(work.capacity(), 8);
+        assert_eq!(open_work.capacity(), 8);
+        assert_eq!(seal_work.capacity(), 8);
     }
 
     #[test]
     fn owner_retires_worker_completions_in_owner_order() {
         let owner = OwnerId::fsp(9);
+        let key = 9;
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
         for counter in 1..=3 {
             mover
-                .submit_socket_packet(packet(
+                .submit_socket_packet(encrypted_fsp_packet(
                     owner,
                     1,
                     counter,
                     PacketClass::Bulk,
                     OutputTarget::Tun,
+                    key,
                 ))
                 .unwrap();
         }
@@ -306,10 +331,10 @@
             vec![0, 1, 2]
         );
 
-        let completion_2 = mover.execute_work(work[2].clone());
+        let completion_2 = open_aead_completion(work[2].clone(), key);
         assert!(mover.retire_completion(completion_2).is_empty());
 
-        let completion_0 = mover.execute_work(work[0].clone());
+        let completion_0 = open_aead_completion(work[0].clone(), key);
         let retired = outputs(mover.retire_completion(completion_0));
         assert_eq!(
             retired
@@ -319,7 +344,7 @@
             vec![1]
         );
 
-        let completion_1 = mover.execute_work(work[1].clone());
+        let completion_1 = open_aead_completion(work[1].clone(), key);
         let retired = outputs(mover.retire_completion(completion_1));
         assert_eq!(
             retired
@@ -333,17 +358,39 @@
     #[test]
     fn owner_defers_in_flight_overflow_and_still_rejects_replay() {
         let owner = OwnerId::fsp(3);
+        let key = 3;
         let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
         mover.register_owner(owner, OwnerConfig::new(1, 1));
 
         mover
-            .submit_socket_packet(packet(owner, 1, 8, PacketClass::Bulk, OutputTarget::Tun))
+            .submit_socket_packet(encrypted_fsp_packet(
+                owner,
+                1,
+                8,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+                key,
+            ))
             .unwrap();
         mover
-            .submit_socket_packet(packet(owner, 1, 9, PacketClass::Bulk, OutputTarget::Tun))
+            .submit_socket_packet(encrypted_fsp_packet(
+                owner,
+                1,
+                9,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+                key,
+            ))
             .unwrap();
         mover
-            .submit_socket_packet(packet(owner, 1, 8, PacketClass::Bulk, OutputTarget::Tun))
+            .submit_socket_packet(encrypted_fsp_packet(
+                owner,
+                1,
+                8,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+                key,
+            ))
             .unwrap();
 
         let work = mover.dispatch_available(8);
@@ -354,8 +401,10 @@
         let drops = mover.drain_drops();
         assert!(drops.is_empty());
 
-        let completion = mover.execute_work(work[0].clone());
-        assert_eq!(outputs(mover.retire_completion(completion)).len(), 1);
+        assert_eq!(
+            outputs(retire_open_aead(&mut mover, work[0].clone(), key)).len(),
+            1
+        );
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 0);
 
         let work = mover.dispatch_available(8);
@@ -366,8 +415,10 @@
         let drops = mover.drain_drops();
         assert!(drops.is_empty());
 
-        let completion = mover.execute_work(work[0].clone());
-        assert_eq!(outputs(mover.retire_completion(completion)).len(), 1);
+        assert_eq!(
+            outputs(retire_open_aead(&mut mover, work[0].clone(), key)).len(),
+            1
+        );
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight(), 0);
 
         let work = mover.dispatch_available(8);
@@ -495,22 +546,24 @@
     #[test]
     fn stale_generation_is_dropped_before_dispatch_and_at_retire() {
         let owner = OwnerId::fmp(4);
+        let key = 4;
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
         mover
-            .submit_socket_packet(packet(
+            .submit_socket_packet(encrypted_fmp_packet(
                 owner,
                 1,
                 1,
                 PacketClass::Control,
                 OutputTarget::Transport,
+                key,
             ))
             .unwrap();
 
         let mut work = mover.dispatch_available(8);
         assert_eq!(work.len(), 1);
         mover.owner_mut(owner).unwrap().rekey(2);
-        let stale_retire = mover.retire_completion(mover.execute_work(work.pop().unwrap()));
+        let stale_retire = retire_open_aead(&mut mover, work.pop().unwrap(), key);
         let stale_retire_drops = drops(stale_retire);
         assert_eq!(
             stale_retire_drops[0].reason,
@@ -518,21 +571,23 @@
         );
 
         mover
-            .submit_socket_packet(packet(
+            .submit_socket_packet(encrypted_fmp_packet(
                 owner,
                 1,
                 2,
                 PacketClass::Control,
                 OutputTarget::Transport,
+                key,
             ))
             .unwrap();
         mover
-            .submit_socket_packet(packet(
+            .submit_socket_packet(encrypted_fmp_packet(
                 owner,
                 2,
                 3,
                 PacketClass::Control,
                 OutputTarget::Transport,
+                key,
             ))
             .unwrap();
         let work = mover.dispatch_available(8);
@@ -548,6 +603,7 @@
     #[test]
     fn tun_endpoint_and_transport_outputs_keep_owner_order() {
         let owner = OwnerId::fsp(42);
+        let key = 42;
         let mut mover = mover();
         mover.register_owner(owner, OwnerConfig::new(1, 8));
         let targets = [
@@ -557,14 +613,21 @@
         ];
         for (idx, target) in targets.into_iter().enumerate() {
             mover
-                .submit_socket_packet(packet(owner, 1, idx as u64 + 1, PacketClass::Bulk, target))
+                .submit_socket_packet(encrypted_fsp_packet(
+                    owner,
+                    1,
+                    idx as u64 + 1,
+                    PacketClass::Bulk,
+                    target,
+                    key,
+                ))
                 .unwrap();
         }
 
         let work = mover.dispatch_available(8);
         let mut retired = Vec::new();
         for work in work.into_iter().rev() {
-            retired.extend(mover.retire_completion(mover.execute_work(work)));
+            retired.extend(retire_open_aead(&mut mover, work, key));
         }
         let outputs = outputs(retired);
         assert_eq!(

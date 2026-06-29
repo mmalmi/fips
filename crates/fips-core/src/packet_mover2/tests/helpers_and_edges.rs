@@ -188,6 +188,64 @@
         data
     }
 
+    fn encrypted_fmp_packet(
+        owner: OwnerId,
+        generation: u64,
+        counter: u64,
+        class: PacketClass,
+        output: OutputTarget,
+        key: u8,
+    ) -> SocketPacket {
+        SocketPacket::new(
+            owner,
+            generation,
+            counter,
+            class,
+            output,
+            fmp_encrypted_wire(
+                owner
+                    .fixture_peer()
+                    .expect("encrypted_fmp_packet requires a fixture owner")
+                    as u32,
+                counter,
+                0,
+                &[counter as u8],
+                key,
+            ),
+        )
+    }
+
+    fn encrypted_fsp_packet(
+        owner: OwnerId,
+        generation: u64,
+        counter: u64,
+        class: PacketClass,
+        output: OutputTarget,
+        key: u8,
+    ) -> SocketPacket {
+        SocketPacket::new(
+            owner,
+            generation,
+            counter,
+            class,
+            output,
+            fsp_encrypted_wire(counter, 0, &[counter as u8], key),
+        )
+    }
+
+    fn open_aead_completion(work: CryptoWork, key: u8) -> CryptoCompletion {
+        StatelessAeadOpenWorker.execute(AeadOpenWork::from_crypto_work(work, test_key(key)).unwrap())
+    }
+
+    fn retire_open_aead(
+        mover: &mut PacketMover2,
+        work: CryptoWork,
+        key: u8,
+    ) -> Vec<RetiredPacket> {
+        let completion = open_aead_completion(work, key);
+        mover.retire_completion(completion)
+    }
+
     fn empty_fsp_coords_prefix() -> Vec<u8> {
         let mut prefix = Vec::with_capacity(2 * std::mem::size_of::<u16>());
         prefix.extend_from_slice(&0u16.to_le_bytes());
@@ -332,7 +390,6 @@
 
         assert_eq!(path.transport_id(), Some(transport_id));
         assert_eq!(path.remote_addr(), Some(&remote_addr));
-        assert_eq!(path.fixture_id(), None);
 
         let raw = PacketMover2RawIngress::from_live_received(
             PacketProtocol::Fmp,

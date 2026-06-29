@@ -237,11 +237,6 @@ impl PacketMover2 {
     }
 
     #[cfg(test)]
-    pub(crate) fn execute_work(&self, work: CryptoWork) -> CryptoCompletion {
-        copy_crypto_completion(work)
-    }
-
-    #[cfg(test)]
     pub(crate) fn dispatch_available(&mut self, limit: usize) -> Vec<CryptoWork> {
         let mut work = Vec::new();
         self.dispatch_available_into(limit, &mut work);
@@ -253,31 +248,6 @@ impl PacketMover2 {
         let mut work = Vec::new();
         self.dispatch_outbound_available_into(limit, &mut work);
         work
-    }
-
-    #[cfg(test)]
-    pub(crate) fn run_available(&mut self, limit: usize) -> PacketMoverTurn {
-        let mut work = Vec::new();
-        self.run_available_with_work_buffer(limit, &mut work)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn run_available_with_work_buffer(
-        &mut self,
-        limit: usize,
-        work: &mut Vec<CryptoWork>,
-    ) -> PacketMoverTurn {
-        let dispatched = self.dispatch_available_into(limit, work);
-        let mut retired = Vec::new();
-        for work in work.drain(..) {
-            let completion = copy_crypto_completion(work);
-            retired.extend(self.retire_completion(completion));
-        }
-        PacketMoverTurn {
-            dispatched,
-            retired,
-            drops: self.drain_drops(),
-        }
     }
 
     #[cfg(test)]

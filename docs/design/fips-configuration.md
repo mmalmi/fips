@@ -121,21 +121,6 @@ Controls capacity for connections, peers, and links.
 | `node.limits.max_links` | usize | `256` | Max active links |
 | `node.limits.max_pending_inbound` | usize | `1000` | Max pending inbound handshakes |
 
-### Connected UDP Fast Path (`node.connected_udp.*`)
-
-Controls per-peer connected UDP sockets on Linux and macOS. Connected UDP uses
-approximately three file descriptors per installed peer, so high-capacity
-bootstrap nodes must raise both `node.limits.max_peers` and the service/process
-`RLIMIT_NOFILE`. While the implementation uses one receive-drain thread per
-installed peer, `node.connected_udp.max_peers` can cap the fast path for large
-meshes; peers above the cap continue to use wildcard UDP.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `node.connected_udp.enabled` | bool | `true` | Enable per-peer connected UDP sockets |
-| `node.connected_udp.max_peers` | usize | `0` | Explicit cap on peers with connected UDP sockets; `0` means no cap beyond fd and node peer limits |
-| `node.connected_udp.fd_reserve` | usize | `128` | FDs to reserve for non-connected-UDP use; effective fast-path peer budget is roughly `(RLIMIT_NOFILE - fd_reserve) / 3` |
-
 ### Rate Limiting (`node.rate_limit.*`)
 
 Handshake rate limiting protects against DoS on the Noise IK handshake path.
@@ -751,9 +736,6 @@ node:
     nsec: "..."
   limits:
     max_peers: 64
-  connected_udp:
-    max_peers: 64
-    fd_reserve: 512
   retry:
     max_retries: 10
     max_backoff_secs: 600
@@ -780,10 +762,6 @@ node:
     max_peers: 128
     max_links: 256
     max_pending_inbound: 1000
-  connected_udp:
-    enabled: true
-    max_peers: 0
-    fd_reserve: 128
   rate_limit:
     handshake_burst: 100
     handshake_rate: 10.0

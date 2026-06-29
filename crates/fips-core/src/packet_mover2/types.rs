@@ -147,13 +147,6 @@ impl TransportPath {
         }
     }
 
-    #[cfg(test)]
-    fn fixture_id(&self) -> Option<u64> {
-        match self {
-            Self::Fixture(id) => Some(*id),
-            Self::Live { .. } => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
