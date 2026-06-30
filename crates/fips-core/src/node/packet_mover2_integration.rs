@@ -752,13 +752,25 @@ impl Node {
         node_addr: &NodeAddr,
         coords_warmup_remaining: u8,
     ) -> Option<PacketMover2FspOwnerSeed> {
-        let (open, seal, counter_authority, session_start_ms, fsp_flags, source_peer, is_initiator) = {
+        let (
+            open,
+            seal,
+            counter_authority,
+            session_start_ms,
+            current_k_bit,
+            previous_draining_k_bit,
+            fsp_flags,
+            source_peer,
+            is_initiator,
+        ) = {
             let session = self.sessions.get(node_addr)?;
             let (open, seal) = session.fsp_crypto_keys()?;
             let counter_authority = session.send_counter_authority()?;
             let source_peer = session.remote_identity()?;
+            let current_k_bit = session.current_k_bit();
+            let previous_draining_k_bit = session.is_draining().then_some(!current_k_bit);
             let mut fsp_flags = 0;
-            if session.current_k_bit() {
+            if current_k_bit {
                 fsp_flags |= crate::node::session_wire::FSP_FLAG_K;
             }
             (
@@ -766,6 +778,8 @@ impl Node {
                 seal,
                 counter_authority,
                 session.session_start_ms(),
+                current_k_bit,
+                previous_draining_k_bit,
                 fsp_flags,
                 source_peer,
                 session.is_initiator(),
@@ -783,6 +797,7 @@ impl Node {
             .with_send_counter_authority(counter_authority)
             .with_fsp_session_start_ms(session_start_ms)
             .with_fsp_send_headers(fsp_flags, inner_flags)
+            .with_fsp_epoch(current_k_bit, previous_draining_k_bit)
             .with_source_peer(source_peer);
         config = config.with_fsp_mmp(self.config.node.session_mmp.clone(), is_initiator);
         if coords_warmup_remaining > 0 {

@@ -205,10 +205,20 @@ impl Node {
         source: &'static str,
     ) -> bool {
         let now_ms = Self::now_ms();
-        let authenticated_inbound_age_ms = self
-            .packet_mover2
-            .fsp_owner_activity(&src_addr)
-            .and_then(|activity| activity.last_rx_age_ms(now_ms));
+        let owner_activity = self.packet_mover2.fsp_owner_activity(&src_addr);
+        let authenticated_inbound_age_ms =
+            owner_activity.and_then(|activity| activity.last_rx_age_ms(now_ms));
+        if owner_activity.is_some_and(|activity| {
+            activity.should_ignore_stale_epoch_decrypt_failure(received_k_bit)
+        }) {
+            trace!(
+                src = %self.peer_display_name(&src_addr),
+                counter,
+                source,
+                "Ignoring FSP AEAD failure from stale previous key epoch during PM2-owned drain"
+            );
+            return true;
+        }
         let Some(entry) = self.sessions.get(&src_addr) else {
             debug!(
                 src = %self.peer_display_name(&src_addr),
@@ -218,15 +228,6 @@ impl Node {
             );
             return false;
         };
-        if should_ignore_stale_epoch_drain_failure(entry, received_k_bit) {
-            trace!(
-                src = %self.peer_display_name(&src_addr),
-                counter,
-                source,
-                "Ignoring FSP AEAD failure from stale previous key epoch during drain"
-            );
-            return true;
-        }
         let entry_can_recover = entry.is_established()
             && !entry.has_rekey_in_progress()
             && entry.pending_new_session().is_none();

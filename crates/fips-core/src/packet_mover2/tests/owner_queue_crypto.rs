@@ -1320,6 +1320,37 @@
     }
 
     #[test]
+    fn fsp_owner_activity_owns_epoch_drain_and_send_counter() {
+        let owner = fsp_owner(41);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 4));
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(7)
+                .with_fsp_epoch(false, None),
+        );
+        assert!(!mover
+            .owner_fsp_activity(owner)
+            .unwrap()
+            .should_ignore_stale_epoch_decrypt_failure(false));
+
+        mover.owner_mut(owner).unwrap().apply_live_config(
+            OwnerConfig::new(1, 8).with_fsp_epoch(true, Some(false)),
+        );
+        let activity = mover.owner_fsp_activity(owner).unwrap();
+        assert!(activity.should_ignore_stale_epoch_decrypt_failure(false));
+        assert!(!activity.should_ignore_stale_epoch_decrypt_failure(true));
+        assert_eq!(activity.send_counter(), 7);
+
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"sent"))
+            .unwrap();
+        let work = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(work.len(), 1);
+        assert_eq!(mover.owner_fsp_activity(owner).unwrap().send_counter(), 8);
+    }
+
+    #[test]
     fn outbound_completions_retire_in_owner_order() {
         let owner = fmp_owner(44);
         let key = 7;

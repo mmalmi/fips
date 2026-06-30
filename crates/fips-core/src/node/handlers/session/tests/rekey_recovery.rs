@@ -118,30 +118,6 @@
     }
 
     #[test]
-    fn stale_previous_epoch_failure_is_ignored_only_during_drain() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-
-        let old_k_bit = entry.current_k_bit();
-        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
-
-        entry.set_pending_session(make_xk_session(&local, &peer));
-        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
-
-        assert!(entry.cutover_to_new_session(2000));
-        assert_ne!(entry.current_k_bit(), old_k_bit);
-        assert!(should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
-        assert!(!should_ignore_stale_epoch_drain_failure(
-            &entry,
-            entry.current_k_bit()
-        ));
-
-        entry.complete_drain();
-        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
-    }
-
-    #[test]
     fn recovery_rekey_keeps_old_session_usable_until_and_after_cutover() {
         let local = Identity::generate();
         let peer = Identity::generate();

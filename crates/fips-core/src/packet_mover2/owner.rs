@@ -9,6 +9,8 @@ pub(crate) struct OwnerConfig {
     fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
     fsp_send_headers: Option<PacketMover2FspSendHeaders>,
+    fsp_current_k_bit: Option<bool>,
+    fsp_previous_draining_k_bit: Option<bool>,
     fsp_coords_warmup: Option<(u8, Vec<u8>)>,
     fsp_mmp: Option<PacketMover2FspMmpConfig>,
     source_peer: Option<crate::PeerIdentity>,
@@ -181,6 +183,8 @@ impl OwnerConfig {
             fmp_session_start_ms: None,
             fsp_session_start_ms: None,
             fsp_send_headers: None,
+            fsp_current_k_bit: None,
+            fsp_previous_draining_k_bit: None,
             fsp_coords_warmup: None,
             fsp_mmp: None,
             source_peer: None,
@@ -232,6 +236,16 @@ impl OwnerConfig {
         inner_flags: u8,
     ) -> Self {
         self.fsp_send_headers = Some(PacketMover2FspSendHeaders::new(fsp_flags, inner_flags));
+        self
+    }
+
+    pub(crate) fn with_fsp_epoch(
+        mut self,
+        current_k_bit: bool,
+        previous_draining_k_bit: Option<bool>,
+    ) -> Self {
+        self.fsp_current_k_bit = Some(current_k_bit);
+        self.fsp_previous_draining_k_bit = previous_draining_k_bit;
         self
     }
 
@@ -328,6 +342,9 @@ pub(crate) struct PacketMover2FspOwnerActivity {
     last_rx_data_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
+    current_k_bit: bool,
+    previous_draining_k_bit: Option<bool>,
+    send_counter: u64,
     current_path_mtu: Option<u16>,
     data_packets_sent: u64,
     data_packets_recv: u64,
@@ -346,6 +363,15 @@ impl PacketMover2FspOwnerActivity {
 
     pub(crate) fn last_rx_data_age_ms(self, now_ms: u64) -> Option<u64> {
         self.last_rx_data_activity.map(|tick| tick.age_ms(now_ms))
+    }
+
+    pub(crate) fn should_ignore_stale_epoch_decrypt_failure(self, received_k_bit: bool) -> bool {
+        self.previous_draining_k_bit == Some(received_k_bit)
+            && received_k_bit != self.current_k_bit
+    }
+
+    pub(crate) fn send_counter(self) -> u64 {
+        self.send_counter
     }
 
     pub(crate) fn current_path_mtu(self) -> Option<u16> {
@@ -436,6 +462,8 @@ pub(crate) struct OwnerState {
     fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
     fsp_send_headers: Option<PacketMover2FspSendHeaders>,
+    fsp_current_k_bit: bool,
+    fsp_previous_draining_k_bit: Option<bool>,
     fsp_coords_warmup_remaining: u8,
     fsp_coords_prefix: Vec<u8>,
     fsp_mmp: Option<crate::mmp::MmpSessionState>,
@@ -479,6 +507,8 @@ impl OwnerState {
             fmp_session_start_ms: config.fmp_session_start_ms,
             fsp_session_start_ms: config.fsp_session_start_ms,
             fsp_send_headers: config.fsp_send_headers,
+            fsp_current_k_bit: config.fsp_current_k_bit.unwrap_or(false),
+            fsp_previous_draining_k_bit: config.fsp_previous_draining_k_bit,
             fsp_coords_warmup_remaining: config
                 .fsp_coords_warmup
                 .as_ref()
@@ -518,6 +548,8 @@ impl OwnerState {
         self.fmp_session_start_ms = None;
         self.fsp_session_start_ms = None;
         self.fsp_send_headers = None;
+        self.fsp_current_k_bit = false;
+        self.fsp_previous_draining_k_bit = None;
         self.fsp_coords_warmup_remaining = 0;
         self.fsp_coords_prefix.clear();
         if let Some(mmp) = &mut self.fsp_mmp {
@@ -555,6 +587,10 @@ impl OwnerState {
         }
         if let Some(headers) = config.fsp_send_headers {
             self.fsp_send_headers = Some(headers);
+        }
+        if let Some(current_k_bit) = config.fsp_current_k_bit {
+            self.fsp_current_k_bit = current_k_bit;
+            self.fsp_previous_draining_k_bit = config.fsp_previous_draining_k_bit;
         }
         if let Some(peer) = config.source_peer {
             self.source_peer = Some(peer);
@@ -671,6 +707,9 @@ impl OwnerState {
             last_rx_data_activity: self.last_rx_data_activity,
             last_tx_data_activity: self.last_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,
+            current_k_bit: self.fsp_current_k_bit,
+            previous_draining_k_bit: self.fsp_previous_draining_k_bit,
+            send_counter: self.next_send_counter,
             current_path_mtu: self
                 .fsp_mmp
                 .as_ref()

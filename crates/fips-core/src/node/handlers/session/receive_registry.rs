@@ -36,12 +36,6 @@ fn should_start_decrypt_failure_rekey(
             .is_some_and(|age_ms| age_ms >= DECRYPT_FAILURE_RECOVERY_QUIET_MS)
 }
 
-fn should_ignore_stale_epoch_drain_failure(entry: &SessionEntry, received_k_bit: bool) -> bool {
-    entry.is_draining()
-        && entry.pending_new_session().is_none()
-        && received_k_bit != entry.current_k_bit()
-}
-
 impl crate::node::SessionRegistry {
     fn record_handshake_resend(&mut self, source_addr: &NodeAddr, next_resend_at_ms: u64) -> bool {
         let Some(entry) = self.get_mut(source_addr) else {

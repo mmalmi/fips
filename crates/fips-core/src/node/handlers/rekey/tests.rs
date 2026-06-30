@@ -684,6 +684,7 @@ fn session_registry_owns_rekey_tick_selection() {
         drain_ms,
         dampening_ms,
         FSP_CUTOVER_DELAY_MS,
+        |_| 0,
     );
     plan.cutover.sort();
     plan.drain.sort();

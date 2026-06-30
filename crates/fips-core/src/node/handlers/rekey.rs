@@ -327,7 +327,7 @@ impl crate::node::SessionRegistry {
         true
     }
 
-    fn plan_session_rekey_tick(
+    fn plan_session_rekey_tick<F>(
         &self,
         now_ms: u64,
         rekey_after_secs: u64,
@@ -335,7 +335,11 @@ impl crate::node::SessionRegistry {
         drain_ms: u64,
         dampening_ms: u64,
         cutover_delay_ms: u64,
-    ) -> SessionRekeyTickPlan {
+        mut send_counter_for: F,
+    ) -> SessionRekeyTickPlan
+    where
+        F: FnMut(&NodeAddr) -> u64,
+    {
         let mut plan = SessionRekeyTickPlan::default();
 
         for (node_addr, entry) in self.iter() {
@@ -367,7 +371,8 @@ impl crate::node::SessionRegistry {
             let elapsed_secs = now_ms.saturating_sub(entry.session_start_ms()) / 1000;
             let effective_after_secs =
                 rekey_after_secs.saturating_add_signed(entry.rekey_jitter_secs());
-            if elapsed_secs >= effective_after_secs || entry.send_counter() >= rekey_after_messages
+            if elapsed_secs >= effective_after_secs
+                || send_counter_for(node_addr) >= rekey_after_messages
             {
                 plan.initiate.push(*node_addr);
             }
@@ -789,6 +794,7 @@ impl Node {
         let drain_ms = DRAIN_WINDOW_SECS * 1000;
         let dampening_ms = REKEY_DAMPENING_SECS * 1000;
 
+        let packet_mover2 = &self.packet_mover2;
         let plan = self.sessions.plan_session_rekey_tick(
             now_ms,
             rekey_after_secs,
@@ -796,6 +802,11 @@ impl Node {
             drain_ms,
             dampening_ms,
             FSP_CUTOVER_DELAY_MS,
+            |addr| {
+                packet_mover2
+                    .fsp_owner_activity(addr)
+                    .map_or(0, |activity| activity.send_counter())
+            },
         );
 
         // Execute cutover for initiator side

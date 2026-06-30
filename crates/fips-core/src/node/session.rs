@@ -333,14 +333,6 @@ impl SessionEntry {
         self.session_start_ms
     }
 
-    /// Get the current send counter from the established NoiseSession.
-    pub(crate) fn send_counter(&self) -> u64 {
-        match self.state.as_ref() {
-            Some(EndToEndState::Established(s)) => s.current_send_counter(),
-            _ => 0,
-        }
-    }
-
     /// Clone the established FSP send-counter authority for off-task packet movers.
     pub(crate) fn send_counter_authority(&self) -> Option<crate::noise::SendCounterAuthority> {
         Some(self.current_noise_session()?.send_counter_authority())
