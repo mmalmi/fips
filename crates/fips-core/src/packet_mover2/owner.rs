@@ -726,6 +726,7 @@ impl OwnerState {
         let fsp_application_data_len = packet.fsp_application_data_len();
         let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
         let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
+        self.refresh_fsp_outbound_headers(&mut packet);
         self.reserve_fsp_coords_warmup(&mut packet);
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_tx_activity, tick);
@@ -1040,6 +1041,21 @@ impl OwnerState {
         *flags |= crate::node::session_wire::FSP_FLAG_CP;
         packet.fsp_cleartext_prefix = self.fsp_coords_prefix.clone();
         self.fsp_coords_warmup_remaining = self.fsp_coords_warmup_remaining.saturating_sub(1);
+    }
+
+    fn refresh_fsp_outbound_headers(&self, packet: &mut OutboundPacket) {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return;
+        }
+        let Some(mmp) = &self.fsp_mmp else {
+            return;
+        };
+        packet.refresh_fsp_inner_flags(
+            crate::protocol::FspInnerFlags {
+                spin_bit: mmp.spin_bit.tx_bit(),
+            }
+            .to_byte(),
+        );
     }
 
     fn reserve_send_counter(&mut self) -> Result<u64, OwnerReserveError> {

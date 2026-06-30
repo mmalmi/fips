@@ -679,6 +679,49 @@
     }
 
     #[test]
+    fn fsp_owner_refreshes_inner_flags_from_owner_mmp_before_outbound_crypto() {
+        let owner = fsp_owner(86);
+        let mut state = OwnerState::new(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_fsp_send_headers(0, 0)
+                .with_fsp_mmp(crate::config::SessionMmpConfig::default(), true),
+        );
+        let sync = FspReceiveSync {
+            counter: 1,
+            received_k_bit: false,
+            timestamp: 1,
+            plaintext_len: FSP_INNER_HEADER_SIZE,
+            ce_flag: false,
+            path_mtu: u16::MAX,
+            spin_bit: false,
+            lifecycle_sync_required: false,
+        };
+        assert_eq!(
+            state.record_authenticated_fsp_session(
+                owner.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                sync,
+                None,
+                std::time::Instant::now(),
+            ),
+            Some(true)
+        );
+
+        let packet = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"payload".to_vec())
+            .with_fsp_inner_header(crate::protocol::SessionMessageType::DataPacket.to_byte(), 0);
+        let (_, packet) = state.reserve_outbound(packet, 0).unwrap();
+        assert_eq!(
+            packet.payload_transform,
+            OutboundPayloadTransform::FspInnerHeader {
+                msg_type: crate::protocol::SessionMessageType::DataPacket.to_byte(),
+                inner_flags: crate::protocol::FspInnerFlags { spin_bit: true }.to_byte(),
+            }
+        );
+    }
+
+    #[test]
     fn outbound_dispatch_preserves_priority_when_bulk_in_flight_cap_is_full() {
         let owner = fsp_owner(36);
         let mut mover = PacketMover2::new(AdmissionConfig::new(8, 8));

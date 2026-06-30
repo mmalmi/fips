@@ -241,6 +241,14 @@ impl OutboundPacket {
         self
     }
 
+    fn refresh_fsp_inner_flags(&mut self, refreshed_inner_flags: u8) {
+        if let OutboundPayloadTransform::FspInnerHeader { inner_flags, .. } =
+            &mut self.payload_transform
+        {
+            *inner_flags = refreshed_inner_flags;
+        }
+    }
+
     pub(crate) fn with_post_seal(mut self, post_seal: OutboundPostSeal) -> Self {
         self.post_seal = post_seal;
         self

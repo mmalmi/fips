@@ -752,17 +752,7 @@ impl Node {
         node_addr: &NodeAddr,
         coords_warmup_remaining: u8,
     ) -> Option<PacketMover2FspOwnerSeed> {
-        let (
-            open,
-            seal,
-            counter_authority,
-            session_start_ms,
-            fsp_flags,
-            inner_flags,
-            source_peer,
-            mmp_enabled,
-            is_initiator,
-        ) = {
+        let (open, seal, counter_authority, session_start_ms, fsp_flags, source_peer, is_initiator) = {
             let session = self.sessions.get(node_addr)?;
             let (open, seal) = session.fsp_crypto_keys()?;
             let counter_authority = session.send_counter_authority()?;
@@ -771,23 +761,18 @@ impl Node {
             if session.current_k_bit() {
                 fsp_flags |= crate::node::session_wire::FSP_FLAG_K;
             }
-            let inner_flags = crate::protocol::FspInnerFlags {
-                spin_bit: session.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()),
-            }
-            .to_byte();
             (
                 open,
                 seal,
                 counter_authority,
                 session.session_start_ms(),
                 fsp_flags,
-                inner_flags,
                 source_peer,
-                session.mmp().is_some(),
                 session.is_initiator(),
             )
         };
         let generation = Self::packet_mover2_generation_from_session_start_ms(session_start_ms);
+        let inner_flags = crate::protocol::FspInnerFlags { spin_bit: false }.to_byte();
         let coords_prefix =
             self.packet_mover2_fsp_coords_prefix(node_addr, coords_warmup_remaining);
         let (routes, next_hop) =
@@ -799,9 +784,7 @@ impl Node {
             .with_fsp_session_start_ms(session_start_ms)
             .with_fsp_send_headers(fsp_flags, inner_flags)
             .with_source_peer(source_peer);
-        if mmp_enabled {
-            config = config.with_fsp_mmp(self.config.node.session_mmp.clone(), is_initiator);
-        }
+        config = config.with_fsp_mmp(self.config.node.session_mmp.clone(), is_initiator);
         if coords_warmup_remaining > 0 {
             config = config.with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix);
         }
