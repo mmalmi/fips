@@ -183,6 +183,22 @@ fn event_table_exposes_current_pm2_and_queue_events() {
             Event::PacketMover2DispatchExecutorFull,
             "packet_mover2_dispatch_executor_full",
         ),
+        (
+            Event::PacketMover2DispatchOwnerBlockedTotal,
+            "packet_mover2_dispatch_owner_blocked_total",
+        ),
+        (
+            Event::PacketMover2DispatchOwnerBlockedBulkLane,
+            "packet_mover2_dispatch_owner_blocked_bulk_lane",
+        ),
+        (
+            Event::PacketMover2DispatchOwnerBlockedDiscardableBulk,
+            "packet_mover2_dispatch_owner_blocked_discardable_bulk",
+        ),
+        (
+            Event::PacketMover2DispatchOwnerBlockedReliableBulk,
+            "packet_mover2_dispatch_owner_blocked_reliable_bulk",
+        ),
     ];
     for (event, name) in live_events {
         assert_eq!(event_from_index(event as usize).name(), name);
@@ -197,7 +213,6 @@ fn event_table_exposes_current_pm2_and_queue_events() {
         (Event::ReservedEvent96, "reserved_event_96"),
         (Event::ReservedEvent108, "reserved_event_108"),
         (Event::ReservedEvent171, "reserved_event_171"),
-        (Event::ReservedEvent205, "reserved_event_205"),
         (Event::ReservedEvent219, "reserved_event_219"),
         (Event::ReservedEvent220, "reserved_event_220"),
     ] {

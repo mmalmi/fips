@@ -469,10 +469,10 @@ pub enum Event {
     PacketMover2DispatchNoIngress = 202,
     PacketMover2DispatchLimitHit = 203,
     PacketMover2DispatchExecutorFull = 204,
-    ReservedEvent205 = 205,
-    ReservedEvent206 = 206,
-    ReservedEvent207 = 207,
-    ReservedEvent208 = 208,
+    PacketMover2DispatchOwnerBlockedTotal = 205,
+    PacketMover2DispatchOwnerBlockedBulkLane = 206,
+    PacketMover2DispatchOwnerBlockedDiscardableBulk = 207,
+    PacketMover2DispatchOwnerBlockedReliableBulk = 208,
     ReservedEvent209 = 209,
     ReservedEvent210 = 210,
     ReservedEvent211 = 211,
@@ -697,10 +697,18 @@ impl Event {
             Event::PacketMover2DispatchNoIngress => "packet_mover2_dispatch_no_ingress",
             Event::PacketMover2DispatchLimitHit => "packet_mover2_dispatch_limit_hit",
             Event::PacketMover2DispatchExecutorFull => "packet_mover2_dispatch_executor_full",
-            Event::ReservedEvent205 => "reserved_event_205",
-            Event::ReservedEvent206 => "reserved_event_206",
-            Event::ReservedEvent207 => "reserved_event_207",
-            Event::ReservedEvent208 => "reserved_event_208",
+            Event::PacketMover2DispatchOwnerBlockedTotal => {
+                "packet_mover2_dispatch_owner_blocked_total"
+            }
+            Event::PacketMover2DispatchOwnerBlockedBulkLane => {
+                "packet_mover2_dispatch_owner_blocked_bulk_lane"
+            }
+            Event::PacketMover2DispatchOwnerBlockedDiscardableBulk => {
+                "packet_mover2_dispatch_owner_blocked_discardable_bulk"
+            }
+            Event::PacketMover2DispatchOwnerBlockedReliableBulk => {
+                "packet_mover2_dispatch_owner_blocked_reliable_bulk"
+            }
             Event::ReservedEvent209 => "reserved_event_209",
             Event::ReservedEvent210 => "reserved_event_210",
             Event::ReservedEvent211 => "reserved_event_211",
@@ -924,10 +932,10 @@ fn event_from_index(idx: usize) -> Event {
         202 => Event::PacketMover2DispatchNoIngress,
         203 => Event::PacketMover2DispatchLimitHit,
         204 => Event::PacketMover2DispatchExecutorFull,
-        205 => Event::ReservedEvent205,
-        206 => Event::ReservedEvent206,
-        207 => Event::ReservedEvent207,
-        208 => Event::ReservedEvent208,
+        205 => Event::PacketMover2DispatchOwnerBlockedTotal,
+        206 => Event::PacketMover2DispatchOwnerBlockedBulkLane,
+        207 => Event::PacketMover2DispatchOwnerBlockedDiscardableBulk,
+        208 => Event::PacketMover2DispatchOwnerBlockedReliableBulk,
         209 => Event::ReservedEvent209,
         210 => Event::ReservedEvent210,
         211 => Event::ReservedEvent211,

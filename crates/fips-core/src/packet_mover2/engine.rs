@@ -93,9 +93,7 @@ impl PacketMover2 {
                 continue;
             };
             if !owner.can_reserve_class(queued.packet.class) {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::PacketMover2DispatchOwnerBlocked,
-                );
+                record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
                 self.admission.push_front(queued);
                 break;
             }
@@ -143,6 +141,7 @@ impl PacketMover2 {
             let lane = queued.packet.lane();
             let ingress_seq = queued.ingress_seq;
             if !owner.can_reserve_class(queued.packet.class) {
+                record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
                 self.outbound_admission.push_front(queued);
                 break;
             }
@@ -191,6 +190,7 @@ impl PacketMover2 {
             let lane = queued.packet.lane();
             let ingress_seq = queued.ingress_seq;
             if !owner.can_reserve_class(queued.packet.class) {
+                record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
                 self.outbound_admission.push_front(queued);
                 break;
             }
@@ -392,6 +392,27 @@ impl PacketMover2 {
         }
     }
 
+}
+
+fn record_owner_blocked(reason: Option<OwnerReserveBlockReason>) {
+    use crate::perf_profile::{record_event, Event};
+
+    record_event(Event::PacketMover2DispatchOwnerBlocked);
+    match reason {
+        Some(OwnerReserveBlockReason::TotalInFlight) => {
+            record_event(Event::PacketMover2DispatchOwnerBlockedTotal);
+        }
+        Some(OwnerReserveBlockReason::BulkLane) => {
+            record_event(Event::PacketMover2DispatchOwnerBlockedBulkLane);
+        }
+        Some(OwnerReserveBlockReason::DiscardableBulk) => {
+            record_event(Event::PacketMover2DispatchOwnerBlockedDiscardableBulk);
+        }
+        Some(OwnerReserveBlockReason::ReliableBulk) => {
+            record_event(Event::PacketMover2DispatchOwnerBlockedReliableBulk);
+        }
+        None => {}
+    }
 }
 
 fn execute_prepared_crypto_chunk<E>(

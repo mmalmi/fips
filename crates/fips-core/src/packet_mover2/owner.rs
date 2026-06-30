@@ -124,6 +124,14 @@ pub(crate) enum OwnerReserveError {
     CounterExhausted,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnerReserveBlockReason {
+    TotalInFlight,
+    BulkLane,
+    DiscardableBulk,
+    ReliableBulk,
+}
+
 #[derive(Debug)]
 pub(crate) struct OwnerState {
     owner: OwnerId,
@@ -261,15 +269,34 @@ impl OwnerState {
     }
 
     pub(crate) fn can_reserve_class(&self, class: PacketClass) -> bool {
-        if !self.can_reserve_lane(class.lane()) {
-            return false;
+        self.reserve_block_reason(class).is_none()
+    }
+
+    pub(crate) fn reserve_block_reason(
+        &self,
+        class: PacketClass,
+    ) -> Option<OwnerReserveBlockReason> {
+        if self.in_flight >= self.in_flight_limit {
+            return Some(OwnerReserveBlockReason::TotalInFlight);
+        }
+        if class.lane() == Lane::Bulk && self.bulk_in_flight >= self.bulk_lane_in_flight_limit() {
+            return Some(OwnerReserveBlockReason::BulkLane);
         }
         match class {
-            PacketClass::Bulk => self.discardable_bulk_in_flight < self.bulk_in_flight_limit,
-            PacketClass::ReliableBulk => {
-                self.reliable_bulk_in_flight < self.reliable_bulk_in_flight_limit
+            PacketClass::Bulk if self.discardable_bulk_in_flight >= self.bulk_in_flight_limit => {
+                Some(OwnerReserveBlockReason::DiscardableBulk)
             }
-            PacketClass::Control | PacketClass::Rekey | PacketClass::Mmp | PacketClass::Liveness => true,
+            PacketClass::ReliableBulk
+                if self.reliable_bulk_in_flight >= self.reliable_bulk_in_flight_limit =>
+            {
+                Some(OwnerReserveBlockReason::ReliableBulk)
+            }
+            PacketClass::Control
+            | PacketClass::Rekey
+            | PacketClass::Mmp
+            | PacketClass::Liveness
+            | PacketClass::Bulk
+            | PacketClass::ReliableBulk => None,
         }
     }
 
@@ -445,8 +472,7 @@ impl OwnerState {
     }
 
     pub(crate) fn retire(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
-        self.pending
-            .insert(completion.reservation.order, completion);
+        self.pending.insert(completion.reservation.order, completion);
         let mut retired = Vec::new();
 
         while let Some(completion) = self.pending.remove(&OrderToken(self.next_retire)) {
