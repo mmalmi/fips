@@ -210,10 +210,10 @@ fn test_purge_idle_sessions_removes_outbound_only_stale_session() {
 
     // Simulate periodic outbound endpoint/application data keeping the old
     // idle timer fresh while no authenticated FSP frame comes back.
-    entry.record_sent_batch(1, 128);
     entry.touch(91_000);
 
     node.sessions.insert(remote_addr, entry);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);
 
     let now_ms = 92_000;
     node.purge_idle_sessions(now_ms);
@@ -239,12 +239,12 @@ fn test_purge_idle_sessions_keeps_outbound_session_with_recent_inbound_frame() {
         1000,
         true,
     );
-
-    entry.record_sent_batch(1, 128);
     entry.touch(91_000);
     entry.touch_inbound_frame(91_500);
 
     node.sessions.insert(remote_addr, entry);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, 91_500);
 
     let now_ms = 92_000;
     node.purge_idle_sessions(now_ms);

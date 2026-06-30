@@ -66,7 +66,6 @@
             receive_completion: Some(SessionReceiveCompletion {
                 source_addr,
                 previous_hop_addr,
-                body_len: 512,
                 direct_path: false,
             }),
         }
@@ -84,15 +83,7 @@
             !node.retry_pending.contains_key(&previous_hop_addr),
             "fresh authenticated data from the direct previous hop should stop link refresh churn"
         );
-        let entry = node
-            .sessions
-            .get(&source_addr)
-            .expect("source session should remain");
-        assert_eq!(
-            entry.last_inbound_data_frame_ms(),
-            1_000,
-            "previous-hop liveness must not become direct-source payload trust"
-        );
+        assert!(node.sessions.get(&source_addr).is_some());
     }
 
     #[test]
@@ -392,7 +383,6 @@
             Some(SessionReceiveCompletion {
                 source_addr,
                 previous_hop_addr,
-                body_len: endpoint_payload.len(),
                 direct_path: false,
             })
         );
@@ -403,7 +393,6 @@
             Some(SessionReceiveCompletion {
                 source_addr,
                 previous_hop_addr,
-                body_len: endpoint_payload.len(),
                 direct_path: false,
             })
         );
@@ -412,16 +401,7 @@
         sessions.insert(source_addr, established_entry(&local, &peer));
         assert!(commit.record_receive(&mut sessions, 0x0bad_cafe));
         let entry = sessions.get(&source_addr).expect("session should remain");
-        assert_eq!(
-            entry.traffic_counters(),
-            (0, 1, 0, endpoint_payload.len() as u64)
-        );
         assert_eq!(entry.last_activity(), 0x0bad_cafe);
-        assert_eq!(
-            entry.last_inbound_data_frame_ms(),
-            1000,
-            "relayed application data must not refresh direct-path trust"
-        );
 
         let delivery = dispatch.into_endpoint_data_delivery();
         assert_eq!(delivery.source_peer, source_peer);
@@ -448,7 +428,7 @@
         assert_eq!(
             report_dispatch.receive_completion(),
             None,
-            "MMP reports must not reset session idle/traffic counters"
+            "MMP reports must not reset session idle"
         );
         let report_commit = report_dispatch.commit();
         assert_eq!(report_commit.source_addr(), &source_addr);
@@ -458,12 +438,13 @@
             "MMP reports still flush pending packets without recording receive progress"
         );
         assert!(!report_commit.record_receive(&mut sessions, 0x0bad_f00d));
-        let entry = sessions.get(&source_addr).expect("session should remain");
         assert_eq!(
-            entry.traffic_counters(),
-            (0, 1, 0, endpoint_payload.len() as u64)
+            sessions
+                .get(&source_addr)
+                .expect("session should remain")
+                .last_activity(),
+            0x0bad_cafe
         );
-        assert_eq!(entry.last_activity(), 0x0bad_cafe);
     }
 
     #[test]
@@ -513,19 +494,7 @@
             }
             event => panic!("expected single endpoint data event, got {event:?}"),
         }
-        let entry = node
-            .sessions
-            .get(&source_addr)
-            .expect("session should remain");
-        assert_eq!(
-            entry.traffic_counters(),
-            (0, 1, 0, endpoint_payload.len() as u64)
-        );
-        assert_eq!(
-            entry.last_inbound_data_frame_ms(),
-            1000,
-            "fast relayed endpoint data must not refresh direct-path trust"
-        );
+        assert!(node.sessions.get(&source_addr).is_some());
         assert!(
             !node.pending_session_traffic.has_traffic_for(&source_addr),
             "empty pending guard should keep the fast path synchronous"

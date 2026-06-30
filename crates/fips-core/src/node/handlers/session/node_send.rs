@@ -115,8 +115,11 @@ impl Node {
                         let last_outbound_route = self
                             .sessions
                             .iter()
-                            .find(|(_, session)| {
-                                session.last_outbound_next_hop() == Some(*peer.node_addr())
+                            .find(|(dest_addr, _)| {
+                                self.packet_mover2
+                                    .fsp_owner_activity(dest_addr)
+                                    .and_then(|activity| activity.last_outbound_next_hop())
+                                    == Some(*peer.node_addr())
                             })
                             .map(|(dest_addr, _)| {
                                 if dest_addr == peer.node_addr() {

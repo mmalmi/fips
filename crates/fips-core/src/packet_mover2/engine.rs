@@ -95,12 +95,14 @@ impl PacketMover2 {
         owner: OwnerId,
         previous_hop: NodeAddr,
         msg_type: u8,
+        body_len: usize,
         activity_tick: Option<ActivityTick>,
     ) -> bool {
         self.owner_shard_mut(owner).record_authenticated_fsp_session(
             owner,
             previous_hop,
             msg_type,
+            body_len,
             activity_tick,
         )
     }
@@ -109,10 +111,11 @@ impl PacketMover2 {
         &mut self,
         owner: OwnerId,
         next_hop: NodeAddr,
+        bytes: usize,
         tick: ActivityTick,
     ) -> bool {
         self.owner_shard_mut(owner)
-            .record_fsp_data_sent(owner, next_hop, tick)
+            .record_fsp_data_sent(owner, next_hop, bytes, tick)
     }
 
     pub(crate) fn submit_socket_packet(

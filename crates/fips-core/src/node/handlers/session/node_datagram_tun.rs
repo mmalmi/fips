@@ -76,8 +76,6 @@ impl Node {
             self.recover_direct_payload_send_failure(dest_addr, next_hop_addr, &err);
             return Err(err);
         }
-        self.sessions
-            .record_session_datagram_next_hop(&runtime_route.dest_addr, runtime_route.next_hop_addr);
         self.stats_mut().forwarding.record_originated(encoded.len());
         Ok(())
     }

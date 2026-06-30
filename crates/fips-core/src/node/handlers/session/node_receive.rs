@@ -117,10 +117,14 @@ impl Node {
             );
             return false;
         }
+        let body_len = plaintext
+            .len()
+            .saturating_sub(crate::node::session_wire::FSP_INNER_HEADER_SIZE);
         self.packet_mover2.record_authenticated_fsp_session(
             source_addr,
             previous_hop_addr,
             msg_type,
+            body_len,
             activity_tick,
         );
         let Some(source_peer) = self.packet_mover2_session_source_peer(&source_addr) else {
@@ -131,9 +135,6 @@ impl Node {
             return false;
         };
 
-        let body_len = plaintext
-            .len()
-            .saturating_sub(crate::node::session_wire::FSP_INNER_HEADER_SIZE);
         debug!(
             src = %self.peer_display_name(&source_addr),
             previous_hop = %self.peer_display_name(&previous_hop_addr),

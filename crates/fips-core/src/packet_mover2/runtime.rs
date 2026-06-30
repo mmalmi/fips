@@ -97,19 +97,21 @@ impl PacketMover2TurnDriver {
         owner: OwnerId,
         previous_hop: NodeAddr,
         msg_type: u8,
+        body_len: usize,
         activity_tick: Option<ActivityTick>,
     ) -> bool {
         self.mover
-            .record_authenticated_fsp_session(owner, previous_hop, msg_type, activity_tick)
+            .record_authenticated_fsp_session(owner, previous_hop, msg_type, body_len, activity_tick)
     }
 
     pub(crate) fn record_fsp_data_sent(
         &mut self,
         owner: OwnerId,
         next_hop: NodeAddr,
+        bytes: usize,
         tick: ActivityTick,
     ) -> bool {
-        self.mover.record_fsp_data_sent(owner, next_hop, tick)
+        self.mover.record_fsp_data_sent(owner, next_hop, bytes, tick)
     }
 
     async fn finish_aead_live_node_output_turn_with_executor<Resolver, Transports, E>(

@@ -1262,6 +1262,7 @@
             owner,
             owner.node_addr(),
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            11,
             Some(ActivityTick::new(110)),
         ));
         let activity = mover.owner_fsp_activity(owner).unwrap();
@@ -1272,6 +1273,7 @@
             owner,
             next_hop.node_addr(),
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            13,
             Some(ActivityTick::new(120)),
         ));
         let activity = mover.owner_fsp_activity(owner).unwrap();
@@ -1282,6 +1284,7 @@
             owner,
             test_node_addr(179),
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            17,
             Some(ActivityTick::new(130)),
         ));
         let activity = mover.owner_fsp_activity(owner).unwrap();

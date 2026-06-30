@@ -129,7 +129,7 @@ where
 fn ensure_packet_mover2_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
     node.packet_mover2.register_owner_if_missing(
         crate::packet_mover2::OwnerId::fsp_node(dest_addr),
-        crate::packet_mover2::OwnerConfig::new(1, 8),
+        crate::packet_mover2::OwnerConfig::new(1, 8).with_fsp_session_start_ms(1_000),
     );
 }
 
@@ -143,6 +143,7 @@ fn seed_packet_mover2_fsp_data_sent_for_test(
     assert!(node.packet_mover2.record_fsp_data_sent(
         dest_addr,
         next_hop,
+        512,
         crate::packet_mover2::ActivityTick::new(now_ms),
     ));
 }
@@ -158,6 +159,7 @@ fn seed_packet_mover2_fsp_data_rx_for_test(
         source_addr,
         previous_hop,
         crate::protocol::SessionMessageType::EndpointData.to_byte(),
+        512,
         Some(crate::packet_mover2::ActivityTick::new(now_ms)),
     ));
 }

@@ -350,12 +350,14 @@ impl PacketMover2LiveNode {
         source_addr: NodeAddr,
         previous_hop: NodeAddr,
         msg_type: u8,
+        body_len: usize,
         activity_tick: Option<ActivityTick>,
     ) -> bool {
         self.driver.record_authenticated_fsp_session(
             OwnerId::fsp_node(source_addr),
             previous_hop,
             msg_type,
+            body_len,
             activity_tick,
         )
     }
@@ -364,10 +366,11 @@ impl PacketMover2LiveNode {
         &mut self,
         dest_addr: NodeAddr,
         next_hop: NodeAddr,
+        bytes: usize,
         tick: ActivityTick,
     ) -> bool {
         self.driver
-            .record_fsp_data_sent(OwnerId::fsp_node(dest_addr), next_hop, tick)
+            .record_fsp_data_sent(OwnerId::fsp_node(dest_addr), next_hop, bytes, tick)
     }
 
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> PacketMover2LiveOwnerRouteSummary {

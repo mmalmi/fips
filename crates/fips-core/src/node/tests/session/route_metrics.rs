@@ -19,10 +19,6 @@ async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
-    node.sessions
-        .get_mut(&remote_addr)
-        .expect("session")
-        .record_outbound_next_hop(remote_addr);
 
     assert_eq!(
         node.find_next_hop(&remote_addr)
@@ -127,18 +123,6 @@ fn test_stale_direct_session_trust_prefers_fallback_before_loss_sample() {
     node.learn_reverse_route(remote_addr, fallback_next_hop);
 
     let now_ms = Node::now_ms();
-    {
-        let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent_batch(1, 128);
-        session.touch_outbound_frame(now_ms);
-        session.record_outbound_next_hop(remote_addr);
-        assert!(
-            session
-                .last_authenticated_inbound_data_age_ms(Node::now_ms())
-                .is_none_or(|age| age > 10_000),
-            "fixture should model a direct session that sent data but has no recent authenticated inbound data proof"
-        );
-    }
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, now_ms);
 
     assert_eq!(
@@ -168,10 +152,6 @@ fn test_stale_direct_session_trust_without_fallback_uses_direct_last_resort() {
     install_established_session_with_mmp(&mut node, &remote);
 
     let now_ms = Node::now_ms();
-    let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent_batch(1, 128);
-    session.touch_outbound_frame(now_ms);
-    session.record_outbound_next_hop(remote_addr);
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, now_ms);
 
     assert_eq!(
@@ -211,10 +191,6 @@ fn test_stale_discovered_direct_session_trust_without_fallback_queues_payload() 
     install_established_session_with_mmp(&mut node, &remote);
 
     let now_ms = Node::now_ms();
-    let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent_batch(1, 128);
-    session.touch_outbound_frame(now_ms);
-    session.record_outbound_next_hop(remote_addr);
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, now_ms);
     assert!(
         node.session_direct_path_exclusive_trust_expired(&remote_addr, Node::now_ms()),
@@ -255,10 +231,6 @@ fn test_pending_direct_probe_alone_keeps_healthy_direct_over_fallback() {
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
-    node.sessions
-        .get_mut(&remote_addr)
-        .expect("session")
-        .record_outbound_next_hop(remote_addr);
     let mut retry = super::super::retry::RetryState::new(peer_config);
     retry.reconnect = true;
     retry.retry_after_ms = Node::now_ms() + 500;
@@ -294,10 +266,6 @@ fn test_unreturned_session_traffic_prefers_fallback_during_direct_probe() {
     node.learn_reverse_route(remote_addr, fallback_next_hop);
     {
         let now_ms = Node::now_ms();
-        let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent_batch(1, 512);
-        session.touch_outbound_frame(now_ms);
-        session.record_outbound_next_hop(remote_addr);
         seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, now_ms);
     }
     let mut retry = super::super::retry::RetryState::new(peer_config);
@@ -343,10 +311,6 @@ fn test_active_session_keeps_learned_fallback_next_hop_affinity() {
     node.mark_session_direct_path_degraded(remote_addr, Node::now_ms());
     {
         let now_ms = Node::now_ms();
-        let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent_batch(1, 128);
-        session.touch_outbound_frame(now_ms);
-        session.record_outbound_next_hop(first_fallback);
         seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, first_fallback, now_ms);
     }
 
@@ -384,10 +348,6 @@ fn test_active_fallback_affinity_periodically_retries_direct_payload() {
     node.learn_reverse_route(remote_addr, fallback_next_hop);
     {
         let now_ms = Node::now_ms();
-        let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent_batch(1, 128);
-        session.touch_outbound_frame(now_ms);
-        session.record_outbound_next_hop(fallback_next_hop);
         seed_packet_mover2_fsp_data_sent_for_test(
             &mut node,
             remote_addr,
@@ -464,10 +424,6 @@ fn test_stale_cost_fallback_periodically_retries_healthy_direct_payload() {
         .update(5_000);
     {
         let now_ms = Node::now_ms();
-        let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent_batch(1, 128);
-        session.touch_outbound_frame(now_ms);
-        session.record_outbound_next_hop(fallback_next_hop);
         seed_packet_mover2_fsp_data_sent_for_test(
             &mut node,
             remote_addr,
@@ -547,12 +503,6 @@ fn test_recent_direct_payload_return_prefers_direct_over_cheaper_fallback() {
         .update(5_000);
     {
         let now_ms = Node::now_ms();
-        let session = node.sessions.get_mut(&remote_addr).expect("session");
-        session.record_sent_batch(1, 128);
-        session.record_recv(128);
-        session.touch_inbound_data_frame(now_ms);
-        session.touch_outbound_frame(now_ms);
-        session.record_outbound_next_hop(fallback_next_hop);
         seed_packet_mover2_fsp_data_sent_for_test(
             &mut node,
             remote_addr,
@@ -625,10 +575,6 @@ fn test_historical_outbound_session_counter_does_not_deprioritize_direct() {
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
 
-    let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent_batch(1, 128);
-    session.record_outbound_next_hop(remote_addr);
-
     assert_eq!(
         node.find_next_hop(&remote_addr)
             .map(|peer| *peer.node_addr()),
@@ -660,10 +606,6 @@ async fn test_stale_direct_session_trust_does_not_reprobe_healthy_link() {
     node.learn_reverse_route(remote_addr, fallback_next_hop);
 
     let now_ms = Node::now_ms();
-    let session = node.sessions.get_mut(&remote_addr).expect("session");
-    session.record_sent_batch(1, 128);
-    session.touch_outbound_frame(now_ms);
-    session.record_outbound_next_hop(remote_addr);
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, now_ms);
 
     node.check_link_heartbeats().await;
@@ -703,10 +645,6 @@ async fn test_fresh_bogus_session_metrics_without_valid_rtt_do_not_change_route_
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
-    node.sessions
-        .get_mut(&remote_addr)
-        .expect("session")
-        .record_outbound_next_hop(remote_addr);
 
     let baseline = SessionReceiverReport {
         highest_counter: 100,
@@ -812,10 +750,6 @@ async fn test_stale_session_receiver_reports_do_not_change_route_choice() {
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
-    node.sessions
-        .get_mut(&remote_addr)
-        .expect("session")
-        .record_outbound_next_hop(remote_addr);
 
     let baseline = SessionReceiverReport {
         highest_counter: 100,

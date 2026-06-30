@@ -411,15 +411,13 @@ fn fresh_static_udp_peer_data_liveness_skips_retry_without_resolving_hints() {
     );
     node.peers.insert(peer_addr, active);
 
-    let mut entry = SessionEntry::new(
+    let entry = SessionEntry::new(
         peer_addr,
         peer_identity.pubkey_full(),
         EndToEndState::Established(session),
         1_000,
         true,
     );
-    entry.record_recv(512);
-    entry.touch_inbound_data_frame(now_ms);
     node.sessions.insert(peer_addr, entry);
     seed_packet_mover2_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
@@ -877,18 +875,13 @@ async fn poll_nostr_discovery_established_fresh_bootstrap_data_skips_redundant_t
     node.bootstrap_transports.mark(bootstrap_transport);
 
     let now_ms = Node::now_ms();
-    let mut session = crate::node::session::SessionEntry::new(
+    let session = crate::node::session::SessionEntry::new(
         app_addr,
         app_identity.pubkey_full(),
         crate::node::session::EndToEndState::Established(endpoint_session),
         1_000,
         true,
     );
-    session.record_sent_batch(1, 512);
-    session.touch_outbound_frame(now_ms);
-    session.record_recv(512);
-    session.touch_inbound_data_frame(now_ms);
-    session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(app_addr, session);
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
     seed_packet_mover2_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);

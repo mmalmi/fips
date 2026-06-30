@@ -110,7 +110,6 @@
         let mut entry = established_entry(&local, &peer);
         entry.mark_established(1_000);
         entry.init_mmp(&crate::config::SessionMmpConfig::default());
-        entry.record_outbound_next_hop(peer_addr);
         entry.mmp_mut().expect("session mmp").receiver.record_recv(
             40,
             10,
@@ -127,6 +126,7 @@
             .process_session_receiver_report(
                 &peer_addr,
                 &receiver_report(100, 100, 10_000, 50),
+                Some(peer_addr),
                 1_100,
                 now,
             )
@@ -141,6 +141,7 @@
             .process_session_receiver_report(
                 &peer_addr,
                 &receiver_report(300, 290, 29_000, 100),
+                Some(peer_addr),
                 1_200,
                 now + std::time::Duration::from_secs(1),
             )
@@ -175,7 +176,6 @@
         let mut entry = established_entry(&local, &peer);
         entry.mark_established(1_000);
         entry.init_mmp(&crate::config::SessionMmpConfig::default());
-        entry.record_outbound_next_hop(peer_addr);
 
         let mut sessions = crate::node::SessionRegistry::default();
         assert!(sessions.insert(peer_addr, entry).is_none());
@@ -185,6 +185,7 @@
             .process_session_receiver_report(
                 &peer_addr,
                 &receiver_report(100, 100, 10_000, 50),
+                Some(peer_addr),
                 1_100,
                 now,
             )
@@ -199,6 +200,7 @@
                 .process_session_receiver_report(
                     &peer_addr,
                     &receiver_report(highest, received, received * 100, 100),
+                Some(peer_addr),
                     1_200 + i as u64,
                     now + std::time::Duration::from_millis(500 + i as u64),
                 )
@@ -211,6 +213,7 @@
             .process_session_receiver_report(
                 &peer_addr,
                 &receiver_report(116, 112, 11_200, 100),
+                Some(peer_addr),
                 1_300,
                 now + std::time::Duration::from_secs(2),
             )
@@ -245,6 +248,7 @@
             .process_session_receiver_report(
                 &peer_addr,
                 &receiver_report(100, 100, 10_000, 50),
+                None,
                 1_100,
                 now,
             )
@@ -260,6 +264,7 @@
             .process_session_receiver_report(
                 &peer_addr,
                 &receiver_report(300, 260, 26_000, 100),
+                None,
                 1_200,
                 now + std::time::Duration::from_secs(1),
             )
@@ -286,6 +291,7 @@
             sessions.process_session_receiver_report(
                 &peer_addr,
                 &rr,
+                Some(peer_addr),
                 1_100,
                 std::time::Instant::now()
             ),
@@ -300,6 +306,7 @@
             sessions.process_session_receiver_report(
                 &peer_addr,
                 &rr,
+                Some(peer_addr),
                 1_100,
                 std::time::Instant::now()
             ),
@@ -466,11 +473,10 @@
     }
 
     #[test]
-    fn session_registry_owns_datagram_path_bookkeeping() {
+    fn session_registry_owns_datagram_path_mtu_bookkeeping() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let peer_addr = *peer.node_addr();
-        let next_hop = node_addr(0x55);
         let mut entry = established_entry(&local, &peer);
         entry.init_mmp(&crate::config::SessionMmpConfig::default());
 
@@ -487,16 +493,7 @@
                 .current_mtu(),
             1280
         );
-        assert!(sessions.record_session_datagram_next_hop(&peer_addr, next_hop));
-        assert_eq!(
-            sessions
-                .get(&peer_addr)
-                .expect("session")
-                .last_outbound_next_hop(),
-            Some(next_hop)
-        );
         assert!(!sessions.seed_session_datagram_path_mtu(&node_addr(0x77), 1280));
-        assert!(!sessions.record_session_datagram_next_hop(&node_addr(0x77), next_hop));
     }
 
     #[test]

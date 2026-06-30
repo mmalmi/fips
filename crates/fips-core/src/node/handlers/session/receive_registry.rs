@@ -198,10 +198,6 @@ impl crate::node::SessionRegistry {
         let Some(entry) = self.get_mut(&completion.source_addr) else {
             return false;
         };
-        entry.record_recv(completion.body_len);
-        if completion.direct_path {
-            entry.touch_inbound_data_frame(now_ms);
-        }
         entry.touch(now_ms);
         true
     }
@@ -210,6 +206,7 @@ impl crate::node::SessionRegistry {
         &mut self,
         src_addr: &NodeAddr,
         rr: &ReceiverReport,
+        last_outbound_next_hop: Option<NodeAddr>,
         now_ms: u64,
         now: std::time::Instant,
     ) -> Result<ProcessedSessionReceiverReport, SessionReceiverReportSkip> {
@@ -218,7 +215,6 @@ impl crate::node::SessionRegistry {
         };
 
         let our_timestamp_ms = entry.session_timestamp(now_ms);
-        let last_outbound_next_hop = entry.last_outbound_next_hop();
 
         let Some(mmp) = entry.mmp_mut() else {
             return Err(SessionReceiverReportSkip::MmpDisabled);
@@ -333,18 +329,6 @@ impl crate::node::SessionRegistry {
             return false;
         };
         mmp.path_mtu.seed_source_mtu(path_mtu);
-        true
-    }
-
-    pub(in crate::node) fn record_session_datagram_next_hop(
-        &mut self,
-        dest_addr: &NodeAddr,
-        next_hop_addr: NodeAddr,
-    ) -> bool {
-        let Some(entry) = self.get_mut(dest_addr) else {
-            return false;
-        };
-        entry.record_outbound_next_hop(next_hop_addr);
         true
     }
 

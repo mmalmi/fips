@@ -44,9 +44,14 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let peer_name = self.peer_display_name(src_addr);
+        let last_outbound_next_hop = self
+            .packet_mover2
+            .fsp_owner_activity(src_addr)
+            .and_then(|activity| activity.last_outbound_next_hop());
         let processed = match self.sessions.process_session_receiver_report(
             src_addr,
             &rr,
+            last_outbound_next_hop,
             now_ms,
             std::time::Instant::now(),
         ) {

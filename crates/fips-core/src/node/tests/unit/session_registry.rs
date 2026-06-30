@@ -36,10 +36,7 @@ fn session_registry_owns_endpoint_session_storage() {
         .insert(peer_addr, replacement)
         .expect("session replacement should return the previous entry");
     assert_eq!(replaced.remote_pubkey(), &peer.pubkey_full());
-    registry
-        .get_mut(&peer_addr)
-        .expect("mutable access should stay behind the same owner")
-        .record_sent_batch(1, 123);
+    assert!(registry.get_mut(&peer_addr).is_some());
 
     assert_eq!(
         registry
@@ -85,21 +82,10 @@ fn session_registry_owns_fsp_send_bookkeeping() {
         .get(&peer_addr)
         .expect("control bookkeeping must keep session storage");
     assert_eq!(
-        entry.traffic_counters(),
-        (0, 0, 0, 0),
-        "control/MMP bookkeeping must not inflate data counters"
-    );
-    assert_eq!(
         entry.last_activity(),
         1_000,
         "control/MMP bookkeeping must not reset idle activity"
     );
-    assert_eq!(
-        entry.last_outbound_frame_ms(),
-        0,
-        "control/MMP bookkeeping must not refresh outbound data activity"
-    );
-    assert_eq!(entry.last_outbound_next_hop(), None);
     let mmp = entry.mmp().expect("session should have MMP state");
     assert_eq!(mmp.sender.cumulative_packets_sent(), 1);
     assert_eq!(mmp.sender.cumulative_bytes_sent(), 64);

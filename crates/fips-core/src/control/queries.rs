@@ -389,7 +389,7 @@ pub fn show_sessions(node: &Node) -> Value {
             session_json["npub"] = json!(encode_npub(&xonly));
 
             // Traffic counters
-            let (pkts_tx, pkts_rx, bytes_tx, bytes_rx) = entry.traffic_counters();
+            let (pkts_tx, pkts_rx, bytes_tx, bytes_rx) = node.session_dataplane_counters(addr);
             session_json["stats"] = json!({
                 "packets_sent": pkts_tx,
                 "packets_recv": pkts_rx,

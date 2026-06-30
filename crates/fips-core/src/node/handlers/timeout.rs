@@ -392,7 +392,13 @@ impl Node {
                 if now_ms.saturating_sub(entry.last_activity()) > timeout_ms {
                     return Some((*addr, "idle"));
                 }
-                if entry.has_stale_outbound_only_activity(now_ms, timeout_ms) {
+                if self
+                    .packet_mover2
+                    .fsp_owner_activity(addr)
+                    .is_some_and(|activity| {
+                        activity.has_stale_outbound_only_activity(now_ms, timeout_ms)
+                    })
+                {
                     return Some((*addr, "outbound-only"));
                 }
                 None

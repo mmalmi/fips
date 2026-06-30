@@ -135,12 +135,15 @@ pub(crate) enum OwnerReserveBlockReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2FspOwnerActivity {
     owner: NodeAddr,
+    fsp_session_start_ms: Option<u64>,
     last_rx_activity: Option<ActivityTick>,
     last_rx_data_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
     data_packets_sent: u64,
     data_packets_recv: u64,
+    data_bytes_sent: u64,
+    data_bytes_recv: u64,
 }
 
 impl PacketMover2FspOwnerActivity {
@@ -161,6 +164,15 @@ impl PacketMover2FspOwnerActivity {
             .is_some_and(|tick| tick.age_ms(now_ms) <= timeout_ms)
     }
 
+    pub(crate) fn has_stale_outbound_only_activity(self, now_ms: u64, timeout_ms: u64) -> bool {
+        let last_inbound_ms = self
+            .last_rx_activity
+            .map(ActivityTick::get)
+            .or(self.fsp_session_start_ms);
+        self.data_packets_sent > 0
+            && last_inbound_ms.is_some_and(|last_ms| now_ms.saturating_sub(last_ms) > timeout_ms)
+    }
+
     pub(crate) fn has_recent_outbound_without_inbound(
         self,
         now_ms: u64,
@@ -177,6 +189,15 @@ impl PacketMover2FspOwnerActivity {
     fn tracks_next_hop(self, next_hop: &NodeAddr) -> bool {
         self.last_outbound_next_hop == Some(*next_hop)
             || (self.owner == *next_hop && self.last_outbound_next_hop.is_none())
+    }
+
+    pub(crate) fn traffic_counters(self) -> (u64, u64, u64, u64) {
+        (
+            self.data_packets_sent,
+            self.data_packets_recv,
+            self.data_bytes_sent,
+            self.data_bytes_recv,
+        )
     }
 }
 
@@ -209,6 +230,8 @@ pub(crate) struct OwnerState {
     last_outbound_next_hop: Option<NodeAddr>,
     data_packets_sent: u64,
     data_packets_recv: u64,
+    data_bytes_sent: u64,
+    data_bytes_recv: u64,
     hard_events: u64,
     authenticated_counter_highest: u64,
     replay_window: ReplayWindow,
@@ -250,6 +273,8 @@ impl OwnerState {
             last_outbound_next_hop: None,
             data_packets_sent: 0,
             data_packets_recv: 0,
+            data_bytes_sent: 0,
+            data_bytes_recv: 0,
             hard_events: 0,
             authenticated_counter_highest: 0,
             replay_window: ReplayWindow::default(),
@@ -272,6 +297,8 @@ impl OwnerState {
         self.last_outbound_next_hop = None;
         self.data_packets_sent = 0;
         self.data_packets_recv = 0;
+        self.data_bytes_sent = 0;
+        self.data_bytes_recv = 0;
         self.authenticated_counter_highest = 0;
     }
 
@@ -381,12 +408,15 @@ impl OwnerState {
     pub(crate) fn fsp_activity(&self) -> Option<PacketMover2FspOwnerActivity> {
         (self.owner.protocol() == PacketProtocol::Fsp).then_some(PacketMover2FspOwnerActivity {
             owner: self.owner.node_addr(),
+            fsp_session_start_ms: self.fsp_session_start_ms,
             last_rx_activity: self.last_rx_activity,
             last_rx_data_activity: self.last_rx_data_activity,
             last_tx_data_activity: self.last_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,
             data_packets_sent: self.data_packets_sent,
             data_packets_recv: self.data_packets_recv,
+            data_bytes_sent: self.data_bytes_sent,
+            data_bytes_recv: self.data_bytes_recv,
         })
     }
 
@@ -467,13 +497,13 @@ impl OwnerState {
         let counter = self.reserve_send_counter()?;
         let output_path = self.active_path.clone();
         let fsp_next_hop = packet.fsp_next_hop();
-        let fsp_application_data = packet.is_fsp_application_data();
+        let fsp_application_data_len = packet.fsp_application_data_len();
         let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
         let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
         self.reserve_fsp_coords_warmup(&mut packet);
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_tx_activity, tick);
-            if fsp_application_data {
+            if fsp_application_data_len.is_some() {
                 note_activity(&mut self.last_tx_data_activity, tick);
             }
         }
@@ -481,8 +511,9 @@ impl OwnerState {
             if let Some(next_hop) = fsp_next_hop {
                 self.last_outbound_next_hop = Some(next_hop);
             }
-            if fsp_application_data {
+            if let Some(bytes) = fsp_application_data_len {
                 self.data_packets_sent = self.data_packets_sent.saturating_add(1);
+                self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
             }
         }
         self.reserve_class(packet.class);
@@ -513,6 +544,7 @@ impl OwnerState {
         &mut self,
         previous_hop: NodeAddr,
         msg_type: u8,
+        body_len: usize,
         activity_tick: Option<ActivityTick>,
     ) -> bool {
         if self.owner.protocol() != PacketProtocol::Fsp {
@@ -528,11 +560,17 @@ impl OwnerState {
         {
             note_activity(&mut self.last_rx_data_activity, tick);
             self.data_packets_recv = self.data_packets_recv.saturating_add(1);
+            self.data_bytes_recv = self.data_bytes_recv.saturating_add(body_len as u64);
         }
         true
     }
 
-    pub(crate) fn record_fsp_data_sent(&mut self, next_hop: NodeAddr, tick: ActivityTick) -> bool {
+    pub(crate) fn record_fsp_data_sent(
+        &mut self,
+        next_hop: NodeAddr,
+        bytes: usize,
+        tick: ActivityTick,
+    ) -> bool {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return false;
         }
@@ -540,6 +578,7 @@ impl OwnerState {
         note_activity(&mut self.last_tx_activity, tick);
         note_activity(&mut self.last_tx_data_activity, tick);
         self.data_packets_sent = self.data_packets_sent.saturating_add(1);
+        self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
         true
     }
 

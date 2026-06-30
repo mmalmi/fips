@@ -291,15 +291,16 @@ impl OutboundPacket {
         }
     }
 
-    fn is_fsp_application_data(&self) -> bool {
+    fn fsp_application_data_len(&self) -> Option<usize> {
         if self.owner.protocol() != PacketProtocol::Fsp {
-            return false;
+            return None;
         }
         match self.payload_transform {
             OutboundPayloadTransform::FspInnerHeader { msg_type, .. } => {
                 packet_mover2_fsp_message_is_application_data(msg_type)
+                    .then_some(self.payload.len())
             }
-            OutboundPayloadTransform::None => false,
+            OutboundPayloadTransform::None => None,
         }
     }
 

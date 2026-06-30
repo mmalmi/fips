@@ -291,10 +291,11 @@ impl PacketMover2OwnerShard {
         owner: OwnerId,
         previous_hop: NodeAddr,
         msg_type: u8,
+        body_len: usize,
         activity_tick: Option<ActivityTick>,
     ) -> bool {
         self.owner_mut(owner).is_some_and(|owner| {
-            owner.record_authenticated_fsp_session(previous_hop, msg_type, activity_tick)
+            owner.record_authenticated_fsp_session(previous_hop, msg_type, body_len, activity_tick)
         })
     }
 
@@ -302,9 +303,10 @@ impl PacketMover2OwnerShard {
         &mut self,
         owner: OwnerId,
         next_hop: NodeAddr,
+        bytes: usize,
         tick: ActivityTick,
     ) -> bool {
         self.owner_mut(owner)
-            .is_some_and(|owner| owner.record_fsp_data_sent(next_hop, tick))
+            .is_some_and(|owner| owner.record_fsp_data_sent(next_hop, bytes, tick))
     }
 }

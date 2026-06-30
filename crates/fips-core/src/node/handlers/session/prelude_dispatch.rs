@@ -256,7 +256,6 @@ struct AuthenticatedSessionDispatch {
 struct SessionReceiveCompletion {
     source_addr: NodeAddr,
     previous_hop_addr: NodeAddr,
-    body_len: usize,
     direct_path: bool,
 }
 
@@ -322,7 +321,6 @@ impl AuthenticatedSessionDispatch {
             .then_some(SessionReceiveCompletion {
                 source_addr: self.source_addr,
                 previous_hop_addr: self.previous_hop_addr,
-                body_len: self.message.body_len(),
                 direct_path: self.previous_hop_addr == self.source_addr,
             })
     }
@@ -484,8 +482,8 @@ impl SessionDispatchCommit {
     }
 
     fn finish_receive(&self, node: &mut Node) -> SessionDispatchFinish {
-        // Only application data resets the idle timer and traffic counters —
-        // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
+        // Only application data resets the idle timer. PM2 owners count
+        // authenticated dataplane packets and bytes.
         let now_ms = Node::now_ms();
         let receive_recorded = self.record_receive(&mut node.sessions, now_ms);
         if receive_recorded

@@ -471,8 +471,6 @@ impl Node {
             dest_addr,
             FspSendBookkeepingInput::control(counter, timestamp, frame_bytes),
         );
-        self.sessions
-            .record_session_datagram_next_hop(dest_addr, next_hop);
         self.stats_mut()
             .forwarding
             .record_originated(datagram_bytes);

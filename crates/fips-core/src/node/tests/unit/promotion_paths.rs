@@ -553,7 +553,7 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
 
     let trust_timeout_ms = node.session_direct_path_exclusive_trust_timeout_ms();
     let now_ms = trust_timeout_ms + 10_000;
-    let mut endpoint_entry = crate::node::session::SessionEntry::new(
+    let endpoint_entry = crate::node::session::SessionEntry::new(
         peer_node_addr,
         peer_identity.pubkey_full(),
         crate::node::session::EndToEndState::Established(make_test_fmp_session(
@@ -565,9 +565,6 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
         now_ms - trust_timeout_ms - 1,
         true,
     );
-    endpoint_entry.record_sent_batch(1, 128);
-    endpoint_entry.touch_outbound_frame(now_ms);
-    endpoint_entry.record_outbound_next_hop(peer_node_addr);
     node.sessions.insert(peer_node_addr, endpoint_entry);
     assert!(
         node.session_direct_path_exclusive_trust_expired(&peer_node_addr, now_ms),
