@@ -1238,8 +1238,60 @@
     }
 
     #[test]
+    fn fsp_owner_tracks_data_return_without_registry_side_channel() {
+        let owner = fsp_owner(77);
+        let next_hop = fmp_owner(78);
+        let wrap =
+            PacketMover2FspWrapRoute::new(next_hop, 1, 7878, test_node_addr(1), owner.node_addr());
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(10));
+
+        let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"payload".to_vec())
+            .with_fsp_inner_header(crate::protocol::SessionMessageType::EndpointData.to_byte(), 0)
+            .with_post_seal(OutboundPostSeal::FmpWrap(wrap))
+            .with_activity_tick(ActivityTick::new(100));
+        mover.submit_outbound_packet(outbound).unwrap();
+        assert_eq!(dispatch_outbound_available(&mut mover, 8).len(), 1);
+
+        let activity = mover.owner_fsp_activity(owner).unwrap();
+        assert_eq!(activity.last_outbound_next_hop(), Some(next_hop.node_addr()));
+        assert!(activity.has_recent_outbound_activity(105, 10));
+        assert!(activity.has_recent_outbound_without_inbound(105, 10));
+
+        assert!(mover.record_authenticated_fsp_session(
+            owner,
+            owner.node_addr(),
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            Some(ActivityTick::new(110)),
+        ));
+        let activity = mover.owner_fsp_activity(owner).unwrap();
+        assert_eq!(activity.last_rx_data_age_ms(115), Some(5));
+        assert!(!activity.has_recent_outbound_without_inbound(115, 20));
+
+        assert!(mover.record_authenticated_fsp_session(
+            owner,
+            next_hop.node_addr(),
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            Some(ActivityTick::new(120)),
+        ));
+        let activity = mover.owner_fsp_activity(owner).unwrap();
+        assert_eq!(activity.last_rx_age_ms(125), Some(5));
+        assert_eq!(activity.last_rx_data_age_ms(125), Some(5));
+
+        assert!(mover.record_authenticated_fsp_session(
+            owner,
+            test_node_addr(179),
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            Some(ActivityTick::new(130)),
+        ));
+        let activity = mover.owner_fsp_activity(owner).unwrap();
+        assert_eq!(activity.last_rx_age_ms(135), Some(5));
+        assert_eq!(activity.last_rx_data_age_ms(135), Some(15));
+    }
+
+    #[test]
     fn hard_event_liveness_state_stays_owner_owned_across_rekey() {
-        let owner = fmp_owner(77);
+        let owner = fmp_owner(79);
         let mut state = OwnerState::new(owner, OwnerConfig::new(1, 8));
 
         state.record_hard_event(ActivityTick::new(100));

@@ -55,6 +55,11 @@ impl PacketClass {
     }
 }
 
+pub(crate) fn packet_mover2_fsp_message_is_application_data(msg_type: u8) -> bool {
+    msg_type == crate::protocol::SessionMessageType::DataPacket.to_byte()
+        || msg_type == crate::protocol::SessionMessageType::EndpointData.to_byte()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Lane {
     Priority,
@@ -106,6 +111,10 @@ pub(crate) struct ActivityTick(u64);
 impl ActivityTick {
     pub(crate) fn new(tick: u64) -> Self {
         Self(tick)
+    }
+
+    pub(crate) fn age_ms(self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.0)
     }
 
     fn get(self) -> u64 {
@@ -270,6 +279,28 @@ impl OutboundPacket {
     pub(crate) fn with_activity_tick(mut self, tick: ActivityTick) -> Self {
         self.activity_tick = Some(tick);
         self
+    }
+
+    fn fsp_next_hop(&self) -> Option<NodeAddr> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        match self.post_seal {
+            OutboundPostSeal::FmpWrap(route) => Some(route.next_hop_addr()),
+            OutboundPostSeal::Transport => None,
+        }
+    }
+
+    fn is_fsp_application_data(&self) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        match self.payload_transform {
+            OutboundPayloadTransform::FspInnerHeader { msg_type, .. } => {
+                packet_mover2_fsp_message_is_application_data(msg_type)
+            }
+            OutboundPayloadTransform::None => false,
+        }
     }
 
     fn lane(&self) -> Lane {

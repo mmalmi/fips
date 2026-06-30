@@ -101,6 +101,7 @@ impl Node {
             previous_hop_addr,
             ce_flag,
             receive_sync,
+            activity_tick,
             timestamp_ms,
             msg_type,
             inner_flags,
@@ -116,6 +117,12 @@ impl Node {
             );
             return false;
         }
+        self.packet_mover2.record_authenticated_fsp_session(
+            source_addr,
+            previous_hop_addr,
+            msg_type,
+            activity_tick,
+        );
         let Some(source_peer) = self.packet_mover2_session_source_peer(&source_addr) else {
             debug!(
                 src = %self.peer_display_name(&source_addr),

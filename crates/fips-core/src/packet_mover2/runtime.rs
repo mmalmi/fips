@@ -54,8 +54,62 @@ impl PacketMover2TurnDriver {
         self.mover.owner_active_path(owner)
     }
 
+    pub(crate) fn owner_fsp_activity(
+        &self,
+        owner: OwnerId,
+    ) -> Option<PacketMover2FspOwnerActivity> {
+        self.mover.owner_fsp_activity(owner)
+    }
+
+    pub(crate) fn min_fsp_rx_age_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<u64> {
+        self.mover.min_fsp_rx_age_for_next_hop(next_hop, now_ms)
+    }
+
+    pub(crate) fn min_fsp_data_rx_age_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<u64> {
+        self.mover
+            .min_fsp_data_rx_age_for_next_hop(next_hop, now_ms)
+    }
+
+    pub(crate) fn any_fsp_recent_outbound_without_inbound_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        self.mover
+            .any_fsp_recent_outbound_without_inbound_for_next_hop(next_hop, now_ms, timeout_ms)
+    }
+
     pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.mover.owner_mut(owner)
+    }
+
+    pub(crate) fn record_authenticated_fsp_session(
+        &mut self,
+        owner: OwnerId,
+        previous_hop: NodeAddr,
+        msg_type: u8,
+        activity_tick: Option<ActivityTick>,
+    ) -> bool {
+        self.mover
+            .record_authenticated_fsp_session(owner, previous_hop, msg_type, activity_tick)
+    }
+
+    pub(crate) fn record_fsp_data_sent(
+        &mut self,
+        owner: OwnerId,
+        next_hop: NodeAddr,
+        tick: ActivityTick,
+    ) -> bool {
+        self.mover.record_fsp_data_sent(owner, next_hop, tick)
     }
 
     async fn finish_aead_live_node_output_turn_with_executor<Resolver, Transports, E>(
@@ -336,7 +390,6 @@ impl PacketMover2TurnDriver {
         deferred_tun_packets.append(&mut outbound_buffers.tun_deferred_packets);
         report.set_endpoint_command_drops(outbound_buffers.endpoint_drops);
         report.set_endpoint_source_drained(endpoint_drained);
-        report.set_endpoint_routed_destinations(outbound_buffers.endpoint_routed_destinations);
         report.set_endpoint_deferred_commands(endpoint_deferred_count);
         report.set_tun_outbound_drops(outbound_buffers.tun_drops);
         report.set_tun_deferred_packets(tun_deferred_count);

@@ -298,6 +298,7 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
     session.touch_outbound_frame(Node::now_ms());
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(peer_addr, session);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
 
     node.check_link_heartbeats().await;
 
@@ -387,6 +388,7 @@ async fn endpoint_session_traffic_keeps_traversal_liveness_fresh() {
     session.record_recv(512);
     session.touch_inbound_data_frame(Node::now_ms());
     node.sessions.insert(peer_addr, session);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
 
     node.check_link_heartbeats().await;
 
@@ -471,6 +473,7 @@ async fn endpoint_session_traffic_from_direct_peer_keeps_liveness_fresh_without_
     session.record_recv(512);
     session.touch_inbound_data_frame(Node::now_ms());
     node.sessions.insert(peer_addr, session);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
 
     node.check_link_heartbeats().await;
 
@@ -563,6 +566,8 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
     session.touch_inbound_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(peer_addr, session);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
     node.check_link_heartbeats().await;
 
@@ -655,6 +660,8 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
     session.touch_inbound_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(peer_addr, session);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
     let mut retry = super::super::retry::RetryState::new(peer_config);
     retry.reconnect = true;
@@ -823,6 +830,8 @@ async fn fresh_bootstrap_endpoint_data_clears_static_direct_refresh_pending() {
     session.touch_inbound_data_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(app_addr, session);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
 
     assert!(
         !node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
@@ -907,6 +916,8 @@ async fn fresh_control_with_unreturned_endpoint_data_keeps_direct_without_fallba
     session.touch_inbound_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(peer_addr, session);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
     let discovery_initiated = node.stats().discovery.req_initiated;
     node.check_link_heartbeats().await;
@@ -1005,6 +1016,8 @@ async fn endpoint_return_via_direct_next_hop_keeps_link_liveness_fresh() {
     session.touch_inbound_data_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(app_addr, session);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
 
     node.check_link_heartbeats().await;
 
@@ -1094,6 +1107,8 @@ async fn authenticated_endpoint_return_clears_static_retry_on_fresh_discovered_u
     session.touch_inbound_data_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(app_addr, session);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
 
     let mut retry = super::super::retry::RetryState::new(peer_config);
     retry.reconnect = true;

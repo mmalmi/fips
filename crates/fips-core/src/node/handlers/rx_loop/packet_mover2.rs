@@ -189,11 +189,6 @@ impl Node {
                 processed += 1;
             }
         }
-        for routed in turn.take_endpoint_routed_destinations() {
-            if self.sessions.record_packet_mover2_endpoint_routed(routed) {
-                processed += 1;
-            }
-        }
         for drop in turn.tun_outbound_drops() {
             if self.process_packet_mover2_tun_outbound_drop(drop) {
                 processed += 1;

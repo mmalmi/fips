@@ -493,7 +493,7 @@ impl Node {
             let failed = turn.has_failures();
             let needs_continuation = Self::packet_mover2_pending_outbound_needs_continuation(&turn);
 
-            self.process_packet_mover2_pending_outbound_bookkeeping(&mut turn)
+            self.process_packet_mover2_pending_outbound_bookkeeping()
                 .await;
 
             if failed {
@@ -610,16 +610,8 @@ impl Node {
         format!("packet_mover2 {label} failed: {summary:?}")
     }
 
-    async fn process_packet_mover2_pending_outbound_bookkeeping(
-        &mut self,
-        turn: &mut PacketMover2LiveNodeTurn,
-    ) -> usize {
+    async fn process_packet_mover2_pending_outbound_bookkeeping(&mut self) -> usize {
         let mut processed = 0usize;
-        for routed in turn.take_endpoint_routed_destinations() {
-            if self.sessions.record_packet_mover2_endpoint_routed(routed) {
-                processed += 1;
-            }
-        }
         // Pending flush callers already own the packet they are trying to send.
         // If PM2 defers it again, drain it here and let the caller queue/recover.
         for _packet in self.packet_mover2.take_deferred_tun_packets() {

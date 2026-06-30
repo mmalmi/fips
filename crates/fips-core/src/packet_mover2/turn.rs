@@ -361,6 +361,7 @@ pub(crate) struct PacketMover2FspSessionIngress {
     previous_hop_addr: NodeAddr,
     ce_flag: bool,
     receive_sync: crate::node::session::FspReceiveSync,
+    activity_tick: Option<ActivityTick>,
     timestamp_ms: u32,
     msg_type: u8,
     inner_flags: u8,
@@ -377,6 +378,7 @@ impl PacketMover2FspSessionIngress {
             Err(_) => return Err(output),
         };
         let path_mtu = output.path_mtu();
+        let activity_tick = output.activity_tick;
         let (timestamp_ms, msg_type, inner_flags, plaintext_len) = {
             let Some(plaintext) = output.opened_payload() else {
                 return Err(output);
@@ -407,6 +409,7 @@ impl PacketMover2FspSessionIngress {
             previous_hop_addr,
             ce_flag,
             receive_sync,
+            activity_tick,
             timestamp_ms,
             msg_type,
             inner_flags,
@@ -430,6 +433,10 @@ impl PacketMover2FspSessionIngress {
         self.timestamp_ms
     }
 
+    pub(crate) fn activity_tick(&self) -> Option<ActivityTick> {
+        self.activity_tick
+    }
+
     pub(crate) fn msg_type(&self) -> u8 {
         self.msg_type
     }
@@ -449,6 +456,7 @@ impl PacketMover2FspSessionIngress {
         NodeAddr,
         bool,
         crate::node::session::FspReceiveSync,
+        Option<ActivityTick>,
         u32,
         u8,
         u8,
@@ -459,6 +467,7 @@ impl PacketMover2FspSessionIngress {
             self.previous_hop_addr,
             self.ce_flag,
             self.receive_sync,
+            self.activity_tick,
             self.timestamp_ms,
             self.msg_type,
             self.inner_flags,
@@ -479,7 +488,6 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
-    endpoint_routed_destinations: Vec<PacketMover2EndpointRoutedDestination>,
     tun_source_drained: usize,
     endpoint_source_drained: usize,
     endpoint_deferred_commands: usize,
@@ -505,7 +513,6 @@ impl PacketMover2LiveNodeTurn {
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
             endpoint_command_drops: Vec::new(),
-            endpoint_routed_destinations: Vec::new(),
             tun_source_drained: 0,
             endpoint_source_drained: 0,
             endpoint_deferred_commands: 0,
@@ -617,23 +624,6 @@ impl PacketMover2LiveNodeTurn {
         self.endpoint_command_drops = drops;
     }
 
-    pub(crate) fn endpoint_routed_destinations(&self) -> &[PacketMover2EndpointRoutedDestination] {
-        &self.endpoint_routed_destinations
-    }
-
-    fn set_endpoint_routed_destinations(
-        &mut self,
-        destinations: Vec<PacketMover2EndpointRoutedDestination>,
-    ) {
-        self.endpoint_routed_destinations = destinations;
-    }
-
-    pub(crate) fn take_endpoint_routed_destinations(
-        &mut self,
-    ) -> Vec<PacketMover2EndpointRoutedDestination> {
-        std::mem::take(&mut self.endpoint_routed_destinations)
-    }
-
     pub(crate) fn tun_source_drained(&self) -> usize {
         self.tun_source_drained
     }
@@ -701,7 +691,6 @@ impl PacketMover2LiveNodeTurn {
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_command_drops.is_empty()
-            || !self.endpoint_routed_destinations.is_empty()
             || self.tun_source_drained > 0
             || self.endpoint_source_drained > 0
             || self.endpoint_deferred_commands > 0

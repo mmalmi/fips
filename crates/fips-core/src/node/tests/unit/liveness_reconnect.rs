@@ -421,6 +421,7 @@ fn fresh_static_udp_peer_data_liveness_skips_retry_without_resolving_hints() {
     entry.record_recv(512);
     entry.touch_inbound_data_frame(now_ms);
     node.sessions.insert(peer_addr, entry);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
     assert!(
         !node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
@@ -889,6 +890,8 @@ async fn poll_nostr_discovery_established_fresh_bootstrap_data_skips_redundant_t
     session.touch_inbound_data_frame(now_ms);
     session.record_outbound_next_hop(peer_addr);
     node.sessions.insert(app_addr, session);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
 
     let bootstrap = std::sync::Arc::new(NostrDiscovery::new_for_test());
     let socket = UdpSocket::bind("127.0.0.1:0").expect("bind local UDP socket");

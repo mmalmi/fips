@@ -40,6 +40,41 @@ impl PacketMover2OwnerShard {
         self.owners.get(&owner)
     }
 
+    fn owner_fsp_activity(&self, owner: OwnerId) -> Option<PacketMover2FspOwnerActivity> {
+        self.owner(owner).and_then(OwnerState::fsp_activity)
+    }
+
+    fn min_fsp_rx_age_for_next_hop(&self, next_hop: &NodeAddr, now_ms: u64) -> Option<u64> {
+        self.owners
+            .values()
+            .filter_map(OwnerState::fsp_activity)
+            .filter(|activity| activity.tracks_next_hop(next_hop))
+            .filter_map(|activity| activity.last_rx_age_ms(now_ms))
+            .min()
+    }
+
+    fn min_fsp_data_rx_age_for_next_hop(&self, next_hop: &NodeAddr, now_ms: u64) -> Option<u64> {
+        self.owners
+            .values()
+            .filter_map(OwnerState::fsp_activity)
+            .filter(|activity| activity.tracks_next_hop(next_hop))
+            .filter_map(|activity| activity.last_rx_data_age_ms(now_ms))
+            .min()
+    }
+
+    fn any_fsp_recent_outbound_without_inbound_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        self.owners
+            .values()
+            .filter_map(OwnerState::fsp_activity)
+            .filter(|activity| activity.tracks_next_hop(next_hop))
+            .any(|activity| activity.has_recent_outbound_without_inbound(now_ms, timeout_ms))
+    }
+
     fn submit_socket_packet_with_seq(
         &mut self,
         packet: SocketPacket,
@@ -249,5 +284,27 @@ impl PacketMover2OwnerShard {
 
     fn outbound_admission_queue_lens(&self) -> (usize, usize) {
         self.outbound_admission.lens()
+    }
+
+    fn record_authenticated_fsp_session(
+        &mut self,
+        owner: OwnerId,
+        previous_hop: NodeAddr,
+        msg_type: u8,
+        activity_tick: Option<ActivityTick>,
+    ) -> bool {
+        self.owner_mut(owner).is_some_and(|owner| {
+            owner.record_authenticated_fsp_session(previous_hop, msg_type, activity_tick)
+        })
+    }
+
+    fn record_fsp_data_sent(
+        &mut self,
+        owner: OwnerId,
+        next_hop: NodeAddr,
+        tick: ActivityTick,
+    ) -> bool {
+        self.owner_mut(owner)
+            .is_some_and(|owner| owner.record_fsp_data_sent(next_hop, tick))
     }
 }

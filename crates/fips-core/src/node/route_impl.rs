@@ -150,11 +150,10 @@ impl Node {
         }
 
         if let Some(next_hop_addr) = sendable_learned_peers.as_ref().and_then(|sendable| {
-            let session = self.sessions.get(dest_node_addr)?;
-            let next_hop_addr = session.last_outbound_next_hop()?;
+            let activity = self.packet_mover2.fsp_owner_activity(dest_node_addr)?;
+            let next_hop_addr = activity.last_outbound_next_hop()?;
             if next_hop_addr == *dest_node_addr
-                || !session.is_established()
-                || !session.has_recent_outbound_activity(
+                || !activity.has_recent_outbound_activity(
                     now_ms,
                     self.session_direct_path_exclusive_trust_timeout_ms(),
                 )
@@ -427,13 +426,10 @@ impl Node {
         {
             return false;
         }
-        let Some(session) = self.sessions.get(dest) else {
+        let Some(activity) = self.packet_mover2.fsp_owner_activity(dest) else {
             return false;
         };
-        if !session.is_established() {
-            return false;
-        }
-        session.has_recent_outbound_without_inbound(
+        activity.has_recent_outbound_without_inbound(
             now_ms,
             self.session_direct_path_exclusive_trust_timeout_ms(),
         )
@@ -444,9 +440,9 @@ impl Node {
         dest: &NodeAddr,
         now_ms: u64,
     ) -> bool {
-        self.sessions
-            .get(dest)
-            .and_then(|session| session.last_authenticated_inbound_data_age_ms(now_ms))
+        self.packet_mover2
+            .fsp_owner_activity(dest)
+            .and_then(|activity| activity.last_rx_data_age_ms(now_ms))
             .is_some_and(|age_ms| age_ms <= self.session_direct_path_exclusive_trust_timeout_ms())
     }
 

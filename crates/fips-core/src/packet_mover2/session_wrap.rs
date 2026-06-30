@@ -45,6 +45,10 @@ impl PacketMover2FspWrapRoute {
         self
     }
 
+    fn next_hop_addr(self) -> NodeAddr {
+        self.fmp_owner.node_addr()
+    }
+
     fn fmp_payload(self, fsp_wire: PacketBuffer) -> PacketBuffer {
         let fsp_wire = fsp_wire.into_vec();
         let mut payload =

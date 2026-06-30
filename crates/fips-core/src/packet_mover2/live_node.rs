@@ -310,6 +310,66 @@ impl PacketMover2LiveNode {
         Ok(self.driver.owner_active_path(owner))
     }
 
+    pub(crate) fn fsp_owner_activity(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<PacketMover2FspOwnerActivity> {
+        self.driver
+            .owner_fsp_activity(OwnerId::fsp_node(*node_addr))
+    }
+
+    pub(crate) fn min_fsp_rx_age_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<u64> {
+        self.driver.min_fsp_rx_age_for_next_hop(next_hop, now_ms)
+    }
+
+    pub(crate) fn min_fsp_data_rx_age_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<u64> {
+        self.driver
+            .min_fsp_data_rx_age_for_next_hop(next_hop, now_ms)
+    }
+
+    pub(crate) fn any_fsp_recent_outbound_without_inbound_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        self.driver
+            .any_fsp_recent_outbound_without_inbound_for_next_hop(next_hop, now_ms, timeout_ms)
+    }
+
+    pub(crate) fn record_authenticated_fsp_session(
+        &mut self,
+        source_addr: NodeAddr,
+        previous_hop: NodeAddr,
+        msg_type: u8,
+        activity_tick: Option<ActivityTick>,
+    ) -> bool {
+        self.driver.record_authenticated_fsp_session(
+            OwnerId::fsp_node(source_addr),
+            previous_hop,
+            msg_type,
+            activity_tick,
+        )
+    }
+
+    pub(crate) fn record_fsp_data_sent(
+        &mut self,
+        dest_addr: NodeAddr,
+        next_hop: NodeAddr,
+        tick: ActivityTick,
+    ) -> bool {
+        self.driver
+            .record_fsp_data_sent(OwnerId::fsp_node(dest_addr), next_hop, tick)
+    }
+
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> PacketMover2LiveOwnerRouteSummary {
         PacketMover2LiveOwnerRouteSummary {
             owner_removed: self.driver.unregister_owner(owner),

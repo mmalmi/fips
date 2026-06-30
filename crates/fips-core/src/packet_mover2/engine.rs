@@ -44,8 +44,75 @@ impl PacketMover2 {
         self.owner_shard(owner).owner_active_path(owner)
     }
 
+    pub(crate) fn owner_fsp_activity(
+        &self,
+        owner: OwnerId,
+    ) -> Option<PacketMover2FspOwnerActivity> {
+        self.owner_shard(owner).owner_fsp_activity(owner)
+    }
+
+    pub(crate) fn min_fsp_rx_age_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<u64> {
+        self.shards
+            .iter()
+            .filter_map(|shard| shard.min_fsp_rx_age_for_next_hop(next_hop, now_ms))
+            .min()
+    }
+
+    pub(crate) fn min_fsp_data_rx_age_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<u64> {
+        self.shards
+            .iter()
+            .filter_map(|shard| shard.min_fsp_data_rx_age_for_next_hop(next_hop, now_ms))
+            .min()
+    }
+
+    pub(crate) fn any_fsp_recent_outbound_without_inbound_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        self.shards.iter().any(|shard| {
+            shard.any_fsp_recent_outbound_without_inbound_for_next_hop(
+                next_hop, now_ms, timeout_ms,
+            )
+        })
+    }
+
     pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.owner_shard_mut(owner).owner_mut(owner)
+    }
+
+    pub(crate) fn record_authenticated_fsp_session(
+        &mut self,
+        owner: OwnerId,
+        previous_hop: NodeAddr,
+        msg_type: u8,
+        activity_tick: Option<ActivityTick>,
+    ) -> bool {
+        self.owner_shard_mut(owner).record_authenticated_fsp_session(
+            owner,
+            previous_hop,
+            msg_type,
+            activity_tick,
+        )
+    }
+
+    pub(crate) fn record_fsp_data_sent(
+        &mut self,
+        owner: OwnerId,
+        next_hop: NodeAddr,
+        tick: ActivityTick,
+    ) -> bool {
+        self.owner_shard_mut(owner)
+            .record_fsp_data_sent(owner, next_hop, tick)
     }
 
     pub(crate) fn submit_socket_packet(

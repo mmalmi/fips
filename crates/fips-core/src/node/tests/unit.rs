@@ -134,6 +134,57 @@ fn peer_identity_for_outbound_refresh_loser(node: &Node) -> (Identity, PeerIdent
     }
 }
 
+fn ensure_packet_mover2_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
+    node.packet_mover2.register_owner_if_missing(
+        crate::packet_mover2::OwnerId::fsp_node(dest_addr),
+        crate::packet_mover2::OwnerConfig::new(1, 8),
+    );
+}
+
+fn seed_packet_mover2_fsp_data_sent_for_test(
+    node: &mut Node,
+    dest_addr: NodeAddr,
+    next_hop: NodeAddr,
+    now_ms: u64,
+) {
+    ensure_packet_mover2_fsp_owner_for_test(node, dest_addr);
+    assert!(node.packet_mover2.record_fsp_data_sent(
+        dest_addr,
+        next_hop,
+        crate::packet_mover2::ActivityTick::new(now_ms),
+    ));
+}
+
+fn seed_packet_mover2_fsp_control_rx_for_test(
+    node: &mut Node,
+    source_addr: NodeAddr,
+    previous_hop: NodeAddr,
+    now_ms: u64,
+) {
+    ensure_packet_mover2_fsp_owner_for_test(node, source_addr);
+    assert!(node.packet_mover2.record_authenticated_fsp_session(
+        source_addr,
+        previous_hop,
+        crate::protocol::SessionMessageType::SenderReport.to_byte(),
+        Some(crate::packet_mover2::ActivityTick::new(now_ms)),
+    ));
+}
+
+fn seed_packet_mover2_fsp_data_rx_for_test(
+    node: &mut Node,
+    source_addr: NodeAddr,
+    previous_hop: NodeAddr,
+    now_ms: u64,
+) {
+    ensure_packet_mover2_fsp_owner_for_test(node, source_addr);
+    assert!(node.packet_mover2.record_authenticated_fsp_session(
+        source_addr,
+        previous_hop,
+        crate::protocol::SessionMessageType::EndpointData.to_byte(),
+        Some(crate::packet_mover2::ActivityTick::new(now_ms)),
+    ));
+}
+
 fn auto_connect_peer(npub: String, addr: &str) -> crate::config::PeerConfig {
     crate::config::PeerConfig {
         npub,
