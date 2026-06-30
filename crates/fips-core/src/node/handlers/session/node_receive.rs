@@ -1,17 +1,4 @@
 impl Node {
-    pub(in crate::node) fn confirm_authenticated_fsp_receive_lifecycle(
-        &mut self,
-        source_addr: NodeAddr,
-    ) -> bool {
-        let apply = {
-            let Some(entry) = self.sessions.get_mut(&source_addr) else {
-                return false;
-            };
-            entry.confirm_authenticated_fsp_current_epoch()
-        };
-        apply
-    }
-
     /// Handle a locally-delivered session datagram payload.
     ///
     /// Called from `handle_session_datagram()` when `dest_addr == self.node_addr()`.

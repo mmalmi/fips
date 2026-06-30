@@ -473,6 +473,7 @@ pub(crate) struct PacketMover2FspOwnerActivity {
     last_outbound_next_hop: Option<NodeAddr>,
     current_k_bit: bool,
     previous_draining_k_bit: Option<bool>,
+    current_epoch_confirmed: bool,
     send_counter: u64,
     current_path_mtu: Option<u16>,
     data_packets_sent: u64,
@@ -504,6 +505,10 @@ impl PacketMover2FspOwnerActivity {
 
     pub(crate) fn is_draining(self) -> bool {
         self.previous_draining_k_bit.is_some()
+    }
+
+    pub(crate) fn current_epoch_confirmed(self) -> bool {
+        self.current_epoch_confirmed
     }
 
     pub(crate) fn should_ignore_stale_epoch_decrypt_failure(self, received_k_bit: bool) -> bool {
@@ -1021,6 +1026,7 @@ impl OwnerState {
             last_outbound_next_hop: self.last_outbound_next_hop,
             current_k_bit: self.fsp_current_k_bit,
             previous_draining_k_bit: self.fsp_previous_draining_k_bit,
+            current_epoch_confirmed: self.fsp_lifecycle_confirmed,
             send_counter: self.next_send_counter,
             current_path_mtu: self
                 .fsp_mmp

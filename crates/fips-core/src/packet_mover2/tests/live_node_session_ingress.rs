@@ -129,7 +129,10 @@
         assert_eq!(receipt.inner_timestamp_ms(), fmp_inner_timestamp);
         assert_eq!(receipt.fmp_flags(), fmp_flags);
         assert!(endpoint_io.event_rx.try_recv().is_err());
-        assert_eq!(turn.fsp_current_epoch_confirmed(), &[source_addr]);
+        assert!(driver
+            .owner_fsp_activity(fsp_owner)
+            .unwrap()
+            .current_epoch_confirmed());
         assert_eq!(turn.fsp_session_ingress().len(), 1);
         let session_ingress = &turn.fsp_session_ingress()[0];
         assert_eq!(session_ingress.source_addr(), source_addr);
@@ -286,10 +289,10 @@
         assert_eq!(coord_cache.get(&source_addr, 10), Some(&source_coords));
         assert_eq!(coord_cache.get(&local_addr, 10), Some(&local_coords));
         assert_eq!(turn.fsp_session_ingress().len(), 1);
-        assert_eq!(turn.fsp_current_epoch_confirmed(), &[source_addr]);
         assert!(turn.fsp_local_session_ingress().is_empty());
         assert!(turn.fmp_link_ingress().is_empty());
         let activity = driver.owner_fsp_activity(fsp_owner).unwrap();
+        assert!(activity.current_epoch_confirmed());
         assert_eq!(activity.last_rx_age_ms(fmp_timestamp), Some(0));
         assert_eq!(
             driver.record_fsp_decrypt_failure(fsp_owner),

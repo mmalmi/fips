@@ -388,24 +388,16 @@ impl SessionEntry {
         self.rekey_msg3_resend_count = 0;
     }
 
-    /// Mark the peer as confirmed on the new epoch and stop msg3 retransmission.
-    pub(crate) fn confirm_peer_new_epoch(&mut self) {
-        self.clear_rekey_msg3_payload();
-    }
-
-    /// Confirm that packet_mover2 authenticated the current FSP epoch.
-    ///
-    /// PM2 owns FSP AEAD verification, generation selection, replay admission,
-    /// ordered retirement, and per-packet MMP receive facts. The session
-    /// registry keeps only the control-plane cleanup for handshake/rekey
-    /// retransmission state after PM2 has accepted a current-epoch frame.
-    pub(crate) fn confirm_authenticated_fsp_current_epoch(&mut self) -> bool {
+    /// Clear control-plane retransmit payloads after PM2 has authenticated the
+    /// established FSP owner epoch. PM2 owns the packet-path confirmation; the
+    /// registry only drops stale handshake/rekey scaffolding.
+    pub(crate) fn clear_pm2_confirmed_fsp_retransmits(&mut self) -> bool {
         if !self.is_established() || self.current_noise_session().is_none() {
             return false;
         }
 
         if self.rekey_msg3_payload().is_some() && self.pending_new_session().is_none() {
-            self.confirm_peer_new_epoch();
+            self.clear_rekey_msg3_payload();
         }
         if self.handshake_payload().is_some()
             && self.pending_new_session().is_none()

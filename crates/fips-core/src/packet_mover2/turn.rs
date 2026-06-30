@@ -494,7 +494,6 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
-    fsp_current_epoch_confirmed: Vec<NodeAddr>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
@@ -520,7 +519,6 @@ impl PacketMover2LiveNodeTurn {
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
             fsp_coord_warmups: Vec::new(),
-            fsp_current_epoch_confirmed: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
@@ -593,18 +591,6 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn take_fsp_coord_warmups(&mut self) -> Vec<PacketMover2FspCoordWarmup> {
         std::mem::take(&mut self.fsp_coord_warmups)
-    }
-
-    pub(crate) fn fsp_current_epoch_confirmed(&self) -> &[NodeAddr] {
-        &self.fsp_current_epoch_confirmed
-    }
-
-    fn set_fsp_current_epoch_confirmed(&mut self, confirmed: Vec<NodeAddr>) {
-        self.fsp_current_epoch_confirmed = confirmed;
-    }
-
-    pub(crate) fn take_fsp_current_epoch_confirmed(&mut self) -> Vec<NodeAddr> {
-        std::mem::take(&mut self.fsp_current_epoch_confirmed)
     }
 
     pub(crate) fn fsp_local_session_ingress(&self) -> &[PacketMover2FspLocalSessionIngress] {
@@ -711,7 +697,6 @@ impl PacketMover2LiveNodeTurn {
             || !self.fmp_ingress_receipts.is_empty()
             || !self.fmp_link_ingress.is_empty()
             || !self.fsp_coord_warmups.is_empty()
-            || !self.fsp_current_epoch_confirmed.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
             || !self.fsp_session_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()

@@ -99,6 +99,36 @@ impl crate::node::SessionRegistry {
 }
 
 impl Node {
+    fn clear_pm2_confirmed_session_retransmits(&mut self) {
+        let confirmed: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| {
+                entry.handshake_payload().is_some() || entry.rekey_msg3_payload().is_some()
+            })
+            .filter_map(|(addr, _)| {
+                self.packet_mover2
+                    .fsp_owner_activity(addr)
+                    .is_some_and(|activity| activity.current_epoch_confirmed())
+                    .then_some(*addr)
+            })
+            .collect();
+
+        for addr in confirmed {
+            let cleared = self
+                .sessions
+                .get_mut(&addr)
+                .is_some_and(|entry| entry.clear_pm2_confirmed_fsp_retransmits());
+            if cleared {
+                let name = self.peer_display_name(&addr);
+                debug!(
+                    dest = %name,
+                    "Cleared session retransmit payload after PM2 authenticated current epoch"
+                );
+            }
+        }
+    }
+
     /// Check for timed-out handshake connections and clean them up.
     ///
     /// Called periodically by the RX event loop. Removes connections that have
@@ -315,6 +345,8 @@ impl Node {
                 self.schedule_retry(peer_node_addr, now_ms);
             }
         }
+
+        self.clear_pm2_confirmed_session_retransmits();
 
         // Established sessions can temporarily retain a session-layer
         // handshake payload: the initial final msg3, an FSP rekey msg1, or a
