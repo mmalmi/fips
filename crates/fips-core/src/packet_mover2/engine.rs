@@ -525,28 +525,41 @@ impl PacketMover2 {
         let start_len = prepared.len();
         let priority_only = priority_only || self.has_inbound_priority_pending();
         let shard_count = self.shards.len();
-        let start_shard = self.next_ingress_dispatch_shard % shard_count;
+        let mut start_shard = self.next_ingress_dispatch_shard % shard_count;
         let mut dispatched = 0usize;
-        for offset in 0..shard_count {
-            if dispatched >= limit {
+        while dispatched < limit {
+            let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
+                limit.saturating_sub(dispatched),
+                shard_count,
+            );
+            let mut pass_dispatched = 0usize;
+            for offset in 0..shard_count {
+                if dispatched >= limit {
+                    break;
+                }
+                let shard = (start_shard + offset) % shard_count;
+                let before = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
+                let got = self.shards[shard].dispatch_ingress_prepared_into(
+                    shard_limit.min(limit.saturating_sub(dispatched)),
+                    prepared,
+                    priority_only,
+                    fsp_path_open,
+                    fsp_path_open_bulk,
+                    &mut self.drops,
+                );
+                let after = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
+                self.admission_lens
+                    .saturating_sub_assign(before.saturating_sub(after));
+                dispatched = dispatched.saturating_add(got);
+                pass_dispatched = pass_dispatched.saturating_add(got);
+                if got > 0 {
+                    self.next_ingress_dispatch_shard = (shard + 1) % shard_count;
+                }
+            }
+            if pass_dispatched == 0 {
                 break;
             }
-            let shard = (start_shard + offset) % shard_count;
-            let before = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
-            let got = self.shards[shard].dispatch_ingress_prepared_into(
-                limit.saturating_sub(dispatched),
-                prepared,
-                priority_only,
-                fsp_path_open,
-                fsp_path_open_bulk,
-                &mut self.drops,
-            );
-            let after = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
-            self.admission_lens.saturating_sub_assign(before.saturating_sub(after));
-            dispatched = dispatched.saturating_add(got);
-            if got > 0 {
-                self.next_ingress_dispatch_shard = (shard + 1) % shard_count;
-            }
+            start_shard = self.next_ingress_dispatch_shard % shard_count;
         }
         crate::perf_profile::record_packet_mover2_crypto_open_batch(
             prepared.len().saturating_sub(start_len),
@@ -568,27 +581,39 @@ impl PacketMover2 {
         let priority_only = priority_only || self.has_outbound_priority_pending();
         let start_len = prepared.len();
         let shard_count = self.shards.len();
-        let start_shard = self.next_outbound_dispatch_shard % shard_count;
+        let mut start_shard = self.next_outbound_dispatch_shard % shard_count;
         let mut dispatched = 0usize;
-        for offset in 0..shard_count {
-            if dispatched >= limit {
+        while dispatched < limit {
+            let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
+                limit.saturating_sub(dispatched),
+                shard_count,
+            );
+            let mut pass_dispatched = 0usize;
+            for offset in 0..shard_count {
+                if dispatched >= limit {
+                    break;
+                }
+                let shard = (start_shard + offset) % shard_count;
+                let before = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
+                let got = self.shards[shard].dispatch_outbound_prepared_into(
+                    shard_limit.min(limit.saturating_sub(dispatched)),
+                    prepared,
+                    priority_only,
+                    &mut self.drops,
+                );
+                let after = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
+                self.outbound_admission_lens
+                    .saturating_sub_assign(before.saturating_sub(after));
+                dispatched = dispatched.saturating_add(got);
+                pass_dispatched = pass_dispatched.saturating_add(got);
+                if got > 0 {
+                    self.next_outbound_dispatch_shard = (shard + 1) % shard_count;
+                }
+            }
+            if pass_dispatched == 0 {
                 break;
             }
-            let shard = (start_shard + offset) % shard_count;
-            let before = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
-            let got = self.shards[shard].dispatch_outbound_prepared_into(
-                limit.saturating_sub(dispatched),
-                prepared,
-                priority_only,
-                &mut self.drops,
-            );
-            let after = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
-            self.outbound_admission_lens
-                .saturating_sub_assign(before.saturating_sub(after));
-            dispatched = dispatched.saturating_add(got);
-            if got > 0 {
-                self.next_outbound_dispatch_shard = (shard + 1) % shard_count;
-            }
+            start_shard = self.next_outbound_dispatch_shard % shard_count;
         }
 
         crate::perf_profile::record_packet_mover2_crypto_seal_batch(
@@ -747,6 +772,11 @@ fn packet_mover2_owner_shard_count(config: AdmissionConfig) -> usize {
         .min(usize::BITS as usize)
         .min(config.total_capacity().max(1))
         .max(1)
+}
+
+fn packet_mover2_owner_shard_dispatch_quantum(remaining: usize, shard_count: usize) -> usize {
+    let shard_count = shard_count.max(1);
+    remaining.saturating_add(shard_count - 1) / shard_count
 }
 
 fn packet_mover2_owner_shard_index(owner: OwnerId, shards: usize) -> usize {

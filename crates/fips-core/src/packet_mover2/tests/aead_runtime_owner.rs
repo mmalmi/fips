@@ -52,6 +52,71 @@
         assert_eq!(open_sealed_output(outputs[1], seal_key), b"outbound");
     }
 
+    #[test]
+    fn aead_dispatch_spreads_existing_budget_across_owner_shards() {
+        let mut mover = PacketMover2::new(AdmissionConfig::new(16, 16));
+        let shard_count = mover.shards.len();
+        if shard_count < 2 {
+            return;
+        }
+
+        let first = fsp_owner(10_000);
+        let first_shard = packet_mover2_owner_shard_index(first, shard_count);
+        let second = (10_001..20_000)
+            .map(fsp_owner)
+            .find(|owner| packet_mover2_owner_shard_index(*owner, shard_count) != first_shard)
+            .expect("test range should contain an owner on a distinct shard");
+        let key = 70;
+        mover.register_owner(first, OwnerConfig::new(1, 16));
+        mover.register_owner(second, OwnerConfig::new(1, 16));
+        mover
+            .owner_mut(first)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+        mover
+            .owner_mut(second)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        for counter in 1..=8 {
+            mover
+                .submit_socket_packet(encrypted_fsp_packet(
+                    first,
+                    1,
+                    counter,
+                    PacketClass::Bulk,
+                    OutputTarget::Tun,
+                    key,
+                ))
+                .unwrap();
+        }
+        for counter in 101..=108 {
+            mover
+                .submit_socket_packet(encrypted_fsp_packet(
+                    second,
+                    1,
+                    counter,
+                    PacketClass::Bulk,
+                    OutputTarget::Tun,
+                    key,
+                ))
+                .unwrap();
+        }
+
+        let work = dispatch_available(&mut mover, 8);
+        let first_count = work
+            .iter()
+            .filter(|work| work.reservation.owner == first)
+            .count();
+        let second_count = work
+            .iter()
+            .filter(|work| work.reservation.owner == second)
+            .count();
+        assert_eq!(work.len(), 8);
+        assert!(first_count > 0, "first shard should be fed");
+        assert!(second_count > 0, "second shard should be fed");
+    }
+
     #[derive(Debug, Default)]
     struct RecordingChunkExecutor {
         inline: InlinePacketMover2CryptoExecutor,
