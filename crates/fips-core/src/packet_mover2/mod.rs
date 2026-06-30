@@ -53,6 +53,7 @@ include!("session_wrap.rs");
 include!("wire.rs");
 include!("admission.rs");
 include!("owner.rs");
+include!("owner_shard.rs");
 include!("work.rs");
 include!("live_ingress.rs");
 include!("tun_outbound.rs");
