@@ -482,45 +482,6 @@
         }
     }
 
-    #[derive(Debug, Default)]
-    struct ReadyDrainingDelayedChunkExecutor {
-        delayed: DelayedChunkExecutor,
-    }
-
-    impl PacketMover2CryptoExecutor for ReadyDrainingDelayedChunkExecutor {
-        fn execute_prepared_chunk(
-            &mut self,
-            prepared: &mut Vec<PreparedCryptoWork>,
-            completions: &mut Vec<CryptoCompletion>,
-        ) -> usize {
-            self.delayed.execute_prepared_chunk(prepared, completions)
-        }
-
-        fn drain_ready_completions_into(
-            &mut self,
-            limit: usize,
-            completions: &mut Vec<CryptoCompletion>,
-        ) -> usize {
-            let mut drained = 0usize;
-            while drained < limit {
-                let Some(mut batch) = self.delayed.ready.pop_front() else {
-                    break;
-                };
-                let remaining = limit.saturating_sub(drained);
-                if batch.len() > remaining {
-                    let tail = batch.split_off(remaining);
-                    drained = drained.saturating_add(batch.len());
-                    completions.extend(batch);
-                    self.delayed.ready.push_front(tail);
-                    break;
-                }
-                drained = drained.saturating_add(batch.len());
-                completions.extend(batch);
-            }
-            drained
-        }
-    }
-
     #[derive(Debug)]
     struct BoundedDelayedChunkExecutor {
         inline: InlinePacketMover2CryptoExecutor,
@@ -790,56 +751,38 @@
     }
 
     #[test]
-    fn ready_executor_completions_retire_in_same_dispatch_turn() {
+    fn aead_worker_pool_returns_completions_through_completion_source() {
         let owner = fmp_owner(706);
         let open_key = 20;
         let mut mover = mover();
         register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
-        submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..102, b"ready");
-
-        let mut executor = ReadyDrainingDelayedChunkExecutor::default();
-        let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut executor, 2);
-
-        assert_eq!(dispatched, 2);
-        assert_eq!(executor.delayed.nonempty_chunks, vec![2]);
-        assert!(drops.is_empty());
-        let outputs = outputs(retired);
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(
-            outputs
-                .iter()
-                .map(PacketOutput::counter)
-                .collect::<Vec<_>>(),
-            vec![100, 101]
-        );
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-        assert!(executor.delayed.ready.is_empty());
-    }
-
-    #[test]
-    fn aead_worker_pool_returns_completions_through_completion_source() {
-        let owner = fmp_owner(707);
-        let open_key = 21;
-        let mut mover = mover();
-        register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
-        submit_fmp_inbound_range(&mut mover, owner, 707, open_key, 100..104, b"worker");
+        submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..104, b"worker");
 
         let mut pool = PacketMover2AeadWorkerPool::new(2, 8);
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
 
         assert_eq!(dispatched, 4);
+        assert!(retired.is_empty());
         assert!(drops.is_empty());
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 4);
 
-        let mut retired = outputs(retired);
-        while retired.len() < 4 {
-            let completions = drain_worker_pool_completions(&mut pool, 4 - retired.len());
-            assert!(!completions.is_empty());
-            for completion in completions {
-                retired.extend(outputs(retire_completion(&mut mover, completion)));
-            }
+        let mut retired = Vec::new();
+        let completions = drain_worker_pool_completions(&mut pool, 2);
+        assert_eq!(completions.len(), 2);
+        assert_eq!(pool.available_open_capacity(), 6);
+        assert_eq!(pool.available_seal_capacity(), 8);
+        for completion in completions {
+            retired.extend(retire_completion(&mut mover, completion));
         }
+
+        let completions = drain_worker_pool_completions(&mut pool, 2);
+        assert_eq!(completions.len(), 2);
+        for completion in completions {
+            retired.extend(retire_completion(&mut mover, completion));
+        }
+        let outputs = outputs(retired);
         assert_eq!(
-            retired
+            outputs
                 .iter()
                 .map(PacketOutput::counter)
                 .collect::<Vec<_>>(),
@@ -879,10 +822,10 @@
         let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut pool, 4);
 
         assert_eq!(dispatched, 4);
-        assert!(outputs(retired).len() <= 4);
+        assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert!(pool.available_open_capacity() <= 2);
-        assert!(pool.available_seal_capacity() <= 2);
+        assert_eq!(pool.available_open_capacity(), 0);
+        assert_eq!(pool.available_seal_capacity(), 0);
     }
 
     #[test]
@@ -922,8 +865,13 @@
             PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
         );
         assert_eq!(dispatched, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS);
-        assert!(outputs(retired).len() <= PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS);
+        assert!(retired.is_empty());
         assert!(drops.is_empty());
+        assert_eq!(pool.available_open_capacity_for_lane(Lane::Bulk), 0);
+        assert_eq!(
+            pool.available_open_capacity_for_lane(Lane::Priority),
+            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS
+        );
 
         mover
             .submit_socket_packet(encrypted_fmp_packet(
@@ -940,10 +888,10 @@
             &mut pool,
             PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
         );
-        assert!(dispatched >= 1);
-        let _retired = outputs(retired);
+        assert_eq!(dispatched, 1);
+        assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(queue_lens(&mover).0, 0);
+        assert_eq!(queue_lens(&mover), (0, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS));
     }
 
     #[test]

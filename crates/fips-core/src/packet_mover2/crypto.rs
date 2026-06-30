@@ -146,14 +146,6 @@ pub(crate) trait PacketMover2CryptoExecutor {
         prepared: &mut Vec<PreparedCryptoWork>,
         completions: &mut Vec<CryptoCompletion>,
     ) -> usize;
-
-    fn drain_ready_completions_into(
-        &mut self,
-        _limit: usize,
-        _completions: &mut Vec<CryptoCompletion>,
-    ) -> usize {
-        0
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -445,14 +437,6 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             completions,
         );
         count
-    }
-
-    fn drain_ready_completions_into(
-        &mut self,
-        limit: usize,
-        completions: &mut Vec<CryptoCompletion>,
-    ) -> usize {
-        self.drain_completions_into(limit, completions)
     }
 }
 

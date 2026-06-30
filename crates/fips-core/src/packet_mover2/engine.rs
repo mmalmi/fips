@@ -499,37 +499,9 @@ impl PacketMover2 {
         execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         let completed = self.queue_completion_batch(completion_work);
         self.retire_queued_completions_into(completed, retired);
-        self.drain_ready_executor_completions_into(
-            executor,
-            limit.saturating_sub(completed),
-            completion_work,
-            retired,
-        );
 
         drops.append(&mut self.drops);
         dispatched_total
-    }
-
-    fn drain_ready_executor_completions_into<E>(
-        &mut self,
-        executor: &mut E,
-        limit: usize,
-        completion_work: &mut Vec<CryptoCompletion>,
-        retired: &mut Vec<RetiredPacket>,
-    ) -> usize
-    where
-        E: PacketMover2CryptoExecutor,
-    {
-        if limit == 0 {
-            return 0;
-        }
-        completion_work.clear();
-        let completed = executor.drain_ready_completions_into(limit, completion_work);
-        if completed == 0 {
-            return 0;
-        }
-        let queued = self.queue_completion_batch(completion_work);
-        self.retire_queued_completions_into(queued, retired)
     }
 
     pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
