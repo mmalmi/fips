@@ -372,6 +372,20 @@ impl PacketMover2EndpointCommandRouter for PacketMover2LiveRouteTable {
         };
         route.route_owned_request(request)
     }
+
+    fn route_endpoint_command_owned_batch(
+        &mut self,
+        request: PacketMover2EndpointCommandOwnedBatch,
+    ) -> PacketMover2EndpointCommandBatchRoute {
+        let Some(route) = self.endpoint.get(&request.dest_addr()) else {
+            let mut result = PacketMover2EndpointCommandBatchRoute::default();
+            if !request.is_empty() {
+                result.set_deferred_payloads(request.into_payloads());
+            }
+            return result;
+        };
+        route.route_owned_batch(request)
+    }
 }
 
 #[derive(Clone, Debug)]

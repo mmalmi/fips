@@ -81,6 +81,83 @@ impl PacketMover2EndpointCommandOwnedPayload {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct PacketMover2EndpointCommandOwnedBatch {
+    remote: PeerIdentity,
+    payloads: Vec<EndpointDataPayload>,
+}
+
+impl PacketMover2EndpointCommandOwnedBatch {
+    fn new(remote: PeerIdentity, payloads: Vec<EndpointDataPayload>) -> Self {
+        Self { remote, payloads }
+    }
+
+    fn remote(&self) -> PeerIdentity {
+        self.remote
+    }
+
+    fn dest_addr(&self) -> NodeAddr {
+        *self.remote.node_addr()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.payloads.is_empty()
+    }
+
+    fn into_payloads(self) -> Vec<EndpointDataPayload> {
+        self.payloads
+    }
+
+    fn into_sends(self) -> impl Iterator<Item = EndpointDataSend> {
+        let remote = self.remote;
+        self.payloads
+            .into_iter()
+            .map(move |payload| EndpointDataSend::new(remote, payload))
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PacketMover2EndpointCommandBatchRoute {
+    routed: Vec<OutboundPacket>,
+    dropped: Vec<(EndpointDataSend, PacketMover2EndpointCommandDropReason)>,
+    deferred_payloads: Option<Vec<EndpointDataPayload>>,
+}
+
+impl PacketMover2EndpointCommandBatchRoute {
+    fn routed_mut(&mut self) -> &mut Vec<OutboundPacket> {
+        &mut self.routed
+    }
+
+    fn dropped_mut(
+        &mut self,
+    ) -> &mut Vec<(EndpointDataSend, PacketMover2EndpointCommandDropReason)> {
+        &mut self.dropped
+    }
+
+    fn set_deferred_payloads(&mut self, payloads: Vec<EndpointDataPayload>) {
+        if !payloads.is_empty() {
+            self.deferred_payloads = Some(payloads);
+        }
+    }
+
+    fn finish<F>(
+        self,
+        drops: &mut Vec<PacketMover2EndpointCommandDrop>,
+        mut push: F,
+    ) -> Option<Vec<EndpointDataPayload>>
+    where
+        F: FnMut(OutboundPacket),
+    {
+        for packet in self.routed {
+            push(packet);
+        }
+        for (send, reason) in self.dropped {
+            push_endpoint_command_drop(&send, reason, drops);
+        }
+        self.deferred_payloads
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2EndpointCommandRoute {
     owner: OwnerId,
@@ -139,6 +216,30 @@ impl PacketMover2EndpointCommandRoute {
         }
         let class = request.packet_class();
         Ok(self.build_packet(class, request.into_payload_bytes()))
+    }
+
+    fn route_owned_batch(
+        &self,
+        request: PacketMover2EndpointCommandOwnedBatch,
+    ) -> PacketMover2EndpointCommandBatchRoute {
+        let mut result = PacketMover2EndpointCommandBatchRoute::default();
+        let routed_at_ms = crate::time::now_ms();
+        for send in request.into_sends() {
+            let payload_len = send.payload().len();
+            if let Err(reason) = self.validate_payload_len(payload_len) {
+                result.dropped_mut().push((send, reason));
+                continue;
+            }
+            let class = endpoint_packet_class(
+                send.payload().lane(),
+                send.payload().drop_on_backpressure(),
+            );
+            result.routed_mut().push(
+                self.build_packet(class, send.into_payload().into_bytes())
+                    .with_activity_tick(ActivityTick::new(routed_at_ms)),
+            );
+        }
+        result
     }
 
     fn validate_payload_len(
@@ -255,6 +356,40 @@ pub(crate) trait PacketMover2EndpointCommandRouter {
             Err(reason) => Err((request, reason)),
         }
     }
+
+    fn route_endpoint_command_owned_batch(
+        &mut self,
+        request: PacketMover2EndpointCommandOwnedBatch,
+    ) -> PacketMover2EndpointCommandBatchRoute
+    where
+        Self: Sized,
+    {
+        let mut result = PacketMover2EndpointCommandBatchRoute::default();
+        let mut any_routed = false;
+        let remote = request.remote();
+        let mut payloads = request.into_payloads().into_iter();
+        while let Some(payload) = payloads.next() {
+            let send = EndpointDataSend::new(remote, payload);
+            match route_endpoint_send_with_router_owned(send, self, |packet| {
+                any_routed = true;
+                result.routed_mut().push(packet);
+            }) {
+                Ok(()) => {}
+                Err((send, PacketMover2EndpointCommandDropReason::NoRoute)) if !any_routed => {
+                    let mut remaining =
+                        Vec::with_capacity(payloads.size_hint().0.saturating_add(1));
+                    remaining.push(send.into_payload());
+                    remaining.extend(payloads);
+                    result.set_deferred_payloads(remaining);
+                    break;
+                }
+                Err((send, reason)) => {
+                    result.dropped_mut().push((send, reason));
+                }
+            }
+        }
+        result
+    }
 }
 
 impl<F> PacketMover2EndpointCommandRouter for F
@@ -360,30 +495,10 @@ fn route_endpoint_command_with_router<R, F>(
         }
         NodeEndpointCommand::SendBatchOneway { command, lane } => {
             let (remote, payloads, queued_at, enqueued_at_ms) = command.into_deferred_parts();
-            let mut any_routed = false;
-            let mut deferred_payloads = None;
-            let mut payloads = payloads.into_iter();
-            while let Some(payload) = payloads.next() {
-                let send = EndpointDataSend::new(remote, payload);
-                match route_endpoint_send_with_router_owned(send, router, &mut push) {
-                    Ok(()) => {
-                        any_routed = true;
-                    }
-                    Err((send, PacketMover2EndpointCommandDropReason::NoRoute))
-                        if !any_routed =>
-                    {
-                        let mut remaining =
-                            Vec::with_capacity(payloads.size_hint().0.saturating_add(1));
-                        remaining.push(send.into_payload());
-                        remaining.extend(payloads);
-                        deferred_payloads = Some(remaining);
-                        break;
-                    }
-                    Err((send, reason)) => {
-                        push_endpoint_command_drop(&send, reason, drops);
-                    }
-                }
-            }
+            let route = router.route_endpoint_command_owned_batch(
+                PacketMover2EndpointCommandOwnedBatch::new(remote, payloads),
+            );
+            let deferred_payloads = route.finish(drops, &mut push);
             if let Some(payloads) = deferred_payloads {
                 let command = EndpointSendBatchCommand::new_with_enqueued_at_ms(
                     remote,
