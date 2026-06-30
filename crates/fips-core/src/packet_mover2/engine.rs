@@ -7,8 +7,8 @@ pub(crate) struct PacketMover2 {
     drops: Vec<PacketDrop>,
     next_ingress_seq: u64,
     next_outbound_seq: u64,
-    next_ingress_dispatch_shard: usize,
-    next_outbound_dispatch_shard: usize,
+    ingress_ready_shards: ReadyShardQueues,
+    outbound_ready_shards: ReadyShardQueues,
     completion_ready_shards: VecDeque<usize>,
     completion_shard_ready: Vec<bool>,
 }
@@ -27,8 +27,8 @@ impl PacketMover2 {
             drops: Vec::new(),
             next_ingress_seq: 0,
             next_outbound_seq: 0,
-            next_ingress_dispatch_shard: 0,
-            next_outbound_dispatch_shard: 0,
+            ingress_ready_shards: ReadyShardQueues::new(shard_count),
+            outbound_ready_shards: ReadyShardQueues::new(shard_count),
             completion_ready_shards: VecDeque::new(),
             completion_shard_ready: vec![false; shard_count],
         }
@@ -262,10 +262,10 @@ impl PacketMover2 {
         }
 
         let ingress_seq = self.next_ingress_seq();
-        let admitted = self
-            .owner_shard_mut(packet.owner)
-            .submit_socket_packet_with_seq(packet, ingress_seq);
+        let shard = self.owner_shard_index(packet.owner);
+        let admitted = self.shards[shard].submit_socket_packet_with_seq(packet, ingress_seq);
         self.admission_lens.increment(lane);
+        self.ingress_ready_shards.mark(shard, lane);
         Ok(admitted)
     }
 
@@ -290,10 +290,10 @@ impl PacketMover2 {
         }
 
         let ingress_seq = self.next_outbound_seq();
-        let admitted = self
-            .owner_shard_mut(packet.owner)
-            .submit_outbound_packet_with_seq(packet, ingress_seq);
+        let shard = self.owner_shard_index(packet.owner);
+        let admitted = self.shards[shard].submit_outbound_packet_with_seq(packet, ingress_seq);
         self.outbound_admission_lens.increment(lane);
+        self.outbound_ready_shards.mark(shard, lane);
         Ok(admitted)
     }
 
@@ -599,20 +599,24 @@ impl PacketMover2 {
 
         let start_len = prepared.len();
         let priority_only = priority_only || self.has_inbound_priority_pending();
-        let shard_count = self.shards.len();
-        let mut start_shard = self.next_ingress_dispatch_shard % shard_count;
         let mut dispatched = 0usize;
         while dispatched < limit {
+            let ready_lanes = self.ingress_ready_shards.ready_len(priority_only);
+            if ready_lanes == 0 {
+                break;
+            }
             let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
                 limit.saturating_sub(dispatched),
-                shard_count,
+                ready_lanes,
             );
             let mut pass_dispatched = 0usize;
-            for offset in 0..shard_count {
+            for _ in 0..ready_lanes {
                 if dispatched >= limit {
                     break;
                 }
-                let shard = (start_shard + offset) % shard_count;
+                let Some(shard) = self.ingress_ready_shards.pop(priority_only) else {
+                    break;
+                };
                 let before = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
                 let got = self.shards[shard].dispatch_ingress_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
@@ -625,16 +629,13 @@ impl PacketMover2 {
                 let after = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
                 self.admission_lens
                     .saturating_sub_assign(before.saturating_sub(after));
+                self.ingress_ready_shards.mark_from_lens(shard, after);
                 dispatched = dispatched.saturating_add(got);
                 pass_dispatched = pass_dispatched.saturating_add(got);
-                if got > 0 {
-                    self.next_ingress_dispatch_shard = (shard + 1) % shard_count;
-                }
             }
             if pass_dispatched == 0 {
                 break;
             }
-            start_shard = self.next_ingress_dispatch_shard % shard_count;
         }
         crate::perf_profile::record_packet_mover2_crypto_open_batch(
             prepared.len().saturating_sub(start_len),
@@ -655,20 +656,24 @@ impl PacketMover2 {
 
         let priority_only = priority_only || self.has_outbound_priority_pending();
         let start_len = prepared.len();
-        let shard_count = self.shards.len();
-        let mut start_shard = self.next_outbound_dispatch_shard % shard_count;
         let mut dispatched = 0usize;
         while dispatched < limit {
+            let ready_lanes = self.outbound_ready_shards.ready_len(priority_only);
+            if ready_lanes == 0 {
+                break;
+            }
             let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
                 limit.saturating_sub(dispatched),
-                shard_count,
+                ready_lanes,
             );
             let mut pass_dispatched = 0usize;
-            for offset in 0..shard_count {
+            for _ in 0..ready_lanes {
                 if dispatched >= limit {
                     break;
                 }
-                let shard = (start_shard + offset) % shard_count;
+                let Some(shard) = self.outbound_ready_shards.pop(priority_only) else {
+                    break;
+                };
                 let before = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
                 let got = self.shards[shard].dispatch_outbound_prepared_into(
                     shard_limit.min(limit.saturating_sub(dispatched)),
@@ -679,16 +684,13 @@ impl PacketMover2 {
                 let after = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
                 self.outbound_admission_lens
                     .saturating_sub_assign(before.saturating_sub(after));
+                self.outbound_ready_shards.mark_from_lens(shard, after);
                 dispatched = dispatched.saturating_add(got);
                 pass_dispatched = pass_dispatched.saturating_add(got);
-                if got > 0 {
-                    self.next_outbound_dispatch_shard = (shard + 1) % shard_count;
-                }
             }
             if pass_dispatched == 0 {
                 break;
             }
-            start_shard = self.next_outbound_dispatch_shard % shard_count;
         }
 
         crate::perf_profile::record_packet_mover2_crypto_seal_batch(
@@ -741,6 +743,86 @@ impl LaneLens {
     fn saturating_sub_assign(&mut self, other: Self) {
         self.priority = self.priority.saturating_sub(other.priority);
         self.bulk = self.bulk.saturating_sub(other.bulk);
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ReadyShardQueues {
+    priority: VecDeque<usize>,
+    bulk: VecDeque<usize>,
+    priority_ready: Vec<bool>,
+    bulk_ready: Vec<bool>,
+}
+
+impl ReadyShardQueues {
+    fn new(shards: usize) -> Self {
+        Self {
+            priority: VecDeque::new(),
+            bulk: VecDeque::new(),
+            priority_ready: vec![false; shards],
+            bulk_ready: vec![false; shards],
+        }
+    }
+
+    fn mark(&mut self, shard: usize, lane: Lane) {
+        let (queue, ready) = self.lane_mut(lane);
+        let Some(is_ready) = ready.get_mut(shard) else {
+            return;
+        };
+        if *is_ready {
+            return;
+        }
+        *is_ready = true;
+        queue.push_back(shard);
+    }
+
+    fn mark_from_lens(&mut self, shard: usize, lens: LaneLens) {
+        if lens.priority > 0 {
+            self.mark(shard, Lane::Priority);
+        }
+        if lens.bulk > 0 {
+            self.mark(shard, Lane::Bulk);
+        }
+    }
+
+    fn pop(&mut self, priority_only: bool) -> Option<usize> {
+        self.pop_lane(Lane::Priority).or_else(|| {
+            if priority_only {
+                None
+            } else {
+                self.pop_lane(Lane::Bulk)
+            }
+        })
+    }
+
+    fn ready_len(&self, priority_only: bool) -> usize {
+        if priority_only {
+            self.priority.len()
+        } else {
+            self.priority.len().saturating_add(self.bulk.len())
+        }
+    }
+
+    fn pop_lane(&mut self, lane: Lane) -> Option<usize> {
+        let (queue, ready) = self.lane_mut(lane);
+        loop {
+            let shard = queue.pop_front()?;
+            let Some(is_ready) = ready.get_mut(shard) else {
+                continue;
+            };
+            if !*is_ready {
+                continue;
+            }
+            *is_ready = false;
+            return Some(shard);
+        }
+    }
+
+    fn lane_mut(&mut self, lane: Lane) -> (&mut VecDeque<usize>, &mut Vec<bool>) {
+        match lane {
+            Lane::Priority => (&mut self.priority, &mut self.priority_ready),
+            Lane::Bulk => (&mut self.bulk, &mut self.bulk_ready),
+        }
     }
 }
 

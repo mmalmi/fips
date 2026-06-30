@@ -254,6 +254,111 @@
         assert!(matches!(&retired[1], RetiredPacket::Output(output) if output.counter == 2));
     }
 
+    #[test]
+    fn admission_ready_queues_mark_each_owner_shard_lane_once() {
+        let owner = fmp_owner(20_600);
+        let key = 73;
+        let mut inbound_mover = mover();
+        inbound_mover.register_owner(owner, OwnerConfig::new(1, 16));
+        inbound_mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        inbound_mover
+            .submit_socket_packet(packet(
+                owner,
+                1,
+                10,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+            ))
+            .unwrap();
+        inbound_mover
+            .submit_socket_packet(packet(
+                owner,
+                1,
+                11,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+            ))
+            .unwrap();
+
+        let shard = packet_mover2_owner_shard_index(owner, inbound_mover.shards.len());
+        assert_eq!(
+            inbound_mover
+                .ingress_ready_shards
+                .bulk
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![shard]
+        );
+
+        let inbound = dispatch_available(&mut inbound_mover, 1);
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(
+            inbound_mover
+                .ingress_ready_shards
+                .bulk
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![shard]
+        );
+        assert!(inbound_mover.ingress_ready_shards.bulk_ready[shard]);
+
+        let mut outbound_mover = mover();
+        outbound_mover.register_owner(owner, OwnerConfig::new(1, 16).with_next_send_counter(700));
+        outbound_mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+        outbound_mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                700,
+                0,
+                b"first".to_vec(),
+            ))
+            .unwrap();
+        outbound_mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                700,
+                0,
+                b"second".to_vec(),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            outbound_mover
+                .outbound_ready_shards
+                .bulk
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![shard]
+        );
+
+        let outbound = dispatch_outbound_available(&mut outbound_mover, 1);
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(
+            outbound_mover
+                .outbound_ready_shards
+                .bulk
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![shard]
+        );
+        assert!(outbound_mover.outbound_ready_shards.bulk_ready[shard]);
+    }
+
     #[derive(Debug, Default)]
     struct RecordingChunkExecutor {
         inline: InlinePacketMover2CryptoExecutor,
