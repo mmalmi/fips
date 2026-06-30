@@ -599,6 +599,7 @@ pub(crate) struct OwnerState {
     next_send_counter: u64,
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     crypto_keys: Option<OwnerCryptoKeys>,
+    previous_fsp_open: Option<AeadKey>,
     active_path: Option<TransportPath>,
     fmp_session_start_ms: Option<u64>,
     fmp_send_headers: Option<PacketMover2FmpSendHeaders>,
@@ -626,6 +627,7 @@ pub(crate) struct OwnerState {
     hard_events: u64,
     authenticated_counter_highest: u64,
     replay_window: ReplayWindow,
+    previous_fsp_replay_window: Option<ReplayWindow>,
     pending: BTreeMap<OrderToken, CryptoCompletion>,
 }
 
@@ -646,6 +648,7 @@ impl OwnerState {
             next_send_counter: config.next_send_counter,
             send_counter_authority: config.send_counter_authority,
             crypto_keys: None,
+            previous_fsp_open: None,
             active_path: None,
             fmp_session_start_ms: config.fmp_session_start_ms,
             fmp_send_headers: config.fmp_send_headers,
@@ -682,6 +685,7 @@ impl OwnerState {
             hard_events: 0,
             authenticated_counter_highest: 0,
             replay_window: ReplayWindow::default(),
+            previous_fsp_replay_window: None,
             pending: BTreeMap::new(),
         }
     }
@@ -692,6 +696,7 @@ impl OwnerState {
         self.next_send_counter = 0;
         self.send_counter_authority = None;
         self.crypto_keys = None;
+        self.previous_fsp_open = None;
         self.fmp_session_start_ms = None;
         self.fmp_send_headers = None;
         if let Some(mmp) = &mut self.fmp_mmp {
@@ -717,10 +722,41 @@ impl OwnerState {
         self.data_bytes_recv = 0;
         self.consecutive_decrypt_failures = 0;
         self.authenticated_counter_highest = 0;
+        self.previous_fsp_replay_window = None;
     }
 
     pub(crate) fn set_crypto_keys(&mut self, keys: OwnerCryptoKeys) {
         self.crypto_keys = Some(keys);
+    }
+
+    pub(crate) fn install_fsp_session(
+        &mut self,
+        config: OwnerConfig,
+        keys: OwnerCryptoKeys,
+    ) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+
+        let generation_changed = config.generation != self.generation;
+        let previous_epoch = generation_changed && config.fsp_previous_draining_k_bit.is_some();
+        let previous_open = previous_epoch
+            .then(|| self.crypto_keys.as_ref().map(|old_keys| old_keys.open.clone()))
+            .flatten();
+        let previous_replay = previous_open
+            .is_some()
+            .then(|| std::mem::take(&mut self.replay_window));
+
+        self.apply_live_config(config);
+        self.crypto_keys = Some(keys);
+        if let (Some(open), Some(replay)) = (previous_open, previous_replay) {
+            self.previous_fsp_open = Some(open);
+            self.previous_fsp_replay_window = Some(replay);
+        } else if self.fsp_previous_draining_k_bit.is_none() {
+            self.previous_fsp_open = None;
+            self.previous_fsp_replay_window = None;
+        }
+        true
     }
 
     pub(crate) fn set_fsp_epoch(
@@ -733,6 +769,10 @@ impl OwnerState {
         }
         self.fsp_current_k_bit = current_k_bit;
         self.fsp_previous_draining_k_bit = previous_draining_k_bit;
+        if previous_draining_k_bit.is_none() {
+            self.previous_fsp_open = None;
+            self.previous_fsp_replay_window = None;
+        }
         true
     }
 
@@ -809,6 +849,24 @@ impl OwnerState {
 
     fn crypto_keys(&self) -> Option<OwnerCryptoKeys> {
         self.crypto_keys.clone()
+    }
+
+    fn open_key_for_packet(&self, packet: &SocketPacket) -> Option<AeadKey> {
+        if self.uses_previous_fsp_receive_epoch(packet) {
+            return self.previous_fsp_open.clone();
+        }
+        self.crypto_keys.as_ref().map(|keys| keys.open.clone())
+    }
+
+    fn uses_previous_fsp_receive_epoch(&self, packet: &SocketPacket) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        let received_k_bit = packet.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0;
+        self.fsp_previous_draining_k_bit == Some(received_k_bit)
+            && received_k_bit != self.fsp_current_k_bit
+            && self.previous_fsp_open.is_some()
+            && self.previous_fsp_replay_window.is_some()
     }
 
     pub(crate) fn set_active_path(&mut self, path: TransportPath) {
@@ -1044,15 +1102,23 @@ impl OwnerState {
         if packet.generation != self.generation {
             return Err(OwnerReserveError::StaleGeneration);
         }
-        if self.replay_window.is_replay(packet.counter) {
-            return Err(OwnerReserveError::Replay);
-        }
+        let use_previous_epoch = self.uses_previous_fsp_receive_epoch(packet);
         let lane = packet.lane();
         if !self.can_reserve_class(packet.class) {
             return Err(OwnerReserveError::InFlightFull);
         }
+        let replay_window = if use_previous_epoch {
+            self.previous_fsp_replay_window
+                .as_mut()
+                .expect("previous FSP epoch checked before reservation")
+        } else {
+            &mut self.replay_window
+        };
+        if replay_window.is_replay(packet.counter) {
+            return Err(OwnerReserveError::Replay);
+        }
 
-        if !self.replay_window.accept(packet.counter) {
+        if !replay_window.accept(packet.counter) {
             return Err(OwnerReserveError::Replay);
         }
         if let Some(path) = packet.source_path.clone() {

@@ -235,16 +235,16 @@ impl PacketMover2OwnerShard {
                 continue;
             }
 
-            let keys = owner.crypto_keys();
             match owner.reserve(&queued.packet, queued.ingress_seq) {
                 Ok(reservation) => {
                     count_fsp_path_open_dispatch(&reservation, fsp_path_open, fsp_path_open_bulk);
+                    let open_key = owner.open_key_for_packet(&queued.packet);
                     let work = CryptoWork {
                         reservation: reservation.clone(),
                         packet: queued.packet,
                     };
-                    let prepared_work = match keys {
-                        Some(keys) => PreparedCryptoWork::open(work, keys.open),
+                    let prepared_work = match open_key {
+                        Some(open_key) => PreparedCryptoWork::open(work, open_key),
                         None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open),
                     };
                     prepared.push(prepared_work);

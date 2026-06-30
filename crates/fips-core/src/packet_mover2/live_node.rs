@@ -264,6 +264,21 @@ impl PacketMover2LiveNode {
         Ok(())
     }
 
+    pub(crate) fn install_owner_fsp_session(
+        &mut self,
+        owner: OwnerId,
+        config: OwnerConfig,
+        keys: OwnerCryptoKeys,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.install_fsp_session(config, keys) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
     pub(crate) fn apply_owner_live_config(
         &mut self,
         owner: OwnerId,

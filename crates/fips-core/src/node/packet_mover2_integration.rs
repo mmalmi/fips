@@ -783,12 +783,8 @@ impl Node {
             .is_none_or(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
         let synced = self
             .packet_mover2
-            .apply_owner_live_config(seed.owner, seed.config)
+            .install_owner_fsp_session(seed.owner, seed.config, seed.keys)
             .is_ok()
-            && self
-                .packet_mover2
-                .set_owner_crypto_keys(seed.owner, seed.keys)
-                .is_ok()
             && self
                 .packet_mover2
                 .replace_owner_routes(seed.owner, seed.routes)

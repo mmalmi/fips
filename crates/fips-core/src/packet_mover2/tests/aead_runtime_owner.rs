@@ -1465,6 +1465,82 @@
     }
 
     #[test]
+    fn fsp_owner_keeps_previous_receive_epoch_during_rekey_drain() {
+        let owner = fsp_owner(85);
+        let old_key = 85;
+        let new_key = 86;
+        let mut mover = mover();
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_fsp_session_start_ms(1_000)
+                .with_fsp_send_headers(0, 0)
+                .with_fsp_epoch(false, None),
+        );
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(old_key), test_key(old_key)));
+
+        mover
+            .submit_socket_packet(SocketPacket::new(
+                owner,
+                1,
+                10,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+                fsp_encrypted_wire(10, 0, b"old-before", old_key),
+            ))
+            .unwrap();
+        let turn = run_aead_available(&mut mover, 8);
+        assert!(turn.drops().is_empty());
+        assert_eq!(&turn.outputs()[0].payload[FSP_HEADER_SIZE..], b"old-before");
+
+        assert!(mover.owner_mut(owner).unwrap().install_fsp_session(
+            OwnerConfig::new(2, 8)
+                .with_fsp_session_start_ms(2_000)
+                .with_fsp_send_headers(crate::node::session_wire::FSP_FLAG_K, 0)
+                .with_fsp_epoch(true, Some(false)),
+            OwnerCryptoKeys::new(test_key(new_key), test_key(new_key)),
+        ));
+
+        mover
+            .submit_socket_packet(SocketPacket::new(
+                owner,
+                2,
+                11,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+                fsp_encrypted_wire(11, 0, b"old-after", old_key),
+            ))
+            .unwrap();
+        let current_epoch_packet = SocketPacket::new(
+            owner,
+            2,
+            1,
+            PacketClass::Bulk,
+            OutputTarget::Tun,
+            fsp_encrypted_wire(
+                1,
+                crate::node::session_wire::FSP_FLAG_K,
+                b"new-after",
+                new_key,
+            ),
+        )
+        .with_wire_flags(crate::node::session_wire::FSP_FLAG_K);
+        mover
+            .submit_socket_packet(current_epoch_packet)
+            .unwrap();
+
+        let turn = run_aead_available(&mut mover, 8);
+        assert!(turn.drops().is_empty(), "{:?}", turn.drops());
+        let outputs = turn.outputs();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(&outputs[0].payload[FSP_HEADER_SIZE..], b"old-after");
+        assert_eq!(&outputs[1].payload[FSP_HEADER_SIZE..], b"new-after");
+    }
+
+    #[test]
     fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         let owner = fsp_owner(81);
         let mut mover = mover();
