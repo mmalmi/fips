@@ -164,8 +164,6 @@ impl PacketMover2 {
     fn run_aead_available_into_with_executor<E>(
         &mut self,
         limit: usize,
-        open_work: &mut Vec<CryptoWork>,
-        seal_work: &mut Vec<OutboundCryptoWork>,
         prepared_work: &mut Vec<PreparedCryptoWork>,
         completion_work: &mut Vec<CryptoCompletion>,
         retired: &mut Vec<RetiredPacket>,
@@ -176,8 +174,6 @@ impl PacketMover2 {
         E: PacketMover2CryptoExecutor,
     {
         retired.clear();
-        open_work.clear();
-        seal_work.clear();
         prepared_work.clear();
         completion_work.clear();
         let executor_capacity = executor.available_capacity();
@@ -205,25 +201,26 @@ impl PacketMover2 {
         let mut fsp_path_open_bulk = 0u64;
 
         let pre_priority_inbound_dispatched =
-            self.dispatch_available_into(pre_priority_inbound_limit, open_work);
+            self.dispatch_prepared_available_into(
+                pre_priority_inbound_limit,
+                prepared_work,
+                &mut fsp_path_open,
+                &mut fsp_path_open_bulk,
+            );
         dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
         priority_feed_capacity =
             priority_feed_capacity.saturating_sub(pre_priority_inbound_dispatched);
-        self.append_open_work_batch(
-            open_work,
-            prepared_work,
-            &mut fsp_path_open,
-            &mut fsp_path_open_bulk,
-        );
 
         let priority_outbound_limit = outbound_priority_reserve
             .min(limit.saturating_sub(dispatched_total))
             .min(priority_feed_capacity);
         let priority_outbound_dispatched =
-            self.dispatch_outbound_priority_available_into(priority_outbound_limit, seal_work);
+            self.dispatch_outbound_prepared_priority_available_into(
+                priority_outbound_limit,
+                prepared_work,
+            );
         dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
         priority_feed_capacity = priority_feed_capacity.saturating_sub(priority_outbound_dispatched);
-        self.append_seal_work_batch(seal_work.drain(..), prepared_work);
 
         let priority_inbound_limit = if inbound_priority_pending {
             priority_feed_capacity
@@ -231,43 +228,44 @@ impl PacketMover2 {
             0
         };
         let priority_inbound_dispatched =
-            self.dispatch_priority_available_into(priority_inbound_limit, open_work);
+            self.dispatch_prepared_priority_available_into(
+                priority_inbound_limit,
+                prepared_work,
+                &mut fsp_path_open,
+                &mut fsp_path_open_bulk,
+            );
         dispatched_total = dispatched_total.saturating_add(priority_inbound_dispatched);
-        self.append_open_work_batch(
-            open_work,
-            prepared_work,
-            &mut fsp_path_open,
-            &mut fsp_path_open_bulk,
-        );
 
         let total_remaining = total_available_limit.saturating_sub(dispatched_total);
         bulk_feed_capacity = bulk_feed_capacity.min(total_remaining);
         let bulk_dispatch_capacity = limit
             .saturating_sub(dispatched_total)
             .min(bulk_feed_capacity);
-        let inbound_dispatched = self.dispatch_available_into(bulk_dispatch_capacity, open_work);
-        dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
-        bulk_feed_capacity = bulk_feed_capacity.saturating_sub(inbound_dispatched);
-        let outbound_dispatched =
-            self.dispatch_outbound_available_into(bulk_feed_capacity, seal_work);
-        dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
-        debug_assert!(dispatched_total <= total_available_limit);
-
-        let leading_priority_seals = seal_work
-            .iter()
-            .take_while(|work| work.reservation.lane == Lane::Priority)
-            .count();
-        self.append_seal_work_batch(seal_work.drain(..leading_priority_seals), prepared_work);
-
-        self.append_open_work_batch(
-            open_work,
+        let bulk_inbound_start = prepared_work.len();
+        let inbound_dispatched = self.dispatch_prepared_available_into(
+            bulk_dispatch_capacity,
             prepared_work,
             &mut fsp_path_open,
             &mut fsp_path_open_bulk,
         );
+        dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
+        bulk_feed_capacity = bulk_feed_capacity.saturating_sub(inbound_dispatched);
+        let outbound_start = prepared_work.len();
+        let outbound_dispatched =
+            self.dispatch_outbound_prepared_available_into(bulk_feed_capacity, prepared_work);
+        dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
+        debug_assert!(dispatched_total <= total_available_limit);
+
+        let leading_priority_seals = prepared_work[outbound_start..]
+            .iter()
+            .take_while(|work| work.lane() == Lane::Priority)
+            .count();
+        if leading_priority_seals > 0 {
+            prepared_work[bulk_inbound_start..outbound_start + leading_priority_seals]
+                .rotate_right(leading_priority_seals);
+        }
         record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
 
-        self.append_seal_work_batch(seal_work.drain(..), prepared_work);
         execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
@@ -308,14 +306,6 @@ impl PacketMover2 {
     fn owner_shard_mut(&mut self, owner: OwnerId) -> &mut PacketMover2OwnerShard {
         let shard = self.owner_shard_index(owner);
         &mut self.shards[shard]
-    }
-
-    fn owner_state(&self, owner: OwnerId) -> Option<&OwnerState> {
-        self.owner_shard(owner).owner(owner)
-    }
-
-    fn owner_crypto_keys(&self, owner: OwnerId) -> Option<OwnerCryptoKeys> {
-        self.owner_state(owner).and_then(OwnerState::crypto_keys)
     }
 
     fn record_drop(&mut self, drop: PacketDrop) {
@@ -451,6 +441,159 @@ impl PacketMover2 {
         dispatched.min(limit)
     }
 
+    fn dispatch_prepared_available_into(
+        &mut self,
+        limit: usize,
+        prepared: &mut Vec<PreparedCryptoWork>,
+        fsp_path_open: &mut u64,
+        fsp_path_open_bulk: &mut u64,
+    ) -> usize {
+        self.dispatch_prepared_ingress_shards_into(
+            limit,
+            prepared,
+            false,
+            fsp_path_open,
+            fsp_path_open_bulk,
+        )
+    }
+
+    fn dispatch_prepared_priority_available_into(
+        &mut self,
+        limit: usize,
+        prepared: &mut Vec<PreparedCryptoWork>,
+        fsp_path_open: &mut u64,
+        fsp_path_open_bulk: &mut u64,
+    ) -> usize {
+        self.dispatch_prepared_ingress_shards_into(
+            limit,
+            prepared,
+            true,
+            fsp_path_open,
+            fsp_path_open_bulk,
+        )
+    }
+
+    fn dispatch_outbound_prepared_available_into(
+        &mut self,
+        limit: usize,
+        prepared: &mut Vec<PreparedCryptoWork>,
+    ) -> usize {
+        self.dispatch_outbound_prepared_shards_into(limit, prepared, false)
+    }
+
+    fn dispatch_outbound_prepared_priority_available_into(
+        &mut self,
+        limit: usize,
+        prepared: &mut Vec<PreparedCryptoWork>,
+    ) -> usize {
+        self.dispatch_outbound_prepared_shards_into(limit, prepared, true)
+    }
+
+    fn dispatch_prepared_ingress_shards_into(
+        &mut self,
+        limit: usize,
+        prepared: &mut Vec<PreparedCryptoWork>,
+        priority_only: bool,
+        fsp_path_open: &mut u64,
+        fsp_path_open_bulk: &mut u64,
+    ) -> usize {
+        if limit == 0 || self.shards.is_empty() {
+            crate::perf_profile::record_packet_mover2_crypto_open_batch(0);
+            return 0;
+        }
+
+        let start_len = prepared.len();
+        let mut dispatched = 0usize;
+        let mut attempts_remaining = self.admission_len_for_priority(priority_only);
+        let mut skipped_shards = PacketMover2ShardSkipSet::empty();
+        while dispatched < limit && attempts_remaining > 0 {
+            let Some(shard) = self.select_ingress_dispatch_shard(priority_only, &skipped_shards)
+            else {
+                break;
+            };
+            let got = self.shards[shard].dispatch_ingress_prepared_into(
+                limit.saturating_sub(dispatched),
+                prepared,
+                priority_only,
+                fsp_path_open,
+                fsp_path_open_bulk,
+            );
+            dispatched = dispatched.saturating_add(got);
+            if got == 0 {
+                self.preferred_ingress_dispatch_shard = None;
+                skipped_shards.insert(shard);
+                attempts_remaining = attempts_remaining.saturating_sub(1);
+            } else {
+                self.preferred_ingress_dispatch_shard = Some(shard);
+                skipped_shards.clear();
+                attempts_remaining = self.admission_len_for_priority(priority_only);
+            }
+        }
+        crate::perf_profile::record_packet_mover2_crypto_open_batch(
+            prepared.len().saturating_sub(start_len),
+        );
+        dispatched
+    }
+
+    fn dispatch_outbound_prepared_shards_into(
+        &mut self,
+        limit: usize,
+        prepared: &mut Vec<PreparedCryptoWork>,
+        priority_only: bool,
+    ) -> usize {
+        if limit == 0 || self.shards.is_empty() {
+            crate::perf_profile::record_packet_mover2_crypto_seal_batch(0);
+            return 0;
+        }
+
+        let start_len = prepared.len();
+        let mut dispatched = 0usize;
+        let mut attempts_remaining = self.outbound_len();
+        let mut skipped_shards = PacketMover2ShardSkipSet::empty();
+        while dispatched < limit && attempts_remaining > 0 {
+            let Some(shard) = self.select_outbound_dispatch_shard(priority_only, &skipped_shards)
+            else {
+                break;
+            };
+            let pop = if priority_only {
+                self.shards[shard].pop_outbound_priority()
+            } else {
+                self.shards[shard].pop_outbound()
+            };
+            let Some(OwnerAdmissionPop { item, cursor }) = pop else {
+                self.preferred_outbound_dispatch_shard = None;
+                skipped_shards.insert(shard);
+                attempts_remaining = attempts_remaining.saturating_sub(1);
+                continue;
+            };
+            attempts_remaining = attempts_remaining.saturating_sub(1);
+
+            match self.shards[shard].dispatch_outbound_prepared_into(item, prepared) {
+                OutboundDispatchResult::Completed => {
+                    self.shards[shard].continue_outbound_owner_run(cursor);
+                    self.preferred_outbound_dispatch_shard = Some(shard);
+                    skipped_shards.clear();
+                    if prepared.len().saturating_sub(start_len) > dispatched {
+                        dispatched = prepared.len().saturating_sub(start_len);
+                    }
+                    attempts_remaining = self.outbound_len();
+                }
+                OutboundDispatchResult::Blocked(queued) => {
+                    self.shards[shard].defer_outbound_owner_pop(OwnerAdmissionPop {
+                        item: queued,
+                        cursor,
+                    });
+                    self.preferred_outbound_dispatch_shard = None;
+                }
+            }
+        }
+
+        crate::perf_profile::record_packet_mover2_crypto_seal_batch(
+            prepared.len().saturating_sub(start_len),
+        );
+        dispatched.min(limit)
+    }
+
     fn outbound_len(&self) -> usize {
         self.shards
             .iter()
@@ -521,51 +664,6 @@ impl PacketMover2 {
             })
             .min_by_key(|(seq, _)| *seq)
             .map(|(_, shard)| shard)
-    }
-
-    fn prepare_seal_work(&mut self, work: OutboundCryptoWork) -> PreparedCryptoWork {
-        let reservation = work.reservation.clone();
-        let Some(keys) = self.owner_crypto_keys(reservation.owner) else {
-            return PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal);
-        };
-        PreparedCryptoWork::seal(work, keys.seal)
-    }
-
-    fn append_open_work_batch(
-        &mut self,
-        open_work: &mut Vec<CryptoWork>,
-        prepared: &mut Vec<PreparedCryptoWork>,
-        fsp_path_open: &mut u64,
-        fsp_path_open_bulk: &mut u64,
-    ) {
-        let mut prepared_count = 0usize;
-        for work in open_work.drain(..) {
-            let reservation = work.reservation.clone();
-            count_fsp_path_open_dispatch(&reservation, fsp_path_open, fsp_path_open_bulk);
-            let prepared_work = match self.owner_crypto_keys(reservation.owner) {
-                Some(keys) => PreparedCryptoWork::open(work, keys.open),
-                None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open),
-            };
-            prepared.push(prepared_work);
-            prepared_count = prepared_count.saturating_add(1);
-        }
-        crate::perf_profile::record_packet_mover2_crypto_open_batch(prepared_count);
-    }
-
-    fn append_seal_work_batch<I>(
-        &mut self,
-        seal_work: I,
-        prepared: &mut Vec<PreparedCryptoWork>,
-    ) where
-        I: IntoIterator<Item = OutboundCryptoWork>,
-    {
-        let mut prepared_count = 0usize;
-        for work in seal_work {
-            let prepared_work = self.prepare_seal_work(work);
-            prepared.push(prepared_work);
-            prepared_count = prepared_count.saturating_add(1);
-        }
-        crate::perf_profile::record_packet_mover2_crypto_seal_batch(prepared_count);
     }
 
     fn retire_completion_batch(

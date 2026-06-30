@@ -223,17 +223,6 @@
     }
 
     fn run_aead_available(mover: &mut PacketMover2, limit: usize) -> PacketMoverTurn {
-        let mut open_work = Vec::new();
-        let mut seal_work = Vec::new();
-        run_aead_available_with_work_buffers(mover, limit, &mut open_work, &mut seal_work)
-    }
-
-    fn run_aead_available_with_work_buffers(
-        mover: &mut PacketMover2,
-        limit: usize,
-        open_work: &mut Vec<CryptoWork>,
-        seal_work: &mut Vec<OutboundCryptoWork>,
-    ) -> PacketMoverTurn {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
         let mut retired = Vec::new();
@@ -241,8 +230,6 @@
         let mut executor = InlinePacketMover2CryptoExecutor::default();
         let dispatched = mover.run_aead_available_into_with_executor(
             limit,
-            open_work,
-            seal_work,
             &mut prepared_work,
             &mut completion_work,
             &mut retired,

@@ -324,7 +324,7 @@
     }
 
     #[test]
-    fn turn_runner_batches_admission_and_reuses_work_buffer() {
+    fn turn_runner_batches_admission_and_preserves_owner_order() {
         let owner = fsp_owner(11);
         let key = 11;
         let mut mover = PacketMover2::new(AdmissionConfig::new(2, 4));
@@ -348,11 +348,7 @@
             assert!(mover.submit_socket_packet(packet).is_ok());
         }
 
-        let mut open_work = Vec::with_capacity(8);
-        let mut seal_work = Vec::with_capacity(8);
-        let turn = run_aead_available_with_work_buffers(&mut mover, 2, &mut open_work, &mut seal_work);
-        assert!(open_work.is_empty());
-        assert!(seal_work.is_empty());
+        let turn = run_aead_available(&mut mover, 2);
         assert_eq!(turn.dispatched(), 2);
         assert!(turn.drops().is_empty());
         assert_eq!(
@@ -370,11 +366,9 @@
             2
         );
 
-        let turn = run_aead_available_with_work_buffers(&mut mover, 2, &mut open_work, &mut seal_work);
+        let turn = run_aead_available(&mut mover, 2);
         assert_eq!(turn.dispatched(), 1);
         assert_eq!(turn.outputs()[0].counter, 3);
-        assert_eq!(open_work.capacity(), 8);
-        assert_eq!(seal_work.capacity(), 8);
     }
 
     #[test]

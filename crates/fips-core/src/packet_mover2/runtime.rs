@@ -1,8 +1,6 @@
 #[derive(Debug)]
 pub(crate) struct PacketMover2TurnDriver {
     mover: PacketMover2,
-    open_work: Vec<CryptoWork>,
-    seal_work: Vec<OutboundCryptoWork>,
     prepared_work: Vec<PreparedCryptoWork>,
     completion_work: Vec<CryptoCompletion>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
@@ -23,8 +21,6 @@ impl PacketMover2TurnDriver {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
             mover: PacketMover2::new(config),
-            open_work: Vec::new(),
-            seal_work: Vec::new(),
             prepared_work: Vec::new(),
             completion_work: Vec::new(),
             raw_ingress_drops: Vec::new(),
@@ -691,8 +687,6 @@ impl PacketMover2TurnDriver {
                 );
                 self.mover.run_aead_available_into_with_executor(
                     remaining,
-                    &mut self.open_work,
-                    &mut self.seal_work,
                     &mut self.prepared_work,
                     &mut self.completion_work,
                     &mut self.retired,

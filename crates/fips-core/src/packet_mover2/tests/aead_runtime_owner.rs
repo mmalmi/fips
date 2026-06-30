@@ -32,13 +32,9 @@
             ))
             .unwrap();
 
-        let mut open_work_buffer = Vec::with_capacity(4);
-        let mut seal_work_buffer = Vec::with_capacity(4);
-        let turn = run_aead_available_with_work_buffers(&mut mover, 8, &mut open_work_buffer, &mut seal_work_buffer);
+        let turn = run_aead_available(&mut mover, 8);
         assert_eq!(turn.dispatched(), 2);
         assert!(turn.drops().is_empty());
-        assert!(open_work_buffer.is_empty());
-        assert!(seal_work_buffer.is_empty());
 
         let outputs = turn.outputs();
         assert_eq!(outputs.len(), 2);
@@ -54,8 +50,6 @@
         assert_eq!(sealed_header.receiver_idx(), 700);
         assert_eq!(sealed_header.counter(), 200);
         assert_eq!(open_sealed_output(outputs[1], seal_key), b"outbound");
-        assert_eq!(open_work_buffer.capacity(), 4);
-        assert_eq!(seal_work_buffer.capacity(), 4);
     }
 
     #[derive(Debug, Default)]
@@ -212,16 +206,12 @@
     where
         E: PacketMover2CryptoExecutor,
     {
-        let mut open_work = Vec::new();
-        let mut seal_work = Vec::new();
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
         let mut retired = Vec::new();
         let mut drops = Vec::new();
         let dispatched = mover.run_aead_available_into_with_executor(
             limit,
-            &mut open_work,
-            &mut seal_work,
             &mut prepared_work,
             &mut completion_work,
             &mut retired,
@@ -286,8 +276,6 @@
                 .unwrap();
         }
 
-        let mut open_work = Vec::new();
-        let mut seal_work = Vec::new();
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
         let mut retired = Vec::new();
@@ -295,8 +283,6 @@
         let mut executor = RecordingChunkExecutor::default();
         let dispatched = mover.run_aead_available_into_with_executor(
             6,
-            &mut open_work,
-            &mut seal_work,
             &mut prepared_work,
             &mut completion_work,
             &mut retired,
@@ -307,8 +293,6 @@
         assert_eq!(dispatched, 6);
         assert_eq!(executor.nonempty_chunks, vec![6]);
         assert!(drops.is_empty());
-        assert!(open_work.is_empty());
-        assert!(seal_work.is_empty());
         assert!(prepared_work.is_empty());
         assert!(completion_work.is_empty());
 
@@ -943,9 +927,7 @@
             ))
             .unwrap();
 
-        let mut open_work_buffer = Vec::new();
-        let mut seal_work_buffer = Vec::new();
-        let turn = run_aead_available_with_work_buffers(&mut mover, 2, &mut open_work_buffer, &mut seal_work_buffer);
+        let turn = run_aead_available(&mut mover, 2);
 
         assert_eq!(turn.dispatched(), 2);
         let outputs = turn.outputs();
@@ -2054,7 +2036,7 @@
     }
 
     #[test]
-    fn runtime_turn_driver_reuses_work_and_output_buffers() {
+    fn runtime_turn_driver_reuses_output_buffers() {
         let owner = fsp_owner(80);
         let key = 41;
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
@@ -2079,8 +2061,6 @@
         }
 
         let capacities = (
-            driver.open_work.capacity(),
-            driver.seal_work.capacity(),
             driver.raw_ingress_drops.capacity(),
             driver.output_drops.capacity(),
             driver.outputs.capacity(),
@@ -2093,8 +2073,6 @@
         assert_eq!(
             capacities,
             (
-                driver.open_work.capacity(),
-                driver.seal_work.capacity(),
                 driver.raw_ingress_drops.capacity(),
                 driver.output_drops.capacity(),
                 driver.outputs.capacity(),
