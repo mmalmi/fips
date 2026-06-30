@@ -248,6 +248,10 @@ impl PacketMover2LiveNode {
         true
     }
 
+    pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
+        self.driver.has_owner(owner)
+    }
+
     pub(crate) fn set_owner_crypto_keys(
         &mut self,
         owner: OwnerId,

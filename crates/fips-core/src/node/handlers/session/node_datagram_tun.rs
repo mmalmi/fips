@@ -359,6 +359,13 @@ impl Node {
         if !self.pending_session_traffic.has_traffic_for(dest_addr) {
             return;
         }
+        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+            debug!(
+                dest = %self.peer_display_name(dest_addr),
+                "Skipping pending packet flush until packet_mover2 FSP owner is available"
+            );
+            return;
+        }
 
         if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
             let (mut packets, stale_count) = packets.into_fresh_packets(
@@ -378,7 +385,7 @@ impl Node {
             }
             while let Some(packet) = packets.pop_front() {
                 if let Err(e) = self
-                    .send_packet_mover2_pending_tun_packet(dest_addr, packet.into_packet())
+                    .send_packet_mover2_cached_tun_packet(dest_addr, packet.into_packet())
                     .await
                 {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
@@ -409,7 +416,7 @@ impl Node {
                 }
 
                 if let Err(e) = self
-                    .send_packet_mover2_pending_endpoint_payloads(
+                    .send_packet_mover2_cached_endpoint_payloads(
                         dest_addr,
                         batch.clone(),
                         lane,

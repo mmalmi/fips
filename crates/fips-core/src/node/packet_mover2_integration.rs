@@ -191,6 +191,21 @@ impl Node {
                 reason: "packet_mover2 FSP owner unavailable for queued TUN packet".into(),
             });
         }
+        self.send_packet_mover2_cached_tun_packet(dest_addr, packet)
+            .await
+    }
+
+    pub(in crate::node) async fn send_packet_mover2_cached_tun_packet(
+        &mut self,
+        dest_addr: &NodeAddr,
+        packet: Vec<u8>,
+    ) -> Result<(), NodeError> {
+        if !self.packet_mover2_has_synced_fsp_owner(dest_addr) {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "packet_mover2 FSP owner not cached for queued TUN packet".into(),
+            });
+        }
 
         let turn = self
             .pump_packet_mover2_pending_outbound_firsts(
@@ -205,7 +220,7 @@ impl Node {
             .map(|_| ())
     }
 
-    pub(in crate::node) async fn send_packet_mover2_pending_endpoint_payloads(
+    pub(in crate::node) async fn send_packet_mover2_cached_endpoint_payloads(
         &mut self,
         dest_addr: &NodeAddr,
         payloads: Vec<EndpointDataPayload>,
@@ -216,10 +231,10 @@ impl Node {
             return Ok(());
         }
         debug_assert!(payloads.iter().all(|payload| payload.lane() == lane));
-        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+        if !self.packet_mover2_has_synced_fsp_owner(dest_addr) {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
-                reason: "packet_mover2 FSP owner unavailable for queued endpoint data".into(),
+                reason: "packet_mover2 FSP owner not cached for queued endpoint data".into(),
             });
         }
         let Some(remote) = self.packet_mover2_peer_identity(dest_addr) else {
@@ -646,6 +661,11 @@ impl Node {
 
     pub(in crate::node) fn sync_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) -> bool {
         self.sync_packet_mover2_fsp_owner_with_coords_transfer(node_addr, true)
+    }
+
+    fn packet_mover2_has_synced_fsp_owner(&self, node_addr: &NodeAddr) -> bool {
+        self.packet_mover2.has_owner(OwnerId::fsp_node(*node_addr))
+            && self.packet_mover2_fsp_owner_sync.contains_key(node_addr)
     }
 
     fn sync_packet_mover2_fsp_owner_preserving_coords_warmup(
