@@ -50,6 +50,10 @@ impl PacketMover2TurnDriver {
         self.mover.has_owner(owner)
     }
 
+    pub(crate) fn fsp_owner_destinations(&self) -> Vec<NodeAddr> {
+        self.mover.fsp_owner_destinations()
+    }
+
     pub(crate) fn owner_active_path(&self, owner: OwnerId) -> Option<TransportPath> {
         self.mover.owner_active_path(owner)
     }

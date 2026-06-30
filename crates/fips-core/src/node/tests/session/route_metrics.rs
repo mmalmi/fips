@@ -1,5 +1,40 @@
 use super::*;
 
+#[test]
+fn test_packet_mover2_fmp_owner_update_refreshes_fsp_owner_wrap_route() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+
+    assert!(node.sync_packet_mover2_fmp_owner(&next_hop));
+    node.learn_reverse_route(remote_addr, next_hop);
+    install_established_session_with_mmp(&mut node, &remote);
+    let snapshot = node
+        .sessions
+        .get(&remote_addr)
+        .and_then(Node::packet_mover2_fsp_owner_session_snapshot)
+        .expect("established session should seed PM2 FSP owner");
+    assert!(node.sync_packet_mover2_fsp_owner_from_session_snapshot(&remote_addr, snapshot, 0));
+    assert_eq!(
+        node.packet_mover2.fsp_owner_next_hop(&remote_addr),
+        Some(next_hop)
+    );
+
+    node.remove_packet_mover2_fmp_owner(&next_hop);
+    assert_eq!(
+        node.refresh_packet_mover2_fsp_owner_routes_after_fmp_owner_update(&next_hop),
+        1
+    );
+    assert_eq!(node.packet_mover2.fsp_owner_next_hop(&remote_addr), None);
+
+    assert!(node.sync_packet_mover2_fmp_owner(&next_hop));
+    assert_eq!(
+        node.packet_mover2.fsp_owner_next_hop(&remote_addr),
+        Some(next_hop)
+    );
+}
+
 #[tokio::test]
 async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();

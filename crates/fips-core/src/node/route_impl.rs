@@ -535,6 +535,7 @@ impl Node {
             self.config.node.routing.learned_ttl_secs,
             self.config.node.routing.max_learned_routes_per_dest,
         );
+        let _ = self.refresh_packet_mover2_fsp_owner_routes(&destination);
     }
 
     pub(in crate::node) fn record_route_failure(

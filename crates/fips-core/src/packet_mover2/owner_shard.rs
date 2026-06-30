@@ -30,6 +30,12 @@ impl PacketMover2OwnerShard {
         self.owners.contains_key(&owner)
     }
 
+    fn fsp_owner_destinations(&self, destinations: &mut Vec<NodeAddr>) {
+        destinations.extend(self.owners.keys().filter_map(|owner| {
+            (owner.protocol() == PacketProtocol::Fsp).then_some(owner.node_addr())
+        }));
+    }
+
     fn owner_active_path(&self, owner: OwnerId) -> Option<TransportPath> {
         self.owners
             .get(&owner)

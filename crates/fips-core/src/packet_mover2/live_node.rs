@@ -252,6 +252,10 @@ impl PacketMover2LiveNode {
         self.driver.has_owner(owner)
     }
 
+    pub(crate) fn fsp_owner_destinations(&self) -> Vec<NodeAddr> {
+        self.driver.fsp_owner_destinations()
+    }
+
     pub(crate) fn set_owner_crypto_keys(
         &mut self,
         owner: OwnerId,

@@ -427,19 +427,18 @@ impl Node {
                 reason: format!("packet_mover2 FSP owner not registered for {label}"),
             });
         }
-        if !self.refresh_packet_mover2_fsp_owner_routes(dest_addr) {
+        let Some(next_hop) = self.packet_mover2.fsp_owner_next_hop(dest_addr) else {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
-                reason: format!("packet_mover2 FSP route unavailable for {label}"),
+                reason: format!("packet_mover2 FSP owner route unavailable for {label}"),
             });
-        }
+        };
         let Some(send_context) = self.packet_mover2.fsp_owner_send_context(dest_addr) else {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
                 reason: format!("packet_mover2 FSP owner send context unavailable for {label}"),
             });
         };
-        let next_hop = self.packet_mover2.fsp_owner_next_hop(dest_addr);
         let coords_prefix_len = coords_prefix.as_ref().map_or(0, Vec::len);
         let fsp_flags = fsp_flags_override.unwrap_or_else(|| send_context.fsp_flags());
         let inner_flags = send_context.inner_flags();
@@ -468,10 +467,8 @@ impl Node {
         {
             Ok(turn) => turn,
             Err(error) => {
-                if let Some(next_hop) = next_hop {
-                    self.record_route_failure(*dest_addr, next_hop);
-                    self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
-                }
+                self.record_route_failure(*dest_addr, next_hop);
+                self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
                 return Err(error);
             }
         };
@@ -643,12 +640,14 @@ impl Node {
     pub(in crate::node) fn sync_packet_mover2_fmp_owner(&mut self, node_addr: &NodeAddr) -> bool {
         let Some(seed) = self.packet_mover2_fmp_owner_seed(node_addr) else {
             self.remove_packet_mover2_fmp_owner(node_addr);
+            self.refresh_packet_mover2_fsp_owner_routes_after_fmp_owner_update(node_addr);
             return false;
         };
 
         self.packet_mover2
             .register_owner_if_missing(seed.owner, seed.config.clone());
-        self.packet_mover2
+        let synced = self
+            .packet_mover2
             .apply_owner_live_config(seed.owner, seed.config)
             .is_ok()
             && self
@@ -662,7 +661,11 @@ impl Node {
             && self
                 .packet_mover2
                 .replace_owner_routes(seed.owner, seed.routes)
-                .is_ok()
+                .is_ok();
+        if synced {
+            self.refresh_packet_mover2_fsp_owner_routes_after_fmp_owner_update(node_addr);
+        }
+        synced
     }
 
     pub(in crate::node) fn remove_packet_mover2_fmp_owner(&mut self, node_addr: &NodeAddr) {
@@ -701,6 +704,29 @@ impl Node {
                 .is_ok()
             && route_ready
             && next_hop_ready
+    }
+
+    pub(in crate::node) fn refresh_packet_mover2_fsp_owner_routes_after_fmp_owner_update(
+        &mut self,
+        next_hop_addr: &NodeAddr,
+    ) -> usize {
+        let destinations = self.packet_mover2.fsp_owner_destinations();
+        let mut refreshed = 0usize;
+        for dest in destinations {
+            let current_uses_next_hop =
+                self.packet_mover2.fsp_owner_next_hop(&dest) == Some(*next_hop_addr);
+            let would_use_next_hop = self
+                .find_next_hop(&dest)
+                .is_some_and(|peer| peer.node_addr() == next_hop_addr);
+            if !(current_uses_next_hop || would_use_next_hop) {
+                continue;
+            }
+            let route_ready = self.refresh_packet_mover2_fsp_owner_routes(&dest);
+            if route_ready || current_uses_next_hop {
+                refreshed = refreshed.saturating_add(1);
+            }
+        }
+        refreshed
     }
 
     pub(in crate::node) fn refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(

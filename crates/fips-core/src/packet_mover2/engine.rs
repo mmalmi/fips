@@ -44,6 +44,14 @@ impl PacketMover2 {
         self.owner_shard(owner).has_owner(owner)
     }
 
+    pub(crate) fn fsp_owner_destinations(&self) -> Vec<NodeAddr> {
+        let mut destinations = Vec::new();
+        for shard in &self.shards {
+            shard.fsp_owner_destinations(&mut destinations);
+        }
+        destinations
+    }
+
     pub(crate) fn owner_active_path(&self, owner: OwnerId) -> Option<TransportPath> {
         self.owner_shard(owner).owner_active_path(owner)
     }
