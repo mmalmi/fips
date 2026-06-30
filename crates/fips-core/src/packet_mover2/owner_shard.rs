@@ -402,6 +402,19 @@ impl PacketMover2OwnerShard {
         true
     }
 
+    fn retire_queued_completions_into(
+        &mut self,
+        limit: usize,
+        retired: &mut Vec<RetiredPacket>,
+        drops: &mut Vec<PacketDrop>,
+    ) -> usize {
+        let mut retired_count = 0usize;
+        while retired_count < limit && self.retire_queued_completion_into(retired, drops) {
+            retired_count = retired_count.saturating_add(1);
+        }
+        retired_count
+    }
+
     fn has_queued_completions(&self) -> bool {
         !self.completed.is_empty()
     }

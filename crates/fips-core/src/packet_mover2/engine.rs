@@ -328,19 +328,42 @@ impl PacketMover2 {
 
         let mut retired_count = 0usize;
         while retired_count < limit {
-            let Some(shard) = self.completion_ready_shards.pop() else { break };
-            let Some(owner_shard) = self.shards.get_mut(shard) else {
-                continue;
-            };
-            if owner_shard.retire_queued_completion_into(retired, &mut self.drops) {
-                retired_count = retired_count.saturating_add(1);
+            let ready_shards = self.completion_ready_shards.len();
+            if ready_shards == 0 {
+                break;
             }
-            if self
-                .shards
-                .get(shard)
-                .is_some_and(PacketMover2OwnerShard::has_queued_completions)
-            {
-                self.completion_ready_shards.mark(shard);
+            let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
+                limit.saturating_sub(retired_count),
+                ready_shards,
+            );
+            let mut pass_retired = 0usize;
+            for _ in 0..ready_shards {
+                if retired_count >= limit {
+                    break;
+                }
+                let Some(shard) = self.completion_ready_shards.pop() else {
+                    break;
+                };
+                let Some(owner_shard) = self.shards.get_mut(shard) else {
+                    continue;
+                };
+                let got = owner_shard.retire_queued_completions_into(
+                    shard_limit.min(limit.saturating_sub(retired_count)),
+                    retired,
+                    &mut self.drops,
+                );
+                retired_count = retired_count.saturating_add(got);
+                pass_retired = pass_retired.saturating_add(got);
+                if self
+                    .shards
+                    .get(shard)
+                    .is_some_and(PacketMover2OwnerShard::has_queued_completions)
+                {
+                    self.completion_ready_shards.mark(shard);
+                }
+            }
+            if pass_retired == 0 {
+                break;
             }
         }
         retired_count

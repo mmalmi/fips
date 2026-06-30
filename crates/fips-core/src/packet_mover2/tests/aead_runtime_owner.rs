@@ -257,6 +257,74 @@
     }
 
     #[test]
+    fn aead_completion_ready_queue_retires_owner_shard_batch() {
+        let owner = fsp_owner(20_550);
+        let key = 74;
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 16));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        for counter in 1..=3 {
+            mover
+                .submit_socket_packet(encrypted_fsp_packet(
+                    owner,
+                    1,
+                    counter,
+                    PacketClass::Bulk,
+                    OutputTarget::Tun,
+                    key,
+                ))
+                .unwrap();
+        }
+
+        let work = dispatch_available(&mut mover, 8);
+        assert_eq!(work.len(), 3);
+        let shard = work[0].reservation.owner_shard;
+        for work in work {
+            mover.queue_completion(open_aead_completion(work, key));
+        }
+        assert_eq!(
+            mover
+                .completion_ready_shards
+                .queue
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![shard]
+        );
+
+        let mut retired = Vec::new();
+        let retired_counters = |retired: &[RetiredPacket]| {
+            retired
+                .iter()
+                .filter_map(|item| match item {
+                    RetiredPacket::Output(output) => Some(output.counter),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(mover.retire_queued_completions_into(2, &mut retired), 2);
+        assert_eq!(retired_counters(&retired), vec![1, 2]);
+        assert_eq!(
+            mover
+                .completion_ready_shards
+                .queue
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![shard]
+        );
+        assert!(mover.completion_ready_shards.ready[shard]);
+
+        assert_eq!(mover.retire_queued_completions_into(8, &mut retired), 1);
+        assert!(mover.completion_ready_shards.is_empty());
+        assert_eq!(retired_counters(&retired), vec![1, 2, 3]);
+    }
+
+    #[test]
     fn admission_ready_queues_mark_each_owner_shard_lane_once() {
         let owner = fmp_owner(20_600);
         let key = 73;
