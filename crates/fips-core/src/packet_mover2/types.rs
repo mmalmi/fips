@@ -157,7 +157,7 @@ pub(crate) enum OutboundWire {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OutboundPostSeal {
+enum OutboundPostSeal {
     Transport,
     FmpWrap(PacketMover2FspWrapRoute),
 }
@@ -246,11 +246,6 @@ impl OutboundPacket {
         {
             *inner_flags = refreshed_inner_flags;
         }
-    }
-
-    pub(crate) fn with_post_seal(mut self, post_seal: OutboundPostSeal) -> Self {
-        self.post_seal = post_seal;
-        self
     }
 
     fn apply_fsp_owner_wrap_route(&mut self, route: PacketMover2FspWrapRoute) {

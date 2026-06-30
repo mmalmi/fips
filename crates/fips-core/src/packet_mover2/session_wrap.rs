@@ -73,11 +73,4 @@ impl PacketMover2FspWrapRoute {
         )
     }
 
-    fn reserve_fmp_outbound(self, class: PacketClass) -> OutboundPacket {
-        self.into_fmp_outbound(class, Vec::<u8>::new().into())
-    }
-
-    fn fill_reserved_fmp_outbound(self, packet: &mut OutboundPacket, fsp_wire: PacketBuffer) {
-        packet.payload = self.fmp_payload(fsp_wire);
-    }
 }

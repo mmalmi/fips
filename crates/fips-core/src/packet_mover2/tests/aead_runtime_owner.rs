@@ -1071,7 +1071,7 @@
     }
 
     #[test]
-    fn aead_turn_runner_wraps_fsp_post_seal_into_next_hop_fmp() {
+    fn aead_turn_runner_wraps_owner_routed_fsp_into_next_hop_fmp() {
         let source = NodeAddr::from_bytes([0x21; 16]);
         let dest = NodeAddr::from_bytes([0x22; 16]);
         let next_hop = NodeAddr::from_bytes([0x23; 16]);
@@ -1112,6 +1112,10 @@
         .with_fmp_flags(0x05)
         .with_ttl(42)
         .with_path_mtu(1280);
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_fsp_wrap_route(Some(wrap));
         let packet = OutboundPacket::fsp(
             fsp_owner,
             1,
@@ -1120,7 +1124,6 @@
             b"session-body".to_vec(),
         )
         .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
-        .with_post_seal(OutboundPostSeal::FmpWrap(wrap))
         .with_activity_tick(ActivityTick::new(1_234));
         let queued_bulk = OutboundPacket::fmp(
             fmp_owner,
@@ -1195,7 +1198,7 @@
     }
 
     #[test]
-    fn aead_turn_runner_spends_remaining_budget_on_fsp_post_seal_wrap() {
+    fn aead_turn_runner_spends_remaining_budget_on_owner_routed_fsp_wrap() {
         let source = NodeAddr::from_bytes([0x31; 16]);
         let dest = NodeAddr::from_bytes([0x32; 16]);
         let next_hop = NodeAddr::from_bytes([0x33; 16]);
@@ -1224,6 +1227,10 @@
         let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 5151, source, dest)
             .with_ttl(42)
             .with_path_mtu(1280);
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_fsp_wrap_route(Some(wrap));
         let packet = OutboundPacket::fsp(
             fsp_owner,
             1,
@@ -1231,8 +1238,7 @@
             0x03,
             b"session-priority".to_vec(),
         )
-        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
-        .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
+        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix());
 
         let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet], 2);
         assert_eq!(turn.summary().outbound_admitted(), 2);
@@ -1296,6 +1302,10 @@
         let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 6000, source, dest)
             .with_ttl(42)
             .with_path_mtu(1280);
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_fsp_wrap_route(Some(wrap));
         let packets = (0..4).map(|idx| {
             OutboundPacket::fsp(
                 fsp_owner,
@@ -1305,7 +1315,6 @@
                 format!("session-{idx}").into_bytes(),
             )
             .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
-            .with_post_seal(OutboundPostSeal::FmpWrap(wrap))
         });
 
         let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), packets, 8);
@@ -1687,11 +1696,15 @@
         let wrap =
             PacketMover2FspWrapRoute::new(next_hop, 1, 7878, test_node_addr(1), owner.node_addr());
         let mut mover = mover();
-        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(10));
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(10)
+                .with_fsp_wrap_route(wrap),
+        );
 
         let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"payload".to_vec())
             .with_fsp_inner_header(crate::protocol::SessionMessageType::EndpointData.to_byte(), 0)
-            .with_post_seal(OutboundPostSeal::FmpWrap(wrap))
             .with_activity_tick(ActivityTick::new(100));
         mover.submit_outbound_packet(outbound).unwrap();
         assert_eq!(dispatch_outbound_available(&mut mover, 8).len(), 1);
@@ -2733,7 +2746,7 @@
     }
 
     #[test]
-    fn completion_only_turn_continues_fsp_post_seal_wrap_to_fmp_output() {
+    fn completion_only_turn_continues_owner_routed_fsp_wrap_to_fmp_output() {
         let source = NodeAddr::from_bytes([0x80; 16]);
         let dest = NodeAddr::from_bytes([0x81; 16]);
         let next_hop = NodeAddr::from_bytes([0x82; 16]);
@@ -2761,6 +2774,10 @@
         let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 8282, source, dest)
             .with_ttl(42)
             .with_path_mtu(1280);
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_fsp_wrap_route(Some(wrap));
         let packet = OutboundPacket::fsp(
             fsp_owner,
             1,
@@ -2768,8 +2785,7 @@
             0x03,
             b"wake-wrap".to_vec(),
         )
-        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
-        .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
+        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix());
 
         driver.mover.submit_outbound_packet(packet).unwrap();
         let mut seal_work = dispatch_outbound_available(&mut driver.mover, 1);
@@ -2816,7 +2832,7 @@
     }
 
     #[test]
-    fn failed_fsp_post_seal_wrap_releases_inner_owner_only() {
+    fn failed_owner_routed_fsp_wrap_releases_inner_owner_only() {
         let source = NodeAddr::from_bytes([0x83; 16]);
         let dest = NodeAddr::from_bytes([0x84; 16]);
         let next_hop = NodeAddr::from_bytes([0x85; 16]);
@@ -2827,6 +2843,10 @@
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(70));
         driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(84), test_key(84)));
+        driver
             .owner_mut(fmp_owner)
             .unwrap()
             .set_active_path(fmp_path);
@@ -2834,6 +2854,10 @@
         let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 8585, source, dest)
             .with_ttl(42)
             .with_path_mtu(1280);
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_fsp_wrap_route(Some(wrap));
         let packet = OutboundPacket::fsp(
             fsp_owner,
             1,
@@ -2841,8 +2865,7 @@
             0x03,
             b"failed-wrap".to_vec(),
         )
-        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
-        .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
+        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix());
 
         driver.mover.submit_outbound_packet(packet).unwrap();
         let mut seal_work = dispatch_outbound_available(&mut driver.mover, 1);

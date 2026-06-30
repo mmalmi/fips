@@ -88,7 +88,6 @@ pub(crate) struct PacketMover2EndpointCommandRoute {
     flags: u8,
     inner_flags: u8,
     fsp_cleartext_prefix: Vec<u8>,
-    post_seal: OutboundPostSeal,
     max_payload_len: Option<usize>,
 }
 
@@ -100,7 +99,6 @@ impl PacketMover2EndpointCommandRoute {
             flags,
             inner_flags,
             fsp_cleartext_prefix: Vec::new(),
-            post_seal: OutboundPostSeal::Transport,
             max_payload_len: None,
         }
     }
@@ -173,7 +171,6 @@ impl PacketMover2EndpointCommandRoute {
             self.inner_flags,
         )
         .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone())
-        .with_post_seal(self.post_seal)
     }
 }
 
