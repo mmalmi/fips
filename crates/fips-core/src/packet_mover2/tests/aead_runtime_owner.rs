@@ -532,6 +532,9 @@
     #[test]
     fn aead_worker_jobs_split_hot_owner_burst() {
         let owner = fmp_owner(708);
+        assert_eq!(packet_mover2_aead_worker_job_packets(8, 8), 1);
+        assert_eq!(packet_mover2_aead_worker_job_packets(64, 8), 8);
+
         let work_count = PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2 + 3;
         let work = (0..work_count as u64)
             .map(|counter| {
@@ -560,14 +563,11 @@
             })
             .collect::<Vec<_>>();
 
-        let jobs = PreparedCryptoJobSplitter::new(work).collect::<Vec<_>>();
+        let jobs = PreparedCryptoJobSplitter::new(work, packet_mover2_aead_worker_job_packets(work_count, 4))
+            .collect::<Vec<_>>();
         assert_eq!(
             jobs.iter().map(Vec::len).collect::<Vec<_>>(),
-            vec![
-                PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS,
-                PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS,
-                3
-            ]
+            vec![5, 5, 5, 4]
         );
         let counters = jobs
             .into_iter()

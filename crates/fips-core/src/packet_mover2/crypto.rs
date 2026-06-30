@@ -79,12 +79,14 @@ impl PreparedCryptoWork {
 
 struct PreparedCryptoJobSplitter {
     remaining: std::vec::IntoIter<PreparedCryptoWork>,
+    job_packets: usize,
 }
 
 impl PreparedCryptoJobSplitter {
-    fn new(work: Vec<PreparedCryptoWork>) -> Self {
+    fn new(work: Vec<PreparedCryptoWork>, job_packets: usize) -> Self {
         Self {
             remaining: work.into_iter(),
+            job_packets: job_packets.max(1),
         }
     }
 
@@ -102,9 +104,9 @@ impl Iterator for PreparedCryptoJobSplitter {
 
     fn next(&mut self) -> Option<Self::Item> {
         let first = self.remaining.next()?;
-        let mut job = Vec::with_capacity(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS);
+        let mut job = Vec::with_capacity(self.job_packets);
         job.push(first);
-        while job.len() < PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS {
+        while job.len() < self.job_packets {
             let Some(work) = self.remaining.next() else {
                 break;
             };
@@ -256,7 +258,9 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             return count;
         };
 
-        let mut jobs = PreparedCryptoJobSplitter::new(chunk);
+        let job_packets =
+            packet_mover2_aead_worker_job_packets(chunk.len(), self.workers.len());
+        let mut jobs = PreparedCryptoJobSplitter::new(chunk, job_packets);
         while let Some(work_chunk) = jobs.next() {
             let chunk_len = work_chunk.len();
             let bulk_count = count_bulk_prepared_work(&work_chunk);
@@ -326,6 +330,15 @@ fn count_bulk_prepared_work(prepared: &[PreparedCryptoWork]) -> usize {
 fn packet_mover2_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
     max_in_flight
         .saturating_sub(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
+        .min(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
+}
+
+fn packet_mover2_aead_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
+    let worker_count = worker_count.max(1);
+    work_count
+        .saturating_add(worker_count - 1)
+        / worker_count
+        .max(1)
         .min(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
 }
 
