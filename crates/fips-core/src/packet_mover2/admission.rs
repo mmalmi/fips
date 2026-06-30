@@ -220,10 +220,6 @@ where
         self.pop_lane(Lane::Priority)
     }
 
-    fn has_priority_pending(&self) -> bool {
-        self.priority_len > 0
-    }
-
     fn pop_lane(&mut self, lane: Lane) -> Option<OwnerAdmissionPop<T>> {
         loop {
             let owner = self.pop_ready_front(lane)?;
@@ -347,14 +343,9 @@ impl AdmissionQueue {
         self.queues.len()
     }
 
-    fn has_priority_pending(&self) -> bool {
-        self.queues.has_priority_pending()
-    }
-
     fn lens(&self) -> (usize, usize) {
         self.queues.lens()
     }
-
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -424,10 +415,6 @@ impl OutboundAdmissionQueue {
         self.queues.defer_owner_pop(pop);
     }
 
-    fn has_priority_pending(&self) -> bool {
-        self.queues.has_priority_pending()
-    }
-
     fn len(&self) -> usize {
         self.queues.len()
     }
@@ -435,5 +422,4 @@ impl OutboundAdmissionQueue {
     fn lens(&self) -> (usize, usize) {
         self.queues.lens()
     }
-
 }

@@ -2,6 +2,8 @@
 pub(crate) struct PacketMover2 {
     config: AdmissionConfig,
     shards: Vec<PacketMover2OwnerShard>,
+    admission_lens: LaneLens,
+    outbound_admission_lens: LaneLens,
     next_ingress_seq: u64,
     next_outbound_seq: u64,
     next_ingress_dispatch_shard: usize,
@@ -15,6 +17,8 @@ impl PacketMover2 {
         Self {
             config,
             shards,
+            admission_lens: LaneLens::default(),
+            outbound_admission_lens: LaneLens::default(),
             next_ingress_seq: 0,
             next_outbound_seq: 0,
             next_ingress_dispatch_shard: 0,
@@ -47,7 +51,7 @@ impl PacketMover2 {
         packet: SocketPacket,
     ) -> Result<u64, AdmissionDrop> {
         let lane = packet.lane();
-        if self.admission_lane_len(lane) >= self.config.lane_capacity(lane) {
+        if self.admission_lens.lane(lane) >= self.config.lane_capacity(lane) {
             let drop = AdmissionDrop {
                 owner: packet.owner,
                 counter: packet.counter,
@@ -67,6 +71,7 @@ impl PacketMover2 {
         let admitted = self
             .owner_shard_mut(packet.owner)
             .submit_socket_packet_with_seq(packet, ingress_seq);
+        self.admission_lens.increment(lane);
         Ok(admitted)
     }
 
@@ -75,7 +80,7 @@ impl PacketMover2 {
         packet: OutboundPacket,
     ) -> Result<u64, OutboundAdmissionDrop> {
         let lane = packet.lane();
-        if self.outbound_admission_lane_len(lane) >= self.config.lane_capacity(lane) {
+        if self.outbound_admission_lens.lane(lane) >= self.config.lane_capacity(lane) {
             let drop = OutboundAdmissionDrop {
                 owner: packet.owner,
                 class: packet.class,
@@ -94,6 +99,7 @@ impl PacketMover2 {
         let admitted = self
             .owner_shard_mut(packet.owner)
             .submit_outbound_packet_with_seq(packet, ingress_seq);
+        self.outbound_admission_lens.increment(lane);
         Ok(admitted)
     }
 
@@ -227,17 +233,11 @@ impl PacketMover2 {
     }
 
     pub(crate) fn admission_queue_lens(&self) -> (usize, usize) {
-        self.shards.iter().fold((0usize, 0usize), |sum, shard| {
-            let lens = shard.admission_queue_lens();
-            (sum.0.saturating_add(lens.0), sum.1.saturating_add(lens.1))
-        })
+        self.admission_lens.as_tuple()
     }
 
     pub(crate) fn outbound_admission_queue_lens(&self) -> (usize, usize) {
-        self.shards.iter().fold((0usize, 0usize), |sum, shard| {
-            let lens = shard.outbound_admission_queue_lens();
-            (sum.0.saturating_add(lens.0), sum.1.saturating_add(lens.1))
-        })
+        self.outbound_admission_lens.as_tuple()
     }
 
     fn owner_shard_index(&self, owner: OwnerId) -> usize {
@@ -269,30 +269,12 @@ impl PacketMover2 {
         ingress_seq
     }
 
-    fn admission_lane_len(&self, lane: Lane) -> usize {
-        self.shards
-            .iter()
-            .map(|shard| shard.admission_lane_len(lane))
-            .sum()
-    }
-
-    fn outbound_admission_lane_len(&self, lane: Lane) -> usize {
-        self.shards
-            .iter()
-            .map(|shard| shard.outbound_admission_lane_len(lane))
-            .sum()
-    }
-
     fn has_inbound_priority_pending(&self) -> bool {
-        self.shards
-            .iter()
-            .any(PacketMover2OwnerShard::has_inbound_priority_pending)
+        self.admission_lens.priority > 0
     }
 
     fn has_outbound_priority_pending(&self) -> bool {
-        self.shards
-            .iter()
-            .any(PacketMover2OwnerShard::has_outbound_priority_pending)
+        self.outbound_admission_lens.priority > 0
     }
 
     fn dispatch_prepared_available_into(
@@ -366,6 +348,7 @@ impl PacketMover2 {
                 break;
             }
             let shard = (start_shard + offset) % shard_count;
+            let before = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
             let got = self.shards[shard].dispatch_ingress_prepared_into(
                 limit.saturating_sub(dispatched),
                 prepared,
@@ -373,6 +356,8 @@ impl PacketMover2 {
                 fsp_path_open,
                 fsp_path_open_bulk,
             );
+            let after = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
+            self.admission_lens.saturating_sub_assign(before.saturating_sub(after));
             dispatched = dispatched.saturating_add(got);
             if got > 0 {
                 self.next_ingress_dispatch_shard = (shard + 1) % shard_count;
@@ -405,11 +390,15 @@ impl PacketMover2 {
                 break;
             }
             let shard = (start_shard + offset) % shard_count;
+            let before = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
             let got = self.shards[shard].dispatch_outbound_prepared_into(
                 limit.saturating_sub(dispatched),
                 prepared,
                 priority_only,
             );
+            let after = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
+            self.outbound_admission_lens
+                .saturating_sub_assign(before.saturating_sub(after));
             dispatched = dispatched.saturating_add(got);
             if got > 0 {
                 self.next_outbound_dispatch_shard = (shard + 1) % shard_count;
@@ -430,6 +419,51 @@ impl PacketMover2 {
         for completion in completions.drain(..) {
             self.retire_completion_into(completion, retired);
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct LaneLens {
+    priority: usize,
+    bulk: usize,
+}
+
+impl LaneLens {
+    fn from_tuple(lens: (usize, usize)) -> Self {
+        Self {
+            priority: lens.0,
+            bulk: lens.1,
+        }
+    }
+
+    fn as_tuple(self) -> (usize, usize) {
+        (self.priority, self.bulk)
+    }
+
+    fn lane(self, lane: Lane) -> usize {
+        match lane {
+            Lane::Priority => self.priority,
+            Lane::Bulk => self.bulk,
+        }
+    }
+
+    fn increment(&mut self, lane: Lane) {
+        match lane {
+            Lane::Priority => self.priority = self.priority.saturating_add(1),
+            Lane::Bulk => self.bulk = self.bulk.saturating_add(1),
+        }
+    }
+
+    fn saturating_sub(self, other: Self) -> Self {
+        Self {
+            priority: self.priority.saturating_sub(other.priority),
+            bulk: self.bulk.saturating_sub(other.bulk),
+        }
+    }
+
+    fn saturating_sub_assign(&mut self, other: Self) {
+        self.priority = self.priority.saturating_sub(other.priority);
+        self.bulk = self.bulk.saturating_sub(other.bulk);
     }
 }
 

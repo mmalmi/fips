@@ -138,30 +138,6 @@ impl PacketMover2OwnerShard {
         dispatched
     }
 
-    fn has_inbound_priority_pending(&self) -> bool {
-        self.admission.has_priority_pending()
-    }
-
-    fn has_outbound_priority_pending(&self) -> bool {
-        self.outbound_admission.has_priority_pending()
-    }
-
-    fn admission_lane_len(&self, lane: Lane) -> usize {
-        let lens = self.admission.lens();
-        match lane {
-            Lane::Priority => lens.0,
-            Lane::Bulk => lens.1,
-        }
-    }
-
-    fn outbound_admission_lane_len(&self, lane: Lane) -> usize {
-        let lens = self.outbound_admission.lens();
-        match lane {
-            Lane::Priority => lens.0,
-            Lane::Bulk => lens.1,
-        }
-    }
-
     fn dispatch_outbound_prepared_into(
         &mut self,
         limit: usize,
