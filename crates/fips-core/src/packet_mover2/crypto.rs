@@ -7,7 +7,7 @@ pub(crate) enum PreparedCryptoWork {
     Completed(CryptoCompletion),
 }
 
-const PACKET_MOVER2_AEAD_WORKER_CHUNK_TARGET: usize = 16;
+const PACKET_MOVER2_AEAD_WORKER_CHUNK_TARGET: usize = 32;
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
@@ -201,6 +201,25 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             );
             return count;
         };
+
+        if chunk.len() <= PACKET_MOVER2_AEAD_WORKER_CHUNK_TARGET {
+            let chunk_len = chunk.len();
+            match work_tx.try_send(chunk) {
+                Ok(()) => {
+                    self.in_flight
+                        .fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
+                }
+                Err(crossbeam_channel::TrySendError::Full(mut chunk))
+                | Err(crossbeam_channel::TrySendError::Disconnected(mut chunk)) => {
+                    completions.extend(
+                        chunk
+                            .drain(..)
+                            .map(PreparedCryptoWork::into_executor_failed_completion),
+                    );
+                }
+            }
+            return count;
+        }
 
         let mut remaining = chunk.into_iter();
         loop {
