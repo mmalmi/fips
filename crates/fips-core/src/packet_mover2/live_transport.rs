@@ -329,23 +329,12 @@ where
     send_packet_mover2_transport_plans_inner(transports, plans, drops, None).await
 }
 
-pub(crate) async fn send_packet_mover2_transport_plans_collect_sent<R>(
-    transports: &R,
-    plans: &[PacketMover2TransportSendPlan],
-    drops: &mut Vec<PacketMover2OutputDrop>,
-    sent_outputs: &mut Vec<PacketOutput>,
-) -> usize
-where
-    R: PacketMover2TransportResolver + ?Sized,
-{
-    send_packet_mover2_transport_plans_inner(transports, plans, drops, Some(sent_outputs)).await
-}
-
 pub(crate) async fn send_packet_mover2_transport_plans_with_bulk_worker<R>(
     transports: &R,
     plans: Vec<PacketMover2TransportSendPlan>,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
+    mut sent_outputs: Option<&mut Vec<PacketOutput>>,
 ) -> usize
 where
     R: PacketMover2TransportResolver + ?Sized,
@@ -356,7 +345,6 @@ where
 
     let mut sent = 0usize;
     let mut batch = Vec::new();
-    let mut sent_outputs = None;
     let priority_cut_in_end = send_transport_priority_cut_in(
         transports,
         &plans,
@@ -373,9 +361,18 @@ where
         drops,
         &mut sent,
         &mut batch,
+        &mut sent_outputs,
     )
     .await;
-    send_bulk_transport_plans_with_worker(transports, plans, drops, worker, &mut sent).await;
+    send_bulk_transport_plans_with_worker(
+        transports,
+        plans,
+        drops,
+        worker,
+        &mut sent_outputs,
+        &mut sent,
+    )
+    .await;
     sent
 }
 
@@ -435,10 +432,10 @@ async fn send_remaining_transport_priority_plans<'a, R>(
     drops: &mut Vec<PacketMover2OutputDrop>,
     sent: &mut usize,
     batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
+    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
 ) where
     R: PacketMover2TransportResolver + ?Sized,
 {
-    let mut sent_outputs = None;
     let mut start = 0usize;
     while let Some((range_start, range_end, transport_id)) =
         next_transport_batch_range(plans, start)
@@ -459,7 +456,7 @@ async fn send_remaining_transport_priority_plans<'a, R>(
             batch,
             sent,
             drops,
-            &mut sent_outputs,
+            sent_outputs,
         )
         .await;
         start = range_end;
@@ -471,6 +468,7 @@ async fn send_bulk_transport_plans_with_worker<R>(
     plans: Vec<PacketMover2TransportSendPlan>,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
+    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
     sent: &mut usize,
 ) where
     R: PacketMover2TransportResolver + ?Sized,
@@ -490,13 +488,18 @@ async fn send_bulk_transport_plans_with_worker<R>(
         };
 
         let TransportHandle::Udp(udp) = transport else {
-            flush_pending_packet_mover2_udp_send_job(&mut pending_udp, drops, worker, sent);
+            flush_pending_packet_mover2_udp_send_job(
+                &mut pending_udp,
+                drops,
+                worker,
+                sent_outputs,
+                sent,
+            );
             let result = transport
                 .send(plan.remote_addr(), plan.output().payload())
                 .await;
             let plans = [plan];
-            let mut sent_outputs = None;
-            record_transport_send_result(&plans, 0, result, sent, drops, &mut sent_outputs);
+            record_transport_send_result(&plans, 0, result, sent, drops, sent_outputs);
             continue;
         };
 
@@ -506,12 +509,18 @@ async fn send_bulk_transport_plans_with_worker<R>(
             continue;
         };
         if !pending_udp.matches(plan.transport_id(), socket_addr) {
-            flush_pending_packet_mover2_udp_send_job(&mut pending_udp, drops, worker, sent);
+            flush_pending_packet_mover2_udp_send_job(
+                &mut pending_udp,
+                drops,
+                worker,
+                sent_outputs,
+                sent,
+            );
             pending_udp.reset(snapshot, plan.transport_id(), socket_addr);
         }
         pending_udp.push(plan_index, plan, socket_addr);
     }
-    flush_pending_packet_mover2_udp_send_job(&mut pending_udp, drops, worker, sent);
+    flush_pending_packet_mover2_udp_send_job(&mut pending_udp, drops, worker, sent_outputs, sent);
 }
 
 async fn prepare_packet_mover2_udp_worker_packet(
@@ -603,14 +612,30 @@ fn flush_pending_packet_mover2_udp_send_job(
     pending: &mut PendingPacketMover2UdpSendJob,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
+    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
     sent: &mut usize,
 ) {
     let Some(job) = pending.take_job() else {
         return;
     };
+    let sent_receipts = if sent_outputs.is_some() {
+        Some(
+            job.packets
+                .iter()
+                .map(|(_, output, _)| output.clone())
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
     match worker.try_enqueue(job) {
         Ok(count) => {
             *sent += count;
+            if let (Some(sent_outputs), Some(sent_receipts)) =
+                (sent_outputs.as_deref_mut(), sent_receipts)
+            {
+                sent_outputs.extend(sent_receipts);
+            }
         }
         Err(mut job) => {
             let dropped = job.packets.len();

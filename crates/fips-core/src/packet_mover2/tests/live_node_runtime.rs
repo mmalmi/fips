@@ -278,6 +278,7 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         live_node.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(1760));
         live_node.driver.owner_mut(owner)
             .unwrap()
@@ -295,7 +296,7 @@
             b"continuation".to_vec(),
         );
         let mut first = live_node
-            .pump_outbound_firsts(
+            .pump_outbound_firsts_with_transport_worker(
                 PacketMover2LiveOutboundFirsts::default()
                     .with_initial_outbound(Some(outbound))
                     .with_transport_sent_output_collection(true),
@@ -306,6 +307,7 @@
                 missing_endpoint_peer,
                 &transports,
                 0,
+                &mut transport_worker,
             )
             .await;
         assert_eq!(first.summary().outbound_admitted(), 1);
@@ -314,7 +316,7 @@
         assert!(first.take_transport_sent_outputs().is_empty());
 
         let mut second = live_node
-            .pump_outbound_firsts(
+            .pump_outbound_firsts_with_transport_worker(
                 PacketMover2LiveOutboundFirsts::default()
                     .with_transport_sent_output_collection(true),
                 0,
@@ -324,6 +326,7 @@
                 missing_endpoint_peer,
                 &transports,
                 1,
+                &mut transport_worker,
             )
             .await;
         assert_eq!(second.summary().dispatched(), 1);
@@ -334,7 +337,7 @@
 
         wait_for_live_worker_completion(&live_node).await;
         let mut third = live_node
-            .pump_outbound_firsts(
+            .pump_outbound_firsts_with_transport_worker(
                 PacketMover2LiveOutboundFirsts::default()
                     .with_transport_sent_output_collection(true),
                 0,
@@ -344,6 +347,7 @@
                 missing_endpoint_peer,
                 &transports,
                 1,
+                &mut transport_worker,
             )
             .await;
         assert_eq!(third.summary().completions(), 1);
@@ -844,6 +848,7 @@
             plans,
             &mut drops,
             &mut worker,
+            None,
         )
         .await;
 
@@ -926,6 +931,7 @@
             plans,
             &mut drops,
             &mut worker,
+            None,
         )
         .await;
 

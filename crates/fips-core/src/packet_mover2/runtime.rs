@@ -194,12 +194,16 @@ impl PacketMover2TurnDriver {
                 crate::perf_profile::Stage::PacketMover2TransportSend,
             );
             if collect_transport_sent_outputs {
-                let plans = transport_output.plans();
-                send_packet_mover2_transport_plans_collect_sent(
+                let worker = transport_send_worker
+                    .as_deref_mut()
+                    .expect("transport sent output collection requires the live transport worker");
+                let plans = transport_output.take_plans_preserving_capacity();
+                send_packet_mover2_transport_plans_with_bulk_worker(
                     transports,
                     plans,
                     &mut report.output_drops,
-                    &mut report.transport_sent_outputs,
+                    worker,
+                    Some(&mut report.transport_sent_outputs),
                 )
                 .await
             } else if let Some(worker) = transport_send_worker.as_deref_mut() {
@@ -209,6 +213,7 @@ impl PacketMover2TurnDriver {
                     plans,
                     &mut report.output_drops,
                     worker,
+                    None,
                 )
                 .await
             } else {
