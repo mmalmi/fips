@@ -895,57 +895,11 @@
     }
 
     #[test]
-    fn aead_worker_jobs_split_hot_owner_burst() {
-        let owner = fmp_owner(708);
+    fn aead_worker_jobs_cap_hot_owner_fanout() {
         assert_eq!(packet_mover2_aead_worker_job_packets(8, 8), 1);
         assert_eq!(packet_mover2_aead_worker_job_packets(64, 8), 8);
-
-        let work_count = PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2 + 3;
-        let work = (0..work_count as u64)
-            .map(|counter| {
-                PreparedCryptoWork::Completed(CryptoCompletion {
-                    reservation: OwnerReservation {
-                        owner,
-                        owner_shard: 0,
-                        generation: 1,
-                        order: OrderToken(counter),
-                        ingress_seq: counter,
-                        counter,
-                        class: PacketClass::Bulk,
-                        lane: Lane::Bulk,
-                        source_path: None,
-                        previous_hop: None,
-                        ce_flag: false,
-                        path_mtu: u16::MAX,
-                        wire_flags: 0,
-                        source_peer: None,
-                        output_path: None,
-                        activity_tick: None,
-                        fmp_timestamp_ms: None,
-                        fsp_timestamp_ms: None,
-                    },
-                    result: CryptoResult::Failed(CryptoFailureKind::Open),
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let jobs = PreparedCryptoJobSplitter::new(work, packet_mover2_aead_worker_job_packets(work_count, 4))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            jobs.iter().map(Vec::len).collect::<Vec<_>>(),
-            vec![5, 5, 5, 4]
-        );
-        let counters = jobs
-            .into_iter()
-            .flatten()
-            .map(|work| match work {
-                PreparedCryptoWork::Completed(completion) => completion.reservation.counter,
-                PreparedCryptoWork::Open { .. } | PreparedCryptoWork::Seal { .. } => {
-                    unreachable!("test constructs completed crypto work only")
-                }
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(counters, (0..work_count as u64).collect::<Vec<_>>());
+        assert_eq!(packet_mover2_aead_worker_job_packets(48, 14), 7);
+        assert_eq!(packet_mover2_aead_worker_job_packets(244, 14), 32);
     }
 
     #[test]
@@ -961,7 +915,6 @@
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(pool.available_open_capacity(), 0);
         assert_eq!(pool.available_seal_capacity(), 2);
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
@@ -981,6 +934,19 @@
 
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
         assert_eq!(dispatched, 2);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
+
+        let completions = drain_worker_pool_completions(&mut pool, 2);
+        assert_eq!(completions.len(), 2);
+        for completion in completions {
+            retire_completion(&mut mover, completion);
+        }
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
+
+        let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
+        assert_eq!(dispatched, 0);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
     }

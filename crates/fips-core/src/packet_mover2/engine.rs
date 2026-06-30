@@ -408,109 +408,124 @@ impl PacketMover2 {
         retired.clear();
         prepared_work.clear();
         completion_work.clear();
-        let open_capacity = executor.available_open_capacity();
-        let seal_capacity = executor.available_seal_capacity();
-        let direction_capacity = open_capacity.saturating_add(seal_capacity);
-        let executor_capacity = executor.available_capacity().min(direction_capacity);
-        let total_limit = limit.min(executor_capacity);
-        if limit > 0 && executor_capacity == 0 {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::PacketMover2DispatchExecutorFull,
-            );
-        }
-        let mut open_priority_capacity =
-            total_limit.min(executor.available_open_capacity_for_lane(Lane::Priority));
-        let seal_priority_capacity =
-            total_limit.min(executor.available_seal_capacity_for_lane(Lane::Priority));
-        let open_bulk_capacity =
-            total_limit.min(executor.available_open_capacity_for_lane(Lane::Bulk));
-        let seal_bulk_capacity =
-            total_limit.min(executor.available_seal_capacity_for_lane(Lane::Bulk));
-        let inbound_priority_pending = self.has_inbound_priority_pending();
-        let priority_feed_capacity = total_limit.min(
-            open_priority_capacity
-                .saturating_add(seal_priority_capacity),
-        );
-        let outbound_priority_reserve = outbound_priority_dispatch_limit(
-            priority_feed_capacity,
-            self.has_outbound_priority_pending(),
-        );
-        let pre_priority_inbound_limit =
-            inbound_before_outbound_priority_limit(priority_feed_capacity, outbound_priority_reserve)
-                .min(open_priority_capacity);
         let mut dispatched_total = 0usize;
         let mut fsp_path_open = 0u64;
         let mut fsp_path_open_bulk = 0u64;
+        {
+            let _owner_dispatch_timer = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::PacketMover2OwnerDispatch,
+            );
+            let open_capacity = executor.available_open_capacity();
+            let seal_capacity = executor.available_seal_capacity();
+            let direction_capacity = open_capacity.saturating_add(seal_capacity);
+            let executor_capacity = executor.available_capacity().min(direction_capacity);
+            let total_limit = limit.min(executor_capacity);
+            if limit > 0 && executor_capacity == 0 {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::PacketMover2DispatchExecutorFull,
+                );
+            }
+            let mut open_priority_capacity =
+                total_limit.min(executor.available_open_capacity_for_lane(Lane::Priority));
+            let seal_priority_capacity =
+                total_limit.min(executor.available_seal_capacity_for_lane(Lane::Priority));
+            let open_bulk_capacity =
+                total_limit.min(executor.available_open_capacity_for_lane(Lane::Bulk));
+            let seal_bulk_capacity =
+                total_limit.min(executor.available_seal_capacity_for_lane(Lane::Bulk));
+            let inbound_priority_pending = self.has_inbound_priority_pending();
+            let priority_feed_capacity = total_limit.min(
+                open_priority_capacity
+                    .saturating_add(seal_priority_capacity),
+            );
+            let outbound_priority_reserve = outbound_priority_dispatch_limit(
+                priority_feed_capacity,
+                self.has_outbound_priority_pending(),
+            );
+            let pre_priority_inbound_limit = inbound_before_outbound_priority_limit(
+                priority_feed_capacity,
+                outbound_priority_reserve,
+            )
+            .min(open_priority_capacity);
 
-        let pre_priority_inbound_dispatched =
-            self.dispatch_prepared_available_into(
+            let pre_priority_inbound_dispatched = self.dispatch_prepared_available_into(
                 pre_priority_inbound_limit,
                 prepared_work,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
             );
-        dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
-        open_priority_capacity =
-            open_priority_capacity.saturating_sub(pre_priority_inbound_dispatched);
+            dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
+            open_priority_capacity =
+                open_priority_capacity.saturating_sub(pre_priority_inbound_dispatched);
 
-        let priority_outbound_limit = outbound_priority_reserve
-            .min(total_limit.saturating_sub(dispatched_total))
-            .min(seal_priority_capacity);
-        let priority_outbound_dispatched =
-            self.dispatch_outbound_prepared_priority_available_into(
-                priority_outbound_limit,
-                prepared_work,
-            );
-        dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
+            let priority_outbound_limit = outbound_priority_reserve
+                .min(total_limit.saturating_sub(dispatched_total))
+                .min(seal_priority_capacity);
+            let priority_outbound_dispatched = self
+                .dispatch_outbound_prepared_priority_available_into(
+                    priority_outbound_limit,
+                    prepared_work,
+                );
+            dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
 
-        let priority_inbound_limit = if inbound_priority_pending {
-            open_priority_capacity.min(total_limit.saturating_sub(dispatched_total))
-        } else {
-            0
-        };
-        let priority_inbound_dispatched =
-            self.dispatch_prepared_priority_available_into(
+            let priority_inbound_limit = if inbound_priority_pending {
+                open_priority_capacity.min(total_limit.saturating_sub(dispatched_total))
+            } else {
+                0
+            };
+            let priority_inbound_dispatched = self.dispatch_prepared_priority_available_into(
                 priority_inbound_limit,
                 prepared_work,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
             );
-        dispatched_total = dispatched_total.saturating_add(priority_inbound_dispatched);
+            dispatched_total = dispatched_total.saturating_add(priority_inbound_dispatched);
 
-        let bulk_dispatch_capacity = total_limit
-            .saturating_sub(dispatched_total)
-            .min(open_bulk_capacity);
-        let bulk_inbound_start = prepared_work.len();
-        let inbound_dispatched = self.dispatch_prepared_available_into(
-            bulk_dispatch_capacity,
-            prepared_work,
-            &mut fsp_path_open,
-            &mut fsp_path_open_bulk,
-        );
-        dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
-        let outbound_start = prepared_work.len();
-        let outbound_dispatched = self.dispatch_outbound_prepared_available_into(
-            total_limit
+            let bulk_dispatch_capacity = total_limit
                 .saturating_sub(dispatched_total)
-                .min(seal_bulk_capacity),
-            prepared_work,
-        );
-        dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
-        debug_assert!(dispatched_total <= total_limit);
+                .min(open_bulk_capacity);
+            let bulk_inbound_start = prepared_work.len();
+            let inbound_dispatched = self.dispatch_prepared_available_into(
+                bulk_dispatch_capacity,
+                prepared_work,
+                &mut fsp_path_open,
+                &mut fsp_path_open_bulk,
+            );
+            dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
+            let outbound_start = prepared_work.len();
+            let outbound_dispatched = self.dispatch_outbound_prepared_available_into(
+                total_limit
+                    .saturating_sub(dispatched_total)
+                    .min(seal_bulk_capacity),
+                prepared_work,
+            );
+            dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
+            debug_assert!(dispatched_total <= total_limit);
 
-        let leading_priority_seals = prepared_work[outbound_start..]
-            .iter()
-            .take_while(|work| work.lane() == Lane::Priority)
-            .count();
-        if leading_priority_seals > 0 {
-            prepared_work[bulk_inbound_start..outbound_start + leading_priority_seals]
-                .rotate_right(leading_priority_seals);
+            let leading_priority_seals = prepared_work[outbound_start..]
+                .iter()
+                .take_while(|work| work.lane() == Lane::Priority)
+                .count();
+            if leading_priority_seals > 0 {
+                prepared_work[bulk_inbound_start..outbound_start + leading_priority_seals]
+                    .rotate_right(leading_priority_seals);
+            }
+            record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
         }
-        record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
 
-        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
-        let completed = self.queue_completion_batch(completion_work);
-        self.retire_queued_completions_into(completed, retired);
+        {
+            let _executor_submit_timer = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::PacketMover2ExecutorSubmit,
+            );
+            execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
+        }
+        {
+            let _completion_queue_timer = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::PacketMover2CompletionQueue,
+            );
+            let completed = self.queue_completion_batch(completion_work);
+            self.retire_queued_completions_into(completed, retired);
+        }
 
         drops.append(&mut self.drops);
         dispatched_total

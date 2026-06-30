@@ -77,42 +77,84 @@ impl PreparedCryptoWork {
     }
 }
 
-struct PreparedCryptoJobSplitter {
-    remaining: std::vec::IntoIter<PreparedCryptoWork>,
-    job_packets: usize,
+#[derive(Debug)]
+struct PreparedCryptoJob {
+    queued_at: Option<crate::perf_profile::TraceStamp>,
+    work: Vec<PreparedCryptoWork>,
+    bulk_count: usize,
 }
 
-impl PreparedCryptoJobSplitter {
-    fn new(work: Vec<PreparedCryptoWork>, job_packets: usize) -> Self {
+impl PreparedCryptoJob {
+    fn new(work: Vec<PreparedCryptoWork>, bulk_count: usize) -> Self {
         Self {
-            remaining: work.into_iter(),
-            job_packets: job_packets.max(1),
+            queued_at: crate::perf_profile::stamp(),
+            work,
+            bulk_count,
         }
     }
 
-    fn push_failed_completions(&mut self, completions: &mut Vec<CryptoCompletion>) {
-        while let Some(job) = self.next() {
-            for work in job {
-                work.push_executor_failed_completions(completions);
-            }
-        }
+    fn len(&self) -> usize {
+        self.work.len()
+    }
+
+    fn bulk_count(&self) -> usize {
+        self.bulk_count
     }
 }
 
-impl Iterator for PreparedCryptoJobSplitter {
-    type Item = Vec<PreparedCryptoWork>;
+struct PreparedCryptoJobBuilder {
+    direction: PacketMover2AeadDirection,
+    job_packets: usize,
+    work: Vec<PreparedCryptoWork>,
+    bulk_count: usize,
+    closed: bool,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        let first = self.remaining.next()?;
-        let mut job = Vec::with_capacity(self.job_packets);
-        job.push(first);
-        while job.len() < self.job_packets {
-            let Some(work) = self.remaining.next() else {
-                break;
-            };
-            job.push(work);
+impl PreparedCryptoJobBuilder {
+    fn new(direction: PacketMover2AeadDirection, job_packets: usize) -> Self {
+        let job_packets = job_packets.max(1);
+        Self {
+            direction,
+            job_packets,
+            work: Vec::with_capacity(job_packets),
+            bulk_count: 0,
+            closed: false,
         }
-        Some(job)
+    }
+
+    fn push(
+        &mut self,
+        pool: &PacketMover2AeadWorkerPool,
+        work: PreparedCryptoWork,
+        completions: &mut Vec<CryptoCompletion>,
+    ) {
+        if self.closed {
+            work.push_executor_failed_completions(completions);
+            return;
+        }
+        if work.lane() == Lane::Bulk {
+            self.bulk_count = self.bulk_count.saturating_add(1);
+        }
+        self.work.push(work);
+        if self.work.len() >= self.job_packets {
+            self.flush(pool, completions);
+        }
+    }
+
+    fn flush(
+        &mut self,
+        pool: &PacketMover2AeadWorkerPool,
+        completions: &mut Vec<CryptoCompletion>,
+    ) {
+        if self.work.is_empty() || self.closed {
+            return;
+        }
+        let next = Vec::with_capacity(self.job_packets);
+        let work = std::mem::replace(&mut self.work, next);
+        let bulk_count = std::mem::take(&mut self.bulk_count);
+        if !pool.submit_prepared_job(self.direction, work, bulk_count, completions) {
+            self.closed = true;
+        }
     }
 }
 
@@ -154,10 +196,51 @@ enum PacketMover2AeadDirection {
     Seal,
 }
 
+struct PacketMover2AeadDirectionCounts {
+    open: usize,
+    open_bulk: usize,
+    seal: usize,
+    seal_bulk: usize,
+}
+
+fn crypto_completion_direction(completion: &CryptoCompletion) -> PacketMover2AeadDirection {
+    match &completion.result {
+        CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => {
+            PacketMover2AeadDirection::Open
+        }
+        CryptoResult::Sealed(_)
+        | CryptoResult::Outbound(_)
+        | CryptoResult::Failed(CryptoFailureKind::Seal) => PacketMover2AeadDirection::Seal,
+    }
+}
+
+fn count_completion_directions(completions: &[CryptoCompletion]) -> PacketMover2AeadDirectionCounts {
+    let mut counts = PacketMover2AeadDirectionCounts {
+        open: 0,
+        open_bulk: 0,
+        seal: 0,
+        seal_bulk: 0,
+    };
+    for completion in completions {
+        let is_bulk = completion.reservation.lane == Lane::Bulk;
+        match crypto_completion_direction(completion) {
+            PacketMover2AeadDirection::Open => {
+                counts.open = counts.open.saturating_add(1);
+                counts.open_bulk = counts.open_bulk.saturating_add(usize::from(is_bulk));
+            }
+            PacketMover2AeadDirection::Seal => {
+                counts.seal = counts.seal.saturating_add(1);
+                counts.seal_bulk = counts.seal_bulk.saturating_add(usize::from(is_bulk));
+            }
+        }
+    }
+    counts
+}
+
 #[derive(Debug)]
 pub(crate) struct PacketMover2AeadWorkerPool {
-    open_tx: Option<crossbeam_channel::Sender<Vec<PreparedCryptoWork>>>,
-    seal_tx: Option<crossbeam_channel::Sender<Vec<PreparedCryptoWork>>>,
+    open_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
+    seal_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
     completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletion>>>,
     completion_notify: Arc<tokio::sync::Notify>,
     pending_completions: VecDeque<CryptoCompletion>,
@@ -227,10 +310,10 @@ impl PacketMover2AeadWorkerPool {
         completion: CryptoCompletion,
         completions: &mut Vec<CryptoCompletion>,
     ) {
-        let direction = completion.aead_direction();
-        let lane = completion.reservation.lane;
+        let direction = crypto_completion_direction(&completion);
+        let bulk_count = usize::from(completion.reservation.lane == Lane::Bulk);
         completions.push(completion);
-        self.finish_drained_completions(direction, 1, usize::from(lane == Lane::Bulk));
+        self.finish_drained_completions(direction, 1, bulk_count);
     }
 
     fn finish_drained_completions(
@@ -300,7 +383,7 @@ impl PacketMover2AeadWorkerPool {
     fn direction_sender(
         &self,
         direction: PacketMover2AeadDirection,
-    ) -> Option<&crossbeam_channel::Sender<Vec<PreparedCryptoWork>>> {
+    ) -> Option<&crossbeam_channel::Sender<PreparedCryptoJob>> {
         match direction {
             PacketMover2AeadDirection::Open => self.open_tx.as_ref(),
             PacketMover2AeadDirection::Seal => self.seal_tx.as_ref(),
@@ -337,40 +420,38 @@ impl PacketMover2AeadWorkerPool {
         bulk_limit.saturating_sub(bulk_in_flight).min(total_available)
     }
 
-    fn submit_prepared_direction_chunks(
+    fn submit_prepared_job(
         &self,
         direction: PacketMover2AeadDirection,
         work: Vec<PreparedCryptoWork>,
+        bulk_count: usize,
         completions: &mut Vec<CryptoCompletion>,
-    ) {
+    ) -> bool {
         if work.is_empty() {
-            return;
+            return true;
         }
         let Some(work_tx) = self.direction_sender(direction) else {
             push_failed_prepared_work(work, completions);
-            return;
+            return false;
         };
 
-        let job_packets =
-            packet_mover2_aead_worker_job_packets(work.len(), self.direction_worker_count(direction));
-        let mut jobs = PreparedCryptoJobSplitter::new(work, job_packets);
-        while let Some(work_chunk) = jobs.next() {
-            let chunk_len = work_chunk.len();
-            let bulk_count = count_bulk_prepared_work(&work_chunk);
-            match work_tx.try_send(work_chunk) {
-                Ok(()) => {
-                    let (in_flight, bulk_in_flight) = self.direction_counters(direction);
-                    in_flight.fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
-                    bulk_in_flight.fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
+        let job = PreparedCryptoJob::new(work, bulk_count);
+        let chunk_len = job.len();
+        let (in_flight, bulk_in_flight) = self.direction_counters(direction);
+        in_flight.fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
+        if bulk_count > 0 {
+            bulk_in_flight.fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
+        }
+        match work_tx.try_send(job) {
+            Ok(()) => true,
+            Err(crossbeam_channel::TrySendError::Full(job))
+            | Err(crossbeam_channel::TrySendError::Disconnected(job)) => {
+                in_flight.fetch_sub(chunk_len, std::sync::atomic::Ordering::AcqRel);
+                if bulk_count > 0 {
+                    bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
                 }
-                Err(crossbeam_channel::TrySendError::Full(mut work_chunk))
-                | Err(crossbeam_channel::TrySendError::Disconnected(mut work_chunk)) => {
-                    for work in work_chunk.drain(..) {
-                        work.push_executor_failed_completions(completions);
-                    }
-                    jobs.push_failed_completions(completions);
-                    break;
-                }
+                push_failed_prepared_work(job.work, completions);
+                false
             }
         }
     }
@@ -414,28 +495,27 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             return 0;
         }
 
-        let mut chunk = Vec::new();
-        std::mem::swap(prepared, &mut chunk);
-        let mut open_work = Vec::new();
-        let mut seal_work = Vec::new();
-        for work in chunk.drain(..) {
+        let open_job_packets =
+            packet_mover2_aead_worker_job_packets(count, self.direction_worker_count(PacketMover2AeadDirection::Open));
+        let seal_job_packets =
+            packet_mover2_aead_worker_job_packets(count, self.direction_worker_count(PacketMover2AeadDirection::Seal));
+        let mut open_jobs =
+            PreparedCryptoJobBuilder::new(PacketMover2AeadDirection::Open, open_job_packets);
+        let mut seal_jobs =
+            PreparedCryptoJobBuilder::new(PacketMover2AeadDirection::Seal, seal_job_packets);
+        for work in prepared.drain(..) {
             match work {
-                work @ PreparedCryptoWork::Open { .. } => open_work.push(work),
-                work @ PreparedCryptoWork::Seal { .. } => seal_work.push(work),
+                work @ PreparedCryptoWork::Open { .. } => {
+                    open_jobs.push(self, work, completions);
+                }
+                work @ PreparedCryptoWork::Seal { .. } => {
+                    seal_jobs.push(self, work, completions);
+                }
                 PreparedCryptoWork::Completed(completion) => completions.push(completion),
             }
         }
-
-        self.submit_prepared_direction_chunks(
-            PacketMover2AeadDirection::Open,
-            open_work,
-            completions,
-        );
-        self.submit_prepared_direction_chunks(
-            PacketMover2AeadDirection::Seal,
-            seal_work,
-            completions,
-        );
+        open_jobs.flush(self, completions);
+        seal_jobs.flush(self, completions);
         count
     }
 }
@@ -473,48 +553,6 @@ impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
     }
 }
 
-impl CryptoCompletion {
-    fn aead_direction(&self) -> PacketMover2AeadDirection {
-        match self.result {
-            CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => {
-                PacketMover2AeadDirection::Open
-            }
-            CryptoResult::Sealed(_)
-            | CryptoResult::Outbound(_)
-            | CryptoResult::Failed(CryptoFailureKind::Seal) => PacketMover2AeadDirection::Seal,
-        }
-    }
-}
-
-#[derive(Default)]
-struct PacketMover2AeadDirectionCounts {
-    open: usize,
-    open_bulk: usize,
-    seal: usize,
-    seal_bulk: usize,
-}
-
-fn count_completion_directions(completions: &[CryptoCompletion]) -> PacketMover2AeadDirectionCounts {
-    let mut counts = PacketMover2AeadDirectionCounts::default();
-    for completion in completions {
-        match completion.aead_direction() {
-            PacketMover2AeadDirection::Open => {
-                counts.open = counts.open.saturating_add(1);
-                if completion.reservation.lane == Lane::Bulk {
-                    counts.open_bulk = counts.open_bulk.saturating_add(1);
-                }
-            }
-            PacketMover2AeadDirection::Seal => {
-                counts.seal = counts.seal.saturating_add(1);
-                if completion.reservation.lane == Lane::Bulk {
-                    counts.seal_bulk = counts.seal_bulk.saturating_add(1);
-                }
-            }
-        }
-    }
-    counts
-}
-
 fn spawn_packet_mover2_aead_workers(
     direction: PacketMover2AeadDirection,
     worker_count: usize,
@@ -524,12 +562,12 @@ fn spawn_packet_mover2_aead_workers(
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
 ) -> (
-    crossbeam_channel::Sender<Vec<PreparedCryptoWork>>,
+    crossbeam_channel::Sender<PreparedCryptoJob>,
     Vec<std::thread::JoinHandle<()>>,
 ) {
     let (work_tx, work_rx): (
-        crossbeam_channel::Sender<Vec<PreparedCryptoWork>>,
-        crossbeam_channel::Receiver<Vec<PreparedCryptoWork>>,
+        crossbeam_channel::Sender<PreparedCryptoJob>,
+        crossbeam_channel::Receiver<PreparedCryptoJob>,
     ) = crossbeam_channel::bounded(max_in_flight);
     let mut workers = Vec::with_capacity(worker_count);
     for worker_idx in 0..worker_count {
@@ -550,11 +588,15 @@ fn spawn_packet_mover2_aead_workers(
                 .spawn(move || {
                     let opened = StatelessAeadOpenWorker;
                     let sealed = StatelessAeadSealWorker;
-                    while let Ok(mut prepared) = work_rx.recv() {
-                        let count = prepared.len();
-                        let bulk_count = count_bulk_prepared_work(&prepared);
+                    while let Ok(mut job) = work_rx.recv() {
+                        crate::perf_profile::record_since(
+                            crate::perf_profile::Stage::PacketMover2AeadWorkerQueueWait,
+                            job.queued_at,
+                        );
+                        let count = job.len();
+                        let bulk_count = job.bulk_count();
                         let mut completions = Vec::with_capacity(count);
-                        for work in prepared.drain(..) {
+                        for work in job.work.drain(..) {
                             completions.push(work.execute(&opened, &sealed));
                         }
                         if completion_tx.send(completions).is_err() {
@@ -581,13 +623,6 @@ fn push_failed_prepared_work(
     }
 }
 
-fn count_bulk_prepared_work(prepared: &[PreparedCryptoWork]) -> usize {
-    prepared
-        .iter()
-        .filter(|work| work.lane() == Lane::Bulk)
-        .count()
-}
-
 fn packet_mover2_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
     max_in_flight
         .saturating_sub(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
@@ -596,11 +631,8 @@ fn packet_mover2_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
 
 fn packet_mover2_aead_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
     let worker_count = worker_count.max(1);
-    work_count
-        .saturating_add(worker_count - 1)
-        / worker_count
-        .max(1)
-        .min(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
+    let divisor = worker_count.min(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS);
+    work_count.saturating_add(worker_count - 1) / divisor
 }
 
 impl Drop for PacketMover2AeadWorkerPool {

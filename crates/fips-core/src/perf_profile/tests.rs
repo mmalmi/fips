@@ -311,6 +311,30 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
             Stage::PacketMover2TransportSend,
             "packet_mover2_transport_send",
         ),
+        (
+            Stage::PacketMover2TransportPrepare,
+            "packet_mover2_transport_prepare",
+        ),
+        (
+            Stage::PacketMover2TransportSendWorker,
+            "packet_mover2_transport_send_worker",
+        ),
+        (
+            Stage::PacketMover2OwnerDispatch,
+            "packet_mover2_owner_dispatch",
+        ),
+        (
+            Stage::PacketMover2ExecutorSubmit,
+            "packet_mover2_executor_submit",
+        ),
+        (
+            Stage::PacketMover2CompletionQueue,
+            "packet_mover2_completion_queue",
+        ),
+        (
+            Stage::PacketMover2AeadWorkerQueueWait,
+            "packet_mover2_aead_worker_queue_wait",
+        ),
     ] {
         assert_eq!(stage_from_index(stage as usize).name(), name);
     }
@@ -325,10 +349,6 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
         (Stage::ReservedStage34, "reserved_stage_34"),
         (Stage::ReservedStage37, "reserved_stage_37"),
         (Stage::ReservedStage47, "reserved_stage_47"),
-        (
-            Stage::PacketMover2TransportSendWorker,
-            "packet_mover2_transport_send_worker",
-        ),
         (Stage::ReservedStage68, "reserved_stage_68"),
     ] {
         assert_eq!(stage_from_index(stage as usize).name(), name);
