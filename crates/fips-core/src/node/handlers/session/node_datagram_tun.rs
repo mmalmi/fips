@@ -197,7 +197,7 @@ impl Node {
             TunOutboundSessionDecision::Established => {
                 if self.find_next_hop(&dest_addr).is_some()
                     && self
-                        .send_packet_mover2_pending_tun_packet(&dest_addr, ipv6_packet.clone())
+                        .send_packet_mover2_cached_tun_packet(&dest_addr, ipv6_packet.clone())
                         .await
                         .is_ok()
                 {
@@ -357,10 +357,10 @@ impl Node {
         if !self.pending_session_traffic.has_traffic_for(dest_addr) {
             return;
         }
-        if !self.ensure_packet_mover2_fsp_owner(dest_addr) {
+        if !self.packet_mover2_has_fsp_owner(dest_addr) {
             debug!(
                 dest = %self.peer_display_name(dest_addr),
-                "Skipping pending packet flush until packet_mover2 FSP owner is available"
+                "Skipping pending packet flush because packet_mover2 FSP owner is not registered"
             );
             return;
         }

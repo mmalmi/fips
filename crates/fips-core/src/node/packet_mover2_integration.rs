@@ -178,21 +178,6 @@ impl Node {
         unreachable!("bounded FMP outbound continuation loop must return")
     }
 
-    pub(in crate::node) async fn send_packet_mover2_pending_tun_packet(
-        &mut self,
-        dest_addr: &NodeAddr,
-        packet: Vec<u8>,
-    ) -> Result<(), NodeError> {
-        if !self.ensure_packet_mover2_fsp_owner(dest_addr) {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "packet_mover2 FSP owner unavailable for queued TUN packet".into(),
-            });
-        }
-        self.send_packet_mover2_cached_tun_packet(dest_addr, packet)
-            .await
-    }
-
     pub(in crate::node) async fn send_packet_mover2_cached_tun_packet(
         &mut self,
         dest_addr: &NodeAddr,
@@ -657,14 +642,7 @@ impl Node {
         self.sync_packet_mover2_fsp_owner_with_coords_transfer(node_addr, true)
     }
 
-    pub(in crate::node) fn ensure_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) -> bool {
-        if self.packet_mover2_has_fsp_owner(node_addr) {
-            return true;
-        }
-        self.sync_packet_mover2_fsp_owner(node_addr)
-    }
-
-    fn packet_mover2_has_fsp_owner(&self, node_addr: &NodeAddr) -> bool {
+    pub(in crate::node) fn packet_mover2_has_fsp_owner(&self, node_addr: &NodeAddr) -> bool {
         self.packet_mover2.has_owner(OwnerId::fsp_node(*node_addr))
     }
 
