@@ -21,6 +21,29 @@ enum OutboundDispatchResult {
     Blocked(QueuedOutboundPacket),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PacketMover2ShardSkipSet(usize);
+
+impl PacketMover2ShardSkipSet {
+    fn empty() -> Self {
+        Self(0)
+    }
+
+    fn contains(self, shard: usize) -> bool {
+        shard < usize::BITS as usize && (self.0 & (1usize << shard)) != 0
+    }
+
+    fn insert(&mut self, shard: usize) {
+        if shard < usize::BITS as usize {
+            self.0 |= 1usize << shard;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.0 = 0;
+    }
+}
+
 impl PacketMover2 {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         let shard_count = packet_mover2_owner_shard_count(config);
@@ -360,7 +383,7 @@ impl PacketMover2 {
 
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.admission_len_for_priority(priority_only);
-        let mut skipped_shards = vec![false; self.shards.len()];
+        let mut skipped_shards = PacketMover2ShardSkipSet::empty();
         while dispatched < limit && attempts_remaining > 0 {
             let Some(shard) = self.select_ingress_dispatch_shard(priority_only, &skipped_shards)
             else {
@@ -374,11 +397,11 @@ impl PacketMover2 {
             dispatched = dispatched.saturating_add(got);
             if got == 0 {
                 self.preferred_ingress_dispatch_shard = None;
-                skipped_shards[shard] = true;
+                skipped_shards.insert(shard);
                 attempts_remaining = attempts_remaining.saturating_sub(1);
             } else {
                 self.preferred_ingress_dispatch_shard = Some(shard);
-                skipped_shards.fill(false);
+                skipped_shards.clear();
                 attempts_remaining = self.admission_len_for_priority(priority_only);
             }
         }
@@ -397,7 +420,7 @@ impl PacketMover2 {
 
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.outbound_len();
-        let mut skipped_shards = vec![false; self.shards.len()];
+        let mut skipped_shards = PacketMover2ShardSkipSet::empty();
         while dispatched < limit && attempts_remaining > 0 {
             let Some(shard) = self.select_outbound_dispatch_shard(priority_only, &skipped_shards)
             else {
@@ -410,7 +433,7 @@ impl PacketMover2 {
             };
             let Some(OwnerAdmissionPop { item, cursor }) = pop else {
                 self.preferred_outbound_dispatch_shard = None;
-                skipped_shards[shard] = true;
+                skipped_shards.insert(shard);
                 attempts_remaining = attempts_remaining.saturating_sub(1);
                 continue;
             };
@@ -420,7 +443,7 @@ impl PacketMover2 {
                 OutboundDispatchResult::Completed => {
                     self.shards[shard].continue_outbound_owner_run(cursor);
                     self.preferred_outbound_dispatch_shard = Some(shard);
-                    skipped_shards.fill(false);
+                    skipped_shards.clear();
                     if work.len() > dispatched {
                         dispatched = work.len();
                     }
@@ -456,11 +479,11 @@ impl PacketMover2 {
     fn select_ingress_dispatch_shard(
         &self,
         priority_only: bool,
-        skipped_shards: &[bool],
+        skipped_shards: &PacketMover2ShardSkipSet,
     ) -> Option<usize> {
         let priority_only = priority_only || self.has_inbound_priority_pending();
         if let Some(shard) = self.preferred_ingress_dispatch_shard
-            && !skipped_shards.get(shard).copied().unwrap_or(false)
+            && !skipped_shards.contains(shard)
             && self
                 .shards
                 .get(shard)
@@ -472,7 +495,7 @@ impl PacketMover2 {
         self.shards
             .iter()
             .enumerate()
-            .filter(|(shard, _)| !skipped_shards.get(*shard).copied().unwrap_or(false))
+            .filter(|(shard, _)| !skipped_shards.contains(*shard))
             .filter_map(|(shard, owner_shard)| {
                 owner_shard
                     .peek_ingress_seq(priority_only)
@@ -485,11 +508,11 @@ impl PacketMover2 {
     fn select_outbound_dispatch_shard(
         &self,
         priority_only: bool,
-        skipped_shards: &[bool],
+        skipped_shards: &PacketMover2ShardSkipSet,
     ) -> Option<usize> {
         let priority_only = priority_only || self.has_outbound_priority_pending();
         if let Some(shard) = self.preferred_outbound_dispatch_shard
-            && !skipped_shards.get(shard).copied().unwrap_or(false)
+            && !skipped_shards.contains(shard)
             && self
                 .shards
                 .get(shard)
@@ -501,7 +524,7 @@ impl PacketMover2 {
         self.shards
             .iter()
             .enumerate()
-            .filter(|(shard, _)| !skipped_shards.get(*shard).copied().unwrap_or(false))
+            .filter(|(shard, _)| !skipped_shards.contains(*shard))
             .filter_map(|(shard, owner_shard)| {
                 owner_shard
                     .peek_outbound_seq(priority_only)
@@ -1051,6 +1074,7 @@ fn packet_mover2_owner_shard_count(config: AdmissionConfig) -> usize {
         .map(|count| count.get())
         .unwrap_or(1)
         .max(1)
+        .min(usize::BITS as usize)
         .min(config.total_capacity().max(1))
         .max(1)
 }
