@@ -271,6 +271,9 @@
             .submit_socket_packet(packet(blocked, 1, 2, PacketClass::Bulk, OutputTarget::Tun))
             .unwrap();
         mover
+            .submit_socket_packet(packet(blocked, 1, 3, PacketClass::Bulk, OutputTarget::Tun))
+            .unwrap();
+        mover
             .submit_socket_packet(packet(runnable, 1, 1, PacketClass::Bulk, OutputTarget::Tun))
             .unwrap();
 
@@ -278,7 +281,17 @@
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].packet.owner, runnable);
         assert_eq!(work[0].packet.counter, 1);
-        assert_eq!(queue_lens(&mover), (0, 1));
+        assert_eq!(queue_lens(&mover), (0, 2));
+
+        let first_reservation = first[0].reservation.clone();
+        mover.retire_completion(CryptoCompletion {
+            reservation: first_reservation,
+            result: CryptoResult::Failed(CryptoFailureKind::Open),
+        });
+        let work = dispatch_available(&mut mover, 1);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].packet.owner, blocked);
+        assert_eq!(work[0].packet.counter, 2);
     }
 
     #[test]
@@ -703,6 +716,9 @@
             .submit_outbound_packet(outbound_packet(blocked, 1, PacketClass::Bulk, b"blocked-2"))
             .unwrap();
         mover
+            .submit_outbound_packet(outbound_packet(blocked, 1, PacketClass::Bulk, b"blocked-3"))
+            .unwrap();
+        mover
             .submit_outbound_packet(outbound_packet(runnable, 1, PacketClass::Bulk, b"runnable"))
             .unwrap();
 
@@ -710,7 +726,17 @@
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].reservation.owner, runnable);
         assert_eq!(work[0].reservation.counter, 380);
-        assert_eq!(outbound_queue_lens(&mover), (0, 1));
+        assert_eq!(outbound_queue_lens(&mover), (0, 2));
+
+        let first_reservation = first[0].reservation.clone();
+        mover.retire_completion(CryptoCompletion {
+            reservation: first_reservation,
+            result: CryptoResult::Failed(CryptoFailureKind::Seal),
+        });
+        let work = dispatch_outbound_available(&mut mover, 1);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].reservation.owner, blocked);
+        assert_eq!(work[0].packet.payload.as_ref(), b"blocked-2");
     }
 
     #[test]

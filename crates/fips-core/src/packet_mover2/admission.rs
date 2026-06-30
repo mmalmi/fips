@@ -187,16 +187,24 @@ where
     }
 
     fn push_back(&mut self, item: T) {
-        self.push(item);
+        self.push(item, false);
     }
 
-    fn push(&mut self, item: T) {
+    fn push_front(&mut self, item: T) {
+        self.push(item, true);
+    }
+
+    fn push(&mut self, item: T, front: bool) {
         let owner = item.owner();
         let lane = item.lane();
         let was_empty = {
             let queue = self.owners.entry(owner).or_default().lane_mut(lane);
             let was_empty = queue.is_empty();
-            queue.push_back(item);
+            if front {
+                queue.push_front(item);
+            } else {
+                queue.push_back(item);
+            }
             was_empty
         };
         self.increment_lane_len(lane);
@@ -317,6 +325,10 @@ impl AdmissionQueue {
         self.queues.push_back(queued);
     }
 
+    fn push_front(&mut self, queued: QueuedPacket) {
+        self.queues.push_front(queued);
+    }
+
     fn len(&self) -> usize {
         self.queues.len()
     }
@@ -404,6 +416,10 @@ impl OutboundAdmissionQueue {
 
     fn push_back(&mut self, queued: QueuedOutboundPacket) {
         self.queues.push_back(queued);
+    }
+
+    fn push_front(&mut self, queued: QueuedOutboundPacket) {
+        self.queues.push_front(queued);
     }
 
     fn has_priority_pending(&self) -> bool {

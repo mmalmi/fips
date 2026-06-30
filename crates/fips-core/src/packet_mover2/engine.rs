@@ -198,7 +198,7 @@ impl PacketMover2OwnerShard {
             };
             if !owner.can_reserve_class(queued.packet.class) {
                 record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
-                self.admission.push_back(queued);
+                self.admission.push_front(queued);
                 continue;
             }
 
@@ -291,7 +291,7 @@ impl PacketMover2OwnerShard {
         };
         if !owner.can_reserve_class(class) {
             record_owner_blocked(owner.reserve_block_reason(class));
-            self.outbound_admission.push_back(queued);
+            self.outbound_admission.push_front(queued);
             return false;
         }
 
@@ -312,7 +312,7 @@ impl PacketMover2OwnerShard {
             };
             if !outer_owner.can_reserve_class(class) {
                 record_owner_blocked(outer_owner.reserve_block_reason(class));
-                self.outbound_admission.push_back(queued);
+                self.outbound_admission.push_front(queued);
                 return false;
             }
         }
