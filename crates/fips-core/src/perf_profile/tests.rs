@@ -159,10 +159,7 @@ fn event_table_exposes_current_pm2_and_queue_events() {
             Event::PacketMover2CryptoBatchGe64,
             "packet_mover2_crypto_batch_ge64",
         ),
-        (
-            Event::PacketMover2FspOwnerSyncEstablished,
-            "packet_mover2_fsp_owner_sync_established",
-        ),
+        (Event::ReservedEvent199, "reserved_event_199"),
         (
             Event::PacketMover2FspOwnerSyncApplied,
             "packet_mover2_fsp_owner_sync_applied",
@@ -359,7 +356,7 @@ fn live_event_counters_increment() {
         (Event::PacketMover2FspOwnerSyncCall, 57),
         (Event::PacketMover2CryptoOpenBatch, 59),
         (Event::PacketMover2CryptoSealPackets, 61),
-        (Event::PacketMover2FspOwnerSyncEstablished, 63),
+        (Event::ReservedEvent199, 63),
         (Event::PacketMover2FspOwnerSyncApplied, 65),
         (Event::PacketBatchPoolReuse, 67),
         (Event::PacketBufferPoolFresh, 71),

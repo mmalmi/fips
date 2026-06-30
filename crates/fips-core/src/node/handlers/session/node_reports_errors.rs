@@ -181,6 +181,8 @@ impl Node {
                 );
             }
         }
+
+        let _ = self.sync_packet_mover2_fsp_owner(src_addr);
     }
 
     /// Handle a CoordsRequired error signal from a transit router.
@@ -342,7 +344,7 @@ impl Node {
         );
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
-        match self.sessions.apply_session_path_mtu_signal(
+        let path_mtu_changed = match self.sessions.apply_session_path_mtu_signal(
             &msg.dest_addr,
             msg.mtu,
             std::time::Instant::now(),
@@ -355,11 +357,12 @@ impl Node {
                     reporter = %msg.reporter,
                     "Path MTU decreased via reactive MtuExceeded signal"
                 );
+                true
             }
             Ok(SessionPathMtuApplyResult::Unchanged)
             | Err(SessionPathMtuApplySkip::UnknownSession)
-            | Err(SessionPathMtuApplySkip::MmpDisabled) => {}
-        }
+            | Err(SessionPathMtuApplySkip::MmpDisabled) => false,
+        };
 
         // Mirror the bottleneck into the FipsAddress-keyed lookup used by
         // the TUN reader/writer at TCP MSS clamp time. Discovery's reverse-
@@ -400,6 +403,9 @@ impl Node {
                     "path_mtu_lookup write lock poisoned; reactive MtuExceeded not reflected"
                 );
             }
+        }
+        if path_mtu_changed {
+            let _ = self.sync_packet_mover2_fsp_owner(&msg.dest_addr);
         }
     }
 

@@ -467,12 +467,23 @@ impl Node {
         dest: NodeAddr,
         now_ms: u64,
     ) -> bool {
-        self.session_direct_degradation
-            .mark_degraded(dest, now_ms, SESSION_DIRECT_DEGRADED_HOLD_MS)
+        let changed = self.session_direct_degradation.mark_degraded(
+            dest,
+            now_ms,
+            SESSION_DIRECT_DEGRADED_HOLD_MS,
+        );
+        if changed {
+            let _ = self.sync_packet_mover2_fsp_owner(&dest);
+        }
+        changed
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
-        self.session_direct_degradation.clear(dest)
+        let changed = self.session_direct_degradation.clear(dest);
+        if changed {
+            let _ = self.sync_packet_mover2_fsp_owner(dest);
+        }
+        changed
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded_after_promotion(
@@ -541,6 +552,7 @@ impl Node {
             return;
         }
         self.learned_routes.record_failure(&destination, &next_hop);
+        let _ = self.sync_packet_mover2_fsp_owner(&destination);
     }
 
     pub(crate) fn learned_route_table_snapshot(&self, now_ms: u64) -> LearnedRouteTableSnapshot {

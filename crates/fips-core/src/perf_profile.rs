@@ -463,7 +463,7 @@ pub enum Event {
     PacketMover2CryptoBatchGe8 = 196,
     PacketMover2CryptoBatchGe32 = 197,
     PacketMover2CryptoBatchGe64 = 198,
-    PacketMover2FspOwnerSyncEstablished = 199,
+    ReservedEvent199 = 199,
     PacketMover2FspOwnerSyncApplied = 200,
     PacketMover2DispatchOwnerBlocked = 201,
     PacketMover2DispatchNoIngress = 202,
@@ -689,9 +689,7 @@ impl Event {
             Event::PacketMover2CryptoBatchGe8 => "packet_mover2_crypto_batch_ge8",
             Event::PacketMover2CryptoBatchGe32 => "packet_mover2_crypto_batch_ge32",
             Event::PacketMover2CryptoBatchGe64 => "packet_mover2_crypto_batch_ge64",
-            Event::PacketMover2FspOwnerSyncEstablished => {
-                "packet_mover2_fsp_owner_sync_established"
-            }
+            Event::ReservedEvent199 => "reserved_event_199",
             Event::PacketMover2FspOwnerSyncApplied => "packet_mover2_fsp_owner_sync_applied",
             Event::PacketMover2DispatchOwnerBlocked => "packet_mover2_dispatch_owner_blocked",
             Event::PacketMover2DispatchNoIngress => "packet_mover2_dispatch_no_ingress",
@@ -926,7 +924,7 @@ fn event_from_index(idx: usize) -> Event {
         196 => Event::PacketMover2CryptoBatchGe8,
         197 => Event::PacketMover2CryptoBatchGe32,
         198 => Event::PacketMover2CryptoBatchGe64,
-        199 => Event::PacketMover2FspOwnerSyncEstablished,
+        199 => Event::ReservedEvent199,
         200 => Event::PacketMover2FspOwnerSyncApplied,
         201 => Event::PacketMover2DispatchOwnerBlocked,
         202 => Event::PacketMover2DispatchNoIngress,

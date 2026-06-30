@@ -87,10 +87,6 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        if endpoint_limit > 0 || tun_limit > 0 {
-            self.sync_packet_mover2_established_fsp_owners();
-        }
-
         let sessions = &self.sessions;
         let identity_cache = &self.identity_cache;
         let endpoint_resolver = |source_addr: &NodeAddr| {

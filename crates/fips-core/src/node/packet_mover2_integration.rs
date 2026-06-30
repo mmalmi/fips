@@ -10,7 +10,7 @@ use crate::packet_mover2::{
     TransportPath,
 };
 use crate::protocol::SessionMessageType;
-use std::collections::{HashSet, hash_map::DefaultHasher};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
@@ -660,6 +660,14 @@ impl Node {
         node_addr: &NodeAddr,
         transfer_coords_warmup: bool,
     ) -> bool {
+        if transfer_coords_warmup && !self.packet_mover2_fsp_owner_sync_is_dirty(node_addr) {
+            return true;
+        }
+
+        let _timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2FspOwnerSync);
+        crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2FspOwnerSyncCall);
+
         let Some(seed) = self.packet_mover2_fsp_owner_seed(node_addr, transfer_coords_warmup)
         else {
             self.remove_packet_mover2_fsp_owner(node_addr);
@@ -689,6 +697,11 @@ impl Node {
         } else {
             self.packet_mover2_fsp_owner_sync.remove(node_addr);
         }
+        if synced {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::PacketMover2FspOwnerSyncApplied,
+            );
+        }
         synced
     }
 
@@ -696,38 +709,6 @@ impl Node {
         self.packet_mover2
             .unregister_owner(OwnerId::fsp_node(*node_addr));
         self.packet_mover2_fsp_owner_sync.remove(node_addr);
-    }
-
-    pub(in crate::node) fn sync_packet_mover2_established_fsp_owners(&mut self) {
-        let _timer =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2FspOwnerSync);
-        crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2FspOwnerSyncCall);
-        let established: Vec<NodeAddr> = self
-            .sessions
-            .iter()
-            .filter_map(|(node_addr, session)| session.is_established().then_some(*node_addr))
-            .collect();
-        crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2FspOwnerSyncEstablished,
-            established.len() as u64,
-        );
-        let established_set: HashSet<NodeAddr> = established.iter().copied().collect();
-        self.packet_mover2_fsp_owner_sync
-            .retain(|node_addr, _| established_set.contains(node_addr));
-
-        let mut applied = 0u64;
-        for node_addr in established {
-            if !self.packet_mover2_fsp_owner_sync_is_dirty(&node_addr) {
-                continue;
-            }
-            if self.sync_packet_mover2_fsp_owner(&node_addr) {
-                applied += 1;
-            }
-        }
-        crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2FspOwnerSyncApplied,
-            applied,
-        );
     }
 
     fn packet_mover2_fsp_owner_sync_is_dirty(&mut self, node_addr: &NodeAddr) -> bool {
@@ -750,9 +731,9 @@ impl Node {
     }
 
     fn packet_mover2_fsp_owner_sync_fingerprint(&mut self, node_addr: &NodeAddr) -> Option<u64> {
-        // This is the hot-turn bridge while SessionRegistry remains the source
-        // of truth for session/path facts. Keep it in lockstep with every fact
-        // mirrored into the PM2 owner: first-contact/missing map entries,
+        // This fingerprint keeps explicit lifecycle/control refreshes cheap
+        // while SessionRegistry remains the source of truth for session/path
+        // facts mirrored into the PM2 owner: first-contact/missing map entries,
         // FSP generation and K-bit, coords warmup transfer, endpoint/TUN MTU,
         // next-hop owner generation, transport id/address, path MTU, and
         // liveness-visible spin flags.
