@@ -817,11 +817,21 @@ impl Node {
                 .sessions
                 .cutover_due_session_rekey(&node_addr, now_ms, FSP_CUTOVER_DELAY_MS)
             {
+                let snapshot = self
+                    .sessions
+                    .get(&node_addr)
+                    .and_then(Self::packet_mover2_fsp_owner_session_snapshot);
                 debug!(
                     peer = %self.peer_display_name(&node_addr),
                     "FSP rekey cutover complete (initiator), K-bit flipped"
                 );
-                self.sync_packet_mover2_fsp_owner(&node_addr);
+                if let Some(snapshot) = snapshot {
+                    self.sync_packet_mover2_fsp_owner_from_session_snapshot(
+                        &node_addr, snapshot, 0,
+                    );
+                } else {
+                    self.remove_packet_mover2_fsp_owner(&node_addr);
+                }
             }
         }
 
@@ -831,11 +841,21 @@ impl Node {
                 .sessions
                 .complete_due_session_rekey_drain(&node_addr, now_ms, drain_ms)
             {
+                let epoch = self
+                    .sessions
+                    .get(&node_addr)
+                    .map(Self::packet_mover2_fsp_owner_epoch);
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
                     "FSP drain complete, stale epoch retired"
                 );
-                self.refresh_packet_mover2_fsp_owner_epoch(&node_addr);
+                if let Some((current_k_bit, previous_draining_k_bit)) = epoch {
+                    self.set_packet_mover2_fsp_owner_epoch(
+                        &node_addr,
+                        current_k_bit,
+                        previous_draining_k_bit,
+                    );
+                }
             }
         }
 
