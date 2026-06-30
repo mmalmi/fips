@@ -61,6 +61,15 @@ impl Node {
             .and_then(|activity| activity.session_idle_activity_ms())
     }
 
+    pub(crate) fn session_dataplane_epoch(&self, addr: &NodeAddr) -> Option<(u64, bool, bool)> {
+        let activity = self.packet_mover2.fsp_owner_activity(addr)?;
+        Some((
+            activity.fsp_session_start_ms()?,
+            activity.current_k_bit(),
+            activity.is_draining(),
+        ))
+    }
+
     pub(crate) fn session_mmp_snapshot(
         &self,
         addr: &NodeAddr,

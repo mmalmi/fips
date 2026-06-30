@@ -365,6 +365,18 @@ impl PacketMover2FspOwnerActivity {
         self.last_rx_data_activity.map(|tick| tick.age_ms(now_ms))
     }
 
+    pub(crate) fn fsp_session_start_ms(self) -> Option<u64> {
+        self.fsp_session_start_ms
+    }
+
+    pub(crate) fn current_k_bit(self) -> bool {
+        self.current_k_bit
+    }
+
+    pub(crate) fn is_draining(self) -> bool {
+        self.previous_draining_k_bit.is_some()
+    }
+
     pub(crate) fn should_ignore_stale_epoch_decrypt_failure(self, received_k_bit: bool) -> bool {
         self.previous_draining_k_bit == Some(received_k_bit)
             && received_k_bit != self.current_k_bit

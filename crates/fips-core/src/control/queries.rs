@@ -436,10 +436,13 @@ pub fn show_sessions(node: &Node) -> Value {
             }
 
             // Rekey and session health (visible when established)
-            if entry.is_established() {
-                session_json["session_start_ms"] = json!(entry.session_start_ms());
-                session_json["current_k_bit"] = json!(entry.current_k_bit());
-                session_json["is_draining"] = json!(entry.is_draining());
+            if entry.is_established()
+                && let Some((session_start_ms, current_k_bit, is_draining)) =
+                    node.session_dataplane_epoch(addr)
+            {
+                session_json["session_start_ms"] = json!(session_start_ms);
+                session_json["current_k_bit"] = json!(current_k_bit);
+                session_json["is_draining"] = json!(is_draining);
             }
 
             if let Some(mmp) = node.session_mmp_snapshot(addr) {

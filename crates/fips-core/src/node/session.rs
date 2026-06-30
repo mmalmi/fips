@@ -88,8 +88,6 @@ pub(crate) struct SessionEntry {
     // === Rekey (Key Rotation) ===
     /// Current K-bit epoch value (alternates each rekey).
     current_k_bit: bool,
-    /// Previous NoiseSession during drain window after cutover.
-    previous_noise_session: Option<NoiseSession>,
     /// When drain window started (Unix ms). 0 = no drain.
     drain_started_ms: u64,
     /// In-progress rekey state (runs alongside Established session).
@@ -137,7 +135,6 @@ impl SessionEntry {
             resend_count: 0,
             next_resend_at_ms: 0,
             current_k_bit: false,
-            previous_noise_session: None,
             drain_started_ms: 0,
             rekey_state: None,
             pending_new_session: None,
@@ -218,14 +215,6 @@ impl SessionEntry {
         self.session_start_ms = now_ms;
     }
 
-    /// Compute a session-relative timestamp for the FSP inner header.
-    ///
-    /// Returns `(now_ms - session_start_ms)` truncated to u32.
-    /// Wraps naturally at ~49.7 days, which is fine for relative timing.
-    pub(crate) fn session_timestamp(&self, now_ms: u64) -> u32 {
-        now_ms.wrapping_sub(self.session_start_ms) as u32
-    }
-
     /// Whether this node initiated the Noise handshake.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_initiator(&self) -> bool {
@@ -296,12 +285,6 @@ impl SessionEntry {
             Some(EndToEndState::Established(session)) => Some(session),
             _ => None,
         }
-    }
-
-    /// Get the previous session for decryption fallback during drain.
-    #[cfg(test)]
-    pub(crate) fn previous_noise_session_mut(&mut self) -> Option<&mut NoiseSession> {
-        self.previous_noise_session.as_mut()
     }
 
     /// Snapshot the current established-FSP open/seal keys for packet mover owner state.
@@ -440,10 +423,6 @@ impl SessionEntry {
             None => return false,
         };
 
-        // Demote current to previous for drain
-        if let Some(EndToEndState::Established(old)) = self.state.take() {
-            self.previous_noise_session = Some(old);
-        }
         self.drain_started_ms = now_ms;
 
         // Promote pending to current
@@ -476,9 +455,8 @@ impl SessionEntry {
         self.drain_started_ms > 0
     }
 
-    /// Complete the drain: drop previous session.
+    /// Complete the stale-epoch drain window.
     pub(crate) fn complete_drain(&mut self) {
-        self.previous_noise_session = None;
         self.drain_started_ms = 0;
     }
 

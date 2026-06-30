@@ -47,7 +47,7 @@ async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
     node.handle_session_receiver_report(&remote_addr, &baseline)
         .await;
 
-    let lossy_timestamp_echo = session_timestamp_echo_for(&node, &remote_addr, 50);
+    let lossy_timestamp_echo = session_timestamp_echo_for(50);
     let lossy = SessionReceiverReport {
         highest_counter: 120,
         cumulative_packets_recv: 118,

@@ -14,7 +14,9 @@ use secp256k1::PublicKey;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
 
-/// Keep previous session alive for this long after cutover.
+/// Keep the post-cutover stale-epoch drain window open for this long.
+/// FMP retains its previous link session during this window; FSP keeps only
+/// drain timing/epoch metadata while PM2 owns packet-path stale-epoch handling.
 const DRAIN_WINDOW_SECS: u64 = 10;
 
 /// Suppress local rekey initiation for this long after receiving
@@ -781,7 +783,7 @@ impl Node {
     /// For each established session:
     /// - If the initiator has a pending session past the liveness timer,
     ///   perform K-bit cutover
-    /// - If the drain window has expired, clean up the previous session
+    /// - If the drain window has expired, clear stale-epoch metadata
     /// - If the rekey timer/counter fires, initiate a new XK handshake
     pub(in crate::node) async fn check_session_rekey(&mut self) {
         if !self.config.node.rekey.enabled {
@@ -831,7 +833,7 @@ impl Node {
             {
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
-                    "FSP drain complete, previous session erased"
+                    "FSP drain complete, stale epoch retired"
                 );
                 self.refresh_packet_mover2_fsp_owner_epoch(&node_addr);
             }

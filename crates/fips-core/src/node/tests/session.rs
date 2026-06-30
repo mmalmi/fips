@@ -456,11 +456,7 @@ fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
     ensure_packet_mover2_fsp_owner_for_test(node, remote_addr);
 }
 
-fn session_timestamp_echo_for(node: &Node, remote_addr: &NodeAddr, rtt_ms: u32) -> u32 {
+fn session_timestamp_echo_for(rtt_ms: u32) -> u32 {
     let now_ms = Node::now_ms();
-    node.sessions
-        .get(remote_addr)
-        .expect("session")
-        .session_timestamp(now_ms)
-        .saturating_sub(rtt_ms)
+    (now_ms.wrapping_sub(1_000) as u32).saturating_sub(rtt_ms)
 }

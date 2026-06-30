@@ -118,7 +118,7 @@
     }
 
     #[test]
-    fn recovery_rekey_keeps_old_session_usable_until_and_after_cutover() {
+    fn recovery_rekey_uses_old_session_until_cutover_and_new_session_after() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let aad = b"fsp-test-aad";
@@ -154,21 +154,13 @@
             b"old packet before cutover"
         );
 
-        // After cutover, stale old-session packets are accepted through the
-        // previous-session drain slot, while new-session packets decrypt on
-        // the promoted current session.
+        // After cutover, SessionEntry promotes only the new session. PM2 owns
+        // stale-epoch drain handling, so registry state no longer retains the
+        // old NoiseSession for decrypt fallback.
         assert!(entry.cutover_to_new_session(2000));
         let (old_counter, old_ciphertext) =
             encrypt_frame(&mut old_sender, b"old packet after cutover", aad);
         assert!(decrypt_current(&mut entry, &old_ciphertext, old_counter, aad).is_err());
-        assert_eq!(
-            entry
-                .previous_noise_session_mut()
-                .expect("old session should be retained for drain")
-                .decrypt_with_replay_check_and_aad(&old_ciphertext, old_counter, aad)
-                .unwrap(),
-            b"old packet after cutover"
-        );
 
         let (new_counter, new_ciphertext) =
             encrypt_frame(&mut new_sender, b"new packet after cutover", aad);
