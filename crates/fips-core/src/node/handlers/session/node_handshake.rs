@@ -433,10 +433,12 @@ impl Node {
             msg3_resend_payload,
             now_ms,
             resend_interval,
-            self.config.node.session.coords_warmup_packets,
             &self.config.node.session_mmp,
         );
-        self.sync_packet_mover2_fsp_owner(src_addr);
+        self.sync_packet_mover2_fsp_owner_with_coords_warmup(
+            src_addr,
+            self.config.node.session.coords_warmup_packets,
+        );
 
         // Flush any queued outbound packets for this destination
         self.flush_pending_packets(src_addr).await;
@@ -561,10 +563,12 @@ impl Node {
             remote_pubkey,
             session,
             now_ms,
-            self.config.node.session.coords_warmup_packets,
             &self.config.node.session_mmp,
         );
-        self.sync_packet_mover2_fsp_owner(src_addr);
+        self.sync_packet_mover2_fsp_owner_with_coords_warmup(
+            src_addr,
+            self.config.node.session.coords_warmup_packets,
+        );
 
         // Flush any pending packets
         self.flush_pending_packets(src_addr).await;

@@ -406,7 +406,6 @@ pub fn show_sessions(node: &Node) -> Value {
             if entry.is_established() {
                 session_json["session_start_ms"] = json!(entry.session_start_ms());
                 session_json["current_k_bit"] = json!(entry.current_k_bit());
-                session_json["coords_warmup_remaining"] = json!(entry.coords_warmup_remaining());
                 session_json["is_draining"] = json!(entry.is_draining());
             }
 

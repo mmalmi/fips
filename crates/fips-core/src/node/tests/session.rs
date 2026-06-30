@@ -11,7 +11,6 @@ use crate::node::tests::spanning_tree::{
 use crate::protocol::{SessionAck, SessionDatagram, SessionReceiverReport, SessionSetup};
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 
-mod coords_identity;
 mod direct_endpoint;
 mod discovery_tun;
 mod entry_basics;

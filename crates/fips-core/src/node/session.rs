@@ -101,10 +101,6 @@ pub(crate) struct SessionEntry {
     /// Used to compute session-relative timestamps for the FSP inner header.
     /// Set to 0 until the session is established.
     session_start_ms: u64,
-    /// Remaining data packets that should include COORDS_PRESENT.
-    /// Initialized from config when session becomes Established;
-    /// reset on CoordsRequired receipt.
-    coords_warmup_remaining: u8,
     /// Whether this node initiated the Noise handshake.
     /// Used for spin bit role assignment in session-layer MMP.
     is_initiator: bool,
@@ -174,7 +170,6 @@ impl SessionEntry {
             last_activity: now_ms,
             last_inbound_frame_ms: now_ms,
             session_start_ms: 0,
-            coords_warmup_remaining: 0,
             is_initiator,
             mmp: None,
             handshake_payload: None,
@@ -282,17 +277,6 @@ impl SessionEntry {
     #[cfg(test)]
     pub(crate) fn last_inbound_frame_ms(&self) -> u64 {
         self.last_inbound_frame_ms
-    }
-
-    /// Remaining DataPackets that should include COORDS_PRESENT.
-    pub(crate) fn coords_warmup_remaining(&self) -> u8 {
-        self.coords_warmup_remaining
-    }
-
-    /// Set the coords warmup counter (used on Established transition
-    /// and CoordsRequired reset).
-    pub(crate) fn set_coords_warmup_remaining(&mut self, value: u8) {
-        self.coords_warmup_remaining = value;
     }
 
     /// Mark the session as started (transition to Established).

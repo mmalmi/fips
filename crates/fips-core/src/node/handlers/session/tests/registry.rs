@@ -379,52 +379,6 @@
     }
 
     #[test]
-    fn session_registry_owns_route_error_coords_warmup_policy() {
-        let local = Identity::generate();
-        let established_peer = Identity::generate();
-        let initiating_peer = Identity::generate();
-        let established_addr = *established_peer.node_addr();
-        let initiating_addr = *initiating_peer.node_addr();
-        let missing_addr = node_addr(0x99);
-        let mut sessions = crate::node::SessionRegistry::default();
-        assert!(
-            sessions
-                .insert(
-                    established_addr,
-                    established_entry(&local, &established_peer)
-                )
-                .is_none()
-        );
-        assert!(
-            sessions
-                .insert(initiating_addr, initiating_entry(&local, &initiating_peer))
-                .is_none()
-        );
-
-        assert!(sessions.route_error_can_send_coords_warmup(&established_addr));
-        assert!(!sessions.route_error_can_send_coords_warmup(&initiating_addr));
-        assert!(!sessions.route_error_can_send_coords_warmup(&missing_addr));
-
-        assert!(sessions.reset_route_error_coords_warmup(&established_addr, 3));
-        assert!(sessions.reset_route_error_coords_warmup(&initiating_addr, 2));
-        assert!(!sessions.reset_route_error_coords_warmup(&missing_addr, 1));
-        assert_eq!(
-            sessions
-                .get(&established_addr)
-                .expect("established session")
-                .coords_warmup_remaining(),
-            3
-        );
-        assert_eq!(
-            sessions
-                .get(&initiating_addr)
-                .expect("initiating session")
-                .coords_warmup_remaining(),
-            2
-        );
-    }
-
-    #[test]
     fn session_registry_owns_fsp_send_context_flags() {
         let local = Identity::generate();
         let peer = Identity::generate();
@@ -666,7 +620,6 @@
                     vec![0x44, 0x55],
                     3_000,
                     750,
-                    3,
                     &mmp_config,
                 )
                 .is_some()
@@ -676,7 +629,6 @@
             .expect("established initiator session should be installed");
         assert!(entry.is_established());
         assert!(entry.is_initiator());
-        assert_eq!(entry.coords_warmup_remaining(), 3);
         assert_eq!(entry.session_start_ms(), 3_000);
         assert_eq!(entry.last_activity(), 3_000);
         assert!(entry.mmp().is_some());
@@ -691,7 +643,6 @@
                     peer.pubkey_full(),
                     responder_session,
                     4_000,
-                    2,
                     &mmp_config,
                 )
                 .is_some()
@@ -701,7 +652,6 @@
             .expect("established responder session should be installed");
         assert!(entry.is_established());
         assert!(!entry.is_initiator());
-        assert_eq!(entry.coords_warmup_remaining(), 2);
         assert_eq!(entry.session_start_ms(), 4_000);
         assert_eq!(entry.last_activity(), 4_000);
         assert!(entry.mmp().is_some());

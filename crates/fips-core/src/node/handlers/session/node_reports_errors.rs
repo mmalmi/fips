@@ -218,9 +218,7 @@ impl Node {
             .coords_response_rate_limiter
             .should_send(&msg.dest_addr)
         {
-            if self
-                .sessions
-                .route_error_can_send_coords_warmup(&msg.dest_addr)
+            if self.packet_mover2_has_fsp_owner(&msg.dest_addr)
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
             {
                 debug!(dest = %msg.dest_addr, error = %e,
@@ -243,10 +241,7 @@ impl Node {
         // Reset coords warmup counter so the next N packets also include
         // COORDS_PRESENT, re-warming transit caches along the path.
         let n = self.config.node.session.coords_warmup_packets;
-        if self
-            .sessions
-            .reset_route_error_coords_warmup(&msg.dest_addr, n)
-        {
+        if self.sync_packet_mover2_fsp_owner_with_coords_warmup(&msg.dest_addr, n) {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -282,9 +277,7 @@ impl Node {
             .coords_response_rate_limiter
             .should_send(&msg.dest_addr)
         {
-            if self
-                .sessions
-                .route_error_can_send_coords_warmup(&msg.dest_addr)
+            if self.packet_mover2_has_fsp_owner(&msg.dest_addr)
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
             {
                 debug!(dest = %msg.dest_addr, error = %e,
@@ -312,10 +305,7 @@ impl Node {
         // Reset coords warmup counter so the next N packets include
         // COORDS_PRESENT, re-warming transit caches along the new path.
         let n = self.config.node.session.coords_warmup_packets;
-        if self
-            .sessions
-            .reset_route_error_coords_warmup(&msg.dest_addr, n)
-        {
+        if self.sync_packet_mover2_fsp_owner_with_coords_warmup(&msg.dest_addr, n) {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,

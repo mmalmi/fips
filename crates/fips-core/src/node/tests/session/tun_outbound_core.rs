@@ -32,6 +32,37 @@ fn test_identity_cache_populated_on_promote() {
     assert_eq!(cached_pk, peer_identity.pubkey_full());
 }
 
+#[test]
+fn identity_cache_validates_claims_touches_lru_and_keeps_lookup_views() {
+    let id1 = Identity::generate();
+    let id2 = Identity::generate();
+    let id3 = Identity::generate();
+    let wrong = Identity::generate();
+    let mut cache = crate::node::IdentityCache::default();
+
+    assert!(cache.register(*id1.node_addr(), id1.pubkey_full(), 1_000, 2));
+    assert!(cache.register(*id2.node_addr(), id2.pubkey_full(), 2_000, 2));
+    assert_eq!(cache.len(), 2);
+
+    assert!(!cache.register(*id1.node_addr(), wrong.pubkey_full(), 3_000, 2));
+    assert_eq!(
+        cache.pubkey_for_node_addr(id1.node_addr()),
+        Some(id1.pubkey_full())
+    );
+
+    let id1_prefix = crate::node::IdentityCache::prefix_for(id1.node_addr());
+    assert_eq!(
+        cache.lookup_by_prefix(&id1_prefix, 4_000),
+        Some((*id1.node_addr(), id1.pubkey_full()))
+    );
+
+    assert!(cache.register(*id3.node_addr(), id3.pubkey_full(), 5_000, 2));
+    assert_eq!(cache.len(), 2);
+    assert!(cache.has_prefix_for(id1.node_addr()));
+    assert!(!cache.has_prefix_for(id2.node_addr()));
+    assert_eq!(cache.npub_for_node_addr(id3.node_addr()), Some(id3.npub()));
+}
+
 #[tokio::test]
 async fn test_tun_outbound_established_session() {
     // Two directly connected nodes, session established.

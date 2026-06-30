@@ -111,11 +111,9 @@ impl crate::node::SessionRegistry {
         msg3_resend_payload: Vec<u8>,
         now_ms: u64,
         resend_interval_ms: u64,
-        coords_warmup_packets: u8,
         mmp_config: &crate::config::SessionMmpConfig,
     ) -> Option<SessionEntry> {
         entry.set_state(EndToEndState::Established(session));
-        entry.set_coords_warmup_remaining(coords_warmup_packets);
         entry.mark_established(now_ms);
         entry.init_mmp(mmp_config);
         entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval_ms);
@@ -129,7 +127,6 @@ impl crate::node::SessionRegistry {
         remote_pubkey: PublicKey,
         session: NoiseSession,
         now_ms: u64,
-        coords_warmup_packets: u8,
         mmp_config: &crate::config::SessionMmpConfig,
     ) -> Option<SessionEntry> {
         let mut entry = SessionEntry::new(
@@ -139,7 +136,6 @@ impl crate::node::SessionRegistry {
             now_ms,
             false,
         );
-        entry.set_coords_warmup_remaining(coords_warmup_packets);
         entry.mark_established(now_ms);
         entry.init_mmp(mmp_config);
         entry.touch(now_ms);
@@ -283,23 +279,6 @@ impl crate::node::SessionRegistry {
             old_mtu,
             new_mtu: mmp.path_mtu.current_mtu(),
         }))
-    }
-
-    fn route_error_can_send_coords_warmup(&self, dest_addr: &NodeAddr) -> bool {
-        self.get(dest_addr)
-            .is_some_and(|entry| entry.is_established())
-    }
-
-    fn reset_route_error_coords_warmup(
-        &mut self,
-        dest_addr: &NodeAddr,
-        warmup_packets: u8,
-    ) -> bool {
-        let Some(entry) = self.get_mut(dest_addr) else {
-            return false;
-        };
-        entry.set_coords_warmup_remaining(warmup_packets);
-        true
     }
 
     pub(in crate::node) fn session_fsp_send_context(

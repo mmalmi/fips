@@ -310,16 +310,6 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
         nodes[0].node.stats().forwarding.originated_packets > originated_before,
         "fresh discovery for an established session should immediately send a small fallback warmup"
     );
-    assert_eq!(
-        nodes[0]
-            .node
-            .get_session(&dest_addr)
-            .expect("session")
-            .coords_warmup_remaining(),
-        nodes[0].node.config.node.session.coords_warmup_packets,
-        "standalone warmup must not consume the data-plane coordinate warmup budget"
-    );
-
     drain_to_quiescence(&mut nodes).await;
     cleanup_nodes(&mut nodes).await;
 }
