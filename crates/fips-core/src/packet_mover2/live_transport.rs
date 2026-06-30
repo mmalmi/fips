@@ -1,4 +1,4 @@
-pub(crate) trait PacketMover2TransportOutput {
+trait PacketMover2TransportOutput {
     fn send_transport(
         &mut self,
         transport_id: TransportId,
@@ -207,14 +207,14 @@ fn packet_mover2_transport_send_worker_shard(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2TransportSendPlan {
+struct PacketMover2TransportSendPlan {
     transport_id: TransportId,
     remote_addr: TransportAddr,
     output: PacketOutput,
 }
 
 impl PacketMover2TransportSendPlan {
-    pub(crate) fn new(
+    fn new(
         transport_id: TransportId,
         remote_addr: TransportAddr,
         output: PacketOutput,
@@ -226,38 +226,38 @@ impl PacketMover2TransportSendPlan {
         }
     }
 
-    pub(crate) fn transport_id(&self) -> TransportId {
+    fn transport_id(&self) -> TransportId {
         self.transport_id
     }
 
-    pub(crate) fn remote_addr(&self) -> &TransportAddr {
+    fn remote_addr(&self) -> &TransportAddr {
         &self.remote_addr
     }
 
-    pub(crate) fn output(&self) -> &PacketOutput {
+    fn output(&self) -> &PacketOutput {
         &self.output
     }
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct PacketMover2TransportSendPlanOutput {
+struct PacketMover2TransportSendPlanOutput {
     plans: Vec<PacketMover2TransportSendPlan>,
 }
 
 impl PacketMover2TransportSendPlanOutput {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn clear(&mut self) {
+    fn clear(&mut self) {
         self.plans.clear();
     }
 
-    pub(crate) fn plans(&self) -> &[PacketMover2TransportSendPlan] {
+    fn plans(&self) -> &[PacketMover2TransportSendPlan] {
         &self.plans
     }
 
-    pub(crate) fn take_plans_preserving_capacity(&mut self) -> Vec<PacketMover2TransportSendPlan> {
+    fn take_plans_preserving_capacity(&mut self) -> Vec<PacketMover2TransportSendPlan> {
         let capacity = self.plans.capacity();
         std::mem::replace(&mut self.plans, Vec::with_capacity(capacity))
     }
@@ -318,7 +318,7 @@ impl<T: PacketMover2TransportResolver + ?Sized> PacketMover2TransportResolver fo
     }
 }
 
-pub(crate) async fn send_packet_mover2_transport_plans_with_bulk_worker<R>(
+async fn send_packet_mover2_transport_plans_with_bulk_worker<R>(
     transports: &R,
     plans: Vec<PacketMover2TransportSendPlan>,
     drops: &mut Vec<PacketMover2OutputDrop>,
