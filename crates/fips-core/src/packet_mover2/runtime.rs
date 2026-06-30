@@ -17,6 +17,13 @@ pub(crate) struct PacketMover2TurnDriver {
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
 }
 
+struct PacketMover2LiveAdmissionResult {
+    summary: PacketMover2RuntimeSummary,
+    outbound_buffers: PacketMover2RouteTableOutboundBuffers,
+    endpoint_drained: usize,
+    tun_drained: usize,
+}
+
 impl PacketMover2TurnDriver {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
@@ -394,11 +401,26 @@ impl PacketMover2TurnDriver {
     where
         C: PacketMover2CompletionSource,
     {
+        self.reset_turn_buffers();
+        self.drain_aead_completion_turn_into_summary(
+            PacketMover2RuntimeSummary::default(),
+            completions,
+            completion_limit,
+        )
+    }
+
+    fn drain_aead_completion_turn_into_summary<C>(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        completions: &mut C,
+        completion_limit: usize,
+    ) -> PacketMover2RuntimeSummary
+    where
+        C: PacketMover2CompletionSource,
+    {
         let _completion_timer = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::PacketMover2CompletionDrain,
         );
-        self.reset_turn_buffers();
-        let mut summary = PacketMover2RuntimeSummary::default();
         self.completion_work.clear();
         let queued = completions.drain_completions_into(completion_limit, &mut self.completion_work);
         summary.completions = summary.completions.saturating_add(queued);
@@ -413,7 +435,7 @@ impl PacketMover2TurnDriver {
         Transports,
     >(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
+        summary: PacketMover2RuntimeSummary,
         executor: &mut E,
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
@@ -437,10 +459,126 @@ impl PacketMover2TurnDriver {
         RI: PacketMover2RawIngressSource,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
+        let admission = self.admit_live_node_route_table_turn_with_firsts(
+            summary,
+            raw_ingress,
+            routes,
+            raw_ingress_limit,
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            outbound_firsts,
+        );
+        self.finish_live_node_turn_after_admission(
+            admission.summary,
+            admission.outbound_buffers,
+            admission.endpoint_drained,
+            admission.tun_drained,
+            routes,
+            tun_tx,
+            endpoint_tx,
+            transports,
+            crypto_limit,
+            collect_transport_sent_outputs,
+            executor,
+            transport_send_worker,
+            deferred_endpoint_commands,
+            deferred_tun_packets,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn pump_aead_live_node_route_table_ingress_first_executor_turn_with_firsts<
+        CE,
+        RI,
+        Transports,
+    >(
+        &mut self,
+        executor: &mut CE,
+        raw_ingress: &mut RI,
+        routes: &mut PacketMover2LiveRouteTable,
+        raw_ingress_limit: usize,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        CE: PacketMover2CompletionSource + PacketMover2CryptoExecutor,
+        RI: PacketMover2RawIngressSource,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        self.reset_turn_buffers();
+        let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
+        let admission = self.admit_live_node_route_table_turn_with_firsts(
+            PacketMover2RuntimeSummary::default(),
+            raw_ingress,
+            routes,
+            raw_ingress_limit,
+            endpoint_priority_rx,
+            endpoint_bulk_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            outbound_firsts,
+        );
+        let summary = self.drain_aead_completion_turn_into_summary(
+            admission.summary,
+            executor,
+            crypto_limit,
+        );
+        self.finish_live_node_turn_after_admission(
+            summary,
+            admission.outbound_buffers,
+            admission.endpoint_drained,
+            admission.tun_drained,
+            routes,
+            tun_tx,
+            endpoint_tx,
+            transports,
+            crypto_limit,
+            collect_transport_sent_outputs,
+            executor,
+            transport_send_worker,
+            deferred_endpoint_commands,
+            deferred_tun_packets,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_live_node_route_table_turn_with_firsts<RI>(
+        &mut self,
+        mut summary: PacketMover2RuntimeSummary,
+        raw_ingress: &mut RI,
+        routes: &mut PacketMover2LiveRouteTable,
+        raw_ingress_limit: usize,
+        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+    ) -> PacketMover2LiveAdmissionResult
+    where
+        RI: PacketMover2RawIngressSource,
+    {
         let admit_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveAdmit);
         let mut outbound_firsts = outbound_firsts;
-        let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
         if let Some(packet) = outbound_firsts.take_initial_outbound() {
             self.admit_outbound_packet(packet, &mut summary);
         }
@@ -500,6 +638,36 @@ impl PacketMover2TurnDriver {
         }
         drop(admit_timer);
 
+        PacketMover2LiveAdmissionResult {
+            summary,
+            outbound_buffers,
+            endpoint_drained,
+            tun_drained,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_live_node_turn_after_admission<E, Transports>(
+        &mut self,
+        summary: PacketMover2RuntimeSummary,
+        mut outbound_buffers: PacketMover2RouteTableOutboundBuffers,
+        endpoint_drained: usize,
+        tun_drained: usize,
+        routes: &mut PacketMover2LiveRouteTable,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        collect_transport_sent_outputs: bool,
+        executor: &mut E,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        E: PacketMover2CryptoExecutor,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
         let mut report = self
             .finish_aead_live_node_output_turn_with_executor(
                 summary,

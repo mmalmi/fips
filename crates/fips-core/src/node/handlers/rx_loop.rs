@@ -248,11 +248,13 @@ impl Node {
                                 firsts = firsts.with_tun_packet(Some(packet));
                                 side_latency_ready = true;
                             }
-                            let packet_budget = packet_drain_budget(
-                                latency_packet
-                                    || packet_rx.priority_ready_packets() > 0
-                                    || side_latency_ready,
-                            );
+                            let latency_work_ready = latency_packet
+                                || packet_rx.priority_ready_packets() > 0
+                                || side_latency_ready;
+                            if !latency_work_ready {
+                                firsts = firsts.with_raw_ingress_first(true);
+                            }
+                            let packet_budget = packet_drain_budget(latency_work_ready);
                             let endpoint_budget = endpoint_drain_budget(packet_budget);
                             let tun_budget = tun_drain_budget(packet_budget);
                             let crypto_budget = mixed_dataplane_crypto_budget(

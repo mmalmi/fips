@@ -169,6 +169,7 @@ pub(crate) struct PacketMover2LiveTurnFirsts {
     endpoint_priority: Option<NodeEndpointCommand>,
     endpoint_bulk: Option<NodeEndpointCommand>,
     tun_packet: Option<Vec<u8>>,
+    raw_ingress_first: bool,
 }
 
 impl PacketMover2LiveTurnFirsts {
@@ -189,6 +190,11 @@ impl PacketMover2LiveTurnFirsts {
 
     pub(crate) fn with_tun_packet(mut self, packet: Option<Vec<u8>>) -> Self {
         self.tun_packet = packet;
+        self
+    }
+
+    pub(crate) fn with_raw_ingress_first(mut self, enabled: bool) -> Self {
+        self.raw_ingress_first = enabled;
         self
     }
 }
@@ -684,6 +690,7 @@ impl PacketMover2LiveNode {
         self.pump_turn_with_transport_worker_inner(
             raw_ingress,
             raw_ingress_limit,
+            false,
             outbound_firsts,
             endpoint_priority_rx,
             endpoint_bulk_rx,
@@ -703,6 +710,7 @@ impl PacketMover2LiveNode {
         &mut self,
         raw_ingress: &mut RI,
         raw_ingress_limit: usize,
+        raw_ingress_first: bool,
         outbound_firsts: PacketMover2LiveOutboundFirsts,
         endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
@@ -721,31 +729,55 @@ impl PacketMover2LiveNode {
     {
         let _turn_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
-        let summary = self
-            .driver
-            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
-        self.driver
-            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
-                summary,
-                &mut self.crypto_worker,
-                raw_ingress,
-                &mut self.routes,
-                raw_ingress_limit,
-                endpoint_priority_rx,
-                endpoint_bulk_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                outbound_firsts,
-                &mut self.deferred_endpoint_commands,
-                &mut self.deferred_tun_packets,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                crypto_limit,
-                transport_send_worker,
-            )
-            .await
+        if raw_ingress_first && raw_ingress_limit > 0 {
+            self.driver
+                .pump_aead_live_node_route_table_ingress_first_executor_turn_with_firsts(
+                    &mut self.crypto_worker,
+                    raw_ingress,
+                    &mut self.routes,
+                    raw_ingress_limit,
+                    endpoint_priority_rx,
+                    endpoint_bulk_rx,
+                    endpoint_limit,
+                    tun_outbound_rx,
+                    tun_limit,
+                    outbound_firsts,
+                    &mut self.deferred_endpoint_commands,
+                    &mut self.deferred_tun_packets,
+                    tun_tx,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_worker,
+                )
+                .await
+        } else {
+            let summary = self
+                .driver
+                .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
+            self.driver
+                .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+                    summary,
+                    &mut self.crypto_worker,
+                    raw_ingress,
+                    &mut self.routes,
+                    raw_ingress_limit,
+                    endpoint_priority_rx,
+                    endpoint_bulk_rx,
+                    endpoint_limit,
+                    tun_outbound_rx,
+                    tun_limit,
+                    outbound_firsts,
+                    &mut self.deferred_endpoint_commands,
+                    &mut self.deferred_tun_packets,
+                    tun_tx,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_worker,
+                )
+                .await
+        }
     }
 
     pub(crate) async fn pump_completion_output_turn_with_transport_worker<Transports>(
@@ -887,6 +919,7 @@ impl PacketMover2LiveNode {
             endpoint_priority,
             endpoint_bulk,
             tun_packet,
+            raw_ingress_first,
         } = firsts;
         let outbound_firsts = PacketMover2LiveOutboundFirsts::default()
             .with_endpoint_priority(endpoint_priority)
@@ -894,9 +927,10 @@ impl PacketMover2LiveNode {
             .with_tun_packet(tun_packet);
         let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, raw_packet);
         let mut turn = self
-            .pump_turn_with_firsts_and_transport_worker(
+            .pump_turn_with_transport_worker_inner(
                 &mut raw_ingress,
                 packet_limit,
+                raw_ingress_first,
                 outbound_firsts,
                 endpoint_priority_rx,
                 endpoint_bulk_rx,
