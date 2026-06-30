@@ -357,46 +357,6 @@ impl PacketMover2LiveNode {
         std::mem::take(&mut self.deferred_tun_packets)
     }
 
-    pub(crate) async fn pump_turn_with_firsts<RI, Resolver, Transports>(
-        &mut self,
-        raw_ingress: &mut RI,
-        raw_ingress_limit: usize,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        RI: PacketMover2RawIngressSource,
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.pump_turn_with_live_worker(
-            raw_ingress,
-            raw_ingress_limit,
-            outbound_firsts,
-            endpoint_priority_rx,
-            endpoint_bulk_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-            None,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn pump_turn_with_firsts_and_transport_worker<
         RI,
@@ -424,7 +384,7 @@ impl PacketMover2LiveNode {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        self.pump_turn_with_live_worker(
+        self.pump_turn_with_transport_worker_inner(
             raw_ingress,
             raw_ingress_limit,
             outbound_firsts,
@@ -438,12 +398,12 @@ impl PacketMover2LiveNode {
             endpoint_resolver,
             transports,
             crypto_limit,
-            Some(transport_send_worker),
+            transport_send_worker,
         )
         .await
     }
 
-    async fn pump_turn_with_live_worker<RI, Resolver, Transports>(
+    async fn pump_turn_with_transport_worker_inner<RI, Resolver, Transports>(
         &mut self,
         raw_ingress: &mut RI,
         raw_ingress_limit: usize,
@@ -458,7 +418,7 @@ impl PacketMover2LiveNode {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
-        transport_send_worker: Option<&mut PacketMover2TransportSendWorkerPool>,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
         RI: PacketMover2RawIngressSource,
@@ -513,6 +473,7 @@ impl PacketMover2LiveNode {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
         C: PacketMover2CompletionSource,
@@ -542,38 +503,9 @@ impl PacketMover2LiveNode {
                 endpoint_resolver,
                 transports,
                 crypto_limit,
-                None,
+                transport_send_worker,
             )
             .await
-    }
-
-    pub(crate) async fn pump_outbound_firsts<Resolver, Transports>(
-        &mut self,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_limit: usize,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.pump_outbound_firsts_with_live_worker(
-            outbound_firsts,
-            endpoint_limit,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-            None,
-        )
-        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -593,7 +525,7 @@ impl PacketMover2LiveNode {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        self.pump_outbound_firsts_with_live_worker(
+        self.pump_outbound_firsts_with_transport_worker_inner(
             outbound_firsts,
             endpoint_limit,
             tun_limit,
@@ -602,12 +534,12 @@ impl PacketMover2LiveNode {
             endpoint_resolver,
             transports,
             crypto_limit,
-            Some(transport_send_worker),
+            transport_send_worker,
         )
         .await
     }
 
-    async fn pump_outbound_firsts_with_live_worker<Resolver, Transports>(
+    async fn pump_outbound_firsts_with_transport_worker_inner<Resolver, Transports>(
         &mut self,
         outbound_firsts: PacketMover2LiveOutboundFirsts,
         endpoint_limit: usize,
@@ -617,7 +549,7 @@ impl PacketMover2LiveNode {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
-        transport_send_worker: Option<&mut PacketMover2TransportSendWorkerPool>,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
         Resolver: PacketMover2EndpointIdentityResolver,
@@ -683,6 +615,7 @@ impl PacketMover2LiveNode {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
         C: PacketMover2CompletionSource,
@@ -724,61 +657,9 @@ impl PacketMover2LiveNode {
                 endpoint_resolver,
                 transports,
                 crypto_limit,
-                None,
+                transport_send_worker,
             )
             .await
-    }
-
-    pub(crate) async fn pump_packet_rx_turn_with_firsts<Resolver, Transports>(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        firsts: PacketMover2LiveTurnFirsts,
-        packet_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        let PacketMover2LiveTurnFirsts {
-            raw_packet,
-            endpoint_priority,
-            endpoint_bulk,
-            tun_packet,
-        } = firsts;
-        let outbound_firsts = PacketMover2LiveOutboundFirsts::default()
-            .with_endpoint_priority(endpoint_priority)
-            .with_endpoint_bulk(endpoint_bulk)
-            .with_tun_packet(tun_packet);
-        let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, raw_packet);
-        let mut turn = self
-            .pump_turn_with_firsts(
-            &mut raw_ingress,
-            packet_limit,
-            outbound_firsts,
-            endpoint_priority_rx,
-            endpoint_bulk_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-        )
-            .await;
-        turn.set_fmp_control_ingress(raw_ingress.take_control_ingress());
-        turn
     }
 
     #[allow(clippy::too_many_arguments)]

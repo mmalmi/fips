@@ -260,9 +260,10 @@
         tun_outbound_tx
             .try_send(tun_packet.clone())
             .expect("enqueue post-rekey TUN packet");
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
 
         let first = live_node
-            .pump_turn_with_firsts(
+            .pump_turn_with_firsts_and_transport_worker(
                 &mut raw_source,
                 8,
                 PacketMover2LiveOutboundFirsts::default(),
@@ -276,6 +277,7 @@
                 missing_endpoint_peer,
                 &transports,
                 8,
+                &mut transport_worker,
             )
             .await;
 
@@ -298,7 +300,7 @@
 
         wait_for_live_worker_completion(&live_node).await;
         let turn = live_node
-            .pump_outbound_firsts(
+            .pump_outbound_firsts_with_transport_worker(
                 PacketMover2LiveOutboundFirsts::default(),
                 0,
                 0,
@@ -307,6 +309,7 @@
                 missing_endpoint_peer,
                 &transports,
                 8,
+                &mut transport_worker,
             )
             .await;
         assert_eq!(turn.summary().completions(), 2);

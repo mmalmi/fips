@@ -30,6 +30,7 @@
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         live_node.register_owner(
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(760),
@@ -61,7 +62,7 @@
             .expect("enqueue TUN outbound packet");
 
         let first = live_node
-            .pump_turn_with_firsts(
+            .pump_turn_with_firsts_and_transport_worker(
                 &mut raw_source,
                 8,
                 PacketMover2LiveOutboundFirsts::default(),
@@ -75,6 +76,7 @@
                 missing_endpoint_peer,
                 &transports,
                 8,
+                &mut transport_worker,
             )
             .await;
 
@@ -100,7 +102,7 @@
 
         wait_for_live_worker_completion(&live_node).await;
         let mut turn = live_node
-            .pump_outbound_firsts(
+            .pump_outbound_firsts_with_transport_worker(
                 PacketMover2LiveOutboundFirsts::default(),
                 0,
                 0,
@@ -109,6 +111,7 @@
                 missing_endpoint_peer,
                 &transports,
                 8,
+                &mut transport_worker,
             )
             .await;
         assert_eq!(turn.summary().completions(), 1);
@@ -182,6 +185,7 @@
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let transports: HashMap<TransportId, TransportHandle> = HashMap::new();
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         let mut empty_completions: VecDeque<CryptoCompletion> = VecDeque::new();
         let mut executor = DelayedChunkExecutor::default();
 
@@ -203,6 +207,7 @@
                 missing_endpoint_peer,
                 &transports,
                 8,
+                &mut transport_worker,
             )
             .await;
         assert_eq!(first.summary().raw_ingress_dropped(), 0);
@@ -231,6 +236,7 @@
                 missing_endpoint_peer,
                 &transports,
                 0,
+                &mut transport_worker,
             )
             .await;
         assert_eq!(second.summary().completions(), 1);
@@ -664,8 +670,16 @@
         );
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut drops = Vec::new();
+        let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans(&transports, &[plan], &mut drops).await;
+        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+            &transports,
+            vec![plan],
+            &mut drops,
+            &mut worker,
+            None,
+        )
+        .await;
 
         assert_eq!(sent, 0);
         assert_eq!(drops.len(), 1);
@@ -702,8 +716,16 @@
         let mut transports = HashMap::new();
         transports.insert(transport_id, unstarted_udp_transport(transport_id));
         let mut drops = Vec::new();
+        let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans(&transports, &[plan], &mut drops).await;
+        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+            &transports,
+            vec![plan],
+            &mut drops,
+            &mut worker,
+            None,
+        )
+        .await;
 
         assert_eq!(sent, 0);
         assert_eq!(drops.len(), 1);
@@ -764,8 +786,16 @@
         );
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
+        let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans(&transports, &[plan], &mut drops).await;
+        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+            &transports,
+            vec![plan],
+            &mut drops,
+            &mut worker,
+            None,
+        )
+        .await;
 
         assert_eq!(sent, 1);
         assert!(drops.is_empty());

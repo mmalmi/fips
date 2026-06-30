@@ -59,6 +59,7 @@
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut live_node =
             PacketMover2LiveNode::new(AdmissionConfig::new(8, 16));
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         live_node.register_owner(
             fsp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(820),
@@ -119,7 +120,7 @@
         );
 
         let first = live_node
-            .pump_packet_rx_turn_with_firsts(
+            .pump_packet_rx_turn_with_firsts_and_transport_worker(
                 &mut packet_rx,
                 PacketMover2LiveTurnFirsts::default(),
                 8,
@@ -133,6 +134,7 @@
                 missing_endpoint_peer,
                 &transports,
                 8,
+                &mut transport_worker,
             )
             .await;
 
@@ -162,7 +164,7 @@
 
         wait_for_live_worker_completion(&live_node).await;
         let turn = live_node
-            .pump_outbound_firsts(
+            .pump_outbound_firsts_with_transport_worker(
                 PacketMover2LiveOutboundFirsts::default(),
                 0,
                 0,
@@ -171,6 +173,7 @@
                 missing_endpoint_peer,
                 &transports,
                 8,
+                &mut transport_worker,
             )
             .await;
         assert_eq!(turn.summary().completions(), 2);

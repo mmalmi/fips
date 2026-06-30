@@ -115,37 +115,6 @@ impl PacketMover2TurnDriver {
         self.finish_aead_output_turn_with_executor(summary, sink, crypto_limit, executor)
     }
 
-    async fn finish_aead_live_node_output_turn<Resolver, Transports>(
-        &mut self,
-        summary: PacketMover2RuntimeSummary,
-        routes: &mut PacketMover2LiveRouteTable,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-        collect_transport_sent_outputs: bool,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
-        self.finish_aead_live_node_output_turn_with_executor(
-            summary,
-            routes,
-            tun_tx,
-            endpoint_tx,
-            endpoint_resolver,
-            transports,
-            crypto_limit,
-            collect_transport_sent_outputs,
-            &mut executor,
-            None,
-        )
-        .await
-    }
-
     async fn finish_aead_live_node_output_turn_with_executor<Resolver, Transports, E>(
         &mut self,
         summary: PacketMover2RuntimeSummary,
@@ -157,7 +126,7 @@ impl PacketMover2TurnDriver {
         crypto_limit: usize,
         collect_transport_sent_outputs: bool,
         executor: &mut E,
-        mut transport_send_worker: Option<&mut PacketMover2TransportSendWorkerPool>,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
         Resolver: PacketMover2EndpointIdentityResolver,
@@ -194,32 +163,25 @@ impl PacketMover2TurnDriver {
                 crate::perf_profile::Stage::PacketMover2TransportSend,
             );
             if collect_transport_sent_outputs {
-                let worker = transport_send_worker
-                    .as_deref_mut()
-                    .expect("transport sent output collection requires the live transport worker");
                 let plans = transport_output.take_plans_preserving_capacity();
                 send_packet_mover2_transport_plans_with_bulk_worker(
                     transports,
                     plans,
                     &mut report.output_drops,
-                    worker,
+                    transport_send_worker,
                     Some(&mut report.transport_sent_outputs),
                 )
                 .await
-            } else if let Some(worker) = transport_send_worker.as_deref_mut() {
+            } else {
                 let plans = transport_output.take_plans_preserving_capacity();
                 send_packet_mover2_transport_plans_with_bulk_worker(
                     transports,
                     plans,
                     &mut report.output_drops,
-                    worker,
+                    transport_send_worker,
                     None,
                 )
                 .await
-            } else {
-                let plans = transport_output.plans();
-                send_packet_mover2_transport_plans(transports, plans, &mut report.output_drops)
-                    .await
             }
         };
         report.transport_dropped = report.output_drops.len().saturating_sub(dropped_before);
@@ -257,6 +219,7 @@ impl PacketMover2TurnDriver {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
         RI: PacketMover2RawIngressSource,
@@ -285,7 +248,7 @@ impl PacketMover2TurnDriver {
             endpoint_resolver,
             transports,
             crypto_limit,
-            None,
+            transport_send_worker,
         )
         .await
     }
@@ -317,7 +280,7 @@ impl PacketMover2TurnDriver {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
-        transport_send_worker: Option<&mut PacketMover2TransportSendWorkerPool>,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
         C: PacketMover2CompletionSource,
@@ -395,7 +358,7 @@ impl PacketMover2TurnDriver {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
-        transport_send_worker: Option<&mut PacketMover2TransportSendWorkerPool>,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
         E: PacketMover2CryptoExecutor,

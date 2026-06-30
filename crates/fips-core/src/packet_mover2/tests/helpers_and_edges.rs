@@ -451,6 +451,7 @@
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         driver
             .pump_aead_live_node_route_table_turn_with_firsts(
                 raw_ingress,
@@ -469,6 +470,7 @@
                 endpoint_resolver,
                 transports,
                 crypto_limit,
+                &mut transport_worker,
             )
             .await
     }

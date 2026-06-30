@@ -318,17 +318,6 @@ impl<T: PacketMover2TransportResolver + ?Sized> PacketMover2TransportResolver fo
     }
 }
 
-pub(crate) async fn send_packet_mover2_transport_plans<R>(
-    transports: &R,
-    plans: &[PacketMover2TransportSendPlan],
-    drops: &mut Vec<PacketMover2OutputDrop>,
-) -> usize
-where
-    R: PacketMover2TransportResolver + ?Sized,
-{
-    send_packet_mover2_transport_plans_inner(transports, plans, drops, None).await
-}
-
 pub(crate) async fn send_packet_mover2_transport_plans_with_bulk_worker<R>(
     transports: &R,
     plans: Vec<PacketMover2TransportSendPlan>,
@@ -373,55 +362,6 @@ where
         &mut sent,
     )
     .await;
-    sent
-}
-
-async fn send_packet_mover2_transport_plans_inner<R>(
-    transports: &R,
-    plans: &[PacketMover2TransportSendPlan],
-    drops: &mut Vec<PacketMover2OutputDrop>,
-    mut sent_outputs: Option<&mut Vec<PacketOutput>>,
-) -> usize
-where
-    R: PacketMover2TransportResolver + ?Sized,
-{
-    let mut sent = 0;
-    let mut batch = Vec::new();
-    let priority_cut_in_end = send_transport_priority_cut_in(
-        transports,
-        plans,
-        drops,
-        &mut sent_outputs,
-        &mut sent,
-        &mut batch,
-    )
-    .await;
-    let mut start = 0usize;
-    while let Some((range_start, range_end, transport_id)) =
-        next_transport_batch_range(plans, start)
-    {
-        batch.clear();
-        append_transport_batch_plans_skipping_priority_before(
-            plans,
-            range_start,
-            range_end,
-            Lane::Priority,
-            priority_cut_in_end,
-            &mut batch,
-        );
-        append_transport_batch_plans(plans, range_start, range_end, Lane::Bulk, &mut batch);
-        send_transport_plan_batch(
-            transports,
-            plans,
-            transport_id,
-            &batch,
-            &mut sent,
-            drops,
-            &mut sent_outputs,
-        )
-        .await;
-        start = range_end;
-    }
     sent
 }
 
