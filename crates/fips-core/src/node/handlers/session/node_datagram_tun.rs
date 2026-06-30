@@ -57,8 +57,8 @@ impl Node {
 
     /// Route and send a SessionDatagram through the mesh.
     ///
-    /// Finds the next hop for the destination, seeds path_mtu from the
-    /// first-hop transport MTU, and sends as an encrypted link message.
+    /// Finds the next hop for the destination, seeds PM2 owner path_mtu from
+    /// the first-hop transport MTU, and sends as an encrypted link message.
     pub(in crate::node) async fn send_session_datagram(
         &mut self,
         datagram: &mut SessionDatagram,
@@ -122,9 +122,7 @@ impl Node {
         }
         datagram.path_mtu = path_mtu;
 
-        let _ = self
-            .sessions
-            .seed_session_datagram_path_mtu(&dest_addr, path_mtu);
+        let _ = self.packet_mover2.seed_fsp_path_mtu(dest_addr, path_mtu);
 
         Ok(SessionDatagramRuntimeRoute {
             dest_addr,

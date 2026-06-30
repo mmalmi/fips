@@ -79,30 +79,6 @@
     }
 
     #[test]
-    fn session_registry_owns_datagram_path_mtu_bookkeeping() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let peer_addr = *peer.node_addr();
-        let mut entry = established_entry(&local, &peer);
-        entry.init_mmp(&crate::config::SessionMmpConfig::default());
-
-        let mut sessions = crate::node::SessionRegistry::default();
-        assert!(sessions.insert(peer_addr, entry).is_none());
-
-        assert!(sessions.seed_session_datagram_path_mtu(&peer_addr, 1280));
-        assert_eq!(
-            sessions
-                .get(&peer_addr)
-                .and_then(|entry| entry.mmp())
-                .expect("session mmp")
-                .path_mtu
-                .current_mtu(),
-            1280
-        );
-        assert!(!sessions.seed_session_datagram_path_mtu(&node_addr(0x77), 1280));
-    }
-
-    #[test]
     fn session_registry_owns_session_initiation_skip_policy() {
         let local = Identity::generate();
         let established_peer = Identity::generate();

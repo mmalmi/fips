@@ -67,6 +67,16 @@ impl PacketMover2OwnerShard {
             .and_then(|owner| owner.record_fsp_mmp_send_result(success))
     }
 
+    fn seed_fsp_path_mtu(
+        &mut self,
+        owner: OwnerId,
+        path_mtu: u16,
+    ) -> Result<(), PacketMover2FspMmpSkip> {
+        self.owner_mut(owner)
+            .ok_or(PacketMover2FspMmpSkip::UnknownOwner)?
+            .seed_fsp_path_mtu(path_mtu)
+    }
+
     fn process_fsp_mmp_receiver_report(
         &mut self,
         owner: OwnerId,

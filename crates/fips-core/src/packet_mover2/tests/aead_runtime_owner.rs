@@ -1470,11 +1470,16 @@
         assert!(report.used_direct_next_hop);
         assert_eq!(report.mode, crate::mmp::MmpMode::Full);
 
+        assert_eq!(mover.seed_fsp_path_mtu(owner, 1400), Ok(()));
+        assert_eq!(
+            mover.owner_fsp_activity(owner).unwrap().current_path_mtu(),
+            Some(1400)
+        );
         assert_eq!(
             mover.apply_fsp_path_mtu_signal(owner, 1280, std::time::Instant::now()),
             Ok(PacketMover2FspPathMtuApplyResult::Changed(
                 PacketMover2FspPathMtuChange {
-                    old_mtu: u16::MAX,
+                    old_mtu: 1400,
                     new_mtu: 1280
                 }
             ))

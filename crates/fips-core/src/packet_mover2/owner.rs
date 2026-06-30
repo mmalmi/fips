@@ -936,6 +936,17 @@ impl OwnerState {
         }
     }
 
+    fn seed_fsp_path_mtu(&mut self, path_mtu: u16) -> Result<(), PacketMover2FspMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+        }
+        let Some(mmp) = &mut self.fsp_mmp else {
+            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+        };
+        mmp.path_mtu.seed_source_mtu(path_mtu);
+        Ok(())
+    }
+
     fn process_fsp_mmp_receiver_report(
         &mut self,
         rr: &crate::mmp::report::ReceiverReport,

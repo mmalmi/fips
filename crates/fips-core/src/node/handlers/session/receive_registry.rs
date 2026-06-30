@@ -181,17 +181,6 @@ impl crate::node::SessionRegistry {
         self.insert(remote_addr, entry)
     }
 
-    fn seed_session_datagram_path_mtu(&mut self, dest_addr: &NodeAddr, path_mtu: u16) -> bool {
-        let Some(entry) = self.get_mut(dest_addr) else {
-            return false;
-        };
-        let Some(mmp) = entry.mmp_mut() else {
-            return false;
-        };
-        mmp.path_mtu.seed_source_mtu(path_mtu);
-        true
-    }
-
     fn should_skip_session_initiation(&self, dest_addr: &NodeAddr) -> bool {
         self.get(dest_addr)
             .is_some_and(|entry| entry.is_established() || entry.is_initiating())

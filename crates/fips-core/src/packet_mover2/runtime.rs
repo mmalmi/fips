@@ -83,6 +83,14 @@ impl PacketMover2TurnDriver {
         self.mover.record_fsp_mmp_send_result(owner, success)
     }
 
+    pub(crate) fn seed_fsp_path_mtu(
+        &mut self,
+        owner: OwnerId,
+        path_mtu: u16,
+    ) -> Result<(), PacketMover2FspMmpSkip> {
+        self.mover.seed_fsp_path_mtu(owner, path_mtu)
+    }
+
     pub(crate) fn process_fsp_mmp_receiver_report(
         &mut self,
         owner: OwnerId,
