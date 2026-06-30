@@ -471,10 +471,11 @@
         let mut executor = DelayedChunkExecutor::default();
 
         {
-            let turn = driver.pump_aead_output_completion_executor_turn(
+            let turn = pump_aead_output_completion_executor_turn(
                 &mut empty_completions,
                 8,
                 &mut executor,
+                &mut driver,
                 &mut raw_ingress,
                 &mut NullIngressRouter,
                 0,
@@ -498,10 +499,11 @@
 
         let mut ready_completions = executor.take_ready();
         {
-            let turn = driver.pump_aead_output_completion_executor_turn(
+            let turn = pump_aead_output_completion_executor_turn(
                 &mut ready_completions,
                 8,
                 &mut executor,
+                &mut driver,
                 &mut raw_ingress,
                 &mut NullIngressRouter,
                 0,

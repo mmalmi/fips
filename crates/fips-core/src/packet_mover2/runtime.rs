@@ -64,45 +64,6 @@ impl PacketMover2TurnDriver {
         self.mover.owner_mut(owner)
     }
 
-    pub(crate) fn pump_aead_output_completion_executor_turn<C, E, RI, O, R, S>(
-        &mut self,
-        completions: &mut C,
-        completion_limit: usize,
-        executor: &mut E,
-        raw_ingress: &mut RI,
-        router: &mut R,
-        raw_ingress_limit: usize,
-        outbound: &mut O,
-        outbound_limit: usize,
-        sink: &mut S,
-        crypto_limit: usize,
-    ) -> PacketMover2RuntimeTurn<'_>
-    where
-        C: PacketMover2CompletionSource,
-        E: PacketMover2CryptoExecutor,
-        RI: PacketMover2RawIngressSource,
-        O: PacketMover2OutboundSource,
-        R: PacketMover2IngressRouter,
-        S: PacketMover2OutputSink,
-    {
-        self.reset_turn_buffers();
-
-        let mut summary = PacketMover2RuntimeSummary::default();
-        completions.drain_completions(completion_limit, |completion| {
-            self.collect_completed_aead_output(&mut summary, completion);
-        });
-        summary = self.collect_retired_outputs(summary);
-
-        raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
-            self.admit_raw_ingress_packet(packet, router, &mut summary);
-        });
-        outbound.drain_outbound(outbound_limit, |packet| {
-            self.admit_outbound_packet(packet, &mut summary);
-        });
-
-        self.finish_aead_output_turn_with_executor(summary, sink, crypto_limit, executor)
-    }
-
     async fn finish_aead_live_node_output_turn_with_executor<Resolver, Transports, E>(
         &mut self,
         summary: PacketMover2RuntimeSummary,
@@ -526,21 +487,6 @@ impl PacketMover2TurnDriver {
             Ok(_) => summary.outbound_admitted += 1,
             Err(_) => summary.outbound_dropped += 1,
         }
-    }
-
-    fn finish_aead_output_turn_with_executor<S, E>(
-        &mut self,
-        mut summary: PacketMover2RuntimeSummary,
-        sink: &mut S,
-        limit: usize,
-        executor: &mut E,
-    ) -> PacketMover2RuntimeTurn<'_>
-    where
-        S: PacketMover2OutputSink,
-        E: PacketMover2CryptoExecutor,
-    {
-        summary = self.collect_aead_outputs_with_executor(summary, limit, executor);
-        self.send_collected_outputs(summary, sink)
     }
 
     fn send_collected_outputs<S>(
