@@ -8,8 +8,6 @@ pub(crate) enum PreparedCryptoWork {
     Completed(CryptoCompletion),
 }
 
-const PACKET_MOVER2_AEAD_WORKER_CHUNK_TARGET: usize = 32;
-
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
         Self::Open { work, cipher }
@@ -223,6 +221,11 @@ impl PacketMover2AeadWorkerPool {
     pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
         Arc::clone(&self.completion_notify)
     }
+
+    fn worker_chunk_size(&self, packet_count: usize) -> usize {
+        let workers = self.workers.len().max(1);
+        packet_count.div_ceil(workers).max(1)
+    }
 }
 
 impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
@@ -256,29 +259,10 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             return count;
         };
 
-        if chunk.len() <= PACKET_MOVER2_AEAD_WORKER_CHUNK_TARGET {
-            let chunk_len = chunk.len();
-            match work_tx.try_send(chunk) {
-                Ok(()) => {
-                    self.in_flight
-                        .fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
-                }
-                Err(crossbeam_channel::TrySendError::Full(mut chunk))
-                | Err(crossbeam_channel::TrySendError::Disconnected(mut chunk)) => {
-                    for work in chunk.drain(..) {
-                        work.push_executor_failed_completions(completions);
-                    }
-                }
-            }
-            return count;
-        }
-
+        let chunk_size = self.worker_chunk_size(count);
         let mut remaining = chunk.into_iter();
         loop {
-            let work_chunk: Vec<_> = remaining
-                .by_ref()
-                .take(PACKET_MOVER2_AEAD_WORKER_CHUNK_TARGET)
-                .collect();
+            let work_chunk: Vec<_> = remaining.by_ref().take(chunk_size).collect();
             if work_chunk.is_empty() {
                 break;
             }
