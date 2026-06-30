@@ -710,9 +710,10 @@ impl PacketMover2TurnDriver {
             summary.dispatched = summary.dispatched.saturating_add(dispatched);
             remaining = remaining.saturating_sub(dispatched);
 
+            let outbound_admitted_before = summary.outbound_admitted;
             summary = self.collect_retired_outputs(summary);
 
-            if dispatched == 0 {
+            if dispatched == 0 && summary.outbound_admitted == outbound_admitted_before {
                 break;
             }
         }
@@ -736,17 +737,6 @@ impl PacketMover2TurnDriver {
                 RetiredPacket::Outbound(packet) => {
                     self.wrapped_outbound_receipts.push(packet.receipt());
                     self.admit_outbound_packet(packet.into_packet(), &mut summary);
-                }
-                RetiredPacket::WrappedCompletion(packet) => {
-                    self.wrapped_outbound_receipts.push(packet.receipt());
-                    let nested = self.retire_completion_collecting_drops(packet.into_completion());
-                    retired.extend(nested);
-                    summary.completions = summary.completions.saturating_add(1);
-                }
-                RetiredPacket::OwnerCompletion(completion) => {
-                    let nested = self.retire_completion_collecting_drops(completion);
-                    retired.extend(nested);
-                    summary.completions = summary.completions.saturating_add(1);
                 }
                 RetiredPacket::Drop(_) => {}
             }

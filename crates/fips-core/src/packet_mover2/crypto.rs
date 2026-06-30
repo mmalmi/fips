@@ -1,10 +1,6 @@
 pub(crate) enum PreparedCryptoWork {
     Open { work: CryptoWork, cipher: AeadKey },
-    Seal {
-        work: OutboundCryptoWork,
-        cipher: AeadKey,
-        wrap_cipher: Option<AeadKey>,
-    },
+    Seal { work: OutboundCryptoWork, cipher: AeadKey },
     Completed(CryptoCompletion),
 }
 
@@ -16,39 +12,11 @@ impl PreparedCryptoWork {
     }
 
     pub(crate) fn seal(work: OutboundCryptoWork, cipher: AeadKey) -> Self {
-        Self::Seal {
-            work,
-            cipher,
-            wrap_cipher: None,
-        }
-    }
-
-    pub(crate) fn seal_wrapped(
-        work: OutboundCryptoWork,
-        cipher: AeadKey,
-        wrap_cipher: AeadKey,
-    ) -> Self {
-        Self::Seal {
-            work,
-            cipher,
-            wrap_cipher: Some(wrap_cipher),
-        }
+        Self::Seal { work, cipher }
     }
 
     pub(crate) fn failed(reservation: OwnerReservation, kind: CryptoFailureKind) -> Self {
         Self::Completed(failed_crypto_completion(reservation, kind))
-    }
-
-    pub(crate) fn failed_wrapped(
-        reservation: OwnerReservation,
-        wrap_reservation: OwnerReservation,
-        kind: CryptoFailureKind,
-    ) -> Self {
-        Self::Completed(failed_wrapped_crypto_completion(
-            reservation,
-            wrap_reservation,
-            kind,
-        ))
     }
 
     pub(crate) fn execute(
@@ -70,26 +38,14 @@ impl PreparedCryptoWork {
             Self::Seal {
                 work,
                 cipher,
-                wrap_cipher,
             } => {
                 let reservation = work.reservation.clone();
-                let wrap_reservation = work.wrap.as_ref().map(|wrap| wrap.reservation.clone());
                 let _timer = crate::perf_profile::Timer::start(
                     crate::perf_profile::Stage::PacketMover2AeadSeal,
                 );
                 match AeadSealWork::from_outbound_work(work, cipher) {
-                    Ok(work) => match wrap_cipher {
-                        Some(wrap_cipher) => sealed.execute_reserved_wrap(work, wrap_cipher),
-                        None => sealed.execute(work),
-                    },
-                    Err(_) => match wrap_reservation {
-                        Some(wrap_reservation) => failed_wrapped_crypto_completion(
-                            reservation,
-                            wrap_reservation,
-                            CryptoFailureKind::Seal,
-                        ),
-                        None => failed_crypto_completion(reservation, CryptoFailureKind::Seal),
-                    },
+                    Ok(work) => sealed.execute(work),
+                    Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Seal),
                 }
             }
             Self::Completed(completion) => completion,
@@ -103,18 +59,10 @@ impl PreparedCryptoWork {
                 CryptoFailureKind::Open,
             )),
             Self::Seal { work, .. } => {
-                let reservation = work.reservation;
-                match work.wrap {
-                    Some(wrap) => completions.push(failed_wrapped_crypto_completion(
-                        reservation,
-                        wrap.reservation,
-                        CryptoFailureKind::Seal,
-                    )),
-                    None => completions.push(failed_crypto_completion(
-                        reservation,
-                        CryptoFailureKind::Seal,
-                    )),
-                }
+                completions.push(failed_crypto_completion(
+                    work.reservation,
+                    CryptoFailureKind::Seal,
+                ));
             }
             Self::Completed(completion) => completions.push(completion),
         }
@@ -420,20 +368,6 @@ fn failed_crypto_completion(
     }
 }
 
-fn failed_wrapped_crypto_completion(
-    reservation: OwnerReservation,
-    wrap_reservation: OwnerReservation,
-    kind: CryptoFailureKind,
-) -> CryptoCompletion {
-    CryptoCompletion {
-        reservation,
-        result: CryptoResult::WrappedFailed {
-            failure: kind,
-            completion: Box::new(failed_crypto_completion(wrap_reservation, kind)),
-        },
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AeadHeader {
     Fmp([u8; FMP_ESTABLISHED_HEADER_SIZE]),
@@ -549,7 +483,6 @@ pub(crate) struct AeadSealWork {
     work: OutboundCryptoWork,
     cipher: AeadKey,
     post_seal: OutboundPostSeal,
-    wrap: Option<OutboundWrapReservation>,
     aad_len: usize,
     ciphertext_offset: usize,
 }
@@ -615,10 +548,8 @@ impl AeadSealWork {
         payload.extend_from_slice(&plaintext);
         work.packet.payload = payload.into();
 
-        let wrap = work.wrap.take();
         Ok(Self {
             post_seal: work.packet.post_seal,
-            wrap,
             work,
             cipher,
             aad_len,
@@ -632,22 +563,7 @@ pub(crate) struct StatelessAeadSealWorker;
 
 impl StatelessAeadSealWorker {
     pub(crate) fn execute(&self, work: AeadSealWork) -> CryptoCompletion {
-        self.execute_inner(work, None)
-    }
-
-    pub(crate) fn execute_reserved_wrap(
-        &self,
-        work: AeadSealWork,
-        wrap_cipher: AeadKey,
-    ) -> CryptoCompletion {
-        self.execute_inner(work, Some(wrap_cipher))
-    }
-
-    fn execute_inner(
-        &self,
-        mut work: AeadSealWork,
-        wrap_cipher: Option<AeadKey>,
-    ) -> CryptoCompletion {
+        let mut work = work;
         let reservation = work.work.reservation;
         let tag = if work.aad_len <= work.ciphertext_offset
             && work.ciphertext_offset <= work.work.packet.payload.len()
@@ -692,37 +608,6 @@ impl StatelessAeadSealWorker {
                         payload: work.work.packet.payload,
                     }),
                     OutboundPostSeal::FmpWrap(route) => {
-                        if let Some(mut wrap) = work.wrap.take() {
-                            route.fill_reserved_fmp_outbound(
-                                &mut wrap.packet,
-                                work.work.packet.payload,
-                            );
-                            let wrap_reservation = wrap.reservation.clone();
-                            let completion = match wrap_cipher {
-                                Some(cipher) => {
-                                    let wrap_work = OutboundCryptoWork::new(
-                                        wrap.reservation,
-                                        wrap.packet,
-                                    );
-                                    match AeadSealWork::from_outbound_work(wrap_work, cipher) {
-                                        Ok(wrap_work) => self.execute(wrap_work),
-                                        Err(_) => failed_crypto_completion(
-                                            wrap_reservation,
-                                            CryptoFailureKind::Seal,
-                                        ),
-                                    }
-                                }
-                                None => failed_crypto_completion(
-                                    wrap_reservation,
-                                    CryptoFailureKind::Seal,
-                                ),
-                            };
-                            CryptoResult::WrappedSealed(WrappedCryptoCompletion::new(
-                                reservation.owner,
-                                reservation.counter,
-                                completion,
-                            ))
-                        } else {
                         let mut packet =
                             route.into_fmp_outbound(work.work.packet.class, work.work.packet.payload);
                         if let Some(tick) = reservation.activity_tick {
@@ -733,20 +618,10 @@ impl StatelessAeadSealWorker {
                             reservation.owner,
                             reservation.counter,
                         ))
-                        }
                     }
                 }
             }
-            None => match work.wrap.take() {
-                Some(wrap) => CryptoResult::WrappedFailed {
-                    failure: CryptoFailureKind::Seal,
-                    completion: Box::new(failed_crypto_completion(
-                        wrap.reservation,
-                        CryptoFailureKind::Seal,
-                    )),
-                },
-                None => CryptoResult::Failed(CryptoFailureKind::Seal),
-            },
+            None => CryptoResult::Failed(CryptoFailureKind::Seal),
         };
 
         CryptoCompletion {

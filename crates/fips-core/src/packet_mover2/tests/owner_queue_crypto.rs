@@ -1000,12 +1000,6 @@
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
-            RetiredPacket::WrappedCompletion(packet) => {
-                panic!("unexpected wrapped completion: {packet:?}")
-            }
-            RetiredPacket::OwnerCompletion(completion) => {
-                panic!("unexpected owner completion: {completion:?}")
-            }
         }
         match &retired[1] {
             RetiredPacket::Output(output) => {
@@ -1014,12 +1008,6 @@
             }
             RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
-            RetiredPacket::WrappedCompletion(packet) => {
-                panic!("unexpected wrapped completion: {packet:?}")
-            }
-            RetiredPacket::OwnerCompletion(completion) => {
-                panic!("unexpected owner completion: {completion:?}")
-            }
         }
     }
 
@@ -1335,11 +1323,7 @@
             OwnerState::new(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(1));
         let mismatch = OutboundPacket::fsp(fmp_owner, 1, PacketClass::Bulk, 0, b"body".to_vec());
         let (reservation, mismatch) = fmp_state.reserve_outbound(mismatch, 0).unwrap();
-        let mismatch_work = OutboundCryptoWork {
-            reservation,
-            packet: mismatch,
-            wrap: None,
-        };
+        let mismatch_work = OutboundCryptoWork::new(reservation, mismatch);
         assert_eq!(
             AeadSealWork::from_outbound_work(mismatch_work, test_key(1)).err(),
             Some(WireBuildError::ProtocolMismatch)
@@ -1355,11 +1339,7 @@
             b"body".to_vec(),
         );
         let (reservation, plaintext_fsp) = fsp_state.reserve_outbound(plaintext_fsp, 0).unwrap();
-        let plaintext_work = OutboundCryptoWork {
-            reservation,
-            packet: plaintext_fsp,
-            wrap: None,
-        };
+        let plaintext_work = OutboundCryptoWork::new(reservation, plaintext_fsp);
         assert_eq!(
             AeadSealWork::from_outbound_work(plaintext_work, test_key(1)).err(),
             Some(WireBuildError::PlaintextFsp)

@@ -708,23 +708,24 @@
             b"queued-bulk".to_vec(),
         );
 
-        let first = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet, queued_bulk], 1);
-        assert_eq!(first.summary().outbound_admitted(), 2);
+        let first =
+            run_aead_classified_turn(&mut driver, std::iter::empty(), [packet, queued_bulk], 1);
+        assert_eq!(first.summary().outbound_admitted(), 3);
         assert_eq!(first.summary().dispatched(), 1);
-        assert_eq!(first.summary().outputs(), 1);
+        assert_eq!(first.summary().outputs(), 0);
         assert!(first.drops().is_empty());
-        let first_output = first.outputs()[0].clone();
 
-        let second = run_aead_classified_turn(&mut driver,
+        let second = run_aead_classified_turn(
+            &mut driver,
             std::iter::empty::<SocketPacket>(),
             std::iter::empty::<OutboundPacket>(),
-            8,
+            1,
         );
         assert_eq!(second.summary().dispatched(), 1);
         assert_eq!(second.summary().outputs(), 1);
         assert!(second.drops().is_empty());
 
-        let output = &first_output;
+        let output = &second.outputs()[0];
         assert_eq!(output.owner(), fmp_owner);
         assert_eq!(output.counter(), 70);
         assert_eq!(output.target(), OutputTarget::Transport);
@@ -750,7 +751,17 @@
             b"session-body"
         );
 
-        let output = &second.outputs()[0];
+        let third = run_aead_classified_turn(
+            &mut driver,
+            std::iter::empty::<SocketPacket>(),
+            std::iter::empty::<OutboundPacket>(),
+            1,
+        );
+        assert_eq!(third.summary().dispatched(), 1);
+        assert_eq!(third.summary().outputs(), 1);
+        assert!(third.drops().is_empty());
+
+        let output = &third.outputs()[0];
         assert_eq!(output.owner(), fmp_owner);
         assert_eq!(output.counter(), 71);
         assert_eq!(open_sealed_output(output, fmp_key), b"queued-bulk");
@@ -797,8 +808,8 @@
         .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
 
         let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet], 2);
-        assert_eq!(turn.summary().outbound_admitted(), 1);
-        assert_eq!(turn.summary().dispatched(), 1);
+        assert_eq!(turn.summary().outbound_admitted(), 2);
+        assert_eq!(turn.summary().dispatched(), 2);
         assert_eq!(turn.summary().outputs(), 1);
         assert!(turn.drops().is_empty());
 
@@ -871,8 +882,8 @@
         });
 
         let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), packets, 8);
-        assert_eq!(turn.summary().outbound_admitted(), 4);
-        assert_eq!(turn.summary().dispatched(), 4);
+        assert_eq!(turn.summary().outbound_admitted(), 8);
+        assert_eq!(turn.summary().dispatched(), 8);
         assert_eq!(turn.summary().outputs(), 4);
         assert!(turn.drops().is_empty());
 
@@ -978,12 +989,6 @@
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
-            RetiredPacket::WrappedCompletion(packet) => {
-                panic!("unexpected wrapped completion: {packet:?}")
-            }
-            RetiredPacket::OwnerCompletion(completion) => {
-                panic!("unexpected owner completion: {completion:?}")
-            }
         }
         assert_eq!(turn.drops().len(), 1);
         assert_eq!(turn.drops()[0].reason, PacketDropReason::CryptoFailed);
@@ -1020,12 +1025,6 @@
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
-            RetiredPacket::WrappedCompletion(packet) => {
-                panic!("unexpected wrapped completion: {packet:?}")
-            }
-            RetiredPacket::OwnerCompletion(completion) => {
-                panic!("unexpected owner completion: {completion:?}")
-            }
         }
         let owner = mover.owner_mut(owner).unwrap();
         assert_eq!(owner.next_send_counter, 1);
@@ -1908,15 +1907,14 @@
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
 
         let worker = StatelessAeadSealWorker;
-        let completion = worker.execute_reserved_wrap(
+        let completion = worker.execute(
             AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(fsp_key)).unwrap(),
-            test_key(fmp_key),
         );
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 1);
-            assert_eq!(turn.summary().outbound_admitted(), 0);
-            assert_eq!(turn.summary().dispatched(), 0);
+            assert_eq!(turn.summary().outbound_admitted(), 1);
+            assert_eq!(turn.summary().dispatched(), 1);
             assert_eq!(turn.summary().outputs(), 1);
             assert!(turn.drops().is_empty());
 
@@ -1948,7 +1946,7 @@
     }
 
     #[test]
-    fn failed_reserved_fsp_post_seal_wrap_releases_both_owners() {
+    fn failed_fsp_post_seal_wrap_releases_inner_owner_only() {
         let source = NodeAddr::from_bytes([0x83; 16]);
         let dest = NodeAddr::from_bytes([0x84; 16]);
         let next_hop = NodeAddr::from_bytes([0x85; 16]);
@@ -1985,19 +1983,14 @@
             1
         );
         let work = seal_work.pop().unwrap();
-        let wrap_reservation = work.wrap.as_ref().unwrap().reservation.clone();
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
-        assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 1);
+        assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 0);
 
-        let completion = failed_wrapped_crypto_completion(
-            work.reservation,
-            wrap_reservation,
-            CryptoFailureKind::Seal,
-        );
+        let completion = failed_crypto_completion(work.reservation, CryptoFailureKind::Seal);
         let turn = run_aead_completion_turn(&mut driver, [completion], 1);
-        assert_eq!(turn.summary().completions(), 2);
+        assert_eq!(turn.summary().completions(), 1);
         assert_eq!(turn.summary().outputs(), 0);
-        assert_eq!(turn.drops().len(), 2);
+        assert_eq!(turn.drops().len(), 1);
         assert!(turn
             .drops()
             .iter()
