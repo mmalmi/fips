@@ -47,9 +47,7 @@ impl PacketMover2ShardSkipSet {
 impl PacketMover2 {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         let shard_count = packet_mover2_owner_shard_count(config);
-        let shards = (0..shard_count)
-            .map(|_| PacketMover2OwnerShard::new(config))
-            .collect();
+        let shards = (0..shard_count).map(|_| PacketMover2OwnerShard::new()).collect();
         Self {
             config,
             shards,
@@ -102,8 +100,10 @@ impl PacketMover2 {
         }
 
         let ingress_seq = self.next_ingress_seq();
-        self.owner_shard_mut(packet.owner)
-            .submit_socket_packet_with_seq(packet, ingress_seq)
+        let admitted = self
+            .owner_shard_mut(packet.owner)
+            .submit_socket_packet_with_seq(packet, ingress_seq);
+        Ok(admitted)
     }
 
     fn submit_outbound_packet(
@@ -127,8 +127,10 @@ impl PacketMover2 {
         }
 
         let ingress_seq = self.next_outbound_seq();
-        self.owner_shard_mut(packet.owner)
-            .submit_outbound_packet_with_seq(packet, ingress_seq)
+        let admitted = self
+            .owner_shard_mut(packet.owner)
+            .submit_outbound_packet_with_seq(packet, ingress_seq);
+        Ok(admitted)
     }
 
     fn dispatch_available_into(
@@ -744,10 +746,10 @@ impl PacketMover2 {
 }
 
 impl PacketMover2OwnerShard {
-    fn new(config: AdmissionConfig) -> Self {
+    fn new() -> Self {
         Self {
-            admission: AdmissionQueue::new(config),
-            outbound_admission: OutboundAdmissionQueue::new(config),
+            admission: AdmissionQueue::new(),
+            outbound_admission: OutboundAdmissionQueue::new(),
             owners: HashMap::new(),
             drops: Vec::new(),
         }
@@ -783,28 +785,16 @@ impl PacketMover2OwnerShard {
         &mut self,
         packet: SocketPacket,
         ingress_seq: u64,
-    ) -> Result<u64, AdmissionDrop> {
-        match self.admission.admit_with_seq(packet, ingress_seq) {
-            Ok(seq) => Ok(seq),
-            Err(drop) => {
-                self.drops.push(drop.clone().into());
-                Err(drop)
-            }
-        }
+    ) -> u64 {
+        self.admission.admit_with_seq(packet, ingress_seq)
     }
 
     fn submit_outbound_packet_with_seq(
         &mut self,
         packet: OutboundPacket,
         ingress_seq: u64,
-    ) -> Result<u64, OutboundAdmissionDrop> {
-        match self.outbound_admission.admit_with_seq(packet, ingress_seq) {
-            Ok(seq) => Ok(seq),
-            Err(drop) => {
-                self.drops.push(drop.clone().into());
-                Err(drop)
-            }
-        }
+    ) -> u64 {
+        self.outbound_admission.admit_with_seq(packet, ingress_seq)
     }
 
     fn dispatch_ingress_available_into(

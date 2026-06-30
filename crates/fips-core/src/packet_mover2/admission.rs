@@ -149,7 +149,6 @@ impl<T> OwnerLaneQueues<T> {
 
 #[derive(Debug)]
 struct OwnerAdmissionQueues<T> {
-    config: AdmissionConfig,
     priority_len: usize,
     bulk_len: usize,
     priority_ready: VecDeque<OwnerId>,
@@ -174,28 +173,13 @@ impl<T> OwnerAdmissionQueues<T>
 where
     T: OwnerQueuedAdmission,
 {
-    fn new(config: AdmissionConfig) -> Self {
+    fn new() -> Self {
         Self {
-            config,
             priority_len: 0,
             bulk_len: 0,
             priority_ready: VecDeque::new(),
             bulk_ready: VecDeque::new(),
             owners: HashMap::new(),
-        }
-    }
-
-    fn lane_len(&self, lane: Lane) -> usize {
-        match lane {
-            Lane::Priority => self.priority_len,
-            Lane::Bulk => self.bulk_len,
-        }
-    }
-
-    fn lane_capacity(&self, lane: Lane) -> usize {
-        match lane {
-            Lane::Priority => self.config.priority_capacity,
-            Lane::Bulk => self.config.bulk_capacity,
         }
     }
 
@@ -358,38 +342,18 @@ pub(crate) struct AdmissionQueue {
 }
 
 impl AdmissionQueue {
-    pub(crate) fn new(config: AdmissionConfig) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            queues: OwnerAdmissionQueues::new(config),
+            queues: OwnerAdmissionQueues::new(),
         }
     }
 
-    fn admit_with_seq(
-        &mut self,
-        packet: SocketPacket,
-        ingress_seq: u64,
-    ) -> Result<u64, AdmissionDrop> {
-        let lane = packet.lane();
-
-        if self.queues.lane_len(lane) >= self.queues.lane_capacity(lane) {
-            return Err(AdmissionDrop {
-                owner: packet.owner,
-                counter: packet.counter,
-                class: packet.class,
-                lane,
-                payload_len: packet.payload.len(),
-                reason: match lane {
-                    Lane::Priority => AdmissionDropReason::PriorityFull,
-                    Lane::Bulk => AdmissionDropReason::BulkFull,
-                },
-            });
-        }
-
+    fn admit_with_seq(&mut self, packet: SocketPacket, ingress_seq: u64) -> u64 {
         self.queues.push_back(QueuedPacket {
             ingress_seq,
             packet,
         });
-        Ok(ingress_seq)
+        ingress_seq
     }
 
     fn pop_next(&mut self) -> Option<OwnerAdmissionPop<QueuedPacket>> {
@@ -467,37 +431,18 @@ pub(crate) struct OutboundAdmissionQueue {
 }
 
 impl OutboundAdmissionQueue {
-    pub(crate) fn new(config: AdmissionConfig) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            queues: OwnerAdmissionQueues::new(config),
+            queues: OwnerAdmissionQueues::new(),
         }
     }
 
-    fn admit_with_seq(
-        &mut self,
-        packet: OutboundPacket,
-        ingress_seq: u64,
-    ) -> Result<u64, OutboundAdmissionDrop> {
-        let lane = packet.lane();
-
-        if self.queues.lane_len(lane) >= self.queues.lane_capacity(lane) {
-            return Err(OutboundAdmissionDrop {
-                owner: packet.owner,
-                class: packet.class,
-                lane,
-                payload_len: packet.payload.len(),
-                reason: match lane {
-                    Lane::Priority => AdmissionDropReason::PriorityFull,
-                    Lane::Bulk => AdmissionDropReason::BulkFull,
-                },
-            });
-        }
-
+    fn admit_with_seq(&mut self, packet: OutboundPacket, ingress_seq: u64) -> u64 {
         self.queues.push_back(QueuedOutboundPacket {
             ingress_seq,
             packet,
         });
-        Ok(ingress_seq)
+        ingress_seq
     }
 
     fn pop_next(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
