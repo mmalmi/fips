@@ -10,6 +10,7 @@ pub(crate) struct OwnerConfig {
     fsp_session_start_ms: Option<u64>,
     fsp_send_headers: Option<PacketMover2FspSendHeaders>,
     fsp_coords_warmup: Option<(u8, Vec<u8>)>,
+    endpoint_source_peer: Option<crate::PeerIdentity>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +70,7 @@ impl OwnerConfig {
             fsp_session_start_ms: None,
             fsp_send_headers: None,
             fsp_coords_warmup: None,
+            endpoint_source_peer: None,
         }
     }
 
@@ -128,6 +130,11 @@ impl OwnerConfig {
         }
         self
     }
+
+    pub(crate) fn with_endpoint_source_peer(mut self, peer: crate::PeerIdentity) -> Self {
+        self.endpoint_source_peer = Some(peer);
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -165,6 +172,7 @@ pub(crate) struct OwnerReservation {
     ce_flag: bool,
     path_mtu: u16,
     wire_flags: u8,
+    endpoint_source_peer: Option<crate::PeerIdentity>,
     output_path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
@@ -289,6 +297,7 @@ pub(crate) struct OwnerState {
     fsp_send_headers: Option<PacketMover2FspSendHeaders>,
     fsp_coords_warmup_remaining: u8,
     fsp_coords_prefix: Vec<u8>,
+    endpoint_source_peer: Option<crate::PeerIdentity>,
     last_rx_activity: Option<ActivityTick>,
     last_rx_data_activity: Option<ActivityTick>,
     last_tx_activity: Option<ActivityTick>,
@@ -333,6 +342,7 @@ impl OwnerState {
             fsp_coords_prefix: config
                 .fsp_coords_warmup
                 .map_or_else(Vec::new, |(_, prefix)| prefix),
+            endpoint_source_peer: config.endpoint_source_peer,
             last_rx_activity: None,
             last_rx_data_activity: None,
             last_tx_activity: None,
@@ -361,6 +371,7 @@ impl OwnerState {
         self.fsp_send_headers = None;
         self.fsp_coords_warmup_remaining = 0;
         self.fsp_coords_prefix.clear();
+        self.endpoint_source_peer = None;
         self.last_rx_data_activity = None;
         self.last_tx_data_activity = None;
         self.last_outbound_next_hop = None;
@@ -390,6 +401,9 @@ impl OwnerState {
         }
         if let Some(headers) = config.fsp_send_headers {
             self.fsp_send_headers = Some(headers);
+        }
+        if let Some(peer) = config.endpoint_source_peer {
+            self.endpoint_source_peer = Some(peer);
         }
         // Coords warmup is transferred into the owner once; ordinary live
         // refreshes must not reload or erase the owner-local budget.
@@ -550,6 +564,7 @@ impl OwnerState {
             ce_flag: packet.ce_flag,
             path_mtu: packet.path_mtu,
             wire_flags: packet.wire_flags,
+            endpoint_source_peer: self.endpoint_source_peer,
             output_path: None,
             activity_tick: packet.activity_tick,
             fmp_timestamp_ms: None,
@@ -608,6 +623,7 @@ impl OwnerState {
             ce_flag: false,
             path_mtu: u16::MAX,
             wire_flags: 0,
+            endpoint_source_peer: self.endpoint_source_peer,
             output_path,
             activity_tick: packet.activity_tick,
             fmp_timestamp_ms,

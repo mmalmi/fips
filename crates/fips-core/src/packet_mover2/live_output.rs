@@ -653,42 +653,25 @@ impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut
     }
 }
 
-pub(crate) trait PacketMover2EndpointIdentityResolver {
-    fn resolve_endpoint_peer(&mut self, source_addr: &NodeAddr) -> Option<PeerIdentity>;
-}
-
-impl<F> PacketMover2EndpointIdentityResolver for F
-where
-    F: FnMut(&NodeAddr) -> Option<PeerIdentity>,
-{
-    fn resolve_endpoint_peer(&mut self, source_addr: &NodeAddr) -> Option<PeerIdentity> {
-        self(source_addr)
-    }
-}
-
 #[derive(Debug)]
-pub(crate) struct PacketMover2EndpointEventOutput<'a, Resolver> {
+pub(crate) struct PacketMover2EndpointEventOutput<'a> {
     tx: &'a EndpointEventSender,
-    resolver: Resolver,
 }
 
-impl<'a, Resolver> PacketMover2EndpointEventOutput<'a, Resolver> {
-    pub(crate) fn new(tx: &'a EndpointEventSender, resolver: Resolver) -> Self {
-        Self { tx, resolver }
+impl<'a> PacketMover2EndpointEventOutput<'a> {
+    pub(crate) fn new(tx: &'a EndpointEventSender) -> Self {
+        Self { tx }
     }
 }
 
-impl<Resolver> PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_, Resolver>
-where
-    Resolver: PacketMover2EndpointIdentityResolver,
-{
+impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
     fn send_endpoint(
         &mut self,
         output: &PacketOutput,
         payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError> {
         let source_addr = output.owner().node_addr();
-        let Some(source_peer) = self.resolver.resolve_endpoint_peer(&source_addr) else {
+        let Some(source_peer) = output.endpoint_source_peer() else {
             return Err(PacketMover2OutputError::NoRoute);
         };
         if source_peer.node_addr() != &source_addr {

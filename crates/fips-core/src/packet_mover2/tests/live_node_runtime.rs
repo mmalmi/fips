@@ -73,7 +73,6 @@
                 8,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                missing_endpoint_peer,
                 &transports,
                 8,
                 &mut transport_worker,
@@ -108,7 +107,6 @@
                 0,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                missing_endpoint_peer,
                 &transports,
                 8,
                 &mut transport_worker,
@@ -203,7 +201,6 @@
                 0,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                missing_endpoint_peer,
                 &transports,
                 0,
                 &mut transport_worker,
@@ -222,7 +219,6 @@
                 0,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                missing_endpoint_peer,
                 &transports,
                 1,
                 &mut transport_worker,
@@ -243,7 +239,6 @@
                 0,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                missing_endpoint_peer,
                 &transports,
                 1,
                 &mut transport_worker,
@@ -404,22 +399,18 @@
     }
 
     #[test]
-    fn endpoint_event_output_sends_resolved_peer_payload_to_node_endpoint_channel() {
+    fn endpoint_event_output_sends_owner_peer_payload_to_node_endpoint_channel() {
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
         let source_addr = *source_peer.node_addr();
         let owner = OwnerId::fsp_node(source_addr);
-        let output = opened_output(owner, 50, 7, OutputTarget::Endpoint, b"endpoint-node");
-        let resolver = |addr: &NodeAddr| {
-            assert_eq!(addr, &source_addr);
-            Some(source_peer)
-        };
+        let output = opened_endpoint_output(owner, source_peer, 50, 7, b"endpoint-node");
         let mut tun = LiveTunRecorder::default();
         let mut transport = LiveTransportRecorder::default();
 
         let sent = {
-            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx, resolver);
+            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
             sink.send(output)
         };
@@ -449,14 +440,12 @@
         let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
         let source_addr = *source_peer.node_addr();
         let owner = OwnerId::fsp_node(source_addr);
-        let output = opened_output(owner, 53, 0, OutputTarget::Endpoint, b"closed-endpoint");
+        let output = opened_endpoint_output(owner, source_peer, 53, 0, b"closed-endpoint");
         let mut tun = LiveTunRecorder::default();
         let mut transport = LiveTransportRecorder::default();
 
         let sent = {
-            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_tx, |_: &NodeAddr| {
-                Some(source_peer)
-            });
+            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_tx);
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
             sink.send(output)
         };
@@ -467,7 +456,7 @@
     }
 
     #[test]
-    fn endpoint_event_output_requires_resolved_matching_peer_identity() {
+    fn endpoint_event_output_requires_owner_matching_peer_identity() {
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
@@ -476,26 +465,19 @@
         let owner = OwnerId::fsp_node(source_addr);
         let missing_output =
             opened_output(owner, 51, 0, OutputTarget::Endpoint, b"missing-identity");
-        let mismatched_output =
-            opened_output(owner, 52, 1, OutputTarget::Endpoint, b"wrong-identity");
+        let mismatched_output = opened_endpoint_output(owner, wrong_peer, 52, 1, b"wrong-identity");
         let mut tun = LiveTunRecorder::default();
         let mut transport = LiveTransportRecorder::default();
 
         let missing = {
-            let endpoint =
-                PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx, |_: &NodeAddr| {
-                    None::<PeerIdentity>
-                });
+            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
             sink.send(missing_output)
         };
         assert_eq!(missing, Err(PacketMover2OutputError::NoRoute));
 
         let mismatched = {
-            let endpoint =
-                PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx, |_: &NodeAddr| {
-                    Some(wrong_peer)
-                });
+            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
             sink.send(mismatched_output)
         };

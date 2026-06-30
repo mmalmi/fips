@@ -129,7 +129,6 @@
                 8,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                missing_endpoint_peer,
                 &transports,
                 8,
                 &mut transport_worker,
@@ -168,7 +167,6 @@
                 0,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                missing_endpoint_peer,
                 &transports,
                 8,
                 &mut transport_worker,
@@ -274,7 +272,10 @@
         let mut endpoint_io = node.attach_endpoint_data_io(1).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
+        driver.register_owner(
+            fsp_owner,
+            OwnerConfig::new(1, 8).with_endpoint_source_peer(source_peer),
+        );
         driver
             .owner_mut(fsp_owner)
             .unwrap()
@@ -289,13 +290,6 @@
         let mut deferred_endpoint_commands = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
-        let resolver = |addr: &NodeAddr| {
-            if addr == &fsp_source {
-                Some(source_peer)
-            } else {
-                None
-            }
-        };
 
         let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_source,
@@ -310,7 +304,6 @@
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                resolver,
                 &transports,
                 8,
             )

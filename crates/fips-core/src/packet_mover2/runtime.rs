@@ -121,13 +121,12 @@ impl PacketMover2TurnDriver {
         self.mover.record_fsp_data_sent(owner, next_hop, bytes, tick)
     }
 
-    async fn finish_aead_live_node_output_turn_with_executor<Resolver, Transports, E>(
+    async fn finish_aead_live_node_output_turn_with_executor<Transports, E>(
         &mut self,
         summary: PacketMover2RuntimeSummary,
         routes: &mut PacketMover2LiveRouteTable,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
         collect_transport_sent_outputs: bool,
@@ -135,7 +134,6 @@ impl PacketMover2TurnDriver {
         transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
     where
-        Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
         E: PacketMover2CryptoExecutor,
     {
@@ -146,8 +144,7 @@ impl PacketMover2TurnDriver {
         transport_output.clear();
         let mut report = {
             let tun_output = PacketMover2TunTxOutput::new(tun_tx);
-            let endpoint_output =
-                PacketMover2EndpointEventOutput::new(endpoint_tx, endpoint_resolver);
+            let endpoint_output = PacketMover2EndpointEventOutput::new(endpoint_tx);
             let mut sink =
                 PacketMover2LiveOutputSink::new(tun_output, endpoint_output, &mut transport_output);
             let turn = self.send_collected_outputs(summary, &mut sink);
@@ -207,7 +204,6 @@ impl PacketMover2TurnDriver {
         C,
         E,
         RI,
-        Resolver,
         Transports,
     >(
         &mut self,
@@ -227,7 +223,6 @@ impl PacketMover2TurnDriver {
         deferred_tun_packets: &mut Vec<Vec<u8>>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
         transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
@@ -236,7 +231,6 @@ impl PacketMover2TurnDriver {
         C: PacketMover2CompletionSource,
         E: PacketMover2CryptoExecutor,
         RI: PacketMover2RawIngressSource,
-        Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
         let summary = self.start_aead_completion_turn(completions, completion_limit);
@@ -256,7 +250,6 @@ impl PacketMover2TurnDriver {
             deferred_tun_packets,
             tun_tx,
             endpoint_tx,
-            endpoint_resolver,
             transports,
             crypto_limit,
             transport_send_worker,
@@ -286,7 +279,6 @@ impl PacketMover2TurnDriver {
     async fn pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts<
         E,
         RI,
-        Resolver,
         Transports,
     >(
         &mut self,
@@ -305,7 +297,6 @@ impl PacketMover2TurnDriver {
         deferred_tun_packets: &mut Vec<Vec<u8>>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
         transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
@@ -313,7 +304,6 @@ impl PacketMover2TurnDriver {
     where
         E: PacketMover2CryptoExecutor,
         RI: PacketMover2RawIngressSource,
-        Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
         let admit_timer =
@@ -385,7 +375,6 @@ impl PacketMover2TurnDriver {
                 routes,
                 tun_tx,
                 endpoint_tx,
-                endpoint_resolver,
                 transports,
                 crypto_limit,
                 collect_transport_sent_outputs,

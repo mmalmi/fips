@@ -47,6 +47,7 @@ pub(crate) struct PacketOutput {
     previous_hop: Option<NodeAddr>,
     ce_flag: bool,
     path_mtu: u16,
+    endpoint_source_peer: Option<crate::PeerIdentity>,
     path: Option<TransportPath>,
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
@@ -102,6 +103,10 @@ impl PacketOutput {
 
     pub(crate) fn path_mtu(&self) -> u16 {
         self.path_mtu
+    }
+
+    pub(crate) fn endpoint_source_peer(&self) -> Option<crate::PeerIdentity> {
+        self.endpoint_source_peer
     }
 
     pub(crate) fn payload(&self) -> &[u8] {

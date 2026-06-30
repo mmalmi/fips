@@ -87,12 +87,6 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        let sessions = &self.sessions;
-        let identity_cache = &self.identity_cache;
-        let endpoint_resolver = |source_addr: &NodeAddr| {
-            Self::packet_mover2_endpoint_peer_from_stores(sessions, identity_cache, source_addr)
-        };
-
         let turn = self
             .packet_mover2
             .pump_packet_rx_turn_with_firsts_and_transport_worker(
@@ -106,7 +100,6 @@ impl Node {
                 tun_limit,
                 tun_tx,
                 endpoint_tx,
-                endpoint_resolver,
                 &self.transports,
                 crypto_limit,
                 &mut self.packet_mover2_transport_send_worker,
@@ -424,21 +417,6 @@ impl Node {
             .iter()
             .find_map(|(cached_addr, pubkey, _)| {
                 (cached_addr == addr).then(|| PeerIdentity::from_pubkey_full(*pubkey))
-            })
-    }
-
-    pub(in crate::node) fn packet_mover2_endpoint_peer_from_stores(
-        sessions: &crate::node::session_registry::SessionRegistry,
-        identity_cache: &crate::node::IdentityCache,
-        source_addr: &NodeAddr,
-    ) -> Option<PeerIdentity> {
-        sessions
-            .get(source_addr)
-            .and_then(|entry| entry.remote_identity())
-            .or_else(|| {
-                identity_cache
-                    .pubkey_for_node_addr(source_addr)
-                    .map(PeerIdentity::from_pubkey_full)
             })
     }
 

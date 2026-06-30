@@ -506,7 +506,7 @@
         )
     }
 
-    async fn pump_aead_live_node_route_table_turn<RI, Resolver, Transports>(
+    async fn pump_aead_live_node_route_table_turn<RI, Transports>(
         driver: &mut PacketMover2TurnDriver,
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
@@ -520,13 +520,11 @@
         deferred_tun_packets: &mut Vec<Vec<u8>>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
     ) -> PacketMover2LiveNodeTurn
     where
         RI: PacketMover2RawIngressSource,
-        Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
@@ -550,7 +548,6 @@
                 deferred_tun_packets,
                 tun_tx,
                 endpoint_tx,
-                endpoint_resolver,
                 transports,
                 crypto_limit,
                 &mut transport_worker,
@@ -725,6 +722,7 @@
             previous_hop: None,
             ce_flag: false,
             path_mtu: u16::MAX,
+            endpoint_source_peer: None,
             path: None,
             activity_tick: None,
             source_wire_len: None,
@@ -732,6 +730,18 @@
             fsp_send_receipt: None,
             payload: payload.into(),
         }
+    }
+
+    fn opened_endpoint_output(
+        owner: OwnerId,
+        source_peer: PeerIdentity,
+        counter: u64,
+        ingress_seq: u64,
+        plaintext: &[u8],
+    ) -> PacketOutput {
+        let mut output = opened_output(owner, counter, ingress_seq, OutputTarget::Endpoint, plaintext);
+        output.endpoint_source_peer = Some(source_peer);
+        output
     }
 
     fn transport_output(
@@ -752,6 +762,7 @@
             previous_hop: None,
             ce_flag: false,
             path_mtu: u16::MAX,
+            endpoint_source_peer: None,
             path: Some(TransportPath::live(transport_id, remote_addr)),
             activity_tick: None,
             source_wire_len: None,
@@ -782,10 +793,6 @@
             },
             packet_tx,
         ))
-    }
-
-    fn missing_endpoint_peer(_: &NodeAddr) -> Option<PeerIdentity> {
-        None
     }
 
     fn fmp_encrypted_wire(

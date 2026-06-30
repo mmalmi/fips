@@ -348,7 +348,8 @@
     #[test]
     fn live_output_sink_sends_tun_endpoint_and_transport_once() {
         let fmp_source = NodeAddr::from_bytes([0x45; 16]);
-        let fsp_source = NodeAddr::from_bytes([0x46; 16]);
+        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let fsp_source = *source_peer.node_addr();
         let fmp_owner = OwnerId::fmp_node(fmp_source);
         let fsp_owner = OwnerId::fsp_node(fsp_source);
         let fmp_key = 45;
@@ -361,7 +362,10 @@
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(700),
         );
-        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
+        driver.register_owner(
+            fsp_owner,
+            OwnerConfig::new(1, 8).with_endpoint_source_peer(source_peer),
+        );
         driver
             .owner_mut(fmp_owner)
             .unwrap()
@@ -493,7 +497,10 @@
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(740),
         );
-        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8));
+        driver.register_owner(
+            fsp_owner,
+            OwnerConfig::new(1, 8).with_endpoint_source_peer(source_peer),
+        );
         driver
             .owner_mut(fmp_owner)
             .unwrap()
@@ -552,13 +559,6 @@
         let mut deferred_endpoint_commands = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
-        let resolver = |addr: &NodeAddr| {
-            if addr == &fsp_source {
-                Some(source_peer)
-            } else {
-                None
-            }
-        };
 
         let turn = pump_aead_live_node_route_table_turn(&mut driver,
                 &mut raw_source,
@@ -573,7 +573,6 @@
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                resolver,
                 &transports,
                 8,
             )
@@ -680,7 +679,6 @@
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
-                missing_endpoint_peer,
                 &transports,
                 8,
             )
