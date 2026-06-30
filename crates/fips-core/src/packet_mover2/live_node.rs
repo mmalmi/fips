@@ -748,6 +748,37 @@ impl PacketMover2LiveNode {
             .await
     }
 
+    pub(crate) async fn pump_completion_output_turn_with_transport_worker<Transports>(
+        &mut self,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let _turn_timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
+        let summary = self
+            .driver
+            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
+        self.driver
+            .finish_aead_live_node_output_turn_with_executor(
+                summary,
+                &mut self.routes,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                false,
+                &mut self.crypto_worker,
+                transport_send_worker,
+            )
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn pump_outbound_firsts_with_transport_worker<Transports>(
         &mut self,
