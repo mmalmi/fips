@@ -80,12 +80,6 @@ pub(crate) struct SessionEntry {
     /// Only updated for DataPacket send/receive and session establishment.
     /// MMP reports do not update this field. Used for idle session timeout.
     last_activity: u64,
-    /// Last authenticated FSP frame received from this peer (Unix milliseconds).
-    ///
-    /// Outbound-only application traffic can keep `last_activity` fresh even
-    /// when the peer stopped returning valid FSP frames. This timestamp is
-    /// used to retire such stale sessions so the next send re-handshakes.
-    last_inbound_frame_ms: u64,
     /// When the session transitioned to Established (Unix milliseconds).
     /// Used to compute session-relative timestamps for the FSP inner header.
     /// Set to 0 until the session is established.
@@ -157,7 +151,6 @@ impl SessionEntry {
             state: Some(state),
             created_at: now_ms,
             last_activity: now_ms,
-            last_inbound_frame_ms: now_ms,
             session_start_ms: 0,
             is_initiator,
             mmp: None,
@@ -227,15 +220,6 @@ impl SessionEntry {
         self.last_activity = now_ms;
     }
 
-    /// Mark receipt of any authenticated FSP frame from the peer.
-    pub(crate) fn touch_inbound_frame(&mut self, now_ms: u64) {
-        self.last_inbound_frame_ms = now_ms;
-    }
-
-    pub(crate) fn last_authenticated_inbound_age_ms(&self, now_ms: u64) -> Option<u64> {
-        (now_ms >= self.last_inbound_frame_ms).then(|| now_ms - self.last_inbound_frame_ms)
-    }
-
     /// Check if the session is established.
     pub(crate) fn is_established(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.is_established())
@@ -260,12 +244,6 @@ impl SessionEntry {
     /// Get last activity time.
     pub(crate) fn last_activity(&self) -> u64 {
         self.last_activity
-    }
-
-    /// Get last authenticated inbound FSP frame time.
-    #[cfg(test)]
-    pub(crate) fn last_inbound_frame_ms(&self) -> u64 {
-        self.last_inbound_frame_ms
     }
 
     /// Mark the session as started (transition to Established).
@@ -483,7 +461,6 @@ impl SessionEntry {
     pub(crate) fn apply_fsp_receive_sync_result(
         &mut self,
         sync: FspReceiveSync,
-        now_ms: u64,
         now: Instant,
     ) -> bool {
         if !self.is_established() || self.current_noise_session().is_none() {
@@ -513,7 +490,6 @@ impl SessionEntry {
             let _spin_rtt = mmp.spin_bit.rx_observe(sync.spin_bit, sync.counter, now);
             mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
         }
-        self.touch_inbound_frame(now_ms);
         true
     }
 

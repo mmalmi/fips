@@ -22,7 +22,6 @@ fn test_session_entry_new_initiating() {
     assert!(!entry.state().is_awaiting_msg3());
     assert_eq!(entry.created_at(), 1000);
     assert_eq!(entry.last_activity(), 1000);
-    assert_eq!(entry.last_inbound_frame_ms(), 1000);
 }
 
 #[test]

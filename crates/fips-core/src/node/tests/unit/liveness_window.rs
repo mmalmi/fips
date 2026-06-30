@@ -546,14 +546,13 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
     node.learn_reverse_route(peer_addr, transit_addr);
 
     let now_ms = Node::now_ms();
-    let mut session = crate::node::session::SessionEntry::new(
+    let session = crate::node::session::SessionEntry::new(
         peer_addr,
         peer_identity.pubkey_full(),
         crate::node::session::EndToEndState::Established(endpoint_session),
         1_000,
         true,
     );
-    session.touch_inbound_frame(now_ms);
     node.sessions.insert(peer_addr, session);
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
     seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
@@ -637,14 +636,13 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
     );
 
     let now_ms = Node::now_ms();
-    let mut session = crate::node::session::SessionEntry::new(
+    let session = crate::node::session::SessionEntry::new(
         peer_addr,
         peer_identity.pubkey_full(),
         crate::node::session::EndToEndState::Established(endpoint_session),
         1_000,
         true,
     );
-    session.touch_inbound_frame(now_ms);
     node.sessions.insert(peer_addr, session);
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
     seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
@@ -885,14 +883,13 @@ async fn fresh_control_with_unreturned_endpoint_data_keeps_direct_without_fallba
     node.peers.insert(peer_addr, active);
 
     let now_ms = Node::now_ms();
-    let mut session = crate::node::session::SessionEntry::new(
+    let session = crate::node::session::SessionEntry::new(
         peer_addr,
         peer_identity.pubkey_full(),
         crate::node::session::EndToEndState::Established(endpoint_session),
         1_000,
         true,
     );
-    session.touch_inbound_frame(now_ms);
     node.sessions.insert(peer_addr, session);
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
     seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);

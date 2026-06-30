@@ -68,12 +68,12 @@
         assert!(!should_start_decrypt_failure_rekey(
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD - 1,
-            20_000
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
         assert!(should_start_decrypt_failure_rekey(
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            20_000
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
 
         let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
@@ -81,7 +81,7 @@
         assert!(!should_start_decrypt_failure_rekey(
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            20_000
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
         entry.abandon_rekey();
 
@@ -89,7 +89,7 @@
         assert!(!should_start_decrypt_failure_rekey(
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            20_000
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
     }
 
@@ -97,23 +97,22 @@
     fn decrypt_failure_recovery_rekey_waits_for_quiet_session() {
         let local = Identity::generate();
         let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-        entry.touch_inbound_frame(10_000);
+        let entry = established_entry(&local, &peer);
 
         assert!(!should_start_decrypt_failure_rekey(
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            10_000 + DECRYPT_FAILURE_RECOVERY_QUIET_MS - 1,
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS - 1),
         ));
         assert!(should_start_decrypt_failure_rekey(
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            10_000 + DECRYPT_FAILURE_RECOVERY_QUIET_MS,
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS),
         ));
         assert!(!should_start_decrypt_failure_rekey(
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            9_000,
+            None,
         ));
     }
 

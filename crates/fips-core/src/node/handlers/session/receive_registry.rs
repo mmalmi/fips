@@ -28,14 +28,13 @@ fn duplicate_rekey_responder_ack(existing: &SessionEntry) -> Option<Vec<u8>> {
 fn should_start_decrypt_failure_rekey(
     entry: &SessionEntry,
     consecutive: u32,
-    now_ms: u64,
+    authenticated_inbound_age_ms: Option<u64>,
 ) -> bool {
     consecutive >= DECRYPT_FAILURE_RECOVERY_THRESHOLD
         && entry.is_established()
         && !entry.has_rekey_in_progress()
         && entry.pending_new_session().is_none()
-        && entry
-            .last_authenticated_inbound_age_ms(now_ms)
+        && authenticated_inbound_age_ms
             .is_some_and(|age_ms| age_ms >= DECRYPT_FAILURE_RECOVERY_QUIET_MS)
 }
 

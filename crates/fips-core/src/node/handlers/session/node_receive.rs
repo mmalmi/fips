@@ -9,7 +9,7 @@ impl Node {
             let Some(entry) = self.sessions.get_mut(&source_addr) else {
                 return false;
             };
-            entry.apply_fsp_receive_sync_result(sync, Self::now_ms(), now)
+            entry.apply_fsp_receive_sync_result(sync, now)
         };
         apply
     }
@@ -211,6 +211,11 @@ impl Node {
         received_k_bit: bool,
         source: &'static str,
     ) -> bool {
+        let now_ms = Self::now_ms();
+        let authenticated_inbound_age_ms = self
+            .packet_mover2
+            .fsp_owner_activity(&src_addr)
+            .and_then(|activity| activity.last_rx_age_ms(now_ms));
         let Some(entry) = self.sessions.get_mut(&src_addr) else {
             debug!(
                 src = %self.peer_display_name(&src_addr),
@@ -230,7 +235,8 @@ impl Node {
             return true;
         }
         let consecutive = entry.record_decrypt_failure();
-        let recover_session = should_start_decrypt_failure_rekey(entry, consecutive, Self::now_ms());
+        let recover_session =
+            should_start_decrypt_failure_rekey(entry, consecutive, authenticated_inbound_age_ms);
         debug!(
             src = %self.peer_display_name(&src_addr),
             counter,
