@@ -63,20 +63,6 @@ impl PacketMover2OwnerShard {
         self.outbound_admission.admit_with_seq(packet, ingress_seq)
     }
 
-    fn dispatch_ingress_available_into(
-        &mut self,
-        limit: usize,
-        work: &mut Vec<CryptoWork>,
-        priority_only: bool,
-    ) -> usize {
-        self.dispatch_ingress_with(limit, priority_only, |reservation, packet, _keys| {
-            work.push(CryptoWork {
-                reservation,
-                packet,
-            });
-        })
-    }
-
     fn dispatch_ingress_prepared_into(
         &mut self,
         limit: usize,
@@ -237,16 +223,6 @@ impl PacketMover2OwnerShard {
 
     fn defer_outbound_owner_pop(&mut self, pop: OwnerAdmissionPop<QueuedOutboundPacket>) {
         self.outbound_admission.defer_owner_pop(pop);
-    }
-
-    fn dispatch_outbound_available_into(
-        &mut self,
-        queued: QueuedOutboundPacket,
-        work: &mut Vec<OutboundCryptoWork>,
-    ) -> OutboundDispatchResult {
-        self.dispatch_outbound_with(queued, |reservation, packet, _keys| {
-            work.push(OutboundCryptoWork::new(reservation, packet));
-        })
     }
 
     fn dispatch_outbound_prepared_into(

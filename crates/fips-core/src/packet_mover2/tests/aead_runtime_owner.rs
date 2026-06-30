@@ -1345,8 +1345,8 @@
             )
             .unwrap();
 
-        let mut work = Vec::new();
-        assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 1);
+        let mut work = dispatch_available(&mut driver.mover, 8);
+        assert_eq!(work.len(), 1);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 1);
 
         let worker = StatelessAeadOpenWorker;
@@ -1409,8 +1409,8 @@
                 .unwrap();
         }
 
-        let mut work = Vec::new();
-        assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 3);
+        let mut work = dispatch_available(&mut driver.mover, 8);
+        assert_eq!(work.len(), 3);
 
         let worker = StatelessAeadOpenWorker;
         let mut completions = work
@@ -1513,8 +1513,8 @@
                 .unwrap();
         }
 
-        let mut work = Vec::new();
-        assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 3);
+        let mut work = dispatch_available(&mut driver.mover, 8);
+        assert_eq!(work.len(), 3);
 
         let worker = StatelessAeadOpenWorker;
         let completions = work
@@ -1606,8 +1606,8 @@
                 .unwrap();
         }
 
-        let mut work = Vec::new();
-        assert_eq!(driver.mover.dispatch_available_into(8, &mut work), 3);
+        let mut work = dispatch_available(&mut driver.mover, 8);
+        assert_eq!(work.len(), 3);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 3);
 
         let worker = StatelessAeadOpenWorker;
@@ -1689,8 +1689,8 @@
                 .unwrap(),
             )
             .unwrap();
-        let mut old_work = Vec::new();
-        assert_eq!(driver.mover.dispatch_available_into(8, &mut old_work), 1);
+        let mut old_work = dispatch_available(&mut driver.mover, 8);
+        assert_eq!(old_work.len(), 1);
 
         driver.owner_mut(owner).unwrap().rekey(2);
         driver
@@ -1705,8 +1705,8 @@
                 .unwrap(),
             )
             .unwrap();
-        let mut new_work = Vec::new();
-        assert_eq!(driver.mover.dispatch_available_into(8, &mut new_work), 1);
+        let mut new_work = dispatch_available(&mut driver.mover, 8);
+        assert_eq!(new_work.len(), 1);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 2);
 
         let worker = StatelessAeadOpenWorker;
@@ -1779,13 +1779,8 @@
                 b"bulk-1".to_vec(),
             ))
             .unwrap();
-        let mut seal_work = Vec::new();
-        assert_eq!(
-            driver
-                .mover
-                .dispatch_outbound_available_into(1, &mut seal_work),
-            1
-        );
+        let mut seal_work = dispatch_outbound_available(&mut driver.mover, 1);
+        assert_eq!(seal_work.len(), 1);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 1);
 
         driver
@@ -1879,13 +1874,8 @@
         .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
 
         driver.mover.submit_outbound_packet(packet).unwrap();
-        let mut seal_work = Vec::new();
-        assert_eq!(
-            driver
-                .mover
-                .dispatch_outbound_available_into(1, &mut seal_work),
-            1
-        );
+        let mut seal_work = dispatch_outbound_available(&mut driver.mover, 1);
+        assert_eq!(seal_work.len(), 1);
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
 
         let worker = StatelessAeadSealWorker;
@@ -1957,13 +1947,8 @@
         .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
 
         driver.mover.submit_outbound_packet(packet).unwrap();
-        let mut seal_work = Vec::new();
-        assert_eq!(
-            driver
-                .mover
-                .dispatch_outbound_available_into(1, &mut seal_work),
-            1
-        );
+        let mut seal_work = dispatch_outbound_available(&mut driver.mover, 1);
+        assert_eq!(seal_work.len(), 1);
         let work = seal_work.pop().unwrap();
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
         assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 0);

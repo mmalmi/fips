@@ -58,6 +58,24 @@
         }
     }
 
+    #[derive(Debug, Default)]
+    struct CapturingPreparedCryptoExecutor {
+        prepared: Vec<PreparedCryptoWork>,
+    }
+
+    impl PacketMover2CryptoExecutor for CapturingPreparedCryptoExecutor {
+        fn execute_prepared_chunk(
+            &mut self,
+            prepared: &mut Vec<PreparedCryptoWork>,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
+            completions.clear();
+            let count = prepared.len();
+            self.prepared.extend(prepared.drain(..));
+            count
+        }
+    }
+
     fn crypto_work_order(work: &CryptoWork) -> u64 {
         work.reservation.order.0
     }
@@ -67,18 +85,71 @@
     }
 
     fn dispatch_available(mover: &mut PacketMover2, limit: usize) -> Vec<CryptoWork> {
-        let mut work = Vec::new();
-        mover.dispatch_available_into(limit, &mut work);
-        work
+        capture_prepared_work(mover, limit)
+            .into_iter()
+            .filter_map(|prepared| match prepared {
+                PreparedCryptoWork::Open { work, .. } => Some(work),
+                PreparedCryptoWork::Seal { work, .. } => {
+                    panic!("unexpected outbound work while capturing inbound: {work:?}")
+                }
+                PreparedCryptoWork::Completed(completion) => {
+                    panic!("unexpected completed work while capturing inbound: {completion:?}")
+                }
+            })
+            .collect()
     }
 
     fn dispatch_outbound_available(
         mover: &mut PacketMover2,
         limit: usize,
     ) -> Vec<OutboundCryptoWork> {
-        let mut work = Vec::new();
-        mover.dispatch_outbound_available_into(limit, &mut work);
-        work
+        capture_prepared_work(mover, limit)
+            .into_iter()
+            .filter_map(|prepared| match prepared {
+                PreparedCryptoWork::Seal { work, .. } => Some(work),
+                PreparedCryptoWork::Open { work, .. } => {
+                    panic!("unexpected inbound work while capturing outbound: {work:?}")
+                }
+                PreparedCryptoWork::Completed(completion) => {
+                    panic!("unexpected completed work while capturing outbound: {completion:?}")
+                }
+            })
+            .collect()
+    }
+
+    fn capture_prepared_work(mover: &mut PacketMover2, limit: usize) -> Vec<PreparedCryptoWork> {
+        seed_missing_test_owner_keys(mover);
+        let mut prepared_work = Vec::new();
+        let mut completion_work = Vec::new();
+        let mut retired = Vec::new();
+        let mut drops = Vec::new();
+        let mut executor = CapturingPreparedCryptoExecutor::default();
+        mover.run_aead_available_into_with_executor(
+            limit,
+            &mut prepared_work,
+            &mut completion_work,
+            &mut retired,
+            &mut drops,
+            &mut executor,
+        );
+        debug_assert!(prepared_work.is_empty());
+        debug_assert!(completion_work.is_empty());
+        debug_assert!(retired.is_empty());
+        for drop in drops {
+            mover.record_drop(drop);
+        }
+        executor.prepared
+    }
+
+    fn seed_missing_test_owner_keys(mover: &mut PacketMover2) {
+        let key = test_key(0);
+        for shard in &mut mover.shards {
+            for owner in shard.owners.values_mut() {
+                if owner.crypto_keys().is_none() {
+                    owner.set_crypto_keys(OwnerCryptoKeys::new(key.clone(), key.clone()));
+                }
+            }
+        }
     }
 
     impl PacketMover2OutboundSource for VecDeque<OutboundPacket> {
