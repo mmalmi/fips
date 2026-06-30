@@ -175,17 +175,35 @@ impl PacketMover2OwnerShard {
         }
     }
 
-    pub(crate) fn dispatch_available_into(
+    pub(crate) fn dispatch_available_into(&mut self, limit: usize, work: &mut Vec<CryptoWork>) -> usize {
+        self.dispatch_ingress_available_into(limit, work, false)
+    }
+
+    fn dispatch_priority_available_into(
         &mut self,
         limit: usize,
         work: &mut Vec<CryptoWork>,
+    ) -> usize {
+        self.dispatch_ingress_available_into(limit, work, true)
+    }
+
+    fn dispatch_ingress_available_into(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<CryptoWork>,
+        priority_only: bool,
     ) -> usize {
         work.clear();
 
         let mut attempts_remaining = self.admission.len();
         while work.len() < limit && attempts_remaining > 0 {
-            let Some(pop) = self.admission.pop_next() else {
-                if limit > 0 {
+            let pop = if priority_only {
+                self.admission.pop_next_priority()
+            } else {
+                self.admission.pop_next()
+            };
+            let Some(pop) = pop else {
+                if !priority_only && limit > 0 {
                     crate::perf_profile::record_event(
                         crate::perf_profile::Event::PacketMover2DispatchNoIngress,
                     );
@@ -232,66 +250,11 @@ impl PacketMover2OwnerShard {
             }
         }
 
-        if limit > 0 && work.len() >= limit {
+        if !priority_only && limit > 0 && work.len() >= limit {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PacketMover2DispatchLimitHit,
             );
         }
-        work.len()
-    }
-
-    fn dispatch_priority_available_into(
-        &mut self,
-        limit: usize,
-        work: &mut Vec<CryptoWork>,
-    ) -> usize {
-        work.clear();
-
-        let mut attempts_remaining = self.admission.len();
-        while work.len() < limit && attempts_remaining > 0 {
-            let Some(pop) = self.admission.pop_next_priority() else {
-                break;
-            };
-            attempts_remaining = attempts_remaining.saturating_sub(1);
-            let OwnerAdmissionPop {
-                item: queued,
-                cursor,
-            } = pop;
-
-            let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
-                self.drops.push(PacketDrop::from_queued(
-                    &queued,
-                    PacketDropReason::UnknownOwner,
-                ));
-                self.admission.continue_owner_run(cursor);
-                continue;
-            };
-            if !owner.can_reserve_class(queued.packet.class) {
-                record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
-                self.admission.defer_owner_pop(OwnerAdmissionPop {
-                    item: queued,
-                    cursor,
-                });
-                continue;
-            }
-
-            match owner.reserve(&queued.packet, queued.ingress_seq) {
-                Ok(reservation) => {
-                    work.push(CryptoWork {
-                        reservation,
-                        packet: queued.packet,
-                    });
-                    self.admission.continue_owner_run(cursor);
-                    attempts_remaining = self.admission.len();
-                }
-                Err(error) => {
-                    self.drops
-                        .push(PacketDrop::from_queued(&queued, error.into()));
-                    self.admission.continue_owner_run(cursor);
-                }
-            }
-        }
-
         work.len()
     }
 
@@ -300,31 +263,7 @@ impl PacketMover2OwnerShard {
         limit: usize,
         work: &mut Vec<OutboundCryptoWork>,
     ) -> usize {
-        work.clear();
-
-        let mut attempts_remaining = self.outbound_admission.len();
-        while work.len() < limit && attempts_remaining > 0 {
-            let Some(pop) = self.outbound_admission.pop_next() else {
-                break;
-            };
-            attempts_remaining = attempts_remaining.saturating_sub(1);
-            let cursor = pop.cursor;
-
-            match self.dispatch_queued_outbound(pop.item, work) {
-                OutboundDispatchResult::Completed => {
-                    self.outbound_admission.continue_owner_run(cursor);
-                    attempts_remaining = self.outbound_admission.len();
-                }
-                OutboundDispatchResult::Blocked(queued) => {
-                    self.outbound_admission.defer_owner_pop(OwnerAdmissionPop {
-                        item: queued,
-                        cursor,
-                    });
-                }
-            }
-        }
-
-        work.len()
+        self.dispatch_outbound_available_into_by_priority(limit, work, false)
     }
 
     fn dispatch_outbound_priority_available_into(
@@ -332,11 +271,25 @@ impl PacketMover2OwnerShard {
         limit: usize,
         work: &mut Vec<OutboundCryptoWork>,
     ) -> usize {
+        self.dispatch_outbound_available_into_by_priority(limit, work, true)
+    }
+
+    fn dispatch_outbound_available_into_by_priority(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<OutboundCryptoWork>,
+        priority_only: bool,
+    ) -> usize {
         work.clear();
 
         let mut attempts_remaining = self.outbound_admission.len();
         while work.len() < limit && attempts_remaining > 0 {
-            let Some(pop) = self.outbound_admission.pop_next_priority() else {
+            let pop = if priority_only {
+                self.outbound_admission.pop_next_priority()
+            } else {
+                self.outbound_admission.pop_next()
+            };
+            let Some(pop) = pop else {
                 break;
             };
             attempts_remaining = attempts_remaining.saturating_sub(1);
