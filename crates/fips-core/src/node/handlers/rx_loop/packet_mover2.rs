@@ -145,6 +145,15 @@ impl Node {
             warmup.apply_to(self.coord_cache_mut(), Self::now_ms());
             processed += 1;
         }
+        for source_addr in turn.take_fsp_current_epoch_confirmed() {
+            if !self.confirm_authenticated_fsp_receive_lifecycle(source_addr) {
+                debug!(
+                    src = %self.peer_display_name(&source_addr),
+                    "Packet-mover2 authenticated session message has no SessionRegistry lifecycle mirror"
+                );
+            }
+            processed += 1;
+        }
         let fsp_crypto_failures: Vec<_> = turn
             .drops()
             .iter()
@@ -431,6 +440,7 @@ impl Node {
             .saturating_add(turn.fmp_control_ingress().len())
             .saturating_add(turn.fmp_link_ingress().len())
             .saturating_add(turn.fsp_coord_warmups().len())
+            .saturating_add(turn.fsp_current_epoch_confirmed().len())
             .saturating_add(turn.fsp_local_session_ingress().len())
             .saturating_add(turn.fsp_session_ingress().len())
             .saturating_add(turn.endpoint_deferred_commands())
@@ -453,6 +463,7 @@ impl Node {
                 output_drops = turn.output_drops().len(),
                 fmp_control_ingress = turn.fmp_control_ingress().len(),
                 fsp_coord_warmups = turn.fsp_coord_warmups().len(),
+                fsp_current_epoch_confirmed = turn.fsp_current_epoch_confirmed().len(),
                 fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
                 fsp_session_ingress = turn.fsp_session_ingress().len(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
@@ -495,6 +506,7 @@ impl Node {
             fmp_control_ingress = turn.fmp_control_ingress().len(),
             fmp_link_ingress = turn.fmp_link_ingress().len(),
             fsp_coord_warmups = turn.fsp_coord_warmups().len(),
+            fsp_current_epoch_confirmed = turn.fsp_current_epoch_confirmed().len(),
             fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
             fsp_session_ingress = turn.fsp_session_ingress().len(),
             "packet mover2 turn completed"

@@ -206,7 +206,7 @@ impl PacketMover2 {
         sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
         now: std::time::Instant,
-    ) -> Option<FspReceiveLifecycle> {
+    ) -> Option<bool> {
         self.owner_shard_mut(owner).record_authenticated_fsp_session(
             owner,
             previous_hop,

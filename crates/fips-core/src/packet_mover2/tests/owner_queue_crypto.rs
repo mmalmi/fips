@@ -705,10 +705,7 @@
                 None,
                 std::time::Instant::now(),
             ),
-            Some(FspReceiveLifecycle {
-                registry_sync_required: true,
-                current_epoch_confirmed: true,
-            })
+            Some(true)
         );
 
         let packet = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"payload".to_vec())

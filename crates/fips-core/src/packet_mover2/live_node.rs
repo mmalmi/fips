@@ -528,7 +528,7 @@ impl PacketMover2LiveNode {
         sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
         now: std::time::Instant,
-    ) -> Option<FspReceiveLifecycle> {
+    ) -> Option<bool> {
         self.driver.record_authenticated_fsp_session(
             OwnerId::fsp_node(source_addr),
             previous_hop,

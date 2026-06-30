@@ -1160,7 +1160,7 @@ impl OwnerState {
         sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
         now: std::time::Instant,
-    ) -> Option<FspReceiveLifecycle> {
+    ) -> Option<bool> {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
@@ -1190,14 +1190,12 @@ impl OwnerState {
             self.data_bytes_recv = self.data_bytes_recv.saturating_add(body_len as u64);
         }
         let current_epoch_confirmed = sync.received_k_bit == self.fsp_current_k_bit;
-        let registry_sync_required = current_epoch_confirmed && !self.fsp_lifecycle_confirmed;
+        let newly_confirmed_current_epoch =
+            current_epoch_confirmed && !self.fsp_lifecycle_confirmed;
         if current_epoch_confirmed {
             self.fsp_lifecycle_confirmed = true;
         }
-        Some(FspReceiveLifecycle {
-            registry_sync_required,
-            current_epoch_confirmed,
-        })
+        Some(newly_confirmed_current_epoch)
     }
 
     pub(crate) fn record_authenticated_fmp_receive(

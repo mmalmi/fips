@@ -1,5 +1,5 @@
 impl Node {
-    fn confirm_authenticated_fsp_receive_lifecycle(
+    pub(in crate::node) fn confirm_authenticated_fsp_receive_lifecycle(
         &mut self,
         source_addr: NodeAddr,
     ) -> bool {
@@ -96,22 +96,12 @@ impl Node {
             source_peer,
             previous_hop_addr,
             ce_flag,
-            receive_lifecycle,
             _activity_tick,
             timestamp_ms,
             msg_type,
             inner_flags,
             plaintext,
         ) = ingress.into_parts();
-        if receive_lifecycle.registry_sync_required
-            && receive_lifecycle.current_epoch_confirmed
-            && !self.confirm_authenticated_fsp_receive_lifecycle(source_addr)
-        {
-            debug!(
-                src = %self.peer_display_name(&source_addr),
-                "Packet-mover2 authenticated session message has no SessionRegistry lifecycle mirror"
-            );
-        }
         let body_len = plaintext
             .len()
             .saturating_sub(crate::node::session_wire::FSP_INNER_HEADER_SIZE);

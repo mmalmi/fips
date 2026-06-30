@@ -13,6 +13,7 @@ pub(crate) struct PacketMover2TurnDriver {
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
+    fsp_current_epoch_confirmed: Vec<NodeAddr>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
 }
@@ -33,6 +34,7 @@ impl PacketMover2TurnDriver {
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
             fsp_coord_warmups: Vec::new(),
+            fsp_current_epoch_confirmed: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
         }
@@ -196,7 +198,7 @@ impl PacketMover2TurnDriver {
         sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
         now: std::time::Instant,
-    ) -> Option<FspReceiveLifecycle> {
+    ) -> Option<bool> {
         self.mover.record_authenticated_fsp_session(
             owner,
             previous_hop,
@@ -211,7 +213,7 @@ impl PacketMover2TurnDriver {
     fn record_fsp_session_ingress_activity(
         &mut self,
         ingress: &PacketMover2FspSessionIngress,
-    ) -> FspReceiveLifecycle {
+    ) -> bool {
         let body_len = ingress
             .receive_sync
             .plaintext_len
@@ -225,7 +227,7 @@ impl PacketMover2TurnDriver {
             ingress.activity_tick,
             std::time::Instant::now(),
         )
-        .unwrap_or_default()
+        .unwrap_or(false)
     }
 
     pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
@@ -274,6 +276,9 @@ impl PacketMover2TurnDriver {
         report.set_fmp_ingress_receipts(std::mem::take(&mut self.fmp_ingress_receipts));
         report.set_fmp_link_ingress(std::mem::take(&mut self.fmp_link_ingress));
         report.set_fsp_coord_warmups(std::mem::take(&mut self.fsp_coord_warmups));
+        report.set_fsp_current_epoch_confirmed(std::mem::take(
+            &mut self.fsp_current_epoch_confirmed,
+        ));
         report.set_fsp_local_session_ingress(std::mem::take(&mut self.fsp_local_session_ingress));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
         report.transport_planned = transport_output.plans().len();
@@ -548,6 +553,7 @@ impl PacketMover2TurnDriver {
         self.fmp_ingress_receipts.clear();
         self.fmp_link_ingress.clear();
         self.fsp_coord_warmups.clear();
+        self.fsp_current_epoch_confirmed.clear();
         self.fsp_local_session_ingress.clear();
         self.fsp_session_ingress.clear();
     }
@@ -745,9 +751,10 @@ impl PacketMover2TurnDriver {
             match output.target {
                 OutputTarget::SessionPayload { .. } => {
                     match PacketMover2FspSessionIngress::from_output(output) {
-                        Ok(mut ingress) => {
-                            let lifecycle = self.record_fsp_session_ingress_activity(&ingress);
-                            ingress.set_lifecycle(lifecycle);
+                        Ok(ingress) => {
+                            if self.record_fsp_session_ingress_activity(&ingress) {
+                                self.fsp_current_epoch_confirmed.push(ingress.source_addr());
+                            }
                             self.fsp_session_ingress.push(ingress);
                         }
                         Err(output) => {

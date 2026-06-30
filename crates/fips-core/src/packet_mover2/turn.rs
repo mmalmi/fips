@@ -362,7 +362,6 @@ pub(crate) struct PacketMover2FspSessionIngress {
     previous_hop_addr: NodeAddr,
     ce_flag: bool,
     receive_sync: FspReceiveSync,
-    lifecycle: FspReceiveLifecycle,
     activity_tick: Option<ActivityTick>,
     timestamp_ms: u32,
     msg_type: u8,
@@ -417,7 +416,6 @@ impl PacketMover2FspSessionIngress {
             previous_hop_addr,
             ce_flag,
             receive_sync,
-            lifecycle: FspReceiveLifecycle::default(),
             activity_tick,
             timestamp_ms,
             msg_type,
@@ -428,10 +426,6 @@ impl PacketMover2FspSessionIngress {
 
     pub(crate) fn source_addr(&self) -> NodeAddr {
         self.source_addr
-    }
-
-    pub(crate) fn set_lifecycle(&mut self, lifecycle: FspReceiveLifecycle) {
-        self.lifecycle = lifecycle;
     }
 
     pub(crate) fn previous_hop_addr(&self) -> NodeAddr {
@@ -469,7 +463,6 @@ impl PacketMover2FspSessionIngress {
         crate::PeerIdentity,
         NodeAddr,
         bool,
-        FspReceiveLifecycle,
         Option<ActivityTick>,
         u32,
         u8,
@@ -481,7 +474,6 @@ impl PacketMover2FspSessionIngress {
             self.source_peer,
             self.previous_hop_addr,
             self.ce_flag,
-            self.lifecycle,
             self.activity_tick,
             self.timestamp_ms,
             self.msg_type,
@@ -498,6 +490,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
+    fsp_current_epoch_confirmed: Vec<NodeAddr>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
@@ -523,6 +516,7 @@ impl PacketMover2LiveNodeTurn {
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
             fsp_coord_warmups: Vec::new(),
+            fsp_current_epoch_confirmed: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
@@ -595,6 +589,18 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn take_fsp_coord_warmups(&mut self) -> Vec<PacketMover2FspCoordWarmup> {
         std::mem::take(&mut self.fsp_coord_warmups)
+    }
+
+    pub(crate) fn fsp_current_epoch_confirmed(&self) -> &[NodeAddr] {
+        &self.fsp_current_epoch_confirmed
+    }
+
+    fn set_fsp_current_epoch_confirmed(&mut self, confirmed: Vec<NodeAddr>) {
+        self.fsp_current_epoch_confirmed = confirmed;
+    }
+
+    pub(crate) fn take_fsp_current_epoch_confirmed(&mut self) -> Vec<NodeAddr> {
+        std::mem::take(&mut self.fsp_current_epoch_confirmed)
     }
 
     pub(crate) fn fsp_local_session_ingress(&self) -> &[PacketMover2FspLocalSessionIngress] {
@@ -701,6 +707,7 @@ impl PacketMover2LiveNodeTurn {
             || !self.fmp_ingress_receipts.is_empty()
             || !self.fmp_link_ingress.is_empty()
             || !self.fsp_coord_warmups.is_empty()
+            || !self.fsp_current_epoch_confirmed.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
             || !self.fsp_session_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()

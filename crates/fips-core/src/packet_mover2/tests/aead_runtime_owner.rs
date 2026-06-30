@@ -1369,10 +1369,7 @@
                 Some(ActivityTick::new(1_030)),
                 std::time::Instant::now(),
             ),
-            Some(FspReceiveLifecycle {
-                registry_sync_required: true,
-                current_epoch_confirmed: true,
-            })
+            Some(true)
         );
 
         let batch = mover.collect_fsp_mmp_reports(std::time::Instant::now());
@@ -1408,6 +1405,66 @@
     }
 
     #[test]
+    fn fsp_owner_current_epoch_confirmation_is_one_shot_per_generation() {
+        let owner = fsp_owner(84);
+        let mut mover = mover();
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_fsp_session_start_ms(1_000)
+                .with_fsp_send_headers(0, 0),
+        );
+        let sync = FspReceiveSync {
+            counter: 1,
+            received_k_bit: false,
+            timestamp: 10,
+            plaintext_len: FSP_INNER_HEADER_SIZE,
+            ce_flag: false,
+            path_mtu: u16::MAX,
+            spin_bit: false,
+        };
+
+        assert_eq!(
+            mover.record_authenticated_fsp_session(
+                owner,
+                owner.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                sync,
+                Some(ActivityTick::new(1_010)),
+                std::time::Instant::now(),
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            mover.record_authenticated_fsp_session(
+                owner,
+                owner.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                FspReceiveSync { counter: 2, ..sync },
+                Some(ActivityTick::new(1_020)),
+                std::time::Instant::now(),
+            ),
+            Some(false)
+        );
+
+        mover.owner_mut(owner).unwrap().rekey(2);
+        assert_eq!(
+            mover.record_authenticated_fsp_session(
+                owner,
+                owner.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                FspReceiveSync { counter: 3, ..sync },
+                Some(ActivityTick::new(1_030)),
+                std::time::Instant::now(),
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         let owner = fsp_owner(81);
         let mut mover = mover();
@@ -1438,10 +1495,7 @@
                 Some(ActivityTick::new(1_040)),
                 std::time::Instant::now(),
             ),
-            Some(FspReceiveLifecycle {
-                registry_sync_required: true,
-                current_epoch_confirmed: true,
-            })
+            Some(true)
         );
 
         let rr = crate::mmp::report::ReceiverReport {

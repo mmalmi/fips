@@ -87,13 +87,6 @@ pub(crate) struct FspReceiveSync {
     pub(crate) spin_bit: bool,
 }
 
-/// Owner-side lifecycle signal emitted after authenticated FSP retirement.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct FspReceiveLifecycle {
-    pub(crate) registry_sync_required: bool,
-    pub(crate) current_epoch_confirmed: bool,
-}
-
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum TransportPath {
     Live {
