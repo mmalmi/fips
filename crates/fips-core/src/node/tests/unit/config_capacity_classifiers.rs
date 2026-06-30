@@ -81,7 +81,7 @@ async fn fmp_recovery_rekey_epoch_change_clears_stale_fsp_session() {
             true,
         ),
     );
-    assert!(node.sessions.contains_key(&peer_node_addr));
+    assert!(node.sessions.get(&peer_node_addr).is_some());
 
     assert!(node.initiate_rekey(&peer_node_addr).await);
     let rekey_msg1 = node
@@ -111,7 +111,7 @@ async fn fmp_recovery_rekey_epoch_change_clears_stale_fsp_session() {
         "FMP recovery rekey should still complete and await cutover"
     );
     assert!(
-        !node.sessions.contains_key(&peer_node_addr),
+        node.sessions.get(&peer_node_addr).is_none(),
         "old FSP session must be removed when FMP rekey learns a new peer startup epoch"
     );
 

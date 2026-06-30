@@ -885,7 +885,7 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
             true,
         ),
     );
-    assert!(node.sessions.contains_key(&peer_node_addr));
+    assert!(node.sessions.get(&peer_node_addr).is_some());
 
     let new_transport_id = TransportId::new(2);
     let new_link_id = LinkId::new(11);
@@ -928,7 +928,7 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
     assert_eq!(active.link_id(), new_link_id);
     assert_eq!(active.remote_epoch(), Some([0x22; 8]));
     assert!(
-        !node.sessions.contains_key(&peer_node_addr),
+        node.sessions.get(&peer_node_addr).is_none(),
         "old FSP session must be removed when the peer's startup epoch changes"
     );
 }

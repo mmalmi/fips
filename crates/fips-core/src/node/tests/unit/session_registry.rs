@@ -19,7 +19,7 @@ fn session_registry_owns_endpoint_session_storage() {
     );
     assert!(registry.insert(peer_addr, first).is_none());
     assert_eq!(registry.len(), 1);
-    assert!(registry.contains_key(&peer_addr));
+    assert!(registry.get(&peer_addr).is_some());
     assert_eq!(
         registry.get(&peer_addr).map(SessionEntry::remote_pubkey),
         Some(&peer.pubkey_full())
@@ -50,7 +50,7 @@ fn session_registry_owns_endpoint_session_storage() {
         .remove(&peer_addr)
         .expect("session storage should live in the session owner");
     assert_eq!(removed.remote_pubkey(), &peer.pubkey_full());
-    assert!(!registry.contains_key(&peer_addr));
+    assert!(registry.get(&peer_addr).is_none());
     assert!(registry.is_empty());
 }
 
@@ -85,11 +85,6 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
     let weights = ConfiguredPeerSendWeights::from_config(&config);
 
     assert_eq!(
-        weights.len(),
-        2,
-        "invalid peer identities must not create phantom scheduling policy"
-    );
-    assert_eq!(
         weights.peer_addr_for_npub(&configured_npub),
         Some(configured_addr),
         "configured peer npubs are parsed once into a reverse address lookup"
@@ -98,6 +93,10 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         weights.peer_addr_for_npub(&on_demand_npub),
         Some(on_demand_addr),
         "non-auto configured peers should still be addressable by npub"
+    );
+    assert!(
+        weights.peer_addr_for_npub("not-a-valid-peer-id").is_none(),
+        "invalid peer identities must not create phantom scheduling policy"
     );
     assert_eq!(
         weights

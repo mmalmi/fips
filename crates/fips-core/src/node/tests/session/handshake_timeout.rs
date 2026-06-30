@@ -117,14 +117,14 @@ async fn test_session_handshake_timeout() {
     );
     node.sessions.insert(dest_addr, entry);
 
-    assert!(node.sessions.contains_key(&dest_addr));
+    assert!(node.sessions.get(&dest_addr).is_some());
 
     // Before timeout: session should remain
     let timeout_secs = node.config.node.rate_limit.handshake_timeout_secs;
     let before_timeout = 1000 + timeout_secs * 1000 - 1;
     node.resend_pending_session_handshakes(before_timeout).await;
     assert!(
-        node.sessions.contains_key(&dest_addr),
+        node.sessions.get(&dest_addr).is_some(),
         "Session should survive before timeout"
     );
 
@@ -132,7 +132,7 @@ async fn test_session_handshake_timeout() {
     let after_timeout = 1000 + timeout_secs * 1000 + 1;
     node.resend_pending_session_handshakes(after_timeout).await;
     assert!(
-        !node.sessions.contains_key(&dest_addr),
+        node.sessions.get(&dest_addr).is_none(),
         "Timed-out session should be removed"
     );
 }
@@ -161,14 +161,14 @@ async fn test_session_awaiting_msg3_timeout() {
     );
     node.sessions.insert(src_addr, entry);
 
-    assert!(node.sessions.contains_key(&src_addr));
+    assert!(node.sessions.get(&src_addr).is_some());
 
     // After timeout: session should be removed
     let timeout_secs = node.config.node.rate_limit.handshake_timeout_secs;
     let after_timeout = 1000 + timeout_secs * 1000 + 1;
     node.resend_pending_session_handshakes(after_timeout).await;
     assert!(
-        !node.sessions.contains_key(&src_addr),
+        node.sessions.get(&src_addr).is_none(),
         "Timed-out AwaitingMsg3 session should be removed"
     );
 }

@@ -27,11 +27,6 @@ impl SessionRegistry {
         self.sessions.get_mut(node_addr)
     }
 
-    #[cfg(test)]
-    pub(in crate::node) fn contains_key(&self, node_addr: &NodeAddr) -> bool {
-        self.sessions.contains_key(node_addr)
-    }
-
     pub(in crate::node) fn is_empty(&self) -> bool {
         self.sessions.is_empty()
     }
@@ -97,11 +92,6 @@ impl ConfiguredPeerSendWeights {
         self.peer_configs
             .iter()
             .filter(|(_, peer)| peer.is_auto_connect())
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn len(&self) -> usize {
-        self.peer_configs.len()
     }
 }
 
