@@ -157,6 +157,7 @@ pub(crate) struct OutboundPacket {
     payload_transform: OutboundPayloadTransform,
     fsp_cleartext_prefix: Vec<u8>,
     fsp_auto_coords_warmup: bool,
+    fsp_send_receipt: Option<PacketMover2FspSendReceipt>,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -182,6 +183,7 @@ impl OutboundPacket {
             payload_transform: OutboundPayloadTransform::None,
             fsp_cleartext_prefix: Vec::new(),
             fsp_auto_coords_warmup: true,
+            fsp_send_receipt: None,
             activity_tick: None,
             payload: payload.into(),
         }
@@ -203,6 +205,7 @@ impl OutboundPacket {
             payload_transform: OutboundPayloadTransform::None,
             fsp_cleartext_prefix: Vec::new(),
             fsp_auto_coords_warmup: true,
+            fsp_send_receipt: None,
             activity_tick: None,
             payload: payload.into(),
         }
@@ -228,6 +231,11 @@ impl OutboundPacket {
 
     pub(crate) fn without_fsp_auto_coords_warmup(mut self) -> Self {
         self.fsp_auto_coords_warmup = false;
+        self
+    }
+
+    fn with_fsp_send_receipt(mut self, receipt: PacketMover2FspSendReceipt) -> Self {
+        self.fsp_send_receipt = Some(receipt);
         self
     }
 

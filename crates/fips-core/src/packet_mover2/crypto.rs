@@ -466,6 +466,7 @@ impl StatelessAeadOpenWorker {
                     activity_tick: reservation.activity_tick,
                     fmp_timestamp_ms: reservation.fmp_timestamp_ms,
                     source_wire_len: Some(source_wire_len),
+                    fsp_send_receipt: None,
                     payload: work.work.packet.payload,
                 })
             }
@@ -605,19 +606,20 @@ impl StatelessAeadSealWorker {
                         activity_tick: reservation.activity_tick,
                         fmp_timestamp_ms: reservation.fmp_timestamp_ms,
                         source_wire_len: None,
+                        fsp_send_receipt: work.work.packet.fsp_send_receipt,
                         payload: work.work.packet.payload,
                     }),
                     OutboundPostSeal::FmpWrap(route) => {
-                        let mut packet =
-                            route.into_fmp_outbound(work.work.packet.class, work.work.packet.payload);
+                        let mut packet = route
+                            .into_fmp_outbound(work.work.packet.class, work.work.packet.payload)
+                            .with_fsp_send_receipt(PacketMover2FspSendReceipt::new(
+                                reservation.owner,
+                                reservation.counter,
+                            ));
                         if let Some(tick) = reservation.activity_tick {
                             packet = packet.with_activity_tick(tick);
                         }
-                        CryptoResult::Outbound(WrappedOutboundPacket::new(
-                            packet,
-                            reservation.owner,
-                            reservation.counter,
-                        ))
+                        CryptoResult::Outbound(packet)
                     }
                 }
             }

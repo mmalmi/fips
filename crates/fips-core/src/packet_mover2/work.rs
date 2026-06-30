@@ -26,7 +26,7 @@ pub(crate) struct CryptoCompletion {
 pub(crate) enum CryptoResult {
     Opened(PacketOutput),
     Sealed(PacketOutput),
-    Outbound(WrappedOutboundPacket),
+    Outbound(OutboundPacket),
     Failed(CryptoFailureKind),
 }
 
@@ -51,6 +51,7 @@ pub(crate) struct PacketOutput {
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
     source_wire_len: Option<usize>,
+    fsp_send_receipt: Option<PacketMover2FspSendReceipt>,
     payload: PacketBuffer,
 }
 
@@ -119,6 +120,10 @@ impl PacketOutput {
         self.fmp_timestamp_ms
     }
 
+    pub(crate) fn fsp_send_receipt(&self) -> Option<PacketMover2FspSendReceipt> {
+        self.fsp_send_receipt
+    }
+
     pub(crate) fn into_payload(self) -> PacketBuffer {
         self.payload
     }
@@ -139,12 +144,16 @@ impl PacketOutput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2WrappedOutboundReceipt {
+pub(crate) struct PacketMover2FspSendReceipt {
     owner: OwnerId,
     counter: u64,
 }
 
-impl PacketMover2WrappedOutboundReceipt {
+impl PacketMover2FspSendReceipt {
+    pub(crate) fn new(owner: OwnerId, counter: u64) -> Self {
+        Self { owner, counter }
+    }
+
     pub(crate) fn owner(self) -> OwnerId {
         self.owner
     }
@@ -155,32 +164,9 @@ impl PacketMover2WrappedOutboundReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct WrappedOutboundPacket {
-    packet: OutboundPacket,
-    receipt: PacketMover2WrappedOutboundReceipt,
-}
-
-impl WrappedOutboundPacket {
-    pub(crate) fn new(packet: OutboundPacket, owner: OwnerId, counter: u64) -> Self {
-        Self {
-            packet,
-            receipt: PacketMover2WrappedOutboundReceipt { owner, counter },
-        }
-    }
-
-    pub(crate) fn receipt(&self) -> PacketMover2WrappedOutboundReceipt {
-        self.receipt
-    }
-
-    pub(crate) fn into_packet(self) -> OutboundPacket {
-        self.packet
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RetiredPacket {
     Output(PacketOutput),
-    Outbound(WrappedOutboundPacket),
+    Outbound(OutboundPacket),
     Drop(PacketDrop),
 }
 

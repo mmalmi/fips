@@ -476,7 +476,6 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
-    wrapped_outbound_receipts: Vec<PacketMover2WrappedOutboundReceipt>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
     endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
@@ -503,7 +502,6 @@ impl PacketMover2LiveNodeTurn {
             fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             fsp_session_ingress: Vec::new(),
-            wrapped_outbound_receipts: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
             endpoint_command_drops: Vec::new(),
@@ -603,26 +601,6 @@ impl PacketMover2LiveNodeTurn {
         std::mem::take(&mut self.fsp_session_ingress)
     }
 
-    fn set_wrapped_outbound_receipts(
-        &mut self,
-        receipts: Vec<PacketMover2WrappedOutboundReceipt>,
-    ) {
-        self.wrapped_outbound_receipts = receipts;
-    }
-
-    pub(crate) fn take_wrapped_outbound_receipts(
-        &mut self,
-    ) -> Vec<PacketMover2WrappedOutboundReceipt> {
-        std::mem::take(&mut self.wrapped_outbound_receipts)
-    }
-
-    pub(crate) fn extend_wrapped_outbound_receipts(
-        &mut self,
-        receipts: impl IntoIterator<Item = PacketMover2WrappedOutboundReceipt>,
-    ) {
-        self.wrapped_outbound_receipts.extend(receipts);
-    }
-
     pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
         &self.tun_outbound_drops
     }
@@ -720,7 +698,6 @@ impl PacketMover2LiveNodeTurn {
             || !self.fsp_coord_warmups.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
             || !self.fsp_session_ingress.is_empty()
-            || !self.wrapped_outbound_receipts.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_command_drops.is_empty()

@@ -671,6 +671,7 @@
             activity_tick: None,
             source_wire_len: None,
             fmp_timestamp_ms: None,
+            fsp_send_receipt: None,
             payload: payload.into(),
         }
     }
@@ -697,6 +698,7 @@
             activity_tick: None,
             source_wire_len: None,
             fmp_timestamp_ms: None,
+            fsp_send_receipt: None,
             payload: payload.into(),
         }
     }

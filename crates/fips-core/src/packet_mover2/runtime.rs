@@ -9,7 +9,6 @@ pub(crate) struct PacketMover2TurnDriver {
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
     output_rewrite_buffer: Vec<PacketOutput>,
-    wrapped_outbound_receipts: Vec<PacketMover2WrappedOutboundReceipt>,
     retired: Vec<RetiredPacket>,
     transport_output: PacketMover2TransportSendPlanOutput,
     drops: Vec<PacketDrop>,
@@ -32,7 +31,6 @@ impl PacketMover2TurnDriver {
             output_drops: Vec::new(),
             outputs: Vec::new(),
             output_rewrite_buffer: Vec::new(),
-            wrapped_outbound_receipts: Vec::new(),
             retired: Vec::new(),
             transport_output: PacketMover2TransportSendPlanOutput::new(),
             drops: Vec::new(),
@@ -101,10 +99,6 @@ impl PacketMover2TurnDriver {
         report.set_fsp_coord_warmups(std::mem::take(&mut self.fsp_coord_warmups));
         report.set_fsp_local_session_ingress(std::mem::take(&mut self.fsp_local_session_ingress));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
-        report.set_wrapped_outbound_receipts(std::mem::take(
-            &mut self.wrapped_outbound_receipts,
-        ));
-
         report.transport_planned = transport_output.plans().len();
         let dropped_before = report.output_drops.len();
         report.transport_sent = {
@@ -378,7 +372,6 @@ impl PacketMover2TurnDriver {
     fn reset_turn_buffers(&mut self) {
         self.outputs.clear();
         self.output_rewrite_buffer.clear();
-        self.wrapped_outbound_receipts.clear();
         self.retired.clear();
         self.transport_output.clear();
         self.drops.clear();
@@ -735,8 +728,7 @@ impl PacketMover2TurnDriver {
                     self.outputs.push(output);
                 }
                 RetiredPacket::Outbound(packet) => {
-                    self.wrapped_outbound_receipts.push(packet.receipt());
-                    self.admit_outbound_packet(packet.into_packet(), &mut summary);
+                    self.admit_outbound_packet(packet, &mut summary);
                 }
                 RetiredPacket::Drop(_) => {}
             }
