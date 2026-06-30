@@ -117,6 +117,82 @@
         assert!(second_count > 0, "second shard should be fed");
     }
 
+    #[test]
+    fn aead_completions_return_through_owner_shard_queues() {
+        let mut mover = PacketMover2::new(AdmissionConfig::new(16, 16));
+        let shard_count = mover.shards.len();
+        if shard_count < 2 {
+            return;
+        }
+
+        let first = fsp_owner(20_000);
+        let first_shard = packet_mover2_owner_shard_index(first, shard_count);
+        let second = (20_001..30_000)
+            .map(fsp_owner)
+            .find(|owner| packet_mover2_owner_shard_index(*owner, shard_count) != first_shard)
+            .expect("test range should contain an owner on a distinct shard");
+        let key = 71;
+        mover.register_owner(first, OwnerConfig::new(1, 16));
+        mover.register_owner(second, OwnerConfig::new(1, 16));
+        mover
+            .owner_mut(first)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+        mover
+            .owner_mut(second)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        mover
+            .submit_socket_packet(encrypted_fsp_packet(
+                first,
+                1,
+                1,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+                key,
+            ))
+            .unwrap();
+        mover
+            .submit_socket_packet(encrypted_fsp_packet(
+                second,
+                1,
+                101,
+                PacketClass::Bulk,
+                OutputTarget::Tun,
+                key,
+            ))
+            .unwrap();
+
+        let mut work = dispatch_available(&mut mover, 8);
+        assert_eq!(work.len(), 2);
+        let second_work = work
+            .iter()
+            .position(|work| work.reservation.owner == second)
+            .map(|pos| work.remove(pos))
+            .unwrap();
+        let first_work = work.pop().unwrap();
+        assert_eq!(
+            first_work.reservation.owner_shard,
+            packet_mover2_owner_shard_index(first, shard_count)
+        );
+        assert_eq!(
+            second_work.reservation.owner_shard,
+            packet_mover2_owner_shard_index(second, shard_count)
+        );
+
+        let mut retired = Vec::new();
+        mover.queue_completion(open_aead_completion(second_work, key));
+        assert_eq!(mover.retire_queued_completions_into(1, &mut retired), 1);
+        assert_eq!(retired.len(), 1);
+        assert!(matches!(&retired[0], RetiredPacket::Output(output) if output.owner == second));
+
+        mover.queue_completion(open_aead_completion(first_work, key));
+        assert_eq!(mover.retire_queued_completions_into(1, &mut retired), 1);
+        assert_eq!(retired.len(), 2);
+        assert!(matches!(&retired[1], RetiredPacket::Output(output) if output.owner == first));
+    }
+
     #[derive(Debug, Default)]
     struct RecordingChunkExecutor {
         inline: InlinePacketMover2CryptoExecutor,
@@ -548,6 +624,7 @@
                 PreparedCryptoWork::Completed(CryptoCompletion {
                     reservation: OwnerReservation {
                         owner,
+                        owner_shard: 0,
                         generation: 1,
                         order: OrderToken(counter),
                         ingress_seq: counter,

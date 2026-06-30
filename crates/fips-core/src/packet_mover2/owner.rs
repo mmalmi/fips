@@ -429,6 +429,7 @@ pub(crate) struct OrderToken(u64);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OwnerReservation {
     owner: OwnerId,
+    owner_shard: usize,
     generation: u64,
     order: OrderToken,
     ingress_seq: u64,
@@ -445,6 +446,17 @@ pub(crate) struct OwnerReservation {
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
     fsp_timestamp_ms: Option<u32>,
+}
+
+impl OwnerReservation {
+    fn with_owner_shard(mut self, owner_shard: usize) -> Self {
+        self.owner_shard = owner_shard;
+        self
+    }
+
+    fn owner_shard(&self) -> usize {
+        self.owner_shard
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1196,6 +1208,7 @@ impl OwnerState {
         self.next_order = self.next_order.wrapping_add(1);
         Ok(OwnerReservation {
             owner: self.owner,
+            owner_shard: 0,
             generation: self.generation,
             order,
             ingress_seq,
@@ -1262,6 +1275,7 @@ impl OwnerState {
         self.next_order = self.next_order.wrapping_add(1);
         let reservation = OwnerReservation {
             owner: self.owner,
+            owner_shard: 0,
             generation: self.generation,
             order,
             ingress_seq,

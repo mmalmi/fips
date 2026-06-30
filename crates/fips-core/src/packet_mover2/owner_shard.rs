@@ -1,15 +1,19 @@
 #[derive(Debug)]
 struct PacketMover2OwnerShard {
+    index: usize,
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
+    completed: VecDeque<CryptoCompletion>,
     owners: HashMap<OwnerId, OwnerState>,
 }
 
 impl PacketMover2OwnerShard {
-    fn new() -> Self {
+    fn new(index: usize) -> Self {
         Self {
+            index,
             admission: AdmissionQueue::new(),
             outbound_admission: OutboundAdmissionQueue::new(),
+            completed: VecDeque::new(),
             owners: HashMap::new(),
         }
     }
@@ -237,6 +241,7 @@ impl PacketMover2OwnerShard {
 
             match owner.reserve(&queued.packet, queued.ingress_seq) {
                 Ok(reservation) => {
+                    let reservation = reservation.with_owner_shard(self.index);
                     count_fsp_path_open_dispatch(&reservation, fsp_path_open, fsp_path_open_bulk);
                     let open_key = owner.open_key_for_packet(&queued.packet);
                     let work = CryptoWork {
@@ -320,7 +325,9 @@ impl PacketMover2OwnerShard {
                     .get_mut(&owner_id)
                     .expect("outbound owner checked before reservation");
                 match owner.reserve_outbound(queued.packet, ingress_seq) {
-                    Ok(reserved) => reserved,
+                    Ok((reservation, packet)) => {
+                        (reservation.with_owner_shard(self.index), packet)
+                    }
                     Err(error) => {
                         drops.push(PacketDrop {
                             owner: owner_id,
@@ -375,6 +382,22 @@ impl PacketMover2OwnerShard {
                 RetiredPacket::Output(_) => None,
                 RetiredPacket::Outbound(_) => None,
             }));
+    }
+
+    fn queue_completion(&mut self, completion: CryptoCompletion) {
+        self.completed.push_back(completion);
+    }
+
+    fn retire_queued_completion_into(
+        &mut self,
+        retired: &mut Vec<RetiredPacket>,
+        drops: &mut Vec<PacketDrop>,
+    ) -> bool {
+        let Some(completion) = self.completed.pop_front() else {
+            return false;
+        };
+        self.retire_completion_into(completion, retired, drops);
+        true
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {

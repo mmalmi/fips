@@ -9,12 +9,15 @@ pub(crate) struct PacketMover2 {
     next_outbound_seq: u64,
     next_ingress_dispatch_shard: usize,
     next_outbound_dispatch_shard: usize,
+    next_completion_retire_shard: usize,
 }
 
 impl PacketMover2 {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         let shard_count = packet_mover2_owner_shard_count(config);
-        let shards = (0..shard_count).map(|_| PacketMover2OwnerShard::new()).collect();
+        let shards = (0..shard_count)
+            .map(PacketMover2OwnerShard::new)
+            .collect();
         Self {
             config,
             shards,
@@ -25,6 +28,7 @@ impl PacketMover2 {
             next_outbound_seq: 0,
             next_ingress_dispatch_shard: 0,
             next_outbound_dispatch_shard: 0,
+            next_completion_retire_shard: 0,
         }
     }
 
@@ -296,8 +300,61 @@ impl PacketMover2 {
         completion: CryptoCompletion,
         retired: &mut Vec<RetiredPacket>,
     ) {
-        let shard = self.owner_shard_index(completion.reservation.owner);
-        self.shards[shard].retire_completion_into(completion, retired, &mut self.drops);
+        self.queue_completion(completion);
+        self.retire_queued_completions_into(1, retired);
+    }
+
+    fn queue_completion(&mut self, completion: CryptoCompletion) {
+        let shard = completion.reservation.owner_shard();
+        debug_assert_eq!(shard, self.owner_shard_index(completion.reservation.owner));
+        let Some(owner_shard) = self.shards.get_mut(shard) else {
+            let drop =
+                PacketDrop::from_completion(&completion, PacketDropReason::UnknownOwner, None);
+            self.drops.push(drop);
+            return;
+        };
+        owner_shard.queue_completion(completion);
+    }
+
+    fn queue_completion_batch(&mut self, completions: &mut Vec<CryptoCompletion>) -> usize {
+        let count = completions.len();
+        for completion in completions.drain(..) {
+            self.queue_completion(completion);
+        }
+        count
+    }
+
+    fn retire_queued_completions_into(
+        &mut self,
+        limit: usize,
+        retired: &mut Vec<RetiredPacket>,
+    ) -> usize {
+        if limit == 0 || self.shards.is_empty() {
+            return 0;
+        }
+
+        let shard_count = self.shards.len();
+        let mut retired_count = 0usize;
+        let mut start_shard = self.next_completion_retire_shard % shard_count;
+        while retired_count < limit {
+            let mut pass_retired = 0usize;
+            for offset in 0..shard_count {
+                if retired_count >= limit {
+                    break;
+                }
+                let shard = (start_shard + offset) % shard_count;
+                if self.shards[shard].retire_queued_completion_into(retired, &mut self.drops) {
+                    retired_count = retired_count.saturating_add(1);
+                    pass_retired = pass_retired.saturating_add(1);
+                    self.next_completion_retire_shard = (shard + 1) % shard_count;
+                }
+            }
+            if pass_retired == 0 {
+                break;
+            }
+            start_shard = self.next_completion_retire_shard % shard_count;
+        }
+        retired_count
     }
 
     fn run_aead_available_into_with_executor<E>(
@@ -406,7 +463,8 @@ impl PacketMover2 {
         record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
 
         execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
-        self.retire_completion_batch(completion_work, retired);
+        let completed = self.queue_completion_batch(completion_work);
+        self.retire_queued_completions_into(completed, retired);
 
         drops.append(&mut self.drops);
         dispatched_total
@@ -622,15 +680,6 @@ impl PacketMover2 {
         dispatched.min(limit)
     }
 
-    fn retire_completion_batch(
-        &mut self,
-        completions: &mut Vec<CryptoCompletion>,
-        retired: &mut Vec<RetiredPacket>,
-    ) {
-        for completion in completions.drain(..) {
-            self.retire_completion_into(completion, retired);
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

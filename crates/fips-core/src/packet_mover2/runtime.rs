@@ -391,9 +391,10 @@ impl PacketMover2TurnDriver {
         );
         self.reset_turn_buffers();
         let mut summary = PacketMover2RuntimeSummary::default();
-        completions.drain_completions(completion_limit, |completion| {
-            self.collect_completed_aead_output(&mut summary, completion);
+        let queued = completions.drain_completions(completion_limit, |completion| {
+            self.queue_completed_aead_output(&mut summary, completion);
         });
+        self.retire_queued_completed_aead_outputs(queued);
         self.collect_retired_outputs(summary)
     }
 
@@ -775,9 +776,12 @@ impl PacketMover2TurnDriver {
     where
         I: IntoIterator<Item = CryptoCompletion>,
     {
+        let mut queued = 0usize;
         for completion in completions {
-            self.collect_completed_aead_output(&mut summary, completion);
+            self.queue_completed_aead_output(&mut summary, completion);
+            queued = queued.saturating_add(1);
         }
+        self.retire_queued_completed_aead_outputs(queued);
         self.collect_retired_outputs(summary)
     }
 
@@ -786,14 +790,23 @@ impl PacketMover2TurnDriver {
         summary: &mut PacketMover2RuntimeSummary,
         completion: CryptoCompletion,
     ) {
-        self.retire_completion_collecting_drops(completion);
+        self.queue_completed_aead_output(summary, completion);
+        self.retire_queued_completed_aead_outputs(1);
+    }
+
+    fn queue_completed_aead_output(
+        &mut self,
+        summary: &mut PacketMover2RuntimeSummary,
+        completion: CryptoCompletion,
+    ) {
+        self.mover.queue_completion(completion);
         summary.completions = summary.completions.saturating_add(1);
     }
 
-    fn retire_completion_collecting_drops(&mut self, completion: CryptoCompletion) {
+    fn retire_queued_completed_aead_outputs(&mut self, limit: usize) {
         let retired_start = self.retired.len();
         self.mover
-            .retire_completion_into(completion, &mut self.retired);
+            .retire_queued_completions_into(limit, &mut self.retired);
         let mut mover_drops = self.mover.drain_drops();
         let emitted_drop_start = self.drops.len();
         self.drops.append(&mut mover_drops);
