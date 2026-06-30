@@ -14,6 +14,12 @@
 //! The core invariant is simple: owners reserve replay, order, generation, and
 //! in-flight state before crypto work leaves the owner; workers only copy/open
 //! bytes and return completions; owners retire those completions in order.
+//!
+//! Worker/shard direction: owner loops, not crypto workers, own replay,
+//! counters, session generation, liveness, path state, and ordered output.
+//! Stateless workers may only execute prepared crypto/send batches and wake the
+//! owner path for ordered retirement. Priority/control/rekey/liveness work must
+//! keep reserved progress outside bulk pressure.
 
 use crate::node::{
     EndpointCommandLane, EndpointDataSend, EndpointEventSender, EndpointSendBatchCommand,

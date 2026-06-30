@@ -235,6 +235,10 @@ pub struct Node {
     /// Canonical packet_mover2 dataplane state owned by the node.
     #[allow(dead_code)]
     packet_mover2: PacketMover2Node,
+    /// Last applied hot-path FSP owner fingerprints. The owner path uses this
+    /// to avoid rebuilding unchanged session routes, keys, and live config on
+    /// every packet turn.
+    packet_mover2_fsp_owner_sync: HashMap<NodeAddr, u64>,
     /// Bounded PM2 bulk UDP send executor used by the live daemon path.
     packet_mover2_transport_send_worker: PacketMover2TransportSendWorkerPool,
 

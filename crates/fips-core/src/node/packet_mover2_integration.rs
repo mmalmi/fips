@@ -10,6 +10,8 @@ use crate::packet_mover2::{
     TransportPath,
 };
 use crate::protocol::SessionMessageType;
+use std::collections::{HashSet, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
 const PACKET_MOVER2_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
@@ -669,7 +671,8 @@ impl Node {
         let next_hop_ready = seed
             .next_hop
             .is_none_or(|next_hop| self.sync_packet_mover2_fmp_owner(&next_hop));
-        self.packet_mover2
+        let synced = self
+            .packet_mover2
             .apply_owner_live_config(seed.owner, seed.config)
             .is_ok()
             && self
@@ -680,12 +683,19 @@ impl Node {
                 .packet_mover2
                 .replace_owner_routes(seed.owner, seed.routes)
                 .is_ok()
-            && next_hop_ready
+            && next_hop_ready;
+        if synced && transfer_coords_warmup {
+            self.refresh_packet_mover2_fsp_owner_sync(node_addr);
+        } else {
+            self.packet_mover2_fsp_owner_sync.remove(node_addr);
+        }
+        synced
     }
 
     pub(in crate::node) fn remove_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) {
         self.packet_mover2
             .unregister_owner(OwnerId::fsp_node(*node_addr));
+        self.packet_mover2_fsp_owner_sync.remove(node_addr);
     }
 
     pub(in crate::node) fn sync_packet_mover2_established_fsp_owners(&mut self) {
@@ -701,8 +711,15 @@ impl Node {
             crate::perf_profile::Event::PacketMover2FspOwnerSyncEstablished,
             established.len() as u64,
         );
+        let established_set: HashSet<NodeAddr> = established.iter().copied().collect();
+        self.packet_mover2_fsp_owner_sync
+            .retain(|node_addr, _| established_set.contains(node_addr));
+
         let mut applied = 0u64;
         for node_addr in established {
+            if !self.packet_mover2_fsp_owner_sync_is_dirty(&node_addr) {
+                continue;
+            }
             if self.sync_packet_mover2_fsp_owner(&node_addr) {
                 applied += 1;
             }
@@ -711,6 +728,104 @@ impl Node {
             crate::perf_profile::Event::PacketMover2FspOwnerSyncApplied,
             applied,
         );
+    }
+
+    fn packet_mover2_fsp_owner_sync_is_dirty(&mut self, node_addr: &NodeAddr) -> bool {
+        let Some(fingerprint) = self.packet_mover2_fsp_owner_sync_fingerprint(node_addr) else {
+            return true;
+        };
+        self.packet_mover2_fsp_owner_sync.get(node_addr).copied() != Some(fingerprint)
+    }
+
+    fn refresh_packet_mover2_fsp_owner_sync(&mut self, node_addr: &NodeAddr) {
+        match self.packet_mover2_fsp_owner_sync_fingerprint(node_addr) {
+            Some(fingerprint) => {
+                self.packet_mover2_fsp_owner_sync
+                    .insert(*node_addr, fingerprint);
+            }
+            None => {
+                self.packet_mover2_fsp_owner_sync.remove(node_addr);
+            }
+        }
+    }
+
+    fn packet_mover2_fsp_owner_sync_fingerprint(&mut self, node_addr: &NodeAddr) -> Option<u64> {
+        // This is the hot-turn bridge while SessionRegistry remains the source
+        // of truth for session/path facts. Keep it in lockstep with every fact
+        // mirrored into the PM2 owner: first-contact/missing map entries,
+        // FSP generation and K-bit, coords warmup transfer, endpoint/TUN MTU,
+        // next-hop owner generation, transport id/address, path MTU, and
+        // liveness-visible spin flags.
+        let (session_start_ms, fsp_k_bit, fsp_spin_bit, coords_warmup_remaining) = {
+            let session = self.sessions.get(node_addr)?;
+            if !session.is_established() {
+                return None;
+            }
+            (
+                session.session_start_ms(),
+                session.current_k_bit(),
+                session.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()),
+                session.coords_warmup_remaining(),
+            )
+        };
+        let tun_max_packet_len = self.packet_mover2_tun_max_packet_len(node_addr);
+        let next_hop = match self.find_next_hop(node_addr) {
+            Some(peer) => {
+                let next_hop_addr = *peer.node_addr();
+                let generation = peer.session_generation();
+                let receiver_idx = peer.their_index().map(|idx| idx.as_u32());
+                let transport_id = peer.transport_id();
+                let remote_addr = peer.current_addr().cloned();
+                let mut fmp_flags = if peer.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()) {
+                    FLAG_SP
+                } else {
+                    0
+                };
+                if peer.current_k_bit() {
+                    fmp_flags |= FLAG_KEY_EPOCH;
+                }
+                match (receiver_idx, transport_id, remote_addr) {
+                    (Some(receiver_idx), Some(transport_id), Some(remote_addr)) => Some((
+                        next_hop_addr,
+                        generation,
+                        receiver_idx,
+                        transport_id,
+                        remote_addr,
+                        fmp_flags,
+                    )),
+                    _ => None,
+                }
+            }
+            None => None,
+        }
+        .map(
+            |(next_hop_addr, generation, receiver_idx, transport_id, remote_addr, fmp_flags)| {
+                let path_mtu = self
+                    .transports
+                    .get(&transport_id)
+                    .map(|transport| transport.link_mtu(&remote_addr))
+                    .unwrap_or_else(|| self.transport_mtu());
+                (
+                    next_hop_addr,
+                    generation,
+                    receiver_idx,
+                    transport_id,
+                    remote_addr,
+                    fmp_flags,
+                    path_mtu,
+                )
+            },
+        );
+
+        let mut hasher = DefaultHasher::new();
+        node_addr.hash(&mut hasher);
+        session_start_ms.hash(&mut hasher);
+        fsp_k_bit.hash(&mut hasher);
+        fsp_spin_bit.hash(&mut hasher);
+        coords_warmup_remaining.hash(&mut hasher);
+        tun_max_packet_len.hash(&mut hasher);
+        next_hop.hash(&mut hasher);
+        Some(hasher.finish())
     }
 
     fn packet_mover2_fmp_owner_seed(

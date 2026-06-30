@@ -1,5 +1,10 @@
 #[derive(Debug)]
 pub(crate) struct PacketMover2 {
+    shard: PacketMover2OwnerShard,
+}
+
+#[derive(Debug)]
+struct PacketMover2OwnerShard {
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
     owners: HashMap<OwnerId, OwnerState>,
@@ -9,6 +14,106 @@ pub(crate) struct PacketMover2 {
 impl PacketMover2 {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
+            shard: PacketMover2OwnerShard::new(config),
+        }
+    }
+
+    pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
+        self.shard.register_owner(owner, config);
+    }
+
+    pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> bool {
+        self.shard.unregister_owner(owner)
+    }
+
+    pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
+        self.shard.has_owner(owner)
+    }
+
+    pub(crate) fn owner_active_path(&self, owner: OwnerId) -> Option<TransportPath> {
+        self.shard.owner_active_path(owner)
+    }
+
+    pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
+        self.shard.owner_mut(owner)
+    }
+
+    pub(crate) fn submit_socket_packet(
+        &mut self,
+        packet: SocketPacket,
+    ) -> Result<u64, AdmissionDrop> {
+        self.shard.submit_socket_packet(packet)
+    }
+
+    fn submit_outbound_packet(
+        &mut self,
+        packet: OutboundPacket,
+    ) -> Result<u64, OutboundAdmissionDrop> {
+        self.shard.submit_outbound_packet(packet)
+    }
+
+    fn dispatch_available_into(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<CryptoWork>,
+    ) -> usize {
+        self.shard.dispatch_available_into(limit, work)
+    }
+
+    fn dispatch_outbound_available_into(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<OutboundCryptoWork>,
+    ) -> usize {
+        self.shard.dispatch_outbound_available_into(limit, work)
+    }
+
+    fn retire_completion(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
+        self.shard.retire_completion(completion)
+    }
+
+    fn run_aead_available_into_with_executor<E>(
+        &mut self,
+        limit: usize,
+        open_work: &mut Vec<CryptoWork>,
+        seal_work: &mut Vec<OutboundCryptoWork>,
+        prepared_work: &mut Vec<PreparedCryptoWork>,
+        completion_work: &mut Vec<CryptoCompletion>,
+        retired: &mut Vec<RetiredPacket>,
+        drops: &mut Vec<PacketDrop>,
+        executor: &mut E,
+    ) -> usize
+    where
+        E: PacketMover2CryptoExecutor,
+    {
+        self.shard.run_aead_available_into_with_executor(
+            limit,
+            open_work,
+            seal_work,
+            prepared_work,
+            completion_work,
+            retired,
+            drops,
+            executor,
+        )
+    }
+
+    pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
+        self.shard.drain_drops()
+    }
+
+    pub(crate) fn admission_queue_lens(&self) -> (usize, usize) {
+        self.shard.admission_queue_lens()
+    }
+
+    pub(crate) fn outbound_admission_queue_lens(&self) -> (usize, usize) {
+        self.shard.outbound_admission_queue_lens()
+    }
+}
+
+impl PacketMover2OwnerShard {
+    fn new(config: AdmissionConfig) -> Self {
+        Self {
             admission: AdmissionQueue::new(config),
             outbound_admission: OutboundAdmissionQueue::new(config),
             owners: HashMap::new(),
@@ -16,25 +121,25 @@ impl PacketMover2 {
         }
     }
 
-    pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
+    fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
         self.owners.insert(owner, OwnerState::new(owner, config));
     }
 
-    pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> bool {
+    fn unregister_owner(&mut self, owner: OwnerId) -> bool {
         self.owners.remove(&owner).is_some()
     }
 
-    pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
+    fn has_owner(&self, owner: OwnerId) -> bool {
         self.owners.contains_key(&owner)
     }
 
-    pub(crate) fn owner_active_path(&self, owner: OwnerId) -> Option<TransportPath> {
+    fn owner_active_path(&self, owner: OwnerId) -> Option<TransportPath> {
         self.owners
             .get(&owner)
             .and_then(OwnerState::active_path)
     }
 
-    pub(crate) fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
+    fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.owners.get_mut(&owner)
     }
 
@@ -42,10 +147,7 @@ impl PacketMover2 {
         self.owners.get(&owner).and_then(OwnerState::crypto_keys)
     }
 
-    pub(crate) fn submit_socket_packet(
-        &mut self,
-        packet: SocketPacket,
-    ) -> Result<u64, AdmissionDrop> {
+    fn submit_socket_packet(&mut self, packet: SocketPacket) -> Result<u64, AdmissionDrop> {
         match self.admission.admit(packet) {
             Ok(seq) => Ok(seq),
             Err(drop) => {
@@ -417,8 +519,19 @@ impl PacketMover2 {
         dispatched_total
     }
 
-    pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
+    fn drain_drops(&mut self) -> Vec<PacketDrop> {
         std::mem::take(&mut self.drops)
+    }
+
+    fn admission_queue_lens(&self) -> (usize, usize) {
+        (self.admission.priority.len(), self.admission.bulk.len())
+    }
+
+    fn outbound_admission_queue_lens(&self) -> (usize, usize) {
+        (
+            self.outbound_admission.priority.len(),
+            self.outbound_admission.bulk.len(),
+        )
     }
 
     fn prepare_seal_work(
