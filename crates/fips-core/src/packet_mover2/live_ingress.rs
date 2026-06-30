@@ -435,7 +435,11 @@ impl<'a> PacketMover2FmpPacketRxSource<'a> {
         std::mem::take(&mut self.control_ingress)
     }
 
-    fn push_packet<F>(&mut self, packet: ReceivedPacket, push: &mut F) -> bool
+    fn push_packet<F>(
+        control_ingress: &mut Vec<PacketMover2FmpControlIngress>,
+        packet: ReceivedPacket,
+        push: &mut F,
+    ) -> bool
     where
         F: FnMut(PacketMover2RawIngress),
     {
@@ -452,8 +456,7 @@ impl<'a> PacketMover2FmpPacketRxSource<'a> {
                 true
             }
             LiveFmpPacketClass::Control { phase } => {
-                self.control_ingress
-                    .push(PacketMover2FmpControlIngress::new(phase, packet));
+                control_ingress.push(PacketMover2FmpControlIngress::new(phase, packet));
                 false
             }
             LiveFmpPacketClass::RawDrop => {
@@ -473,16 +476,24 @@ impl PacketMover2RawIngressSource for PacketMover2FmpPacketRxSource<'_> {
         F: FnMut(PacketMover2RawIngress),
     {
         let mut drained = 0;
-        while drained < limit {
-            let Some(packet) = self.first.take().or_else(|| self.rx.try_recv().ok()) else {
-                break;
-            };
-            let keep_draining = self.push_packet(packet, &mut push);
+        let Self {
+            rx,
+            first,
+            control_ingress,
+        } = self;
+
+        if drained < limit
+            && let Some(packet) = first.take()
+        {
+            let keep_draining = Self::push_packet(control_ingress, packet, &mut push);
             drained += 1;
             if !keep_draining {
-                break;
+                return drained;
             }
         }
+        drained += rx.drain_ready(limit.saturating_sub(drained), |packet| {
+            Self::push_packet(control_ingress, packet, &mut push)
+        });
         drained
     }
 }

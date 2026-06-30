@@ -463,6 +463,134 @@ fn packet_rx_priority_ready_includes_pending_batch_tail() {
     assert_eq!(rx.priority_ready_packets(), 0);
 }
 
+#[test]
+fn packet_rx_drain_ready_drains_bulk_batch_tail_in_one_call() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send_batch(vec![
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        ),
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        ),
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr,
+            vec![0xcc; PRIORITY_PACKET_MAX_LEN + 3],
+        ),
+    ])
+    .expect("bulk batch send should succeed");
+
+    let mut drained = Vec::new();
+    assert_eq!(
+        rx.drain_ready(2, |packet| {
+            drained.push(packet.data[0]);
+            true
+        }),
+        2
+    );
+    assert_eq!(drained, vec![0xaa, 0xbb]);
+    assert_eq!(
+        tx.queued_packets(),
+        0,
+        "dequeued batch tail should be rx-loop-owned, not channel-owned"
+    );
+    assert_eq!(tx.bulk_queued_packets(), 0);
+    assert_eq!(rx.try_recv().unwrap().data[0], 0xcc);
+}
+
+#[test]
+fn packet_rx_drain_ready_leaves_tail_when_consumer_stops() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send_batch(vec![
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        ),
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        ),
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr,
+            vec![0xcc; PRIORITY_PACKET_MAX_LEN + 3],
+        ),
+    ])
+    .expect("bulk batch send should succeed");
+
+    let mut drained = Vec::new();
+    assert_eq!(
+        rx.drain_ready(8, |packet| {
+            let byte = packet.data[0];
+            drained.push(byte);
+            byte != 0xbb
+        }),
+        2
+    );
+    assert_eq!(drained, vec![0xaa, 0xbb]);
+    assert_eq!(rx.try_recv().unwrap().data[0], 0xcc);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[test]
+fn packet_rx_drain_ready_preserves_priority_overtaking_bulk_tail() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send_batch(vec![
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        ),
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        ),
+    ])
+    .expect("bulk batch send should succeed");
+
+    let mut first = Vec::new();
+    assert_eq!(
+        rx.drain_ready(1, |packet| {
+            first.push(packet.data[0]);
+            true
+        }),
+        1
+    );
+    assert_eq!(first, vec![0xaa]);
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        vec![0x11; 32],
+    ))
+    .expect("priority packet send should succeed");
+
+    let mut drained = Vec::new();
+    assert_eq!(
+        rx.drain_ready(8, |packet| {
+            drained.push(packet.data[0]);
+            true
+        }),
+        2
+    );
+    assert_eq!(drained, vec![0x11, 0xbb]);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+}
+
 #[tokio::test]
 async fn packet_channel_priority_overtakes_pending_bulk_batch_tail() {
     let (tx, mut rx) = packet_channel(10);

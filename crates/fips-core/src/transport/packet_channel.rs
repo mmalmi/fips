@@ -977,6 +977,66 @@ impl PacketRx {
         }
     }
 
+    pub(crate) fn drain_ready<F>(&mut self, limit: usize, mut consume: F) -> usize
+    where
+        F: FnMut(ReceivedPacket) -> bool,
+    {
+        let mut drained = 0usize;
+        while drained < limit {
+            if !self.drain_pending_priority(limit, &mut drained, &mut consume) {
+                break;
+            }
+            if drained >= limit {
+                break;
+            }
+
+            if self.should_probe_priority() {
+                match self.priority.try_recv() {
+                    Ok(item) => {
+                        if !self.drain_item(
+                            item,
+                            PacketLane::Priority,
+                            limit,
+                            &mut drained,
+                            &mut consume,
+                        ) {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => {
+                        self.priority_closed = true;
+                    }
+                }
+            }
+            if drained >= limit {
+                break;
+            }
+
+            if !self.drain_pending_bulk(limit, &mut drained, &mut consume) {
+                break;
+            }
+            if drained >= limit {
+                break;
+            }
+
+            match self.bulk.try_recv() {
+                Ok(item) => {
+                    if !self.drain_item(item, PacketLane::Bulk, limit, &mut drained, &mut consume) {
+                        break;
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.bulk_closed = true;
+                    break;
+                }
+            }
+        }
+        drained
+    }
+
     fn packet_from_item(
         &mut self,
         item: PacketQueueItem,
@@ -1011,6 +1071,70 @@ impl PacketRx {
                 Some(packet)
             }
         }
+    }
+
+    fn drain_item<F>(
+        &mut self,
+        item: PacketQueueItem,
+        lane: PacketLane,
+        limit: usize,
+        drained: &mut usize,
+        consume: &mut F,
+    ) -> bool
+    where
+        F: FnMut(ReceivedPacket) -> bool,
+    {
+        if let Some(packet) = self.packet_from_item(item, lane) {
+            *drained += 1;
+            if !consume(packet) {
+                return false;
+            }
+        }
+
+        match lane {
+            PacketLane::Priority => self.drain_pending_priority(limit, drained, consume),
+            PacketLane::Bulk => self.drain_pending_bulk(limit, drained, consume),
+        }
+    }
+
+    fn drain_pending_priority<F>(
+        &mut self,
+        limit: usize,
+        drained: &mut usize,
+        consume: &mut F,
+    ) -> bool
+    where
+        F: FnMut(ReceivedPacket) -> bool,
+    {
+        while *drained < limit {
+            let Some(packet) = Self::take_pending(&mut self.pending_priority) else {
+                return true;
+            };
+            *drained += 1;
+            if !consume(packet) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn drain_pending_bulk<F>(&mut self, limit: usize, drained: &mut usize, consume: &mut F) -> bool
+    where
+        F: FnMut(ReceivedPacket) -> bool,
+    {
+        while *drained < limit {
+            if self.should_probe_priority() {
+                return true;
+            }
+            let Some(packet) = Self::take_pending(&mut self.pending_bulk) else {
+                return true;
+            };
+            *drained += 1;
+            if !consume(packet) {
+                return false;
+            }
+        }
+        true
     }
 
     fn should_probe_priority(&self) -> bool {
