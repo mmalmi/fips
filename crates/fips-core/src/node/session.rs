@@ -166,14 +166,6 @@ impl SessionEntry {
             .expect("session state taken but not restored")
     }
 
-    /// Get mutable access to the session state.
-    #[cfg(test)]
-    pub(crate) fn state_mut(&mut self) -> &mut EndToEndState {
-        self.state
-            .as_mut()
-            .expect("session state taken but not restored")
-    }
-
     /// Replace the session state.
     pub(crate) fn set_state(&mut self, state: EndToEndState) {
         self.state = Some(state);

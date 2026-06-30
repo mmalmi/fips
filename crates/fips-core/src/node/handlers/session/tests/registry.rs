@@ -47,11 +47,17 @@
         counter: u64,
         aad: &[u8],
     ) -> Result<Vec<u8>, NoiseError> {
-        match entry.state_mut() {
-            EndToEndState::Established(session) => {
-                session.decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
+        match entry.take_state() {
+            Some(EndToEndState::Established(mut session)) => {
+                let result = session.decrypt_with_replay_check_and_aad(ciphertext, counter, aad);
+                entry.set_state(EndToEndState::Established(session));
+                result
             }
-            _ => unreachable!("test entry is established"),
+            Some(state) => {
+                entry.set_state(state);
+                unreachable!("test entry is established")
+            }
+            None => unreachable!("test entry state is present"),
         }
     }
 
