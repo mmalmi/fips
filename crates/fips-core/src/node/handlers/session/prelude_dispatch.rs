@@ -83,7 +83,6 @@ impl SessionFspSendContextError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct SessionFspSendContext {
-    pub(in crate::node) timestamp: u32,
     spin_bit: bool,
     current_k_bit: bool,
 }

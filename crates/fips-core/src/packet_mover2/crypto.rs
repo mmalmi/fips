@@ -615,6 +615,7 @@ impl StatelessAeadSealWorker {
                             .with_fsp_send_receipt(PacketMover2FspSendReceipt::new(
                                 reservation.owner,
                                 reservation.counter,
+                                reservation.fsp_timestamp_ms,
                             ));
                         if let Some(tick) = reservation.activity_tick {
                             packet = packet.with_activity_tick(tick);

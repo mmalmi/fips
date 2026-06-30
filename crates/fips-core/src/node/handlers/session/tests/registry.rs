@@ -429,18 +429,15 @@
         let local = Identity::generate();
         let peer = Identity::generate();
         let peer_addr = *peer.node_addr();
-        let now_ms = 0x0102_0304_0506_0708;
         let mut entry = established_entry(&local, &peer);
-        let expected_timestamp = entry.session_timestamp(now_ms);
         entry.init_mmp(&crate::config::SessionMmpConfig::default());
 
         let mut sessions = crate::node::SessionRegistry::default();
         assert!(sessions.insert(peer_addr, entry).is_none());
 
         let context = sessions
-            .session_fsp_send_context(&peer_addr, now_ms)
+            .session_fsp_send_context(&peer_addr)
             .expect("established context");
-        assert_eq!(context.timestamp, expected_timestamp);
         assert_eq!(
             context.inner_flags_byte(),
             FspInnerFlags { spin_bit: false }.to_byte()
@@ -457,7 +454,7 @@
         let mut sessions = crate::node::SessionRegistry::default();
 
         assert_eq!(
-            sessions.session_fsp_send_context(&peer_addr, 123),
+            sessions.session_fsp_send_context(&peer_addr),
             Err(SessionFspSendContextError::NoSession)
         );
 
@@ -467,7 +464,7 @@
                 .is_none()
         );
         assert_eq!(
-            sessions.session_fsp_send_context(&peer_addr, 123),
+            sessions.session_fsp_send_context(&peer_addr),
             Err(SessionFspSendContextError::NotEstablished)
         );
     }

@@ -147,11 +147,16 @@ impl PacketOutput {
 pub(crate) struct PacketMover2FspSendReceipt {
     owner: OwnerId,
     counter: u64,
+    timestamp_ms: Option<u32>,
 }
 
 impl PacketMover2FspSendReceipt {
-    pub(crate) fn new(owner: OwnerId, counter: u64) -> Self {
-        Self { owner, counter }
+    pub(crate) fn new(owner: OwnerId, counter: u64, timestamp_ms: Option<u32>) -> Self {
+        Self {
+            owner,
+            counter,
+            timestamp_ms,
+        }
     }
 
     pub(crate) fn owner(self) -> OwnerId {
@@ -160,6 +165,10 @@ impl PacketMover2FspSendReceipt {
 
     pub(crate) fn counter(self) -> u64 {
         self.counter
+    }
+
+    pub(crate) fn timestamp_ms(self) -> Option<u32> {
+        self.timestamp_ms
     }
 }
 

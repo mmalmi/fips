@@ -305,7 +305,6 @@ impl crate::node::SessionRegistry {
     pub(in crate::node) fn session_fsp_send_context(
         &self,
         dest_addr: &NodeAddr,
-        now_ms: u64,
     ) -> Result<SessionFspSendContext, SessionFspSendContextError> {
         let Some(entry) = self.get(dest_addr) else {
             return Err(SessionFspSendContextError::NoSession);
@@ -315,7 +314,6 @@ impl crate::node::SessionRegistry {
         }
 
         Ok(SessionFspSendContext {
-            timestamp: entry.session_timestamp(now_ms),
             spin_bit: entry.mmp().is_some_and(|m| m.spin_bit.tx_bit()),
             current_k_bit: entry.current_k_bit(),
         })

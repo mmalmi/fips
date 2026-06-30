@@ -649,7 +649,12 @@
         let fmp_path = live_path(2200);
         let mut driver =
             PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
+        driver.register_owner(
+            fsp_owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(50)
+                .with_fsp_session_start_ms(1_000),
+        );
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(70));
         driver
             .owner_mut(fsp_owner)
@@ -682,7 +687,8 @@
             b"session-body".to_vec(),
         )
         .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
-        .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
+        .with_post_seal(OutboundPostSeal::FmpWrap(wrap))
+        .with_activity_tick(ActivityTick::new(1_234));
         let queued_bulk = OutboundPacket::fmp(
             fmp_owner,
             1,
@@ -714,6 +720,10 @@
         assert_eq!(output.counter(), 70);
         assert_eq!(output.target(), OutputTarget::Transport);
         assert_eq!(output.path(), Some(fmp_path));
+        let receipt = output.fsp_send_receipt().expect("wrapped FSP receipt");
+        assert_eq!(receipt.owner(), fsp_owner);
+        assert_eq!(receipt.counter(), 50);
+        assert_eq!(receipt.timestamp_ms(), Some(234));
 
         let fmp_plaintext = open_sealed_output(output, fmp_key);
         assert_eq!(

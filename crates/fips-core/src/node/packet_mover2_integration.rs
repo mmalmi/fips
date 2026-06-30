@@ -2,12 +2,12 @@ use super::endpoint_traffic::classify_fmp_plaintext_traffic;
 use super::*;
 use crate::packet_mover2::{
     ActivityTick, OutboundPacket, OutboundPostSeal, OutputTarget, OwnerConfig, OwnerCryptoKeys,
-    OwnerId, PacketClass, PacketMover2EndpointCommandRoute, PacketMover2FspWrapRoute,
-    PacketMover2IngressRoute, PacketMover2LiveEndpointRoute, PacketMover2LiveFmpIngressRoute,
-    PacketMover2LiveFspIngressRoute, PacketMover2LiveNodeTurn, PacketMover2LiveOutboundFirsts,
-    PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute, PacketMover2OutputDrop,
-    PacketMover2OutputError, PacketMover2TunDestinationRoute, PacketMover2TunOutboundRoute,
-    TransportPath,
+    OwnerId, PacketClass, PacketMover2EndpointCommandRoute, PacketMover2FspSendReceipt,
+    PacketMover2FspWrapRoute, PacketMover2IngressRoute, PacketMover2LiveEndpointRoute,
+    PacketMover2LiveFmpIngressRoute, PacketMover2LiveFspIngressRoute, PacketMover2LiveNodeTurn,
+    PacketMover2LiveOutboundFirsts, PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute,
+    PacketMover2OutputDrop, PacketMover2OutputError, PacketMover2TunDestinationRoute,
+    PacketMover2TunOutboundRoute, TransportPath,
 };
 use crate::protocol::SessionMessageType;
 
@@ -280,7 +280,7 @@ impl Node {
         let now_ms = Self::now_ms();
         let send_context = self
             .sessions
-            .session_fsp_send_context(dest_addr, now_ms)
+            .session_fsp_send_context(dest_addr)
             .map_err(|error| error.into_node_error(*dest_addr))?;
         self.send_packet_mover2_fsp_control_outbound(
             dest_addr,
@@ -290,7 +290,6 @@ impl Node {
             payload,
             None,
             now_ms,
-            send_context.timestamp,
             "FSP control message",
         )
         .await
@@ -303,7 +302,7 @@ impl Node {
         let now_ms = Self::now_ms();
         let send_context = self
             .sessions
-            .session_fsp_send_context(dest_addr, now_ms)
+            .session_fsp_send_context(dest_addr)
             .map_err(|error| error.into_node_error(*dest_addr))?;
         let coords_prefix = self.packet_mover2_fsp_coords_prefix_for_dest(dest_addr);
         self.send_packet_mover2_fsp_control_outbound(
@@ -314,7 +313,6 @@ impl Node {
             &[],
             Some(coords_prefix),
             now_ms,
-            send_context.timestamp,
             "FSP coords warmup",
         )
         .await
@@ -386,7 +384,6 @@ impl Node {
         payload: &[u8],
         coords_prefix: Option<Vec<u8>>,
         now_ms: u64,
-        timestamp: u32,
         label: &str,
     ) -> Result<(), NodeError> {
         if !self.sync_packet_mover2_fsp_owner_preserving_coords_warmup(dest_addr) {
@@ -439,10 +436,16 @@ impl Node {
                 return Err(error);
             }
         };
-        let Some(counter) = Self::packet_mover2_sent_fsp_counter(&mut turn, *dest_addr) else {
+        let Some(receipt) = Self::packet_mover2_sent_fsp_receipt(&mut turn, *dest_addr) else {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
                 reason: format!("packet_mover2 FSP receipt unavailable for {label}"),
+            });
+        };
+        let Some(timestamp) = receipt.timestamp_ms() else {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("packet_mover2 FSP timestamp unavailable for {label}"),
             });
         };
         let frame_bytes = crate::node::session_wire::FSP_INNER_HEADER_SIZE
@@ -454,7 +457,7 @@ impl Node {
             .saturating_add(frame_bytes);
         let _ = self.sessions.record_fsp_send_bookkeeping(
             dest_addr,
-            FspSendBookkeepingInput::control(counter, timestamp, frame_bytes),
+            FspSendBookkeepingInput::control(receipt.counter(), timestamp, frame_bytes),
         );
         self.stats_mut()
             .forwarding
@@ -535,20 +538,20 @@ impl Node {
         .await;
     }
 
-    fn packet_mover2_sent_fsp_counter(
+    fn packet_mover2_sent_fsp_receipt(
         turn: &mut PacketMover2LiveNodeTurn,
         dest_addr: NodeAddr,
-    ) -> Option<u64> {
+    ) -> Option<PacketMover2FspSendReceipt> {
         let owner = OwnerId::fsp_node(dest_addr);
-        let mut counter = None;
+        let mut sent_receipt = None;
         for output in turn.take_transport_sent_outputs() {
             if let Some(receipt) = output.fsp_send_receipt()
                 && receipt.owner() == owner
             {
-                counter = Some(receipt.counter());
+                sent_receipt = Some(receipt);
             }
         }
-        counter
+        sent_receipt
     }
 
     fn packet_mover2_pending_outbound_sent(turn: &PacketMover2LiveNodeTurn) -> bool {
