@@ -295,6 +295,33 @@
     }
 
     #[test]
+    fn ingress_dispatch_feeds_contiguous_owner_run() {
+        let first_owner = fsp_owner(23);
+        let second_owner = fsp_owner(24);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 8));
+        mover.register_owner(first_owner, OwnerConfig::new(1, 8));
+        mover.register_owner(second_owner, OwnerConfig::new(1, 8));
+
+        mover
+            .submit_socket_packet(packet(first_owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun))
+            .unwrap();
+        mover
+            .submit_socket_packet(packet(second_owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun))
+            .unwrap();
+        mover
+            .submit_socket_packet(packet(first_owner, 1, 2, PacketClass::Bulk, OutputTarget::Tun))
+            .unwrap();
+
+        let work = dispatch_available(&mut mover, 8);
+        assert_eq!(
+            work.iter()
+                .map(|work| (work.packet.owner, work.packet.counter))
+                .collect::<Vec<_>>(),
+            vec![(first_owner, 1), (first_owner, 2), (second_owner, 1)]
+        );
+    }
+
+    #[test]
     fn turn_runner_batches_admission_and_reuses_work_buffer() {
         let owner = fsp_owner(11);
         let key = 11;
@@ -737,6 +764,33 @@
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].reservation.owner, blocked);
         assert_eq!(work[0].packet.payload.as_ref(), b"blocked-2");
+    }
+
+    #[test]
+    fn outbound_dispatch_feeds_contiguous_owner_run() {
+        let first_owner = fsp_owner(39);
+        let second_owner = fsp_owner(40);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 8));
+        mover.register_owner(first_owner, OwnerConfig::new(1, 8).with_next_send_counter(390));
+        mover.register_owner(second_owner, OwnerConfig::new(1, 8).with_next_send_counter(400));
+
+        mover
+            .submit_outbound_packet(outbound_packet(first_owner, 1, PacketClass::Bulk, b"first-1"))
+            .unwrap();
+        mover
+            .submit_outbound_packet(outbound_packet(second_owner, 1, PacketClass::Bulk, b"second"))
+            .unwrap();
+        mover
+            .submit_outbound_packet(outbound_packet(first_owner, 1, PacketClass::Bulk, b"first-2"))
+            .unwrap();
+
+        let work = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(
+            work.iter()
+                .map(|work| (work.reservation.owner, work.reservation.counter))
+                .collect::<Vec<_>>(),
+            vec![(first_owner, 390), (first_owner, 391), (second_owner, 400)]
+        );
     }
 
     #[test]

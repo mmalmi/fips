@@ -142,6 +142,19 @@ struct OwnerAdmissionQueues<T> {
     owners: HashMap<OwnerId, OwnerLaneQueues<T>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OwnerAdmissionCursor {
+    owner: OwnerId,
+    lane: Lane,
+    owner_has_more: bool,
+}
+
+#[derive(Debug)]
+struct OwnerAdmissionPop<T> {
+    item: T,
+    cursor: OwnerAdmissionCursor,
+}
+
 impl<T> OwnerAdmissionQueues<T>
 where
     T: OwnerQueuedAdmission,
@@ -213,12 +226,12 @@ where
         }
     }
 
-    fn pop_next(&mut self) -> Option<T> {
+    fn pop_next(&mut self) -> Option<OwnerAdmissionPop<T>> {
         self.pop_lane(Lane::Priority)
             .or_else(|| self.pop_lane(Lane::Bulk))
     }
 
-    fn pop_next_priority(&mut self) -> Option<T> {
+    fn pop_next_priority(&mut self) -> Option<OwnerAdmissionPop<T>> {
         self.pop_lane(Lane::Priority)
     }
 
@@ -226,20 +239,24 @@ where
         self.priority_len > 0
     }
 
-    fn pop_lane(&mut self, lane: Lane) -> Option<T> {
+    fn pop_lane(&mut self, lane: Lane) -> Option<OwnerAdmissionPop<T>> {
         loop {
             let owner = self.pop_ready_front(lane)?;
             let Some((item, owner_has_more, owner_empty)) = self.pop_owner_lane(owner, lane) else {
                 continue;
             };
             self.decrement_lane_len(lane);
-            if owner_has_more {
-                self.push_ready_back(lane, owner);
-            }
             if owner_empty {
                 self.owners.remove(&owner);
             }
-            return Some(item);
+            return Some(OwnerAdmissionPop {
+                item,
+                cursor: OwnerAdmissionCursor {
+                    owner,
+                    lane,
+                    owner_has_more,
+                },
+            });
         }
     }
 
@@ -277,6 +294,31 @@ where
             Lane::Priority => self.priority_ready.push_back(owner),
             Lane::Bulk => self.bulk_ready.push_back(owner),
         }
+    }
+
+    fn push_ready_front(&mut self, lane: Lane, owner: OwnerId) {
+        match lane {
+            Lane::Priority => self.priority_ready.push_front(owner),
+            Lane::Bulk => self.bulk_ready.push_front(owner),
+        }
+    }
+
+    fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
+        if cursor.owner_has_more {
+            self.push_ready_front(cursor.lane, cursor.owner);
+        }
+    }
+
+    fn defer_owner_pop(&mut self, pop: OwnerAdmissionPop<T>) {
+        let owner = pop.cursor.owner;
+        let lane = pop.cursor.lane;
+        self.owners
+            .entry(owner)
+            .or_default()
+            .lane_mut(lane)
+            .push_front(pop.item);
+        self.increment_lane_len(lane);
+        self.push_ready_back(lane, owner);
     }
 }
 
@@ -317,16 +359,16 @@ impl AdmissionQueue {
         Ok(ingress_seq)
     }
 
-    fn pop_next(&mut self) -> Option<QueuedPacket> {
+    fn pop_next(&mut self) -> Option<OwnerAdmissionPop<QueuedPacket>> {
         self.queues.pop_next()
     }
 
-    fn push_back(&mut self, queued: QueuedPacket) {
-        self.queues.push_back(queued);
+    fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
+        self.queues.continue_owner_run(cursor);
     }
 
-    fn push_front(&mut self, queued: QueuedPacket) {
-        self.queues.push_front(queued);
+    fn defer_owner_pop(&mut self, pop: OwnerAdmissionPop<QueuedPacket>) {
+        self.queues.defer_owner_pop(pop);
     }
 
     fn len(&self) -> usize {
@@ -406,20 +448,20 @@ impl OutboundAdmissionQueue {
         Ok(ingress_seq)
     }
 
-    fn pop_next(&mut self) -> Option<QueuedOutboundPacket> {
+    fn pop_next(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
         self.queues.pop_next()
     }
 
-    fn pop_next_priority(&mut self) -> Option<QueuedOutboundPacket> {
+    fn pop_next_priority(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
         self.queues.pop_next_priority()
     }
 
-    fn push_back(&mut self, queued: QueuedOutboundPacket) {
-        self.queues.push_back(queued);
+    fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
+        self.queues.continue_owner_run(cursor);
     }
 
-    fn push_front(&mut self, queued: QueuedOutboundPacket) {
-        self.queues.push_front(queued);
+    fn defer_owner_pop(&mut self, pop: OwnerAdmissionPop<QueuedOutboundPacket>) {
+        self.queues.defer_owner_pop(pop);
     }
 
     fn has_priority_pending(&self) -> bool {

@@ -11,6 +11,11 @@ struct PacketMover2OwnerShard {
     drops: Vec<PacketDrop>,
 }
 
+enum OutboundDispatchResult {
+    Completed,
+    Blocked(QueuedOutboundPacket),
+}
+
 impl PacketMover2 {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
@@ -179,7 +184,7 @@ impl PacketMover2OwnerShard {
 
         let mut attempts_remaining = self.admission.len();
         while work.len() < limit && attempts_remaining > 0 {
-            let Some(queued) = self.admission.pop_next() else {
+            let Some(pop) = self.admission.pop_next() else {
                 if limit > 0 {
                     crate::perf_profile::record_event(
                         crate::perf_profile::Event::PacketMover2DispatchNoIngress,
@@ -188,17 +193,25 @@ impl PacketMover2OwnerShard {
                 break;
             };
             attempts_remaining = attempts_remaining.saturating_sub(1);
+            let OwnerAdmissionPop {
+                item: queued,
+                cursor,
+            } = pop;
 
             let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
                 self.drops.push(PacketDrop::from_queued(
                     &queued,
                     PacketDropReason::UnknownOwner,
                 ));
+                self.admission.continue_owner_run(cursor);
                 continue;
             };
             if !owner.can_reserve_class(queued.packet.class) {
                 record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
-                self.admission.push_front(queued);
+                self.admission.defer_owner_pop(OwnerAdmissionPop {
+                    item: queued,
+                    cursor,
+                });
                 continue;
             }
 
@@ -208,11 +221,14 @@ impl PacketMover2OwnerShard {
                         reservation,
                         packet: queued.packet,
                     });
+                    self.admission.continue_owner_run(cursor);
                     attempts_remaining = self.admission.len();
                 }
-                Err(error) => self
-                    .drops
-                    .push(PacketDrop::from_queued(&queued, error.into())),
+                Err(error) => {
+                    self.drops
+                        .push(PacketDrop::from_queued(&queued, error.into()));
+                    self.admission.continue_owner_run(cursor);
+                }
             }
         }
 
@@ -233,13 +249,23 @@ impl PacketMover2OwnerShard {
 
         let mut attempts_remaining = self.outbound_admission.len();
         while work.len() < limit && attempts_remaining > 0 {
-            let Some(queued) = self.outbound_admission.pop_next() else {
+            let Some(pop) = self.outbound_admission.pop_next() else {
                 break;
             };
             attempts_remaining = attempts_remaining.saturating_sub(1);
+            let cursor = pop.cursor;
 
-            if self.dispatch_queued_outbound(queued, work) {
-                attempts_remaining = self.outbound_admission.len();
+            match self.dispatch_queued_outbound(pop.item, work) {
+                OutboundDispatchResult::Completed => {
+                    self.outbound_admission.continue_owner_run(cursor);
+                    attempts_remaining = self.outbound_admission.len();
+                }
+                OutboundDispatchResult::Blocked(queued) => {
+                    self.outbound_admission.defer_owner_pop(OwnerAdmissionPop {
+                        item: queued,
+                        cursor,
+                    });
+                }
             }
         }
 
@@ -255,13 +281,23 @@ impl PacketMover2OwnerShard {
 
         let mut attempts_remaining = self.outbound_admission.len();
         while work.len() < limit && attempts_remaining > 0 {
-            let Some(queued) = self.outbound_admission.pop_next_priority() else {
+            let Some(pop) = self.outbound_admission.pop_next_priority() else {
                 break;
             };
             attempts_remaining = attempts_remaining.saturating_sub(1);
+            let cursor = pop.cursor;
 
-            if self.dispatch_queued_outbound(queued, work) {
-                attempts_remaining = self.outbound_admission.len();
+            match self.dispatch_queued_outbound(pop.item, work) {
+                OutboundDispatchResult::Completed => {
+                    self.outbound_admission.continue_owner_run(cursor);
+                    attempts_remaining = self.outbound_admission.len();
+                }
+                OutboundDispatchResult::Blocked(queued) => {
+                    self.outbound_admission.defer_owner_pop(OwnerAdmissionPop {
+                        item: queued,
+                        cursor,
+                    });
+                }
             }
         }
 
@@ -272,7 +308,7 @@ impl PacketMover2OwnerShard {
         &mut self,
         queued: QueuedOutboundPacket,
         work: &mut Vec<OutboundCryptoWork>,
-    ) -> bool {
+    ) -> OutboundDispatchResult {
         let owner_id = queued.packet.owner;
         let lane = queued.packet.lane();
         let class = queued.packet.class;
@@ -287,12 +323,11 @@ impl PacketMover2OwnerShard {
                 &queued,
                 PacketDropReason::UnknownOwner,
             ));
-            return true;
+            return OutboundDispatchResult::Completed;
         };
         if !owner.can_reserve_class(class) {
             record_owner_blocked(owner.reserve_block_reason(class));
-            self.outbound_admission.push_front(queued);
-            return false;
+            return OutboundDispatchResult::Blocked(queued);
         }
 
         if let Some(route) = wrap_route {
@@ -308,12 +343,11 @@ impl PacketMover2OwnerShard {
                     wire_flags: None,
                     authenticated_counter_highest: None,
                 });
-                return true;
+                return OutboundDispatchResult::Completed;
             };
             if !outer_owner.can_reserve_class(class) {
                 record_owner_blocked(outer_owner.reserve_block_reason(class));
-                self.outbound_admission.push_front(queued);
-                return false;
+                return OutboundDispatchResult::Blocked(queued);
             }
         }
 
@@ -335,14 +369,14 @@ impl PacketMover2OwnerShard {
                         wire_flags: None,
                         authenticated_counter_highest: None,
                     });
-                    return true;
+                    return OutboundDispatchResult::Completed;
                 }
             }
         };
 
         let Some(route) = wrap_route else {
             work.push(OutboundCryptoWork::new(reservation, packet));
-            return true;
+            return OutboundDispatchResult::Completed;
         };
 
         let mut outer_packet = route.reserve_fmp_outbound(class);
@@ -363,7 +397,7 @@ impl PacketMover2OwnerShard {
                     wire_flags: None,
                     authenticated_counter_highest: None,
                 });
-                return true;
+                return OutboundDispatchResult::Completed;
             };
             match outer_owner.reserve_outbound(outer_packet, ingress_seq) {
                 Ok(reserved) => reserved,
@@ -379,7 +413,7 @@ impl PacketMover2OwnerShard {
                         wire_flags: None,
                         authenticated_counter_highest: None,
                     });
-                    return true;
+                    return OutboundDispatchResult::Completed;
                 }
             }
         };
@@ -391,7 +425,7 @@ impl PacketMover2OwnerShard {
                 outer_packet,
             )),
         );
-        true
+        OutboundDispatchResult::Completed
     }
 
     pub(crate) fn retire_completion(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
