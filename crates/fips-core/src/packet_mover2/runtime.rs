@@ -111,6 +111,10 @@ impl PacketMover2TurnDriver {
             .record_authenticated_fsp_session(owner, previous_hop, msg_type, body_len, activity_tick)
     }
 
+    pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
+        self.mover.record_fsp_decrypt_failure(owner)
+    }
+
     pub(crate) fn record_fsp_data_sent(
         &mut self,
         owner: OwnerId,

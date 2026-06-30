@@ -308,6 +308,7 @@ pub(crate) struct OwnerState {
     data_packets_recv: u64,
     data_bytes_sent: u64,
     data_bytes_recv: u64,
+    consecutive_decrypt_failures: u32,
     hard_events: u64,
     authenticated_counter_highest: u64,
     replay_window: ReplayWindow,
@@ -353,6 +354,7 @@ impl OwnerState {
             data_packets_recv: 0,
             data_bytes_sent: 0,
             data_bytes_recv: 0,
+            consecutive_decrypt_failures: 0,
             hard_events: 0,
             authenticated_counter_highest: 0,
             replay_window: ReplayWindow::default(),
@@ -379,6 +381,7 @@ impl OwnerState {
         self.data_packets_recv = 0;
         self.data_bytes_sent = 0;
         self.data_bytes_recv = 0;
+        self.consecutive_decrypt_failures = 0;
         self.authenticated_counter_highest = 0;
     }
 
@@ -523,6 +526,14 @@ impl OwnerState {
         note_activity(&mut self.last_hard_event, tick);
     }
 
+    pub(crate) fn record_fsp_decrypt_failure(&mut self) -> Option<u32> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        self.consecutive_decrypt_failures = self.consecutive_decrypt_failures.saturating_add(1);
+        Some(self.consecutive_decrypt_failures)
+    }
+
     pub(crate) fn reserve(
         &mut self,
         packet: &SocketPacket,
@@ -642,6 +653,7 @@ impl OwnerState {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return false;
         }
+        self.consecutive_decrypt_failures = 0;
         let Some(tick) = activity_tick else {
             return false;
         };

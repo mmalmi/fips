@@ -1268,6 +1268,8 @@
         assert_eq!(activity.last_outbound_next_hop(), Some(next_hop.node_addr()));
         assert!(activity.has_recent_outbound_activity(105, 10));
         assert!(activity.has_recent_outbound_without_inbound(105, 10));
+        assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
+        assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(2));
 
         assert!(mover.record_authenticated_fsp_session(
             owner,
@@ -1279,6 +1281,7 @@
         let activity = mover.owner_fsp_activity(owner).unwrap();
         assert_eq!(activity.last_rx_data_age_ms(115), Some(5));
         assert!(!activity.has_recent_outbound_without_inbound(115, 20));
+        assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
 
         assert!(mover.record_authenticated_fsp_session(
             owner,

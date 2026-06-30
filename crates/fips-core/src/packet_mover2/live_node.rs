@@ -358,6 +358,11 @@ impl PacketMover2LiveNode {
         )
     }
 
+    pub(crate) fn record_fsp_decrypt_failure(&mut self, source_addr: NodeAddr) -> Option<u32> {
+        self.driver
+            .record_fsp_decrypt_failure(OwnerId::fsp_node(source_addr))
+    }
+
     pub(crate) fn record_fsp_data_sent(
         &mut self,
         dest_addr: NodeAddr,

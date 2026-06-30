@@ -303,6 +303,11 @@ impl PacketMover2OwnerShard {
         })
     }
 
+    fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
+        self.owner_mut(owner)
+            .and_then(OwnerState::record_fsp_decrypt_failure)
+    }
+
     fn record_fsp_data_sent(
         &mut self,
         owner: OwnerId,

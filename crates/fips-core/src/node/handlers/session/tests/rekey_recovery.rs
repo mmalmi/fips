@@ -64,14 +64,19 @@
         let local = Identity::generate();
         let peer = Identity::generate();
         let mut entry = established_entry(&local, &peer);
+        let can_recover = |entry: &SessionEntry| {
+            entry.is_established()
+                && !entry.has_rekey_in_progress()
+                && entry.pending_new_session().is_none()
+        };
 
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            can_recover(&entry),
             DECRYPT_FAILURE_RECOVERY_THRESHOLD - 1,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
         assert!(should_start_decrypt_failure_rekey(
-            &entry,
+            can_recover(&entry),
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
@@ -79,7 +84,7 @@
         let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
         entry.set_rekey_state(rekey, true);
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            false,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
@@ -87,7 +92,7 @@
 
         entry.set_pending_session(make_xk_session(&local, &peer));
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            false,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
@@ -95,22 +100,18 @@
 
     #[test]
     fn decrypt_failure_recovery_rekey_waits_for_quiet_session() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let entry = established_entry(&local, &peer);
-
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            true,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS - 1),
         ));
         assert!(should_start_decrypt_failure_rekey(
-            &entry,
+            true,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS),
         ));
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            true,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
             None,
         ));

@@ -324,7 +324,6 @@ impl crate::node::SessionRegistry {
         };
         entry.set_rekey_state(handshake, true);
         entry.set_handshake_payload(setup_payload, next_resend_at_ms);
-        entry.reset_decrypt_failures();
         true
     }
 

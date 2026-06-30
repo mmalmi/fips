@@ -124,12 +124,6 @@ pub(crate) struct SessionEntry {
     rekey_msg3_resend_count: u32,
     /// Per-session symmetric jitter applied to the rekey timer trigger.
     rekey_jitter_secs: i64,
-
-    /// Consecutive AEAD decryption failures from this peer.
-    /// Reset on every successful decrypt. Drives auto re-handshake when
-    /// the session keys diverge (e.g. peer restart with stale state on
-    /// our side, or vice versa) — see `DECRYPT_FAILURE_REINIT_THRESHOLD`.
-    consecutive_decrypt_failures: u32,
 }
 
 impl SessionEntry {
@@ -169,7 +163,6 @@ impl SessionEntry {
             rekey_msg3_next_resend_ms: 0,
             rekey_msg3_resend_count: 0,
             rekey_jitter_secs: draw_rekey_jitter(),
-            consecutive_decrypt_failures: 0,
         }
     }
 
@@ -467,7 +460,6 @@ impl SessionEntry {
             return false;
         }
 
-        self.reset_decrypt_failures();
         if self.rekey_msg3_payload().is_some() && self.pending_new_session().is_none() {
             self.confirm_peer_new_epoch();
         }
@@ -571,25 +563,5 @@ impl SessionEntry {
         self.rekey_initiator = false;
         self.rekey_completed_ms = 0;
         self.clear_rekey_msg3_payload();
-    }
-
-    // === Decrypt Failure Tracking ===
-
-    /// Record one AEAD decryption failure and return the new consecutive
-    /// count. Both current-session and drain-window decrypt must have
-    /// failed before calling.
-    pub(crate) fn record_decrypt_failure(&mut self) -> u32 {
-        self.consecutive_decrypt_failures = self.consecutive_decrypt_failures.saturating_add(1);
-        self.consecutive_decrypt_failures
-    }
-
-    /// Reset the consecutive AEAD failure counter on any successful decrypt.
-    pub(crate) fn reset_decrypt_failures(&mut self) {
-        self.consecutive_decrypt_failures = 0;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn consecutive_decrypt_failures(&self) -> u32 {
-        self.consecutive_decrypt_failures
     }
 }

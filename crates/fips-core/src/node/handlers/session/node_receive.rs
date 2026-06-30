@@ -216,7 +216,7 @@ impl Node {
             .packet_mover2
             .fsp_owner_activity(&src_addr)
             .and_then(|activity| activity.last_rx_age_ms(now_ms));
-        let Some(entry) = self.sessions.get_mut(&src_addr) else {
+        let Some(entry) = self.sessions.get(&src_addr) else {
             debug!(
                 src = %self.peer_display_name(&src_addr),
                 counter,
@@ -234,9 +234,20 @@ impl Node {
             );
             return true;
         }
-        let consecutive = entry.record_decrypt_failure();
+        let entry_can_recover = entry.is_established()
+            && !entry.has_rekey_in_progress()
+            && entry.pending_new_session().is_none();
+        let Some(consecutive) = self.packet_mover2.record_fsp_decrypt_failure(src_addr) else {
+            debug!(
+                src = %self.peer_display_name(&src_addr),
+                counter,
+                source,
+                "FSP AEAD failure for missing packet_mover2 owner"
+            );
+            return false;
+        };
         let recover_session =
-            should_start_decrypt_failure_rekey(entry, consecutive, authenticated_inbound_age_ms);
+            should_start_decrypt_failure_rekey(entry_can_recover, consecutive, authenticated_inbound_age_ms);
         debug!(
             src = %self.peer_display_name(&src_addr),
             counter,

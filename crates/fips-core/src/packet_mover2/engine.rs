@@ -114,6 +114,11 @@ impl PacketMover2 {
         )
     }
 
+    pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
+        self.owner_shard_mut(owner)
+            .record_fsp_decrypt_failure(owner)
+    }
+
     pub(crate) fn record_fsp_data_sent(
         &mut self,
         owner: OwnerId,
