@@ -91,6 +91,7 @@ impl Node {
         &mut self,
         ingress: crate::packet_mover2::PacketMover2FspSessionIngress,
     ) -> bool {
+        let received_k_bit = ingress.received_k_bit();
         let (
             source_addr,
             source_peer,
@@ -116,6 +117,17 @@ impl Node {
             endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte(),
             "Dispatching packet mover2 authenticated session"
         );
+
+        if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
+            &source_addr,
+            received_k_bit,
+        ) {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                received_k_bit,
+                "FSP rekey cutover complete after PM2 authenticated pending epoch"
+            );
+        }
 
         let message =
             AuthenticatedSessionMessage::new(source_peer, plaintext, msg_type, inner_flags, timestamp_ms);

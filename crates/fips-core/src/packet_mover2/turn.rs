@@ -436,6 +436,10 @@ impl PacketMover2FspSessionIngress {
         self.ce_flag
     }
 
+    pub(crate) fn received_k_bit(&self) -> bool {
+        self.receive_sync.received_k_bit
+    }
+
     pub(crate) fn timestamp_ms(&self) -> u32 {
         self.timestamp_ms
     }

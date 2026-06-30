@@ -287,6 +287,12 @@ impl SessionEntry {
         self.pending_new_session.as_ref()
     }
 
+    pub(crate) fn pending_k_bit(&self) -> Option<bool> {
+        self.pending_new_session
+            .as_ref()
+            .map(|_| !self.current_k_bit)
+    }
+
     fn current_noise_session(&self) -> Option<&NoiseSession> {
         match self.state.as_ref() {
             Some(EndToEndState::Established(session)) => Some(session),
@@ -298,6 +304,10 @@ impl SessionEntry {
     pub(crate) fn fsp_crypto_keys(&self) -> Option<(LessSafeKey, LessSafeKey)> {
         let session = self.current_noise_session()?;
         Some((session.recv_cipher_clone()?, session.send_cipher_clone()?))
+    }
+
+    pub(crate) fn pending_fsp_open_key(&self) -> Option<LessSafeKey> {
+        self.pending_new_session.as_ref()?.recv_cipher_clone()
     }
 
     /// Whether we initiated the current rekey.
@@ -446,6 +456,24 @@ impl SessionEntry {
     /// Cut over to the pending new session (initiator side).
     pub(crate) fn cutover_to_new_session(&mut self, now_ms: u64) -> bool {
         self.promote_pending(now_ms)
+    }
+
+    pub(crate) fn cutover_to_authenticated_pending_epoch(
+        &mut self,
+        now_ms: u64,
+        received_k_bit: bool,
+    ) -> bool {
+        if self.pending_new_session.is_none()
+            || self.has_rekey_in_progress()
+            || received_k_bit == self.current_k_bit
+        {
+            return false;
+        }
+        let promoted = self.promote_pending(now_ms);
+        if promoted {
+            self.clear_rekey_msg3_payload();
+        }
+        promoted
     }
 
     /// Check if the drain window has expired.

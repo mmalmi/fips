@@ -723,6 +723,56 @@ impl Node {
             .is_ok()
     }
 
+    pub(in crate::node) fn sync_packet_mover2_fsp_pending_receive_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        let Some(session) = self.sessions.get(node_addr) else {
+            return false;
+        };
+        let Some(pending_k_bit) = session.pending_k_bit() else {
+            return false;
+        };
+        let Some(open) = session.pending_fsp_open_key() else {
+            return false;
+        };
+        self.packet_mover2
+            .install_owner_fsp_pending_receive_epoch(
+                OwnerId::fsp_node(*node_addr),
+                pending_k_bit,
+                std::sync::Arc::new(open),
+            )
+            .is_ok()
+    }
+
+    pub(in crate::node) fn promote_packet_mover2_authenticated_pending_fsp_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> bool {
+        let now_ms = Self::now_ms();
+        let promoted = {
+            let Some(session) = self.sessions.get_mut(node_addr) else {
+                return false;
+            };
+            session.cutover_to_authenticated_pending_epoch(now_ms, received_k_bit)
+        };
+        if !promoted {
+            return false;
+        }
+
+        let snapshot = self
+            .sessions
+            .get(node_addr)
+            .and_then(Self::packet_mover2_fsp_owner_session_snapshot);
+        if let Some(snapshot) = snapshot {
+            self.sync_packet_mover2_fsp_owner_from_session_snapshot(node_addr, snapshot, 0)
+        } else {
+            self.remove_packet_mover2_fsp_owner(node_addr);
+            false
+        }
+    }
+
     pub(in crate::node) fn packet_mover2_fsp_owner_epoch(
         session: &SessionEntry,
     ) -> (bool, Option<bool>) {

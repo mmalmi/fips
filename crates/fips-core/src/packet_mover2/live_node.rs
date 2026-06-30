@@ -321,6 +321,21 @@ impl PacketMover2LiveNode {
         Ok(())
     }
 
+    pub(crate) fn install_owner_fsp_pending_receive_epoch(
+        &mut self,
+        owner: OwnerId,
+        pending_k_bit: bool,
+        open: AeadKey,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.install_fsp_pending_receive_epoch(pending_k_bit, open) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_owner_active_path(
         &mut self,
         owner: OwnerId,
