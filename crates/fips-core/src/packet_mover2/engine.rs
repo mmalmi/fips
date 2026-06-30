@@ -384,26 +384,36 @@ impl PacketMover2 {
         retired.clear();
         prepared_work.clear();
         completion_work.clear();
-        let executor_capacity = executor.available_capacity();
+        let open_capacity = executor.available_open_capacity();
+        let seal_capacity = executor.available_seal_capacity();
+        let direction_capacity = open_capacity.saturating_add(seal_capacity);
+        let executor_capacity = executor.available_capacity().min(direction_capacity);
+        let total_limit = limit.min(executor_capacity);
         if limit > 0 && executor_capacity == 0 {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PacketMover2DispatchExecutorFull,
             );
         }
-        let total_available_limit = limit.min(executor_capacity);
-        let priority_available_limit =
-            limit.min(executor.available_capacity_for_lane(Lane::Priority));
-        let bulk_available_limit = limit.min(executor.available_capacity_for_lane(Lane::Bulk));
-        let mut priority_feed_capacity = priority_available_limit.min(total_available_limit);
-        let mut bulk_feed_capacity = bulk_available_limit.min(total_available_limit);
+        let mut open_priority_capacity =
+            total_limit.min(executor.available_open_capacity_for_lane(Lane::Priority));
+        let seal_priority_capacity =
+            total_limit.min(executor.available_seal_capacity_for_lane(Lane::Priority));
+        let open_bulk_capacity =
+            total_limit.min(executor.available_open_capacity_for_lane(Lane::Bulk));
+        let seal_bulk_capacity =
+            total_limit.min(executor.available_seal_capacity_for_lane(Lane::Bulk));
         let inbound_priority_pending = self.has_inbound_priority_pending();
-        let outbound_priority_reserve =
-            outbound_priority_dispatch_limit(
-                priority_feed_capacity,
-                self.has_outbound_priority_pending(),
-            );
+        let priority_feed_capacity = total_limit.min(
+            open_priority_capacity
+                .saturating_add(seal_priority_capacity),
+        );
+        let outbound_priority_reserve = outbound_priority_dispatch_limit(
+            priority_feed_capacity,
+            self.has_outbound_priority_pending(),
+        );
         let pre_priority_inbound_limit =
-            inbound_before_outbound_priority_limit(priority_feed_capacity, outbound_priority_reserve);
+            inbound_before_outbound_priority_limit(priority_feed_capacity, outbound_priority_reserve)
+                .min(open_priority_capacity);
         let mut dispatched_total = 0usize;
         let mut fsp_path_open = 0u64;
         let mut fsp_path_open_bulk = 0u64;
@@ -416,22 +426,21 @@ impl PacketMover2 {
                 &mut fsp_path_open_bulk,
             );
         dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
-        priority_feed_capacity =
-            priority_feed_capacity.saturating_sub(pre_priority_inbound_dispatched);
+        open_priority_capacity =
+            open_priority_capacity.saturating_sub(pre_priority_inbound_dispatched);
 
         let priority_outbound_limit = outbound_priority_reserve
-            .min(limit.saturating_sub(dispatched_total))
-            .min(priority_feed_capacity);
+            .min(total_limit.saturating_sub(dispatched_total))
+            .min(seal_priority_capacity);
         let priority_outbound_dispatched =
             self.dispatch_outbound_prepared_priority_available_into(
                 priority_outbound_limit,
                 prepared_work,
             );
         dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
-        priority_feed_capacity = priority_feed_capacity.saturating_sub(priority_outbound_dispatched);
 
         let priority_inbound_limit = if inbound_priority_pending {
-            priority_feed_capacity
+            open_priority_capacity.min(total_limit.saturating_sub(dispatched_total))
         } else {
             0
         };
@@ -444,11 +453,9 @@ impl PacketMover2 {
             );
         dispatched_total = dispatched_total.saturating_add(priority_inbound_dispatched);
 
-        let total_remaining = total_available_limit.saturating_sub(dispatched_total);
-        bulk_feed_capacity = bulk_feed_capacity.min(total_remaining);
-        let bulk_dispatch_capacity = limit
+        let bulk_dispatch_capacity = total_limit
             .saturating_sub(dispatched_total)
-            .min(bulk_feed_capacity);
+            .min(open_bulk_capacity);
         let bulk_inbound_start = prepared_work.len();
         let inbound_dispatched = self.dispatch_prepared_available_into(
             bulk_dispatch_capacity,
@@ -457,12 +464,15 @@ impl PacketMover2 {
             &mut fsp_path_open_bulk,
         );
         dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
-        bulk_feed_capacity = bulk_feed_capacity.saturating_sub(inbound_dispatched);
         let outbound_start = prepared_work.len();
-        let outbound_dispatched =
-            self.dispatch_outbound_prepared_available_into(bulk_feed_capacity, prepared_work);
+        let outbound_dispatched = self.dispatch_outbound_prepared_available_into(
+            total_limit
+                .saturating_sub(dispatched_total)
+                .min(seal_bulk_capacity),
+            prepared_work,
+        );
         dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
-        debug_assert!(dispatched_total <= total_available_limit);
+        debug_assert!(dispatched_total <= total_limit);
 
         let leading_priority_seals = prepared_work[outbound_start..]
             .iter()

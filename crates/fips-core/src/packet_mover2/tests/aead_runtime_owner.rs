@@ -769,7 +769,8 @@
         let mut retired = Vec::new();
         let completions = drain_worker_pool_completions(&mut pool, 2);
         assert_eq!(completions.len(), 2);
-        assert_eq!(pool.available_capacity(), 6);
+        assert_eq!(pool.available_open_capacity(), 6);
+        assert_eq!(pool.available_seal_capacity(), 8);
         for completion in completions {
             retired.extend(retire_completion(&mut mover, completion));
         }
@@ -788,17 +789,58 @@
             vec![100, 101, 102, 103]
         );
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-        assert_eq!(pool.available_capacity(), 8);
+        assert_eq!(pool.available_open_capacity(), 8);
+        assert_eq!(pool.available_seal_capacity(), 8);
+    }
+
+    #[test]
+    fn aead_worker_pool_has_independent_open_and_seal_capacity() {
+        let owner = fmp_owner(710);
+        let open_key = 23;
+        let seal_key = 24;
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(300));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
+        submit_fmp_inbound_range(&mut mover, owner, 710, open_key, 100..102, b"inbound");
+        for idx in 0..2 {
+            mover
+                .submit_outbound_packet(OutboundPacket::fmp(
+                    owner,
+                    1,
+                    PacketClass::Bulk,
+                    710,
+                    0,
+                    format!("outbound-{idx}").into_bytes(),
+                ))
+                .unwrap();
+        }
+
+        let mut pool = PacketMover2AeadWorkerPool::new(1, 2);
+        let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut pool, 4);
+
+        assert_eq!(dispatched, 4);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(pool.available_open_capacity(), 0);
+        assert_eq!(pool.available_seal_capacity(), 0);
     }
 
     #[test]
     fn aead_worker_pool_reserves_priority_capacity_from_bulk() {
         let owner = fmp_owner(709);
+        let open_key = 22;
         let mut mover = PacketMover2::new(AdmissionConfig::new(16, 32));
         mover.register_owner(
             owner,
             OwnerConfig::new(1, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2),
         );
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
         let mut pool = PacketMover2AeadWorkerPool::new(
             1,
             PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
@@ -806,12 +848,13 @@
 
         for counter in 0..(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2) as u64 {
             mover
-                .submit_socket_packet(packet(
+                .submit_socket_packet(encrypted_fmp_packet(
                     owner,
                     1,
                     counter,
                     PacketClass::Bulk,
                     OutputTarget::Tun,
+                    open_key,
                 ))
                 .unwrap();
         }
@@ -824,19 +867,20 @@
         assert_eq!(dispatched, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(pool.available_capacity_for_lane(Lane::Bulk), 0);
+        assert_eq!(pool.available_open_capacity_for_lane(Lane::Bulk), 0);
         assert_eq!(
-            pool.available_capacity_for_lane(Lane::Priority),
+            pool.available_open_capacity_for_lane(Lane::Priority),
             PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS
         );
 
         mover
-            .submit_socket_packet(packet(
+            .submit_socket_packet(encrypted_fmp_packet(
                 owner,
                 1,
                 1_000,
                 PacketClass::Liveness,
                 OutputTarget::Tun,
+                open_key,
             ))
             .unwrap();
         let (dispatched, retired, drops) = run_with_executor_limit(
@@ -917,7 +961,8 @@
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(pool.available_capacity(), 0);
+        assert_eq!(pool.available_open_capacity(), 0);
+        assert_eq!(pool.available_seal_capacity(), 2);
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
 
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
@@ -932,7 +977,7 @@
             retire_completion(&mut mover, completion);
         }
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
-        assert_eq!(pool.available_capacity(), 2);
+        assert_eq!(pool.available_open_capacity(), 2);
 
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
         assert_eq!(dispatched, 2);
