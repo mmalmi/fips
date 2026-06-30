@@ -77,6 +77,11 @@ impl PacketMover2 {
 
         while work.len() < limit {
             let Some(queued) = self.admission.pop_next() else {
+                if limit > 0 {
+                    crate::perf_profile::record_event(
+                        crate::perf_profile::Event::PacketMover2DispatchNoIngress,
+                    );
+                }
                 break;
             };
 
@@ -88,6 +93,9 @@ impl PacketMover2 {
                 continue;
             };
             if !owner.can_reserve_class(queued.packet.class) {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::PacketMover2DispatchOwnerBlocked,
+                );
                 self.admission.push_front(queued);
                 break;
             }
@@ -103,6 +111,11 @@ impl PacketMover2 {
             }
         }
 
+        if limit > 0 && work.len() >= limit {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::PacketMover2DispatchLimitHit,
+            );
+        }
         work.len()
     }
 
@@ -241,7 +254,13 @@ impl PacketMover2 {
         seal_work.clear();
         prepared_work.clear();
         completion_work.clear();
-        let available_limit = limit.min(executor.available_capacity());
+        let executor_capacity = executor.available_capacity();
+        if limit > 0 && executor_capacity == 0 {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::PacketMover2DispatchExecutorFull,
+            );
+        }
+        let available_limit = limit.min(executor_capacity);
         let outbound_priority_reserve =
             outbound_priority_dispatch_limit(
                 available_limit,

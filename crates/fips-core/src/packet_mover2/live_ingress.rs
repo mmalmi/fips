@@ -425,6 +425,10 @@ impl<'a> PacketMover2FmpPacketRxSource<'a> {
     where
         F: FnMut(PacketMover2RawIngress),
     {
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::TransportRxLoopOwnedWait,
+            packet.trace_rx_loop_owned_at,
+        );
         match classify_live_fmp_packet(&packet) {
             LiveFmpPacketClass::Established => {
                 push(PacketMover2RawIngress::from_live_received(

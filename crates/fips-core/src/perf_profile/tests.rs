@@ -167,6 +167,22 @@ fn event_table_exposes_current_pm2_and_queue_events() {
             Event::PacketMover2FspOwnerSyncApplied,
             "packet_mover2_fsp_owner_sync_applied",
         ),
+        (
+            Event::PacketMover2DispatchOwnerBlocked,
+            "packet_mover2_dispatch_owner_blocked",
+        ),
+        (
+            Event::PacketMover2DispatchNoIngress,
+            "packet_mover2_dispatch_no_ingress",
+        ),
+        (
+            Event::PacketMover2DispatchLimitHit,
+            "packet_mover2_dispatch_limit_hit",
+        ),
+        (
+            Event::PacketMover2DispatchExecutorFull,
+            "packet_mover2_dispatch_executor_full",
+        ),
     ];
     for (event, name) in live_events {
         assert_eq!(event_from_index(event as usize).name(), name);
@@ -181,7 +197,7 @@ fn event_table_exposes_current_pm2_and_queue_events() {
         (Event::ReservedEvent96, "reserved_event_96"),
         (Event::ReservedEvent108, "reserved_event_108"),
         (Event::ReservedEvent171, "reserved_event_171"),
-        (Event::ReservedEvent201, "reserved_event_201"),
+        (Event::ReservedEvent205, "reserved_event_205"),
         (Event::ReservedEvent219, "reserved_event_219"),
         (Event::ReservedEvent220, "reserved_event_220"),
     ] {
@@ -257,6 +273,10 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
             Stage::TransportBulkChannelWait,
             "transport_bulk_channel_wait",
         ),
+        (
+            Stage::TransportRxLoopOwnedWait,
+            "transport_rx_loop_owned_wait",
+        ),
         (Stage::PacketMover2AeadOpen, "packet_mover2_aead_open"),
         (Stage::PacketMover2AeadSeal, "packet_mover2_aead_seal"),
         (Stage::PacketMover2Retire, "packet_mover2_retire"),
@@ -288,7 +308,7 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
         (Stage::ReservedStage3, "reserved_stage_3"),
         (Stage::ReservedStage11, "reserved_stage_11"),
         (Stage::ReservedStage13, "reserved_stage_13"),
-        (Stage::ReservedStage23, "reserved_stage_23"),
+        (Stage::ReservedStage24, "reserved_stage_24"),
         (Stage::ReservedStage29, "reserved_stage_29"),
         (Stage::ReservedStage34, "reserved_stage_34"),
         (Stage::ReservedStage37, "reserved_stage_37"),

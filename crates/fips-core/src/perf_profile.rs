@@ -62,7 +62,7 @@ pub enum Stage {
     TransportChannelWait = 20,
     TransportPriorityChannelWait = 21,
     TransportBulkChannelWait = 22,
-    ReservedStage23 = 23,
+    TransportRxLoopOwnedWait = 23,
     ReservedStage24 = 24,
     ReservedStage25 = 25,
     ReservedStage26 = 26,
@@ -136,7 +136,7 @@ impl Stage {
             Stage::TransportChannelWait => "transport_channel_wait",
             Stage::TransportPriorityChannelWait => "transport_priority_channel_wait",
             Stage::TransportBulkChannelWait => "transport_bulk_channel_wait",
-            Stage::ReservedStage23 => "reserved_stage_23",
+            Stage::TransportRxLoopOwnedWait => "transport_rx_loop_owned_wait",
             Stage::ReservedStage24 => "reserved_stage_24",
             Stage::ReservedStage25 => "reserved_stage_25",
             Stage::ReservedStage26 => "reserved_stage_26",
@@ -211,7 +211,7 @@ fn stage_from_index(idx: usize) -> Stage {
         20 => Stage::TransportChannelWait,
         21 => Stage::TransportPriorityChannelWait,
         22 => Stage::TransportBulkChannelWait,
-        23 => Stage::ReservedStage23,
+        23 => Stage::TransportRxLoopOwnedWait,
         24 => Stage::ReservedStage24,
         25 => Stage::ReservedStage25,
         26 => Stage::ReservedStage26,
@@ -465,10 +465,10 @@ pub enum Event {
     PacketMover2CryptoBatchGe64 = 198,
     PacketMover2FspOwnerSyncEstablished = 199,
     PacketMover2FspOwnerSyncApplied = 200,
-    ReservedEvent201 = 201,
-    ReservedEvent202 = 202,
-    ReservedEvent203 = 203,
-    ReservedEvent204 = 204,
+    PacketMover2DispatchOwnerBlocked = 201,
+    PacketMover2DispatchNoIngress = 202,
+    PacketMover2DispatchLimitHit = 203,
+    PacketMover2DispatchExecutorFull = 204,
     ReservedEvent205 = 205,
     ReservedEvent206 = 206,
     ReservedEvent207 = 207,
@@ -693,10 +693,10 @@ impl Event {
                 "packet_mover2_fsp_owner_sync_established"
             }
             Event::PacketMover2FspOwnerSyncApplied => "packet_mover2_fsp_owner_sync_applied",
-            Event::ReservedEvent201 => "reserved_event_201",
-            Event::ReservedEvent202 => "reserved_event_202",
-            Event::ReservedEvent203 => "reserved_event_203",
-            Event::ReservedEvent204 => "reserved_event_204",
+            Event::PacketMover2DispatchOwnerBlocked => "packet_mover2_dispatch_owner_blocked",
+            Event::PacketMover2DispatchNoIngress => "packet_mover2_dispatch_no_ingress",
+            Event::PacketMover2DispatchLimitHit => "packet_mover2_dispatch_limit_hit",
+            Event::PacketMover2DispatchExecutorFull => "packet_mover2_dispatch_executor_full",
             Event::ReservedEvent205 => "reserved_event_205",
             Event::ReservedEvent206 => "reserved_event_206",
             Event::ReservedEvent207 => "reserved_event_207",
@@ -920,10 +920,10 @@ fn event_from_index(idx: usize) -> Event {
         198 => Event::PacketMover2CryptoBatchGe64,
         199 => Event::PacketMover2FspOwnerSyncEstablished,
         200 => Event::PacketMover2FspOwnerSyncApplied,
-        201 => Event::ReservedEvent201,
-        202 => Event::ReservedEvent202,
-        203 => Event::ReservedEvent203,
-        204 => Event::ReservedEvent204,
+        201 => Event::PacketMover2DispatchOwnerBlocked,
+        202 => Event::PacketMover2DispatchNoIngress,
+        203 => Event::PacketMover2DispatchLimitHit,
+        204 => Event::PacketMover2DispatchExecutorFull,
         205 => Event::ReservedEvent205,
         206 => Event::ReservedEvent206,
         207 => Event::ReservedEvent207,
@@ -1040,6 +1040,17 @@ fn record_count_sample(stage: Stage, elapsed_ns: u64, count: u64, bucket: usize)
     MAX_NS[idx].fetch_max(elapsed_ns, Relaxed);
     HIST[(idx * HIST_BUCKETS) + bucket].fetch_add(count, Relaxed);
     COUNT[idx].fetch_add(count, Release);
+}
+
+#[inline]
+pub(crate) fn record_since(stage: Stage, start: Option<TraceStamp>) {
+    if !enabled() {
+        return;
+    }
+    let Some(start) = start else {
+        return;
+    };
+    record_count(stage, start.elapsed_ns().max(1), 1);
 }
 
 /// Record one queue wait into aggregate + priority/bulk split counters.
