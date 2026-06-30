@@ -259,7 +259,8 @@
 
         let summary = driver
             .collect_completed_aead_outputs(PacketMover2RuntimeSummary::default(), completions);
-        let summary = driver.collect_aead_outputs(summary, limit);
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
 
         PacketMover2RuntimeTurn {
             summary,
@@ -297,7 +298,7 @@
             driver.admit_outbound_packet(packet, &mut summary);
         }
 
-        driver.finish_aead_turn(summary, limit)
+        finish_aead_turn_with_inline(driver, summary, limit)
     }
 
     fn run_aead_classified_output_turn<'a, I, O, S>(
@@ -322,7 +323,8 @@
             driver.admit_outbound_packet(packet, &mut summary);
         }
 
-        driver.finish_aead_output_turn(summary, sink, limit)
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        driver.finish_aead_output_turn_with_executor(summary, sink, limit, &mut executor)
     }
 
     fn run_aead_raw_ingress_turn<'a, I, O, R>(
@@ -340,7 +342,7 @@
         driver.reset_turn_buffers();
 
         let summary = driver.admit_raw_ingress_turn(inbound, router, outbound);
-        driver.finish_aead_turn(summary, limit)
+        finish_aead_turn_with_inline(driver, summary, limit)
     }
 
     fn run_aead_raw_ingress_output_turn<'a, I, O, R, S>(
@@ -360,7 +362,8 @@
         driver.reset_turn_buffers();
 
         let summary = driver.admit_raw_ingress_turn(inbound, router, outbound);
-        driver.finish_aead_output_turn(summary, sink, limit)
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        driver.finish_aead_output_turn_with_executor(summary, sink, limit, &mut executor)
     }
 
     fn pump_aead_output_completion_turn<'a, C, RI, O, R, S>(
@@ -413,7 +416,7 @@
         R: PacketMover2IngressRouter,
         S: PacketMover2OutputSink,
     {
-        let mut completions = PacketMover2NoCompletions;
+        let mut completions = VecDeque::<CryptoCompletion>::new();
         pump_aead_output_completion_turn(
             driver,
             &mut completions,
@@ -452,8 +455,13 @@
         Transports: PacketMover2TransportResolver + ?Sized,
     {
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+        let mut completions = VecDeque::<CryptoCompletion>::new();
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
         driver
-            .pump_aead_live_node_route_table_turn_with_firsts(
+            .pump_aead_live_node_route_table_completion_executor_turn_with_firsts(
+                &mut completions,
+                0,
+                &mut executor,
                 raw_ingress,
                 routes,
                 raw_ingress_limit,
@@ -473,6 +481,22 @@
                 &mut transport_worker,
             )
             .await
+    }
+
+    fn finish_aead_turn_with_inline(
+        driver: &mut PacketMover2TurnDriver,
+        summary: PacketMover2RuntimeSummary,
+        limit: usize,
+    ) -> PacketMover2RuntimeTurn<'_> {
+        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
+        PacketMover2RuntimeTurn {
+            summary,
+            raw_ingress_drops: &driver.raw_ingress_drops,
+            output_drops: &driver.output_drops,
+            outputs: &driver.outputs,
+            drops: &driver.drops,
+        }
     }
 
     fn test_node_addr(id: u64) -> NodeAddr {

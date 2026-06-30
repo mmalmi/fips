@@ -294,7 +294,7 @@
         );
 
         assert_eq!(dispatched, 6);
-        assert_eq!(executor.nonempty_chunks, vec![4, 2]);
+        assert_eq!(executor.nonempty_chunks, vec![6]);
         assert!(drops.is_empty());
         assert!(open_work.is_empty());
         assert!(seal_work.is_empty());

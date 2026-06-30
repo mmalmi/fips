@@ -455,59 +455,6 @@ impl PacketMover2LiveNode {
             .await
     }
 
-    pub(crate) async fn pump_turn_with_completion_executor<C, E, RI, Resolver, Transports>(
-        &mut self,
-        completions: &mut C,
-        completion_limit: usize,
-        executor: &mut E,
-        raw_ingress: &mut RI,
-        raw_ingress_limit: usize,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        C: PacketMover2CompletionSource,
-        E: PacketMover2CryptoExecutor,
-        RI: PacketMover2RawIngressSource,
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.driver
-            .pump_aead_live_node_route_table_completion_executor_turn_with_firsts(
-                completions,
-                completion_limit,
-                executor,
-                raw_ingress,
-                &mut self.routes,
-                raw_ingress_limit,
-                endpoint_priority_rx,
-                endpoint_bulk_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                outbound_firsts,
-                &mut self.deferred_endpoint_commands,
-                &mut self.deferred_tun_packets,
-                tun_tx,
-                endpoint_tx,
-                endpoint_resolver,
-                transports,
-                crypto_limit,
-                transport_send_worker,
-            )
-            .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn pump_outbound_firsts_with_transport_worker<Resolver, Transports>(
         &mut self,
@@ -576,71 +523,6 @@ impl PacketMover2LiveNode {
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,
                 crypto_worker,
-                empty_raw_ingress,
-                routes,
-                0,
-                empty_endpoint_priority_rx,
-                empty_endpoint_bulk_rx,
-                endpoint_limit,
-                empty_tun_outbound_rx,
-                tun_limit,
-                outbound_firsts,
-                deferred_endpoint_commands,
-                deferred_tun_packets,
-                tun_tx,
-                endpoint_tx,
-                endpoint_resolver,
-                transports,
-                crypto_limit,
-                transport_send_worker,
-            )
-            .await
-    }
-
-    pub(crate) async fn pump_outbound_firsts_with_completion_executor<
-        C,
-        E,
-        Resolver,
-        Transports,
-    >(
-        &mut self,
-        completions: &mut C,
-        completion_limit: usize,
-        executor: &mut E,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_limit: usize,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        endpoint_resolver: Resolver,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        C: PacketMover2CompletionSource,
-        E: PacketMover2CryptoExecutor,
-        Resolver: PacketMover2EndpointIdentityResolver,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        let Self {
-            driver,
-            routes,
-            deferred_endpoint_commands,
-            deferred_tun_packets,
-            empty_raw_ingress,
-            empty_endpoint_priority_rx,
-            empty_endpoint_bulk_rx,
-            empty_tun_outbound_rx,
-            ..
-        } = self;
-        empty_raw_ingress.clear();
-
-        driver
-            .pump_aead_live_node_route_table_completion_executor_turn_with_firsts(
-                completions,
-                completion_limit,
-                executor,
                 empty_raw_ingress,
                 routes,
                 0,
