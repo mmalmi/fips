@@ -323,6 +323,10 @@ impl Node {
 
             let now_ms = Self::now_ms();
             let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+            let pending_receive =
+                session
+                    .recv_cipher_clone()
+                    .map(|open| (!entry.current_k_bit(), open));
             self.sessions.install_rekey_initiator_pending_session(
                 *src_addr,
                 entry,
@@ -331,7 +335,9 @@ impl Node {
                 now_ms,
                 resend_interval,
             );
-            self.sync_packet_mover2_fsp_pending_receive_epoch(src_addr);
+            if let Some((pending_k_bit, open)) = pending_receive {
+                self.install_packet_mover2_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
+            }
             self.refresh_packet_mover2_fsp_owner_routes(src_addr);
 
             debug!(
@@ -503,9 +509,15 @@ impl Node {
                 }
             };
 
+            let pending_receive =
+                session
+                    .recv_cipher_clone()
+                    .map(|open| (!entry.current_k_bit(), open));
             self.sessions
                 .install_rekey_responder_pending_session(*src_addr, entry, session);
-            self.sync_packet_mover2_fsp_pending_receive_epoch(src_addr);
+            if let Some((pending_k_bit, open)) = pending_receive {
+                self.install_packet_mover2_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
+            }
             self.refresh_packet_mover2_fsp_owner_routes(src_addr);
 
             debug!(

@@ -287,12 +287,6 @@ impl SessionEntry {
         self.pending_new_session.as_ref()
     }
 
-    pub(crate) fn pending_k_bit(&self) -> Option<bool> {
-        self.pending_new_session
-            .as_ref()
-            .map(|_| !self.current_k_bit)
-    }
-
     fn current_noise_session(&self) -> Option<&NoiseSession> {
         match self.state.as_ref() {
             Some(EndToEndState::Established(session)) => Some(session),
@@ -304,10 +298,6 @@ impl SessionEntry {
     pub(crate) fn fsp_crypto_keys(&self) -> Option<(LessSafeKey, LessSafeKey)> {
         let session = self.current_noise_session()?;
         Some((session.recv_cipher_clone()?, session.send_cipher_clone()?))
-    }
-
-    pub(crate) fn pending_fsp_open_key(&self) -> Option<LessSafeKey> {
-        self.pending_new_session.as_ref()?.recv_cipher_clone()
     }
 
     /// Whether we initiated the current rekey.

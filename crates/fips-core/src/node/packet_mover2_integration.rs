@@ -723,19 +723,12 @@ impl Node {
             .is_ok()
     }
 
-    pub(in crate::node) fn sync_packet_mover2_fsp_pending_receive_epoch(
+    pub(in crate::node) fn install_packet_mover2_fsp_pending_receive_epoch(
         &mut self,
         node_addr: &NodeAddr,
+        pending_k_bit: bool,
+        open: ring::aead::LessSafeKey,
     ) -> bool {
-        let Some(session) = self.sessions.get(node_addr) else {
-            return false;
-        };
-        let Some(pending_k_bit) = session.pending_k_bit() else {
-            return false;
-        };
-        let Some(open) = session.pending_fsp_open_key() else {
-            return false;
-        };
         self.packet_mover2
             .install_owner_fsp_pending_receive_epoch(
                 OwnerId::fsp_node(*node_addr),
