@@ -11,6 +11,7 @@ use crate::config::SessionMmpConfig;
 use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
 use crate::noise::{HandshakeState, NoiseSession};
+use crate::packet_mover2::FspReceiveSync;
 use crate::{NodeAddr, PeerIdentity};
 use rand::RngExt;
 use ring::aead::LessSafeKey;
@@ -38,18 +39,6 @@ pub(crate) enum EndToEndState {
     AwaitingMsg3(HandshakeState),
     /// Handshake complete, NoiseSession available for encrypt/decrypt.
     Established(NoiseSession),
-}
-
-/// Authenticated FSP receive metadata produced by packet_mover2.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FspReceiveSync {
-    pub(crate) counter: u64,
-    pub(crate) received_k_bit: bool,
-    pub(crate) timestamp: u32,
-    pub(crate) plaintext_len: usize,
-    pub(crate) ce_flag: bool,
-    pub(crate) path_mtu: u16,
-    pub(crate) spin_bit: bool,
 }
 
 impl EndToEndState {

@@ -75,6 +75,18 @@ pub(crate) enum OutputTarget {
     SessionPayload { local_addr: NodeAddr },
 }
 
+/// Authenticated FSP receive metadata produced by packet_mover2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FspReceiveSync {
+    pub(crate) counter: u64,
+    pub(crate) received_k_bit: bool,
+    pub(crate) timestamp: u32,
+    pub(crate) plaintext_len: usize,
+    pub(crate) ce_flag: bool,
+    pub(crate) path_mtu: u16,
+    pub(crate) spin_bit: bool,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum TransportPath {
     Live {

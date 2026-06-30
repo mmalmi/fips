@@ -360,7 +360,7 @@ pub(crate) struct PacketMover2FspSessionIngress {
     source_addr: NodeAddr,
     previous_hop_addr: NodeAddr,
     ce_flag: bool,
-    receive_sync: crate::node::session::FspReceiveSync,
+    receive_sync: FspReceiveSync,
     activity_tick: Option<ActivityTick>,
     timestamp_ms: u32,
     msg_type: u8,
@@ -390,7 +390,7 @@ impl PacketMover2FspSessionIngress {
             };
             (timestamp_ms, msg_type, inner_flags, plaintext.len())
         };
-        let receive_sync = crate::node::session::FspReceiveSync {
+        let receive_sync = FspReceiveSync {
             counter: output.counter(),
             received_k_bit: header.flags() & crate::node::session_wire::FSP_FLAG_K != 0,
             timestamp: timestamp_ms,
@@ -454,7 +454,7 @@ impl PacketMover2FspSessionIngress {
         NodeAddr,
         NodeAddr,
         bool,
-        crate::node::session::FspReceiveSync,
+        FspReceiveSync,
         Option<ActivityTick>,
         u32,
         u8,

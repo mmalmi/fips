@@ -2,7 +2,7 @@ impl Node {
     fn apply_authenticated_fsp_receive_sync(
         &mut self,
         source_addr: NodeAddr,
-        sync: crate::node::session::FspReceiveSync,
+        sync: crate::packet_mover2::FspReceiveSync,
         now: Instant,
     ) -> bool {
         let apply = {
