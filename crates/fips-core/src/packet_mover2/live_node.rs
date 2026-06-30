@@ -321,6 +321,20 @@ impl PacketMover2LiveNode {
         Ok(())
     }
 
+    pub(crate) fn set_owner_fsp_wrap_route(
+        &mut self,
+        owner: OwnerId,
+        route: Option<PacketMover2FspWrapRoute>,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.set_fsp_wrap_route(route) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
     pub(crate) fn install_owner_fsp_pending_receive_epoch(
         &mut self,
         owner: OwnerId,
@@ -380,6 +394,11 @@ impl PacketMover2LiveNode {
     ) -> Option<PacketMover2FspSendContext> {
         self.driver
             .owner_fsp_send_context(OwnerId::fsp_node(*node_addr))
+    }
+
+    pub(crate) fn fsp_owner_next_hop(&self, node_addr: &NodeAddr) -> Option<NodeAddr> {
+        self.driver
+            .owner_fsp_next_hop(OwnerId::fsp_node(*node_addr))
     }
 
     pub(crate) fn fmp_owner_send_context(

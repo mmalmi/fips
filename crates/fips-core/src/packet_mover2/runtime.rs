@@ -54,6 +54,10 @@ impl PacketMover2TurnDriver {
         self.mover.owner_active_path(owner)
     }
 
+    pub(crate) fn owner_fsp_next_hop(&self, owner: OwnerId) -> Option<NodeAddr> {
+        self.mover.owner_fsp_next_hop(owner)
+    }
+
     pub(crate) fn owner_fsp_activity(
         &self,
         owner: OwnerId,

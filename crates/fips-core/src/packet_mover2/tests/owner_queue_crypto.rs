@@ -1124,6 +1124,83 @@
     }
 
     #[test]
+    fn fsp_owner_applies_installed_wrap_route_to_plain_outbound() {
+        let fmp = fmp_owner(78);
+        let fsp = fsp_owner(89);
+        let key = 8;
+        let wrap = PacketMover2FspWrapRoute::new(
+            fmp,
+            7,
+            7070,
+            test_node_addr(1),
+            fsp.node_addr(),
+        )
+        .with_fmp_flags(0x04)
+        .with_ttl(63)
+        .with_path_mtu(1400);
+        let mut mover = mover();
+        mover.register_owner(
+            fsp,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(20)
+                .with_fsp_wrap_route(wrap),
+        );
+        mover
+            .owner_mut(fsp)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        mover
+            .submit_outbound_packet(OutboundPacket::fsp(
+                fsp,
+                1,
+                PacketClass::Bulk,
+                0,
+                b"owner routed".to_vec(),
+            ))
+            .unwrap();
+
+        let mut work = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].packet.fsp_next_hop(), Some(fmp.node_addr()));
+
+        let completion = StatelessAeadSealWorker.execute(
+            AeadSealWork::from_outbound_work(work.pop().unwrap(), test_key(key)).unwrap(),
+        );
+        let retired = retire_completion(&mut mover, completion);
+        assert_eq!(retired.len(), 1);
+        match &retired[0] {
+            RetiredPacket::Outbound(packet) => {
+                assert_eq!(packet.owner, fmp);
+                assert_eq!(packet.generation, 7);
+                assert_eq!(packet.post_seal, OutboundPostSeal::Transport);
+                assert_eq!(
+                    packet.wire,
+                    OutboundWire::Fmp {
+                        receiver_idx: 7070,
+                        flags: 0x04
+                    }
+                );
+                assert_eq!(
+                    packet.fsp_send_receipt,
+                    Some(PacketMover2FspSendReceipt::new(fsp, 20, None))
+                );
+                assert_eq!(
+                    packet.payload[0],
+                    crate::protocol::LinkMessageType::SessionDatagram.to_byte()
+                );
+                assert_eq!(packet.payload[1], 63);
+                assert_eq!(
+                    u16::from_le_bytes([packet.payload[2], packet.payload[3]]),
+                    1400
+                );
+            }
+            RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
+            RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
+        }
+    }
+
+    #[test]
     fn outbound_owner_spends_fsp_coords_warmup_on_reserved_packets() {
         let owner = fsp_owner(89);
         let coords_prefix = empty_fsp_coords_prefix();

@@ -105,11 +105,6 @@ impl PacketMover2EndpointCommandRoute {
         }
     }
 
-    pub(crate) fn with_fmp_wrap(mut self, route: PacketMover2FspWrapRoute) -> Self {
-        self.post_seal = OutboundPostSeal::FmpWrap(route);
-        self
-    }
-
     pub(crate) fn with_fsp_cleartext_prefix(mut self, prefix: Vec<u8>) -> Self {
         self.fsp_cleartext_prefix = prefix;
         self

@@ -253,6 +253,15 @@ impl OutboundPacket {
         self
     }
 
+    fn apply_fsp_owner_wrap_route(&mut self, route: PacketMover2FspWrapRoute) {
+        if self.owner.protocol() != PacketProtocol::Fsp
+            || !matches!(self.post_seal, OutboundPostSeal::Transport)
+        {
+            return;
+        }
+        self.post_seal = OutboundPostSeal::FmpWrap(route);
+    }
+
     pub(crate) fn with_fsp_cleartext_prefix(mut self, prefix: Vec<u8>) -> Self {
         self.fsp_cleartext_prefix = prefix;
         self

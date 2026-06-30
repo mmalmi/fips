@@ -14,6 +14,7 @@ pub(crate) struct OwnerConfig {
     fsp_current_k_bit: Option<bool>,
     fsp_previous_draining_k_bit: Option<bool>,
     fsp_coords_warmup: Option<(u8, Vec<u8>)>,
+    fsp_wrap_route: Option<PacketMover2FspWrapRoute>,
     fsp_mmp: Option<PacketMover2FspMmpConfig>,
     source_peer: Option<crate::PeerIdentity>,
 }
@@ -302,6 +303,7 @@ impl OwnerConfig {
             fsp_current_k_bit: None,
             fsp_previous_draining_k_bit: None,
             fsp_coords_warmup: None,
+            fsp_wrap_route: None,
             fsp_mmp: None,
             source_peer: None,
         }
@@ -384,6 +386,11 @@ impl OwnerConfig {
         } else {
             self.fsp_coords_warmup = Some((remaining, prefix));
         }
+        self
+    }
+
+    pub(crate) fn with_fsp_wrap_route(mut self, route: PacketMover2FspWrapRoute) -> Self {
+        self.fsp_wrap_route = Some(route);
         self
     }
 
@@ -630,6 +637,7 @@ pub(crate) struct OwnerState {
     fsp_previous_draining_k_bit: Option<bool>,
     fsp_coords_warmup_remaining: u8,
     fsp_coords_prefix: Vec<u8>,
+    fsp_wrap_route: Option<PacketMover2FspWrapRoute>,
     fsp_mmp: Option<crate::mmp::MmpSessionState>,
     fsp_lifecycle_confirmed: bool,
     source_peer: Option<crate::PeerIdentity>,
@@ -689,6 +697,7 @@ impl OwnerState {
             fsp_coords_prefix: config
                 .fsp_coords_warmup
                 .map_or_else(Vec::new, |(_, prefix)| prefix),
+            fsp_wrap_route: config.fsp_wrap_route,
             fsp_mmp: config
                 .fsp_mmp
                 .map(|mmp| crate::mmp::MmpSessionState::new(&mmp.config, mmp.is_initiator)),
@@ -734,6 +743,7 @@ impl OwnerState {
         self.fsp_previous_draining_k_bit = None;
         self.fsp_coords_warmup_remaining = 0;
         self.fsp_coords_prefix.clear();
+        self.fsp_wrap_route = None;
         if let Some(mmp) = &mut self.fsp_mmp {
             mmp.reset_for_rekey(std::time::Instant::now());
         }
@@ -832,6 +842,14 @@ impl OwnerState {
         true
     }
 
+    pub(crate) fn set_fsp_wrap_route(&mut self, route: Option<PacketMover2FspWrapRoute>) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        self.fsp_wrap_route = route;
+        true
+    }
+
     pub(crate) fn set_fsp_coords_warmup(&mut self, remaining: u8, prefix: Vec<u8>) -> bool {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return false;
@@ -893,6 +911,9 @@ impl OwnerState {
             self.fsp_coords_warmup_remaining = remaining;
             self.fsp_coords_prefix = prefix;
         }
+        if let Some(route) = config.fsp_wrap_route {
+            self.fsp_wrap_route = Some(route);
+        }
     }
 
     pub(crate) fn set_send_counter_authority(
@@ -945,6 +966,13 @@ impl OwnerState {
 
     pub(crate) fn active_path(&self) -> Option<TransportPath> {
         self.active_path.clone()
+    }
+
+    pub(crate) fn fsp_wrap_next_hop(&self) -> Option<NodeAddr> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        self.fsp_wrap_route.map(PacketMover2FspWrapRoute::next_hop_addr)
     }
 
     pub(crate) fn fmp_send_context(&self) -> Option<PacketMover2FmpSendContext> {
@@ -1243,12 +1271,13 @@ impl OwnerState {
 
         let counter = self.reserve_send_counter()?;
         let output_path = self.active_path.clone();
-        let fsp_next_hop = packet.fsp_next_hop();
-        let fsp_application_data_len = packet.fsp_application_data_len();
         let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
         let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
         self.refresh_fsp_outbound_headers(&mut packet);
+        self.apply_fsp_wrap_route(&mut packet);
         self.reserve_fsp_coords_warmup(&mut packet);
+        let fsp_next_hop = packet.fsp_next_hop();
+        let fsp_application_data_len = packet.fsp_application_data_len();
         if let Some(tick) = packet.activity_tick {
             note_activity(&mut self.last_tx_activity, tick);
             if fsp_application_data_len.is_some() {
@@ -1726,6 +1755,16 @@ impl OwnerState {
             }
             .to_byte(),
         );
+    }
+
+    fn apply_fsp_wrap_route(&self, packet: &mut OutboundPacket) {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return;
+        }
+        let Some(route) = self.fsp_wrap_route else {
+            return;
+        };
+        packet.apply_fsp_owner_wrap_route(route);
     }
 
     fn reserve_send_counter(&mut self) -> Result<u64, OwnerReserveError> {

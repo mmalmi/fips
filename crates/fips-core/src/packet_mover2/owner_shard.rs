@@ -36,6 +36,12 @@ impl PacketMover2OwnerShard {
             .and_then(OwnerState::active_path)
     }
 
+    fn owner_fsp_next_hop(&self, owner: OwnerId) -> Option<NodeAddr> {
+        self.owners
+            .get(&owner)
+            .and_then(OwnerState::fsp_wrap_next_hop)
+    }
+
     fn owner_mut(&mut self, owner: OwnerId) -> Option<&mut OwnerState> {
         self.owners.get_mut(&owner)
     }

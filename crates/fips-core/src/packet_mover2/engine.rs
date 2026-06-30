@@ -48,6 +48,10 @@ impl PacketMover2 {
         self.owner_shard(owner).owner_active_path(owner)
     }
 
+    pub(crate) fn owner_fsp_next_hop(&self, owner: OwnerId) -> Option<NodeAddr> {
+        self.owner_shard(owner).owner_fsp_next_hop(owner)
+    }
+
     pub(crate) fn owner_fsp_activity(
         &self,
         owner: OwnerId,

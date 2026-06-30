@@ -97,11 +97,6 @@ impl PacketMover2TunOutboundRoute {
         self
     }
 
-    pub(crate) fn with_fmp_wrap(mut self, route: PacketMover2FspWrapRoute) -> Self {
-        self.post_seal = OutboundPostSeal::FmpWrap(route);
-        self
-    }
-
     fn owner(&self) -> OwnerId {
         self.owner
     }

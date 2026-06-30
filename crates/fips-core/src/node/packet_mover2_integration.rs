@@ -1,13 +1,13 @@
 use super::endpoint_traffic::classify_fmp_plaintext_traffic;
 use super::*;
 use crate::packet_mover2::{
-    ActivityTick, OutboundPacket, OutboundPostSeal, OutputTarget, OwnerConfig, OwnerCryptoKeys,
-    OwnerId, PacketClass, PacketMover2EndpointCommandRoute, PacketMover2FspSendReceipt,
-    PacketMover2FspWrapRoute, PacketMover2IngressRoute, PacketMover2LiveEndpointRoute,
-    PacketMover2LiveFmpIngressRoute, PacketMover2LiveFspIngressRoute, PacketMover2LiveNodeTurn,
-    PacketMover2LiveOutboundFirsts, PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute,
-    PacketMover2OutputDrop, PacketMover2OutputError, PacketMover2TunDestinationRoute,
-    PacketMover2TunOutboundRoute, TransportPath,
+    ActivityTick, OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
+    PacketMover2EndpointCommandRoute, PacketMover2FspSendReceipt, PacketMover2FspWrapRoute,
+    PacketMover2IngressRoute, PacketMover2LiveEndpointRoute, PacketMover2LiveFmpIngressRoute,
+    PacketMover2LiveFspIngressRoute, PacketMover2LiveNodeTurn, PacketMover2LiveOutboundFirsts,
+    PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute, PacketMover2OutputDrop,
+    PacketMover2OutputError, PacketMover2TunDestinationRoute, PacketMover2TunOutboundRoute,
+    TransportPath,
 };
 use crate::protocol::SessionMessageType;
 
@@ -30,6 +30,7 @@ struct PacketMover2FspOwnerSeed {
     config: OwnerConfig,
     keys: OwnerCryptoKeys,
     routes: PacketMover2LiveOwnerRoutes,
+    wrap: Option<PacketMover2FspWrapRoute>,
     next_hop: Option<NodeAddr>,
 }
 
@@ -42,6 +43,12 @@ pub(in crate::node) struct PacketMover2FspOwnerSessionSnapshot {
     previous_draining_k_bit: Option<bool>,
     source_peer: PeerIdentity,
     is_initiator: bool,
+}
+
+struct PacketMover2FspOwnerRouteUpdate {
+    routes: PacketMover2LiveOwnerRoutes,
+    wrap: Option<PacketMover2FspWrapRoute>,
+    next_hop: Option<NodeAddr>,
 }
 
 impl Node {
@@ -432,12 +439,7 @@ impl Node {
                 reason: format!("packet_mover2 FSP owner send context unavailable for {label}"),
             });
         };
-        let Some((wrap, next_hop)) = self.packet_mover2_fsp_wrap_route(dest_addr) else {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("packet_mover2 FSP wrap route unavailable for {label}"),
-            });
-        };
+        let next_hop = self.packet_mover2.fsp_owner_next_hop(dest_addr);
         let coords_prefix_len = coords_prefix.as_ref().map_or(0, Vec::len);
         let fsp_flags = fsp_flags_override.unwrap_or_else(|| send_context.fsp_flags());
         let inner_flags = send_context.inner_flags();
@@ -450,7 +452,6 @@ impl Node {
             payload.to_vec(),
         )
         .with_fsp_inner_header(msg_type, inner_flags)
-        .with_post_seal(OutboundPostSeal::FmpWrap(wrap))
         .with_activity_tick(ActivityTick::new(now_ms));
         if let Some(prefix) = coords_prefix {
             outbound = outbound.with_fsp_cleartext_prefix(prefix);
@@ -467,8 +468,10 @@ impl Node {
         {
             Ok(turn) => turn,
             Err(error) => {
-                self.record_route_failure(*dest_addr, next_hop);
-                self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
+                if let Some(next_hop) = next_hop {
+                    self.record_route_failure(*dest_addr, next_hop);
+                    self.recover_direct_payload_send_failure(*dest_addr, next_hop, &error);
+                }
                 return Err(error);
             }
         };
@@ -679,17 +682,24 @@ impl Node {
         let Some(send_context) = self.packet_mover2.fsp_owner_send_context(node_addr) else {
             return false;
         };
-        let (routes, next_hop) = self.packet_mover2_fsp_owner_routes(
+        let update = self.packet_mover2_fsp_owner_routes(
             node_addr,
             send_context.generation(),
             send_context.fsp_flags(),
             send_context.inner_flags(),
         );
-        let next_hop_ready =
-            next_hop.is_none_or(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
+        let route_ready = update.wrap.is_some();
+        let next_hop_ready = update
+            .next_hop
+            .is_some_and(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
         self.packet_mover2
-            .replace_owner_routes(owner, routes)
+            .set_owner_fsp_wrap_route(owner, update.wrap)
             .is_ok()
+            && self
+                .packet_mover2
+                .replace_owner_routes(owner, update.routes)
+                .is_ok()
+            && route_ready
             && next_hop_ready
     }
 
@@ -830,6 +840,10 @@ impl Node {
             .is_ok()
             && self
                 .packet_mover2
+                .set_owner_fsp_wrap_route(seed.owner, seed.wrap)
+                .is_ok()
+            && self
+                .packet_mover2
                 .replace_owner_routes(seed.owner, seed.routes)
                 .is_ok()
             && next_hop_ready;
@@ -935,7 +949,7 @@ impl Node {
         let inner_flags = crate::protocol::FspInnerFlags { spin_bit: false }.to_byte();
         let coords_prefix =
             self.packet_mover2_fsp_coords_prefix(node_addr, coords_warmup_remaining);
-        let (routes, next_hop) =
+        let route_update =
             self.packet_mover2_fsp_owner_routes(node_addr, generation, fsp_flags, inner_flags);
 
         let mut config = self
@@ -949,12 +963,16 @@ impl Node {
         if coords_warmup_remaining > 0 {
             config = config.with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix);
         }
+        if let Some(wrap) = route_update.wrap {
+            config = config.with_fsp_wrap_route(wrap);
+        }
         Some(PacketMover2FspOwnerSeed {
             owner: OwnerId::fsp_node(*node_addr),
             config,
             keys: OwnerCryptoKeys::new(Arc::new(snapshot.open), Arc::new(snapshot.seal)),
-            routes,
-            next_hop,
+            routes: route_update.routes,
+            wrap: route_update.wrap,
+            next_hop: route_update.next_hop,
         })
     }
 
@@ -986,10 +1004,14 @@ impl Node {
         generation: u64,
         fsp_flags: u8,
         inner_flags: u8,
-    ) -> (PacketMover2LiveOwnerRoutes, Option<NodeAddr>) {
+    ) -> PacketMover2FspOwnerRouteUpdate {
         let owner = OwnerId::fsp_node(*node_addr);
         let Some((wrap, next_hop)) = self.packet_mover2_fsp_wrap_route(node_addr) else {
-            return (PacketMover2LiveOwnerRoutes::new(), None);
+            return PacketMover2FspOwnerRouteUpdate {
+                routes: PacketMover2LiveOwnerRoutes::new(),
+                wrap: None,
+                next_hop: None,
+            };
         };
 
         let mut routes = PacketMover2LiveOwnerRoutes::new();
@@ -1010,8 +1032,7 @@ impl Node {
             PacketClass::Bulk,
             fsp_flags,
             inner_flags,
-        )
-        .with_fmp_wrap(wrap);
+        );
         routes.push_tun_destination(PacketMover2LiveTunRoute::new(
             *node_addr,
             PacketMover2TunDestinationRoute::new(tun)
@@ -1019,11 +1040,14 @@ impl Node {
         ));
 
         let endpoint =
-            PacketMover2EndpointCommandRoute::fsp(owner, generation, fsp_flags, inner_flags)
-                .with_fmp_wrap(wrap);
+            PacketMover2EndpointCommandRoute::fsp(owner, generation, fsp_flags, inner_flags);
         routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(*node_addr, endpoint));
 
-        (routes, Some(next_hop))
+        PacketMover2FspOwnerRouteUpdate {
+            routes,
+            wrap: Some(wrap),
+            next_hop: Some(next_hop),
+        }
     }
 
     fn packet_mover2_fsp_wrap_route(
