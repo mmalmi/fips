@@ -93,39 +93,6 @@ impl crate::node::SessionRegistry {
         self.insert(remote_addr, entry)
     }
 
-    fn install_established_initiator_session(
-        &mut self,
-        remote_addr: NodeAddr,
-        mut entry: SessionEntry,
-        session: NoiseSession,
-        msg3_resend_payload: Vec<u8>,
-        now_ms: u64,
-        resend_interval_ms: u64,
-    ) -> Option<SessionEntry> {
-        entry.set_state(EndToEndState::Established(session));
-        entry.mark_established(now_ms);
-        entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval_ms);
-        self.insert(remote_addr, entry)
-    }
-
-    fn install_established_responder_session(
-        &mut self,
-        remote_addr: NodeAddr,
-        remote_pubkey: PublicKey,
-        session: NoiseSession,
-        now_ms: u64,
-    ) -> Option<SessionEntry> {
-        let mut entry = SessionEntry::new(
-            remote_addr,
-            remote_pubkey,
-            EndToEndState::Established(session),
-            now_ms,
-            false,
-        );
-        entry.mark_established(now_ms);
-        self.insert(remote_addr, entry)
-    }
-
     fn install_rekey_responder_awaiting_msg3(
         &mut self,
         remote_addr: &NodeAddr,

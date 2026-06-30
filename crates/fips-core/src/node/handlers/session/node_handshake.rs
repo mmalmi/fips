@@ -426,18 +426,14 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-        self.sessions.install_established_initiator_session(
-            *src_addr,
-            entry,
-            session,
-            msg3_resend_payload,
-            now_ms,
-            resend_interval,
-        );
-        self.sync_packet_mover2_fsp_owner_with_coords_warmup(
+        entry.establish(session, now_ms);
+        entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
+        self.sync_packet_mover2_fsp_owner_from_session_entry(
             src_addr,
+            &entry,
             self.config.node.session.coords_warmup_packets,
         );
+        self.sessions.insert(*src_addr, entry);
 
         // Flush any queued outbound packets for this destination
         self.flush_pending_packets(src_addr).await;
@@ -557,16 +553,19 @@ impl Node {
 
         let now_ms = Self::now_ms();
         // Replace the placeholder pubkey with the real one
-        self.sessions.install_established_responder_session(
+        let entry = SessionEntry::new_established(
             *src_addr,
             remote_pubkey,
             session,
             now_ms,
+            false,
         );
-        self.sync_packet_mover2_fsp_owner_with_coords_warmup(
+        self.sync_packet_mover2_fsp_owner_from_session_entry(
             src_addr,
+            &entry,
             self.config.node.session.coords_warmup_packets,
         );
+        self.sessions.insert(*src_addr, entry);
 
         // Flush any pending packets
         self.flush_pending_packets(src_addr).await;

@@ -210,17 +210,11 @@
         let (initiator_session, _) = make_xk_session_pair(&local, &peer);
         let mut entry = initiating_entry(&local, &peer);
         let _ = entry.take_state();
+        entry.establish(initiator_session, 3_000);
+        entry.set_handshake_payload(vec![0x44, 0x55], 3_750);
         assert!(
-            sessions
-                .install_established_initiator_session(
-                    peer_addr,
-                    entry,
-                    initiator_session,
-                    vec![0x44, 0x55],
-                    3_000,
-                    750,
-                )
-                .is_some()
+            sessions.insert(peer_addr, entry).is_some(),
+            "established initiator install replaces the old awaiting-msg3 entry"
         );
         let entry = sessions
             .get(&peer_addr)
@@ -232,15 +226,16 @@
         assert_eq!(entry.next_resend_at_ms(), 3_750);
 
         let (_, responder_session) = make_xk_session_pair(&peer, &local);
+        let entry = SessionEntry::new_established(
+            peer_addr,
+            peer.pubkey_full(),
+            responder_session,
+            4_000,
+            false,
+        );
         assert!(
-            sessions
-                .install_established_responder_session(
-                    peer_addr,
-                    peer.pubkey_full(),
-                    responder_session,
-                    4_000,
-                )
-                .is_some()
+            sessions.insert(peer_addr, entry).is_some(),
+            "established responder install replaces the old initiator entry"
         );
         let entry = sessions
             .get(&peer_addr)

@@ -148,6 +148,24 @@ impl SessionEntry {
         }
     }
 
+    pub(crate) fn new_established(
+        remote_addr: NodeAddr,
+        remote_pubkey: PublicKey,
+        session: NoiseSession,
+        now_ms: u64,
+        is_initiator: bool,
+    ) -> Self {
+        let mut entry = Self::new(
+            remote_addr,
+            remote_pubkey,
+            EndToEndState::Established(session),
+            now_ms,
+            is_initiator,
+        );
+        entry.mark_established(now_ms);
+        entry
+    }
+
     /// Get the remote node's public key.
     pub(crate) fn remote_pubkey(&self) -> &PublicKey {
         &self.remote_pubkey
@@ -197,6 +215,11 @@ impl SessionEntry {
     /// session-relative timestamps in the FSP inner header.
     pub(crate) fn mark_established(&mut self, now_ms: u64) {
         self.session_start_ms = now_ms;
+    }
+
+    pub(crate) fn establish(&mut self, session: NoiseSession, now_ms: u64) {
+        self.set_state(EndToEndState::Established(session));
+        self.mark_established(now_ms);
     }
 
     /// Whether this node initiated the Noise handshake.
