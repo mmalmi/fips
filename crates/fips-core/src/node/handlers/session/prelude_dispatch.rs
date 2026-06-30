@@ -67,18 +67,22 @@ enum OutboundSessionState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TunOutboundSessionDecision {
-    Established,
-    EstablishedPathMtuExceeded { path_ipv6_mtu: u32 },
-    Pending,
-    Missing,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiscoveryRetrySessionDecision {
     Established,
     RestartedPending,
     Missing,
+}
+
+impl Node {
+    fn packet_mover2_outbound_session_state(&self, dest_addr: &NodeAddr) -> OutboundSessionState {
+        if self.packet_mover2_has_fsp_owner(dest_addr) {
+            OutboundSessionState::Established
+        } else if self.sessions.get(dest_addr).is_some() {
+            OutboundSessionState::Pending
+        } else {
+            OutboundSessionState::Missing
+        }
+    }
 }
 
 /// Authenticated established-FSP message ready for local dispatch.

@@ -297,43 +297,6 @@ impl crate::node::SessionRegistry {
             .is_some_and(|entry| entry.is_established() || entry.is_initiating())
     }
 
-    fn outbound_session_state(&self, dest_addr: &NodeAddr) -> OutboundSessionState {
-        let Some(entry) = self.get(dest_addr) else {
-            return OutboundSessionState::Missing;
-        };
-        if entry.is_established() {
-            OutboundSessionState::Established
-        } else {
-            OutboundSessionState::Pending
-        }
-    }
-
-    fn tun_outbound_session_decision(
-        &self,
-        dest_addr: &NodeAddr,
-        effective_mtu: usize,
-        packet_len: usize,
-    ) -> TunOutboundSessionDecision {
-        let Some(entry) = self.get(dest_addr) else {
-            return TunOutboundSessionDecision::Missing;
-        };
-        if !entry.is_established() {
-            return TunOutboundSessionDecision::Pending;
-        }
-
-        if let Some(mmp) = entry.mmp() {
-            let path_mtu = mmp.path_mtu.current_mtu();
-            let path_ipv6_mtu = crate::upper::icmp::effective_ipv6_mtu(path_mtu) as usize;
-            if path_ipv6_mtu < effective_mtu && packet_len > path_ipv6_mtu {
-                return TunOutboundSessionDecision::EstablishedPathMtuExceeded {
-                    path_ipv6_mtu: path_ipv6_mtu as u32,
-                };
-            }
-        }
-
-        TunOutboundSessionDecision::Established
-    }
-
     fn prepare_retry_session_after_discovery(
         &mut self,
         dest_addr: &NodeAddr,

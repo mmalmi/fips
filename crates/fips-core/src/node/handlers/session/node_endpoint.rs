@@ -53,7 +53,7 @@ impl Node {
             return Ok(());
         }
 
-        match self.sessions.outbound_session_state(&dest_addr) {
+        match self.packet_mover2_outbound_session_state(&dest_addr) {
             OutboundSessionState::Established => {
                 let route_available = self.find_next_hop(&dest_addr).is_some();
                 for payload in payloads {

@@ -189,27 +189,22 @@ impl Node {
         dest_pubkey: secp256k1::PublicKey,
         ipv6_packet: Vec<u8>,
     ) {
-        match self.sessions.tun_outbound_session_decision(
-            &dest_addr,
-            self.effective_ipv6_mtu() as usize,
-            ipv6_packet.len(),
-        ) {
-            TunOutboundSessionDecision::Established => {
+        match self.packet_mover2_outbound_session_state(&dest_addr) {
+            OutboundSessionState::Established => {
                 if self.find_next_hop(&dest_addr).is_some()
-                    && self
+                {
+                    match self
                         .send_packet_mover2_cached_tun_packet(&dest_addr, ipv6_packet.clone())
                         .await
-                        .is_ok()
-                {
-                    return;
+                    {
+                        Ok(()) | Err(NodeError::MtuExceeded { .. }) => return,
+                        Err(_) => {}
+                    }
                 }
                 self.queue_pending_tun_packet(dest_addr, ipv6_packet);
                 self.maybe_initiate_path_recovery_lookup(&dest_addr).await;
             }
-            TunOutboundSessionDecision::EstablishedPathMtuExceeded { path_ipv6_mtu } => {
-                self.send_icmpv6_packet_too_big(&ipv6_packet, path_ipv6_mtu);
-            }
-            TunOutboundSessionDecision::Pending => {
+            OutboundSessionState::Pending => {
                 self.queue_pending_tun_packet(dest_addr, ipv6_packet);
                 let should_discover = self.config.node.routing.mode
                     == crate::config::RoutingMode::ReplyLearned
@@ -218,7 +213,7 @@ impl Node {
                     self.maybe_initiate_lookup(&dest_addr).await;
                 }
             }
-            TunOutboundSessionDecision::Missing => {
+            OutboundSessionState::Missing => {
                 if self.find_next_hop(&dest_addr).is_none() {
                     self.queue_pending_tun_packet(dest_addr, ipv6_packet);
                     self.maybe_initiate_lookup(&dest_addr).await;

@@ -403,65 +403,28 @@
     }
 
     #[test]
-    fn session_registry_owns_outbound_session_state_and_tun_pmtu_guard() {
+    fn session_registry_owns_session_initiation_skip_policy() {
         let local = Identity::generate();
         let established_peer = Identity::generate();
         let initiating_peer = Identity::generate();
         let established_addr = *established_peer.node_addr();
         let initiating_addr = *initiating_peer.node_addr();
         let missing_addr = node_addr(0x99);
-        let mut established = established_entry(&local, &established_peer);
-        established.init_mmp(&crate::config::SessionMmpConfig::default());
         let mut sessions = crate::node::SessionRegistry::default();
-        assert!(sessions.insert(established_addr, established).is_none());
+        assert!(
+            sessions
+                .insert(established_addr, established_entry(&local, &established_peer))
+                .is_none()
+        );
         assert!(
             sessions
                 .insert(initiating_addr, initiating_entry(&local, &initiating_peer))
                 .is_none()
         );
 
-        assert_eq!(
-            sessions.outbound_session_state(&established_addr),
-            OutboundSessionState::Established
-        );
-        assert_eq!(
-            sessions.outbound_session_state(&initiating_addr),
-            OutboundSessionState::Pending
-        );
-        assert_eq!(
-            sessions.outbound_session_state(&missing_addr),
-            OutboundSessionState::Missing
-        );
         assert!(sessions.should_skip_session_initiation(&established_addr));
         assert!(sessions.should_skip_session_initiation(&initiating_addr));
         assert!(!sessions.should_skip_session_initiation(&missing_addr));
-
-        assert_eq!(
-            sessions.tun_outbound_session_decision(&established_addr, 1500, 1280),
-            TunOutboundSessionDecision::Established
-        );
-
-        let path_mtu = 1280;
-        assert!(sessions.seed_session_datagram_path_mtu(&established_addr, path_mtu));
-        let path_ipv6_mtu = crate::upper::icmp::effective_ipv6_mtu(path_mtu) as usize;
-        assert_eq!(
-            sessions.tun_outbound_session_decision(&established_addr, 1500, path_ipv6_mtu + 1),
-            TunOutboundSessionDecision::EstablishedPathMtuExceeded {
-                path_ipv6_mtu: path_ipv6_mtu as u32
-            }
-        );
-        assert_eq!(
-            sessions.tun_outbound_session_decision(&established_addr, 1500, path_ipv6_mtu),
-            TunOutboundSessionDecision::Established
-        );
-        assert_eq!(
-            sessions.tun_outbound_session_decision(&initiating_addr, 1500, 1280),
-            TunOutboundSessionDecision::Pending
-        );
-        assert_eq!(
-            sessions.tun_outbound_session_decision(&missing_addr, 1500, 1280),
-            TunOutboundSessionDecision::Missing
-        );
     }
 
     #[test]

@@ -198,9 +198,45 @@ impl Node {
                 1,
             )
             .await;
+        if let Some(error) = self.packet_mover2_cached_tun_drop_error(dest_addr, &turn) {
+            return Err(error);
+        }
         self.finish_packet_mover2_pending_outbound_turn(dest_addr, "queued TUN packet", turn, false)
             .await
             .map(|_| ())
+    }
+
+    fn packet_mover2_cached_tun_drop_error(
+        &mut self,
+        dest_addr: &NodeAddr,
+        turn: &PacketMover2LiveNodeTurn,
+    ) -> Option<NodeError> {
+        let drop = turn.tun_outbound_drops().first()?;
+        let packet = drop.packet().to_vec();
+        let payload_len = drop.payload_len();
+        match drop.reason() {
+            crate::packet_mover2::PacketMover2TunOutboundDropReason::MtuExceeded { mtu } => {
+                self.send_icmpv6_packet_too_big(&packet, mtu);
+                Some(NodeError::MtuExceeded {
+                    node_addr: *dest_addr,
+                    packet_size: payload_len,
+                    mtu: mtu.min(u32::from(u16::MAX)) as u16,
+                })
+            }
+            crate::packet_mover2::PacketMover2TunOutboundDropReason::NoRoute => {
+                self.send_icmpv6_dest_unreachable(&packet);
+                Some(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "packet_mover2 TUN route unavailable".into(),
+                })
+            }
+            crate::packet_mover2::PacketMover2TunOutboundDropReason::InvalidPacket => {
+                Some(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "packet_mover2 TUN packet invalid".into(),
+                })
+            }
+        }
     }
 
     pub(in crate::node) async fn send_packet_mover2_cached_endpoint_payloads(
