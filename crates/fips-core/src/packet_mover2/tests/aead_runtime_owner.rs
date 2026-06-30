@@ -1278,7 +1278,6 @@
             ce_flag: false,
             path_mtu: u16::MAX,
             spin_bit: false,
-            lifecycle_sync_required: false,
         };
 
         assert!(mover
@@ -1359,7 +1358,6 @@
             ce_flag: false,
             path_mtu: 1234,
             spin_bit: false,
-            lifecycle_sync_required: false,
         };
         assert_eq!(
             mover.record_authenticated_fsp_session(
@@ -1371,7 +1369,10 @@
                 Some(ActivityTick::new(1_030)),
                 std::time::Instant::now(),
             ),
-            Some(true)
+            Some(FspReceiveLifecycle {
+                registry_sync_required: true,
+                current_epoch_confirmed: true,
+            })
         );
 
         let batch = mover.collect_fsp_mmp_reports(std::time::Instant::now());
@@ -1426,7 +1427,6 @@
             ce_flag: false,
             path_mtu: u16::MAX,
             spin_bit: false,
-            lifecycle_sync_required: false,
         };
         assert_eq!(
             mover.record_authenticated_fsp_session(
@@ -1438,7 +1438,10 @@
                 Some(ActivityTick::new(1_040)),
                 std::time::Instant::now(),
             ),
-            Some(true)
+            Some(FspReceiveLifecycle {
+                registry_sync_required: true,
+                current_epoch_confirmed: true,
+            })
         );
 
         let rr = crate::mmp::report::ReceiverReport {

@@ -695,7 +695,6 @@
             ce_flag: false,
             path_mtu: u16::MAX,
             spin_bit: false,
-            lifecycle_sync_required: false,
         };
         assert_eq!(
             state.record_authenticated_fsp_session(
@@ -706,7 +705,10 @@
                 None,
                 std::time::Instant::now(),
             ),
-            Some(true)
+            Some(FspReceiveLifecycle {
+                registry_sync_required: true,
+                current_epoch_confirmed: true,
+            })
         );
 
         let packet = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"payload".to_vec())

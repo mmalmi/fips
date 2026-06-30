@@ -85,7 +85,13 @@ pub(crate) struct FspReceiveSync {
     pub(crate) ce_flag: bool,
     pub(crate) path_mtu: u16,
     pub(crate) spin_bit: bool,
-    pub(crate) lifecycle_sync_required: bool,
+}
+
+/// Owner-side lifecycle signal emitted after authenticated FSP retirement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FspReceiveLifecycle {
+    pub(crate) registry_sync_required: bool,
+    pub(crate) current_epoch_confirmed: bool,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

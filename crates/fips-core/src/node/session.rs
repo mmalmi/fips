@@ -389,7 +389,7 @@ impl SessionEntry {
     /// ordered retirement, and per-packet MMP receive facts. The session
     /// registry keeps only the control-plane cleanup for handshake/rekey
     /// retransmission state after PM2 has accepted a current-epoch frame.
-    pub(crate) fn confirm_authenticated_fsp_receive(&mut self, received_k_bit: bool) -> bool {
+    pub(crate) fn confirm_authenticated_fsp_current_epoch(&mut self) -> bool {
         if !self.is_established() || self.current_noise_session().is_none() {
             return false;
         }
@@ -400,7 +400,6 @@ impl SessionEntry {
         if self.handshake_payload().is_some()
             && self.pending_new_session().is_none()
             && !self.has_rekey_in_progress()
-            && received_k_bit == self.current_k_bit()
         {
             self.clear_handshake_payload();
         }

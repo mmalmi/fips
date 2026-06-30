@@ -166,7 +166,7 @@ impl PacketMover2TurnDriver {
         sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
         now: std::time::Instant,
-    ) -> Option<bool> {
+    ) -> Option<FspReceiveLifecycle> {
         self.mover.record_authenticated_fsp_session(
             owner,
             previous_hop,
@@ -181,7 +181,7 @@ impl PacketMover2TurnDriver {
     fn record_fsp_session_ingress_activity(
         &mut self,
         ingress: &PacketMover2FspSessionIngress,
-    ) -> bool {
+    ) -> FspReceiveLifecycle {
         let body_len = ingress
             .receive_sync
             .plaintext_len
@@ -195,7 +195,7 @@ impl PacketMover2TurnDriver {
             ingress.activity_tick,
             std::time::Instant::now(),
         )
-        .unwrap_or(false)
+        .unwrap_or_default()
     }
 
     pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
@@ -716,9 +716,8 @@ impl PacketMover2TurnDriver {
                 OutputTarget::SessionPayload { .. } => {
                     match PacketMover2FspSessionIngress::from_output(output) {
                         Ok(mut ingress) => {
-                            let lifecycle_sync_required =
-                                self.record_fsp_session_ingress_activity(&ingress);
-                            ingress.set_lifecycle_sync_required(lifecycle_sync_required);
+                            let lifecycle = self.record_fsp_session_ingress_activity(&ingress);
+                            ingress.set_lifecycle(lifecycle);
                             self.fsp_session_ingress.push(ingress);
                         }
                         Err(output) => {

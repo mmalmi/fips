@@ -2,13 +2,12 @@ impl Node {
     fn confirm_authenticated_fsp_receive_lifecycle(
         &mut self,
         source_addr: NodeAddr,
-        received_k_bit: bool,
     ) -> bool {
         let apply = {
             let Some(entry) = self.sessions.get_mut(&source_addr) else {
                 return false;
             };
-            entry.confirm_authenticated_fsp_receive(received_k_bit)
+            entry.confirm_authenticated_fsp_current_epoch()
         };
         apply
     }
@@ -97,18 +96,16 @@ impl Node {
             source_peer,
             previous_hop_addr,
             ce_flag,
-            receive_sync,
+            receive_lifecycle,
             _activity_tick,
             timestamp_ms,
             msg_type,
             inner_flags,
             plaintext,
         ) = ingress.into_parts();
-        if receive_sync.lifecycle_sync_required
-            && !self.confirm_authenticated_fsp_receive_lifecycle(
-                source_addr,
-                receive_sync.received_k_bit,
-            )
+        if receive_lifecycle.registry_sync_required
+            && receive_lifecycle.current_epoch_confirmed
+            && !self.confirm_authenticated_fsp_receive_lifecycle(source_addr)
         {
             debug!(
                 src = %self.peer_display_name(&source_addr),

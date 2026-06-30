@@ -362,6 +362,7 @@ pub(crate) struct PacketMover2FspSessionIngress {
     previous_hop_addr: NodeAddr,
     ce_flag: bool,
     receive_sync: FspReceiveSync,
+    lifecycle: FspReceiveLifecycle,
     activity_tick: Option<ActivityTick>,
     timestamp_ms: u32,
     msg_type: u8,
@@ -405,7 +406,6 @@ impl PacketMover2FspSessionIngress {
             ce_flag,
             path_mtu,
             spin_bit: inner_flags & 0x01 != 0,
-            lifecycle_sync_required: false,
         };
         let plaintext = match output.into_opened_payload() {
             Ok(plaintext) => plaintext,
@@ -417,6 +417,7 @@ impl PacketMover2FspSessionIngress {
             previous_hop_addr,
             ce_flag,
             receive_sync,
+            lifecycle: FspReceiveLifecycle::default(),
             activity_tick,
             timestamp_ms,
             msg_type,
@@ -429,8 +430,8 @@ impl PacketMover2FspSessionIngress {
         self.source_addr
     }
 
-    pub(crate) fn set_lifecycle_sync_required(&mut self, lifecycle_sync_required: bool) {
-        self.receive_sync.lifecycle_sync_required = lifecycle_sync_required;
+    pub(crate) fn set_lifecycle(&mut self, lifecycle: FspReceiveLifecycle) {
+        self.lifecycle = lifecycle;
     }
 
     pub(crate) fn previous_hop_addr(&self) -> NodeAddr {
@@ -468,7 +469,7 @@ impl PacketMover2FspSessionIngress {
         crate::PeerIdentity,
         NodeAddr,
         bool,
-        FspReceiveSync,
+        FspReceiveLifecycle,
         Option<ActivityTick>,
         u32,
         u8,
@@ -480,7 +481,7 @@ impl PacketMover2FspSessionIngress {
             self.source_peer,
             self.previous_hop_addr,
             self.ce_flag,
-            self.receive_sync,
+            self.lifecycle,
             self.activity_tick,
             self.timestamp_ms,
             self.msg_type,
