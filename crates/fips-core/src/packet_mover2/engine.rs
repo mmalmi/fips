@@ -458,19 +458,20 @@ impl PacketMover2OwnerShard {
         let mut dispatched_total = 0usize;
         let mut fsp_path_open = 0u64;
         let mut fsp_path_open_bulk = 0u64;
+        // Owners reserve order/counters before work leaves this shard. Build one
+        // prepared feed in priority-aware order, then let stateless workers run
+        // it; completion side effects come back through ordered owner retire.
         let pre_priority_inbound_dispatched = self.dispatch_available_into(
             pre_priority_inbound_limit.min(executor.available_capacity()),
             open_work,
         );
         dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
-        self.prepare_open_work_batch(
+        self.append_open_work_batch(
             open_work,
             prepared_work,
             &mut fsp_path_open,
             &mut fsp_path_open_bulk,
         );
-        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
-        self.retire_completion_batch(completion_work, retired);
 
         let priority_outbound_limit = outbound_priority_reserve
             .min(limit.saturating_sub(dispatched_total))
@@ -478,9 +479,7 @@ impl PacketMover2OwnerShard {
         let priority_outbound_dispatched =
             self.dispatch_outbound_priority_available_into(priority_outbound_limit, seal_work);
         dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
-        self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
-        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
-        self.retire_completion_batch(completion_work, retired);
+        self.append_seal_work_batch(seal_work.drain(..), prepared_work);
 
         let bulk_dispatch_capacity = limit
             .saturating_sub(dispatched_total)
@@ -497,21 +496,17 @@ impl PacketMover2OwnerShard {
             .iter()
             .take_while(|work| work.reservation.lane == Lane::Priority)
             .count();
-        self.prepare_seal_work_batch(seal_work.drain(..leading_priority_seals), prepared_work);
-        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
-        self.retire_completion_batch(completion_work, retired);
+        self.append_seal_work_batch(seal_work.drain(..leading_priority_seals), prepared_work);
 
-        self.prepare_open_work_batch(
+        self.append_open_work_batch(
             open_work,
             prepared_work,
             &mut fsp_path_open,
             &mut fsp_path_open_bulk,
         );
-        execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
-        self.retire_completion_batch(completion_work, retired);
         record_fsp_path_open_dispatch(fsp_path_open, fsp_path_open_bulk);
 
-        self.prepare_seal_work_batch(seal_work.drain(..), prepared_work);
+        self.append_seal_work_batch(seal_work.drain(..), prepared_work);
         execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
@@ -563,14 +558,14 @@ impl PacketMover2OwnerShard {
         }
     }
 
-    fn prepare_open_work_batch(
+    fn append_open_work_batch(
         &mut self,
         open_work: &mut Vec<CryptoWork>,
         prepared: &mut Vec<PreparedCryptoWork>,
         fsp_path_open: &mut u64,
         fsp_path_open_bulk: &mut u64,
     ) {
-        prepared.clear();
+        let mut prepared_count = 0usize;
         for work in open_work.drain(..) {
             let reservation = work.reservation.clone();
             count_fsp_path_open_dispatch(&reservation, fsp_path_open, fsp_path_open_bulk);
@@ -579,23 +574,25 @@ impl PacketMover2OwnerShard {
                 None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open),
             };
             prepared.push(prepared_work);
+            prepared_count = prepared_count.saturating_add(1);
         }
-        crate::perf_profile::record_packet_mover2_crypto_open_batch(prepared.len());
+        crate::perf_profile::record_packet_mover2_crypto_open_batch(prepared_count);
     }
 
-    fn prepare_seal_work_batch<I>(
+    fn append_seal_work_batch<I>(
         &mut self,
         seal_work: I,
         prepared: &mut Vec<PreparedCryptoWork>,
     ) where
         I: IntoIterator<Item = OutboundCryptoWork>,
     {
-        prepared.clear();
+        let mut prepared_count = 0usize;
         for work in seal_work {
             let prepared_work = self.prepare_seal_work(work);
             prepared.push(prepared_work);
+            prepared_count = prepared_count.saturating_add(1);
         }
-        crate::perf_profile::record_packet_mover2_crypto_seal_batch(prepared.len());
+        crate::perf_profile::record_packet_mover2_crypto_seal_batch(prepared_count);
     }
 
     fn retire_completion_batch(
