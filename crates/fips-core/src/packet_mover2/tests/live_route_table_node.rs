@@ -60,9 +60,12 @@
         let mut live_node =
             PacketMover2LiveNode::new(AdmissionConfig::new(8, 16));
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+        let fsp_session_start_ms = crate::time::now_ms().saturating_sub(8_200);
         live_node.register_owner(
             fsp_owner,
-            OwnerConfig::new(1, 8).with_next_send_counter(820),
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(820)
+                .with_fsp_session_start_ms(fsp_session_start_ms),
         );
         live_node.register_owner(
             fmp_owner,
@@ -80,11 +83,6 @@
         live_node.driver.owner_mut(fmp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
-        let fsp_session_start_ms = crate::time::now_ms().saturating_sub(8_200);
-        assert_eq!(
-            live_node.set_owner_fsp_session_start_ms(fsp_owner, fsp_session_start_ms),
-            Ok(())
-        );
 
         let mut fsp_routes = PacketMover2LiveOwnerRoutes::new();
         fsp_routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(

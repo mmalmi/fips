@@ -288,18 +288,6 @@ impl PacketMover2LiveNode {
         Ok(())
     }
 
-    pub(crate) fn set_owner_fsp_session_start_ms(
-        &mut self,
-        owner: OwnerId,
-        session_start_ms: u64,
-    ) -> Result<(), PacketMover2LiveOwnerError> {
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return Err(PacketMover2LiveOwnerError::UnknownOwner);
-        };
-        owner_state.set_fsp_session_start_ms(session_start_ms);
-        Ok(())
-    }
-
     pub(crate) fn owner_active_path(
         &self,
         owner: OwnerId,

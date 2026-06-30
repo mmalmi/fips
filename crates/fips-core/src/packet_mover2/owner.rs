@@ -396,10 +396,6 @@ impl OwnerState {
         self.send_counter_authority = Some(authority);
     }
 
-    pub(crate) fn set_fsp_session_start_ms(&mut self, session_start_ms: u64) {
-        self.fsp_session_start_ms = Some(session_start_ms);
-    }
-
     fn crypto_keys(&self) -> Option<OwnerCryptoKeys> {
         self.crypto_keys.clone()
     }
