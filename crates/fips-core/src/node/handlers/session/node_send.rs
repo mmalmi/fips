@@ -128,11 +128,14 @@ impl Node {
                                     "fallback".to_string()
                                 }
                             });
-                        let srtt = peer.mmp().and_then(|mmp| {
-                            mmp.metrics.srtt_ms().map(|value| {
-                                (value.round() as u64, mmp.metrics.srtt_age_ms(snapshot_now))
-                            })
-                        });
+                        let srtt = self
+                            .packet_mover2
+                            .fmp_link_metrics(peer.node_addr(), snapshot_now)
+                            .and_then(|metrics| {
+                                metrics
+                                    .srtt_ms
+                                    .map(|value| (value.round() as u64, metrics.srtt_age_ms))
+                            });
                         let connected = peer.can_send()
                             && stats.time_since_recv(Self::now_ms())
                                 <= self.session_direct_path_exclusive_trust_timeout_ms();

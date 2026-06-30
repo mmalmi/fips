@@ -56,6 +56,33 @@ impl PacketMover2OwnerShard {
         self.owner(owner).and_then(OwnerState::fmp_send_context)
     }
 
+    fn owner_fmp_link_metrics(
+        &self,
+        owner: OwnerId,
+        now: std::time::Instant,
+    ) -> Option<PacketMover2FmpLinkMetrics> {
+        self.owner(owner)
+            .and_then(|owner| owner.fmp_link_metrics(now))
+    }
+
+    fn owner_fmp_link_cost(&self, owner: OwnerId) -> Option<f64> {
+        self.owner(owner).and_then(OwnerState::fmp_link_cost)
+    }
+
+    fn owner_fmp_has_srtt(&self, owner: OwnerId) -> bool {
+        self.owner(owner).is_some_and(OwnerState::fmp_has_srtt)
+    }
+
+    fn collect_fmp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+        batch: &mut PacketMover2FmpMmpReportBatch,
+    ) {
+        for owner in self.owners.values_mut() {
+            owner.collect_fmp_mmp_reports(now, batch);
+        }
+    }
+
     fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,

@@ -4,7 +4,6 @@
 //! periodic report generation on the tick timer, and emits periodic
 //! and teardown metric logs.
 
-use crate::mmp::MmpMode;
 use crate::mmp::report::{ReceiverReport, SenderReport};
 use crate::node::Node;
 use crate::protocol::LinkMessageType;
@@ -25,44 +24,6 @@ fn format_throughput(bps: f64) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ProcessedMmpReceiverReport {
-    first_rtt: bool,
-    srtt_ms: Option<f64>,
-    loss_rate: f64,
-    etx: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MmpReceiverReportSkip {
-    UnknownPeer,
-    MmpDisabled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MmpLinkReport {
-    node_addr: NodeAddr,
-    encoded: Vec<u8>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq)]
-struct MmpLinkReportBatch {
-    sender_reports: Vec<MmpLinkReport>,
-    receiver_reports: Vec<MmpLinkReport>,
-    metric_logs: Vec<MmpLinkMetricSnapshot>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct MmpLinkMetricSnapshot {
-    node_addr: NodeAddr,
-    rtt_ms: Option<f64>,
-    loss_rate: Option<f64>,
-    jitter_ms: f64,
-    goodput_bps: f64,
-    tx_packets: u64,
-    rx_packets: u64,
-}
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct LinkHeartbeatPlan {
     heartbeats: Vec<NodeAddr>,
@@ -77,105 +38,6 @@ struct LinkDeadPeerPlan {
 }
 
 impl crate::node::PeerLifecycleRegistry {
-    fn process_mmp_receiver_report(
-        &mut self,
-        from: &NodeAddr,
-        rr: &ReceiverReport,
-        now: Instant,
-    ) -> Result<ProcessedMmpReceiverReport, MmpReceiverReportSkip> {
-        let peer = self
-            .active
-            .get_mut(from)
-            .ok_or(MmpReceiverReportSkip::UnknownPeer)?;
-
-        let our_timestamp_ms = peer.session_elapsed_ms();
-        let Some(mmp) = peer.mmp_mut() else {
-            return Err(MmpReceiverReportSkip::MmpDisabled);
-        };
-
-        // Process the report: computes RTT from timestamp echo, updates
-        // loss rate, goodput rate, jitter trend, and ETX.
-        let first_rtt = mmp
-            .metrics
-            .process_receiver_report(rr, our_timestamp_ms, now);
-
-        // Feed SRTT back to sender/receiver report interval tuning.
-        if let Some(srtt_ms) = mmp.metrics.srtt_ms() {
-            let srtt_us = (srtt_ms * 1000.0) as i64;
-            mmp.sender.update_report_interval_from_srtt(srtt_us);
-            mmp.receiver.update_report_interval_from_srtt(srtt_us);
-        }
-
-        // Update reverse delivery ratio from our own receiver state
-        // (what fraction of peer's frames we received), using per-interval
-        // deltas.
-        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
-        let peer_highest = mmp.receiver.highest_counter();
-        mmp.metrics
-            .update_reverse_delivery(our_recv_packets, peer_highest);
-
-        Ok(ProcessedMmpReceiverReport {
-            first_rtt,
-            srtt_ms: mmp.metrics.srtt_ms(),
-            loss_rate: mmp.metrics.loss_rate(),
-            etx: mmp.metrics.etx,
-        })
-    }
-
-    fn collect_due_mmp_link_reports(&mut self, now: Instant) -> MmpLinkReportBatch {
-        let mut batch = MmpLinkReportBatch::default();
-
-        for (node_addr, peer) in self.active.iter_mut() {
-            let Some(mmp) = peer.mmp_mut() else {
-                continue;
-            };
-
-            let mode = mmp.mode();
-
-            if mode == MmpMode::Full
-                && mmp.sender.should_send_report(now)
-                && let Some(sr) = mmp.sender.build_report(now)
-            {
-                batch.sender_reports.push(MmpLinkReport {
-                    node_addr: *node_addr,
-                    encoded: sr.encode(),
-                });
-            }
-
-            if mode != MmpMode::Minimal
-                && mmp.receiver.should_send_report(now)
-                && let Some(rr) = mmp.receiver.build_report(now)
-            {
-                batch.receiver_reports.push(MmpLinkReport {
-                    node_addr: *node_addr,
-                    encoded: rr.encode(),
-                });
-            }
-
-            if mmp.should_log(now) {
-                let metrics = &mmp.metrics;
-                batch.metric_logs.push(MmpLinkMetricSnapshot {
-                    node_addr: *node_addr,
-                    rtt_ms: metrics
-                        .rtt_trend
-                        .initialized()
-                        .then(|| metrics.rtt_trend.long() / 1000.0),
-                    loss_rate: metrics
-                        .loss_trend
-                        .initialized()
-                        .then(|| metrics.loss_trend.long()),
-                    jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
-                    goodput_bps: metrics.goodput_bps(),
-                    tx_packets: mmp.sender.cumulative_packets_sent(),
-                    rx_packets: mmp.receiver.cumulative_packets_recv(),
-                });
-                mmp.mark_logged(now);
-            }
-        }
-
-        batch
-    }
-
     fn plan_link_heartbeat_tick<F, G>(
         &self,
         now: Instant,
@@ -197,7 +59,7 @@ impl crate::node::PeerLifecycleRegistry {
             }
 
             let effective_dead_timeout = effective_dead_timeout_for(node_addr);
-            let time_dead = if peer.mmp().is_some() {
+            let time_dead = if peer.noise_session().is_some() {
                 quiet_for(node_addr, peer) >= effective_dead_timeout
             } else {
                 false
@@ -242,6 +104,27 @@ impl crate::node::PeerLifecycleRegistry {
 }
 
 impl Node {
+    pub(in crate::node) fn packet_mover2_fmp_link_cost(&self, node_addr: &NodeAddr) -> f64 {
+        self.packet_mover2.fmp_link_cost(node_addr).unwrap_or(1.0)
+    }
+
+    pub(in crate::node) fn packet_mover2_fmp_has_srtt(&self, node_addr: &NodeAddr) -> bool {
+        self.packet_mover2.fmp_has_srtt(node_addr)
+    }
+
+    pub(in crate::node) fn packet_mover2_fmp_peer_costs(
+        &self,
+    ) -> std::collections::HashMap<NodeAddr, f64> {
+        self.peers
+            .iter()
+            .filter(|(_, peer)| peer.can_send())
+            .filter_map(|(addr, _)| {
+                self.packet_mover2_fmp_has_srtt(addr)
+                    .then(|| (*addr, self.packet_mover2_fmp_link_cost(addr)))
+            })
+            .collect()
+    }
+
     /// Handle an incoming SenderReport from a peer.
     ///
     /// The peer is telling us about what they sent. We feed this to our
@@ -256,15 +139,8 @@ impl Node {
             }
         };
 
-        let peer = match self.peers.get_mut(from) {
-            Some(p) => p,
-            None => {
-                debug!(from = %self.peer_display_name(from), "SenderReport from unknown peer");
-                return;
-            }
-        };
-
-        if peer.mmp().is_none() {
+        if !self.packet_mover2_has_fmp_owner(from) {
+            debug!(from = %self.peer_display_name(from), "SenderReport from unknown peer");
             return;
         }
 
@@ -299,16 +175,18 @@ impl Node {
 
         let peer_name = self.peer_display_name(from);
 
-        let processed = match self
-            .peers
-            .process_mmp_receiver_report(from, &rr, Instant::now())
-        {
+        let processed = match self.packet_mover2.process_fmp_mmp_receiver_report(
+            from,
+            &rr,
+            Self::now_ms(),
+            Instant::now(),
+        ) {
             Ok(processed) => processed,
-            Err(MmpReceiverReportSkip::UnknownPeer) => {
+            Err(crate::packet_mover2::PacketMover2FmpMmpSkip::UnknownOwner) => {
                 debug!(from = %peer_name, "ReceiverReport from unknown peer");
                 return;
             }
-            Err(MmpReceiverReportSkip::MmpDisabled) => return,
+            Err(crate::packet_mover2::PacketMover2FmpMmpSkip::MmpDisabled) => return,
         };
 
         trace!(
@@ -323,12 +201,7 @@ impl Node {
         // Trigger re-evaluation so the node doesn't wait for the next
         // periodic tick or TreeAnnounce.
         if processed.first_rtt {
-            let peer_costs: std::collections::HashMap<crate::NodeAddr, f64> = self
-                .peers
-                .iter()
-                .filter(|(_, p)| p.can_send() && p.has_srtt())
-                .map(|(a, p)| (*a, p.link_cost()))
-                .collect();
+            let peer_costs = self.packet_mover2_fmp_peer_costs();
             if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
                 let new_seq = self.tree_state.my_declaration().sequence() + 1;
                 let timestamp = crate::time::now_secs();
@@ -383,40 +256,38 @@ impl Node {
     ///
     /// Called from the tick handler. Also emits periodic operator logs.
     pub(in crate::node) async fn check_mmp_reports(&mut self) {
-        let batch = self.peers.collect_due_mmp_link_reports(Instant::now());
+        let batch = self.packet_mover2.collect_fmp_mmp_reports(Instant::now());
 
         for metrics in &batch.metric_logs {
             let peer_name = self.peer_display_name(&metrics.node_addr);
             Self::log_mmp_metrics(&peer_name, metrics);
         }
 
-        for report in batch.sender_reports {
+        for report in batch.reports {
+            let report_name = match report.kind {
+                crate::packet_mover2::PacketMover2FmpMmpReportKind::Sender => "SenderReport",
+                crate::packet_mover2::PacketMover2FmpMmpReportKind::Receiver => "ReceiverReport",
+            };
             if let Err(e) = self
                 .send_packet_mover2_fmp_link_plaintext(&report.node_addr, &report.encoded, false)
                 .await
             {
-                debug!(peer = %self.peer_display_name(&report.node_addr), error = %e, "Failed to send SenderReport");
-            }
-        }
-
-        for report in batch.receiver_reports {
-            if let Err(e) = self
-                .send_packet_mover2_fmp_link_plaintext(&report.node_addr, &report.encoded, false)
-                .await
-            {
-                debug!(peer = %self.peer_display_name(&report.node_addr), error = %e, "Failed to send ReceiverReport");
+                debug!(peer = %self.peer_display_name(&report.node_addr), error = %e, report = report_name, "Failed to send MMP report");
             }
         }
     }
 
     /// Emit periodic MMP metrics for a peer.
-    fn log_mmp_metrics(peer_name: &str, metrics: &MmpLinkMetricSnapshot) {
+    fn log_mmp_metrics(
+        peer_name: &str,
+        metrics: &crate::packet_mover2::PacketMover2FmpLinkMetrics,
+    ) {
         let rtt_str = metrics
-            .rtt_ms
+            .srtt_ms
             .map(|rtt| format!("{rtt:.1}ms"))
             .unwrap_or_else(|| "n/a".to_string());
         let loss_str = metrics
-            .loss_rate
+            .loss_rate_for_log
             .map(|loss| format!("{:.1}%", loss * 100.0))
             .unwrap_or_else(|| "n/a".to_string());
 
@@ -433,27 +304,27 @@ impl Node {
     }
 
     /// Emit a teardown log summarizing lifetime MMP metrics for a removed peer.
-    pub(in crate::node) fn log_mmp_teardown(peer_name: &str, mmp: &crate::mmp::MmpPeerState) {
-        let m = &mmp.metrics;
-        let jitter_ms = mmp.receiver.jitter_us() as f64 / 1000.0;
-
-        let rtt_str = match m.srtt_ms() {
+    pub(in crate::node) fn log_mmp_teardown(
+        peer_name: &str,
+        metrics: &crate::packet_mover2::PacketMover2FmpLinkMetrics,
+    ) {
+        let rtt_str = match metrics.srtt_ms {
             Some(rtt) => format!("{:.1}ms", rtt),
             None => "n/a".to_string(),
         };
-        let loss_str = format!("{:.1}%", m.loss_rate() * 100.0);
+        let loss_str = format!("{:.1}%", metrics.loss_rate * 100.0);
 
         debug!(
             peer = %peer_name,
             rtt = %rtt_str,
             loss = %loss_str,
-            jitter = format_args!("{:.1}ms", jitter_ms),
-            etx = format_args!("{:.2}", m.etx),
-            goodput = %format_throughput(m.goodput_bps()),
-            tx_pkts = mmp.sender.cumulative_packets_sent(),
-            tx_bytes = mmp.sender.cumulative_bytes_sent(),
-            rx_pkts = mmp.receiver.cumulative_packets_recv(),
-            rx_bytes = mmp.receiver.cumulative_bytes_recv(),
+            jitter = format_args!("{:.1}ms", metrics.jitter_ms),
+            etx = format_args!("{:.2}", metrics.etx),
+            goodput = %format_throughput(metrics.goodput_bps),
+            tx_pkts = metrics.tx_packets,
+            tx_bytes = metrics.tx_bytes,
+            rx_pkts = metrics.rx_packets,
+            rx_bytes = metrics.rx_bytes,
             "MMP link teardown"
         );
     }
@@ -619,11 +490,12 @@ impl Node {
         now: Instant,
         now_ms: u64,
     ) -> Duration {
-        let reference_time = peer
-            .mmp()
-            .and_then(|mmp| mmp.receiver.last_recv_time())
-            .unwrap_or(peer.session_start());
-        let mut quiet_for = now.duration_since(reference_time);
+        let mut quiet_for = self
+            .packet_mover2
+            .fmp_link_metrics(node_addr, now)
+            .and_then(|metrics| metrics.last_recv_age_ms)
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| now.duration_since(peer.session_start()));
         quiet_for = quiet_for.min(Duration::from_millis(peer.idle_time(now_ms)));
 
         if let Some(session_age_ms) = self

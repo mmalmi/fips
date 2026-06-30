@@ -156,6 +156,17 @@ impl Node {
             fmp.remote_addr,
             fmp.packet_timestamp_ms,
         ) && arrived_from_source;
+        if path_bookkeeping_allowed {
+            let _ = self.packet_mover2.record_authenticated_fmp_mmp_receive(
+                source_addr,
+                fmp.fmp_counter,
+                fmp.inner_timestamp_ms,
+                fmp.packet_len,
+                fmp.fmp_flags & FLAG_CE != 0,
+                fmp.fmp_flags & FLAG_SP != 0,
+                now,
+            );
+        }
         let bookkeeping = self.peers.record_authenticated_fmp_receive(
             source_addr,
             fmp.transport_id,

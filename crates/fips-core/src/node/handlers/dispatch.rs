@@ -150,6 +150,9 @@ impl Node {
             }
         };
         let peer = removed_peer.peer;
+        let link_mmp = self
+            .packet_mover2
+            .fmp_link_metrics(node_addr, std::time::Instant::now());
         self.remove_packet_mover2_fmp_owner(node_addr);
 
         // Log suppressed replay detection summary before teardown
@@ -168,8 +171,8 @@ impl Node {
             .get(node_addr)
             .cloned()
             .unwrap_or_else(|| peer.identity().short_npub());
-        if let Some(mmp) = peer.mmp() {
-            Self::log_mmp_teardown(&peer_name, mmp);
+        if let Some(mmp) = link_mmp {
+            Self::log_mmp_teardown(&peer_name, &mmp);
         }
 
         // Remove any end-to-end session associated with this peer.

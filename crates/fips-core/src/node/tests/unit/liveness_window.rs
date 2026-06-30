@@ -1826,7 +1826,7 @@ async fn outbound_fmp_send_does_not_refresh_direct_path_liveness() {
     node.config.node.heartbeat_interval_secs = 10;
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -1840,17 +1840,27 @@ async fn outbound_fmp_send_does_not_refresh_direct_path_liveness() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(23),
-    );
     node.peers.insert(peer_addr, active);
-    node.peers
-        .record_fmp_send_bookkeeping(&peer_addr, 2, 200, 64)
-        .expect("send bookkeeping recorded");
+    assert!(node.sync_packet_mover2_fmp_owner(&peer_addr));
+    assert!(
+        node.packet_mover2
+            .record_authenticated_fmp_mmp_receive(
+                &peer_addr,
+                1,
+                100,
+                64,
+                false,
+                false,
+                std::time::Instant::now() - std::time::Duration::from_secs(23),
+            )
+            .is_ok(),
+        "PM2 FMP MMP receive bookkeeping recorded"
+    );
+    assert!(
+        node.peers
+            .record_fmp_send_bookkeeping(&peer_addr, 2, 200, 64),
+        "send bookkeeping recorded"
+    );
 
     node.check_link_heartbeats().await;
 

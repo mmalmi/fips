@@ -53,12 +53,6 @@ impl ActivePeerRegistry {
         self.peers.iter()
     }
 
-    pub(in crate::node) fn iter_mut(
-        &mut self,
-    ) -> impl Iterator<Item = (&NodeAddr, &mut ActivePeer)> {
-        self.peers.iter_mut()
-    }
-
     pub(in crate::node) fn insert_session_index(
         &mut self,
         key: (TransportId, u32),
@@ -392,11 +386,11 @@ impl PeerLifecycleRegistry {
         remote_addr: &TransportAddr,
         packet_timestamp_ms: u64,
         packet_len: usize,
-        fmp_counter: u64,
-        inner_timestamp_ms: u32,
-        ce_flag: bool,
-        sp_flag: bool,
-        now: std::time::Instant,
+        _fmp_counter: u64,
+        _inner_timestamp_ms: u32,
+        _ce_flag: bool,
+        _sp_flag: bool,
+        _now: std::time::Instant,
         path_bookkeeping_allowed: bool,
     ) -> Option<AuthenticatedFmpReceiveBookkeeping> {
         let peer = self.active.get_mut(node_addr)?;
@@ -405,8 +399,6 @@ impl PeerLifecycleRegistry {
         let mut result = AuthenticatedFmpReceiveBookkeeping {
             address_changed: false,
             path_bookkeeping_recorded: false,
-            mmp_recorded: false,
-            spin_rtt: None,
         };
         if path_bookkeeping_allowed {
             result.address_changed = peer.set_current_addr(transport_id, remote_addr);
@@ -414,12 +406,6 @@ impl PeerLifecycleRegistry {
             peer.link_stats_mut()
                 .record_recv(packet_len, packet_timestamp_ms);
             peer.touch(packet_timestamp_ms);
-            if let Some(mmp) = peer.mmp_mut() {
-                mmp.receiver
-                    .record_recv(fmp_counter, inner_timestamp_ms, packet_len, ce_flag, now);
-                result.spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
-                result.mmp_recorded = true;
-            }
         }
 
         Some(result)
@@ -428,22 +414,16 @@ impl PeerLifecycleRegistry {
     pub(in crate::node) fn record_fmp_send_bookkeeping(
         &mut self,
         node_addr: &NodeAddr,
-        fmp_counter: u64,
-        timestamp_ms: u32,
+        _fmp_counter: u64,
+        _timestamp_ms: u32,
         bytes_sent: usize,
-    ) -> Option<FmpSendBookkeeping> {
-        let peer = self.active.get_mut(node_addr)?;
+    ) -> bool {
+        let Some(peer) = self.active.get_mut(node_addr) else {
+            return false;
+        };
         peer.link_stats_mut().record_sent(bytes_sent);
 
-        let mut result = FmpSendBookkeeping {
-            mmp_recorded: false,
-        };
-        if let Some(mmp) = peer.mmp_mut() {
-            mmp.sender
-                .record_sent(fmp_counter, timestamp_ms, bytes_sent);
-            result.mmp_recorded = true;
-        }
-        Some(result)
+        true
     }
 
     pub(in crate::node) fn mark_link_dead_direct_path(

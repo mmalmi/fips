@@ -390,15 +390,13 @@ impl Node {
             return false;
         }
         // Outgoing link MMP metrics
-        if let Some(peer) = self.peers.get(next_hop)
-            && let Some(mmp) = peer.mmp()
+        if let Some(metrics) = self
+            .packet_mover2
+            .fmp_link_metrics(next_hop, std::time::Instant::now())
+            && (metrics.loss_rate >= self.config.node.ecn.loss_threshold
+                || metrics.etx >= self.config.node.ecn.etx_threshold)
         {
-            let metrics = &mmp.metrics;
-            if metrics.loss_rate() >= self.config.node.ecn.loss_threshold
-                || metrics.etx >= self.config.node.ecn.etx_threshold
-            {
-                return true;
-            }
+            return true;
         }
         // Local transport congestion (kernel drops)
         self.transport_drops.any_dropping()

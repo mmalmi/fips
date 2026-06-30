@@ -328,9 +328,10 @@ impl Node {
         let now = std::time::Instant::now();
         let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
         peer.idle_time(now_ms) <= fresh_after_ms
-            || peer
-                .mmp()
-                .and_then(|mmp| mmp.metrics.srtt_age_ms(now))
+            || self
+                .packet_mover2
+                .fmp_link_metrics(peer_node_addr, now)
+                .and_then(|metrics| metrics.srtt_age_ms)
                 .is_some_and(|age_ms| age_ms <= fresh_after_ms)
             || self
                 .packet_mover2
@@ -379,9 +380,9 @@ impl Node {
         let now = std::time::Instant::now();
         let mut inbound_quiet_ms = peer.idle_time(now_ms);
         inbound_quiet_ms = inbound_quiet_ms.min(
-            peer.mmp()
-                .and_then(|mmp| mmp.receiver.last_recv_time())
-                .map(|last_recv| now.duration_since(last_recv).as_millis() as u64)
+            self.packet_mover2
+                .fmp_link_metrics(peer_node_addr, now)
+                .and_then(|metrics| metrics.last_recv_age_ms)
                 .unwrap_or_else(|| now_ms.saturating_sub(peer.authenticated_at())),
         );
         if let Some(session_age_ms) = self

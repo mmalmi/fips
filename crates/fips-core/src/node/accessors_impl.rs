@@ -413,10 +413,15 @@ impl Node {
     /// Called once per tick from the RX loop.
     pub(crate) fn record_stats_history(&mut self) {
         let fwd = &self.stats.forwarding;
+        let now = std::time::Instant::now();
         let peers_with_mmp: Vec<f64> = self
             .peers
-            .values()
-            .filter_map(|p| p.mmp().map(|m| m.metrics.loss_rate()))
+            .keys()
+            .filter_map(|addr| {
+                self.packet_mover2
+                    .fmp_link_metrics(addr, now)
+                    .map(|metrics| metrics.loss_rate)
+            })
             .collect();
         let loss_rate = if peers_with_mmp.is_empty() {
             0.0
@@ -437,20 +442,15 @@ impl Node {
             active_sessions: self.sessions.len() as u64,
         };
 
-        let now = std::time::Instant::now();
         let peer_snaps: Vec<stats_history::PeerSnapshot> = self
             .peers
             .values()
             .map(|p| {
                 let stats = p.link_stats();
-                let (srtt_ms, loss_rate, ecn_ce) = match p.mmp() {
-                    Some(m) => (
-                        m.metrics.srtt_ms(),
-                        Some(m.metrics.loss_rate()),
-                        m.receiver.ecn_ce_count() as u64,
-                    ),
-                    None => (None, None, 0),
-                };
+                let metrics = self.packet_mover2.fmp_link_metrics(p.node_addr(), now);
+                let srtt_ms = metrics.and_then(|metrics| metrics.srtt_ms);
+                let loss_rate = metrics.map(|metrics| metrics.loss_rate);
+                let ecn_ce = metrics.map_or(0, |metrics| metrics.ecn_ce_count as u64);
                 stats_history::PeerSnapshot {
                     node_addr: *p.node_addr(),
                     last_seen: now,

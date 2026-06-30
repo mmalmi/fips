@@ -66,8 +66,6 @@ pub(in crate::node) struct ReplacedActivePeerCurrentSession {
 pub(in crate::node) struct AuthenticatedFmpReceiveBookkeeping {
     pub(in crate::node) address_changed: bool,
     pub(in crate::node) path_bookkeeping_recorded: bool,
-    pub(in crate::node) mmp_recorded: bool,
-    pub(in crate::node) spin_rtt: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -98,11 +96,6 @@ pub(in crate::node) struct AuthenticatedSessionDatagram<'a> {
 pub(in crate::node) struct LocalSessionPayload<'a> {
     source_addr: NodeAddr,
     payload: &'a [u8],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::node) struct FmpSendBookkeeping {
-    pub(in crate::node) mmp_recorded: bool,
 }
 
 impl<'a> AuthenticatedFmpReceiveFacts<'a> {

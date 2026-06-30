@@ -69,16 +69,11 @@ impl Node {
             });
         };
 
+        if self.peers.get(node_addr).is_none() {
+            return Err(NodeError::PeerNotFound(*node_addr));
+        }
+
         let mut flags = send_context.flags();
-        {
-            let peer = self
-                .peers
-                .get(node_addr)
-                .ok_or(NodeError::PeerNotFound(*node_addr))?;
-            if peer.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()) {
-                flags |= FLAG_SP;
-            }
-        };
         if ce_flag {
             flags |= FLAG_CE;
         }
@@ -116,6 +111,12 @@ impl Node {
                             reason: "packet_mover2 FMP timestamp missing".into(),
                         })?;
                 let bytes_sent = output.payload_len();
+                let _ = self.packet_mover2.record_fmp_mmp_send_result(
+                    node_addr,
+                    output.counter(),
+                    timestamp_ms,
+                    bytes_sent,
+                );
                 let _ = self.peers.record_fmp_send_bookkeeping(
                     node_addr,
                     output.counter(),
@@ -822,6 +823,7 @@ impl Node {
             }
             (their_index.as_u32(), flags)
         });
+        let fmp_mmp_is_initiator = peer.mmp().map(|mmp| mmp.spin_bit.is_initiator());
         let generation = peer.session_generation();
         let session_start_ms = Self::now_ms().wrapping_sub(u64::from(peer.session_elapsed_ms()));
         let source_peer = *peer.identity();
@@ -848,6 +850,9 @@ impl Node {
             .with_source_peer(source_peer);
         if let Some((receiver_idx, flags)) = fmp_send_headers {
             config = config.with_fmp_send_headers(receiver_idx, flags);
+        }
+        if let Some(is_initiator) = fmp_mmp_is_initiator {
+            config = config.with_fmp_mmp(self.config.node.mmp.clone(), is_initiator);
         }
 
         Some(PacketMover2FmpOwnerSeed {
@@ -988,12 +993,9 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
     ) -> Option<(PacketMover2FspWrapRoute, NodeAddr)> {
-        let (next_hop, spin_bit) = {
+        let next_hop = {
             let peer = self.find_next_hop(dest_addr)?;
-            (
-                *peer.node_addr(),
-                peer.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()),
-            )
+            *peer.node_addr()
         };
         let send_context = self.packet_mover2.fmp_owner_send_context(&next_hop)?;
         let active_path = self
@@ -1002,10 +1004,7 @@ impl Node {
             .ok()??;
         let transport_id = active_path.transport_id()?;
         let remote_addr = active_path.remote_addr()?.clone();
-        let mut fmp_flags = send_context.flags();
-        if spin_bit {
-            fmp_flags |= FLAG_SP;
-        }
+        let fmp_flags = send_context.flags();
         let path_mtu = self
             .transports
             .get(&transport_id)

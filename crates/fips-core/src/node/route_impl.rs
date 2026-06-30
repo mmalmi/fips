@@ -94,10 +94,8 @@ impl Node {
         }
         if let Some(direct_addr) = healthy_direct_route
             && !direct_session_untrusted
-            && self
-                .peers
-                .get(&direct_addr)
-                .is_some_and(|peer| peer.link_cost() <= 1.0 + ROUTING_FALLBACK_MIN_COST_ADVANTAGE)
+            && self.packet_mover2_fmp_link_cost(&direct_addr)
+                <= 1.0 + ROUTING_FALLBACK_MIN_COST_ADVANTAGE
         {
             return self.peers.get(&direct_addr);
         }
@@ -318,9 +316,9 @@ impl Node {
             return false;
         }
 
-        let Some(direct) = self.peers.get(&direct_addr) else {
+        if !self.peers.contains_key(&direct_addr) {
             return true;
-        };
+        }
         if self.active_peer_uses_configured_static_udp_path(&direct_addr) {
             return false;
         }
@@ -331,8 +329,8 @@ impl Node {
             return false;
         }
 
-        let direct_cost = direct.link_cost();
-        let candidate_cost = candidate.link_cost();
+        let direct_cost = self.packet_mover2_fmp_link_cost(&direct_addr);
+        let candidate_cost = self.packet_mover2_fmp_link_cost(&candidate_addr);
         candidate_cost + ROUTING_FALLBACK_MIN_COST_ADVANTAGE < direct_cost
     }
 
@@ -581,7 +579,7 @@ impl Node {
                 continue;
             }
 
-            let cost = candidate.link_cost();
+            let cost = self.packet_mover2_fmp_link_cost(candidate.node_addr());
 
             let dist = self
                 .tree_state

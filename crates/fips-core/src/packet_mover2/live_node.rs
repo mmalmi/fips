@@ -360,6 +360,84 @@ impl PacketMover2LiveNode {
             .owner_fmp_send_context(OwnerId::fmp_node(*node_addr))
     }
 
+    pub(crate) fn fmp_link_metrics(
+        &self,
+        node_addr: &NodeAddr,
+        now: std::time::Instant,
+    ) -> Option<PacketMover2FmpLinkMetrics> {
+        self.driver
+            .owner_fmp_link_metrics(OwnerId::fmp_node(*node_addr), now)
+    }
+
+    pub(crate) fn fmp_link_cost(&self, node_addr: &NodeAddr) -> Option<f64> {
+        self.driver
+            .owner_fmp_link_cost(OwnerId::fmp_node(*node_addr))
+    }
+
+    pub(crate) fn fmp_has_srtt(&self, node_addr: &NodeAddr) -> bool {
+        self.driver
+            .owner_fmp_has_srtt(OwnerId::fmp_node(*node_addr))
+    }
+
+    pub(crate) fn record_authenticated_fmp_mmp_receive(
+        &mut self,
+        node_addr: &NodeAddr,
+        counter: u64,
+        timestamp_ms: u32,
+        packet_len: usize,
+        ce_flag: bool,
+        spin_bit: bool,
+        now: std::time::Instant,
+    ) -> Result<Option<std::time::Duration>, PacketMover2FmpMmpSkip> {
+        let owner = OwnerId::fmp_node(*node_addr);
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        };
+        owner_state.record_authenticated_fmp_receive(
+            counter,
+            timestamp_ms,
+            packet_len,
+            ce_flag,
+            spin_bit,
+            now,
+        )
+    }
+
+    pub(crate) fn record_fmp_mmp_send_result(
+        &mut self,
+        node_addr: &NodeAddr,
+        counter: u64,
+        timestamp_ms: u32,
+        bytes_sent: usize,
+    ) -> Result<(), PacketMover2FmpMmpSkip> {
+        let owner = OwnerId::fmp_node(*node_addr);
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        };
+        owner_state.record_fmp_send_result(counter, timestamp_ms, bytes_sent)
+    }
+
+    pub(crate) fn process_fmp_mmp_receiver_report(
+        &mut self,
+        node_addr: &NodeAddr,
+        rr: &crate::mmp::report::ReceiverReport,
+        now_ms: u64,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FmpReceiverReportResult, PacketMover2FmpMmpSkip> {
+        let owner = OwnerId::fmp_node(*node_addr);
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        };
+        owner_state.process_fmp_mmp_receiver_report(rr, now_ms, now)
+    }
+
+    pub(crate) fn collect_fmp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+    ) -> PacketMover2FmpMmpReportBatch {
+        self.driver.collect_fmp_mmp_reports(now)
+    }
+
     pub(crate) fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,
