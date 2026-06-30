@@ -119,6 +119,14 @@ impl PreparedCryptoWork {
             Self::Completed(completion) => completions.push(completion),
         }
     }
+
+    fn lane(&self) -> Lane {
+        match self {
+            Self::Open { work, .. } => work.reservation.lane,
+            Self::Seal { work, .. } => work.reservation.lane,
+            Self::Completed(completion) => completion.reservation.lane,
+        }
+    }
 }
 
 struct PreparedCryptoJobSplitter {
@@ -163,6 +171,10 @@ pub(crate) trait PacketMover2CryptoExecutor {
         usize::MAX
     }
 
+    fn available_capacity_for_lane(&self, _lane: Lane) -> usize {
+        self.available_capacity()
+    }
+
     fn execute_prepared_chunk(
         &mut self,
         prepared: &mut Vec<PreparedCryptoWork>,
@@ -198,6 +210,7 @@ pub(crate) struct PacketMover2AeadWorkerPool {
     completion_notify: Arc<tokio::sync::Notify>,
     pending_completions: VecDeque<CryptoCompletion>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     max_in_flight: usize,
     workers: Vec<std::thread::JoinHandle<()>>,
 }
@@ -215,12 +228,14 @@ impl PacketMover2AeadWorkerPool {
             crossbeam_channel::Receiver<Vec<CryptoCompletion>>,
         ) = crossbeam_channel::bounded(max_in_flight);
         let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let bulk_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let completion_notify = Arc::new(tokio::sync::Notify::new());
         let mut workers = Vec::with_capacity(worker_count);
         for worker_idx in 0..worker_count {
             let work_rx = work_rx.clone();
             let completion_tx = completion_tx.clone();
             let in_flight = Arc::clone(&in_flight);
+            let bulk_in_flight = Arc::clone(&bulk_in_flight);
             let completion_notify = Arc::clone(&completion_notify);
             workers.push(
                 std::thread::Builder::new()
@@ -230,6 +245,7 @@ impl PacketMover2AeadWorkerPool {
                         let sealed = StatelessAeadSealWorker;
                         while let Ok(mut prepared) = work_rx.recv() {
                             let count = prepared.len();
+                            let bulk_count = count_bulk_prepared_work(&prepared);
                             let mut completions = Vec::with_capacity(count);
                             for work in prepared.drain(..) {
                                 completions.push(work.execute(&opened, &sealed));
@@ -237,6 +253,8 @@ impl PacketMover2AeadWorkerPool {
                             if completion_tx.send(completions).is_err() {
                                 in_flight
                                     .fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
+                                bulk_in_flight
+                                    .fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
                                 break;
                             }
                             completion_notify.notify_one();
@@ -252,6 +270,7 @@ impl PacketMover2AeadWorkerPool {
             completion_notify,
             pending_completions: VecDeque::new(),
             in_flight,
+            bulk_in_flight,
             max_in_flight,
             workers,
         }
@@ -271,6 +290,23 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             self.in_flight
                 .load(std::sync::atomic::Ordering::Acquire),
         )
+    }
+
+    fn available_capacity_for_lane(&self, lane: Lane) -> usize {
+        let total_available = self.available_capacity();
+        if lane == Lane::Priority {
+            return total_available;
+        }
+
+        let bulk_limit =
+            self.max_in_flight
+                .saturating_sub(packet_mover2_aead_worker_priority_reserve(
+                    self.max_in_flight,
+                ));
+        let bulk_in_flight = self
+            .bulk_in_flight
+            .load(std::sync::atomic::Ordering::Acquire);
+        bulk_limit.saturating_sub(bulk_in_flight).min(total_available)
     }
 
     fn execute_prepared_chunk(
@@ -296,10 +332,13 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
         let mut jobs = PreparedCryptoJobSplitter::new(chunk);
         while let Some(work_chunk) = jobs.next() {
             let chunk_len = work_chunk.len();
+            let bulk_count = count_bulk_prepared_work(&work_chunk);
             match work_tx.try_send(work_chunk) {
                 Ok(()) => {
                     self.in_flight
                         .fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
+                    self.bulk_in_flight
+                        .fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
                 }
                 Err(crossbeam_channel::TrySendError::Full(mut work_chunk))
                 | Err(crossbeam_channel::TrySendError::Disconnected(mut work_chunk)) => {
@@ -323,9 +362,14 @@ impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
         let mut drained = 0usize;
         while drained < limit {
             if let Some(completion) = self.pending_completions.pop_front() {
+                let lane = completion.reservation.lane;
                 push(completion);
                 self.in_flight
                     .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                if lane == Lane::Bulk {
+                    self.bulk_in_flight
+                        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                }
                 drained += 1;
                 continue;
             }
@@ -343,6 +387,19 @@ impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
         }
         drained
     }
+}
+
+fn count_bulk_prepared_work(prepared: &[PreparedCryptoWork]) -> usize {
+    prepared
+        .iter()
+        .filter(|work| work.lane() == Lane::Bulk)
+        .count()
+}
+
+fn packet_mover2_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
+    max_in_flight
+        .saturating_sub(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
+        .min(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
 }
 
 impl Drop for PacketMover2AeadWorkerPool {

@@ -201,6 +201,17 @@
     where
         E: PacketMover2CryptoExecutor,
     {
+        run_with_executor_limit(mover, executor, 8)
+    }
+
+    fn run_with_executor_limit<E>(
+        mover: &mut PacketMover2,
+        executor: &mut E,
+        limit: usize,
+    ) -> (usize, Vec<RetiredPacket>, Vec<PacketDrop>)
+    where
+        E: PacketMover2CryptoExecutor,
+    {
         let mut open_work = Vec::new();
         let mut seal_work = Vec::new();
         let mut prepared_work = Vec::new();
@@ -208,7 +219,7 @@
         let mut retired = Vec::new();
         let mut drops = Vec::new();
         let dispatched = mover.run_aead_available_into_with_executor(
-            8,
+            limit,
             &mut open_work,
             &mut seal_work,
             &mut prepared_work,
@@ -408,6 +419,65 @@
         );
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
         assert_eq!(pool.available_capacity(), 8);
+    }
+
+    #[test]
+    fn aead_worker_pool_reserves_priority_capacity_from_bulk() {
+        let owner = fmp_owner(709);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(16, 32));
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2),
+        );
+        let mut pool = PacketMover2AeadWorkerPool::new(
+            1,
+            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
+        );
+
+        for counter in 0..(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2) as u64 {
+            mover
+                .submit_socket_packet(packet(
+                    owner,
+                    1,
+                    counter,
+                    PacketClass::Bulk,
+                    OutputTarget::Tun,
+                ))
+                .unwrap();
+        }
+
+        let (dispatched, retired, drops) = run_with_executor_limit(
+            &mut mover,
+            &mut pool,
+            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
+        );
+        assert_eq!(dispatched, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(pool.available_capacity_for_lane(Lane::Bulk), 0);
+        assert_eq!(
+            pool.available_capacity_for_lane(Lane::Priority),
+            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS
+        );
+
+        mover
+            .submit_socket_packet(packet(
+                owner,
+                1,
+                1_000,
+                PacketClass::Liveness,
+                OutputTarget::Tun,
+            ))
+            .unwrap();
+        let (dispatched, retired, drops) = run_with_executor_limit(
+            &mut mover,
+            &mut pool,
+            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
+        );
+        assert_eq!(dispatched, 1);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(queue_lens(&mover), (0, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS));
     }
 
     #[test]

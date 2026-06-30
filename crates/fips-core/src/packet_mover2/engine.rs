@@ -240,6 +240,61 @@ impl PacketMover2OwnerShard {
         work.len()
     }
 
+    fn dispatch_priority_available_into(
+        &mut self,
+        limit: usize,
+        work: &mut Vec<CryptoWork>,
+    ) -> usize {
+        work.clear();
+
+        let mut attempts_remaining = self.admission.len();
+        while work.len() < limit && attempts_remaining > 0 {
+            let Some(pop) = self.admission.pop_next_priority() else {
+                break;
+            };
+            attempts_remaining = attempts_remaining.saturating_sub(1);
+            let OwnerAdmissionPop {
+                item: queued,
+                cursor,
+            } = pop;
+
+            let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
+                self.drops.push(PacketDrop::from_queued(
+                    &queued,
+                    PacketDropReason::UnknownOwner,
+                ));
+                self.admission.continue_owner_run(cursor);
+                continue;
+            };
+            if !owner.can_reserve_class(queued.packet.class) {
+                record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
+                self.admission.defer_owner_pop(OwnerAdmissionPop {
+                    item: queued,
+                    cursor,
+                });
+                continue;
+            }
+
+            match owner.reserve(&queued.packet, queued.ingress_seq) {
+                Ok(reservation) => {
+                    work.push(CryptoWork {
+                        reservation,
+                        packet: queued.packet,
+                    });
+                    self.admission.continue_owner_run(cursor);
+                    attempts_remaining = self.admission.len();
+                }
+                Err(error) => {
+                    self.drops
+                        .push(PacketDrop::from_queued(&queued, error.into()));
+                    self.admission.continue_owner_run(cursor);
+                }
+            }
+        }
+
+        work.len()
+    }
+
     pub(crate) fn dispatch_outbound_available_into(
         &mut self,
         limit: usize,
@@ -490,27 +545,31 @@ impl PacketMover2OwnerShard {
                 crate::perf_profile::Event::PacketMover2DispatchExecutorFull,
             );
         }
-        let available_limit = limit.min(executor_capacity);
-        let mut feed_capacity = available_limit;
+        let total_available_limit = limit.min(executor_capacity);
+        let priority_available_limit =
+            limit.min(executor.available_capacity_for_lane(Lane::Priority));
+        let bulk_available_limit = limit.min(executor.available_capacity_for_lane(Lane::Bulk));
+        let mut priority_feed_capacity = priority_available_limit.min(total_available_limit);
+        let mut bulk_feed_capacity = bulk_available_limit.min(total_available_limit);
+        let inbound_priority_pending = self.admission.has_priority_pending();
         let outbound_priority_reserve =
             outbound_priority_dispatch_limit(
-                available_limit,
+                priority_feed_capacity,
                 self.outbound_admission.has_priority_pending(),
             );
         let pre_priority_inbound_limit =
-            inbound_before_outbound_priority_limit(available_limit, outbound_priority_reserve);
+            inbound_before_outbound_priority_limit(priority_feed_capacity, outbound_priority_reserve);
         let mut dispatched_total = 0usize;
         let mut fsp_path_open = 0u64;
         let mut fsp_path_open_bulk = 0u64;
         // Owners reserve order/counters before work leaves this shard. Build one
         // prepared feed in priority-aware order, then let stateless workers run
         // it; completion side effects come back through ordered owner retire.
-        let pre_priority_inbound_dispatched = self.dispatch_available_into(
-            pre_priority_inbound_limit.min(feed_capacity),
-            open_work,
-        );
+        let pre_priority_inbound_dispatched =
+            self.dispatch_available_into(pre_priority_inbound_limit, open_work);
         dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
-        feed_capacity = feed_capacity.saturating_sub(pre_priority_inbound_dispatched);
+        priority_feed_capacity =
+            priority_feed_capacity.saturating_sub(pre_priority_inbound_dispatched);
         self.append_open_work_batch(
             open_work,
             prepared_work,
@@ -520,21 +579,40 @@ impl PacketMover2OwnerShard {
 
         let priority_outbound_limit = outbound_priority_reserve
             .min(limit.saturating_sub(dispatched_total))
-            .min(feed_capacity);
+            .min(priority_feed_capacity);
         let priority_outbound_dispatched =
             self.dispatch_outbound_priority_available_into(priority_outbound_limit, seal_work);
         dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
-        feed_capacity = feed_capacity.saturating_sub(priority_outbound_dispatched);
+        priority_feed_capacity = priority_feed_capacity.saturating_sub(priority_outbound_dispatched);
         self.append_seal_work_batch(seal_work.drain(..), prepared_work);
 
-        let bulk_dispatch_capacity = limit.saturating_sub(dispatched_total).min(feed_capacity);
+        let priority_inbound_limit = if inbound_priority_pending {
+            priority_feed_capacity
+        } else {
+            0
+        };
+        let priority_inbound_dispatched =
+            self.dispatch_priority_available_into(priority_inbound_limit, open_work);
+        dispatched_total = dispatched_total.saturating_add(priority_inbound_dispatched);
+        self.append_open_work_batch(
+            open_work,
+            prepared_work,
+            &mut fsp_path_open,
+            &mut fsp_path_open_bulk,
+        );
+
+        let total_remaining = total_available_limit.saturating_sub(dispatched_total);
+        bulk_feed_capacity = bulk_feed_capacity.min(total_remaining);
+        let bulk_dispatch_capacity = limit
+            .saturating_sub(dispatched_total)
+            .min(bulk_feed_capacity);
         let inbound_dispatched = self.dispatch_available_into(bulk_dispatch_capacity, open_work);
         dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
-        feed_capacity = feed_capacity.saturating_sub(inbound_dispatched);
+        bulk_feed_capacity = bulk_feed_capacity.saturating_sub(inbound_dispatched);
         let outbound_dispatched =
-            self.dispatch_outbound_available_into(feed_capacity, seal_work);
+            self.dispatch_outbound_available_into(bulk_feed_capacity, seal_work);
         dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
-        debug_assert!(dispatched_total <= available_limit);
+        debug_assert!(dispatched_total <= total_available_limit);
 
         let leading_priority_seals = seal_work
             .iter()

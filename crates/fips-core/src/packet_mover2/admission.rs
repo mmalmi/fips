@@ -363,6 +363,10 @@ impl AdmissionQueue {
         self.queues.pop_next()
     }
 
+    fn pop_next_priority(&mut self) -> Option<OwnerAdmissionPop<QueuedPacket>> {
+        self.queues.pop_next_priority()
+    }
+
     fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
         self.queues.continue_owner_run(cursor);
     }
@@ -373,6 +377,10 @@ impl AdmissionQueue {
 
     fn len(&self) -> usize {
         self.queues.len()
+    }
+
+    fn has_priority_pending(&self) -> bool {
+        self.queues.has_priority_pending()
     }
 
     fn lens(&self) -> (usize, usize) {
