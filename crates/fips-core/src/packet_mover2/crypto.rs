@@ -208,6 +208,42 @@ impl PacketMover2AeadWorkerPool {
     pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
         Arc::clone(&self.completion_notify)
     }
+
+    fn drain_one_completion<F>(&mut self, completion: CryptoCompletion, push: &mut F)
+    where
+        F: FnMut(CryptoCompletion),
+    {
+        let lane = completion.reservation.lane;
+        push(completion);
+        self.in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        if lane == Lane::Bulk {
+            self.bulk_in_flight
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    fn drain_completion_batch<F>(
+        &mut self,
+        completions: Vec<CryptoCompletion>,
+        limit: usize,
+        push: &mut F,
+    ) -> usize
+    where
+        F: FnMut(CryptoCompletion),
+    {
+        let mut drained = 0usize;
+        let mut completions = completions.into_iter();
+        while drained < limit {
+            let Some(completion) = completions.next() else {
+                return drained;
+            };
+            self.drain_one_completion(completion, push);
+            drained += 1;
+        }
+        self.pending_completions.extend(completions);
+        drained
+    }
 }
 
 impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
@@ -293,14 +329,7 @@ impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
         let mut drained = 0usize;
         while drained < limit {
             if let Some(completion) = self.pending_completions.pop_front() {
-                let lane = completion.reservation.lane;
-                push(completion);
-                self.in_flight
-                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                if lane == Lane::Bulk {
-                    self.bulk_in_flight
-                        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                }
+                self.drain_one_completion(completion, &mut push);
                 drained += 1;
                 continue;
             }
@@ -310,7 +339,11 @@ impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
             };
             match completion_rx.try_recv() {
                 Ok(completions) => {
-                    self.pending_completions.extend(completions);
+                    drained = drained.saturating_add(self.drain_completion_batch(
+                        completions,
+                        limit.saturating_sub(drained),
+                        &mut push,
+                    ));
                 }
                 Err(crossbeam_channel::TryRecvError::Empty)
                 | Err(crossbeam_channel::TryRecvError::Disconnected) => break,

@@ -452,9 +452,16 @@
         assert!(drops.is_empty());
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 4);
 
-        let completions = drain_worker_pool_completions(&mut pool, 4);
-        assert_eq!(completions.len(), 4);
         let mut retired = Vec::new();
+        let completions = drain_worker_pool_completions(&mut pool, 2);
+        assert_eq!(completions.len(), 2);
+        assert_eq!(pool.available_capacity(), 6);
+        for completion in completions {
+            retired.extend(retire_completion(&mut mover, completion));
+        }
+
+        let completions = drain_worker_pool_completions(&mut pool, 2);
+        assert_eq!(completions.len(), 2);
         for completion in completions {
             retired.extend(retire_completion(&mut mover, completion));
         }
