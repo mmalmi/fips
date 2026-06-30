@@ -231,61 +231,6 @@
     }
 
     #[test]
-    fn fsp_receive_sync_requests_pm2_owner_refresh_only_on_epoch_promotion() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-        entry.mark_established(1_000);
-        let initial_k_bit = entry.current_k_bit();
-        entry.set_pending_session(make_xk_session(&local, &peer));
-
-        let promoted = entry.apply_fsp_receive_sync_result(
-            crate::node::session::FspReceiveSync {
-                counter: 7,
-                slot: crate::node::session::EpochSlot::Pending,
-                received_k_bit: !initial_k_bit,
-                timestamp: 0x0102_0304,
-                plaintext_len: FSP_INNER_HEADER_SIZE + 16,
-                ce_flag: false,
-                path_mtu: 1_280,
-                spin_bit: false,
-            },
-            2_000,
-            Instant::now(),
-        );
-
-        assert!(promoted.is_applied());
-        assert!(
-            promoted.refresh_packet_mover2_owner(),
-            "pending promotion changes FSP epoch topology and must refresh the PM2 owner"
-        );
-        assert_eq!(entry.current_k_bit(), !initial_k_bit);
-        assert!(entry.pending_new_session().is_none());
-        assert!(entry.previous_highest_counter().is_some());
-
-        let current = entry.apply_fsp_receive_sync_result(
-            crate::node::session::FspReceiveSync {
-                counter: 8,
-                slot: crate::node::session::EpochSlot::Current,
-                received_k_bit: entry.current_k_bit(),
-                timestamp: 0x0102_0305,
-                plaintext_len: FSP_INNER_HEADER_SIZE + 16,
-                ce_flag: false,
-                path_mtu: 1_280,
-                spin_bit: false,
-            },
-            2_100,
-            Instant::now(),
-        );
-
-        assert!(current.is_applied());
-        assert!(
-            !current.refresh_packet_mover2_owner(),
-            "ordinary current-epoch replay mirroring must not refresh the PM2 owner"
-        );
-    }
-
-    #[test]
     fn authenticated_session_message_owns_endpoint_delivery_conversion() {
         let peer = Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());

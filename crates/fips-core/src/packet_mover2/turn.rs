@@ -392,7 +392,6 @@ impl PacketMover2FspSessionIngress {
         };
         let receive_sync = crate::node::session::FspReceiveSync {
             counter: output.counter(),
-            slot: crate::node::session::EpochSlot::Current,
             received_k_bit: header.flags() & crate::node::session_wire::FSP_FLAG_K != 0,
             timestamp: timestamp_ms,
             plaintext_len,

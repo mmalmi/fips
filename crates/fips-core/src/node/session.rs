@@ -40,60 +40,16 @@ pub(crate) enum EndToEndState {
     Established(NoiseSession),
 }
 
-/// Which key epoch an encrypted FSP frame authenticated against.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EpochSlot {
-    /// The current active session.
-    Current,
-    /// A completed rekey session that has not yet been promoted.
-    #[allow(dead_code)]
-    Pending,
-    /// The old session retained during the drain window after cutover.
-    #[allow(dead_code)]
-    Previous,
-}
-
 /// Authenticated FSP receive metadata produced by packet_mover2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FspReceiveSync {
     pub(crate) counter: u64,
-    pub(crate) slot: EpochSlot,
     pub(crate) received_k_bit: bool,
     pub(crate) timestamp: u32,
     pub(crate) plaintext_len: usize,
     pub(crate) ce_flag: bool,
     pub(crate) path_mtu: u16,
     pub(crate) spin_bit: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FspReceiveSyncApply {
-    applied: bool,
-    refresh_packet_mover2_owner: bool,
-}
-
-impl FspReceiveSyncApply {
-    fn applied(refresh_packet_mover2_owner: bool) -> Self {
-        Self {
-            applied: true,
-            refresh_packet_mover2_owner,
-        }
-    }
-
-    fn stale() -> Self {
-        Self {
-            applied: false,
-            refresh_packet_mover2_owner: false,
-        }
-    }
-
-    pub(crate) fn is_applied(self) -> bool {
-        self.applied
-    }
-
-    pub(crate) fn refresh_packet_mover2_owner(self) -> bool {
-        self.refresh_packet_mover2_owner
-    }
 }
 
 impl EndToEndState {
@@ -170,8 +126,6 @@ pub(crate) struct SessionEntry {
     previous_noise_session: Option<NoiseSession>,
     /// When drain window started (Unix ms). 0 = no drain.
     drain_started_ms: u64,
-    /// Last inbound frame time that authenticated against `previous`.
-    previous_last_used_ms: u64,
     /// In-progress rekey state (runs alongside Established session).
     rekey_state: Option<HandshakeState>,
     /// Pending completed session awaiting K-bit cutover.
@@ -189,8 +143,6 @@ pub(crate) struct SessionEntry {
     rekey_msg3_next_resend_ms: u64,
     /// Number of rekey msg3 retransmissions performed.
     rekey_msg3_resend_count: u32,
-    /// True once the peer has authenticated on the new rekey epoch.
-    peer_new_epoch_confirmed: bool,
     /// Per-session symmetric jitter applied to the rekey timer trigger.
     rekey_jitter_secs: i64,
 
@@ -231,7 +183,6 @@ impl SessionEntry {
             current_k_bit: false,
             previous_noise_session: None,
             drain_started_ms: 0,
-            previous_last_used_ms: 0,
             rekey_state: None,
             pending_new_session: None,
             rekey_initiator: false,
@@ -240,7 +191,6 @@ impl SessionEntry {
             rekey_msg3_payload: None,
             rekey_msg3_next_resend_ms: 0,
             rekey_msg3_resend_count: 0,
-            peer_new_epoch_confirmed: false,
             rekey_jitter_secs: draw_rekey_jitter(),
             consecutive_decrypt_failures: 0,
         }
@@ -454,14 +404,6 @@ impl SessionEntry {
         self.previous_noise_session.as_mut()
     }
 
-    /// Mutable access to the current established session.
-    pub(crate) fn current_noise_session_mut(&mut self) -> Option<&mut NoiseSession> {
-        match self.state.as_mut() {
-            Some(EndToEndState::Established(session)) => Some(session),
-            _ => None,
-        }
-    }
-
     /// Snapshot the current established-FSP open/seal keys for packet mover owner state.
     pub(crate) fn fsp_crypto_keys(&self) -> Option<(LessSafeKey, LessSafeKey)> {
         let session = self.current_noise_session()?;
@@ -524,7 +466,6 @@ impl SessionEntry {
         self.rekey_msg3_payload = Some(payload);
         self.rekey_msg3_next_resend_ms = next_resend_at_ms;
         self.rekey_msg3_resend_count = 0;
-        self.peer_new_epoch_confirmed = false;
     }
 
     /// Get the retained rekey SessionMsg3 payload.
@@ -555,94 +496,34 @@ impl SessionEntry {
         self.rekey_msg3_resend_count = 0;
     }
 
-    #[cfg(test)]
-    pub(crate) fn peer_new_epoch_confirmed(&self) -> bool {
-        self.peer_new_epoch_confirmed
-    }
-
     /// Mark the peer as confirmed on the new epoch and stop msg3 retransmission.
     pub(crate) fn confirm_peer_new_epoch(&mut self) {
-        self.peer_new_epoch_confirmed = true;
         self.clear_rekey_msg3_payload();
     }
 
-    /// Mirror a frame authenticated by packet_mover2 into rx-loop-owned
-    /// session metadata.
+    /// Mirror a frame authenticated by packet_mover2 into session lifecycle
+    /// metadata.
     ///
-    /// PM2 already performed AEAD verification and owner replay admission.
-    /// This method keeps the canonical
-    /// `SessionEntry` coherent and performs the final rx-loop replay guard:
-    /// replay windows are advanced for slow paths, pending epochs are
-    /// promoted, MMP receive state is updated, and idle counters observe
-    /// application data.
+    /// PM2 owns FSP AEAD verification, generation selection, replay admission,
+    /// and ordered retirement. The session registry keeps control-plane state
+    /// coherent after PM2 has accepted a current-epoch FSP frame.
     pub(crate) fn apply_fsp_receive_sync_result(
         &mut self,
         sync: FspReceiveSync,
         now_ms: u64,
         now: Instant,
-    ) -> FspReceiveSyncApply {
-        if !self.is_established() {
-            return FspReceiveSyncApply::stale();
-        }
-
-        let mut refresh_packet_mover2_owner = false;
-        match sync.slot {
-            EpochSlot::Current => {
-                let Some(session) = self.current_noise_session_mut() else {
-                    return FspReceiveSyncApply::stale();
-                };
-                if session.check_replay(sync.counter).is_err() {
-                    return FspReceiveSyncApply::stale();
-                }
-                session.accept_replay(sync.counter);
-                if self.rekey_msg3_payload().is_some() && self.pending_new_session().is_none() {
-                    self.confirm_peer_new_epoch();
-                }
-            }
-            EpochSlot::Pending => {
-                if let Some(session) = self.pending_new_session.as_mut() {
-                    if session.check_replay(sync.counter).is_err() {
-                        return FspReceiveSyncApply::stale();
-                    }
-                    session.accept_replay(sync.counter);
-                    if self.rekey_msg3_payload().is_some() {
-                        self.confirm_peer_new_epoch();
-                    }
-                    self.handle_peer_kbit_flip(now_ms);
-                    refresh_packet_mover2_owner = true;
-                } else if sync.received_k_bit == self.current_k_bit {
-                    // A second pending-epoch event can reach rx_loop after an
-                    // earlier event already promoted the pending session. The
-                    // PM2 authenticated it before promotion; mirror it into
-                    // the now-current slot instead of dropping good data.
-                    let Some(session) = self.current_noise_session_mut() else {
-                        return FspReceiveSyncApply::stale();
-                    };
-                    if session.check_replay(sync.counter).is_err() {
-                        return FspReceiveSyncApply::stale();
-                    }
-                    session.accept_replay(sync.counter);
-                } else {
-                    return FspReceiveSyncApply::stale();
-                }
-            }
-            EpochSlot::Previous => {
-                let Some(session) = self.previous_noise_session.as_mut() else {
-                    return FspReceiveSyncApply::stale();
-                };
-                if session.check_replay(sync.counter).is_err() {
-                    return FspReceiveSyncApply::stale();
-                }
-                session.accept_replay(sync.counter);
-                self.refresh_previous_use(now_ms);
-            }
+    ) -> bool {
+        if !self.is_established() || self.current_noise_session().is_none() {
+            return false;
         }
 
         self.reset_decrypt_failures();
+        if self.rekey_msg3_payload().is_some() && self.pending_new_session().is_none() {
+            self.confirm_peer_new_epoch();
+        }
         if self.handshake_payload().is_some()
             && self.pending_new_session().is_none()
             && !self.has_rekey_in_progress()
-            && sync.slot == EpochSlot::Current
             && sync.received_k_bit == self.current_k_bit()
         {
             self.clear_handshake_payload();
@@ -660,7 +541,7 @@ impl SessionEntry {
             mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
         }
         self.touch_inbound_frame(now_ms);
-        FspReceiveSyncApply::applied(refresh_packet_mover2_owner)
+        true
     }
 
     /// Store a completed rekey session.
@@ -691,7 +572,6 @@ impl SessionEntry {
             self.previous_noise_session = Some(old);
         }
         self.drain_started_ms = now_ms;
-        self.previous_last_used_ms = 0;
 
         // Promote pending to current
         self.state = Some(EndToEndState::Established(new_session));
@@ -715,18 +595,12 @@ impl SessionEntry {
         self.promote_pending(now_ms)
     }
 
-    /// Handle receiving a K-bit flip from the peer (responder side).
-    pub(crate) fn handle_peer_kbit_flip(&mut self, now_ms: u64) -> bool {
-        self.promote_pending(now_ms)
-    }
-
     /// Check if the drain window has expired.
     pub(crate) fn drain_expired(&self, now_ms: u64, drain_ms: u64) -> bool {
         if self.drain_started_ms == 0 {
             return false;
         }
-        let deadline_anchor = self.drain_started_ms.max(self.previous_last_used_ms);
-        now_ms.saturating_sub(deadline_anchor) >= drain_ms
+        now_ms.saturating_sub(self.drain_started_ms) >= drain_ms
     }
 
     /// Whether a drain is in progress.
@@ -734,18 +608,10 @@ impl SessionEntry {
         self.drain_started_ms > 0
     }
 
-    /// Refresh the drain deadline after a frame authenticates against `previous`.
-    pub(crate) fn refresh_previous_use(&mut self, now_ms: u64) {
-        if self.drain_started_ms > 0 {
-            self.previous_last_used_ms = now_ms;
-        }
-    }
-
     /// Complete the drain: drop previous session.
     pub(crate) fn complete_drain(&mut self) {
         self.previous_noise_session = None;
         self.drain_started_ms = 0;
-        self.previous_last_used_ms = 0;
     }
 
     /// Abandon an in-progress rekey.
@@ -756,7 +622,6 @@ impl SessionEntry {
         self.rekey_initiator = false;
         self.rekey_completed_ms = 0;
         self.clear_rekey_msg3_payload();
-        self.peer_new_epoch_confirmed = false;
     }
 
     // === Decrypt Failure Tracking ===
@@ -778,28 +643,4 @@ impl SessionEntry {
     pub(crate) fn consecutive_decrypt_failures(&self) -> u32 {
         self.consecutive_decrypt_failures
     }
-
-    #[cfg(test)]
-    pub(crate) fn set_previous_session_for_test(&mut self, session: NoiseSession, now_ms: u64) {
-        self.previous_noise_session = Some(session);
-        self.drain_started_ms = now_ms;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn previous_highest_counter(&self) -> Option<u64> {
-        self.previous_noise_session
-            .as_ref()
-            .map(|session| session.highest_received_counter())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn current_highest_counter(&self) -> Option<u64> {
-        match self.state.as_ref() {
-            Some(EndToEndState::Established(session)) => Some(session.highest_received_counter()),
-            _ => None,
-        }
-    }
 }
-
-#[cfg(test)]
-mod overlapping_epoch_tests;

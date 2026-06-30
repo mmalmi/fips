@@ -11,10 +11,7 @@ impl Node {
             };
             entry.apply_fsp_receive_sync_result(sync, Self::now_ms(), now)
         };
-        if apply.refresh_packet_mover2_owner() {
-            self.sync_packet_mover2_fsp_owner(&source_addr);
-        }
-        apply.is_applied()
+        apply
     }
 
     /// Handle a locally-delivered session datagram payload.
