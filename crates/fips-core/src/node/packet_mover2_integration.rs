@@ -51,13 +51,13 @@ impl Node {
         plaintext: &[u8],
         ce_flag: bool,
     ) -> Result<(), NodeError> {
-        if !self.sync_packet_mover2_fmp_owner(node_addr) {
+        if !self.packet_mover2_has_fmp_owner(node_addr) {
             return if self.peers.get(node_addr).is_none() {
                 Err(NodeError::PeerNotFound(*node_addr))
             } else {
                 Err(NodeError::SendFailed {
                     node_addr: *node_addr,
-                    reason: "packet_mover2 FMP owner unavailable".into(),
+                    reason: "packet_mover2 FMP owner not registered".into(),
                 })
             };
         }
@@ -668,6 +668,10 @@ impl Node {
             .unregister_owner(OwnerId::fmp_node(*node_addr));
     }
 
+    pub(in crate::node) fn packet_mover2_has_fmp_owner(&self, node_addr: &NodeAddr) -> bool {
+        self.packet_mover2.has_owner(OwnerId::fmp_node(*node_addr))
+    }
+
     pub(in crate::node) fn refresh_packet_mover2_fsp_owner_routes(
         &mut self,
         node_addr: &NodeAddr,
@@ -682,10 +686,8 @@ impl Node {
             send_context.fsp_flags(),
             send_context.inner_flags(),
         );
-        let next_hop_ready = next_hop.is_none_or(|next_hop| {
-            self.packet_mover2.has_owner(OwnerId::fmp_node(next_hop))
-                || self.sync_packet_mover2_fmp_owner(&next_hop)
-        });
+        let next_hop_ready =
+            next_hop.is_none_or(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
         self.packet_mover2
             .replace_owner_routes(owner, routes)
             .is_ok()
@@ -779,7 +781,7 @@ impl Node {
             .register_owner_if_missing(seed.owner, seed.config.clone());
         let next_hop_ready = seed
             .next_hop
-            .is_none_or(|next_hop| self.sync_packet_mover2_fmp_owner(&next_hop));
+            .is_none_or(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
         let synced = self
             .packet_mover2
             .apply_owner_live_config(seed.owner, seed.config)
