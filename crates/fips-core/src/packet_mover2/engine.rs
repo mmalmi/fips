@@ -177,7 +177,8 @@ impl PacketMover2OwnerShard {
     ) -> usize {
         work.clear();
 
-        while work.len() < limit {
+        let mut attempts_remaining = self.admission.len();
+        while work.len() < limit && attempts_remaining > 0 {
             let Some(queued) = self.admission.pop_next() else {
                 if limit > 0 {
                     crate::perf_profile::record_event(
@@ -186,6 +187,7 @@ impl PacketMover2OwnerShard {
                 }
                 break;
             };
+            attempts_remaining = attempts_remaining.saturating_sub(1);
 
             let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
                 self.drops.push(PacketDrop::from_queued(
@@ -196,15 +198,18 @@ impl PacketMover2OwnerShard {
             };
             if !owner.can_reserve_class(queued.packet.class) {
                 record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
-                self.admission.push_front(queued);
-                break;
+                self.admission.push_back(queued);
+                continue;
             }
 
             match owner.reserve(&queued.packet, queued.ingress_seq) {
-                Ok(reservation) => work.push(CryptoWork {
-                    reservation,
-                    packet: queued.packet,
-                }),
+                Ok(reservation) => {
+                    work.push(CryptoWork {
+                        reservation,
+                        packet: queued.packet,
+                    });
+                    attempts_remaining = self.admission.len();
+                }
                 Err(error) => self
                     .drops
                     .push(PacketDrop::from_queued(&queued, error.into())),
@@ -226,13 +231,15 @@ impl PacketMover2OwnerShard {
     ) -> usize {
         work.clear();
 
-        while work.len() < limit {
+        let mut attempts_remaining = self.outbound_admission.len();
+        while work.len() < limit && attempts_remaining > 0 {
             let Some(queued) = self.outbound_admission.pop_next() else {
                 break;
             };
+            attempts_remaining = attempts_remaining.saturating_sub(1);
 
-            if !self.dispatch_queued_outbound(queued, work) {
-                break;
+            if self.dispatch_queued_outbound(queued, work) {
+                attempts_remaining = self.outbound_admission.len();
             }
         }
 
@@ -246,13 +253,15 @@ impl PacketMover2OwnerShard {
     ) -> usize {
         work.clear();
 
-        while work.len() < limit {
+        let mut attempts_remaining = self.outbound_admission.len();
+        while work.len() < limit && attempts_remaining > 0 {
             let Some(queued) = self.outbound_admission.pop_next_priority() else {
                 break;
             };
+            attempts_remaining = attempts_remaining.saturating_sub(1);
 
-            if !self.dispatch_queued_outbound(queued, work) {
-                break;
+            if self.dispatch_queued_outbound(queued, work) {
+                attempts_remaining = self.outbound_admission.len();
             }
         }
 
@@ -282,7 +291,7 @@ impl PacketMover2OwnerShard {
         };
         if !owner.can_reserve_class(class) {
             record_owner_blocked(owner.reserve_block_reason(class));
-            self.outbound_admission.push_front(queued);
+            self.outbound_admission.push_back(queued);
             return false;
         }
 
@@ -303,7 +312,7 @@ impl PacketMover2OwnerShard {
             };
             if !outer_owner.can_reserve_class(class) {
                 record_owner_blocked(outer_owner.reserve_block_reason(class));
-                self.outbound_admission.push_front(queued);
+                self.outbound_admission.push_back(queued);
                 return false;
             }
         }
@@ -520,14 +529,11 @@ impl PacketMover2OwnerShard {
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {
-        (self.admission.priority.len(), self.admission.bulk.len())
+        self.admission.lens()
     }
 
     fn outbound_admission_queue_lens(&self) -> (usize, usize) {
-        (
-            self.outbound_admission.priority.len(),
-            self.outbound_admission.bulk.len(),
-        )
+        self.outbound_admission.lens()
     }
 
     fn prepare_seal_work(

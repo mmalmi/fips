@@ -253,6 +253,35 @@
     }
 
     #[test]
+    fn blocked_owner_ingress_does_not_stop_runnable_owner() {
+        let blocked = fsp_owner(21);
+        let runnable = fsp_owner(22);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 8));
+        mover.register_owner(blocked, OwnerConfig::new(1, 1));
+        mover.register_owner(runnable, OwnerConfig::new(1, 1));
+
+        mover
+            .submit_socket_packet(packet(blocked, 1, 1, PacketClass::Bulk, OutputTarget::Tun))
+            .unwrap();
+        let first = dispatch_available(&mut mover, 8);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].packet.owner, blocked);
+
+        mover
+            .submit_socket_packet(packet(blocked, 1, 2, PacketClass::Bulk, OutputTarget::Tun))
+            .unwrap();
+        mover
+            .submit_socket_packet(packet(runnable, 1, 1, PacketClass::Bulk, OutputTarget::Tun))
+            .unwrap();
+
+        let work = dispatch_available(&mut mover, 8);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].packet.owner, runnable);
+        assert_eq!(work[0].packet.counter, 1);
+        assert_eq!(queue_lens(&mover), (0, 1));
+    }
+
+    #[test]
     fn turn_runner_batches_admission_and_reuses_work_buffer() {
         let owner = fsp_owner(11);
         let key = 11;
@@ -653,6 +682,35 @@
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 3);
         assert_eq!(outbound_queue_lens(&mover), (0, 1));
         assert!(mover.drain_drops().is_empty());
+    }
+
+    #[test]
+    fn blocked_owner_outbound_does_not_stop_runnable_owner() {
+        let blocked = fsp_owner(37);
+        let runnable = fsp_owner(38);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 8));
+        mover.register_owner(blocked, OwnerConfig::new(1, 1).with_next_send_counter(370));
+        mover.register_owner(runnable, OwnerConfig::new(1, 1).with_next_send_counter(380));
+
+        mover
+            .submit_outbound_packet(outbound_packet(blocked, 1, PacketClass::Bulk, b"blocked-1"))
+            .unwrap();
+        let first = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].reservation.owner, blocked);
+
+        mover
+            .submit_outbound_packet(outbound_packet(blocked, 1, PacketClass::Bulk, b"blocked-2"))
+            .unwrap();
+        mover
+            .submit_outbound_packet(outbound_packet(runnable, 1, PacketClass::Bulk, b"runnable"))
+            .unwrap();
+
+        let work = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].reservation.owner, runnable);
+        assert_eq!(work[0].reservation.counter, 380);
+        assert_eq!(outbound_queue_lens(&mover), (0, 1));
     }
 
     #[test]

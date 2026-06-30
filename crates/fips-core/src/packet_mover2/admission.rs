@@ -71,36 +71,223 @@ struct QueuedOutboundPacket {
     packet: OutboundPacket,
 }
 
+trait OwnerQueuedAdmission {
+    fn owner(&self) -> OwnerId;
+    fn lane(&self) -> Lane;
+}
+
+impl OwnerQueuedAdmission for QueuedPacket {
+    fn owner(&self) -> OwnerId {
+        self.packet.owner
+    }
+
+    fn lane(&self) -> Lane {
+        self.packet.lane()
+    }
+}
+
+impl OwnerQueuedAdmission for QueuedOutboundPacket {
+    fn owner(&self) -> OwnerId {
+        self.packet.owner
+    }
+
+    fn lane(&self) -> Lane {
+        self.packet.lane()
+    }
+}
+
 #[derive(Debug)]
-pub(crate) struct AdmissionQueue {
+struct OwnerLaneQueues<T> {
+    priority: VecDeque<T>,
+    bulk: VecDeque<T>,
+}
+
+impl<T> Default for OwnerLaneQueues<T> {
+    fn default() -> Self {
+        Self {
+            priority: VecDeque::new(),
+            bulk: VecDeque::new(),
+        }
+    }
+}
+
+impl<T> OwnerLaneQueues<T> {
+    fn lane(&self, lane: Lane) -> &VecDeque<T> {
+        match lane {
+            Lane::Priority => &self.priority,
+            Lane::Bulk => &self.bulk,
+        }
+    }
+
+    fn lane_mut(&mut self, lane: Lane) -> &mut VecDeque<T> {
+        match lane {
+            Lane::Priority => &mut self.priority,
+            Lane::Bulk => &mut self.bulk,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.priority.is_empty() && self.bulk.is_empty()
+    }
+}
+
+#[derive(Debug)]
+struct OwnerAdmissionQueues<T> {
     config: AdmissionConfig,
     next_ingress_seq: u64,
-    priority: VecDeque<QueuedPacket>,
-    bulk: VecDeque<QueuedPacket>,
+    priority_len: usize,
+    bulk_len: usize,
+    priority_ready: VecDeque<OwnerId>,
+    bulk_ready: VecDeque<OwnerId>,
+    owners: HashMap<OwnerId, OwnerLaneQueues<T>>,
+}
+
+impl<T> OwnerAdmissionQueues<T>
+where
+    T: OwnerQueuedAdmission,
+{
+    fn new(config: AdmissionConfig) -> Self {
+        Self {
+            config,
+            next_ingress_seq: 0,
+            priority_len: 0,
+            bulk_len: 0,
+            priority_ready: VecDeque::new(),
+            bulk_ready: VecDeque::new(),
+            owners: HashMap::new(),
+        }
+    }
+
+    fn next_ingress_seq(&mut self) -> u64 {
+        let ingress_seq = self.next_ingress_seq;
+        self.next_ingress_seq = self.next_ingress_seq.wrapping_add(1);
+        ingress_seq
+    }
+
+    fn lane_len(&self, lane: Lane) -> usize {
+        match lane {
+            Lane::Priority => self.priority_len,
+            Lane::Bulk => self.bulk_len,
+        }
+    }
+
+    fn lane_capacity(&self, lane: Lane) -> usize {
+        match lane {
+            Lane::Priority => self.config.priority_capacity,
+            Lane::Bulk => self.config.bulk_capacity,
+        }
+    }
+
+    fn lens(&self) -> (usize, usize) {
+        (self.priority_len, self.bulk_len)
+    }
+
+    fn len(&self) -> usize {
+        self.priority_len.saturating_add(self.bulk_len)
+    }
+
+    fn push_back(&mut self, item: T) {
+        self.push(item);
+    }
+
+    fn push(&mut self, item: T) {
+        let owner = item.owner();
+        let lane = item.lane();
+        let was_empty = {
+            let queue = self.owners.entry(owner).or_default().lane_mut(lane);
+            let was_empty = queue.is_empty();
+            queue.push_back(item);
+            was_empty
+        };
+        self.increment_lane_len(lane);
+        if was_empty {
+            self.push_ready_back(lane, owner);
+        }
+    }
+
+    fn pop_next(&mut self) -> Option<T> {
+        self.pop_lane(Lane::Priority)
+            .or_else(|| self.pop_lane(Lane::Bulk))
+    }
+
+    fn pop_next_priority(&mut self) -> Option<T> {
+        self.pop_lane(Lane::Priority)
+    }
+
+    fn has_priority_pending(&self) -> bool {
+        self.priority_len > 0
+    }
+
+    fn pop_lane(&mut self, lane: Lane) -> Option<T> {
+        loop {
+            let owner = self.pop_ready_front(lane)?;
+            let Some((item, owner_has_more, owner_empty)) = self.pop_owner_lane(owner, lane) else {
+                continue;
+            };
+            self.decrement_lane_len(lane);
+            if owner_has_more {
+                self.push_ready_back(lane, owner);
+            }
+            if owner_empty {
+                self.owners.remove(&owner);
+            }
+            return Some(item);
+        }
+    }
+
+    fn pop_owner_lane(&mut self, owner: OwnerId, lane: Lane) -> Option<(T, bool, bool)> {
+        let queues = self.owners.get_mut(&owner)?;
+        let item = queues.lane_mut(lane).pop_front()?;
+        let owner_has_more = !queues.lane(lane).is_empty();
+        let owner_empty = queues.is_empty();
+        Some((item, owner_has_more, owner_empty))
+    }
+
+    fn increment_lane_len(&mut self, lane: Lane) {
+        match lane {
+            Lane::Priority => self.priority_len = self.priority_len.saturating_add(1),
+            Lane::Bulk => self.bulk_len = self.bulk_len.saturating_add(1),
+        }
+    }
+
+    fn decrement_lane_len(&mut self, lane: Lane) {
+        match lane {
+            Lane::Priority => self.priority_len = self.priority_len.saturating_sub(1),
+            Lane::Bulk => self.bulk_len = self.bulk_len.saturating_sub(1),
+        }
+    }
+
+    fn pop_ready_front(&mut self, lane: Lane) -> Option<OwnerId> {
+        match lane {
+            Lane::Priority => self.priority_ready.pop_front(),
+            Lane::Bulk => self.bulk_ready.pop_front(),
+        }
+    }
+
+    fn push_ready_back(&mut self, lane: Lane, owner: OwnerId) {
+        match lane {
+            Lane::Priority => self.priority_ready.push_back(owner),
+            Lane::Bulk => self.bulk_ready.push_back(owner),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmissionQueue {
+    queues: OwnerAdmissionQueues<QueuedPacket>,
 }
 
 impl AdmissionQueue {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
-            config,
-            next_ingress_seq: 0,
-            priority: VecDeque::with_capacity(config.priority_capacity),
-            bulk: VecDeque::with_capacity(config.bulk_capacity),
+            queues: OwnerAdmissionQueues::new(config),
         }
     }
 
     pub(crate) fn admit(&mut self, packet: SocketPacket) -> Result<u64, AdmissionDrop> {
         let lane = packet.lane();
-        let target = match lane {
-            Lane::Priority => &mut self.priority,
-            Lane::Bulk => &mut self.bulk,
-        };
-        let capacity = match lane {
-            Lane::Priority => self.config.priority_capacity,
-            Lane::Bulk => self.config.bulk_capacity,
-        };
 
-        if target.len() >= capacity {
+        if self.queues.lane_len(lane) >= self.queues.lane_capacity(lane) {
             return Err(AdmissionDrop {
                 owner: packet.owner,
                 counter: packet.counter,
@@ -114,9 +301,8 @@ impl AdmissionQueue {
             });
         }
 
-        let ingress_seq = self.next_ingress_seq;
-        self.next_ingress_seq = self.next_ingress_seq.wrapping_add(1);
-        target.push_back(QueuedPacket {
+        let ingress_seq = self.queues.next_ingress_seq();
+        self.queues.push_back(QueuedPacket {
             ingress_seq,
             packet,
         });
@@ -124,14 +310,19 @@ impl AdmissionQueue {
     }
 
     fn pop_next(&mut self) -> Option<QueuedPacket> {
-        self.priority.pop_front().or_else(|| self.bulk.pop_front())
+        self.queues.pop_next()
     }
 
-    fn push_front(&mut self, queued: QueuedPacket) {
-        match queued.packet.lane() {
-            Lane::Priority => self.priority.push_front(queued),
-            Lane::Bulk => self.bulk.push_front(queued),
-        }
+    fn push_back(&mut self, queued: QueuedPacket) {
+        self.queues.push_back(queued);
+    }
+
+    fn len(&self) -> usize {
+        self.queues.len()
+    }
+
+    fn lens(&self) -> (usize, usize) {
+        self.queues.lens()
     }
 
 }
@@ -169,34 +360,20 @@ impl OutboundAdmissionDrop {
 
 #[derive(Debug)]
 pub(crate) struct OutboundAdmissionQueue {
-    config: AdmissionConfig,
-    next_ingress_seq: u64,
-    priority: VecDeque<QueuedOutboundPacket>,
-    bulk: VecDeque<QueuedOutboundPacket>,
+    queues: OwnerAdmissionQueues<QueuedOutboundPacket>,
 }
 
 impl OutboundAdmissionQueue {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
-            config,
-            next_ingress_seq: 0,
-            priority: VecDeque::with_capacity(config.priority_capacity),
-            bulk: VecDeque::with_capacity(config.bulk_capacity),
+            queues: OwnerAdmissionQueues::new(config),
         }
     }
 
     pub(crate) fn admit(&mut self, packet: OutboundPacket) -> Result<u64, OutboundAdmissionDrop> {
         let lane = packet.lane();
-        let target = match lane {
-            Lane::Priority => &mut self.priority,
-            Lane::Bulk => &mut self.bulk,
-        };
-        let capacity = match lane {
-            Lane::Priority => self.config.priority_capacity,
-            Lane::Bulk => self.config.bulk_capacity,
-        };
 
-        if target.len() >= capacity {
+        if self.queues.lane_len(lane) >= self.queues.lane_capacity(lane) {
             return Err(OutboundAdmissionDrop {
                 owner: packet.owner,
                 class: packet.class,
@@ -209,9 +386,8 @@ impl OutboundAdmissionQueue {
             });
         }
 
-        let ingress_seq = self.next_ingress_seq;
-        self.next_ingress_seq = self.next_ingress_seq.wrapping_add(1);
-        target.push_back(QueuedOutboundPacket {
+        let ingress_seq = self.queues.next_ingress_seq();
+        self.queues.push_back(QueuedOutboundPacket {
             ingress_seq,
             packet,
         });
@@ -219,22 +395,27 @@ impl OutboundAdmissionQueue {
     }
 
     fn pop_next(&mut self) -> Option<QueuedOutboundPacket> {
-        self.priority.pop_front().or_else(|| self.bulk.pop_front())
+        self.queues.pop_next()
     }
 
     fn pop_next_priority(&mut self) -> Option<QueuedOutboundPacket> {
-        self.priority.pop_front()
+        self.queues.pop_next_priority()
     }
 
-    fn push_front(&mut self, queued: QueuedOutboundPacket) {
-        match queued.packet.lane() {
-            Lane::Priority => self.priority.push_front(queued),
-            Lane::Bulk => self.bulk.push_front(queued),
-        }
+    fn push_back(&mut self, queued: QueuedOutboundPacket) {
+        self.queues.push_back(queued);
     }
 
     fn has_priority_pending(&self) -> bool {
-        !self.priority.is_empty()
+        self.queues.has_priority_pending()
+    }
+
+    fn len(&self) -> usize {
+        self.queues.len()
+    }
+
+    fn lens(&self) -> (usize, usize) {
+        self.queues.lens()
     }
 
 }
