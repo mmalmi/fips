@@ -9,8 +9,7 @@ pub(crate) struct PacketMover2 {
     next_outbound_seq: u64,
     ingress_ready_shards: ReadyShardQueues,
     outbound_ready_shards: ReadyShardQueues,
-    completion_ready_shards: VecDeque<usize>,
-    completion_shard_ready: Vec<bool>,
+    completion_ready_shards: ReadyShardQueue,
 }
 
 impl PacketMover2 {
@@ -29,8 +28,7 @@ impl PacketMover2 {
             next_outbound_seq: 0,
             ingress_ready_shards: ReadyShardQueues::new(shard_count),
             outbound_ready_shards: ReadyShardQueues::new(shard_count),
-            completion_ready_shards: VecDeque::new(),
-            completion_shard_ready: vec![false; shard_count],
+            completion_ready_shards: ReadyShardQueue::new(shard_count),
         }
     }
 
@@ -297,15 +295,6 @@ impl PacketMover2 {
         Ok(admitted)
     }
 
-    fn retire_completion_into(
-        &mut self,
-        completion: CryptoCompletion,
-        retired: &mut Vec<RetiredPacket>,
-    ) {
-        self.queue_completion(completion);
-        self.retire_queued_completions_into(1, retired);
-    }
-
     fn queue_completion(&mut self, completion: CryptoCompletion) {
         let shard = completion.reservation.owner_shard();
         debug_assert_eq!(shard, self.owner_shard_index(completion.reservation.owner));
@@ -316,19 +305,8 @@ impl PacketMover2 {
             return;
         };
         if owner_shard.queue_completion(completion) {
-            self.mark_completion_shard_ready(shard);
+            self.completion_ready_shards.mark(shard);
         }
-    }
-
-    fn mark_completion_shard_ready(&mut self, shard: usize) {
-        let Some(ready) = self.completion_shard_ready.get_mut(shard) else {
-            return;
-        };
-        if *ready {
-            return;
-        }
-        *ready = true;
-        self.completion_ready_shards.push_back(shard);
     }
 
     fn queue_completion_batch(&mut self, completions: &mut Vec<CryptoCompletion>) -> usize {
@@ -350,13 +328,7 @@ impl PacketMover2 {
 
         let mut retired_count = 0usize;
         while retired_count < limit {
-            let Some(shard) = self.completion_ready_shards.pop_front() else {
-                break;
-            };
-            let Some(ready) = self.completion_shard_ready.get_mut(shard) else {
-                continue;
-            };
-            *ready = false;
+            let Some(shard) = self.completion_ready_shards.pop() else { break };
             let Some(owner_shard) = self.shards.get_mut(shard) else {
                 continue;
             };
@@ -368,7 +340,7 @@ impl PacketMover2 {
                 .get(shard)
                 .is_some_and(PacketMover2OwnerShard::has_queued_completions)
             {
-                self.mark_completion_shard_ready(shard);
+                self.completion_ready_shards.mark(shard);
             }
         }
         retired_count
@@ -747,33 +719,69 @@ impl LaneLens {
 }
 
 #[derive(Clone, Debug)]
-struct ReadyShardQueues {
-    priority: VecDeque<usize>,
-    bulk: VecDeque<usize>,
-    priority_ready: Vec<bool>,
-    bulk_ready: Vec<bool>,
+struct ReadyShardQueue {
+    queue: VecDeque<usize>,
+    ready: Vec<bool>,
 }
 
-impl ReadyShardQueues {
+impl ReadyShardQueue {
     fn new(shards: usize) -> Self {
         Self {
-            priority: VecDeque::new(),
-            bulk: VecDeque::new(),
-            priority_ready: vec![false; shards],
-            bulk_ready: vec![false; shards],
+            queue: VecDeque::new(),
+            ready: vec![false; shards],
         }
     }
 
-    fn mark(&mut self, shard: usize, lane: Lane) {
-        let (queue, ready) = self.lane_mut(lane);
-        let Some(is_ready) = ready.get_mut(shard) else {
+    fn mark(&mut self, shard: usize) {
+        let Some(is_ready) = self.ready.get_mut(shard) else {
             return;
         };
         if *is_ready {
             return;
         }
         *is_ready = true;
-        queue.push_back(shard);
+        self.queue.push_back(shard);
+    }
+
+    fn pop(&mut self) -> Option<usize> {
+        loop {
+            let shard = self.queue.pop_front()?;
+            let Some(is_ready) = self.ready.get_mut(shard) else {
+                continue;
+            };
+            if !*is_ready {
+                continue;
+            }
+            *is_ready = false;
+            return Some(shard);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ReadyShardQueues {
+    priority: ReadyShardQueue,
+    bulk: ReadyShardQueue,
+}
+
+impl ReadyShardQueues {
+    fn new(shards: usize) -> Self {
+        Self {
+            priority: ReadyShardQueue::new(shards),
+            bulk: ReadyShardQueue::new(shards),
+        }
+    }
+
+    fn mark(&mut self, shard: usize, lane: Lane) {
+        self.lane_mut(lane).mark(shard);
     }
 
     fn mark_from_lens(&mut self, shard: usize, lens: LaneLens) {
@@ -804,24 +812,13 @@ impl ReadyShardQueues {
     }
 
     fn pop_lane(&mut self, lane: Lane) -> Option<usize> {
-        let (queue, ready) = self.lane_mut(lane);
-        loop {
-            let shard = queue.pop_front()?;
-            let Some(is_ready) = ready.get_mut(shard) else {
-                continue;
-            };
-            if !*is_ready {
-                continue;
-            }
-            *is_ready = false;
-            return Some(shard);
-        }
+        self.lane_mut(lane).pop()
     }
 
-    fn lane_mut(&mut self, lane: Lane) -> (&mut VecDeque<usize>, &mut Vec<bool>) {
+    fn lane_mut(&mut self, lane: Lane) -> &mut ReadyShardQueue {
         match lane {
-            Lane::Priority => (&mut self.priority, &mut self.priority_ready),
-            Lane::Bulk => (&mut self.bulk, &mut self.bulk_ready),
+            Lane::Priority => &mut self.priority,
+            Lane::Bulk => &mut self.bulk,
         }
     }
 }

@@ -895,7 +895,8 @@
         completion: CryptoCompletion,
     ) -> Vec<RetiredPacket> {
         let mut retired = Vec::new();
-        mover.retire_completion_into(completion, &mut retired);
+        mover.queue_completion(completion);
+        mover.retire_queued_completions_into(1, &mut retired);
         retired
     }
 

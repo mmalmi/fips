@@ -228,29 +228,31 @@
         assert_eq!(
             mover
                 .completion_ready_shards
+                .queue
                 .iter()
                 .copied()
                 .collect::<Vec<_>>(),
             vec![shard]
         );
-        assert!(mover.completion_shard_ready[shard]);
+        assert!(mover.completion_ready_shards.ready[shard]);
 
         let mut retired = Vec::new();
         assert_eq!(mover.retire_queued_completions_into(1, &mut retired), 1);
         assert_eq!(
             mover
                 .completion_ready_shards
+                .queue
                 .iter()
                 .copied()
                 .collect::<Vec<_>>(),
             vec![shard]
         );
-        assert!(mover.completion_shard_ready[shard]);
+        assert!(mover.completion_ready_shards.ready[shard]);
         assert!(matches!(&retired[0], RetiredPacket::Output(output) if output.counter == 1));
 
         assert_eq!(mover.retire_queued_completions_into(1, &mut retired), 1);
         assert!(mover.completion_ready_shards.is_empty());
-        assert!(!mover.completion_shard_ready[shard]);
+        assert!(!mover.completion_ready_shards.ready[shard]);
         assert!(matches!(&retired[1], RetiredPacket::Output(output) if output.counter == 2));
     }
 
@@ -289,6 +291,7 @@
             inbound_mover
                 .ingress_ready_shards
                 .bulk
+                .queue
                 .iter()
                 .copied()
                 .collect::<Vec<_>>(),
@@ -301,12 +304,13 @@
             inbound_mover
                 .ingress_ready_shards
                 .bulk
+                .queue
                 .iter()
                 .copied()
                 .collect::<Vec<_>>(),
             vec![shard]
         );
-        assert!(inbound_mover.ingress_ready_shards.bulk_ready[shard]);
+        assert!(inbound_mover.ingress_ready_shards.bulk.ready[shard]);
 
         let mut outbound_mover = mover();
         outbound_mover.register_owner(owner, OwnerConfig::new(1, 16).with_next_send_counter(700));
@@ -339,6 +343,7 @@
             outbound_mover
                 .outbound_ready_shards
                 .bulk
+                .queue
                 .iter()
                 .copied()
                 .collect::<Vec<_>>(),
@@ -351,12 +356,13 @@
             outbound_mover
                 .outbound_ready_shards
                 .bulk
+                .queue
                 .iter()
                 .copied()
                 .collect::<Vec<_>>(),
             vec![shard]
         );
-        assert!(outbound_mover.outbound_ready_shards.bulk_ready[shard]);
+        assert!(outbound_mover.outbound_ready_shards.bulk.ready[shard]);
     }
 
     #[derive(Debug, Default)]
