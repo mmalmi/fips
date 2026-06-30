@@ -46,7 +46,6 @@ fn test_multihop_pmtud_heterogeneous_mtu() {
                 .node
                 .get_session(&node2_addr)
                 .unwrap()
-                .state()
                 .is_established(),
             "Session A→C should be established"
         );

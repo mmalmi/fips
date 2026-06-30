@@ -38,14 +38,13 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_awaiting_msg3()
     );
 
     let count = wait_process_packets_for_node(&mut nodes, 0).await;
     assert!(count > 0, "SessionAck should reach initiator");
     let initiator_entry = nodes[0].node.get_session(&node1_addr).unwrap();
-    assert!(initiator_entry.state().is_established());
+    assert!(initiator_entry.is_established());
     assert!(
         initiator_entry.handshake_payload().is_some(),
         "initiator should retain final msg3 for loss recovery"
@@ -66,7 +65,6 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_awaiting_msg3(),
         "responder should still be waiting after the dropped msg3"
     );
@@ -88,7 +86,6 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_established(),
         "responder should establish from the resent SessionMsg3"
     );
@@ -188,7 +185,6 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_established()
     );
     assert!(
@@ -196,7 +192,6 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 
@@ -617,7 +612,7 @@ async fn session_100_nodes() {
         let ok = nodes[src]
             .node
             .get_session(&dest_addr)
-            .map(|e| e.state().is_established())
+            .map(|e| e.is_established())
             .unwrap_or(false);
         if !ok {
             handshake_failures.push((src, dst));
@@ -747,9 +742,9 @@ async fn session_100_nodes() {
     for tn in &nodes {
         let mut all_est = true;
         for (_, entry) in tn.node.sessions.iter() {
-            if entry.state().is_established() {
+            if entry.is_established() {
                 total_established += 1;
-            } else if entry.state().is_awaiting_msg3() {
+            } else if entry.is_awaiting_msg3() {
                 total_responding += 1;
                 all_est = false;
             } else {

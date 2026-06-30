@@ -209,7 +209,6 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 

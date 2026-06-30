@@ -26,7 +26,6 @@ async fn test_session_direct_peer_handshake() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_initiating()
     );
 
@@ -41,7 +40,6 @@ async fn test_session_direct_peer_handshake() {
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_awaiting_msg3()
     );
 
@@ -55,7 +53,6 @@ async fn test_session_direct_peer_handshake() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 
@@ -69,7 +66,6 @@ async fn test_session_direct_peer_handshake() {
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 

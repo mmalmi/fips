@@ -41,7 +41,6 @@ async fn session_3node_forwarded_handshake() {
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_awaiting_msg3()
     );
 
@@ -57,7 +56,6 @@ async fn session_3node_forwarded_handshake() {
             .node
             .get_session(&node2_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 
@@ -73,7 +71,6 @@ async fn session_3node_forwarded_handshake() {
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 

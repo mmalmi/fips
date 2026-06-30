@@ -78,7 +78,6 @@ async fn test_tun_outbound_3node_forwarded() {
             .node
             .get_session(&node2_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 
@@ -125,7 +124,6 @@ async fn test_tun_outbound_pending_queue_flush() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_initiating()
     );
 
@@ -137,7 +135,6 @@ async fn test_tun_outbound_pending_queue_flush() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 

@@ -157,7 +157,6 @@ async fn test_tun_outbound_triggers_session_initiation() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_initiating()
     );
 

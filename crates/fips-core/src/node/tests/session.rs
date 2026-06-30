@@ -90,7 +90,7 @@ async fn wait_for_session_established(
             if nodes[index]
                 .node
                 .get_session(peer)
-                .is_some_and(|entry| entry.state().is_established())
+                .is_some_and(|entry| entry.is_established())
             {
                 return;
             }
@@ -215,7 +215,7 @@ async fn send_endpoint_data_via_pm2(
     .await;
     if node
         .get_session(&dest_addr)
-        .is_some_and(|entry| entry.state().is_established())
+        .is_some_and(|entry| entry.is_established())
         && node.find_next_hop(&dest_addr).is_some()
     {
         node.flush_pending_packets(&dest_addr).await;

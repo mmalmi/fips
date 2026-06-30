@@ -17,9 +17,9 @@ fn test_session_entry_new_initiating() {
         true,
     );
 
-    assert!(entry.state().is_initiating());
-    assert!(!entry.state().is_established());
-    assert!(!entry.state().is_awaiting_msg3());
+    assert!(entry.is_initiating());
+    assert!(!entry.is_established());
+    assert!(!entry.is_awaiting_msg3());
     assert_eq!(entry.created_at(), 1000);
 }
 

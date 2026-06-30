@@ -158,14 +158,6 @@ impl SessionEntry {
         self.remote_identity
     }
 
-    /// Get the current session state.
-    #[cfg(test)]
-    pub(crate) fn state(&self) -> &EndToEndState {
-        self.state
-            .as_ref()
-            .expect("session state taken but not restored")
-    }
-
     /// Replace the session state.
     pub(crate) fn set_state(&mut self, state: EndToEndState) {
         self.state = Some(state);
