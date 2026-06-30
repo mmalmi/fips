@@ -561,25 +561,3 @@ impl<'a> IntoIterator for &'a PeerLifecycleRegistry {
         self.active.peers.iter()
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::node) struct FspSendBookkeepingInput {
-    pub(in crate::node) counter: u64,
-    pub(in crate::node) timestamp: u32,
-    pub(in crate::node) frame_bytes: usize,
-}
-
-impl FspSendBookkeepingInput {
-    pub(in crate::node) fn control(counter: u64, timestamp: u32, frame_bytes: usize) -> Self {
-        Self {
-            counter,
-            timestamp,
-            frame_bytes,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::node) struct FspSendBookkeeping {
-    pub(in crate::node) mmp_recorded: bool,
-}

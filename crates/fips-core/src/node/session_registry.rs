@@ -44,33 +44,8 @@ impl SessionRegistry {
         self.sessions.iter()
     }
 
-    pub(in crate::node) fn iter_mut(
-        &mut self,
-    ) -> impl Iterator<Item = (&NodeAddr, &mut SessionEntry)> {
-        self.sessions.iter_mut()
-    }
-
     pub(in crate::node) fn values(&self) -> impl Iterator<Item = &SessionEntry> {
         self.sessions.values()
-    }
-
-    pub(in crate::node) fn record_fsp_send_bookkeeping(
-        &mut self,
-        node_addr: &NodeAddr,
-        input: FspSendBookkeepingInput,
-    ) -> Option<FspSendBookkeeping> {
-        let entry = self.sessions.get_mut(node_addr)?;
-        let mut result = FspSendBookkeeping {
-            mmp_recorded: false,
-        };
-
-        if let Some(mmp) = entry.mmp_mut() {
-            mmp.sender
-                .record_sent(input.counter, input.timestamp, input.frame_bytes);
-            result.mmp_recorded = true;
-        }
-
-        Some(result)
     }
 }
 

@@ -1270,40 +1270,223 @@
         assert!(activity.has_recent_outbound_without_inbound(105, 10));
         assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
         assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(2));
+        let sync = |counter, body_len| FspReceiveSync {
+            counter,
+            received_k_bit: false,
+            timestamp: 0,
+            plaintext_len: FSP_INNER_HEADER_SIZE + body_len,
+            ce_flag: false,
+            path_mtu: u16::MAX,
+            spin_bit: false,
+            lifecycle_sync_required: false,
+        };
 
-        assert!(mover.record_authenticated_fsp_session(
-            owner,
-            owner.node_addr(),
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            11,
-            Some(ActivityTick::new(110)),
-        ));
+        assert!(mover
+            .record_authenticated_fsp_session(
+                owner,
+                owner.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                11,
+                sync(1, 11),
+                Some(ActivityTick::new(110)),
+                std::time::Instant::now(),
+            )
+            .is_some());
         let activity = mover.owner_fsp_activity(owner).unwrap();
         assert_eq!(activity.last_rx_data_age_ms(115), Some(5));
         assert!(!activity.has_recent_outbound_without_inbound(115, 20));
         assert_eq!(mover.record_fsp_decrypt_failure(owner), Some(1));
 
-        assert!(mover.record_authenticated_fsp_session(
-            owner,
-            next_hop.node_addr(),
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            13,
-            Some(ActivityTick::new(120)),
-        ));
+        assert!(mover
+            .record_authenticated_fsp_session(
+                owner,
+                next_hop.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                13,
+                sync(2, 13),
+                Some(ActivityTick::new(120)),
+                std::time::Instant::now(),
+            )
+            .is_some());
         let activity = mover.owner_fsp_activity(owner).unwrap();
         assert_eq!(activity.last_rx_age_ms(125), Some(5));
         assert_eq!(activity.last_rx_data_age_ms(125), Some(5));
 
-        assert!(mover.record_authenticated_fsp_session(
-            owner,
-            test_node_addr(179),
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            17,
-            Some(ActivityTick::new(130)),
-        ));
+        assert!(mover
+            .record_authenticated_fsp_session(
+                owner,
+                test_node_addr(179),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                17,
+                sync(3, 17),
+                Some(ActivityTick::new(130)),
+                std::time::Instant::now(),
+            )
+            .is_some());
         let activity = mover.owner_fsp_activity(owner).unwrap();
         assert_eq!(activity.last_rx_age_ms(135), Some(5));
         assert_eq!(activity.last_rx_data_age_ms(135), Some(15));
+    }
+
+    #[test]
+    fn fsp_owner_owns_session_mmp_reports() {
+        let owner = fsp_owner(80);
+        let mut mover = mover();
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_fsp_session_start_ms(1_000)
+                .with_fsp_send_headers(0, 0)
+                .with_fsp_mmp(crate::config::SessionMmpConfig::default(), true)
+                .with_next_send_counter(20),
+        );
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(80), test_key(81)));
+
+        let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Mmp, 0, b"sender".to_vec())
+            .with_fsp_inner_header(crate::protocol::SessionMessageType::SenderReport.to_byte(), 0)
+            .with_activity_tick(ActivityTick::new(1_020));
+        mover.submit_outbound_packet(outbound).unwrap();
+        assert_eq!(dispatch_outbound_available(&mut mover, 8).len(), 1);
+
+        let sync = FspReceiveSync {
+            counter: 9,
+            received_k_bit: false,
+            timestamp: 7,
+            plaintext_len: FSP_INNER_HEADER_SIZE + 5,
+            ce_flag: false,
+            path_mtu: 1234,
+            spin_bit: false,
+            lifecycle_sync_required: false,
+        };
+        assert_eq!(
+            mover.record_authenticated_fsp_session(
+                owner,
+                owner.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                5,
+                sync,
+                Some(ActivityTick::new(1_030)),
+                std::time::Instant::now(),
+            ),
+            Some(true)
+        );
+
+        let batch = mover.collect_fsp_mmp_reports(std::time::Instant::now());
+        assert!(
+            batch.reports.iter().any(|report| {
+                report.dest_addr == owner.node_addr()
+                    && report.msg_type == crate::protocol::SessionMessageType::SenderReport.to_byte()
+            }),
+            "owner should emit session SenderReport from reserved FSP sends"
+        );
+        assert!(
+            batch.reports.iter().any(|report| {
+                report.dest_addr == owner.node_addr()
+                    && report.msg_type
+                        == crate::protocol::SessionMessageType::ReceiverReport.to_byte()
+            }),
+            "owner should emit session ReceiverReport from authenticated FSP receives"
+        );
+        assert!(
+            batch.reports.iter().any(|report| {
+                report.dest_addr == owner.node_addr()
+                    && report.msg_type
+                        == crate::protocol::SessionMessageType::PathMtuNotification.to_byte()
+            }),
+            "owner should emit path-MTU notifications from authenticated FSP receives"
+        );
+        assert_eq!(batch.metric_logs.len(), 1);
+        assert_eq!(batch.metric_logs[0].dest_addr, owner.node_addr());
+        assert_eq!(batch.metric_logs[0].send_mtu, u16::MAX);
+        assert_eq!(batch.metric_logs[0].observed_mtu, 1234);
+        assert_eq!(batch.metric_logs[0].tx_packets, 1);
+        assert_eq!(batch.metric_logs[0].rx_packets, 1);
+    }
+
+    #[test]
+    fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
+        let owner = fsp_owner(81);
+        let mut mover = mover();
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_fsp_session_start_ms(1_000)
+                .with_fsp_send_headers(0, 0)
+                .with_fsp_mmp(crate::config::SessionMmpConfig::default(), true),
+        );
+
+        let sync = FspReceiveSync {
+            counter: 40,
+            received_k_bit: false,
+            timestamp: 10,
+            plaintext_len: FSP_INNER_HEADER_SIZE + 1200,
+            ce_flag: false,
+            path_mtu: u16::MAX,
+            spin_bit: false,
+            lifecycle_sync_required: false,
+        };
+        assert_eq!(
+            mover.record_authenticated_fsp_session(
+                owner,
+                owner.node_addr(),
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                1200,
+                sync,
+                Some(ActivityTick::new(1_040)),
+                std::time::Instant::now(),
+            ),
+            Some(true)
+        );
+
+        let rr = crate::mmp::report::ReceiverReport {
+            highest_counter: 100,
+            cumulative_packets_recv: 100,
+            cumulative_bytes_recv: 10_000,
+            timestamp_echo: 50,
+            dwell_time: 0,
+            max_burst_loss: 0,
+            mean_burst_loss: 0,
+            jitter: 0,
+            ecn_ce_count: 0,
+            owd_trend: 0,
+            burst_loss_count: 0,
+            cumulative_reorder_count: 0,
+            interval_packets_recv: 0,
+            interval_bytes_recv: 0,
+        };
+        let report = mover
+            .process_fsp_mmp_receiver_report(
+                owner,
+                &rr,
+                Some(owner.node_addr()),
+                1_100,
+                std::time::Instant::now(),
+                128,
+            )
+            .expect("owner should process session receiver report");
+        assert!(report.used_direct_next_hop);
+        assert_eq!(report.mode, crate::mmp::MmpMode::Full);
+
+        assert_eq!(
+            mover.apply_fsp_path_mtu_signal(owner, 1280, std::time::Instant::now()),
+            Ok(PacketMover2FspPathMtuApplyResult::Changed(
+                PacketMover2FspPathMtuChange {
+                    old_mtu: u16::MAX,
+                    new_mtu: 1280
+                }
+            ))
+        );
+        assert_eq!(
+            mover.owner_fsp_activity(owner).unwrap().current_path_mtu(),
+            Some(1280)
+        );
+        assert_eq!(
+            mover.apply_fsp_path_mtu_signal(owner, 1400, std::time::Instant::now()),
+            Ok(PacketMover2FspPathMtuApplyResult::Unchanged)
+        );
     }
 
     #[test]

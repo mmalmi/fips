@@ -137,7 +137,9 @@ fn peer_identity_for_outbound_refresh_loser(node: &Node) -> (Identity, PeerIdent
 fn ensure_packet_mover2_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
     node.packet_mover2.register_owner_if_missing(
         crate::packet_mover2::OwnerId::fsp_node(dest_addr),
-        crate::packet_mover2::OwnerConfig::new(1, 8).with_fsp_session_start_ms(1_000),
+        crate::packet_mover2::OwnerConfig::new(1, 8)
+            .with_fsp_session_start_ms(1_000)
+            .with_fsp_mmp(node.config.node.session_mmp.clone(), true),
     );
 }
 
@@ -163,13 +165,28 @@ fn seed_packet_mover2_fsp_control_rx_for_test(
     now_ms: u64,
 ) {
     ensure_packet_mover2_fsp_owner_for_test(node, source_addr);
-    assert!(node.packet_mover2.record_authenticated_fsp_session(
-        source_addr,
-        previous_hop,
-        crate::protocol::SessionMessageType::SenderReport.to_byte(),
-        0,
-        Some(crate::packet_mover2::ActivityTick::new(now_ms)),
-    ));
+    assert!(
+        node.packet_mover2
+            .record_authenticated_fsp_session(
+                source_addr,
+                previous_hop,
+                crate::protocol::SessionMessageType::SenderReport.to_byte(),
+                0,
+                crate::packet_mover2::FspReceiveSync {
+                    counter: 1,
+                    received_k_bit: false,
+                    timestamp: 0,
+                    plaintext_len: crate::node::session_wire::FSP_INNER_HEADER_SIZE,
+                    ce_flag: false,
+                    path_mtu: u16::MAX,
+                    spin_bit: false,
+                    lifecycle_sync_required: false,
+                },
+                Some(crate::packet_mover2::ActivityTick::new(now_ms)),
+                std::time::Instant::now(),
+            )
+            .is_some()
+    );
 }
 
 fn seed_packet_mover2_fsp_data_rx_for_test(
@@ -179,13 +196,29 @@ fn seed_packet_mover2_fsp_data_rx_for_test(
     now_ms: u64,
 ) {
     ensure_packet_mover2_fsp_owner_for_test(node, source_addr);
-    assert!(node.packet_mover2.record_authenticated_fsp_session(
-        source_addr,
-        previous_hop,
-        crate::protocol::SessionMessageType::EndpointData.to_byte(),
-        512,
-        Some(crate::packet_mover2::ActivityTick::new(now_ms)),
-    ));
+    let body_len = 512;
+    assert!(
+        node.packet_mover2
+            .record_authenticated_fsp_session(
+                source_addr,
+                previous_hop,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                body_len,
+                crate::packet_mover2::FspReceiveSync {
+                    counter: 2,
+                    received_k_bit: false,
+                    timestamp: 0,
+                    plaintext_len: crate::node::session_wire::FSP_INNER_HEADER_SIZE + body_len,
+                    ce_flag: false,
+                    path_mtu: u16::MAX,
+                    spin_bit: false,
+                    lifecycle_sync_required: false,
+                },
+                Some(crate::packet_mover2::ActivityTick::new(now_ms)),
+                std::time::Instant::now(),
+            )
+            .is_some()
+    );
 }
 
 fn auto_connect_peer(npub: String, addr: &str) -> crate::config::PeerConfig {

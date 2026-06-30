@@ -58,6 +58,56 @@ impl PacketMover2 {
         self.owner_shard(owner).owner_fsp_send_context(owner)
     }
 
+    pub(crate) fn collect_fsp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+    ) -> PacketMover2FspMmpReportBatch {
+        let mut batch = PacketMover2FspMmpReportBatch::default();
+        for shard in &mut self.shards {
+            shard.collect_fsp_mmp_reports(now, &mut batch);
+        }
+        batch
+    }
+
+    pub(crate) fn record_fsp_mmp_send_result(
+        &mut self,
+        owner: OwnerId,
+        success: bool,
+    ) -> Option<PacketMover2FspMmpReportingResumed> {
+        self.owner_shard_mut(owner)
+            .record_fsp_mmp_send_result(owner, success)
+    }
+
+    pub(crate) fn process_fsp_mmp_receiver_report(
+        &mut self,
+        owner: OwnerId,
+        rr: &crate::mmp::report::ReceiverReport,
+        last_outbound_next_hop: Option<NodeAddr>,
+        now_ms: u64,
+        now: std::time::Instant,
+        min_loss_sample: u64,
+    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+        self.owner_shard_mut(owner)
+            .process_fsp_mmp_receiver_report(
+                owner,
+                rr,
+                last_outbound_next_hop,
+                now_ms,
+                now,
+                min_loss_sample,
+            )
+    }
+
+    pub(crate) fn apply_fsp_path_mtu_signal(
+        &mut self,
+        owner: OwnerId,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+        self.owner_shard_mut(owner)
+            .apply_fsp_path_mtu_signal(owner, path_mtu, now)
+    }
+
     pub(crate) fn min_fsp_rx_age_for_next_hop(
         &self,
         next_hop: &NodeAddr,
@@ -103,14 +153,18 @@ impl PacketMover2 {
         previous_hop: NodeAddr,
         msg_type: u8,
         body_len: usize,
+        sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
-    ) -> bool {
+        now: std::time::Instant,
+    ) -> Option<bool> {
         self.owner_shard_mut(owner).record_authenticated_fsp_session(
             owner,
             previous_hop,
             msg_type,
             body_len,
+            sync,
             activity_tick,
+            now,
         )
     }
 

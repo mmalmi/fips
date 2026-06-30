@@ -85,6 +85,7 @@ pub(crate) struct FspReceiveSync {
     pub(crate) ce_flag: bool,
     pub(crate) path_mtu: u16,
     pub(crate) spin_bit: bool,
+    pub(crate) lifecycle_sync_required: bool,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

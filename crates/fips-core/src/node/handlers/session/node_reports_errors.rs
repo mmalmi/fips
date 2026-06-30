@@ -48,19 +48,28 @@ impl Node {
             .packet_mover2
             .fsp_owner_activity(src_addr)
             .and_then(|activity| activity.last_outbound_next_hop());
-        let processed = match self.sessions.process_session_receiver_report(
-            src_addr,
+        let processed = match self.packet_mover2.process_fsp_mmp_receiver_report(
+            *src_addr,
             &rr,
             last_outbound_next_hop,
             now_ms,
             std::time::Instant::now(),
+            SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
         ) {
-            Ok(processed) => processed,
-            Err(SessionReceiverReportSkip::UnknownSession) => {
+            Ok(processed) => ProcessedSessionReceiverReport {
+                sample: processed.sample,
+                used_direct_next_hop: processed.used_direct_next_hop,
+                srtt_ms: processed.srtt_ms,
+                route_quality_sample: session_receiver_report_can_drive_route_quality(
+                    processed.mode,
+                    processed.srtt_ms,
+                ),
+            },
+            Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner) => {
                 debug!(src = %peer_name, "SessionReceiverReport for unknown session");
                 return;
             }
-            Err(SessionReceiverReportSkip::MmpDisabled) => return,
+            Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => return,
         };
 
         if let Some((span, loss)) = processed.sample
@@ -125,18 +134,18 @@ impl Node {
         };
 
         let peer_name = self.peer_display_name(src_addr);
-        let change = match self.sessions.apply_session_path_mtu_signal(
-            src_addr,
+        let change = match self.packet_mover2.apply_fsp_path_mtu_signal(
+            *src_addr,
             notif.path_mtu,
             std::time::Instant::now(),
         ) {
-            Ok(SessionPathMtuApplyResult::Changed(change)) => change,
-            Ok(SessionPathMtuApplyResult::Unchanged) => return,
-            Err(SessionPathMtuApplySkip::UnknownSession) => {
+            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Changed(change)) => change,
+            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Unchanged) => return,
+            Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner) => {
                 debug!(src = %peer_name, "PathMtuNotification for unknown session");
                 return;
             }
-            Err(SessionPathMtuApplySkip::MmpDisabled) => return,
+            Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => return,
         };
 
         debug!(
@@ -339,12 +348,12 @@ impl Node {
         );
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
-        let path_mtu_changed = match self.sessions.apply_session_path_mtu_signal(
-            &msg.dest_addr,
+        let path_mtu_changed = match self.packet_mover2.apply_fsp_path_mtu_signal(
+            msg.dest_addr,
             msg.mtu,
             std::time::Instant::now(),
         ) {
-            Ok(SessionPathMtuApplyResult::Changed(change)) => {
+            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Changed(change)) => {
                 info!(
                     dest = %peer_name,
                     old_mtu = change.old_mtu,
@@ -354,9 +363,9 @@ impl Node {
                 );
                 true
             }
-            Ok(SessionPathMtuApplyResult::Unchanged)
-            | Err(SessionPathMtuApplySkip::UnknownSession)
-            | Err(SessionPathMtuApplySkip::MmpDisabled) => false,
+            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Unchanged)
+            | Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner)
+            | Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => false,
         };
 
         // Mirror the bottleneck into the FipsAddress-keyed lookup used by

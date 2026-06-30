@@ -405,6 +405,7 @@ impl PacketMover2FspSessionIngress {
             ce_flag,
             path_mtu,
             spin_bit: inner_flags & 0x01 != 0,
+            lifecycle_sync_required: false,
         };
         let plaintext = match output.into_opened_payload() {
             Ok(plaintext) => plaintext,
@@ -426,6 +427,10 @@ impl PacketMover2FspSessionIngress {
 
     pub(crate) fn source_addr(&self) -> NodeAddr {
         self.source_addr
+    }
+
+    pub(crate) fn set_lifecycle_sync_required(&mut self, lifecycle_sync_required: bool) {
+        self.receive_sync.lifecycle_sync_required = lifecycle_sync_required;
     }
 
     pub(crate) fn previous_hop_addr(&self) -> NodeAddr {

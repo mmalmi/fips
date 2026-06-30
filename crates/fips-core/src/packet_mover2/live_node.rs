@@ -314,6 +314,51 @@ impl PacketMover2LiveNode {
             .owner_fsp_send_context(OwnerId::fsp_node(*node_addr))
     }
 
+    pub(crate) fn collect_fsp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+    ) -> PacketMover2FspMmpReportBatch {
+        self.driver.collect_fsp_mmp_reports(now)
+    }
+
+    pub(crate) fn record_fsp_mmp_send_result(
+        &mut self,
+        dest_addr: NodeAddr,
+        success: bool,
+    ) -> Option<PacketMover2FspMmpReportingResumed> {
+        self.driver
+            .record_fsp_mmp_send_result(OwnerId::fsp_node(dest_addr), success)
+    }
+
+    pub(crate) fn process_fsp_mmp_receiver_report(
+        &mut self,
+        source_addr: NodeAddr,
+        rr: &crate::mmp::report::ReceiverReport,
+        last_outbound_next_hop: Option<NodeAddr>,
+        now_ms: u64,
+        now: std::time::Instant,
+        min_loss_sample: u64,
+    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+        self.driver.process_fsp_mmp_receiver_report(
+            OwnerId::fsp_node(source_addr),
+            rr,
+            last_outbound_next_hop,
+            now_ms,
+            now,
+            min_loss_sample,
+        )
+    }
+
+    pub(crate) fn apply_fsp_path_mtu_signal(
+        &mut self,
+        dest_addr: NodeAddr,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+        self.driver
+            .apply_fsp_path_mtu_signal(OwnerId::fsp_node(dest_addr), path_mtu, now)
+    }
+
     pub(crate) fn min_fsp_rx_age_for_next_hop(
         &self,
         next_hop: &NodeAddr,
@@ -347,14 +392,18 @@ impl PacketMover2LiveNode {
         previous_hop: NodeAddr,
         msg_type: u8,
         body_len: usize,
+        sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
-    ) -> bool {
+        now: std::time::Instant,
+    ) -> Option<bool> {
         self.driver.record_authenticated_fsp_session(
             OwnerId::fsp_node(source_addr),
             previous_hop,
             msg_type,
             body_len,
+            sync,
             activity_tick,
+            now,
         )
     }
 

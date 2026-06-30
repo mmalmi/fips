@@ -68,6 +68,49 @@ impl PacketMover2TurnDriver {
         self.mover.owner_fsp_send_context(owner)
     }
 
+    pub(crate) fn collect_fsp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+    ) -> PacketMover2FspMmpReportBatch {
+        self.mover.collect_fsp_mmp_reports(now)
+    }
+
+    pub(crate) fn record_fsp_mmp_send_result(
+        &mut self,
+        owner: OwnerId,
+        success: bool,
+    ) -> Option<PacketMover2FspMmpReportingResumed> {
+        self.mover.record_fsp_mmp_send_result(owner, success)
+    }
+
+    pub(crate) fn process_fsp_mmp_receiver_report(
+        &mut self,
+        owner: OwnerId,
+        rr: &crate::mmp::report::ReceiverReport,
+        last_outbound_next_hop: Option<NodeAddr>,
+        now_ms: u64,
+        now: std::time::Instant,
+        min_loss_sample: u64,
+    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+        self.mover.process_fsp_mmp_receiver_report(
+            owner,
+            rr,
+            last_outbound_next_hop,
+            now_ms,
+            now,
+            min_loss_sample,
+        )
+    }
+
+    pub(crate) fn apply_fsp_path_mtu_signal(
+        &mut self,
+        owner: OwnerId,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+        self.mover.apply_fsp_path_mtu_signal(owner, path_mtu, now)
+    }
+
     pub(crate) fn min_fsp_rx_age_for_next_hop(
         &self,
         next_hop: &NodeAddr,
@@ -105,24 +148,39 @@ impl PacketMover2TurnDriver {
         previous_hop: NodeAddr,
         msg_type: u8,
         body_len: usize,
+        sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
-    ) -> bool {
-        self.mover
-            .record_authenticated_fsp_session(owner, previous_hop, msg_type, body_len, activity_tick)
+        now: std::time::Instant,
+    ) -> Option<bool> {
+        self.mover.record_authenticated_fsp_session(
+            owner,
+            previous_hop,
+            msg_type,
+            body_len,
+            sync,
+            activity_tick,
+            now,
+        )
     }
 
-    fn record_fsp_session_ingress_activity(&mut self, ingress: &PacketMover2FspSessionIngress) {
+    fn record_fsp_session_ingress_activity(
+        &mut self,
+        ingress: &PacketMover2FspSessionIngress,
+    ) -> bool {
         let body_len = ingress
             .receive_sync
             .plaintext_len
             .saturating_sub(FSP_INNER_HEADER_SIZE);
-        let _ = self.record_authenticated_fsp_session(
+        self.record_authenticated_fsp_session(
             OwnerId::fsp_node(ingress.source_addr),
             ingress.previous_hop_addr,
             ingress.msg_type,
             body_len,
+            ingress.receive_sync,
             ingress.activity_tick,
-        );
+            std::time::Instant::now(),
+        )
+        .unwrap_or(false)
     }
 
     pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
@@ -642,8 +700,10 @@ impl PacketMover2TurnDriver {
             match output.target {
                 OutputTarget::SessionPayload { .. } => {
                     match PacketMover2FspSessionIngress::from_output(output) {
-                        Ok(ingress) => {
-                            self.record_fsp_session_ingress_activity(&ingress);
+                        Ok(mut ingress) => {
+                            let lifecycle_sync_required =
+                                self.record_fsp_session_ingress_activity(&ingress);
+                            ingress.set_lifecycle_sync_required(lifecycle_sync_required);
                             self.fsp_session_ingress.push(ingress);
                         }
                         Err(output) => {

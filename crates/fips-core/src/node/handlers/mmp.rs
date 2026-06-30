@@ -8,11 +8,8 @@ use crate::mmp::MmpMode;
 use crate::mmp::MmpSessionState;
 use crate::mmp::report::{ReceiverReport, SenderReport};
 use crate::node::Node;
-use crate::protocol::{
-    LinkMessageType, PathMtuNotification, SessionMessageType, SessionReceiverReport,
-    SessionSenderReport,
-};
-use crate::{ActivePeer, NodeAddr, PeerIdentity};
+use crate::protocol::LinkMessageType;
+use crate::{ActivePeer, NodeAddr};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace, warn};
 
@@ -65,46 +62,6 @@ struct MmpLinkMetricSnapshot {
     goodput_bps: f64,
     tx_packets: u64,
     rx_packets: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionMmpReport {
-    dest_addr: NodeAddr,
-    msg_type: u8,
-    encoded: Vec<u8>,
-    prior_failures: u32,
-}
-
-#[derive(Debug, Default, Clone, PartialEq)]
-struct SessionMmpReportBatch {
-    reports: Vec<SessionMmpReport>,
-    metric_logs: Vec<SessionMmpMetricSnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct SessionMmpMetricSnapshot {
-    dest_addr: NodeAddr,
-    fallback_session_name: String,
-    rtt_ms: Option<f64>,
-    loss_rate: Option<f64>,
-    jitter_ms: f64,
-    goodput_bps: f64,
-    send_mtu: u16,
-    observed_mtu: u16,
-    tx_packets: u64,
-    rx_packets: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionMmpSendResult {
-    dest_addr: NodeAddr,
-    success: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionMmpReportingResumed {
-    dest_addr: NodeAddr,
-    consecutive_failures: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -282,122 +239,6 @@ impl crate::node::PeerLifecycleRegistry {
         };
         peer.mark_heartbeat_sent(now);
         true
-    }
-}
-
-impl crate::node::SessionRegistry {
-    fn collect_due_session_mmp_reports(&mut self, now: Instant) -> SessionMmpReportBatch {
-        let mut batch = SessionMmpReportBatch::default();
-
-        for (dest_addr, entry) in self.iter_mut() {
-            let (xonly, _) = entry.remote_pubkey().x_only_public_key();
-            let fallback_session_name = PeerIdentity::from_pubkey(xonly).short_npub();
-
-            let Some(mmp) = entry.mmp_mut() else {
-                continue;
-            };
-
-            let mode = mmp.mode();
-            let prior_failures = mmp.sender.consecutive_send_failures();
-
-            if mode == MmpMode::Full
-                && mmp.sender.should_send_report(now)
-                && let Some(sr) = mmp.sender.build_report(now)
-            {
-                let session_sr: SessionSenderReport = SessionSenderReport::from(&sr);
-                batch.reports.push(SessionMmpReport {
-                    dest_addr: *dest_addr,
-                    msg_type: SessionMessageType::SenderReport.to_byte(),
-                    encoded: session_sr.encode(),
-                    prior_failures,
-                });
-            }
-
-            if mode != MmpMode::Minimal
-                && mmp.receiver.should_send_report(now)
-                && let Some(rr) = mmp.receiver.build_report(now)
-            {
-                let session_rr: SessionReceiverReport = SessionReceiverReport::from(&rr);
-                batch.reports.push(SessionMmpReport {
-                    dest_addr: *dest_addr,
-                    msg_type: SessionMessageType::ReceiverReport.to_byte(),
-                    encoded: session_rr.encode(),
-                    prior_failures,
-                });
-            }
-
-            if mmp.path_mtu.should_send_notification(now)
-                && let Some(mtu_value) = mmp.path_mtu.build_notification(now)
-            {
-                let notif = PathMtuNotification::new(mtu_value);
-                batch.reports.push(SessionMmpReport {
-                    dest_addr: *dest_addr,
-                    msg_type: SessionMessageType::PathMtuNotification.to_byte(),
-                    encoded: notif.encode(),
-                    prior_failures,
-                });
-            }
-
-            if mmp.should_log(now) {
-                let metrics = &mmp.metrics;
-                batch.metric_logs.push(SessionMmpMetricSnapshot {
-                    dest_addr: *dest_addr,
-                    fallback_session_name,
-                    rtt_ms: metrics
-                        .rtt_trend
-                        .initialized()
-                        .then(|| metrics.rtt_trend.long() / 1000.0),
-                    loss_rate: metrics
-                        .loss_trend
-                        .initialized()
-                        .then(|| metrics.loss_trend.long()),
-                    jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
-                    goodput_bps: metrics.goodput_bps(),
-                    send_mtu: mmp.path_mtu.current_mtu(),
-                    observed_mtu: mmp.path_mtu.last_observed_mtu(),
-                    tx_packets: mmp.sender.cumulative_packets_sent(),
-                    rx_packets: mmp.receiver.cumulative_packets_recv(),
-                });
-                mmp.mark_logged(now);
-            }
-        }
-
-        batch
-    }
-
-    fn record_session_mmp_send_results(
-        &mut self,
-        send_results: impl IntoIterator<Item = SessionMmpSendResult>,
-    ) -> Vec<SessionMmpReportingResumed> {
-        let mut dest_success: std::collections::HashMap<NodeAddr, bool> =
-            std::collections::HashMap::new();
-        for result in send_results {
-            let entry = dest_success.entry(result.dest_addr).or_insert(false);
-            if result.success {
-                *entry = true;
-            }
-        }
-
-        let mut resumed = Vec::new();
-        for (dest_addr, success) in dest_success {
-            if let Some(entry) = self.get_mut(&dest_addr)
-                && let Some(mmp) = entry.mmp_mut()
-            {
-                if success {
-                    let prev = mmp.sender.record_send_success();
-                    if prev > 3 {
-                        resumed.push(SessionMmpReportingResumed {
-                            dest_addr,
-                            consecutive_failures: prev,
-                        });
-                    }
-                } else {
-                    mmp.sender.record_send_failure();
-                }
-            }
-        }
-
-        resumed
     }
 }
 
@@ -626,7 +467,7 @@ impl Node {
     /// Uses the collect-then-send pattern to avoid borrowing conflicts.
     pub(in crate::node) async fn check_session_mmp_reports(&mut self) {
         let now = Instant::now();
-        let batch = self.sessions.collect_due_session_mmp_reports(now);
+        let batch = self.packet_mover2.collect_fsp_mmp_reports(now);
 
         for metrics in &batch.metric_logs {
             let session_name = self
@@ -639,18 +480,12 @@ impl Node {
 
         // Send collected reports via session-layer encryption.
         // Track per-destination success/failure for backoff and log suppression.
-        let mut send_results = Vec::new();
         for report in batch.reports {
-            match self
+            let success = match self
                 .send_session_msg(&report.dest_addr, report.msg_type, &report.encoded)
                 .await
             {
-                Ok(()) => {
-                    send_results.push(SessionMmpSendResult {
-                        dest_addr: report.dest_addr,
-                        success: true,
-                    });
-                }
+                Ok(()) => true,
                 Err(e) => {
                     if report.prior_failures < 3 {
                         debug!(
@@ -667,25 +502,27 @@ impl Node {
                     }
                     // failures > 3: silently suppressed
 
-                    send_results.push(SessionMmpSendResult {
-                        dest_addr: report.dest_addr,
-                        success: false,
-                    });
+                    false
                 }
+            };
+            if let Some(resumed) = self
+                .packet_mover2
+                .record_fsp_mmp_send_result(report.dest_addr, success)
+            {
+                debug!(
+                    dest = %self.peer_display_name(&resumed.dest_addr),
+                    consecutive_failures = resumed.consecutive_failures,
+                    "Resumed session MMP reporting"
+                );
             }
-        }
-
-        for resumed in self.sessions.record_session_mmp_send_results(send_results) {
-            debug!(
-                dest = %self.peer_display_name(&resumed.dest_addr),
-                consecutive_failures = resumed.consecutive_failures,
-                "Resumed session MMP reporting"
-            );
         }
     }
 
     /// Emit periodic session MMP metrics.
-    fn log_session_mmp_metrics(session_name: &str, metrics: &SessionMmpMetricSnapshot) {
+    fn log_session_mmp_metrics(
+        session_name: &str,
+        metrics: &crate::packet_mover2::PacketMover2FspMmpMetricSnapshot,
+    ) {
         let rtt_str = metrics
             .rtt_ms
             .map(|rtt| format!("{rtt:.1}ms"))

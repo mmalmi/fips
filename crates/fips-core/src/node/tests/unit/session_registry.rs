@@ -55,48 +55,6 @@ fn session_registry_owns_endpoint_session_storage() {
 }
 
 #[test]
-fn session_registry_owns_fsp_send_bookkeeping() {
-    use crate::node::session::{EndToEndState, SessionEntry};
-
-    let local = Identity::generate();
-    let peer = Identity::generate();
-    let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-    let peer_addr = *peer_identity.node_addr();
-
-    let mut registry = SessionRegistry::default();
-    let mut entry = SessionEntry::new(
-        peer_addr,
-        peer.pubkey_full(),
-        EndToEndState::Established(make_test_fmp_session(&local, &peer, [0x01; 8], [0x02; 8])),
-        1_000,
-        true,
-    );
-    entry.init_mmp(&crate::config::SessionMmpConfig::default());
-    assert!(registry.insert(peer_addr, entry).is_none());
-
-    let control_result = registry
-        .record_fsp_send_bookkeeping(&peer_addr, FspSendBookkeepingInput::control(7, 1_300, 64))
-        .expect("FSP control send bookkeeping should find session entry");
-    assert!(control_result.mmp_recorded);
-    let entry = registry
-        .get(&peer_addr)
-        .expect("control bookkeeping must keep session storage");
-    let mmp = entry.mmp().expect("session should have MMP state");
-    assert_eq!(mmp.sender.cumulative_packets_sent(), 1);
-    assert_eq!(mmp.sender.cumulative_bytes_sent(), 64);
-
-    assert!(
-        registry
-            .record_fsp_send_bookkeeping(
-                &make_node_addr(99),
-                FspSendBookkeepingInput::control(10, 1_500, 48),
-            )
-            .is_none(),
-        "missing sessions should not record FSP send bookkeeping"
-    );
-}
-
-#[test]
 fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
     let configured = Identity::generate();
     let configured_npub = configured.npub();

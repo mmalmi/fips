@@ -1,15 +1,14 @@
 impl Node {
-    fn sync_authenticated_fsp_receive_lifecycle(
+    fn confirm_authenticated_fsp_receive_lifecycle(
         &mut self,
         source_addr: NodeAddr,
-        sync: crate::packet_mover2::FspReceiveSync,
-        now: Instant,
+        received_k_bit: bool,
     ) -> bool {
         let apply = {
             let Some(entry) = self.sessions.get_mut(&source_addr) else {
                 return false;
             };
-            entry.apply_fsp_receive_sync_result(sync, now)
+            entry.confirm_authenticated_fsp_receive(received_k_bit)
         };
         apply
     }
@@ -105,8 +104,12 @@ impl Node {
             inner_flags,
             plaintext,
         ) = ingress.into_parts();
-        let now = Instant::now();
-        if !self.sync_authenticated_fsp_receive_lifecycle(source_addr, receive_sync, now) {
+        if receive_sync.lifecycle_sync_required
+            && !self.confirm_authenticated_fsp_receive_lifecycle(
+                source_addr,
+                receive_sync.received_k_bit,
+            )
+        {
             debug!(
                 src = %self.peer_display_name(&source_addr),
                 "Packet-mover2 authenticated session message has no SessionRegistry lifecycle mirror"

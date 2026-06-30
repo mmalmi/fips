@@ -456,18 +456,12 @@ impl Node {
                 return Err(error);
             }
         };
-        let Some(receipt) = Self::packet_mover2_sent_fsp_receipt(&mut turn, *dest_addr) else {
+        if Self::packet_mover2_sent_fsp_receipt(&mut turn, *dest_addr).is_none() {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
                 reason: format!("packet_mover2 FSP receipt unavailable for {label}"),
             });
-        };
-        let Some(timestamp) = receipt.timestamp_ms() else {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("packet_mover2 FSP timestamp unavailable for {label}"),
-            });
-        };
+        }
         let frame_bytes = crate::node::session_wire::FSP_INNER_HEADER_SIZE
             .saturating_add(payload.len())
             .saturating_add(crate::noise::TAG_SIZE);
@@ -475,10 +469,6 @@ impl Node {
             .saturating_add(crate::node::session_wire::FSP_HEADER_SIZE)
             .saturating_add(coords_prefix_len)
             .saturating_add(frame_bytes);
-        let _ = self.sessions.record_fsp_send_bookkeeping(
-            dest_addr,
-            FspSendBookkeepingInput::control(receipt.counter(), timestamp, frame_bytes),
-        );
         self.stats_mut()
             .forwarding
             .record_originated(datagram_bytes);
@@ -762,7 +752,17 @@ impl Node {
         node_addr: &NodeAddr,
         coords_warmup_remaining: u8,
     ) -> Option<PacketMover2FspOwnerSeed> {
-        let (open, seal, counter_authority, session_start_ms, fsp_flags, inner_flags, source_peer) = {
+        let (
+            open,
+            seal,
+            counter_authority,
+            session_start_ms,
+            fsp_flags,
+            inner_flags,
+            source_peer,
+            mmp_enabled,
+            is_initiator,
+        ) = {
             let session = self.sessions.get(node_addr)?;
             let (open, seal) = session.fsp_crypto_keys()?;
             let counter_authority = session.send_counter_authority()?;
@@ -783,6 +783,8 @@ impl Node {
                 fsp_flags,
                 inner_flags,
                 source_peer,
+                session.mmp().is_some(),
+                session.is_initiator(),
             )
         };
         let generation = Self::packet_mover2_generation_from_session_start_ms(session_start_ms);
@@ -797,6 +799,9 @@ impl Node {
             .with_fsp_session_start_ms(session_start_ms)
             .with_fsp_send_headers(fsp_flags, inner_flags)
             .with_source_peer(source_peer);
+        if mmp_enabled {
+            config = config.with_fsp_mmp(self.config.node.session_mmp.clone(), is_initiator);
+        }
         if coords_warmup_remaining > 0 {
             config = config.with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix);
         }
@@ -920,10 +925,11 @@ impl Node {
 
     fn packet_mover2_tun_max_packet_len(&self, dest_addr: &NodeAddr) -> usize {
         let effective_mtu = self.effective_ipv6_mtu() as usize;
-        self.sessions
-            .get(dest_addr)
-            .and_then(|entry| entry.mmp())
-            .map(|mmp| crate::upper::icmp::effective_ipv6_mtu(mmp.path_mtu.current_mtu()) as usize)
+        self.packet_mover2
+            .fsp_owner_activity(dest_addr)
+            .and_then(|activity| activity.current_path_mtu())
+            .map(crate::upper::icmp::effective_ipv6_mtu)
+            .map(usize::from)
             .filter(|path_ipv6_mtu| *path_ipv6_mtu < effective_mtu)
             .unwrap_or(effective_mtu)
     }

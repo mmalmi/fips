@@ -10,6 +10,7 @@ pub(crate) struct OwnerConfig {
     fsp_session_start_ms: Option<u64>,
     fsp_send_headers: Option<PacketMover2FspSendHeaders>,
     fsp_coords_warmup: Option<(u8, Vec<u8>)>,
+    fsp_mmp: Option<PacketMover2FspMmpConfig>,
     source_peer: Option<crate::PeerIdentity>,
 }
 
@@ -26,6 +27,12 @@ impl PacketMover2FspSendHeaders {
             inner_flags,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+struct PacketMover2FspMmpConfig {
+    config: crate::config::SessionMmpConfig,
+    is_initiator: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +64,66 @@ impl PacketMover2FspSendContext {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PacketMover2FspMmpReport {
+    pub(crate) dest_addr: NodeAddr,
+    pub(crate) msg_type: u8,
+    pub(crate) encoded: Vec<u8>,
+    pub(crate) prior_failures: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PacketMover2FspMmpMetricSnapshot {
+    pub(crate) dest_addr: NodeAddr,
+    pub(crate) fallback_session_name: String,
+    pub(crate) rtt_ms: Option<f64>,
+    pub(crate) loss_rate: Option<f64>,
+    pub(crate) jitter_ms: f64,
+    pub(crate) goodput_bps: f64,
+    pub(crate) send_mtu: u16,
+    pub(crate) observed_mtu: u16,
+    pub(crate) tx_packets: u64,
+    pub(crate) rx_packets: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct PacketMover2FspMmpReportBatch {
+    pub(crate) reports: Vec<PacketMover2FspMmpReport>,
+    pub(crate) metric_logs: Vec<PacketMover2FspMmpMetricSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PacketMover2FspReceiverReportResult {
+    pub(crate) sample: Option<(u64, f64)>,
+    pub(crate) used_direct_next_hop: bool,
+    pub(crate) srtt_ms: Option<f64>,
+    pub(crate) mode: crate::mmp::MmpMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PacketMover2FspMmpSkip {
+    UnknownOwner,
+    MmpDisabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PacketMover2FspPathMtuChange {
+    pub(crate) old_mtu: u16,
+    pub(crate) new_mtu: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PacketMover2FspPathMtuApplyResult {
+    Changed(PacketMover2FspPathMtuChange),
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PacketMover2FspMmpReportingResumed {
+    pub(crate) dest_addr: NodeAddr,
+    pub(crate) consecutive_failures: u32,
+}
+
 impl OwnerConfig {
     pub(crate) fn new(generation: u64, in_flight_limit: usize) -> Self {
         Self {
@@ -70,6 +137,7 @@ impl OwnerConfig {
             fsp_session_start_ms: None,
             fsp_send_headers: None,
             fsp_coords_warmup: None,
+            fsp_mmp: None,
             source_peer: None,
         }
     }
@@ -128,6 +196,18 @@ impl OwnerConfig {
         } else {
             self.fsp_coords_warmup = Some((remaining, prefix));
         }
+        self
+    }
+
+    pub(crate) fn with_fsp_mmp(
+        mut self,
+        config: crate::config::SessionMmpConfig,
+        is_initiator: bool,
+    ) -> Self {
+        self.fsp_mmp = Some(PacketMover2FspMmpConfig {
+            config,
+            is_initiator,
+        });
         self
     }
 
@@ -203,6 +283,7 @@ pub(crate) struct PacketMover2FspOwnerActivity {
     last_rx_data_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
+    current_path_mtu: Option<u16>,
     data_packets_sent: u64,
     data_packets_recv: u64,
     data_bytes_sent: u64,
@@ -220,6 +301,10 @@ impl PacketMover2FspOwnerActivity {
 
     pub(crate) fn last_rx_data_age_ms(self, now_ms: u64) -> Option<u64> {
         self.last_rx_data_activity.map(|tick| tick.age_ms(now_ms))
+    }
+
+    pub(crate) fn current_path_mtu(self) -> Option<u16> {
+        self.current_path_mtu
     }
 
     pub(crate) fn has_recent_outbound_activity(self, now_ms: u64, timeout_ms: u64) -> bool {
@@ -308,6 +393,8 @@ pub(crate) struct OwnerState {
     fsp_send_headers: Option<PacketMover2FspSendHeaders>,
     fsp_coords_warmup_remaining: u8,
     fsp_coords_prefix: Vec<u8>,
+    fsp_mmp: Option<crate::mmp::MmpSessionState>,
+    fsp_lifecycle_confirmed: bool,
     source_peer: Option<crate::PeerIdentity>,
     last_rx_activity: Option<ActivityTick>,
     last_rx_data_activity: Option<ActivityTick>,
@@ -354,6 +441,10 @@ impl OwnerState {
             fsp_coords_prefix: config
                 .fsp_coords_warmup
                 .map_or_else(Vec::new, |(_, prefix)| prefix),
+            fsp_mmp: config
+                .fsp_mmp
+                .map(|mmp| crate::mmp::MmpSessionState::new(&mmp.config, mmp.is_initiator)),
+            fsp_lifecycle_confirmed: false,
             source_peer: config.source_peer,
             last_rx_activity: None,
             last_rx_data_activity: None,
@@ -384,6 +475,10 @@ impl OwnerState {
         self.fsp_send_headers = None;
         self.fsp_coords_warmup_remaining = 0;
         self.fsp_coords_prefix.clear();
+        if let Some(mmp) = &mut self.fsp_mmp {
+            mmp.reset_for_rekey(std::time::Instant::now());
+        }
+        self.fsp_lifecycle_confirmed = false;
         self.source_peer = None;
         self.last_rx_data_activity = None;
         self.last_tx_data_activity = None;
@@ -419,6 +514,14 @@ impl OwnerState {
         if let Some(peer) = config.source_peer {
             self.source_peer = Some(peer);
         }
+        if self.fsp_mmp.is_none()
+            && let Some(mmp) = config.fsp_mmp
+        {
+            self.fsp_mmp = Some(crate::mmp::MmpSessionState::new(
+                &mmp.config,
+                mmp.is_initiator,
+            ));
+        }
         // Coords warmup is transferred into the owner once; ordinary live
         // refreshes must not reload or erase the owner-local budget.
         if let Some((remaining, prefix)) = config.fsp_coords_warmup {
@@ -451,8 +554,14 @@ impl OwnerState {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
-        self.fsp_send_headers
-            .map(|headers| PacketMover2FspSendContext::new(self.generation, headers))
+        let mut headers = self.fsp_send_headers?;
+        if let Some(mmp) = &self.fsp_mmp {
+            headers.inner_flags = crate::protocol::FspInnerFlags {
+                spin_bit: mmp.spin_bit.tx_bit(),
+            }
+            .to_byte();
+        }
+        Some(PacketMover2FspSendContext::new(self.generation, headers))
     }
 
     pub(crate) fn can_reserve_lane(&self, lane: Lane) -> bool {
@@ -517,6 +626,10 @@ impl OwnerState {
             last_rx_data_activity: self.last_rx_data_activity,
             last_tx_data_activity: self.last_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,
+            current_path_mtu: self
+                .fsp_mmp
+                .as_ref()
+                .map(|mmp| mmp.path_mtu.current_mtu()),
             data_packets_sent: self.data_packets_sent,
             data_packets_recv: self.data_packets_recv,
             data_bytes_sent: self.data_bytes_sent,
@@ -628,6 +741,12 @@ impl OwnerState {
                 self.data_packets_sent = self.data_packets_sent.saturating_add(1);
                 self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
             }
+            if let (Some(mmp), Some(timestamp_ms)) = (&mut self.fsp_mmp, fsp_timestamp_ms) {
+                let frame_bytes = FSP_INNER_HEADER_SIZE
+                    .saturating_add(packet.payload.len())
+                    .saturating_add(AEAD_TAG_SIZE);
+                mmp.sender.record_sent(counter, timestamp_ms, frame_bytes);
+            }
         }
         self.reserve_class(packet.class);
         let order = OrderToken(self.next_order);
@@ -659,25 +778,41 @@ impl OwnerState {
         previous_hop: NodeAddr,
         msg_type: u8,
         body_len: usize,
+        sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
-    ) -> bool {
+        now: std::time::Instant,
+    ) -> Option<bool> {
         if self.owner.protocol() != PacketProtocol::Fsp {
-            return false;
+            return None;
         }
         self.consecutive_decrypt_failures = 0;
-        let Some(tick) = activity_tick else {
-            return false;
-        };
-        note_activity(&mut self.last_rx_activity, tick);
+        if let Some(mmp) = &mut self.fsp_mmp {
+            mmp.receiver.record_recv(
+                sync.counter,
+                sync.timestamp,
+                sync.plaintext_len,
+                sync.ce_flag,
+                now,
+            );
+            let _spin_rtt = mmp.spin_bit.rx_observe(sync.spin_bit, sync.counter, now);
+            mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
+        }
+        if let Some(tick) = activity_tick {
+            note_activity(&mut self.last_rx_activity, tick);
+        }
         if packet_mover2_fsp_message_is_application_data(msg_type)
             && (previous_hop == self.owner.node_addr()
                 || self.last_outbound_next_hop == Some(previous_hop))
         {
-            note_activity(&mut self.last_rx_data_activity, tick);
+            if let Some(tick) = activity_tick {
+                note_activity(&mut self.last_rx_data_activity, tick);
+            }
             self.data_packets_recv = self.data_packets_recv.saturating_add(1);
             self.data_bytes_recv = self.data_bytes_recv.saturating_add(body_len as u64);
         }
-        true
+        let lifecycle_sync_required = !self.fsp_lifecycle_confirmed;
+        self.fsp_lifecycle_confirmed = true;
+        Some(lifecycle_sync_required)
     }
 
     pub(crate) fn record_fsp_data_sent(
@@ -695,6 +830,187 @@ impl OwnerState {
         self.data_packets_sent = self.data_packets_sent.saturating_add(1);
         self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
         true
+    }
+
+    fn collect_fsp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+        batch: &mut PacketMover2FspMmpReportBatch,
+    ) {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return;
+        }
+        let Some(mmp) = &mut self.fsp_mmp else {
+            return;
+        };
+
+        let dest_addr = self.owner.node_addr();
+        let fallback_session_name = self
+            .source_peer
+            .map(|peer| peer.short_npub())
+            .unwrap_or_else(|| dest_addr.to_string());
+        let mode = mmp.mode();
+        let prior_failures = mmp.sender.consecutive_send_failures();
+
+        if mode == crate::mmp::MmpMode::Full
+            && mmp.sender.should_send_report(now)
+            && let Some(sr) = mmp.sender.build_report(now)
+        {
+            let session_sr: crate::protocol::SessionSenderReport =
+                crate::protocol::SessionSenderReport::from(&sr);
+            batch.reports.push(PacketMover2FspMmpReport {
+                dest_addr,
+                msg_type: crate::protocol::SessionMessageType::SenderReport.to_byte(),
+                encoded: session_sr.encode(),
+                prior_failures,
+            });
+        }
+
+        if mode != crate::mmp::MmpMode::Minimal
+            && mmp.receiver.should_send_report(now)
+            && let Some(rr) = mmp.receiver.build_report(now)
+        {
+            let session_rr: crate::protocol::SessionReceiverReport =
+                crate::protocol::SessionReceiverReport::from(&rr);
+            batch.reports.push(PacketMover2FspMmpReport {
+                dest_addr,
+                msg_type: crate::protocol::SessionMessageType::ReceiverReport.to_byte(),
+                encoded: session_rr.encode(),
+                prior_failures,
+            });
+        }
+
+        if mmp.path_mtu.should_send_notification(now)
+            && let Some(mtu_value) = mmp.path_mtu.build_notification(now)
+        {
+            let notif = crate::protocol::PathMtuNotification::new(mtu_value);
+            batch.reports.push(PacketMover2FspMmpReport {
+                dest_addr,
+                msg_type: crate::protocol::SessionMessageType::PathMtuNotification.to_byte(),
+                encoded: notif.encode(),
+                prior_failures,
+            });
+        }
+
+        if mmp.should_log(now) {
+            let metrics = &mmp.metrics;
+            batch.metric_logs.push(PacketMover2FspMmpMetricSnapshot {
+                dest_addr,
+                fallback_session_name,
+                rtt_ms: metrics
+                    .rtt_trend
+                    .initialized()
+                    .then(|| metrics.rtt_trend.long() / 1000.0),
+                loss_rate: metrics
+                    .loss_trend
+                    .initialized()
+                    .then(|| metrics.loss_trend.long()),
+                jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
+                goodput_bps: metrics.goodput_bps(),
+                send_mtu: mmp.path_mtu.current_mtu(),
+                observed_mtu: mmp.path_mtu.last_observed_mtu(),
+                tx_packets: mmp.sender.cumulative_packets_sent(),
+                rx_packets: mmp.receiver.cumulative_packets_recv(),
+            });
+            mmp.mark_logged(now);
+        }
+    }
+
+    fn record_fsp_mmp_send_result(
+        &mut self,
+        success: bool,
+    ) -> Option<PacketMover2FspMmpReportingResumed> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        let mmp = self.fsp_mmp.as_mut()?;
+        if success {
+            let prev = mmp.sender.record_send_success();
+            (prev > 3).then_some(PacketMover2FspMmpReportingResumed {
+                dest_addr: self.owner.node_addr(),
+                consecutive_failures: prev,
+            })
+        } else {
+            mmp.sender.record_send_failure();
+            None
+        }
+    }
+
+    fn process_fsp_mmp_receiver_report(
+        &mut self,
+        rr: &crate::mmp::report::ReceiverReport,
+        last_outbound_next_hop: Option<NodeAddr>,
+        now_ms: u64,
+        now: std::time::Instant,
+        min_loss_sample: u64,
+    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+        }
+        let Some(session_start_ms) = self.fsp_session_start_ms else {
+            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+        };
+        let Some(mmp) = &mut self.fsp_mmp else {
+            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+        };
+
+        let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
+        mmp.metrics
+            .process_receiver_report(rr, our_timestamp_ms, now);
+        let sample = mmp.metrics.take_forward_loss_evidence(min_loss_sample);
+
+        let srtt_ms = mmp.metrics.srtt_ms();
+        if let Some(srtt_ms) = srtt_ms {
+            let srtt_us = (srtt_ms * 1000.0) as i64;
+            mmp.sender.update_report_interval_with_bounds(
+                srtt_us,
+                crate::mmp::MIN_SESSION_REPORT_INTERVAL_MS,
+                crate::mmp::MAX_SESSION_REPORT_INTERVAL_MS,
+            );
+            mmp.receiver.update_report_interval_with_bounds(
+                srtt_us,
+                crate::mmp::MIN_SESSION_REPORT_INTERVAL_MS,
+                crate::mmp::MAX_SESSION_REPORT_INTERVAL_MS,
+            );
+            mmp.path_mtu.update_interval_from_srtt(srtt_ms);
+        }
+
+        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
+        let peer_highest = mmp.receiver.highest_counter();
+        mmp.metrics
+            .update_reverse_delivery(our_recv_packets, peer_highest);
+
+        Ok(PacketMover2FspReceiverReportResult {
+            sample,
+            used_direct_next_hop: last_outbound_next_hop
+                .map_or(true, |next_hop| next_hop == self.owner.node_addr()),
+            srtt_ms,
+            mode: mmp.mode(),
+        })
+    }
+
+    fn apply_fsp_path_mtu_signal(
+        &mut self,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+        }
+        let Some(mmp) = &mut self.fsp_mmp else {
+            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+        };
+        let old_mtu = mmp.path_mtu.current_mtu();
+        if mmp.path_mtu.apply_notification(path_mtu, now) {
+            Ok(PacketMover2FspPathMtuApplyResult::Changed(
+                PacketMover2FspPathMtuChange {
+                    old_mtu,
+                    new_mtu: mmp.path_mtu.current_mtu(),
+                },
+            ))
+        } else {
+            Ok(PacketMover2FspPathMtuApplyResult::Unchanged)
+        }
     }
 
     fn reserve_fsp_coords_warmup(&mut self, packet: &mut OutboundPacket) {

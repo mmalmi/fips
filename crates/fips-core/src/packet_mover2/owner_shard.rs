@@ -48,6 +48,56 @@ impl PacketMover2OwnerShard {
         self.owner(owner).and_then(OwnerState::fsp_send_context)
     }
 
+    fn collect_fsp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+        batch: &mut PacketMover2FspMmpReportBatch,
+    ) {
+        for owner in self.owners.values_mut() {
+            owner.collect_fsp_mmp_reports(now, batch);
+        }
+    }
+
+    fn record_fsp_mmp_send_result(
+        &mut self,
+        owner: OwnerId,
+        success: bool,
+    ) -> Option<PacketMover2FspMmpReportingResumed> {
+        self.owner_mut(owner)
+            .and_then(|owner| owner.record_fsp_mmp_send_result(success))
+    }
+
+    fn process_fsp_mmp_receiver_report(
+        &mut self,
+        owner: OwnerId,
+        rr: &crate::mmp::report::ReceiverReport,
+        last_outbound_next_hop: Option<NodeAddr>,
+        now_ms: u64,
+        now: std::time::Instant,
+        min_loss_sample: u64,
+    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+        self.owner_mut(owner)
+            .ok_or(PacketMover2FspMmpSkip::UnknownOwner)?
+            .process_fsp_mmp_receiver_report(
+                rr,
+                last_outbound_next_hop,
+                now_ms,
+                now,
+                min_loss_sample,
+            )
+    }
+
+    fn apply_fsp_path_mtu_signal(
+        &mut self,
+        owner: OwnerId,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+        self.owner_mut(owner)
+            .ok_or(PacketMover2FspMmpSkip::UnknownOwner)?
+            .apply_fsp_path_mtu_signal(path_mtu, now)
+    }
+
     fn min_fsp_rx_age_for_next_hop(&self, next_hop: &NodeAddr, now_ms: u64) -> Option<u64> {
         self.owners
             .values()
@@ -296,10 +346,19 @@ impl PacketMover2OwnerShard {
         previous_hop: NodeAddr,
         msg_type: u8,
         body_len: usize,
+        sync: FspReceiveSync,
         activity_tick: Option<ActivityTick>,
-    ) -> bool {
-        self.owner_mut(owner).is_some_and(|owner| {
-            owner.record_authenticated_fsp_session(previous_hop, msg_type, body_len, activity_tick)
+        now: std::time::Instant,
+    ) -> Option<bool> {
+        self.owner_mut(owner).and_then(|owner| {
+            owner.record_authenticated_fsp_session(
+                previous_hop,
+                msg_type,
+                body_len,
+                sync,
+                activity_tick,
+                now,
+            )
         })
     }
 

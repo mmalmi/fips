@@ -11,7 +11,6 @@ use crate::config::SessionMmpConfig;
 use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
 use crate::noise::{HandshakeState, NoiseSession};
-use crate::packet_mover2::FspReceiveSync;
 use crate::{NodeAddr, PeerIdentity};
 use rand::RngExt;
 use ring::aead::LessSafeKey;
@@ -425,17 +424,13 @@ impl SessionEntry {
         self.clear_rekey_msg3_payload();
     }
 
-    /// Mirror a frame authenticated by packet_mover2 into session lifecycle
-    /// metadata.
+    /// Confirm that packet_mover2 authenticated the current FSP epoch.
     ///
     /// PM2 owns FSP AEAD verification, generation selection, replay admission,
-    /// and ordered retirement. The session registry keeps control-plane state
-    /// coherent after PM2 has accepted a current-epoch FSP frame.
-    pub(crate) fn apply_fsp_receive_sync_result(
-        &mut self,
-        sync: FspReceiveSync,
-        now: Instant,
-    ) -> bool {
+    /// ordered retirement, and per-packet MMP receive facts. The session
+    /// registry keeps only the control-plane cleanup for handshake/rekey
+    /// retransmission state after PM2 has accepted a current-epoch frame.
+    pub(crate) fn confirm_authenticated_fsp_receive(&mut self, received_k_bit: bool) -> bool {
         if !self.is_established() || self.current_noise_session().is_none() {
             return false;
         }
@@ -446,21 +441,9 @@ impl SessionEntry {
         if self.handshake_payload().is_some()
             && self.pending_new_session().is_none()
             && !self.has_rekey_in_progress()
-            && sync.received_k_bit == self.current_k_bit()
+            && received_k_bit == self.current_k_bit()
         {
             self.clear_handshake_payload();
-        }
-
-        if let Some(mmp) = self.mmp_mut() {
-            mmp.receiver.record_recv(
-                sync.counter,
-                sync.timestamp,
-                sync.plaintext_len,
-                sync.ce_flag,
-                now,
-            );
-            let _spin_rtt = mmp.spin_bit.rx_observe(sync.spin_bit, sync.counter, now);
-            mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
         }
         true
     }

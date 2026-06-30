@@ -1,6 +1,6 @@
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
-use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
+use crate::mmp::MmpMode;
 use crate::node::session::{EndToEndState, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_INNER_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1,
@@ -33,30 +33,6 @@ struct ProcessedSessionReceiverReport {
     used_direct_next_hop: bool,
     srtt_ms: Option<f64>,
     route_quality_sample: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionReceiverReportSkip {
-    UnknownSession,
-    MmpDisabled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionPathMtuChange {
-    old_mtu: u16,
-    new_mtu: u16,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionPathMtuApplyResult {
-    Changed(SessionPathMtuChange),
-    Unchanged,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionPathMtuApplySkip {
-    UnknownSession,
-    MmpDisabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
