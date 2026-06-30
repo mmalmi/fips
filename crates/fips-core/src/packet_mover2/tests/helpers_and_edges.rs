@@ -31,7 +31,10 @@
                 .iter()
                 .filter_map(|item| match item {
                     RetiredPacket::Output(output) => Some(output),
-                    RetiredPacket::Outbound(_) | RetiredPacket::Drop(_) => None,
+                    RetiredPacket::Outbound(_)
+                    | RetiredPacket::WrappedCompletion(_)
+                    | RetiredPacket::OwnerCompletion(_)
+                    | RetiredPacket::Drop(_) => None,
                 })
                 .collect()
         }
@@ -836,6 +839,12 @@
             .map(|item| match item {
                 RetiredPacket::Output(output) => output,
                 RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
+                RetiredPacket::WrappedCompletion(packet) => {
+                    panic!("unexpected wrapped completion: {packet:?}")
+                }
+                RetiredPacket::OwnerCompletion(completion) => {
+                    panic!("unexpected owner completion: {completion:?}")
+                }
                 RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
             })
             .collect()
@@ -848,6 +857,12 @@
                 RetiredPacket::Drop(drop) => drop,
                 RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
                 RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
+                RetiredPacket::WrappedCompletion(packet) => {
+                    panic!("unexpected wrapped completion: {packet:?}")
+                }
+                RetiredPacket::OwnerCompletion(completion) => {
+                    panic!("unexpected owner completion: {completion:?}")
+                }
             })
             .collect()
     }

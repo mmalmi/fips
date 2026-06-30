@@ -45,7 +45,7 @@ impl PacketMover2FspWrapRoute {
         self
     }
 
-    fn into_fmp_outbound(self, class: PacketClass, fsp_wire: PacketBuffer) -> OutboundPacket {
+    fn fmp_payload(self, fsp_wire: PacketBuffer) -> PacketBuffer {
         let fsp_wire = fsp_wire.into_vec();
         let mut payload =
             Vec::with_capacity(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE + fsp_wire.len());
@@ -55,14 +55,25 @@ impl PacketMover2FspWrapRoute {
         payload.extend_from_slice(self.source_addr.as_bytes());
         payload.extend_from_slice(self.dest_addr.as_bytes());
         payload.extend_from_slice(&fsp_wire);
+        payload.into()
+    }
 
+    fn into_fmp_outbound(self, class: PacketClass, fsp_wire: PacketBuffer) -> OutboundPacket {
         OutboundPacket::fmp(
             self.fmp_owner,
             self.fmp_generation,
             class,
             self.receiver_idx,
             self.fmp_flags,
-            payload,
+            self.fmp_payload(fsp_wire),
         )
+    }
+
+    fn reserve_fmp_outbound(self, class: PacketClass) -> OutboundPacket {
+        self.into_fmp_outbound(class, Vec::<u8>::new().into())
+    }
+
+    fn fill_reserved_fmp_outbound(self, packet: &mut OutboundPacket, fsp_wire: PacketBuffer) {
+        packet.payload = self.fmp_payload(fsp_wire);
     }
 }

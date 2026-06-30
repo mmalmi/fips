@@ -585,22 +585,22 @@
         );
 
         let first = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet, queued_bulk], 1);
-        assert_eq!(first.summary().outbound_admitted(), 3);
+        assert_eq!(first.summary().outbound_admitted(), 2);
         assert_eq!(first.summary().dispatched(), 1);
-        assert_eq!(first.summary().outputs(), 0);
-        assert!(first.outputs().is_empty());
+        assert_eq!(first.summary().outputs(), 1);
         assert!(first.drops().is_empty());
+        let first_output = first.outputs()[0].clone();
 
         let second = run_aead_classified_turn(&mut driver,
             std::iter::empty::<SocketPacket>(),
             std::iter::empty::<OutboundPacket>(),
             8,
         );
-        assert_eq!(second.summary().dispatched(), 2);
-        assert_eq!(second.summary().outputs(), 2);
+        assert_eq!(second.summary().dispatched(), 1);
+        assert_eq!(second.summary().outputs(), 1);
         assert!(second.drops().is_empty());
 
-        let output = &second.outputs()[0];
+        let output = &first_output;
         assert_eq!(output.owner(), fmp_owner);
         assert_eq!(output.counter(), 70);
         assert_eq!(output.target(), OutputTarget::Transport);
@@ -626,7 +626,7 @@
             b"session-body"
         );
 
-        let output = &second.outputs()[1];
+        let output = &second.outputs()[0];
         assert_eq!(output.owner(), fmp_owner);
         assert_eq!(output.counter(), 71);
         assert_eq!(open_sealed_output(output, fmp_key), b"queued-bulk");
@@ -673,8 +673,8 @@
         .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
 
         let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet], 2);
-        assert_eq!(turn.summary().outbound_admitted(), 2);
-        assert_eq!(turn.summary().dispatched(), 2);
+        assert_eq!(turn.summary().outbound_admitted(), 1);
+        assert_eq!(turn.summary().dispatched(), 1);
         assert_eq!(turn.summary().outputs(), 1);
         assert!(turn.drops().is_empty());
 
@@ -747,8 +747,8 @@
         });
 
         let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), packets, 8);
-        assert_eq!(turn.summary().outbound_admitted(), 8);
-        assert_eq!(turn.summary().dispatched(), 8);
+        assert_eq!(turn.summary().outbound_admitted(), 4);
+        assert_eq!(turn.summary().dispatched(), 4);
         assert_eq!(turn.summary().outputs(), 4);
         assert!(turn.drops().is_empty());
 
@@ -854,6 +854,12 @@
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
+            RetiredPacket::WrappedCompletion(packet) => {
+                panic!("unexpected wrapped completion: {packet:?}")
+            }
+            RetiredPacket::OwnerCompletion(completion) => {
+                panic!("unexpected owner completion: {completion:?}")
+            }
         }
         assert_eq!(turn.drops().len(), 1);
         assert_eq!(turn.drops()[0].reason, PacketDropReason::CryptoFailed);
@@ -890,6 +896,12 @@
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
+            RetiredPacket::WrappedCompletion(packet) => {
+                panic!("unexpected wrapped completion: {packet:?}")
+            }
+            RetiredPacket::OwnerCompletion(completion) => {
+                panic!("unexpected owner completion: {completion:?}")
+            }
         }
         let owner = mover.owner_mut(owner).unwrap();
         assert_eq!(owner.next_send_counter, 1);
@@ -1772,14 +1784,15 @@
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
 
         let worker = StatelessAeadSealWorker;
-        let completion = worker.execute(
+        let completion = worker.execute_reserved_wrap(
             AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(fsp_key)).unwrap(),
+            test_key(fmp_key),
         );
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 1);
-            assert_eq!(turn.summary().outbound_admitted(), 1);
-            assert_eq!(turn.summary().dispatched(), 1);
+            assert_eq!(turn.summary().outbound_admitted(), 0);
+            assert_eq!(turn.summary().dispatched(), 0);
             assert_eq!(turn.summary().outputs(), 1);
             assert!(turn.drops().is_empty());
 
@@ -1806,6 +1819,65 @@
             );
         }
 
+        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 0);
+        assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 0);
+    }
+
+    #[test]
+    fn failed_reserved_fsp_post_seal_wrap_releases_both_owners() {
+        let source = NodeAddr::from_bytes([0x83; 16]);
+        let dest = NodeAddr::from_bytes([0x84; 16]);
+        let next_hop = NodeAddr::from_bytes([0x85; 16]);
+        let fsp_owner = OwnerId::fsp_node(dest);
+        let fmp_owner = OwnerId::fmp_node(next_hop);
+        let fmp_path = live_path(8500);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
+        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(70));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_active_path(fmp_path);
+
+        let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 8585, source, dest)
+            .with_ttl(42)
+            .with_path_mtu(1280);
+        let packet = OutboundPacket::fsp(
+            fsp_owner,
+            1,
+            PacketClass::ReliableBulk,
+            0x03,
+            b"failed-wrap".to_vec(),
+        )
+        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix())
+        .with_post_seal(OutboundPostSeal::FmpWrap(wrap));
+
+        driver.mover.submit_outbound_packet(packet).unwrap();
+        let mut seal_work = Vec::new();
+        assert_eq!(
+            driver
+                .mover
+                .dispatch_outbound_available_into(1, &mut seal_work),
+            1
+        );
+        let work = seal_work.pop().unwrap();
+        let wrap_reservation = work.wrap.as_ref().unwrap().reservation.clone();
+        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
+        assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 1);
+
+        let completion = failed_wrapped_crypto_completion(
+            work.reservation,
+            wrap_reservation,
+            CryptoFailureKind::Seal,
+        );
+        let turn = run_aead_completion_turn(&mut driver, [completion], 1);
+        assert_eq!(turn.summary().completions(), 2);
+        assert_eq!(turn.summary().outputs(), 0);
+        assert_eq!(turn.drops().len(), 2);
+        assert!(turn
+            .drops()
+            .iter()
+            .all(|drop| drop.reason() == PacketDropReason::CryptoFailed));
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 0);
         assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 0);
     }

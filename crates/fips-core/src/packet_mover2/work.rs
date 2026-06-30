@@ -8,6 +8,43 @@ pub(crate) struct CryptoWork {
 pub(crate) struct OutboundCryptoWork {
     reservation: OwnerReservation,
     packet: OutboundPacket,
+    wrap: Option<OutboundWrapReservation>,
+}
+
+impl OutboundCryptoWork {
+    fn new(reservation: OwnerReservation, packet: OutboundPacket) -> Self {
+        Self {
+            reservation,
+            packet,
+            wrap: None,
+        }
+    }
+
+    fn with_wrap(mut self, wrap: OutboundWrapReservation) -> Self {
+        self.wrap = Some(wrap);
+        self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OutboundWrapReservation {
+    route: PacketMover2FspWrapRoute,
+    reservation: OwnerReservation,
+    packet: OutboundPacket,
+}
+
+impl OutboundWrapReservation {
+    fn new(
+        route: PacketMover2FspWrapRoute,
+        reservation: OwnerReservation,
+        packet: OutboundPacket,
+    ) -> Self {
+        Self {
+            route,
+            reservation,
+            packet,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +58,11 @@ pub(crate) enum CryptoResult {
     Opened(PacketOutput),
     Sealed(PacketOutput),
     Outbound(WrappedOutboundPacket),
+    WrappedSealed(WrappedCryptoCompletion),
+    WrappedFailed {
+        failure: CryptoFailureKind,
+        completion: Box<CryptoCompletion>,
+    },
     Failed(CryptoFailureKind),
 }
 
@@ -172,9 +214,34 @@ impl WrappedOutboundPacket {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WrappedCryptoCompletion {
+    receipt: PacketMover2WrappedOutboundReceipt,
+    completion: Box<CryptoCompletion>,
+}
+
+impl WrappedCryptoCompletion {
+    pub(crate) fn new(owner: OwnerId, counter: u64, completion: CryptoCompletion) -> Self {
+        Self {
+            receipt: PacketMover2WrappedOutboundReceipt { owner, counter },
+            completion: Box::new(completion),
+        }
+    }
+
+    pub(crate) fn receipt(&self) -> PacketMover2WrappedOutboundReceipt {
+        self.receipt
+    }
+
+    pub(crate) fn into_completion(self) -> CryptoCompletion {
+        *self.completion
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RetiredPacket {
     Output(PacketOutput),
     Outbound(WrappedOutboundPacket),
+    WrappedCompletion(WrappedCryptoCompletion),
+    OwnerCompletion(CryptoCompletion),
     Drop(PacketDrop),
 }
 

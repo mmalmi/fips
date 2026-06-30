@@ -129,37 +129,8 @@ impl PacketMover2 {
                 break;
             };
 
-            let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
-                self.drops.push(PacketDrop::from_queued_outbound(
-                    &queued,
-                    PacketDropReason::UnknownOwner,
-                ));
-                continue;
-            };
-
-            let owner_id = queued.packet.owner;
-            let lane = queued.packet.lane();
-            let ingress_seq = queued.ingress_seq;
-            if !owner.can_reserve_class(queued.packet.class) {
-                record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
-                self.outbound_admission.push_front(queued);
+            if !self.dispatch_queued_outbound(queued, work) {
                 break;
-            }
-            match owner.reserve_outbound(queued.packet, ingress_seq) {
-                Ok((reservation, packet)) => work.push(OutboundCryptoWork {
-                    reservation,
-                    packet,
-                }),
-                Err(error) => self.drops.push(PacketDrop {
-                    owner: owner_id,
-                    counter: None,
-                    ingress_seq: Some(ingress_seq),
-                    lane,
-                    reason: error.into(),
-                    crypto_failure: None,
-                    wire_flags: None,
-                    authenticated_counter_highest: None,
-                }),
             }
         }
 
@@ -178,41 +149,138 @@ impl PacketMover2 {
                 break;
             };
 
-            let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
-                self.drops.push(PacketDrop::from_queued_outbound(
-                    &queued,
-                    PacketDropReason::UnknownOwner,
-                ));
-                continue;
-            };
-
-            let owner_id = queued.packet.owner;
-            let lane = queued.packet.lane();
-            let ingress_seq = queued.ingress_seq;
-            if !owner.can_reserve_class(queued.packet.class) {
-                record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
-                self.outbound_admission.push_front(queued);
+            if !self.dispatch_queued_outbound(queued, work) {
                 break;
-            }
-            match owner.reserve_outbound(queued.packet, ingress_seq) {
-                Ok((reservation, packet)) => work.push(OutboundCryptoWork {
-                    reservation,
-                    packet,
-                }),
-                Err(error) => self.drops.push(PacketDrop {
-                    owner: owner_id,
-                    counter: None,
-                    ingress_seq: Some(ingress_seq),
-                    lane,
-                    reason: error.into(),
-                    crypto_failure: None,
-                    wire_flags: None,
-                    authenticated_counter_highest: None,
-                }),
             }
         }
 
         work.len()
+    }
+
+    fn dispatch_queued_outbound(
+        &mut self,
+        queued: QueuedOutboundPacket,
+        work: &mut Vec<OutboundCryptoWork>,
+    ) -> bool {
+        let owner_id = queued.packet.owner;
+        let lane = queued.packet.lane();
+        let class = queued.packet.class;
+        let ingress_seq = queued.ingress_seq;
+        let wrap_route = match queued.packet.post_seal {
+            OutboundPostSeal::FmpWrap(route) => Some(route),
+            OutboundPostSeal::Transport => None,
+        };
+
+        let Some(owner) = self.owners.get(&owner_id) else {
+            self.drops.push(PacketDrop::from_queued_outbound(
+                &queued,
+                PacketDropReason::UnknownOwner,
+            ));
+            return true;
+        };
+        if !owner.can_reserve_class(class) {
+            record_owner_blocked(owner.reserve_block_reason(class));
+            self.outbound_admission.push_front(queued);
+            return false;
+        }
+
+        if let Some(route) = wrap_route {
+            let outer_owner_id = route.fmp_owner;
+            let Some(outer_owner) = self.owners.get(&outer_owner_id) else {
+                self.drops.push(PacketDrop {
+                    owner: outer_owner_id,
+                    counter: None,
+                    ingress_seq: Some(ingress_seq),
+                    lane,
+                    reason: PacketDropReason::UnknownOwner,
+                    crypto_failure: None,
+                    wire_flags: None,
+                    authenticated_counter_highest: None,
+                });
+                return true;
+            };
+            if !outer_owner.can_reserve_class(class) {
+                record_owner_blocked(outer_owner.reserve_block_reason(class));
+                self.outbound_admission.push_front(queued);
+                return false;
+            }
+        }
+
+        let (reservation, packet) = {
+            let owner = self
+                .owners
+                .get_mut(&owner_id)
+                .expect("outbound owner checked before reservation");
+            match owner.reserve_outbound(queued.packet, ingress_seq) {
+                Ok(reserved) => reserved,
+                Err(error) => {
+                    self.drops.push(PacketDrop {
+                        owner: owner_id,
+                        counter: None,
+                        ingress_seq: Some(ingress_seq),
+                        lane,
+                        reason: error.into(),
+                        crypto_failure: None,
+                        wire_flags: None,
+                        authenticated_counter_highest: None,
+                    });
+                    return true;
+                }
+            }
+        };
+
+        let Some(route) = wrap_route else {
+            work.push(OutboundCryptoWork::new(reservation, packet));
+            return true;
+        };
+
+        let mut outer_packet = route.reserve_fmp_outbound(class);
+        if let Some(tick) = packet.activity_tick {
+            outer_packet = outer_packet.with_activity_tick(tick);
+        }
+        let outer_owner_id = route.fmp_owner;
+        let outer_reserved = {
+            let Some(outer_owner) = self.owners.get_mut(&outer_owner_id) else {
+                self.release_reserved_outbound(reservation);
+                self.drops.push(PacketDrop {
+                    owner: outer_owner_id,
+                    counter: None,
+                    ingress_seq: Some(ingress_seq),
+                    lane,
+                    reason: PacketDropReason::UnknownOwner,
+                    crypto_failure: None,
+                    wire_flags: None,
+                    authenticated_counter_highest: None,
+                });
+                return true;
+            };
+            match outer_owner.reserve_outbound(outer_packet, ingress_seq) {
+                Ok(reserved) => reserved,
+                Err(error) => {
+                    self.release_reserved_outbound(reservation);
+                    self.drops.push(PacketDrop {
+                        owner: outer_owner_id,
+                        counter: None,
+                        ingress_seq: Some(ingress_seq),
+                        lane,
+                        reason: error.into(),
+                        crypto_failure: None,
+                        wire_flags: None,
+                        authenticated_counter_highest: None,
+                    });
+                    return true;
+                }
+            }
+        };
+        let (outer_reservation, outer_packet) = outer_reserved;
+        work.push(
+            OutboundCryptoWork::new(reservation, packet).with_wrap(OutboundWrapReservation::new(
+                route,
+                outer_reservation,
+                outer_packet,
+            )),
+        );
+        true
     }
 
     pub(crate) fn retire_completion(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
@@ -231,8 +299,25 @@ impl PacketMover2 {
                 RetiredPacket::Drop(drop) => Some(drop.clone()),
                 RetiredPacket::Output(_) => None,
                 RetiredPacket::Outbound(_) => None,
+                RetiredPacket::WrappedCompletion(_) => None,
+                RetiredPacket::OwnerCompletion(_) => None,
             }));
         retired
+    }
+
+    fn release_reserved_outbound(&mut self, reservation: OwnerReservation) {
+        let retired = self.retire_completion(failed_crypto_completion(
+            reservation,
+            CryptoFailureKind::Seal,
+        ));
+        self.drops
+            .extend(retired.into_iter().filter_map(|item| match item {
+                RetiredPacket::Drop(drop) => Some(drop),
+                RetiredPacket::Output(_)
+                | RetiredPacket::Outbound(_)
+                | RetiredPacket::WrappedCompletion(_)
+                | RetiredPacket::OwnerCompletion(_) => None,
+            }));
     }
 
     pub(crate) fn run_aead_available_into_with_executor<E>(
@@ -341,9 +426,27 @@ impl PacketMover2 {
         work: OutboundCryptoWork,
     ) -> PreparedCryptoWork {
         let reservation = work.reservation.clone();
-        match self.owner_crypto_keys(reservation.owner) {
-            Some(keys) => PreparedCryptoWork::seal(work, keys.seal),
-            None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal),
+        let wrap_reservation = work.wrap.as_ref().map(|wrap| wrap.reservation.clone());
+        let Some(keys) = self.owner_crypto_keys(reservation.owner) else {
+            return match wrap_reservation {
+                Some(outer) => PreparedCryptoWork::failed_wrapped(
+                    reservation,
+                    outer,
+                    CryptoFailureKind::Seal,
+                ),
+                None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal),
+            };
+        };
+        let Some(outer_reservation) = wrap_reservation else {
+            return PreparedCryptoWork::seal(work, keys.seal);
+        };
+        match self.owner_crypto_keys(outer_reservation.owner) {
+            Some(outer_keys) => PreparedCryptoWork::seal_wrapped(work, keys.seal, outer_keys.seal),
+            None => PreparedCryptoWork::failed_wrapped(
+                reservation,
+                outer_reservation,
+                CryptoFailureKind::Seal,
+            ),
         }
     }
 

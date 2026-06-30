@@ -802,22 +802,29 @@ impl PacketMover2TurnDriver {
         summary: &mut PacketMover2RuntimeSummary,
         completion: CryptoCompletion,
     ) {
+        let retired = self.retire_completion_collecting_drops(completion);
+        self.retired.extend(retired);
+        summary.completions = summary.completions.saturating_add(1);
+    }
+
+    fn retire_completion_collecting_drops(
+        &mut self,
+        completion: CryptoCompletion,
+    ) -> Vec<RetiredPacket> {
         let retired = self.mover.retire_completion(completion);
         let mut mover_drops = self.mover.drain_drops();
         let emitted_drop_start = self.drops.len();
         self.drops.append(&mut mover_drops);
         for item in &retired {
-            if let RetiredPacket::Drop(drop) = item {
-                if !self.drops[emitted_drop_start..]
+            if let RetiredPacket::Drop(drop) = item
+                && !self.drops[emitted_drop_start..]
                     .iter()
                     .any(|emitted| emitted == drop)
-                {
-                    self.drops.push(drop.clone());
-                }
+            {
+                self.drops.push(drop.clone());
             }
         }
-        self.retired.extend(retired);
-        summary.completions = summary.completions.saturating_add(1);
+        retired
     }
 
     fn collect_live_session_outputs_with_executor<R, E>(
@@ -908,8 +915,8 @@ impl PacketMover2TurnDriver {
         &mut self,
         mut summary: PacketMover2RuntimeSummary,
     ) -> PacketMover2RuntimeSummary {
-        let mut retired = std::mem::take(&mut self.retired);
-        for packet in retired.drain(..) {
+        let mut retired: VecDeque<_> = std::mem::take(&mut self.retired).into();
+        while let Some(packet) = retired.pop_front() {
             match packet {
                 RetiredPacket::Output(mut output) => {
                     output.promote_opened_latency_sensitive_payload();
@@ -919,10 +926,21 @@ impl PacketMover2TurnDriver {
                     self.wrapped_outbound_receipts.push(packet.receipt());
                     self.admit_outbound_packet(packet.into_packet(), &mut summary);
                 }
+                RetiredPacket::WrappedCompletion(packet) => {
+                    self.wrapped_outbound_receipts.push(packet.receipt());
+                    let nested = self.retire_completion_collecting_drops(packet.into_completion());
+                    retired.extend(nested);
+                    summary.completions = summary.completions.saturating_add(1);
+                }
+                RetiredPacket::OwnerCompletion(completion) => {
+                    let nested = self.retire_completion_collecting_drops(completion);
+                    retired.extend(nested);
+                    summary.completions = summary.completions.saturating_add(1);
+                }
                 RetiredPacket::Drop(_) => {}
             }
         }
-        self.retired = retired;
+        self.retired = retired.into_iter().collect();
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
         summary

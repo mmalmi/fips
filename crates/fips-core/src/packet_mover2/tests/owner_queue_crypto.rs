@@ -862,6 +862,12 @@
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
+            RetiredPacket::WrappedCompletion(packet) => {
+                panic!("unexpected wrapped completion: {packet:?}")
+            }
+            RetiredPacket::OwnerCompletion(completion) => {
+                panic!("unexpected owner completion: {completion:?}")
+            }
         }
         match &retired[1] {
             RetiredPacket::Output(output) => {
@@ -870,6 +876,12 @@
             }
             RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
+            RetiredPacket::WrappedCompletion(packet) => {
+                panic!("unexpected wrapped completion: {packet:?}")
+            }
+            RetiredPacket::OwnerCompletion(completion) => {
+                panic!("unexpected owner completion: {completion:?}")
+            }
         }
     }
 
@@ -1188,6 +1200,7 @@
         let mismatch_work = OutboundCryptoWork {
             reservation,
             packet: mismatch,
+            wrap: None,
         };
         assert_eq!(
             AeadSealWork::from_outbound_work(mismatch_work, test_key(1)).err(),
@@ -1207,6 +1220,7 @@
         let plaintext_work = OutboundCryptoWork {
             reservation,
             packet: plaintext_fsp,
+            wrap: None,
         };
         assert_eq!(
             AeadSealWork::from_outbound_work(plaintext_work, test_key(1)).err(),

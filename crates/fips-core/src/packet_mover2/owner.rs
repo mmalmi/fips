@@ -514,6 +514,27 @@ impl OwnerState {
                 }
                 CryptoResult::Sealed(output) => retired.push(RetiredPacket::Output(output)),
                 CryptoResult::Outbound(packet) => retired.push(RetiredPacket::Outbound(packet)),
+                CryptoResult::WrappedSealed(packet) => {
+                    retired.push(RetiredPacket::WrappedCompletion(packet));
+                }
+                CryptoResult::WrappedFailed {
+                    failure,
+                    completion: outer_completion,
+                } => {
+                    let failed_inner = CryptoCompletion {
+                        reservation: completion.reservation.clone(),
+                        result: CryptoResult::Failed(failure),
+                    };
+                    retired.push(RetiredPacket::Drop(
+                        PacketDrop::from_completion_with_authenticated_highest(
+                            &failed_inner,
+                            PacketDropReason::CryptoFailed,
+                            failure,
+                            self.authenticated_counter_highest,
+                        ),
+                    ));
+                    retired.push(RetiredPacket::OwnerCompletion(*outer_completion));
+                }
                 CryptoResult::Failed(failure) => {
                     retired.push(RetiredPacket::Drop(
                         PacketDrop::from_completion_with_authenticated_highest(
