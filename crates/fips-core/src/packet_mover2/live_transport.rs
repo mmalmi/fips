@@ -443,7 +443,12 @@ async fn send_bulk_transport_plans_with_worker<R>(
             continue;
         };
 
-        if !pending_udp.matches(plan.transport_id(), plan.remote_addr()) {
+        let Some((snapshot, socket_addr)) =
+            prepare_packet_mover2_udp_worker_packet(udp, &plan, drops).await
+        else {
+            continue;
+        };
+        if !pending_udp.matches(plan.transport_id(), socket_addr) {
             flush_pending_packet_mover2_udp_send_job(
                 &mut pending_udp,
                 drops,
@@ -451,33 +456,18 @@ async fn send_bulk_transport_plans_with_worker<R>(
                 sent_outputs,
                 sent,
             );
-            let Some((snapshot, socket_addr)) =
-                prepare_packet_mover2_udp_worker_batch(udp, &plan, drops).await
-            else {
-                continue;
-            };
-            pending_udp.reset(
-                snapshot,
-                plan.transport_id(),
-                plan.remote_addr().clone(),
-                socket_addr,
-            );
+            pending_udp.reset(snapshot, plan.transport_id(), socket_addr);
         }
-        let Some(socket_addr) = pending_udp.validate_packet(&plan, drops) else {
-            continue;
-        };
         pending_udp.push(plan_index, plan, socket_addr);
     }
     flush_pending_packet_mover2_udp_send_job(&mut pending_udp, drops, worker, sent_outputs, sent);
 }
 
-async fn prepare_packet_mover2_udp_worker_batch(
+async fn prepare_packet_mover2_udp_worker_packet(
     udp: &crate::transport::udp::UdpTransport,
     plan: &PacketMover2TransportSendPlan,
     drops: &mut Vec<PacketMover2OutputDrop>,
 ) -> Option<(crate::transport::udp::UdpSendSnapshot, std::net::SocketAddr)> {
-    let _timer =
-        crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2TransportPrepare);
     let snapshot = match udp.send_snapshot() {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -498,6 +488,13 @@ async fn prepare_packet_mover2_udp_worker_batch(
             return None;
         }
     };
+    if let Err(error) = snapshot.validate_packet(plan.output().payload_len(), socket_addr) {
+        drops.push(PacketMover2OutputDrop::from_output(
+            plan.output(),
+            packet_mover2_output_error_for_transport(&error),
+        ));
+        return None;
+    }
     Some((snapshot, socket_addr))
 }
 
@@ -505,51 +502,25 @@ async fn prepare_packet_mover2_udp_worker_batch(
 struct PendingPacketMover2UdpSendJob {
     snapshot: Option<crate::transport::udp::UdpSendSnapshot>,
     transport_id: Option<TransportId>,
-    transport_addr: Option<TransportAddr>,
-    socket_addr: Option<std::net::SocketAddr>,
+    remote_addr: Option<std::net::SocketAddr>,
     packets: Vec<(usize, PacketOutput, std::net::SocketAddr)>,
 }
 
 impl PendingPacketMover2UdpSendJob {
-    fn matches(&self, transport_id: TransportId, remote_addr: &TransportAddr) -> bool {
-        self.transport_id == Some(transport_id)
-            && self.transport_addr.as_ref() == Some(remote_addr)
-            && self.snapshot.is_some()
-            && self.socket_addr.is_some()
+    fn matches(&self, transport_id: TransportId, remote_addr: std::net::SocketAddr) -> bool {
+        self.transport_id == Some(transport_id) && self.remote_addr == Some(remote_addr)
     }
 
     fn reset(
         &mut self,
         snapshot: crate::transport::udp::UdpSendSnapshot,
         transport_id: TransportId,
-        transport_addr: TransportAddr,
-        socket_addr: std::net::SocketAddr,
+        remote_addr: std::net::SocketAddr,
     ) {
         debug_assert!(self.packets.is_empty());
         self.snapshot = Some(snapshot);
         self.transport_id = Some(transport_id);
-        self.transport_addr = Some(transport_addr);
-        self.socket_addr = Some(socket_addr);
-    }
-
-    fn validate_packet(
-        &self,
-        plan: &PacketMover2TransportSendPlan,
-        drops: &mut Vec<PacketMover2OutputDrop>,
-    ) -> Option<std::net::SocketAddr> {
-        let _timer = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::PacketMover2TransportPrepare,
-        );
-        let snapshot = self.snapshot.as_ref()?;
-        let socket_addr = self.socket_addr?;
-        if let Err(error) = snapshot.validate_packet(plan.output().payload_len(), socket_addr) {
-            drops.push(PacketMover2OutputDrop::from_output(
-                plan.output(),
-                packet_mover2_output_error_for_transport(&error),
-            ));
-            return None;
-        }
-        Some(socket_addr)
+        self.remote_addr = Some(remote_addr);
     }
 
     fn push(
@@ -567,8 +538,7 @@ impl PendingPacketMover2UdpSendJob {
         }
         let snapshot = self.snapshot.take()?;
         let transport_id = self.transport_id.take()?;
-        let remote_addr = self.socket_addr.take()?;
-        let _ = self.transport_addr.take();
+        let remote_addr = self.remote_addr.take()?;
         Some(PacketMover2TransportSendJob {
             snapshot,
             transport_id,
