@@ -359,7 +359,7 @@ impl Node {
         if !self.pending_session_traffic.has_traffic_for(dest_addr) {
             return;
         }
-        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+        if !self.ensure_packet_mover2_fsp_owner(dest_addr) {
             debug!(
                 dest = %self.peer_display_name(dest_addr),
                 "Skipping pending packet flush until packet_mover2 FSP owner is available"

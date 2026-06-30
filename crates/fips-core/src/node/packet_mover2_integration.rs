@@ -185,7 +185,7 @@ impl Node {
         dest_addr: &NodeAddr,
         packet: Vec<u8>,
     ) -> Result<(), NodeError> {
-        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+        if !self.ensure_packet_mover2_fsp_owner(dest_addr) {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
                 reason: "packet_mover2 FSP owner unavailable for queued TUN packet".into(),
@@ -661,6 +661,13 @@ impl Node {
 
     pub(in crate::node) fn sync_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) -> bool {
         self.sync_packet_mover2_fsp_owner_with_coords_transfer(node_addr, true)
+    }
+
+    pub(in crate::node) fn ensure_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) -> bool {
+        if self.packet_mover2_has_synced_fsp_owner(node_addr) {
+            return true;
+        }
+        self.sync_packet_mover2_fsp_owner(node_addr)
     }
 
     fn packet_mover2_has_synced_fsp_owner(&self, node_addr: &NodeAddr) -> bool {
