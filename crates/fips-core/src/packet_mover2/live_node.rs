@@ -352,6 +352,14 @@ impl PacketMover2LiveNode {
             .owner_fsp_send_context(OwnerId::fsp_node(*node_addr))
     }
 
+    pub(crate) fn fmp_owner_send_context(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<PacketMover2FmpSendContext> {
+        self.driver
+            .owner_fmp_send_context(OwnerId::fmp_node(*node_addr))
+    }
+
     pub(crate) fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,

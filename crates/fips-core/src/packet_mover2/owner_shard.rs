@@ -52,6 +52,10 @@ impl PacketMover2OwnerShard {
         self.owner(owner).and_then(OwnerState::fsp_send_context)
     }
 
+    fn owner_fmp_send_context(&self, owner: OwnerId) -> Option<PacketMover2FmpSendContext> {
+        self.owner(owner).and_then(OwnerState::fmp_send_context)
+    }
+
     fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,

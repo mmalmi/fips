@@ -7,6 +7,7 @@ pub(crate) struct OwnerConfig {
     next_send_counter: u64,
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     fmp_session_start_ms: Option<u64>,
+    fmp_send_headers: Option<PacketMover2FmpSendHeaders>,
     fsp_session_start_ms: Option<u64>,
     fsp_send_headers: Option<PacketMover2FspSendHeaders>,
     fsp_current_k_bit: Option<bool>,
@@ -14,6 +15,50 @@ pub(crate) struct OwnerConfig {
     fsp_coords_warmup: Option<(u8, Vec<u8>)>,
     fsp_mmp: Option<PacketMover2FspMmpConfig>,
     source_peer: Option<crate::PeerIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FmpSendHeaders {
+    receiver_idx: u32,
+    flags: u8,
+}
+
+impl PacketMover2FmpSendHeaders {
+    pub(crate) fn new(receiver_idx: u32, flags: u8) -> Self {
+        Self {
+            receiver_idx,
+            flags,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FmpSendContext {
+    generation: u64,
+    receiver_idx: u32,
+    flags: u8,
+}
+
+impl PacketMover2FmpSendContext {
+    fn new(generation: u64, headers: PacketMover2FmpSendHeaders) -> Self {
+        Self {
+            generation,
+            receiver_idx: headers.receiver_idx,
+            flags: headers.flags,
+        }
+    }
+
+    pub(crate) fn generation(self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn receiver_idx(self) -> u32 {
+        self.receiver_idx
+    }
+
+    pub(crate) fn flags(self) -> u8 {
+        self.flags
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,6 +226,7 @@ impl OwnerConfig {
             next_send_counter: 0,
             send_counter_authority: None,
             fmp_session_start_ms: None,
+            fmp_send_headers: None,
             fsp_session_start_ms: None,
             fsp_send_headers: None,
             fsp_current_k_bit: None,
@@ -222,6 +268,11 @@ impl OwnerConfig {
 
     pub(crate) fn with_fmp_session_start_ms(mut self, session_start_ms: u64) -> Self {
         self.fmp_session_start_ms = Some(session_start_ms);
+        self
+    }
+
+    pub(crate) fn with_fmp_send_headers(mut self, receiver_idx: u32, flags: u8) -> Self {
+        self.fmp_send_headers = Some(PacketMover2FmpSendHeaders::new(receiver_idx, flags));
         self
     }
 
@@ -472,6 +523,7 @@ pub(crate) struct OwnerState {
     crypto_keys: Option<OwnerCryptoKeys>,
     active_path: Option<TransportPath>,
     fmp_session_start_ms: Option<u64>,
+    fmp_send_headers: Option<PacketMover2FmpSendHeaders>,
     fsp_session_start_ms: Option<u64>,
     fsp_send_headers: Option<PacketMover2FspSendHeaders>,
     fsp_current_k_bit: bool,
@@ -517,6 +569,7 @@ impl OwnerState {
             crypto_keys: None,
             active_path: None,
             fmp_session_start_ms: config.fmp_session_start_ms,
+            fmp_send_headers: config.fmp_send_headers,
             fsp_session_start_ms: config.fsp_session_start_ms,
             fsp_send_headers: config.fsp_send_headers,
             fsp_current_k_bit: config.fsp_current_k_bit.unwrap_or(false),
@@ -558,6 +611,7 @@ impl OwnerState {
         self.send_counter_authority = None;
         self.crypto_keys = None;
         self.fmp_session_start_ms = None;
+        self.fmp_send_headers = None;
         self.fsp_session_start_ms = None;
         self.fsp_send_headers = None;
         self.fsp_current_k_bit = false;
@@ -621,6 +675,9 @@ impl OwnerState {
         if let Some(session_start_ms) = config.fmp_session_start_ms {
             self.fmp_session_start_ms = Some(session_start_ms);
         }
+        if let Some(headers) = config.fmp_send_headers {
+            self.fmp_send_headers = Some(headers);
+        }
         if let Some(session_start_ms) = config.fsp_session_start_ms {
             self.fsp_session_start_ms = Some(session_start_ms);
         }
@@ -667,6 +724,16 @@ impl OwnerState {
 
     pub(crate) fn active_path(&self) -> Option<TransportPath> {
         self.active_path.clone()
+    }
+
+    pub(crate) fn fmp_send_context(&self) -> Option<PacketMover2FmpSendContext> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return None;
+        }
+        Some(PacketMover2FmpSendContext::new(
+            self.generation,
+            self.fmp_send_headers?,
+        ))
     }
 
     pub(crate) fn fsp_send_context(&self) -> Option<PacketMover2FspSendContext> {

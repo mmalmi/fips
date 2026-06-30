@@ -75,6 +75,13 @@ impl PacketMover2TurnDriver {
         self.mover.owner_fsp_send_context(owner)
     }
 
+    pub(crate) fn owner_fmp_send_context(
+        &self,
+        owner: OwnerId,
+    ) -> Option<PacketMover2FmpSendContext> {
+        self.mover.owner_fmp_send_context(owner)
+    }
+
     pub(crate) fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,
