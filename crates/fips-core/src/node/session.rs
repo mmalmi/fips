@@ -5,10 +5,6 @@
 //! (SessionSetup/SessionAck/SessionMsg3) carried inside SessionDatagram
 //! envelopes through the mesh.
 
-use std::time::Instant;
-
-use crate::config::SessionMmpConfig;
-use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
 use crate::noise::{HandshakeState, NoiseSession};
 use crate::{NodeAddr, PeerIdentity};
@@ -79,10 +75,7 @@ pub(crate) struct SessionEntry {
     /// Set to 0 until the session is established.
     session_start_ms: u64,
     /// Whether this node initiated the Noise handshake.
-    /// Used for spin bit role assignment in session-layer MMP.
     is_initiator: bool,
-    /// Session-layer MMP state. Initialized on Established transition.
-    mmp: Option<MmpSessionState>,
     // === Handshake Resend ===
     /// Encoded session-layer payload for resend (SessionSetup or SessionAck).
     /// Cleared on Established transition.
@@ -140,7 +133,6 @@ impl SessionEntry {
             created_at: now_ms,
             session_start_ms: 0,
             is_initiator,
-            mmp: None,
             handshake_payload: None,
             resend_count: 0,
             next_resend_at_ms: 0,
@@ -238,21 +230,6 @@ impl SessionEntry {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_initiator(&self) -> bool {
         self.is_initiator
-    }
-
-    /// Get a reference to the session-layer MMP state, if initialized.
-    pub(crate) fn mmp(&self) -> Option<&MmpSessionState> {
-        self.mmp.as_ref()
-    }
-
-    /// Get a mutable reference to the session-layer MMP state, if initialized.
-    pub(crate) fn mmp_mut(&mut self) -> Option<&mut MmpSessionState> {
-        self.mmp.as_mut()
-    }
-
-    /// Initialize session-layer MMP state (called on Established transition).
-    pub(crate) fn init_mmp(&mut self, config: &SessionMmpConfig) {
-        self.mmp = Some(MmpSessionState::new(config, self.is_initiator));
     }
 
     // === Handshake Resend ===
@@ -486,11 +463,6 @@ impl SessionEntry {
         self.rekey_completed_ms = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
 
-        // Reset MMP counters to avoid metric discontinuity
-        let now = Instant::now();
-        if let Some(mmp) = &mut self.mmp {
-            mmp.reset_for_rekey(now);
-        }
         true
     }
 

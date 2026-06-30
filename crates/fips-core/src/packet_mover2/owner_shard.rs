@@ -44,6 +44,10 @@ impl PacketMover2OwnerShard {
         self.owner(owner).and_then(OwnerState::fsp_activity)
     }
 
+    fn owner_fsp_mmp_snapshot(&self, owner: OwnerId) -> Option<PacketMover2FspMmpSnapshot> {
+        self.owner(owner).and_then(OwnerState::fsp_mmp_snapshot)
+    }
+
     fn owner_fsp_send_context(&self, owner: OwnerId) -> Option<PacketMover2FspSendContext> {
         self.owner(owner).and_then(OwnerState::fsp_send_context)
     }

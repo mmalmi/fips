@@ -407,14 +407,12 @@ impl Node {
             // Compute display name before removing the session
             let name = self.peer_display_name(&addr);
 
-            // Log MMP teardown metrics before removing the session
-            if let Some(entry) = self.sessions.get(&addr)
-                && let Some(mmp) = entry.mmp()
-            {
-                Self::log_session_mmp_teardown(&name, mmp);
-            }
+            let session_mmp = self.session_mmp_snapshot(&addr);
             self.remove_packet_mover2_fsp_owner(&addr);
             self.sessions.remove(&addr);
+            if let Some(mmp) = session_mmp {
+                Self::log_session_mmp_teardown(&name, &mmp);
+            }
             self.pending_session_traffic.remove_destination(&addr);
             debug!(
                 dest = %name,

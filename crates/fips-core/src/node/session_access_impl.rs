@@ -16,12 +16,6 @@ impl Node {
         self.sessions.get(remote)
     }
 
-    /// Get a mutable session by remote NodeAddr.
-    #[cfg(test)]
-    pub(crate) fn get_session_mut(&mut self, remote: &NodeAddr) -> Option<&mut SessionEntry> {
-        self.sessions.get_mut(remote)
-    }
-
     /// Remove a session.
     #[cfg(test)]
     pub(crate) fn remove_session(&mut self, remote: &NodeAddr) -> Option<SessionEntry> {
@@ -65,6 +59,13 @@ impl Node {
         self.packet_mover2
             .fsp_owner_activity(addr)
             .and_then(|activity| activity.session_idle_activity_ms())
+    }
+
+    pub(crate) fn session_mmp_snapshot(
+        &self,
+        addr: &NodeAddr,
+    ) -> Option<crate::packet_mover2::PacketMover2FspMmpSnapshot> {
+        self.packet_mover2.fsp_mmp_snapshot(addr)
     }
 
     // === Identity Cache ===

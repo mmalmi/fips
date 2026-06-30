@@ -38,6 +38,33 @@ fn trend_label(short: f64, long: f64) -> &'static str {
     }
 }
 
+fn session_mmp_json(mmp: &crate::packet_mover2::PacketMover2FspMmpSnapshot) -> Value {
+    let mut mmp_json = json!({
+        "mode": format!("{}", mmp.mode),
+        "loss_rate": mmp.loss_rate,
+        "etx": mmp.etx,
+        "goodput_bps": mmp.goodput_bps,
+        "delivery_ratio_forward": mmp.delivery_ratio_forward,
+        "delivery_ratio_reverse": mmp.delivery_ratio_reverse,
+        "path_mtu": mmp.send_mtu,
+    });
+    if let Some(srtt) = mmp.rtt_ms {
+        mmp_json["srtt_ms"] = json!(srtt);
+    }
+    if let Some(smoothed_loss) = mmp.smoothed_loss {
+        mmp_json["smoothed_loss"] = json!(smoothed_loss);
+    }
+    if let Some(smoothed_etx) = mmp.smoothed_etx {
+        mmp_json["smoothed_etx"] = json!(smoothed_etx);
+    }
+    if let Some(srtt) = mmp.rtt_ms
+        && let Some(setx) = mmp.smoothed_etx
+    {
+        mmp_json["sqi"] = json!(setx * (1.0 + srtt / 100.0));
+    }
+    mmp_json
+}
+
 /// `show_status` — Node overview.
 pub fn show_status(node: &Node) -> Value {
     let pid = std::process::id();
@@ -415,32 +442,8 @@ pub fn show_sessions(node: &Node) -> Value {
                 session_json["is_draining"] = json!(entry.is_draining());
             }
 
-            // Add session MMP if available
-            if let Some(mmp) = entry.mmp() {
-                let mut mmp_json = json!({
-                    "mode": format!("{}", mmp.mode()),
-                    "loss_rate": mmp.metrics.loss_rate(),
-                    "etx": mmp.metrics.etx,
-                    "goodput_bps": mmp.metrics.goodput_bps,
-                    "delivery_ratio_forward": mmp.metrics.delivery_ratio_forward,
-                    "delivery_ratio_reverse": mmp.metrics.delivery_ratio_reverse,
-                    "path_mtu": mmp.path_mtu.current_mtu(),
-                });
-                if let Some(srtt) = mmp.metrics.srtt_ms() {
-                    mmp_json["srtt_ms"] = json!(srtt);
-                }
-                if let Some(smoothed_loss) = mmp.metrics.smoothed_loss() {
-                    mmp_json["smoothed_loss"] = json!(smoothed_loss);
-                }
-                if let Some(smoothed_etx) = mmp.metrics.smoothed_etx() {
-                    mmp_json["smoothed_etx"] = json!(smoothed_etx);
-                }
-                if let Some(srtt) = mmp.metrics.srtt_ms()
-                    && let Some(setx) = mmp.metrics.smoothed_etx()
-                {
-                    mmp_json["sqi"] = json!(setx * (1.0 + srtt / 100.0));
-                }
-                session_json["mmp"] = mmp_json;
+            if let Some(mmp) = node.session_mmp_snapshot(addr) {
+                session_json["mmp"] = session_mmp_json(&mmp);
             }
 
             session_json
@@ -551,33 +554,19 @@ pub fn show_mmp(node: &Node) -> Value {
     // Session-layer MMP
     let sessions: Vec<Value> = node
         .session_entries()
-        .filter_map(|(addr, entry)| {
-            let mmp = entry.mmp()?;
-            let metrics = &mmp.metrics;
-
-            let mut session_layer = json!({
-                "loss_rate": metrics.loss_rate(),
-                "etx": metrics.etx,
-                "path_mtu": mmp.path_mtu.current_mtu(),
+        .filter_map(|(addr, _entry)| {
+            let mmp = node.session_mmp_snapshot(addr)?;
+            let mut session_layer = session_mmp_json(&mmp);
+            session_layer["spin_bit_role"] = json!(if mmp.spin_bit_initiator {
+                "initiator"
+            } else {
+                "responder"
             });
-
-            if let Some(smoothed_loss) = metrics.smoothed_loss() {
-                session_layer["smoothed_loss"] = json!(smoothed_loss);
-            }
-            if let Some(smoothed_etx) = metrics.smoothed_etx() {
-                session_layer["smoothed_etx"] = json!(smoothed_etx);
-            }
-            if let Some(srtt) = metrics.srtt_ms() {
-                session_layer["srtt_ms"] = json!(srtt);
-                if let Some(setx) = metrics.smoothed_etx() {
-                    session_layer["sqi"] = json!(setx * (1.0 + srtt / 100.0));
-                }
-            }
-
+            session_layer["ecn_ce_count"] = json!(mmp.ecn_ce_count);
             Some(json!({
                 "remote": hex::encode(addr.as_bytes()),
                 "display_name": node.peer_display_name(addr),
-                "mode": format!("{}", mmp.mode()),
+                "mode": format!("{}", mmp.mode),
                 "session_layer": session_layer,
             }))
         })

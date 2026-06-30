@@ -93,10 +93,8 @@ async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
         "degraded direct should not block learned fallback"
     );
     assert!(
-        node.sessions
-            .get(&remote_addr)
-            .and_then(|entry| entry.mmp())
-            .and_then(|mmp| mmp.metrics.srtt_ms())
+        node.session_mmp_snapshot(&remote_addr)
+            .and_then(|mmp| mmp.rtt_ms)
             .is_some(),
         "loss-driven route changes in full session MMP must be backed by a valid RTT sample"
     );
@@ -405,7 +403,7 @@ fn test_stale_cost_fallback_periodically_retries_healthy_direct_payload() {
         1000,
         true,
     );
-    entry.init_mmp(&node.config.node.session_mmp);
+    entry.mark_established(1000);
     node.sessions.insert(remote_addr, entry);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
     node.get_peer_mut(&remote_addr)
@@ -484,7 +482,7 @@ fn test_recent_direct_payload_return_prefers_direct_over_cheaper_fallback() {
         1000,
         true,
     );
-    entry.init_mmp(&node.config.node.session_mmp);
+    entry.mark_established(1000);
     node.sessions.insert(remote_addr, entry);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
     node.get_peer_mut(&remote_addr)
@@ -690,23 +688,19 @@ async fn test_fresh_bogus_session_metrics_without_valid_rtt_do_not_change_route_
 
     {
         let mmp = node
-            .sessions
-            .get(&remote_addr)
-            .expect("session")
-            .mmp()
-            .expect("session mmp");
+            .session_mmp_snapshot(&remote_addr)
+            .expect("session PM2 MMP");
         assert_eq!(
-            mmp.metrics.srtt_ms(),
-            None,
+            mmp.rtt_ms, None,
             "invalid RTT samples must not initialize full session MMP SRTT"
         );
         assert_eq!(
-            mmp.metrics.last_forward_loss_sample(),
+            mmp.last_forward_loss_sample,
             Some((200, 1.0)),
             "fixture should exercise a fresh severe-loss sample rather than stale-report rejection"
         );
         assert!(
-            mmp.metrics.goodput_bps() > 0.0,
+            mmp.goodput_bps > 0.0,
             "fixture should exercise a fresh bogus goodput sample"
         );
     }
@@ -838,19 +832,14 @@ async fn test_stale_session_receiver_reports_do_not_change_route_choice() {
     );
 
     let mmp = node
-        .sessions
-        .get(&remote_addr)
-        .expect("session")
-        .mmp()
-        .expect("session mmp");
+        .session_mmp_snapshot(&remote_addr)
+        .expect("session PM2 MMP");
     assert_eq!(
-        mmp.metrics.last_forward_loss_sample(),
-        None,
+        mmp.last_forward_loss_sample, None,
         "ignored stale reports must not leave a loss sample behind"
     );
     assert_eq!(
-        mmp.metrics.goodput_bps(),
-        0.0,
+        mmp.goodput_bps, 0.0,
         "ignored stale reports must not update goodput"
     );
 }

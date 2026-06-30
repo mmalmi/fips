@@ -5,7 +5,6 @@
 //! and teardown metric logs.
 
 use crate::mmp::MmpMode;
-use crate::mmp::MmpSessionState;
 use crate::mmp::report::{ReceiverReport, SenderReport};
 use crate::node::Node;
 use crate::protocol::LinkMessageType;
@@ -521,16 +520,13 @@ impl Node {
     /// Emit periodic session MMP metrics.
     fn log_session_mmp_metrics(
         session_name: &str,
-        metrics: &crate::packet_mover2::PacketMover2FspMmpMetricSnapshot,
+        metrics: &crate::packet_mover2::PacketMover2FspMmpSnapshot,
     ) {
         let rtt_str = metrics
             .rtt_ms
             .map(|rtt| format!("{rtt:.1}ms"))
             .unwrap_or_else(|| "n/a".to_string());
-        let loss_str = metrics
-            .loss_rate
-            .map(|loss| format!("{:.1}%", loss * 100.0))
-            .unwrap_or_else(|| "n/a".to_string());
+        let loss_str = format!("{:.1}%", metrics.loss_rate * 100.0);
 
         debug!(
             session = %session_name,
@@ -547,29 +543,29 @@ impl Node {
     }
 
     /// Emit a teardown log summarizing lifetime session MMP metrics.
-    pub(in crate::node) fn log_session_mmp_teardown(session_name: &str, mmp: &MmpSessionState) {
-        let m = &mmp.metrics;
-        let jitter_ms = mmp.receiver.jitter_us() as f64 / 1000.0;
-
-        let rtt_str = match m.srtt_ms() {
+    pub(in crate::node) fn log_session_mmp_teardown(
+        session_name: &str,
+        mmp: &crate::packet_mover2::PacketMover2FspMmpSnapshot,
+    ) {
+        let rtt_str = match mmp.rtt_ms {
             Some(rtt) => format!("{:.1}ms", rtt),
             None => "n/a".to_string(),
         };
-        let loss_str = format!("{:.1}%", m.loss_rate() * 100.0);
+        let loss_str = format!("{:.1}%", mmp.loss_rate * 100.0);
 
         debug!(
             session = %session_name,
             rtt = %rtt_str,
             loss = %loss_str,
-            jitter = format_args!("{:.1}ms", jitter_ms),
-            etx = format_args!("{:.2}", m.etx),
-            goodput = %format_throughput(m.goodput_bps()),
-            send_mtu = mmp.path_mtu.current_mtu(),
-            observed_mtu = mmp.path_mtu.last_observed_mtu(),
-            tx_pkts = mmp.sender.cumulative_packets_sent(),
-            tx_bytes = mmp.sender.cumulative_bytes_sent(),
-            rx_pkts = mmp.receiver.cumulative_packets_recv(),
-            rx_bytes = mmp.receiver.cumulative_bytes_recv(),
+            jitter = format_args!("{:.1}ms", mmp.jitter_ms),
+            etx = format_args!("{:.2}", mmp.etx),
+            goodput = %format_throughput(mmp.goodput_bps),
+            send_mtu = mmp.send_mtu,
+            observed_mtu = mmp.observed_mtu,
+            tx_pkts = mmp.tx_packets,
+            tx_bytes = mmp.tx_bytes,
+            rx_pkts = mmp.rx_packets,
+            rx_bytes = mmp.rx_bytes,
             "MMP session teardown"
         );
     }

@@ -217,13 +217,19 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     // lower than the local transport MTU.
     let local_transport_mtu = nodes[0].node.transport_mtu();
     let reduced_mtu = local_transport_mtu - 200;
-    {
-        let entry = nodes[0].node.get_session_mut(&node1_addr).unwrap();
-        let mmp = entry.mmp_mut().unwrap();
-        mmp.path_mtu
-            .apply_notification(reduced_mtu, std::time::Instant::now());
-        assert_eq!(mmp.path_mtu.current_mtu(), reduced_mtu);
-    }
+    nodes[0]
+        .node
+        .packet_mover2
+        .apply_fsp_path_mtu_signal(node1_addr, reduced_mtu, std::time::Instant::now())
+        .expect("PM2 FSP owner should accept path MTU signal");
+    assert_eq!(
+        nodes[0]
+            .node
+            .session_mmp_snapshot(&node1_addr)
+            .expect("session should have PM2 MMP state")
+            .send_mtu,
+        reduced_mtu
+    );
 
     // Install TUN receiver on source node to capture ICMPv6 PTB
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();

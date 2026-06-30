@@ -99,7 +99,6 @@ impl crate::node::SessionRegistry {
         self.insert(remote_addr, entry)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn install_established_initiator_session(
         &mut self,
         remote_addr: NodeAddr,
@@ -108,11 +107,9 @@ impl crate::node::SessionRegistry {
         msg3_resend_payload: Vec<u8>,
         now_ms: u64,
         resend_interval_ms: u64,
-        mmp_config: &crate::config::SessionMmpConfig,
     ) -> Option<SessionEntry> {
         entry.set_state(EndToEndState::Established(session));
         entry.mark_established(now_ms);
-        entry.init_mmp(mmp_config);
         entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval_ms);
         self.insert(remote_addr, entry)
     }
@@ -123,7 +120,6 @@ impl crate::node::SessionRegistry {
         remote_pubkey: PublicKey,
         session: NoiseSession,
         now_ms: u64,
-        mmp_config: &crate::config::SessionMmpConfig,
     ) -> Option<SessionEntry> {
         let mut entry = SessionEntry::new(
             remote_addr,
@@ -133,7 +129,6 @@ impl crate::node::SessionRegistry {
             false,
         );
         entry.mark_established(now_ms);
-        entry.init_mmp(mmp_config);
         self.insert(remote_addr, entry)
     }
 

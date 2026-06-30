@@ -61,6 +61,13 @@ impl PacketMover2TurnDriver {
         self.mover.owner_fsp_activity(owner)
     }
 
+    pub(crate) fn owner_fsp_mmp_snapshot(
+        &self,
+        owner: OwnerId,
+    ) -> Option<PacketMover2FspMmpSnapshot> {
+        self.mover.owner_fsp_mmp_snapshot(owner)
+    }
+
     pub(crate) fn owner_fsp_send_context(
         &self,
         owner: OwnerId,

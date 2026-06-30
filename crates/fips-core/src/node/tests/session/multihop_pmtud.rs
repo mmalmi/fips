@@ -84,11 +84,11 @@ fn test_multihop_pmtud_heterogeneous_mtu() {
         drain_to_quiescence(&mut nodes).await;
 
         // Verify PathMtuState was updated on A
-        let path_mtu = {
-            let entry = nodes[0].node.get_session(&node2_addr).unwrap();
-            let mmp = entry.mmp().expect("session should have MMP state");
-            mmp.path_mtu.current_mtu()
-        };
+        let path_mtu = nodes[0]
+            .node
+            .session_mmp_snapshot(&node2_addr)
+            .expect("session should have PM2 MMP state")
+            .send_mtu;
         assert!(
             path_mtu < 1400,
             "PathMtuState should have decreased from MtuExceeded signal, got {}",

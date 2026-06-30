@@ -440,8 +440,7 @@ fn build_path_mtu_notification_body(mtu: u16) -> Vec<u8> {
     mtu.to_le_bytes().to_vec()
 }
 
-/// Insert an Established session with MMP initialized so the proactive
-/// PathMtuNotification handler can apply notifications.
+/// Insert an Established session and matching PM2 FSP owner.
 fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
     let session = make_noise_session(node.identity(), remote);
     let remote_addr = *remote.node_addr();
@@ -452,7 +451,7 @@ fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
         1000,
         true,
     );
-    entry.init_mmp(&node.config.node.session_mmp);
+    entry.mark_established(1000);
     node.sessions.insert(remote_addr, entry);
     ensure_packet_mover2_fsp_owner_for_test(node, remote_addr);
 }

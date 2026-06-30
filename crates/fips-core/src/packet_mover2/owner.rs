@@ -73,23 +73,68 @@ pub(crate) struct PacketMover2FspMmpReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PacketMover2FspMmpMetricSnapshot {
+pub(crate) struct PacketMover2FspMmpSnapshot {
     pub(crate) dest_addr: NodeAddr,
     pub(crate) fallback_session_name: String,
+    pub(crate) mode: crate::mmp::MmpMode,
     pub(crate) rtt_ms: Option<f64>,
-    pub(crate) loss_rate: Option<f64>,
-    pub(crate) jitter_ms: f64,
+    pub(crate) loss_rate: f64,
+    pub(crate) smoothed_loss: Option<f64>,
+    pub(crate) last_forward_loss_sample: Option<(u64, f64)>,
+    pub(crate) etx: f64,
+    pub(crate) smoothed_etx: Option<f64>,
     pub(crate) goodput_bps: f64,
+    pub(crate) delivery_ratio_forward: f64,
+    pub(crate) delivery_ratio_reverse: f64,
+    pub(crate) spin_bit_initiator: bool,
     pub(crate) send_mtu: u16,
     pub(crate) observed_mtu: u16,
+    pub(crate) jitter_ms: f64,
     pub(crate) tx_packets: u64,
+    pub(crate) tx_bytes: u64,
     pub(crate) rx_packets: u64,
+    pub(crate) rx_bytes: u64,
+    pub(crate) ecn_ce_count: u32,
+}
+
+impl PacketMover2FspMmpSnapshot {
+    fn from_mmp(
+        dest_addr: NodeAddr,
+        fallback_session_name: String,
+        mmp: &crate::mmp::MmpSessionState,
+    ) -> Self {
+        let metrics = &mmp.metrics;
+        Self {
+            dest_addr,
+            fallback_session_name,
+            mode: mmp.mode(),
+            rtt_ms: metrics.srtt_ms(),
+            loss_rate: metrics.loss_rate(),
+            smoothed_loss: metrics.smoothed_loss(),
+            last_forward_loss_sample: metrics.last_forward_loss_sample(),
+            etx: metrics.etx,
+            smoothed_etx: metrics.smoothed_etx(),
+            goodput_bps: metrics.goodput_bps(),
+            delivery_ratio_forward: metrics.delivery_ratio_forward,
+            delivery_ratio_reverse: metrics.delivery_ratio_reverse,
+            spin_bit_initiator: mmp.spin_bit.is_initiator(),
+            send_mtu: mmp.path_mtu.current_mtu(),
+            observed_mtu: mmp.path_mtu.last_observed_mtu(),
+            jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
+            tx_packets: mmp.sender.cumulative_packets_sent(),
+            tx_bytes: mmp.sender.cumulative_bytes_sent(),
+            rx_packets: mmp.receiver.cumulative_packets_recv(),
+            rx_bytes: mmp.receiver.cumulative_bytes_recv(),
+            ecn_ce_count: metrics.last_ecn_ce_count(),
+        }
+    }
+
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct PacketMover2FspMmpReportBatch {
     pub(crate) reports: Vec<PacketMover2FspMmpReport>,
-    pub(crate) metric_logs: Vec<PacketMover2FspMmpMetricSnapshot>,
+    pub(crate) metric_logs: Vec<PacketMover2FspMmpSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -637,6 +682,23 @@ impl OwnerState {
         })
     }
 
+    pub(crate) fn fsp_mmp_snapshot(&self) -> Option<PacketMover2FspMmpSnapshot> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        let mmp = self.fsp_mmp.as_ref()?;
+        let dest_addr = self.owner.node_addr();
+        let fallback_session_name = self
+            .source_peer
+            .map(|peer| peer.short_npub())
+            .unwrap_or_else(|| dest_addr.to_string());
+        Some(PacketMover2FspMmpSnapshot::from_mmp(
+            dest_addr,
+            fallback_session_name,
+            mmp,
+        ))
+    }
+
     pub(crate) fn last_hard_event(&self) -> Option<ActivityTick> {
         self.last_hard_event
     }
@@ -894,25 +956,8 @@ impl OwnerState {
         }
 
         if mmp.should_log(now) {
-            let metrics = &mmp.metrics;
-            batch.metric_logs.push(PacketMover2FspMmpMetricSnapshot {
-                dest_addr,
-                fallback_session_name,
-                rtt_ms: metrics
-                    .rtt_trend
-                    .initialized()
-                    .then(|| metrics.rtt_trend.long() / 1000.0),
-                loss_rate: metrics
-                    .loss_trend
-                    .initialized()
-                    .then(|| metrics.loss_trend.long()),
-                jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
-                goodput_bps: metrics.goodput_bps(),
-                send_mtu: mmp.path_mtu.current_mtu(),
-                observed_mtu: mmp.path_mtu.last_observed_mtu(),
-                tx_packets: mmp.sender.cumulative_packets_sent(),
-                rx_packets: mmp.receiver.cumulative_packets_recv(),
-            });
+            let snapshot = PacketMover2FspMmpSnapshot::from_mmp(dest_addr, fallback_session_name, mmp);
+            batch.metric_logs.push(snapshot);
             mmp.mark_logged(now);
         }
     }

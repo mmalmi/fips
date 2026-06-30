@@ -306,6 +306,14 @@ impl PacketMover2LiveNode {
             .owner_fsp_activity(OwnerId::fsp_node(*node_addr))
     }
 
+    pub(crate) fn fsp_mmp_snapshot(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<PacketMover2FspMmpSnapshot> {
+        self.driver
+            .owner_fsp_mmp_snapshot(OwnerId::fsp_node(*node_addr))
+    }
+
     pub(crate) fn fsp_owner_send_context(
         &self,
         node_addr: &NodeAddr,

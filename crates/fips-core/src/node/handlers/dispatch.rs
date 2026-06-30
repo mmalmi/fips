@@ -182,11 +182,12 @@ impl Node {
         //   2. initiate_session() finds is_established() == true on the stale
         //      entry and silently returns Ok(()), preventing a new session over
         //      fallback or a recovered direct link.
+        let session_mmp = self.session_mmp_snapshot(node_addr);
         self.remove_packet_mover2_fsp_owner(node_addr);
-        if let Some(session_entry) = self.sessions.remove(node_addr)
-            && let Some(mmp) = session_entry.mmp()
+        if self.sessions.remove(node_addr).is_some()
+            && let Some(mmp) = session_mmp
         {
-            Self::log_session_mmp_teardown(&peer_name, mmp);
+            Self::log_session_mmp_teardown(&peer_name, &mmp);
         }
 
         if !preserve_queued_packets {

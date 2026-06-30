@@ -154,7 +154,6 @@
         let peer = Identity::generate();
         let peer_addr = *peer.node_addr();
         let mut sessions = crate::node::SessionRegistry::default();
-        let mmp_config = crate::config::SessionMmpConfig::default();
 
         let mut initiating_handshake =
             HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
@@ -214,7 +213,6 @@
                     vec![0x44, 0x55],
                     3_000,
                     750,
-                    &mmp_config,
                 )
                 .is_some()
         );
@@ -224,7 +222,6 @@
         assert!(entry.is_established());
         assert!(entry.is_initiator());
         assert_eq!(entry.session_start_ms(), 3_000);
-        assert!(entry.mmp().is_some());
         assert_eq!(entry.handshake_payload(), Some([0x44, 0x55].as_slice()));
         assert_eq!(entry.next_resend_at_ms(), 3_750);
 
@@ -236,7 +233,6 @@
                     peer.pubkey_full(),
                     responder_session,
                     4_000,
-                    &mmp_config,
                 )
                 .is_some()
         );
@@ -246,7 +242,6 @@
         assert!(entry.is_established());
         assert!(!entry.is_initiator());
         assert_eq!(entry.session_start_ms(), 4_000);
-        assert!(entry.mmp().is_some());
         assert_eq!(*entry.remote_pubkey(), peer.pubkey_full());
         assert_eq!(entry.handshake_payload(), None);
     }

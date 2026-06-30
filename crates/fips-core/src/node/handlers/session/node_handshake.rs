@@ -433,7 +433,6 @@ impl Node {
             msg3_resend_payload,
             now_ms,
             resend_interval,
-            &self.config.node.session_mmp,
         );
         self.sync_packet_mover2_fsp_owner_with_coords_warmup(
             src_addr,
@@ -563,7 +562,6 @@ impl Node {
             remote_pubkey,
             session,
             now_ms,
-            &self.config.node.session_mmp,
         );
         self.sync_packet_mover2_fsp_owner_with_coords_warmup(
             src_addr,
