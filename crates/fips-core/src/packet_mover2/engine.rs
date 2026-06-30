@@ -448,6 +448,7 @@ impl PacketMover2OwnerShard {
             );
         }
         let available_limit = limit.min(executor_capacity);
+        let mut feed_capacity = available_limit;
         let outbound_priority_reserve =
             outbound_priority_dispatch_limit(
                 available_limit,
@@ -462,10 +463,11 @@ impl PacketMover2OwnerShard {
         // prepared feed in priority-aware order, then let stateless workers run
         // it; completion side effects come back through ordered owner retire.
         let pre_priority_inbound_dispatched = self.dispatch_available_into(
-            pre_priority_inbound_limit.min(executor.available_capacity()),
+            pre_priority_inbound_limit.min(feed_capacity),
             open_work,
         );
         dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
+        feed_capacity = feed_capacity.saturating_sub(pre_priority_inbound_dispatched);
         self.append_open_work_batch(
             open_work,
             prepared_work,
@@ -475,22 +477,21 @@ impl PacketMover2OwnerShard {
 
         let priority_outbound_limit = outbound_priority_reserve
             .min(limit.saturating_sub(dispatched_total))
-            .min(executor.available_capacity());
+            .min(feed_capacity);
         let priority_outbound_dispatched =
             self.dispatch_outbound_priority_available_into(priority_outbound_limit, seal_work);
         dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
+        feed_capacity = feed_capacity.saturating_sub(priority_outbound_dispatched);
         self.append_seal_work_batch(seal_work.drain(..), prepared_work);
 
-        let bulk_dispatch_capacity = limit
-            .saturating_sub(dispatched_total)
-            .min(executor.available_capacity());
+        let bulk_dispatch_capacity = limit.saturating_sub(dispatched_total).min(feed_capacity);
         let inbound_dispatched = self.dispatch_available_into(bulk_dispatch_capacity, open_work);
         dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
-        let outbound_dispatched = self.dispatch_outbound_available_into(
-            bulk_dispatch_capacity.saturating_sub(inbound_dispatched),
-            seal_work,
-        );
+        feed_capacity = feed_capacity.saturating_sub(inbound_dispatched);
+        let outbound_dispatched =
+            self.dispatch_outbound_available_into(feed_capacity, seal_work);
         dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
+        debug_assert!(dispatched_total <= available_limit);
 
         let leading_priority_seals = seal_work
             .iter()
