@@ -208,6 +208,7 @@
             .owner_mut(fsp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+        assert_eq!(driver.record_fsp_decrypt_failure(fsp_owner), Some(1));
         let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_fmp(
             transport_id,
@@ -286,6 +287,13 @@
         assert_eq!(turn.fsp_session_ingress().len(), 1);
         assert!(turn.fsp_local_session_ingress().is_empty());
         assert!(turn.fmp_link_ingress().is_empty());
+        let activity = driver.owner_fsp_activity(fsp_owner).unwrap();
+        assert_eq!(activity.last_rx_age_ms(fmp_timestamp), Some(0));
+        assert_eq!(
+            driver.record_fsp_decrypt_failure(fsp_owner),
+            Some(1),
+            "authenticated FSP output collection should reset the owner failure streak"
+        );
     }
 
     #[tokio::test]

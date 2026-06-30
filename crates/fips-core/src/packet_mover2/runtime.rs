@@ -111,6 +111,20 @@ impl PacketMover2TurnDriver {
             .record_authenticated_fsp_session(owner, previous_hop, msg_type, body_len, activity_tick)
     }
 
+    fn record_fsp_session_ingress_activity(&mut self, ingress: &PacketMover2FspSessionIngress) {
+        let body_len = ingress
+            .receive_sync
+            .plaintext_len
+            .saturating_sub(FSP_INNER_HEADER_SIZE);
+        let _ = self.record_authenticated_fsp_session(
+            OwnerId::fsp_node(ingress.source_addr),
+            ingress.previous_hop_addr,
+            ingress.msg_type,
+            body_len,
+            ingress.activity_tick,
+        );
+    }
+
     pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
         self.mover.record_fsp_decrypt_failure(owner)
     }
@@ -628,7 +642,10 @@ impl PacketMover2TurnDriver {
             match output.target {
                 OutputTarget::SessionPayload { .. } => {
                     match PacketMover2FspSessionIngress::from_output(output) {
-                        Ok(ingress) => self.fsp_session_ingress.push(ingress),
+                        Ok(ingress) => {
+                            self.record_fsp_session_ingress_activity(&ingress);
+                            self.fsp_session_ingress.push(ingress);
+                        }
                         Err(output) => {
                             self.output_drops.push(PacketMover2OutputDrop::from_output(
                                 &output,

@@ -1,5 +1,5 @@
 impl Node {
-    fn apply_authenticated_fsp_receive_sync(
+    fn sync_authenticated_fsp_receive_lifecycle(
         &mut self,
         source_addr: NodeAddr,
         sync: crate::packet_mover2::FspReceiveSync,
@@ -99,32 +99,22 @@ impl Node {
             previous_hop_addr,
             ce_flag,
             receive_sync,
-            activity_tick,
+            _activity_tick,
             timestamp_ms,
             msg_type,
             inner_flags,
             plaintext,
         ) = ingress.into_parts();
         let now = Instant::now();
-        let receive_applied =
-            self.apply_authenticated_fsp_receive_sync(source_addr, receive_sync, now);
-        if !receive_applied {
+        if !self.sync_authenticated_fsp_receive_lifecycle(source_addr, receive_sync, now) {
             debug!(
                 src = %self.peer_display_name(&source_addr),
-                "Dropping packet-mover2 authenticated session message for missing or stale session"
+                "Packet-mover2 authenticated session message has no SessionRegistry lifecycle mirror"
             );
-            return false;
         }
         let body_len = plaintext
             .len()
             .saturating_sub(crate::node::session_wire::FSP_INNER_HEADER_SIZE);
-        self.packet_mover2.record_authenticated_fsp_session(
-            source_addr,
-            previous_hop_addr,
-            msg_type,
-            body_len,
-            activity_tick,
-        );
 
         debug!(
             src = %self.peer_display_name(&source_addr),
