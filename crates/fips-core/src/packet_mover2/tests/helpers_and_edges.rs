@@ -883,13 +883,22 @@
         StatelessAeadOpenWorker.execute(AeadOpenWork::from_crypto_work(work, test_key(key)).unwrap())
     }
 
+    fn retire_completion(
+        mover: &mut PacketMover2,
+        completion: CryptoCompletion,
+    ) -> Vec<RetiredPacket> {
+        let mut retired = Vec::new();
+        mover.retire_completion_into(completion, &mut retired);
+        retired
+    }
+
     fn retire_open_aead(
         mover: &mut PacketMover2,
         work: CryptoWork,
         key: u8,
     ) -> Vec<RetiredPacket> {
         let completion = open_aead_completion(work, key);
-        mover.retire_completion(completion)
+        retire_completion(mover, completion)
     }
 
     fn empty_fsp_coords_prefix() -> Vec<u8> {

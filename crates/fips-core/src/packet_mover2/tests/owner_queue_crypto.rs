@@ -286,7 +286,7 @@
         assert_eq!(queue_lens(&mover), (0, 2));
 
         let first_reservation = first[0].reservation.clone();
-        mover.retire_completion(CryptoCompletion {
+        retire_completion(&mut mover, CryptoCompletion {
             reservation: first_reservation,
             result: CryptoResult::Failed(CryptoFailureKind::Open),
         });
@@ -397,10 +397,10 @@
         );
 
         let completion_2 = open_aead_completion(work[2].clone(), key);
-        assert!(mover.retire_completion(completion_2).is_empty());
+        assert!(retire_completion(&mut mover, completion_2).is_empty());
 
         let completion_0 = open_aead_completion(work[0].clone(), key);
-        let retired = outputs(mover.retire_completion(completion_0));
+        let retired = outputs(retire_completion(&mut mover, completion_0));
         assert_eq!(
             retired
                 .iter()
@@ -410,7 +410,7 @@
         );
 
         let completion_1 = open_aead_completion(work[1].clone(), key);
-        let retired = outputs(mover.retire_completion(completion_1));
+        let retired = outputs(retire_completion(&mut mover, completion_1));
         assert_eq!(
             retired
                 .iter()
@@ -752,7 +752,7 @@
         assert_eq!(outbound_queue_lens(&mover), (0, 2));
 
         let first_reservation = first[0].reservation.clone();
-        mover.retire_completion(CryptoCompletion {
+        retire_completion(&mut mover, CryptoCompletion {
             reservation: first_reservation,
             result: CryptoResult::Failed(CryptoFailureKind::Seal),
         });
@@ -927,7 +927,7 @@
         let mut retired = Vec::new();
         for work in dispatch_available(&mut mover, 8) {
             let work = AeadOpenWork::from_crypto_work(work, test_key(key)).unwrap();
-            retired.extend(mover.retire_completion(worker.execute(work)));
+            retired.extend(retire_completion(&mut mover, worker.execute(work)));
         }
 
         let outputs = outputs(retired);
@@ -984,10 +984,10 @@
         assert_eq!(work.len(), 2);
 
         let second = AeadOpenWork::from_crypto_work(work[1].clone(), test_key(1)).unwrap();
-        assert!(mover.retire_completion(worker.execute(second)).is_empty());
+        assert!(retire_completion(&mut mover, worker.execute(second)).is_empty());
 
         let first = AeadOpenWork::from_crypto_work(work[0].clone(), test_key(2)).unwrap();
-        let retired = mover.retire_completion(worker.execute(first));
+        let retired = retire_completion(&mut mover, worker.execute(first));
         assert_eq!(retired.len(), 2);
         match &retired[0] {
             RetiredPacket::Drop(drop) => {
@@ -1040,7 +1040,7 @@
         let mut retired = Vec::new();
         for work in dispatch_outbound_available(&mut mover, 8) {
             let work = AeadSealWork::from_outbound_work(work, test_key(key)).unwrap();
-            retired.extend(mover.retire_completion(worker.execute(work)));
+            retired.extend(retire_completion(&mut mover, worker.execute(work)));
         }
 
         let outputs = outputs(retired);
@@ -1290,16 +1290,16 @@
 
         let worker = StatelessAeadSealWorker;
         let third = AeadSealWork::from_outbound_work(work[2].clone(), test_key(key)).unwrap();
-        assert!(mover.retire_completion(worker.execute(third)).is_empty());
+        assert!(retire_completion(&mut mover, worker.execute(third)).is_empty());
 
         let first = AeadSealWork::from_outbound_work(work[0].clone(), test_key(key)).unwrap();
-        let retired = outputs(mover.retire_completion(worker.execute(first)));
+        let retired = outputs(retire_completion(&mut mover, worker.execute(first)));
         assert_eq!(retired.len(), 1);
         assert_eq!(retired[0].counter, 5);
         assert_eq!(open_sealed_output(&retired[0], key), b"first");
 
         let second = AeadSealWork::from_outbound_work(work[1].clone(), test_key(key)).unwrap();
-        let retired = outputs(mover.retire_completion(worker.execute(second)));
+        let retired = outputs(retire_completion(&mut mover, worker.execute(second)));
         assert_eq!(
             retired
                 .iter()

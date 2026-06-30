@@ -244,24 +244,31 @@ impl PacketMover2OwnerShard {
         prepared.len().saturating_sub(start_len)
     }
 
-    pub(crate) fn retire_completion(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
+    pub(crate) fn retire_completion_into(
+        &mut self,
+        completion: CryptoCompletion,
+        retired: &mut Vec<RetiredPacket>,
+    ) {
         let _timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2Retire);
         let Some(owner) = self.owners.get_mut(&completion.reservation.owner) else {
-            return vec![RetiredPacket::Drop(PacketDrop::from_completion(
+            let drop = PacketDrop::from_completion(
                 &completion,
                 PacketDropReason::UnknownOwner,
                 None,
-            ))];
+            );
+            self.drops.push(drop.clone());
+            retired.push(RetiredPacket::Drop(drop));
+            return;
         };
-        let retired = owner.retire(completion);
+        let retired_start = retired.len();
+        owner.retire_into(completion, retired);
         self.drops
-            .extend(retired.iter().filter_map(|item| match item {
+            .extend(retired[retired_start..].iter().filter_map(|item| match item {
                 RetiredPacket::Drop(drop) => Some(drop.clone()),
                 RetiredPacket::Output(_) => None,
                 RetiredPacket::Outbound(_) => None,
             }));
-        retired
     }
 
     fn drain_drops(&mut self) -> Vec<PacketDrop> {

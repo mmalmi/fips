@@ -358,7 +358,7 @@
         let mut retired_ready = Vec::new();
         for completions in bounded.take_ready() {
             for completion in completions {
-                retired_ready.extend(mover.retire_completion(completion));
+                retired_ready.extend(retire_completion(&mut mover, completion));
             }
         }
         assert_eq!(outputs(retired_ready).len(), 2);
@@ -391,7 +391,7 @@
         assert_eq!(completions.len(), 4);
         let mut retired = Vec::new();
         for completion in completions {
-            retired.extend(mover.retire_completion(completion));
+            retired.extend(retire_completion(&mut mover, completion));
         }
         let outputs = outputs(retired);
         assert_eq!(
@@ -541,7 +541,7 @@
         let completions = drain_worker_pool_completions(&mut pool, 2);
         assert_eq!(completions.len(), 2);
         for completion in completions {
-            mover.retire_completion(completion);
+            retire_completion(&mut mover, completion);
         }
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
         assert_eq!(pool.available_capacity(), 2);

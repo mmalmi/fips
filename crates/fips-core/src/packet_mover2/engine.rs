@@ -97,9 +97,13 @@ impl PacketMover2 {
         Ok(admitted)
     }
 
-    fn retire_completion(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
+    fn retire_completion_into(
+        &mut self,
+        completion: CryptoCompletion,
+        retired: &mut Vec<RetiredPacket>,
+    ) {
         self.owner_shard_mut(completion.reservation.owner)
-            .retire_completion(completion)
+            .retire_completion_into(completion, retired);
     }
 
     fn run_aead_available_into_with_executor<E>(
@@ -424,7 +428,7 @@ impl PacketMover2 {
         retired: &mut Vec<RetiredPacket>,
     ) {
         for completion in completions.drain(..) {
-            retired.extend(self.retire_completion(completion));
+            self.retire_completion_into(completion, retired);
         }
     }
 }

@@ -471,9 +471,12 @@ impl OwnerState {
         Some(activity_ms.wrapping_sub(session_start_ms) as u32)
     }
 
-    pub(crate) fn retire(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {
+    pub(crate) fn retire_into(
+        &mut self,
+        completion: CryptoCompletion,
+        retired: &mut Vec<RetiredPacket>,
+    ) {
         self.pending.insert(completion.reservation.order, completion);
-        let mut retired = Vec::new();
 
         while let Some(completion) = self.pending.remove(&OrderToken(self.next_retire)) {
             self.next_retire = self.next_retire.wrapping_add(1);
@@ -526,8 +529,6 @@ impl OwnerState {
                 }
             }
         }
-
-        retired
     }
 
     fn reserve_class(&mut self, class: PacketClass) {

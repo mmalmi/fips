@@ -611,20 +611,18 @@ impl PacketMover2TurnDriver {
         summary: &mut PacketMover2RuntimeSummary,
         completion: CryptoCompletion,
     ) {
-        let retired = self.retire_completion_collecting_drops(completion);
-        self.retired.extend(retired);
+        self.retire_completion_collecting_drops(completion);
         summary.completions = summary.completions.saturating_add(1);
     }
 
-    fn retire_completion_collecting_drops(
-        &mut self,
-        completion: CryptoCompletion,
-    ) -> Vec<RetiredPacket> {
-        let retired = self.mover.retire_completion(completion);
+    fn retire_completion_collecting_drops(&mut self, completion: CryptoCompletion) {
+        let retired_start = self.retired.len();
+        self.mover
+            .retire_completion_into(completion, &mut self.retired);
         let mut mover_drops = self.mover.drain_drops();
         let emitted_drop_start = self.drops.len();
         self.drops.append(&mut mover_drops);
-        for item in &retired {
+        for item in &self.retired[retired_start..] {
             if let RetiredPacket::Drop(drop) = item
                 && !self.drops[emitted_drop_start..]
                     .iter()
@@ -633,7 +631,6 @@ impl PacketMover2TurnDriver {
                 self.drops.push(drop.clone());
             }
         }
-        retired
     }
 
     fn collect_live_session_outputs_with_executor<R, E>(
