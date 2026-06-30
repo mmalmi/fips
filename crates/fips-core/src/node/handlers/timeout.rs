@@ -389,17 +389,15 @@ impl Node {
                 if !entry.is_established() {
                     return None;
                 }
-                if now_ms.saturating_sub(entry.last_activity()) > timeout_ms {
+                if let Some(activity) = self.packet_mover2.fsp_owner_activity(addr) {
+                    if activity.has_stale_outbound_only_activity(now_ms, timeout_ms) {
+                        return Some((*addr, "outbound-only"));
+                    }
+                    if !activity.has_recent_session_activity(now_ms, timeout_ms) {
+                        return Some((*addr, "idle"));
+                    }
+                } else if now_ms.saturating_sub(entry.last_activity()) > timeout_ms {
                     return Some((*addr, "idle"));
-                }
-                if self
-                    .packet_mover2
-                    .fsp_owner_activity(addr)
-                    .is_some_and(|activity| {
-                        activity.has_stale_outbound_only_activity(now_ms, timeout_ms)
-                    })
-                {
-                    return Some((*addr, "outbound-only"));
                 }
                 None
             })

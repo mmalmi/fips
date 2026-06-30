@@ -232,15 +232,13 @@ fn test_purge_idle_sessions_keeps_outbound_session_with_recent_inbound_frame() {
     let remote_addr = *remote.node_addr();
 
     let session = make_noise_session(node.identity(), &remote);
-    let mut entry = crate::node::session::SessionEntry::new(
+    let entry = crate::node::session::SessionEntry::new(
         remote_addr,
         remote.pubkey_full(),
         EndToEndState::Established(session),
         1000,
         true,
     );
-    entry.touch(91_000);
-    entry.touch_inbound_frame(91_500);
 
     node.sessions.insert(remote_addr, entry);
     seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);

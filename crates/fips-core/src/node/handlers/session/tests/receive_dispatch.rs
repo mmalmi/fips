@@ -341,13 +341,6 @@
                 direct_path: false,
             })
         );
-        let local = Identity::generate();
-        let mut sessions = crate::node::SessionRegistry::default();
-        sessions.insert(source_addr, established_entry(&local, &peer));
-        assert!(commit.record_receive(&mut sessions, 0x0bad_cafe));
-        let entry = sessions.get(&source_addr).expect("session should remain");
-        assert_eq!(entry.last_activity(), 0x0bad_cafe);
-
         let delivery = dispatch.into_endpoint_data_delivery();
         assert_eq!(delivery.source_peer, source_peer);
         assert_eq!(delivery.payload, endpoint_payload);
@@ -381,14 +374,6 @@
             report_commit.receive_completion(),
             None,
             "MMP reports still flush pending packets without recording receive progress"
-        );
-        assert!(!report_commit.record_receive(&mut sessions, 0x0bad_f00d));
-        assert_eq!(
-            sessions
-                .get(&source_addr)
-                .expect("session should remain")
-                .last_activity(),
-            0x0bad_cafe
         );
     }
 

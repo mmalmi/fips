@@ -186,18 +186,6 @@ impl crate::node::SessionRegistry {
         self.insert(remote_addr, entry)
     }
 
-    fn record_receive_completion(
-        &mut self,
-        completion: SessionReceiveCompletion,
-        now_ms: u64,
-    ) -> bool {
-        let Some(entry) = self.get_mut(&completion.source_addr) else {
-            return false;
-        };
-        entry.touch(now_ms);
-        true
-    }
-
     fn process_session_receiver_report(
         &mut self,
         src_addr: &NodeAddr,

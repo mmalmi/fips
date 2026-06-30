@@ -432,21 +432,9 @@ impl SessionDispatchCommit {
         self.receive_completion
     }
 
-    fn record_receive(&self, sessions: &mut crate::node::SessionRegistry, now_ms: u64) -> bool {
-        let Some(completion) = self.receive_completion else {
-            return false;
-        };
-        sessions.record_receive_completion(completion, now_ms)
-    }
-
     fn finish_receive(&self, node: &mut Node) -> SessionDispatchFinish {
-        // Only application data resets the idle timer. PM2 owners count
-        // authenticated dataplane packets and bytes.
         let now_ms = Node::now_ms();
-        let receive_recorded = self.record_receive(&mut node.sessions, now_ms);
-        if receive_recorded
-            && let Some(completion) = self.receive_completion
-        {
+        if let Some(completion) = self.receive_completion {
             if let Some(peer) = node.peers.get_mut(&completion.previous_hop_addr) {
                 peer.touch(now_ms);
             }
