@@ -415,12 +415,10 @@ impl Node {
         now_ms: u64,
         label: &str,
     ) -> Result<(), NodeError> {
-        if !self.packet_mover2_has_fsp_owner(dest_addr)
-            && !self.sync_packet_mover2_fsp_owner(dest_addr)
-        {
+        if !self.packet_mover2_has_fsp_owner(dest_addr) {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
-                reason: format!("packet_mover2 FSP owner unavailable for {label}"),
+                reason: format!("packet_mover2 FSP owner not registered for {label}"),
             });
         }
         if !self.refresh_packet_mover2_fsp_owner_routes(dest_addr) {
@@ -738,19 +736,6 @@ impl Node {
         self.packet_mover2.has_owner(OwnerId::fsp_node(*node_addr))
     }
 
-    pub(in crate::node) fn sync_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) -> bool {
-        let _timer =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2FspOwnerSync);
-        crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2FspOwnerSyncCall);
-
-        let Some(seed) = self.packet_mover2_fsp_owner_seed(node_addr, 0) else {
-            self.remove_packet_mover2_fsp_owner(node_addr);
-            return false;
-        };
-
-        self.apply_packet_mover2_fsp_owner_seed(seed)
-    }
-
     pub(in crate::node) fn sync_packet_mover2_fsp_owner_from_session_entry(
         &mut self,
         node_addr: &NodeAddr,
@@ -861,22 +846,6 @@ impl Node {
             path: TransportPath::live(transport_id, remote_addr),
             routes,
         })
-    }
-
-    fn packet_mover2_fsp_owner_seed(
-        &mut self,
-        node_addr: &NodeAddr,
-        coords_warmup_remaining: u8,
-    ) -> Option<PacketMover2FspOwnerSeed> {
-        let snapshot = self
-            .sessions
-            .get(node_addr)
-            .and_then(Self::packet_mover2_fsp_owner_session_snapshot)?;
-        self.packet_mover2_fsp_owner_seed_from_snapshot(
-            node_addr,
-            snapshot,
-            coords_warmup_remaining,
-        )
     }
 
     pub(in crate::node) fn packet_mover2_fsp_owner_session_snapshot(
