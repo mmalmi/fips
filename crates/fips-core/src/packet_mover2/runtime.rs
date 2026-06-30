@@ -711,8 +711,8 @@ impl PacketMover2TurnDriver {
         &mut self,
         mut summary: PacketMover2RuntimeSummary,
     ) -> PacketMover2RuntimeSummary {
-        let mut retired: VecDeque<_> = std::mem::take(&mut self.retired).into();
-        while let Some(packet) = retired.pop_front() {
+        let mut retired = std::mem::take(&mut self.retired);
+        for packet in retired.drain(..) {
             match packet {
                 RetiredPacket::Output(mut output) => {
                     output.promote_opened_latency_sensitive_payload();
@@ -724,7 +724,7 @@ impl PacketMover2TurnDriver {
                 RetiredPacket::Drop(_) => {}
             }
         }
-        self.retired = retired.into_iter().collect();
+        self.retired = retired;
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
         summary
