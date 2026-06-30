@@ -3,16 +3,14 @@ use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
 use crate::node::session::{EndToEndState, SessionEntry};
 use crate::node::session_wire::{
-    FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_INNER_HEADER_SIZE,
-    FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3,
-    FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM, FspCommonPrefix,
+    FSP_COMMON_PREFIX_SIZE, FSP_INNER_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1,
+    FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM, FspCommonPrefix,
 };
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
     EndpointDataDelivery, EndpointDataPayload, EndpointSendBatchCommand, EndpointSendCommand,
     LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
-    NodeError,
-    SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
+    NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
@@ -20,9 +18,8 @@ use crate::noise::{
     XK_HANDSHAKE_MSG3_SIZE,
 };
 use crate::protocol::{
-    CoordsRequired, FspInnerFlags, MtuExceeded, PathBroken, PathMtuNotification, SessionAck,
-    SessionDatagram, SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport,
-    SessionSetup,
+    CoordsRequired, MtuExceeded, PathBroken, PathMtuNotification, SessionAck, SessionDatagram,
+    SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport, SessionSetup,
 };
 use crate::transport::PacketBuffer;
 use crate::{NodeAddr, PeerIdentity};
@@ -60,48 +57,6 @@ enum SessionPathMtuApplyResult {
 enum SessionPathMtuApplySkip {
     UnknownSession,
     MmpDisabled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::node) enum SessionFspSendContextError {
-    NoSession,
-    NotEstablished,
-}
-
-impl SessionFspSendContextError {
-    pub(in crate::node) fn into_node_error(self, node_addr: NodeAddr) -> NodeError {
-        let reason = match self {
-            Self::NoSession => "no session",
-            Self::NotEstablished => "session not established",
-        };
-        NodeError::SendFailed {
-            node_addr,
-            reason: reason.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::node) struct SessionFspSendContext {
-    spin_bit: bool,
-    current_k_bit: bool,
-}
-
-impl SessionFspSendContext {
-    pub(in crate::node) fn inner_flags_byte(&self) -> u8 {
-        FspInnerFlags {
-            spin_bit: self.spin_bit,
-        }
-        .to_byte()
-    }
-
-    pub(in crate::node) fn fsp_flags(&self, include_coords: bool) -> u8 {
-        let mut flags = if include_coords { FSP_FLAG_CP } else { 0 };
-        if self.current_k_bit {
-            flags |= FSP_FLAG_K;
-        }
-        flags
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

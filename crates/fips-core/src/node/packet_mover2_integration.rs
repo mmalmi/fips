@@ -278,15 +278,10 @@ impl Node {
         payload: &[u8],
     ) -> Result<(), NodeError> {
         let now_ms = Self::now_ms();
-        let send_context = self
-            .sessions
-            .session_fsp_send_context(dest_addr)
-            .map_err(|error| error.into_node_error(*dest_addr))?;
         self.send_packet_mover2_fsp_control_outbound(
             dest_addr,
             msg_type,
-            send_context.fsp_flags(false),
-            send_context.inner_flags_byte(),
+            None,
             payload,
             None,
             now_ms,
@@ -300,16 +295,11 @@ impl Node {
         dest_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
         let now_ms = Self::now_ms();
-        let send_context = self
-            .sessions
-            .session_fsp_send_context(dest_addr)
-            .map_err(|error| error.into_node_error(*dest_addr))?;
         let coords_prefix = self.packet_mover2_fsp_coords_prefix_for_dest(dest_addr);
         self.send_packet_mover2_fsp_control_outbound(
             dest_addr,
             SessionMessageType::CoordsWarmup.to_byte(),
-            crate::node::session_wire::FSP_FLAG_CP,
-            send_context.inner_flags_byte(),
+            Some(crate::node::session_wire::FSP_FLAG_CP),
             &[],
             Some(coords_prefix),
             now_ms,
@@ -379,8 +369,7 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
         msg_type: u8,
-        fsp_flags: u8,
-        inner_flags: u8,
+        fsp_flags_override: Option<u8>,
         payload: &[u8],
         coords_prefix: Option<Vec<u8>>,
         now_ms: u64,
@@ -392,23 +381,25 @@ impl Node {
                 reason: format!("packet_mover2 FSP owner unavailable for {label}"),
             });
         }
+        let Some(send_context) = self.packet_mover2.fsp_owner_send_context(dest_addr) else {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("packet_mover2 FSP owner send context unavailable for {label}"),
+            });
+        };
         let Some((wrap, next_hop)) = self.packet_mover2_fsp_wrap_route(dest_addr) else {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
                 reason: format!("packet_mover2 FSP wrap route unavailable for {label}"),
             });
         };
-        let Some(generation) = self.packet_mover2_fsp_generation(dest_addr) else {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("packet_mover2 FSP generation unavailable for {label}"),
-            });
-        };
         let coords_prefix_len = coords_prefix.as_ref().map_or(0, Vec::len);
+        let fsp_flags = fsp_flags_override.unwrap_or_else(|| send_context.fsp_flags());
+        let inner_flags = send_context.inner_flags();
 
         let mut outbound = OutboundPacket::fsp(
             OwnerId::fsp_node(*dest_addr),
-            generation,
+            send_context.generation(),
             packet_mover2_fsp_control_class(msg_type),
             fsp_flags,
             payload.to_vec(),
@@ -770,7 +761,8 @@ impl Node {
         let mut config = self
             .packet_mover2_owner_config(generation)
             .with_send_counter_authority(counter_authority)
-            .with_fsp_session_start_ms(session_start_ms);
+            .with_fsp_session_start_ms(session_start_ms)
+            .with_fsp_send_headers(fsp_flags, inner_flags);
         if coords_warmup_remaining > 0 {
             config = config.with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix);
         }
@@ -914,12 +906,6 @@ impl Node {
         OwnerConfig::new(generation, in_flight_limit)
             .with_bulk_in_flight_limit(bulk_in_flight_limit)
             .with_reliable_bulk_in_flight_limit(reliable_bulk_in_flight_limit)
-    }
-
-    fn packet_mover2_fsp_generation(&self, node_addr: &NodeAddr) -> Option<u64> {
-        self.sessions.get(node_addr).map(|session| {
-            Self::packet_mover2_generation_from_session_start_ms(session.session_start_ms())
-        })
     }
 
     fn packet_mover2_generation_from_session_start_ms(session_start_ms: u64) -> u64 {

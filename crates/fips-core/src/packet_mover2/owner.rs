@@ -8,7 +8,52 @@ pub(crate) struct OwnerConfig {
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
+    fsp_send_headers: Option<PacketMover2FspSendHeaders>,
     fsp_coords_warmup: Option<(u8, Vec<u8>)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspSendHeaders {
+    fsp_flags: u8,
+    inner_flags: u8,
+}
+
+impl PacketMover2FspSendHeaders {
+    pub(crate) fn new(fsp_flags: u8, inner_flags: u8) -> Self {
+        Self {
+            fsp_flags,
+            inner_flags,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspSendContext {
+    generation: u64,
+    fsp_flags: u8,
+    inner_flags: u8,
+}
+
+impl PacketMover2FspSendContext {
+    fn new(generation: u64, headers: PacketMover2FspSendHeaders) -> Self {
+        Self {
+            generation,
+            fsp_flags: headers.fsp_flags,
+            inner_flags: headers.inner_flags,
+        }
+    }
+
+    pub(crate) fn generation(self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn fsp_flags(self) -> u8 {
+        self.fsp_flags
+    }
+
+    pub(crate) fn inner_flags(self) -> u8 {
+        self.inner_flags
+    }
 }
 
 impl OwnerConfig {
@@ -22,6 +67,7 @@ impl OwnerConfig {
             send_counter_authority: None,
             fmp_session_start_ms: None,
             fsp_session_start_ms: None,
+            fsp_send_headers: None,
             fsp_coords_warmup: None,
         }
     }
@@ -62,6 +108,15 @@ impl OwnerConfig {
 
     pub(crate) fn with_fsp_session_start_ms(mut self, session_start_ms: u64) -> Self {
         self.fsp_session_start_ms = Some(session_start_ms);
+        self
+    }
+
+    pub(crate) fn with_fsp_send_headers(
+        mut self,
+        fsp_flags: u8,
+        inner_flags: u8,
+    ) -> Self {
+        self.fsp_send_headers = Some(PacketMover2FspSendHeaders::new(fsp_flags, inner_flags));
         self
     }
 
@@ -220,6 +275,7 @@ pub(crate) struct OwnerState {
     active_path: Option<TransportPath>,
     fmp_session_start_ms: Option<u64>,
     fsp_session_start_ms: Option<u64>,
+    fsp_send_headers: Option<PacketMover2FspSendHeaders>,
     fsp_coords_warmup_remaining: u8,
     fsp_coords_prefix: Vec<u8>,
     last_rx_activity: Option<ActivityTick>,
@@ -258,6 +314,7 @@ impl OwnerState {
             active_path: None,
             fmp_session_start_ms: config.fmp_session_start_ms,
             fsp_session_start_ms: config.fsp_session_start_ms,
+            fsp_send_headers: config.fsp_send_headers,
             fsp_coords_warmup_remaining: config
                 .fsp_coords_warmup
                 .as_ref()
@@ -290,6 +347,7 @@ impl OwnerState {
         self.crypto_keys = None;
         self.fmp_session_start_ms = None;
         self.fsp_session_start_ms = None;
+        self.fsp_send_headers = None;
         self.fsp_coords_warmup_remaining = 0;
         self.fsp_coords_prefix.clear();
         self.last_rx_data_activity = None;
@@ -318,6 +376,9 @@ impl OwnerState {
         }
         if let Some(session_start_ms) = config.fsp_session_start_ms {
             self.fsp_session_start_ms = Some(session_start_ms);
+        }
+        if let Some(headers) = config.fsp_send_headers {
+            self.fsp_send_headers = Some(headers);
         }
         // Coords warmup is transferred into the owner once; ordinary live
         // refreshes must not reload or erase the owner-local budget.
@@ -349,6 +410,14 @@ impl OwnerState {
 
     pub(crate) fn active_path(&self) -> Option<TransportPath> {
         self.active_path.clone()
+    }
+
+    pub(crate) fn fsp_send_context(&self) -> Option<PacketMover2FspSendContext> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        self.fsp_send_headers
+            .map(|headers| PacketMover2FspSendContext::new(self.generation, headers))
     }
 
     pub(crate) fn can_reserve_lane(&self, lane: Lane) -> bool {

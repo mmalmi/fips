@@ -51,6 +51,13 @@ impl PacketMover2 {
         self.owner_shard(owner).owner_fsp_activity(owner)
     }
 
+    pub(crate) fn owner_fsp_send_context(
+        &self,
+        owner: OwnerId,
+    ) -> Option<PacketMover2FspSendContext> {
+        self.owner_shard(owner).owner_fsp_send_context(owner)
+    }
+
     pub(crate) fn min_fsp_rx_age_for_next_hop(
         &self,
         next_hop: &NodeAddr,

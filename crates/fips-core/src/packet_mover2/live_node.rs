@@ -318,6 +318,14 @@ impl PacketMover2LiveNode {
             .owner_fsp_activity(OwnerId::fsp_node(*node_addr))
     }
 
+    pub(crate) fn fsp_owner_send_context(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<PacketMover2FspSendContext> {
+        self.driver
+            .owner_fsp_send_context(OwnerId::fsp_node(*node_addr))
+    }
+
     pub(crate) fn min_fsp_rx_age_for_next_hop(
         &self,
         next_hop: &NodeAddr,

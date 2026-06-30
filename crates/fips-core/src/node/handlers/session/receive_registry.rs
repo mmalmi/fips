@@ -281,23 +281,6 @@ impl crate::node::SessionRegistry {
         }))
     }
 
-    pub(in crate::node) fn session_fsp_send_context(
-        &self,
-        dest_addr: &NodeAddr,
-    ) -> Result<SessionFspSendContext, SessionFspSendContextError> {
-        let Some(entry) = self.get(dest_addr) else {
-            return Err(SessionFspSendContextError::NoSession);
-        };
-        if !entry.is_established() {
-            return Err(SessionFspSendContextError::NotEstablished);
-        }
-
-        Ok(SessionFspSendContext {
-            spin_bit: entry.mmp().is_some_and(|m| m.spin_bit.tx_bit()),
-            current_k_bit: entry.current_k_bit(),
-        })
-    }
-
     fn seed_session_datagram_path_mtu(&mut self, dest_addr: &NodeAddr, path_mtu: u16) -> bool {
         let Some(entry) = self.get_mut(dest_addr) else {
             return false;

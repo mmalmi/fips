@@ -1216,8 +1216,18 @@
         mover.owner_mut(owner).unwrap().apply_live_config(
             OwnerConfig::new(1, 8)
                 .with_send_counter_authority(refreshed_authority.clone())
+                .with_fsp_send_headers(crate::node::session_wire::FSP_FLAG_K, 0x01)
                 .with_fsp_coords_warmup(1, coords_prefix.clone()),
         );
+        let send_context = mover
+            .owner_fsp_send_context(owner)
+            .expect("FSP owner send context");
+        assert_eq!(send_context.generation(), 1);
+        assert_eq!(
+            send_context.fsp_flags(),
+            crate::node::session_wire::FSP_FLAG_K
+        );
+        assert_eq!(send_context.inner_flags(), 0x01);
 
         mover
             .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"refreshed"))

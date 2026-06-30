@@ -379,51 +379,6 @@
     }
 
     #[test]
-    fn session_registry_owns_fsp_send_context_flags() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let peer_addr = *peer.node_addr();
-        let mut entry = established_entry(&local, &peer);
-        entry.init_mmp(&crate::config::SessionMmpConfig::default());
-
-        let mut sessions = crate::node::SessionRegistry::default();
-        assert!(sessions.insert(peer_addr, entry).is_none());
-
-        let context = sessions
-            .session_fsp_send_context(&peer_addr)
-            .expect("established context");
-        assert_eq!(
-            context.inner_flags_byte(),
-            FspInnerFlags { spin_bit: false }.to_byte()
-        );
-        assert_eq!(context.fsp_flags(false), 0);
-        assert_eq!(context.fsp_flags(true), FSP_FLAG_CP);
-    }
-
-    #[test]
-    fn session_registry_fsp_send_context_reports_skip_reasons() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let peer_addr = *peer.node_addr();
-        let mut sessions = crate::node::SessionRegistry::default();
-
-        assert_eq!(
-            sessions.session_fsp_send_context(&peer_addr),
-            Err(SessionFspSendContextError::NoSession)
-        );
-
-        assert!(
-            sessions
-                .insert(peer_addr, initiating_entry(&local, &peer))
-                .is_none()
-        );
-        assert_eq!(
-            sessions.session_fsp_send_context(&peer_addr),
-            Err(SessionFspSendContextError::NotEstablished)
-        );
-    }
-
-    #[test]
     fn session_registry_owns_datagram_path_mtu_bookkeeping() {
         let local = Identity::generate();
         let peer = Identity::generate();
