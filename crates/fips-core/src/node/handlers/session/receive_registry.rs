@@ -114,7 +114,6 @@ impl crate::node::SessionRegistry {
         entry.mark_established(now_ms);
         entry.init_mmp(mmp_config);
         entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval_ms);
-        entry.touch(now_ms);
         self.insert(remote_addr, entry)
     }
 
@@ -135,7 +134,6 @@ impl crate::node::SessionRegistry {
         );
         entry.mark_established(now_ms);
         entry.init_mmp(mmp_config);
-        entry.touch(now_ms);
         self.insert(remote_addr, entry)
     }
 

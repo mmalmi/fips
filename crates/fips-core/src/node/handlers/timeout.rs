@@ -22,7 +22,7 @@ impl crate::node::SessionRegistry {
     fn timed_out_pending_handshakes(&self, now_ms: u64, timeout_ms: u64) -> Vec<crate::NodeAddr> {
         self.iter()
             .filter(|(_, entry)| {
-                !entry.is_established() && now_ms.saturating_sub(entry.last_activity()) > timeout_ms
+                !entry.is_established() && now_ms.saturating_sub(entry.created_at()) > timeout_ms
             })
             .map(|(addr, _)| *addr)
             .collect()
@@ -396,8 +396,8 @@ impl Node {
                     if !activity.has_recent_session_activity(now_ms, timeout_ms) {
                         return Some((*addr, "idle"));
                     }
-                } else if now_ms.saturating_sub(entry.last_activity()) > timeout_ms {
-                    return Some((*addr, "idle"));
+                } else {
+                    return Some((*addr, "missing-pm2-owner"));
                 }
                 None
             })

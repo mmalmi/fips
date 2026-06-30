@@ -238,6 +238,17 @@ impl PacketMover2FspOwnerActivity {
                 .is_some_and(|tick| tick.age_ms(now_ms) <= timeout_ms)
     }
 
+    pub(crate) fn session_idle_activity_ms(self) -> Option<u64> {
+        [
+            self.fsp_session_start_ms,
+            self.last_rx_data_activity.map(ActivityTick::get),
+            self.last_tx_data_activity.map(ActivityTick::get),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+    }
+
     pub(crate) fn has_stale_outbound_only_activity(self, now_ms: u64, timeout_ms: u64) -> bool {
         let last_inbound_ms = self
             .last_rx_activity

@@ -21,7 +21,6 @@ fn test_session_entry_new_initiating() {
     assert!(!entry.state().is_established());
     assert!(!entry.state().is_awaiting_msg3());
     assert_eq!(entry.created_at(), 1000);
-    assert_eq!(entry.last_activity(), 1000);
 }
 
 #[test]
@@ -85,28 +84,6 @@ fn test_session_entry_rekey_jitter_mean_near_zero() {
         mean,
         n
     );
-}
-
-#[test]
-fn test_session_entry_touch() {
-    use crate::noise::HandshakeState;
-
-    let identity_a = Identity::generate();
-    let identity_b = Identity::generate();
-
-    let handshake = HandshakeState::new_initiator(identity_a.keypair(), identity_b.pubkey_full());
-
-    let mut entry = crate::node::session::SessionEntry::new(
-        *identity_b.node_addr(),
-        identity_b.pubkey_full(),
-        EndToEndState::Initiating(handshake),
-        1000,
-        true,
-    );
-
-    entry.touch(2000);
-    assert_eq!(entry.last_activity(), 2000);
-    assert_eq!(entry.created_at(), 1000);
 }
 
 #[test]

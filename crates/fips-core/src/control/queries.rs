@@ -376,12 +376,18 @@ pub fn show_sessions(node: &Node) -> Value {
                 "unknown"
             };
 
+            let dataplane_activity_ms = if entry.is_established() {
+                node.session_dataplane_activity_ms(addr)
+            } else {
+                Some(entry.created_at())
+            };
+
             let mut session_json = json!({
                 "remote_addr": hex::encode(addr.as_bytes()),
                 "display_name": node.peer_display_name(addr),
                 "state": state_str,
                 "is_initiator": entry.is_initiator(),
-                "last_activity_ms": entry.last_activity(),
+                "last_activity_ms": dataplane_activity_ms,
             });
 
             // Derive npub from session's remote public key

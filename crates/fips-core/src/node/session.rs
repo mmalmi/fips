@@ -74,12 +74,7 @@ pub(crate) struct SessionEntry {
     /// Current session state. `None` only during state transitions.
     state: Option<EndToEndState>,
     /// When the session was created (Unix milliseconds).
-    #[cfg_attr(not(test), allow(dead_code))]
     created_at: u64,
-    /// Last application data activity timestamp (Unix milliseconds).
-    /// Only updated for DataPacket send/receive and session establishment.
-    /// MMP reports do not update this field. Used for idle session timeout.
-    last_activity: u64,
     /// When the session transitioned to Established (Unix milliseconds).
     /// Used to compute session-relative timestamps for the FSP inner header.
     /// Set to 0 until the session is established.
@@ -144,7 +139,6 @@ impl SessionEntry {
             remote_pubkey,
             state: Some(state),
             created_at: now_ms,
-            last_activity: now_ms,
             session_start_ms: 0,
             is_initiator,
             mmp: None,
@@ -205,14 +199,6 @@ impl SessionEntry {
         self.state.take()
     }
 
-    /// Update the last application data activity timestamp.
-    ///
-    /// Only call for DataPacket send/receive and session establishment,
-    /// not for MMP reports. Used by the idle session timeout.
-    pub(crate) fn touch(&mut self, now_ms: u64) {
-        self.last_activity = now_ms;
-    }
-
     /// Check if the session is established.
     pub(crate) fn is_established(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.is_established())
@@ -229,14 +215,8 @@ impl SessionEntry {
     }
 
     /// Get creation time.
-    #[cfg(test)]
     pub(crate) fn created_at(&self) -> u64 {
         self.created_at
-    }
-
-    /// Get last activity time.
-    pub(crate) fn last_activity(&self) -> u64 {
-        self.last_activity
     }
 
     /// Mark the session as started (transition to Established).

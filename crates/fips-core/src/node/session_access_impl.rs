@@ -61,6 +61,12 @@ impl Node {
             .map_or((0, 0, 0, 0), |activity| activity.traffic_counters())
     }
 
+    pub(crate) fn session_dataplane_activity_ms(&self, addr: &NodeAddr) -> Option<u64> {
+        self.packet_mover2
+            .fsp_owner_activity(addr)
+            .and_then(|activity| activity.session_idle_activity_ms())
+    }
+
     // === Identity Cache ===
 
     /// Register a node in the identity cache for FipsAddress → NodeAddr lookup.

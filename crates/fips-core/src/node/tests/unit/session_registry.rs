@@ -81,11 +81,6 @@ fn session_registry_owns_fsp_send_bookkeeping() {
     let entry = registry
         .get(&peer_addr)
         .expect("control bookkeeping must keep session storage");
-    assert_eq!(
-        entry.last_activity(),
-        1_000,
-        "control/MMP bookkeeping must not reset idle activity"
-    );
     let mmp = entry.mmp().expect("session should have MMP state");
     assert_eq!(mmp.sender.cumulative_packets_sent(), 1);
     assert_eq!(mmp.sender.cumulative_bytes_sent(), 64);

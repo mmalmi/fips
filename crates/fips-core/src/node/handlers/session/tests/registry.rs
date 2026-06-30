@@ -548,7 +548,6 @@
         assert!(entry.is_established());
         assert!(entry.is_initiator());
         assert_eq!(entry.session_start_ms(), 3_000);
-        assert_eq!(entry.last_activity(), 3_000);
         assert!(entry.mmp().is_some());
         assert_eq!(entry.handshake_payload(), Some([0x44, 0x55].as_slice()));
         assert_eq!(entry.next_resend_at_ms(), 3_750);
@@ -571,7 +570,6 @@
         assert!(entry.is_established());
         assert!(!entry.is_initiator());
         assert_eq!(entry.session_start_ms(), 4_000);
-        assert_eq!(entry.last_activity(), 4_000);
         assert!(entry.mmp().is_some());
         assert_eq!(*entry.remote_pubkey(), peer.pubkey_full());
         assert_eq!(entry.handshake_payload(), None);
