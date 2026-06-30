@@ -4,6 +4,7 @@ pub(crate) struct PacketMover2 {
     shards: Vec<PacketMover2OwnerShard>,
     admission_lens: LaneLens,
     outbound_admission_lens: LaneLens,
+    drops: Vec<PacketDrop>,
     next_ingress_seq: u64,
     next_outbound_seq: u64,
     next_ingress_dispatch_shard: usize,
@@ -19,6 +20,7 @@ impl PacketMover2 {
             shards,
             admission_lens: LaneLens::default(),
             outbound_admission_lens: LaneLens::default(),
+            drops: Vec::new(),
             next_ingress_seq: 0,
             next_outbound_seq: 0,
             next_ingress_dispatch_shard: 0,
@@ -108,8 +110,8 @@ impl PacketMover2 {
         completion: CryptoCompletion,
         retired: &mut Vec<RetiredPacket>,
     ) {
-        self.owner_shard_mut(completion.reservation.owner)
-            .retire_completion_into(completion, retired);
+        let shard = self.owner_shard_index(completion.reservation.owner);
+        self.shards[shard].retire_completion_into(completion, retired, &mut self.drops);
     }
 
     fn run_aead_available_into_with_executor<E>(
@@ -220,16 +222,12 @@ impl PacketMover2 {
         execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         self.retire_completion_batch(completion_work, retired);
 
-        drops.extend(self.drain_drops());
+        drops.append(&mut self.drops);
         dispatched_total
     }
 
     pub(crate) fn drain_drops(&mut self) -> Vec<PacketDrop> {
-        let mut drops = Vec::new();
-        for shard in &mut self.shards {
-            drops.extend(shard.drain_drops());
-        }
-        drops
+        std::mem::take(&mut self.drops)
     }
 
     pub(crate) fn admission_queue_lens(&self) -> (usize, usize) {
@@ -254,7 +252,7 @@ impl PacketMover2 {
     }
 
     fn record_drop(&mut self, drop: PacketDrop) {
-        self.owner_shard_mut(drop.owner).drops.push(drop);
+        self.drops.push(drop);
     }
 
     fn next_ingress_seq(&mut self) -> u64 {
@@ -355,6 +353,7 @@ impl PacketMover2 {
                 priority_only,
                 fsp_path_open,
                 fsp_path_open_bulk,
+                &mut self.drops,
             );
             let after = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
             self.admission_lens.saturating_sub_assign(before.saturating_sub(after));
@@ -395,6 +394,7 @@ impl PacketMover2 {
                 limit.saturating_sub(dispatched),
                 prepared,
                 priority_only,
+                &mut self.drops,
             );
             let after = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
             self.outbound_admission_lens

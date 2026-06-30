@@ -3,7 +3,6 @@ struct PacketMover2OwnerShard {
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
     owners: HashMap<OwnerId, OwnerState>,
-    drops: Vec<PacketDrop>,
 }
 
 impl PacketMover2OwnerShard {
@@ -12,7 +11,6 @@ impl PacketMover2OwnerShard {
             admission: AdmissionQueue::new(),
             outbound_admission: OutboundAdmissionQueue::new(),
             owners: HashMap::new(),
-            drops: Vec::new(),
         }
     }
 
@@ -65,6 +63,7 @@ impl PacketMover2OwnerShard {
         priority_only: bool,
         fsp_path_open: &mut u64,
         fsp_path_open_bulk: &mut u64,
+        drops: &mut Vec<PacketDrop>,
     ) -> usize {
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.admission.len();
@@ -89,10 +88,7 @@ impl PacketMover2OwnerShard {
             } = pop;
 
             let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
-                self.drops.push(PacketDrop::from_queued(
-                    &queued,
-                    PacketDropReason::UnknownOwner,
-                ));
+                drops.push(PacketDrop::from_queued(&queued, PacketDropReason::UnknownOwner));
                 self.admission.continue_owner_run(cursor);
                 continue;
             };
@@ -123,8 +119,7 @@ impl PacketMover2OwnerShard {
                     attempts_remaining = self.admission.len();
                 }
                 Err(error) => {
-                    self.drops
-                        .push(PacketDrop::from_queued(&queued, error.into()));
+                    drops.push(PacketDrop::from_queued(&queued, error.into()));
                     self.admission.continue_owner_run(cursor);
                 }
             }
@@ -143,6 +138,7 @@ impl PacketMover2OwnerShard {
         limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
         priority_only: bool,
+        drops: &mut Vec<PacketDrop>,
     ) -> usize {
         let start_len = prepared.len();
         let target_len = start_len.saturating_add(limit);
@@ -167,7 +163,7 @@ impl PacketMover2OwnerShard {
             let ingress_seq = queued.ingress_seq;
 
             let Some(owner) = self.owners.get(&owner_id) else {
-                self.drops.push(PacketDrop::from_queued_outbound(
+                drops.push(PacketDrop::from_queued_outbound(
                     &queued,
                     PacketDropReason::UnknownOwner,
                 ));
@@ -192,7 +188,7 @@ impl PacketMover2OwnerShard {
                 match owner.reserve_outbound(queued.packet, ingress_seq) {
                     Ok(reserved) => reserved,
                     Err(error) => {
-                        self.drops.push(PacketDrop {
+                        drops.push(PacketDrop {
                             owner: owner_id,
                             counter: None,
                             ingress_seq: Some(ingress_seq),
@@ -224,6 +220,7 @@ impl PacketMover2OwnerShard {
         &mut self,
         completion: CryptoCompletion,
         retired: &mut Vec<RetiredPacket>,
+        drops: &mut Vec<PacketDrop>,
     ) {
         let _timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2Retire);
@@ -233,22 +230,17 @@ impl PacketMover2OwnerShard {
                 PacketDropReason::UnknownOwner,
                 None,
             );
-            self.drops.push(drop.clone());
+            drops.push(drop.clone());
             retired.push(RetiredPacket::Drop(drop));
             return;
         };
         let retired_start = retired.len();
         owner.retire_into(completion, retired);
-        self.drops
-            .extend(retired[retired_start..].iter().filter_map(|item| match item {
+        drops.extend(retired[retired_start..].iter().filter_map(|item| match item {
                 RetiredPacket::Drop(drop) => Some(drop.clone()),
                 RetiredPacket::Output(_) => None,
                 RetiredPacket::Outbound(_) => None,
             }));
-    }
-
-    fn drain_drops(&mut self) -> Vec<PacketDrop> {
-        std::mem::take(&mut self.drops)
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {
