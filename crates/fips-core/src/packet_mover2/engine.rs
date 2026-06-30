@@ -428,7 +428,14 @@ impl PacketMover2 {
             };
             attempts_remaining = attempts_remaining.saturating_sub(1);
 
-            match self.dispatch_queued_outbound(item, work) {
+            let result = match self.shards[shard].dispatch_outbound_available_into(item, work) {
+                OutboundDispatchResult::CrossShard(queued) => {
+                    self.dispatch_cross_shard_outbound(queued, work)
+                }
+                result => result,
+            };
+
+            match result {
                 OutboundDispatchResult::Completed => {
                     self.shards[shard].continue_outbound_owner_run(cursor);
                     self.preferred_outbound_dispatch_shard = Some(shard);
@@ -444,6 +451,9 @@ impl PacketMover2 {
                         cursor,
                     });
                     self.preferred_outbound_dispatch_shard = None;
+                }
+                OutboundDispatchResult::CrossShard(_) => {
+                    unreachable!("cross-shard outbound dispatch is resolved by the parent")
                 }
             }
         }
@@ -523,7 +533,7 @@ impl PacketMover2 {
             .map(|(_, shard)| shard)
     }
 
-    fn dispatch_queued_outbound(
+    fn dispatch_cross_shard_outbound(
         &mut self,
         queued: QueuedOutboundPacket,
         work: &mut Vec<OutboundCryptoWork>,
