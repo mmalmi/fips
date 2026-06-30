@@ -726,7 +726,7 @@ impl Node {
         let receiver_idx = peer.our_index()?.as_u32();
         let generation = peer.session_generation();
         let session_start_ms = Self::now_ms().wrapping_sub(u64::from(peer.session_elapsed_ms()));
-        let endpoint_source_peer = *peer.identity();
+        let source_peer = *peer.identity();
         let open = Arc::new(session.recv_cipher_clone()?);
         let seal = Arc::new(session.send_cipher_clone()?);
         let counter_authority = session.send_counter_authority();
@@ -750,7 +750,7 @@ impl Node {
                 .packet_mover2_owner_config(generation)
                 .with_send_counter_authority(counter_authority)
                 .with_fmp_session_start_ms(session_start_ms)
-                .with_endpoint_source_peer(endpoint_source_peer),
+                .with_source_peer(source_peer),
             keys: OwnerCryptoKeys::new(open, seal),
             path: TransportPath::live(transport_id, remote_addr),
             routes,
@@ -762,19 +762,11 @@ impl Node {
         node_addr: &NodeAddr,
         coords_warmup_remaining: u8,
     ) -> Option<PacketMover2FspOwnerSeed> {
-        let (
-            open,
-            seal,
-            counter_authority,
-            session_start_ms,
-            fsp_flags,
-            inner_flags,
-            endpoint_source_peer,
-        ) = {
+        let (open, seal, counter_authority, session_start_ms, fsp_flags, inner_flags, source_peer) = {
             let session = self.sessions.get(node_addr)?;
             let (open, seal) = session.fsp_crypto_keys()?;
             let counter_authority = session.send_counter_authority()?;
-            let endpoint_source_peer = session.remote_identity()?;
+            let source_peer = session.remote_identity()?;
             let mut fsp_flags = 0;
             if session.current_k_bit() {
                 fsp_flags |= crate::node::session_wire::FSP_FLAG_K;
@@ -790,7 +782,7 @@ impl Node {
                 session.session_start_ms(),
                 fsp_flags,
                 inner_flags,
-                endpoint_source_peer,
+                source_peer,
             )
         };
         let generation = Self::packet_mover2_generation_from_session_start_ms(session_start_ms);
@@ -804,7 +796,7 @@ impl Node {
             .with_send_counter_authority(counter_authority)
             .with_fsp_session_start_ms(session_start_ms)
             .with_fsp_send_headers(fsp_flags, inner_flags)
-            .with_endpoint_source_peer(endpoint_source_peer);
+            .with_source_peer(source_peer);
         if coords_warmup_remaining > 0 {
             config = config.with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix);
         }

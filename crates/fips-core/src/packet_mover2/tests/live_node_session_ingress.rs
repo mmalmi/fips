@@ -44,7 +44,7 @@
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
         driver.register_owner(
             fsp_owner,
-            OwnerConfig::new(1, 8).with_endpoint_source_peer(source_peer),
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
         );
         driver
             .owner_mut(fmp_owner)
@@ -198,7 +198,7 @@
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
         driver.register_owner(
             fsp_owner,
-            OwnerConfig::new(1, 8).with_endpoint_source_peer(source_peer),
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
         );
         driver
             .owner_mut(fmp_owner)

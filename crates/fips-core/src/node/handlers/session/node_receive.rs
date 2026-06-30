@@ -95,6 +95,7 @@ impl Node {
     ) -> bool {
         let (
             source_addr,
+            source_peer,
             previous_hop_addr,
             ce_flag,
             receive_sync,
@@ -124,13 +125,6 @@ impl Node {
             body_len,
             activity_tick,
         );
-        let Some(source_peer) = self.packet_mover2_session_source_peer(&source_addr) else {
-            debug!(
-                src = %self.peer_display_name(&source_addr),
-                "Dropping packet-mover2 authenticated session message for unknown source identity"
-            );
-            return false;
-        };
 
         debug!(
             src = %self.peer_display_name(&source_addr),
@@ -156,24 +150,6 @@ impl Node {
         }
         dispatch.dispatch(self).await;
         true
-    }
-
-    fn packet_mover2_session_source_peer(&self, source_addr: &NodeAddr) -> Option<PeerIdentity> {
-        if let Some(identity) = self
-            .sessions
-            .get(source_addr)
-            .and_then(|entry| entry.remote_identity())
-        {
-            return Some(identity);
-        }
-        if let Some(identity) = self.peers.get(source_addr).map(|peer| *peer.identity()) {
-            return Some(identity);
-        }
-        self.identity_cache
-            .iter()
-            .find_map(|(addr, pubkey, _)| {
-                (addr == source_addr).then(|| PeerIdentity::from_pubkey_full(*pubkey))
-            })
     }
 
     pub(in crate::node) fn record_authenticated_fmp_receive_facts(

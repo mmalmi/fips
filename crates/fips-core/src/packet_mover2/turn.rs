@@ -358,6 +358,7 @@ impl PacketMover2FspLocalSessionIngress {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2FspSessionIngress {
     source_addr: NodeAddr,
+    source_peer: crate::PeerIdentity,
     previous_hop_addr: NodeAddr,
     ce_flag: bool,
     receive_sync: FspReceiveSync,
@@ -371,6 +372,12 @@ pub(crate) struct PacketMover2FspSessionIngress {
 impl PacketMover2FspSessionIngress {
     fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
         let source_addr = output.owner().node_addr();
+        let Some(source_peer) = output.source_peer() else {
+            return Err(output);
+        };
+        if source_peer.node_addr() != &source_addr {
+            return Err(output);
+        }
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
         let header = match FspWireHeader::parse(output.payload()) {
@@ -405,6 +412,7 @@ impl PacketMover2FspSessionIngress {
         };
         Ok(Self {
             source_addr,
+            source_peer,
             previous_hop_addr,
             ce_flag,
             receive_sync,
@@ -452,6 +460,7 @@ impl PacketMover2FspSessionIngress {
         self,
     ) -> (
         NodeAddr,
+        crate::PeerIdentity,
         NodeAddr,
         bool,
         FspReceiveSync,
@@ -463,6 +472,7 @@ impl PacketMover2FspSessionIngress {
     ) {
         (
             self.source_addr,
+            self.source_peer,
             self.previous_hop_addr,
             self.ce_flag,
             self.receive_sync,

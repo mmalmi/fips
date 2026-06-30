@@ -671,7 +671,7 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
         payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError> {
         let source_addr = output.owner().node_addr();
-        let Some(source_peer) = output.endpoint_source_peer() else {
+        let Some(source_peer) = output.source_peer() else {
             return Err(PacketMover2OutputError::NoRoute);
         };
         if source_peer.node_addr() != &source_addr {

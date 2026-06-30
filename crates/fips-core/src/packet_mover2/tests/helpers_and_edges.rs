@@ -722,7 +722,7 @@
             previous_hop: None,
             ce_flag: false,
             path_mtu: u16::MAX,
-            endpoint_source_peer: None,
+            source_peer: None,
             path: None,
             activity_tick: None,
             source_wire_len: None,
@@ -740,7 +740,7 @@
         plaintext: &[u8],
     ) -> PacketOutput {
         let mut output = opened_output(owner, counter, ingress_seq, OutputTarget::Endpoint, plaintext);
-        output.endpoint_source_peer = Some(source_peer);
+        output.source_peer = Some(source_peer);
         output
     }
 
@@ -762,7 +762,7 @@
             previous_hop: None,
             ce_flag: false,
             path_mtu: u16::MAX,
-            endpoint_source_peer: None,
+            source_peer: None,
             path: Some(TransportPath::live(transport_id, remote_addr)),
             activity_tick: None,
             source_wire_len: None,

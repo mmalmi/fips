@@ -484,7 +484,7 @@
                         ce_flag: false,
                         path_mtu: u16::MAX,
                         wire_flags: 0,
-                        endpoint_source_peer: None,
+                        source_peer: None,
                         output_path: None,
                         activity_tick: None,
                         fmp_timestamp_ms: None,
