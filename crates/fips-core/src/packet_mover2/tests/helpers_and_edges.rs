@@ -170,16 +170,17 @@
     }
 
     impl PacketMover2CompletionSource for VecDeque<CryptoCompletion> {
-        fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
-        where
-            F: FnMut(CryptoCompletion),
-        {
+        fn drain_completions_into(
+            &mut self,
+            limit: usize,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
             let mut drained = 0;
             while drained < limit {
                 let Some(completion) = self.pop_front() else {
                     break;
                 };
-                push(completion);
+                completions.push(completion);
                 drained += 1;
             }
             drained
@@ -187,10 +188,11 @@
     }
 
     impl PacketMover2CompletionSource for VecDeque<Vec<CryptoCompletion>> {
-        fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
-        where
-            F: FnMut(CryptoCompletion),
-        {
+        fn drain_completions_into(
+            &mut self,
+            limit: usize,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
             let mut drained = 0;
             while drained < limit {
                 let Some(mut batch) = self.pop_front() else {
@@ -206,9 +208,7 @@
                     self.push_front(rest);
                 }
                 drained += batch.len();
-                for completion in batch {
-                    push(completion);
-                }
+                completions.extend(batch);
             }
             drained
         }
@@ -609,9 +609,14 @@
         driver.reset_turn_buffers();
 
         let mut summary = PacketMover2RuntimeSummary::default();
-        completions.drain_completions(completion_limit, |completion| {
-            driver.collect_completed_aead_output(&mut summary, completion);
-        });
+        driver.completion_work.clear();
+        let queued =
+            completions.drain_completions_into(completion_limit, &mut driver.completion_work);
+        summary.completions = summary.completions.saturating_add(queued);
+        driver
+            .mover
+            .queue_completion_batch(&mut driver.completion_work);
+        driver.retire_queued_completed_aead_outputs(queued);
         summary = driver.collect_retired_outputs(summary);
 
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {

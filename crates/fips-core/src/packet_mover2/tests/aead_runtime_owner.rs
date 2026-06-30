@@ -540,9 +540,7 @@
     ) -> Vec<CryptoCompletion> {
         let mut completions = Vec::new();
         for _ in 0..100 {
-            pool.drain_completions(expected.saturating_sub(completions.len()), |completion| {
-                completions.push(completion);
-            });
+            pool.drain_completions_into(expected.saturating_sub(completions.len()), &mut completions);
             if completions.len() >= expected {
                 break;
             }

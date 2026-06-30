@@ -511,7 +511,9 @@ pub(crate) trait PacketMover2OutboundSource {
 }
 
 pub(crate) trait PacketMover2CompletionSource {
-    fn drain_completions<F>(&mut self, limit: usize, push: F) -> usize
-    where
-        F: FnMut(CryptoCompletion);
+    fn drain_completions_into(
+        &mut self,
+        limit: usize,
+        completions: &mut Vec<CryptoCompletion>,
+    ) -> usize;
 }

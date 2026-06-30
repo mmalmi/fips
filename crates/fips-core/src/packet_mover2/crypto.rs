@@ -209,39 +209,47 @@ impl PacketMover2AeadWorkerPool {
         Arc::clone(&self.completion_notify)
     }
 
-    fn drain_one_completion<F>(&mut self, completion: CryptoCompletion, push: &mut F)
-    where
-        F: FnMut(CryptoCompletion),
-    {
+    fn drain_one_completion(
+        &mut self,
+        completion: CryptoCompletion,
+        completions: &mut Vec<CryptoCompletion>,
+    ) {
         let lane = completion.reservation.lane;
-        push(completion);
+        completions.push(completion);
+        self.finish_drained_completions(1, usize::from(lane == Lane::Bulk));
+    }
+
+    fn finish_drained_completions(&self, count: usize, bulk_count: usize) {
         self.in_flight
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        if lane == Lane::Bulk {
+            .fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
+        if bulk_count > 0 {
             self.bulk_in_flight
-                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                .fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
         }
     }
 
-    fn drain_completion_batch<F>(
+    fn drain_completion_batch(
         &mut self,
-        completions: Vec<CryptoCompletion>,
+        mut batch: Vec<CryptoCompletion>,
         limit: usize,
-        push: &mut F,
-    ) -> usize
-    where
-        F: FnMut(CryptoCompletion),
-    {
-        let mut drained = 0usize;
-        let mut completions = completions.into_iter();
-        while drained < limit {
-            let Some(completion) = completions.next() else {
-                return drained;
-            };
-            self.drain_one_completion(completion, push);
-            drained += 1;
+        out: &mut Vec<CryptoCompletion>,
+    ) -> usize {
+        let drained = batch.len().min(limit);
+        if drained == 0 {
+            self.pending_completions.extend(batch);
+            return 0;
         }
-        self.pending_completions.extend(completions);
+        let pending = if drained < batch.len() {
+            Some(batch.split_off(drained))
+        } else {
+            None
+        };
+        let bulk_count = count_bulk_completions(&batch);
+        self.finish_drained_completions(drained, bulk_count);
+        out.extend(batch);
+        if let Some(pending) = pending {
+            self.pending_completions.extend(pending);
+        }
         drained
     }
 }
@@ -322,14 +330,15 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
 }
 
 impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
-    fn drain_completions<F>(&mut self, limit: usize, mut push: F) -> usize
-    where
-        F: FnMut(CryptoCompletion),
-    {
+    fn drain_completions_into(
+        &mut self,
+        limit: usize,
+        completions: &mut Vec<CryptoCompletion>,
+    ) -> usize {
         let mut drained = 0usize;
         while drained < limit {
             if let Some(completion) = self.pending_completions.pop_front() {
-                self.drain_one_completion(completion, &mut push);
+                self.drain_one_completion(completion, completions);
                 drained += 1;
                 continue;
             }
@@ -338,11 +347,11 @@ impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
                 break;
             };
             match completion_rx.try_recv() {
-                Ok(completions) => {
+                Ok(batch) => {
                     drained = drained.saturating_add(self.drain_completion_batch(
-                        completions,
+                        batch,
                         limit.saturating_sub(drained),
-                        &mut push,
+                        completions,
                     ));
                 }
                 Err(crossbeam_channel::TryRecvError::Empty)
@@ -357,6 +366,13 @@ fn count_bulk_prepared_work(prepared: &[PreparedCryptoWork]) -> usize {
     prepared
         .iter()
         .filter(|work| work.lane() == Lane::Bulk)
+        .count()
+}
+
+fn count_bulk_completions(completions: &[CryptoCompletion]) -> usize {
+    completions
+        .iter()
+        .filter(|completion| completion.reservation.lane == Lane::Bulk)
         .count()
 }
 
