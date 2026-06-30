@@ -331,7 +331,7 @@ impl Node {
                 now_ms,
                 resend_interval,
             );
-            self.sync_packet_mover2_fsp_owner(src_addr);
+            self.refresh_packet_mover2_fsp_owner_routes(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -508,7 +508,7 @@ impl Node {
 
             self.sessions
                 .install_rekey_responder_pending_session(*src_addr, entry, session);
-            self.sync_packet_mover2_fsp_owner(src_addr);
+            self.refresh_packet_mover2_fsp_owner_routes(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),

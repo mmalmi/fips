@@ -276,6 +276,36 @@ impl PacketMover2LiveNode {
         Ok(())
     }
 
+    pub(crate) fn set_owner_fsp_coords_warmup(
+        &mut self,
+        owner: OwnerId,
+        remaining: u8,
+        prefix: Vec<u8>,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.set_fsp_coords_warmup(remaining, prefix) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_owner_fsp_epoch(
+        &mut self,
+        owner: OwnerId,
+        current_k_bit: bool,
+        previous_draining_k_bit: Option<bool>,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.set_fsp_epoch(current_k_bit, previous_draining_k_bit) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_owner_active_path(
         &mut self,
         owner: OwnerId,

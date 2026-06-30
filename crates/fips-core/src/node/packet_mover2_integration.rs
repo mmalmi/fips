@@ -404,10 +404,18 @@ impl Node {
         now_ms: u64,
         label: &str,
     ) -> Result<(), NodeError> {
-        if !self.sync_packet_mover2_fsp_owner(dest_addr) {
+        if !self.packet_mover2_has_fsp_owner(dest_addr)
+            && !self.sync_packet_mover2_fsp_owner(dest_addr)
+        {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
                 reason: format!("packet_mover2 FSP owner unavailable for {label}"),
+            });
+        }
+        if !self.refresh_packet_mover2_fsp_owner_routes(dest_addr) {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("packet_mover2 FSP route unavailable for {label}"),
             });
         }
         let Some(send_context) = self.packet_mover2.fsp_owner_send_context(dest_addr) else {
@@ -653,6 +661,63 @@ impl Node {
 
     pub(in crate::node) fn sync_packet_mover2_fsp_owner(&mut self, node_addr: &NodeAddr) -> bool {
         self.sync_packet_mover2_fsp_owner_with_coords_warmup(node_addr, 0)
+    }
+
+    pub(in crate::node) fn refresh_packet_mover2_fsp_owner_routes(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        let owner = OwnerId::fsp_node(*node_addr);
+        let Some(send_context) = self.packet_mover2.fsp_owner_send_context(node_addr) else {
+            return false;
+        };
+        let (routes, next_hop) = self.packet_mover2_fsp_owner_routes(
+            node_addr,
+            send_context.generation(),
+            send_context.fsp_flags(),
+            send_context.inner_flags(),
+        );
+        let next_hop_ready = next_hop.is_none_or(|next_hop| {
+            self.packet_mover2.has_owner(OwnerId::fmp_node(next_hop))
+                || self.sync_packet_mover2_fmp_owner(&next_hop)
+        });
+        self.packet_mover2
+            .replace_owner_routes(owner, routes)
+            .is_ok()
+            && next_hop_ready
+    }
+
+    pub(in crate::node) fn refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(
+        &mut self,
+        node_addr: &NodeAddr,
+        coords_warmup_remaining: u8,
+    ) -> bool {
+        let owner = OwnerId::fsp_node(*node_addr);
+        let coords_prefix =
+            self.packet_mover2_fsp_coords_prefix(node_addr, coords_warmup_remaining);
+        let warmup_applied = self
+            .packet_mover2
+            .set_owner_fsp_coords_warmup(owner, coords_warmup_remaining, coords_prefix)
+            .is_ok();
+        self.refresh_packet_mover2_fsp_owner_routes(node_addr) && warmup_applied
+    }
+
+    pub(in crate::node) fn refresh_packet_mover2_fsp_owner_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> bool {
+        let Some(session) = self.sessions.get(node_addr) else {
+            return false;
+        };
+        let current_k_bit = session.current_k_bit();
+        let previous_draining_k_bit = session.is_draining().then_some(!current_k_bit);
+        self.packet_mover2
+            .set_owner_fsp_epoch(
+                OwnerId::fsp_node(*node_addr),
+                current_k_bit,
+                previous_draining_k_bit,
+            )
+            .is_ok()
     }
 
     pub(in crate::node) fn packet_mover2_has_fsp_owner(&self, node_addr: &NodeAddr) -> bool {

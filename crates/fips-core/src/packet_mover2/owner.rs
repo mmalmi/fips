@@ -572,6 +572,33 @@ impl OwnerState {
         self.crypto_keys = Some(keys);
     }
 
+    pub(crate) fn set_fsp_epoch(
+        &mut self,
+        current_k_bit: bool,
+        previous_draining_k_bit: Option<bool>,
+    ) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        self.fsp_current_k_bit = current_k_bit;
+        self.fsp_previous_draining_k_bit = previous_draining_k_bit;
+        true
+    }
+
+    pub(crate) fn set_fsp_coords_warmup(&mut self, remaining: u8, prefix: Vec<u8>) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        if remaining == 0 || prefix.is_empty() {
+            self.fsp_coords_warmup_remaining = 0;
+            self.fsp_coords_prefix.clear();
+        } else {
+            self.fsp_coords_warmup_remaining = remaining;
+            self.fsp_coords_prefix = prefix;
+        }
+        true
+    }
+
     pub(crate) fn apply_live_config(&mut self, config: OwnerConfig) {
         if config.generation != self.generation {
             self.rekey(config.generation);
@@ -589,8 +616,7 @@ impl OwnerState {
             self.fsp_send_headers = Some(headers);
         }
         if let Some(current_k_bit) = config.fsp_current_k_bit {
-            self.fsp_current_k_bit = current_k_bit;
-            self.fsp_previous_draining_k_bit = config.fsp_previous_draining_k_bit;
+            self.set_fsp_epoch(current_k_bit, config.fsp_previous_draining_k_bit);
         }
         if let Some(peer) = config.source_peer {
             self.source_peer = Some(peer);

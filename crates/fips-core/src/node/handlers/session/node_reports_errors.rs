@@ -196,7 +196,7 @@ impl Node {
             }
         }
 
-        let _ = self.sync_packet_mover2_fsp_owner(src_addr);
+        let _ = self.refresh_packet_mover2_fsp_owner_routes(src_addr);
     }
 
     /// Handle a CoordsRequired error signal from a transit router.
@@ -250,7 +250,7 @@ impl Node {
         // Reset coords warmup counter so the next N packets also include
         // COORDS_PRESENT, re-warming transit caches along the path.
         let n = self.config.node.session.coords_warmup_packets;
-        if self.sync_packet_mover2_fsp_owner_with_coords_warmup(&msg.dest_addr, n) {
+        if self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&msg.dest_addr, n) {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -314,7 +314,7 @@ impl Node {
         // Reset coords warmup counter so the next N packets include
         // COORDS_PRESENT, re-warming transit caches along the new path.
         let n = self.config.node.session.coords_warmup_packets;
-        if self.sync_packet_mover2_fsp_owner_with_coords_warmup(&msg.dest_addr, n) {
+        if self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&msg.dest_addr, n) {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -409,7 +409,7 @@ impl Node {
             }
         }
         if path_mtu_changed {
-            let _ = self.sync_packet_mover2_fsp_owner(&msg.dest_addr);
+            let _ = self.refresh_packet_mover2_fsp_owner_routes(&msg.dest_addr);
         }
     }
 

@@ -280,7 +280,7 @@ impl Node {
                 // If an established session exists, reset the PM2 owner warmup budget.
                 if session_established {
                     let n = self.config.node.session.coords_warmup_packets;
-                    self.sync_packet_mover2_fsp_owner_with_coords_warmup(&target, n);
+                    self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&target, n);
                     debug!(
                         dest = %self.peer_display_name(&target),
                         warmup_packets = n,

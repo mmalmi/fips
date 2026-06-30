@@ -833,7 +833,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP drain complete, previous session erased"
                 );
-                self.sync_packet_mover2_fsp_owner(&node_addr);
+                self.refresh_packet_mover2_fsp_owner_epoch(&node_addr);
             }
         }
 
