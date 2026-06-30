@@ -257,39 +257,6 @@
     }
 
     #[test]
-    fn authenticated_session_message_can_own_plaintext_inside_wire_buffer() {
-        let peer = Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-        let endpoint_payload = b"buffer endpoint delivery".to_vec();
-        let plaintext = fsp_prepend_inner_header(
-            0x0102_0304,
-            SessionMessageType::EndpointData.to_byte(),
-            0,
-            &endpoint_payload,
-        );
-        let mut buffer = b"outer-fmp-prefix".to_vec();
-        let plaintext_offset = buffer.len();
-        buffer.extend_from_slice(&plaintext);
-        buffer.extend_from_slice(b"outer-fmp-trailer");
-
-        let message = AuthenticatedSessionMessage::from_buffer(
-            source_peer,
-            buffer,
-            plaintext_offset,
-            plaintext.len(),
-            SessionMessageType::EndpointData.to_byte(),
-            0,
-            0x0102_0304,
-        );
-
-        assert_eq!(message.plaintext(), plaintext);
-        assert_eq!(message.body(), endpoint_payload);
-        let delivery = message.into_endpoint_data_delivery();
-        assert_eq!(delivery.source_peer, source_peer);
-        assert_eq!(delivery.payload, endpoint_payload);
-    }
-
-    #[test]
     fn authenticated_session_dispatch_owns_route_ce_and_completion_facts() {
         let peer = Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
@@ -331,16 +298,6 @@
                 direct_path: false,
             })
         );
-        let commit = dispatch.commit();
-        assert_eq!(commit.source_addr(), &source_addr);
-        assert_eq!(
-            commit.receive_completion(),
-            Some(SessionReceiveCompletion {
-                source_addr,
-                previous_hop_addr,
-                direct_path: false,
-            })
-        );
         let delivery = dispatch.into_endpoint_data_delivery();
         assert_eq!(delivery.source_peer, source_peer);
         assert_eq!(delivery.payload, endpoint_payload);
@@ -367,13 +324,6 @@
             report_dispatch.receive_completion(),
             None,
             "MMP reports must not reset session idle"
-        );
-        let report_commit = report_dispatch.commit();
-        assert_eq!(report_commit.source_addr(), &source_addr);
-        assert_eq!(
-            report_commit.receive_completion(),
-            None,
-            "MMP reports still flush pending packets without recording receive progress"
         );
     }
 

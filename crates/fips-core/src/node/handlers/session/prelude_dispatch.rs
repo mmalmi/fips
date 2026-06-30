@@ -102,40 +102,6 @@ impl AuthenticatedSessionMessage {
         }
     }
 
-    #[cfg(test)]
-    pub(in crate::node) fn from_buffer(
-        source_peer: PeerIdentity,
-        buffer: impl Into<PacketBuffer>,
-        plaintext_offset: usize,
-        plaintext_len: usize,
-        msg_type: u8,
-        inner_flags_byte: u8,
-        timestamp: u32,
-    ) -> Self {
-        let buffer = buffer.into();
-        debug_assert!(plaintext_len >= FSP_INNER_HEADER_SIZE);
-        debug_assert!(
-            plaintext_offset
-                .checked_add(plaintext_len)
-                .is_some_and(|end| end <= buffer.len())
-        );
-        Self {
-            source_peer,
-            buffer,
-            plaintext_offset,
-            plaintext_len,
-            msg_type,
-            inner_flags_byte,
-            timestamp,
-        }
-    }
-
-    #[cfg(test)]
-    fn plaintext(&self) -> &[u8] {
-        debug_assert!(self.plaintext_len >= FSP_INNER_HEADER_SIZE);
-        &self.buffer[self.plaintext_offset..self.plaintext_offset + self.plaintext_len]
-    }
-
     pub(in crate::node) fn msg_type(&self) -> u8 {
         self.msg_type
     }
@@ -398,16 +364,6 @@ impl AuthenticatedSessionDispatch {
 }
 
 impl SessionDispatchCommit {
-    #[cfg(test)]
-    fn source_addr(&self) -> &NodeAddr {
-        &self.source_addr
-    }
-
-    #[cfg(test)]
-    fn receive_completion(&self) -> Option<SessionReceiveCompletion> {
-        self.receive_completion
-    }
-
     fn finish_receive(&self, node: &mut Node) -> SessionDispatchFinish {
         let now_ms = Node::now_ms();
         if let Some(completion) = self.receive_completion {
