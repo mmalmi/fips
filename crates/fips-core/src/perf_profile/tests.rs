@@ -293,7 +293,10 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
         (Stage::ReservedStage34, "reserved_stage_34"),
         (Stage::ReservedStage37, "reserved_stage_37"),
         (Stage::ReservedStage47, "reserved_stage_47"),
-        (Stage::ReservedStage63, "reserved_stage_63"),
+        (
+            Stage::PacketMover2TransportSendWorker,
+            "packet_mover2_transport_send_worker",
+        ),
         (Stage::ReservedStage68, "reserved_stage_68"),
     ] {
         assert_eq!(stage_from_index(stage as usize).name(), name);

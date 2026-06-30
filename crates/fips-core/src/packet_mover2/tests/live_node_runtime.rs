@@ -779,6 +779,173 @@
         recv_transport.stop().await.expect("stop recv udp");
     }
 
+    #[tokio::test]
+    async fn transport_plan_bulk_worker_sends_bulk_after_inline_priority() {
+        let send_transport_id = TransportId::new(62);
+        let recv_transport_id = TransportId::new(63);
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(8);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x62; 16]));
+        let mut priority = transport_output(
+            owner,
+            620,
+            20,
+            send_transport_id,
+            remote_addr.clone(),
+            b"priority-worker".to_vec(),
+        );
+        priority.lane = Lane::Priority;
+        let mut bulk_a = transport_output(
+            owner,
+            621,
+            21,
+            send_transport_id,
+            remote_addr.clone(),
+            b"bulk-worker-a".to_vec(),
+        );
+        bulk_a.lane = Lane::Bulk;
+        let mut bulk_b = transport_output(
+            owner,
+            622,
+            22,
+            send_transport_id,
+            remote_addr.clone(),
+            b"bulk-worker-b".to_vec(),
+        );
+        bulk_b.lane = Lane::Bulk;
+        let plans = vec![
+            PacketMover2TransportSendPlan::new(send_transport_id, remote_addr.clone(), bulk_a),
+            PacketMover2TransportSendPlan::new(send_transport_id, remote_addr.clone(), priority),
+            PacketMover2TransportSendPlan::new(send_transport_id, remote_addr, bulk_b),
+        ];
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let mut drops = Vec::new();
+        let mut worker = PacketMover2TransportSendWorkerPool::new(8);
+
+        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+            &transports,
+            plans,
+            &mut drops,
+            &mut worker,
+        )
+        .await;
+
+        assert_eq!(sent, 3);
+        assert!(drops.is_empty());
+        let mut payloads = Vec::new();
+        for _ in 0..3 {
+            let received =
+                tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                    .await
+                    .expect("receive worker packet")
+                    .expect("packet channel open");
+            payloads.push(received.data.as_slice().to_vec());
+        }
+        assert_eq!(payloads[0], b"priority-worker");
+        assert!(payloads.contains(&b"bulk-worker-a".to_vec()));
+        assert!(payloads.contains(&b"bulk-worker-b".to_vec()));
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
+    }
+
+    #[tokio::test]
+    async fn transport_plan_bulk_worker_full_drops_bulk_without_inline_fallback() {
+        let send_transport_id = TransportId::new(64);
+        let recv_transport_id = TransportId::new(65);
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(8);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x64; 16]));
+        let plans = vec![
+            PacketMover2TransportSendPlan::new(
+                send_transport_id,
+                remote_addr.clone(),
+                transport_output(
+                    owner,
+                    640,
+                    40,
+                    send_transport_id,
+                    remote_addr.clone(),
+                    b"bulk-full-a".to_vec(),
+                ),
+            ),
+            PacketMover2TransportSendPlan::new(
+                send_transport_id,
+                remote_addr.clone(),
+                transport_output(
+                    owner,
+                    641,
+                    41,
+                    send_transport_id,
+                    remote_addr.clone(),
+                    b"bulk-full-b".to_vec(),
+                ),
+            ),
+        ];
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let mut drops = Vec::new();
+        let mut worker = PacketMover2TransportSendWorkerPool::new(1);
+
+        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+            &transports,
+            plans,
+            &mut drops,
+            &mut worker,
+        )
+        .await;
+
+        assert_eq!(sent, 0);
+        assert_eq!(drops.len(), 2);
+        assert!(drops
+            .iter()
+            .all(|drop| drop.reason() == PacketMover2OutputError::Unavailable));
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            recv_packet_rx.recv()
+        )
+        .await
+        .is_err());
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
+    }
+
     #[test]
     fn transport_batch_mapper_prioritizes_within_transport_runs() {
         let transport_a = TransportId::new(60);

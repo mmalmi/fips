@@ -96,7 +96,9 @@ use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
-use crate::packet_mover2::{AdmissionConfig, PacketMover2LiveNode};
+use crate::packet_mover2::{
+    AdmissionConfig, PacketMover2LiveNode, PacketMover2TransportSendWorkerPool,
+};
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
@@ -233,6 +235,8 @@ pub struct Node {
     /// Canonical packet_mover2 dataplane state owned by the node.
     #[allow(dead_code)]
     packet_mover2: PacketMover2Node,
+    /// Bounded PM2 bulk UDP send executor used by the live daemon path.
+    packet_mover2_transport_send_worker: PacketMover2TransportSendWorkerPool,
 
     // === Peer Lifecycle ===
     /// Pending handshake connections plus authenticated peers.

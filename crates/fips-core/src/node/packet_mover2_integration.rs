@@ -340,7 +340,7 @@ impl Node {
 
         let turn = self
             .packet_mover2
-            .pump_outbound_firsts(
+            .pump_outbound_firsts_with_transport_worker(
                 firsts,
                 endpoint_limit,
                 tun_limit,
@@ -349,6 +349,7 @@ impl Node {
                 endpoint_resolver,
                 &self.transports,
                 crypto_limit,
+                &mut self.packet_mover2_transport_send_worker,
             )
             .await;
         Self::observe_packet_mover2_turn(&turn);

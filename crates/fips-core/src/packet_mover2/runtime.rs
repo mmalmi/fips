@@ -141,6 +141,7 @@ impl PacketMover2TurnDriver {
             crypto_limit,
             collect_transport_sent_outputs,
             &mut executor,
+            None,
         )
         .await
     }
@@ -156,6 +157,7 @@ impl PacketMover2TurnDriver {
         crypto_limit: usize,
         collect_transport_sent_outputs: bool,
         executor: &mut E,
+        mut transport_send_worker: Option<&mut PacketMover2TransportSendWorkerPool>,
     ) -> PacketMover2LiveNodeTurn
     where
         Resolver: PacketMover2EndpointIdentityResolver,
@@ -185,14 +187,14 @@ impl PacketMover2TurnDriver {
             &mut self.wrapped_outbound_receipts,
         ));
 
-        let plans = transport_output.plans();
-        report.transport_planned = plans.len();
+        report.transport_planned = transport_output.plans().len();
         let dropped_before = report.output_drops.len();
         report.transport_sent = {
             let _transport_send_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::PacketMover2TransportSend,
             );
             if collect_transport_sent_outputs {
+                let plans = transport_output.plans();
                 send_packet_mover2_transport_plans_collect_sent(
                     transports,
                     plans,
@@ -200,7 +202,17 @@ impl PacketMover2TurnDriver {
                     &mut report.transport_sent_outputs,
                 )
                 .await
+            } else if let Some(worker) = transport_send_worker.as_deref_mut() {
+                let plans = transport_output.take_plans_preserving_capacity();
+                send_packet_mover2_transport_plans_with_bulk_worker(
+                    transports,
+                    plans,
+                    &mut report.output_drops,
+                    worker,
+                )
+                .await
             } else {
+                let plans = transport_output.plans();
                 send_packet_mover2_transport_plans(transports, plans, &mut report.output_drops)
                     .await
             }
@@ -268,6 +280,7 @@ impl PacketMover2TurnDriver {
             endpoint_resolver,
             transports,
             crypto_limit,
+            None,
         )
         .await
     }
@@ -299,6 +312,7 @@ impl PacketMover2TurnDriver {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
+        transport_send_worker: Option<&mut PacketMover2TransportSendWorkerPool>,
     ) -> PacketMover2LiveNodeTurn
     where
         C: PacketMover2CompletionSource,
@@ -327,6 +341,7 @@ impl PacketMover2TurnDriver {
             endpoint_resolver,
             transports,
             crypto_limit,
+            transport_send_worker,
         )
         .await
     }
@@ -375,6 +390,7 @@ impl PacketMover2TurnDriver {
         endpoint_resolver: Resolver,
         transports: &Transports,
         crypto_limit: usize,
+        transport_send_worker: Option<&mut PacketMover2TransportSendWorkerPool>,
     ) -> PacketMover2LiveNodeTurn
     where
         E: PacketMover2CryptoExecutor,
@@ -456,6 +472,7 @@ impl PacketMover2TurnDriver {
                 crypto_limit,
                 collect_transport_sent_outputs,
                 executor,
+                transport_send_worker,
             )
             .await;
         let endpoint_deferred_count = outbound_buffers.endpoint_deferred_commands.len();

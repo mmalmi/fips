@@ -5,8 +5,8 @@
 #[cfg(target_os = "linux")]
 use super::received_timestamp_ms;
 use super::{
-    DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
-    TransportId, TransportState, TransportType,
+    DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport, TransportAddr,
+    TransportError, TransportId, TransportState, TransportType,
 };
 #[cfg(target_os = "macos")]
 pub(crate) mod darwin_sockopts;
@@ -35,6 +35,118 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 /// priority/bulk lane contract at the packet channel boundary.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
+
+#[derive(Clone)]
+pub(crate) struct UdpSendSnapshot {
+    socket: AsyncUdpSocket,
+    local_addr: SocketAddr,
+    mtu: u16,
+    stats: Arc<UdpStats>,
+}
+
+impl std::fmt::Debug for UdpSendSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UdpSendSnapshot")
+            .field("local_addr", &self.local_addr)
+            .field("mtu", &self.mtu)
+            .finish_non_exhaustive()
+    }
+}
+
+impl UdpSendSnapshot {
+    pub(crate) fn validate_packet(
+        &self,
+        data_len: usize,
+        remote_addr: SocketAddr,
+    ) -> Result<(), TransportError> {
+        if data_len > self.mtu as usize {
+            self.stats.record_mtu_exceeded();
+            return Err(TransportError::MtuExceeded {
+                packet_size: data_len,
+                mtu: self.mtu,
+            });
+        }
+        if !socket_addr_families_compatible(self.local_addr, remote_addr) {
+            return Err(TransportError::InvalidAddress(format!(
+                "remote address family {remote_addr} is incompatible with local UDP socket {}",
+                self.local_addr
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn send_owned_batch(
+        &self,
+        packets: &[(usize, PacketBuffer, SocketAddr)],
+    ) -> Vec<(usize, Result<usize, TransportError>)> {
+        if packets.is_empty() {
+            return Vec::new();
+        }
+
+        let socket_packets = packets
+            .iter()
+            .map(|(index, data, addr)| (*index, data.as_slice(), *addr))
+            .collect::<Vec<_>>();
+        let mut results = Vec::with_capacity(socket_packets.len());
+        let mut offset = 0usize;
+        while offset < socket_packets.len() {
+            crate::perf_profile::record_udp_send_sendmmsg_batch(socket_packets.len() - offset);
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+            match self.socket.send_batch(&socket_packets[offset..]).await {
+                Ok(0) => {
+                    self.stats.record_send_error();
+                    for (index, _, _) in socket_packets[offset..].iter().copied() {
+                        results.push((
+                            index,
+                            Err(TransportError::SendFailed(
+                                "sendmmsg made no packet progress".into(),
+                            )),
+                        ));
+                    }
+                    break;
+                }
+                Ok(sent) => {
+                    let end = offset.saturating_add(sent).min(socket_packets.len());
+                    for batch_index in offset..end {
+                        let (index, data, _) = socket_packets[batch_index];
+                        let bytes_sent = data.len();
+                        self.stats.record_send(bytes_sent);
+                        results.push((index, Ok(bytes_sent)));
+                    }
+                    offset = end;
+                }
+                Err(error) => {
+                    self.stats.record_send_error();
+                    let message = error.to_string();
+                    for (index, _, _) in socket_packets[offset..].iter().copied() {
+                        results.push((index, Err(TransportError::SendFailed(message.clone()))));
+                    }
+                    break;
+                }
+            }
+        }
+        results
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) async fn send_owned_batch(
+        &self,
+        packets: &[(usize, PacketBuffer, SocketAddr)],
+    ) -> Vec<(usize, Result<usize, TransportError>)> {
+        let mut results = Vec::with_capacity(packets.len());
+        for (index, data, addr) in packets {
+            let result = self.socket.send_to(data.as_slice(), addr).await;
+            if let Ok(bytes_sent) = result {
+                self.stats.record_send(bytes_sent);
+            } else {
+                self.stats.record_send_error();
+            }
+            results.push((*index, result));
+        }
+        results
+    }
+}
 
 #[cfg(target_os = "linux")]
 pub(crate) fn reset_recv_buffer(buffer: &mut Vec<u8>) {
@@ -208,6 +320,24 @@ impl UdpTransport {
     /// itself, so concurrent userland sends are safe.
     pub fn async_socket(&self) -> Option<AsyncUdpSocket> {
         self.socket.clone()
+    }
+
+    pub(crate) fn send_snapshot(&self) -> Result<UdpSendSnapshot, TransportError> {
+        if !self.state.is_operational() {
+            return Err(TransportError::NotStarted);
+        }
+        let Some(socket) = self.socket.clone() else {
+            return Err(TransportError::NotStarted);
+        };
+        let Some(local_addr) = self.local_addr else {
+            return Err(TransportError::NotStarted);
+        };
+        Ok(UdpSendSnapshot {
+            socket,
+            local_addr,
+            mtu: self.config.mtu(),
+            stats: Arc::clone(&self.stats),
+        })
     }
 
     /// Resolve a transport address, using cached results for hostnames.
