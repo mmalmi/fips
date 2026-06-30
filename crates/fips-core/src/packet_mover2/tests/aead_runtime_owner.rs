@@ -193,6 +193,67 @@
         assert!(matches!(&retired[1], RetiredPacket::Output(output) if output.owner == first));
     }
 
+    #[test]
+    fn aead_completion_ready_queue_marks_each_owner_shard_once() {
+        let owner = fsp_owner(20_500);
+        let key = 72;
+        let mut mover = mover();
+        mover.register_owner(owner, OwnerConfig::new(1, 16));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        for counter in 1..=2 {
+            mover
+                .submit_socket_packet(encrypted_fsp_packet(
+                    owner,
+                    1,
+                    counter,
+                    PacketClass::Bulk,
+                    OutputTarget::Tun,
+                    key,
+                ))
+                .unwrap();
+        }
+
+        let mut work = dispatch_available(&mut mover, 8);
+        assert_eq!(work.len(), 2);
+        let shard = work[0].reservation.owner_shard;
+        let first = work.remove(0);
+        let second = work.remove(0);
+
+        mover.queue_completion(open_aead_completion(first, key));
+        mover.queue_completion(open_aead_completion(second, key));
+        assert_eq!(
+            mover
+                .completion_ready_shards
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![shard]
+        );
+        assert!(mover.completion_shard_ready[shard]);
+
+        let mut retired = Vec::new();
+        assert_eq!(mover.retire_queued_completions_into(1, &mut retired), 1);
+        assert_eq!(
+            mover
+                .completion_ready_shards
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![shard]
+        );
+        assert!(mover.completion_shard_ready[shard]);
+        assert!(matches!(&retired[0], RetiredPacket::Output(output) if output.counter == 1));
+
+        assert_eq!(mover.retire_queued_completions_into(1, &mut retired), 1);
+        assert!(mover.completion_ready_shards.is_empty());
+        assert!(!mover.completion_shard_ready[shard]);
+        assert!(matches!(&retired[1], RetiredPacket::Output(output) if output.counter == 2));
+    }
+
     #[derive(Debug, Default)]
     struct RecordingChunkExecutor {
         inline: InlinePacketMover2CryptoExecutor,

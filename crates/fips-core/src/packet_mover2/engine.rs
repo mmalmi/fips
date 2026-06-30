@@ -9,7 +9,8 @@ pub(crate) struct PacketMover2 {
     next_outbound_seq: u64,
     next_ingress_dispatch_shard: usize,
     next_outbound_dispatch_shard: usize,
-    next_completion_retire_shard: usize,
+    completion_ready_shards: VecDeque<usize>,
+    completion_shard_ready: Vec<bool>,
 }
 
 impl PacketMover2 {
@@ -28,7 +29,8 @@ impl PacketMover2 {
             next_outbound_seq: 0,
             next_ingress_dispatch_shard: 0,
             next_outbound_dispatch_shard: 0,
-            next_completion_retire_shard: 0,
+            completion_ready_shards: VecDeque::new(),
+            completion_shard_ready: vec![false; shard_count],
         }
     }
 
@@ -313,7 +315,20 @@ impl PacketMover2 {
             self.drops.push(drop);
             return;
         };
-        owner_shard.queue_completion(completion);
+        if owner_shard.queue_completion(completion) {
+            self.mark_completion_shard_ready(shard);
+        }
+    }
+
+    fn mark_completion_shard_ready(&mut self, shard: usize) {
+        let Some(ready) = self.completion_shard_ready.get_mut(shard) else {
+            return;
+        };
+        if *ready {
+            return;
+        }
+        *ready = true;
+        self.completion_ready_shards.push_back(shard);
     }
 
     fn queue_completion_batch(&mut self, completions: &mut Vec<CryptoCompletion>) -> usize {
@@ -333,26 +348,28 @@ impl PacketMover2 {
             return 0;
         }
 
-        let shard_count = self.shards.len();
         let mut retired_count = 0usize;
-        let mut start_shard = self.next_completion_retire_shard % shard_count;
         while retired_count < limit {
-            let mut pass_retired = 0usize;
-            for offset in 0..shard_count {
-                if retired_count >= limit {
-                    break;
-                }
-                let shard = (start_shard + offset) % shard_count;
-                if self.shards[shard].retire_queued_completion_into(retired, &mut self.drops) {
-                    retired_count = retired_count.saturating_add(1);
-                    pass_retired = pass_retired.saturating_add(1);
-                    self.next_completion_retire_shard = (shard + 1) % shard_count;
-                }
-            }
-            if pass_retired == 0 {
+            let Some(shard) = self.completion_ready_shards.pop_front() else {
                 break;
+            };
+            let Some(ready) = self.completion_shard_ready.get_mut(shard) else {
+                continue;
+            };
+            *ready = false;
+            let Some(owner_shard) = self.shards.get_mut(shard) else {
+                continue;
+            };
+            if owner_shard.retire_queued_completion_into(retired, &mut self.drops) {
+                retired_count = retired_count.saturating_add(1);
             }
-            start_shard = self.next_completion_retire_shard % shard_count;
+            if self
+                .shards
+                .get(shard)
+                .is_some_and(PacketMover2OwnerShard::has_queued_completions)
+            {
+                self.mark_completion_shard_ready(shard);
+            }
         }
         retired_count
     }

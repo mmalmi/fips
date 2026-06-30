@@ -384,8 +384,10 @@ impl PacketMover2OwnerShard {
             }));
     }
 
-    fn queue_completion(&mut self, completion: CryptoCompletion) {
+    fn queue_completion(&mut self, completion: CryptoCompletion) -> bool {
+        let was_empty = self.completed.is_empty();
         self.completed.push_back(completion);
+        was_empty
     }
 
     fn retire_queued_completion_into(
@@ -398,6 +400,10 @@ impl PacketMover2OwnerShard {
         };
         self.retire_completion_into(completion, retired, drops);
         true
+    }
+
+    fn has_queued_completions(&self) -> bool {
+        !self.completed.is_empty()
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {
