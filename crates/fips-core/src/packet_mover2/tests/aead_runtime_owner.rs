@@ -411,6 +411,58 @@
     }
 
     #[test]
+    fn aead_worker_jobs_split_hot_owner_burst() {
+        let owner = fmp_owner(708);
+        let work_count = PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2 + 3;
+        let work = (0..work_count as u64)
+            .map(|counter| {
+                PreparedCryptoWork::Completed(CryptoCompletion {
+                    reservation: OwnerReservation {
+                        owner,
+                        generation: 1,
+                        order: OrderToken(counter),
+                        ingress_seq: counter,
+                        counter,
+                        class: PacketClass::Bulk,
+                        lane: Lane::Bulk,
+                        source_path: None,
+                        previous_hop: None,
+                        ce_flag: false,
+                        path_mtu: u16::MAX,
+                        wire_flags: 0,
+                        output_path: None,
+                        activity_tick: None,
+                        fmp_timestamp_ms: None,
+                        fsp_timestamp_ms: None,
+                    },
+                    result: CryptoResult::Failed(CryptoFailureKind::Open),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let jobs = PreparedCryptoJobSplitter::new(work).collect::<Vec<_>>();
+        assert_eq!(
+            jobs.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![
+                PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS,
+                PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS,
+                3
+            ]
+        );
+        let counters = jobs
+            .into_iter()
+            .flatten()
+            .map(|work| match work {
+                PreparedCryptoWork::Completed(completion) => completion.reservation.counter,
+                PreparedCryptoWork::Open { .. } | PreparedCryptoWork::Seal { .. } => {
+                    unreachable!("test constructs completed crypto work only")
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(counters, (0..work_count as u64).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn aead_worker_pool_capacity_blocks_reservation_until_completion_drain() {
         let owner = fmp_owner(707);
         let open_key = 21;

@@ -8,6 +8,8 @@ pub(crate) enum PreparedCryptoWork {
     Completed(CryptoCompletion),
 }
 
+const PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS: usize = 8;
+
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
         Self::Open { work, cipher }
@@ -94,14 +96,6 @@ impl PreparedCryptoWork {
         }
     }
 
-    fn owner(&self) -> OwnerId {
-        match self {
-            Self::Open { work, .. } => work.reservation.owner,
-            Self::Seal { work, .. } => work.reservation.owner,
-            Self::Completed(completion) => completion.reservation.owner,
-        }
-    }
-
     fn push_executor_failed_completions(self, completions: &mut Vec<CryptoCompletion>) {
         match self {
             Self::Open { work, .. } => completions.push(failed_crypto_completion(
@@ -124,6 +118,43 @@ impl PreparedCryptoWork {
             }
             Self::Completed(completion) => completions.push(completion),
         }
+    }
+}
+
+struct PreparedCryptoJobSplitter {
+    remaining: std::vec::IntoIter<PreparedCryptoWork>,
+}
+
+impl PreparedCryptoJobSplitter {
+    fn new(work: Vec<PreparedCryptoWork>) -> Self {
+        Self {
+            remaining: work.into_iter(),
+        }
+    }
+
+    fn push_failed_completions(&mut self, completions: &mut Vec<CryptoCompletion>) {
+        while let Some(job) = self.next() {
+            for work in job {
+                work.push_executor_failed_completions(completions);
+            }
+        }
+    }
+}
+
+impl Iterator for PreparedCryptoJobSplitter {
+    type Item = Vec<PreparedCryptoWork>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = self.remaining.next()?;
+        let mut job = Vec::with_capacity(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS);
+        job.push(first);
+        while job.len() < PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS {
+            let Some(work) = self.remaining.next() else {
+                break;
+            };
+            job.push(work);
+        }
+        Some(job)
     }
 }
 
@@ -262,20 +293,8 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             return count;
         };
 
-        let mut remaining = chunk.into_iter().peekable();
-        while let Some(first) = remaining.next() {
-            let owner = first.owner();
-            let mut work_chunk = vec![first];
-            while remaining
-                .peek()
-                .is_some_and(|work| work.owner() == owner)
-            {
-                work_chunk.push(
-                    remaining
-                        .next()
-                        .expect("peeked owner work must still be available"),
-                );
-            }
+        let mut jobs = PreparedCryptoJobSplitter::new(chunk);
+        while let Some(work_chunk) = jobs.next() {
             let chunk_len = work_chunk.len();
             match work_tx.try_send(work_chunk) {
                 Ok(()) => {
@@ -287,9 +306,7 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
                     for work in work_chunk.drain(..) {
                         work.push_executor_failed_completions(completions);
                     }
-                    for work in remaining {
-                        work.push_executor_failed_completions(completions);
-                    }
+                    jobs.push_failed_completions(completions);
                     break;
                 }
             }
