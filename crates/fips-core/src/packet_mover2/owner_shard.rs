@@ -71,29 +71,6 @@ impl PacketMover2OwnerShard {
         fsp_path_open: &mut u64,
         fsp_path_open_bulk: &mut u64,
     ) -> usize {
-        self.dispatch_ingress_with(limit, priority_only, |reservation, packet, keys| {
-            count_fsp_path_open_dispatch(&reservation, fsp_path_open, fsp_path_open_bulk);
-            let work = CryptoWork {
-                reservation: reservation.clone(),
-                packet,
-            };
-            let prepared_work = match keys {
-                Some(keys) => PreparedCryptoWork::open(work, keys.open),
-                None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open),
-            };
-            prepared.push(prepared_work);
-        })
-    }
-
-    fn dispatch_ingress_with<F>(
-        &mut self,
-        limit: usize,
-        priority_only: bool,
-        mut push: F,
-    ) -> usize
-    where
-        F: FnMut(OwnerReservation, SocketPacket, Option<OwnerCryptoKeys>),
-    {
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.admission.len();
         while dispatched < limit && attempts_remaining > 0 {
@@ -136,7 +113,16 @@ impl PacketMover2OwnerShard {
             let keys = owner.crypto_keys();
             match owner.reserve(&queued.packet, queued.ingress_seq) {
                 Ok(reservation) => {
-                    push(reservation, queued.packet, keys);
+                    count_fsp_path_open_dispatch(&reservation, fsp_path_open, fsp_path_open_bulk);
+                    let work = CryptoWork {
+                        reservation: reservation.clone(),
+                        packet: queued.packet,
+                    };
+                    let prepared_work = match keys {
+                        Some(keys) => PreparedCryptoWork::open(work, keys.open),
+                        None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open),
+                    };
+                    prepared.push(prepared_work);
                     dispatched = dispatched.saturating_add(1);
                     self.admission.continue_owner_run(cursor);
                     attempts_remaining = self.admission.len();
@@ -230,24 +216,6 @@ impl PacketMover2OwnerShard {
         queued: QueuedOutboundPacket,
         prepared: &mut Vec<PreparedCryptoWork>,
     ) -> OutboundDispatchResult {
-        self.dispatch_outbound_with(queued, |reservation, packet, keys| {
-            let work = OutboundCryptoWork::new(reservation.clone(), packet);
-            let prepared_work = match keys {
-                Some(keys) => PreparedCryptoWork::seal(work, keys.seal),
-                None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal),
-            };
-            prepared.push(prepared_work);
-        })
-    }
-
-    fn dispatch_outbound_with<F>(
-        &mut self,
-        queued: QueuedOutboundPacket,
-        mut push: F,
-    ) -> OutboundDispatchResult
-    where
-        F: FnMut(OwnerReservation, OutboundPacket, Option<OwnerCryptoKeys>),
-    {
         let owner_id = queued.packet.owner;
         let lane = queued.packet.lane();
         let class = queued.packet.class;
@@ -289,7 +257,12 @@ impl PacketMover2OwnerShard {
             }
         };
 
-        push(reservation, packet, keys);
+        let work = OutboundCryptoWork::new(reservation.clone(), packet);
+        let prepared_work = match keys {
+            Some(keys) => PreparedCryptoWork::seal(work, keys.seal),
+            None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal),
+        };
+        prepared.push(prepared_work);
         OutboundDispatchResult::Completed
     }
 
