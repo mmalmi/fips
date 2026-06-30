@@ -406,20 +406,8 @@ fn test_stale_cost_fallback_periodically_retries_healthy_direct_payload() {
     entry.mark_established(1000);
     node.sessions.insert(remote_addr, entry);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
-    node.get_peer_mut(&remote_addr)
-        .expect("direct peer")
-        .mmp_mut()
-        .expect("direct mmp")
-        .metrics
-        .srtt
-        .update(90_000);
-    node.get_peer_mut(&fallback_next_hop)
-        .expect("fallback peer")
-        .mmp_mut()
-        .expect("fallback mmp")
-        .metrics
-        .srtt
-        .update(5_000);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, remote_addr, 90);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, fallback_next_hop, 5);
     {
         let now_ms = Node::now_ms();
         seed_packet_mover2_fsp_data_sent_for_test(
@@ -485,20 +473,8 @@ fn test_recent_direct_payload_return_prefers_direct_over_cheaper_fallback() {
     entry.mark_established(1000);
     node.sessions.insert(remote_addr, entry);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
-    node.get_peer_mut(&remote_addr)
-        .expect("direct peer")
-        .mmp_mut()
-        .expect("direct mmp")
-        .metrics
-        .srtt
-        .update(90_000);
-    node.get_peer_mut(&fallback_next_hop)
-        .expect("fallback peer")
-        .mmp_mut()
-        .expect("fallback mmp")
-        .metrics
-        .srtt
-        .update(5_000);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, remote_addr, 90);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, fallback_next_hop, 5);
     {
         let now_ms = Node::now_ms();
         seed_packet_mover2_fsp_data_sent_for_test(

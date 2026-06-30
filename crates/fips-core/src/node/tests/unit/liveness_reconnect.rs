@@ -26,7 +26,7 @@ async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
 
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -40,14 +40,12 @@ async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(31),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(31),
+    );
     node.mark_rx_loop_maintenance_timeout();
 
     node.check_link_heartbeats().await;

@@ -168,18 +168,9 @@ async fn test_parent_reeval_ignores_unmeasured_peer_costs() {
     node.tree_state_mut().set_parent(current_parent, 2, 1_000);
     node.tree_state_mut().recompute_coords();
 
-    node.get_peer_mut(&current_parent)
-        .expect("current parent peer")
-        .mmp_mut()
-        .expect("current parent mmp")
-        .metrics
-        .srtt
-        .update(10_000);
+    super::super::seed_packet_mover2_fmp_srtt_for_test(&mut node, current_parent, 10_000);
     assert!(
-        !node
-            .get_peer(&unmeasured_candidate)
-            .expect("candidate peer")
-            .has_srtt(),
+        !node.packet_mover2_fmp_has_srtt(&unmeasured_candidate),
         "fixture should leave the candidate without RTT evidence"
     );
 
@@ -236,13 +227,7 @@ async fn test_parent_reeval_ignores_fresh_bogus_metrics_without_valid_rtt() {
     node.tree_state_mut().set_parent(current_parent, 2, 1_000);
     node.tree_state_mut().recompute_coords();
 
-    node.get_peer_mut(&current_parent)
-        .expect("current parent peer")
-        .mmp_mut()
-        .expect("current parent mmp")
-        .metrics
-        .srtt
-        .update(10_000);
+    super::super::seed_packet_mover2_fmp_srtt_for_test(&mut node, current_parent, 10_000);
 
     let parent_before = *node.tree_state().my_declaration().parent_id();
     let switches_before = node.stats().tree.parent_switches;
@@ -289,23 +274,22 @@ async fn test_parent_reeval_ignores_fresh_bogus_metrics_without_valid_rtt() {
     node.handle_receiver_report(&bogus_candidate, &fresh_bogus_delta[1..])
         .await;
 
-    {
-        let candidate = node.get_peer(&bogus_candidate).expect("candidate peer");
-        let metrics = &candidate.mmp().expect("candidate mmp").metrics;
-        assert!(
-            !candidate.has_srtt(),
-            "invalid RTT samples must not make the candidate parent-eligible"
-        );
-        assert_eq!(
-            metrics.last_forward_loss_sample(),
-            Some((200, 1.0)),
-            "fixture should exercise a fresh severe-loss sample rather than a stale report"
-        );
-        assert!(
-            metrics.goodput_bps() > 0.0,
-            "fixture should exercise a fresh goodput sample rather than a stale report"
-        );
-    }
+    let metrics = node
+        .packet_mover2_fmp_link_metrics(&bogus_candidate, std::time::Instant::now())
+        .expect("candidate PM2 FMP metrics");
+    assert!(
+        !node.packet_mover2_fmp_has_srtt(&bogus_candidate),
+        "invalid RTT samples must not make the candidate parent-eligible"
+    );
+    assert_eq!(
+        metrics.last_forward_loss_sample,
+        Some((200, 1.0)),
+        "fixture should exercise a fresh severe-loss sample rather than a stale report"
+    );
+    assert!(
+        metrics.goodput_bps > 0.0,
+        "fixture should exercise a fresh goodput sample rather than a stale report"
+    );
 
     node.check_tree_state().await;
 

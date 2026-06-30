@@ -4,7 +4,7 @@
 //! ActivePeer holds tree state, Bloom filter, and routing information.
 
 use crate::bloom::BloomFilter;
-use crate::mmp::{MmpConfig, MmpPeerState};
+use crate::mmp::MmpConfig;
 use crate::node::REKEY_JITTER_SECS;
 use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseError, NoiseSession};
 use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
@@ -143,8 +143,8 @@ pub struct ActivePeer {
     remote_epoch: Option<[u8; 8]>,
 
     // === MMP ===
-    /// Per-peer MMP state (None for legacy peers without Noise sessions).
-    mmp: Option<MmpPeerState>,
+    /// Role used when seeding PM2's adjacent-link MMP owner state.
+    fmp_mmp_is_initiator: bool,
 
     // === Heartbeat ===
     /// When we last sent a heartbeat to this peer.
@@ -231,7 +231,7 @@ impl ActivePeer {
             authenticated_at,
             last_seen: authenticated_at,
             remote_epoch: None,
-            mmp: None,
+            fmp_mmp_is_initiator: false,
             last_heartbeat_sent: None,
             handshake_msg2: None,
             replay_suppressed_count: 0,
@@ -288,7 +288,7 @@ impl ActivePeer {
         current_addr: TransportAddr,
         link_stats: LinkStats,
         is_initiator: bool,
-        mmp_config: &MmpConfig,
+        _mmp_config: &MmpConfig,
         remote_epoch: Option<[u8; 8]>,
     ) -> Self {
         let now = Instant::now();
@@ -316,7 +316,7 @@ impl ActivePeer {
             authenticated_at,
             last_seen: authenticated_at,
             remote_epoch,
-            mmp: Some(MmpPeerState::new(mmp_config, is_initiator)),
+            fmp_mmp_is_initiator: is_initiator,
             last_heartbeat_sent: None,
             handshake_msg2: None,
             replay_suppressed_count: 0,
@@ -616,42 +616,9 @@ impl ActivePeer {
         &mut self.link_stats
     }
 
-    // === MMP Accessors ===
-
-    /// Get MMP state (None for legacy peers without sessions).
-    pub fn mmp(&self) -> Option<&MmpPeerState> {
-        self.mmp.as_ref()
-    }
-
-    /// Get mutable MMP state.
-    pub fn mmp_mut(&mut self) -> Option<&mut MmpPeerState> {
-        self.mmp.as_mut()
-    }
-
-    /// Link cost for routing decisions.
-    ///
-    /// Returns a scalar cost where lower is better (1.0 = ideal).
-    /// Computed as RTT-weighted ETX: `etx * (1.0 + srtt_ms / 100.0)`.
-    ///
-    /// Returns 1.0 (optimistic default) when MMP metrics are not yet
-    /// available, matching depth-only parent selection behavior.
-    pub fn link_cost(&self) -> f64 {
-        match self.mmp() {
-            Some(mmp) => {
-                let etx = mmp.metrics.etx;
-                match mmp.metrics.srtt_ms() {
-                    Some(srtt_ms) => etx * (1.0 + srtt_ms / 100.0),
-                    None => 1.0,
-                }
-            }
-            None => 1.0,
-        }
-    }
-
-    /// Whether this peer has at least one MMP RTT measurement.
-    pub fn has_srtt(&self) -> bool {
-        self.mmp()
-            .is_some_and(|mmp| mmp.metrics.srtt_ms().is_some())
+    /// Whether this node initiated the adjacent FMP session.
+    pub fn fmp_mmp_is_initiator(&self) -> bool {
+        self.fmp_mmp_is_initiator
     }
 
     /// When this peer was authenticated.

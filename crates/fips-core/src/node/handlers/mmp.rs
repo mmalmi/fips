@@ -104,17 +104,23 @@ impl crate::node::PeerLifecycleRegistry {
 }
 
 impl Node {
-    pub(in crate::node) fn packet_mover2_fmp_link_cost(&self, node_addr: &NodeAddr) -> f64 {
+    pub(crate) fn packet_mover2_fmp_link_metrics(
+        &self,
+        node_addr: &NodeAddr,
+        now: Instant,
+    ) -> Option<crate::packet_mover2::PacketMover2FmpLinkMetrics> {
+        self.packet_mover2.fmp_link_metrics(node_addr, now)
+    }
+
+    pub(crate) fn packet_mover2_fmp_link_cost(&self, node_addr: &NodeAddr) -> f64 {
         self.packet_mover2.fmp_link_cost(node_addr).unwrap_or(1.0)
     }
 
-    pub(in crate::node) fn packet_mover2_fmp_has_srtt(&self, node_addr: &NodeAddr) -> bool {
+    pub(crate) fn packet_mover2_fmp_has_srtt(&self, node_addr: &NodeAddr) -> bool {
         self.packet_mover2.fmp_has_srtt(node_addr)
     }
 
-    pub(in crate::node) fn packet_mover2_fmp_peer_costs(
-        &self,
-    ) -> std::collections::HashMap<NodeAddr, f64> {
+    pub(crate) fn packet_mover2_fmp_peer_costs(&self) -> std::collections::HashMap<NodeAddr, f64> {
         self.peers
             .iter()
             .filter(|(_, peer)| peer.can_send())

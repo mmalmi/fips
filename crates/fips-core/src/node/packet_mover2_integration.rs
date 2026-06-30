@@ -823,7 +823,7 @@ impl Node {
             }
             (their_index.as_u32(), flags)
         });
-        let fmp_mmp_is_initiator = peer.mmp().map(|mmp| mmp.spin_bit.is_initiator());
+        let fmp_mmp_is_initiator = peer.fmp_mmp_is_initiator();
         let generation = peer.session_generation();
         let session_start_ms = Self::now_ms().wrapping_sub(u64::from(peer.session_elapsed_ms()));
         let source_peer = *peer.identity();
@@ -851,9 +851,7 @@ impl Node {
         if let Some((receiver_idx, flags)) = fmp_send_headers {
             config = config.with_fmp_send_headers(receiver_idx, flags);
         }
-        if let Some(is_initiator) = fmp_mmp_is_initiator {
-            config = config.with_fmp_mmp(self.config.node.mmp.clone(), is_initiator);
-        }
+        config = config.with_fmp_mmp(self.config.node.mmp.clone(), fmp_mmp_is_initiator);
 
         Some(PacketMover2FmpOwnerSeed {
             owner: OwnerId::fmp_node(*node_addr),

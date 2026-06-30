@@ -48,12 +48,8 @@ async fn test_stale_mmp_receiver_reports_do_not_change_route_choice() {
         "healthy direct should initially hide learned fallback"
     );
     assert_eq!(
-        node.get_peer(&dest_addr)
-            .expect("direct peer")
-            .mmp()
-            .expect("direct mmp")
-            .metrics
-            .srtt_ms(),
+        node.packet_mover2_fmp_link_metrics(&dest_addr, std::time::Instant::now())
+            .and_then(|metrics| metrics.srtt_ms),
         None,
         "counter-only baseline must not install a route-changing RTT"
     );
@@ -113,25 +109,23 @@ async fn test_stale_mmp_receiver_reports_do_not_change_route_choice() {
         "ignored stale MMP metrics must not trigger parent reevaluation"
     );
 
-    let direct = node.get_peer(&dest_addr).expect("direct peer");
-    let direct_mmp = direct.mmp().expect("direct mmp");
+    let direct_mmp = node
+        .packet_mover2_fmp_link_metrics(&dest_addr, std::time::Instant::now())
+        .expect("direct mmp");
     assert_eq!(
-        direct_mmp.metrics.srtt_ms(),
-        None,
+        direct_mmp.srtt_ms, None,
         "ignored stale reports must not install an RTT sample"
     );
     assert_eq!(
-        direct_mmp.metrics.last_forward_loss_sample(),
-        None,
+        direct_mmp.last_forward_loss_sample, None,
         "ignored stale reports must not leave a loss sample behind"
     );
     assert_eq!(
-        direct_mmp.metrics.goodput_bps(),
-        0.0,
+        direct_mmp.goodput_bps, 0.0,
         "ignored stale reports must not update goodput"
     );
     assert!(
-        (direct.link_cost() - 1.0).abs() < f64::EPSILON,
+        (node.packet_mover2_fmp_link_cost(&dest_addr) - 1.0).abs() < f64::EPSILON,
         "ignored stale reports must leave default direct link cost unchanged"
     );
 }
@@ -157,20 +151,8 @@ fn test_transit_prefers_adjacent_destination_over_learned_route_back_to_previous
     node.add_connection(dest_conn).unwrap();
     node.promote_connection(dest_link, dest_id, 2000).unwrap();
 
-    node.get_peer_mut(&dest_addr)
-        .expect("destination peer")
-        .mmp_mut()
-        .expect("destination mmp")
-        .metrics
-        .srtt
-        .update(90_000);
-    node.get_peer_mut(&previous_hop)
-        .expect("previous-hop peer")
-        .mmp_mut()
-        .expect("previous-hop mmp")
-        .metrics
-        .srtt
-        .update(5_000);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, dest_addr, 90);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, previous_hop, 5);
     node.learn_reverse_route(dest_addr, previous_hop);
 
     let source_route = node.find_next_hop(&dest_addr).expect("source fallback");

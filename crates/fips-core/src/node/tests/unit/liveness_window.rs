@@ -172,7 +172,7 @@ async fn quiet_recent_endpoint_path_refresh_keeps_direct_payload_without_demotin
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
 
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -186,14 +186,12 @@ async fn quiet_recent_endpoint_path_refresh_keeps_direct_payload_without_demotin
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(11),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(11),
+    );
     node.peers.insert(
         transit_addr,
         ActivePeer::new(transit_peer, LinkId::new(9), 0),
@@ -259,7 +257,7 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
 
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -273,14 +271,12 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(11),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(11),
+    );
     node.peers.insert(
         transit_addr,
         ActivePeer::new(transit_peer, LinkId::new(9), 0),
@@ -351,7 +347,7 @@ async fn endpoint_session_traffic_keeps_traversal_liveness_fresh() {
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
 
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -365,14 +361,12 @@ async fn endpoint_session_traffic_keeps_traversal_liveness_fresh() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(11),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(11),
+    );
 
     let session = crate::node::session::SessionEntry::new(
         peer_addr,
@@ -434,7 +428,7 @@ async fn endpoint_session_traffic_from_direct_peer_keeps_liveness_fresh_without_
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
 
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -448,14 +442,12 @@ async fn endpoint_session_traffic_from_direct_peer_keeps_liveness_fresh_without_
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(11),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(11),
+    );
 
     let session = crate::node::session::SessionEntry::new(
         peer_addr,
@@ -517,7 +509,7 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
 
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -531,14 +523,12 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(11),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(11),
+    );
     node.peers.insert(
         transit_addr,
         ActivePeer::new(transit_peer, LinkId::new(9), 0),
@@ -621,15 +611,13 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now(),
-    );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::ZERO,
+    );
     node.peers.insert(
         transit_addr,
         ActivePeer::new(transit_peer, LinkId::new(9), 0),
@@ -720,14 +708,12 @@ async fn fresh_bootstrap_path_keeps_static_direct_refresh_pending() {
     );
     let now_ms = Node::now_ms();
     active.touch(now_ms);
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now(),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::ZERO,
+    );
     node.bootstrap_transports.mark(bootstrap_transport);
 
     let mut retry = super::super::retry::RetryState::new(peer_config);
@@ -789,15 +775,13 @@ async fn fresh_bootstrap_endpoint_data_clears_static_direct_refresh_pending() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now(),
-    );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::ZERO,
+    );
     node.bootstrap_transports.mark(bootstrap_transport);
 
     let now_ms = Node::now_ms();
@@ -872,15 +856,13 @@ async fn fresh_control_with_unreturned_endpoint_data_keeps_direct_without_fallba
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now(),
-    );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::ZERO,
+    );
 
     let now_ms = Node::now_ms();
     let session = crate::node::session::SessionEntry::new(
@@ -954,7 +936,7 @@ async fn endpoint_return_via_direct_next_hop_keeps_link_liveness_fresh() {
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
 
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -968,14 +950,12 @@ async fn endpoint_return_via_direct_next_hop_keeps_link_liveness_fresh() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(11),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(11),
+    );
 
     let now_ms = Node::now_ms();
     let session = crate::node::session::SessionEntry::new(
@@ -1048,15 +1028,13 @@ async fn authenticated_endpoint_return_clears_static_retry_on_fresh_discovered_u
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(11),
-    );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(11),
+    );
 
     assert!(
         !node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
@@ -1119,7 +1097,7 @@ async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_pe
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
 
-    let mut quiet_active = ActivePeer::with_session(
+    let quiet_active = ActivePeer::with_session(
         quiet_peer,
         LinkId::new(7),
         0,
@@ -1133,14 +1111,12 @@ async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_pe
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    quiet_active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(6),
-    );
     node.peers.insert(quiet_addr, quiet_active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        quiet_addr,
+        std::time::Duration::from_secs(6),
+    );
 
     // Simulate a route-unavailable send to some other peer. The quiet peer
     // has exceeded the fast timeout, but not the normal link-dead timeout.
@@ -1506,7 +1482,7 @@ async fn quiet_recent_endpoint_path_stays_alive_within_mobile_window() {
     node.config.node.heartbeat_interval_secs = 10;
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -1520,14 +1496,12 @@ async fn quiet_recent_endpoint_path_stays_alive_within_mobile_window() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(29),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(29),
+    );
 
     node.check_link_heartbeats().await;
 
@@ -1703,7 +1677,7 @@ async fn local_route_failure_does_not_collapse_recent_endpoint_liveness_window()
     node.config.node.heartbeat_interval_secs = 10;
     node.config.node.link_dead_timeout_secs = 30;
     node.config.node.fast_link_dead_timeout_secs = 5;
-    let mut active = ActivePeer::with_session(
+    let active = ActivePeer::with_session(
         peer,
         LinkId::new(7),
         0,
@@ -1717,14 +1691,12 @@ async fn local_route_failure_does_not_collapse_recent_endpoint_liveness_window()
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(6),
-    );
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(6),
+    );
     node.local_send_failures
         .record_failure(peer_addr, std::time::Instant::now());
 
@@ -1779,15 +1751,13 @@ async fn recent_authenticated_fmp_receive_prevents_traversal_link_dead() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(23),
-    );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(23),
+    );
 
     node.check_link_heartbeats().await;
 
@@ -1964,15 +1934,13 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
         &crate::mmp::MmpConfig::default(),
         None,
     );
-    active.mmp_mut().expect("mmp").receiver.record_recv(
-        1,
-        100,
-        64,
-        false,
-        std::time::Instant::now() - std::time::Duration::from_secs(31),
-    );
     active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
     node.peers.insert(peer_addr, active);
+    super::super::seed_packet_mover2_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(31),
+    );
     node.peers.insert(
         transit_addr,
         ActivePeer::new(transit_peer, LinkId::new(9), 0),

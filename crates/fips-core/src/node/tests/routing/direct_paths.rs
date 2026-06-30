@@ -211,31 +211,19 @@ fn test_reply_learned_keeps_configured_static_direct_peer_over_lower_cost_fallba
     node.add_connection(mesh_conn).unwrap();
     node.promote_connection(mesh_link, mesh_id, 2000).unwrap();
 
-    node.get_peer_mut(&dest_addr)
-        .expect("direct peer")
-        .mmp_mut()
-        .expect("direct mmp")
-        .metrics
-        .srtt
-        .update(90_000);
-    node.get_peer_mut(&mesh_next_hop)
-        .expect("fallback peer")
-        .mmp_mut()
-        .expect("fallback mmp")
-        .metrics
-        .srtt
-        .update(5_000);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, dest_addr, 90);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, mesh_next_hop, 5);
     node.learn_reverse_route(dest_addr, mesh_next_hop);
 
     {
-        let direct = node.get_peer(&dest_addr).expect("direct peer");
-        let fallback = node.get_peer(&mesh_next_hop).expect("fallback peer");
         assert!(
-            direct.is_healthy() && node.active_peer_uses_configured_static_udp_path(&dest_addr),
+            node.get_peer(&dest_addr).expect("direct peer").is_healthy()
+                && node.active_peer_uses_configured_static_udp_path(&dest_addr),
             "fixture should model a healthy operator-configured direct UDP path"
         );
         assert!(
-            fallback.link_cost() < direct.link_cost(),
+            node.packet_mover2_fmp_link_cost(&mesh_next_hop)
+                < node.packet_mover2_fmp_link_cost(&dest_addr),
             "fixture should make the learned fallback look cheaper than direct"
         );
     }
@@ -351,20 +339,8 @@ fn test_reply_learned_prefers_lower_cost_fallback_over_slow_healthy_direct_peer(
     node.add_connection(mesh_conn).unwrap();
     node.promote_connection(mesh_link, mesh_id, 2000).unwrap();
 
-    node.get_peer_mut(&dest_addr)
-        .expect("direct peer")
-        .mmp_mut()
-        .expect("direct mmp")
-        .metrics
-        .srtt
-        .update(90_000);
-    node.get_peer_mut(&mesh_next_hop)
-        .expect("fallback peer")
-        .mmp_mut()
-        .expect("fallback mmp")
-        .metrics
-        .srtt
-        .update(5_000);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, dest_addr, 90);
+    seed_packet_mover2_fmp_srtt_for_test(&mut node, mesh_next_hop, 5);
     node.learn_reverse_route(dest_addr, mesh_next_hop);
 
     assert!(

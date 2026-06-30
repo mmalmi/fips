@@ -79,13 +79,24 @@ pub(crate) struct PacketMover2FmpReceiverReportResult {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PacketMover2FmpLinkMetrics {
     pub(crate) node_addr: NodeAddr,
+    pub(crate) mode: crate::mmp::MmpMode,
+    pub(crate) spin_bit_initiator: bool,
     pub(crate) srtt_ms: Option<f64>,
     pub(crate) srtt_age_ms: Option<u64>,
     pub(crate) loss_rate: f64,
     pub(crate) loss_rate_for_log: Option<f64>,
+    pub(crate) smoothed_loss: Option<f64>,
     pub(crate) etx: f64,
+    pub(crate) smoothed_etx: Option<f64>,
     pub(crate) jitter_ms: f64,
     pub(crate) goodput_bps: f64,
+    pub(crate) rtt_trend: Option<(f64, f64)>,
+    pub(crate) loss_trend: Option<(f64, f64)>,
+    pub(crate) goodput_trend: Option<(f64, f64)>,
+    pub(crate) jitter_trend: Option<(f64, f64)>,
+    pub(crate) delivery_ratio_forward: f64,
+    pub(crate) delivery_ratio_reverse: f64,
+    pub(crate) last_forward_loss_sample: Option<(u64, f64)>,
     pub(crate) tx_packets: u64,
     pub(crate) tx_bytes: u64,
     pub(crate) rx_packets: u64,
@@ -939,6 +950,8 @@ impl OwnerState {
         let metrics = &mmp.metrics;
         Some(PacketMover2FmpLinkMetrics {
             node_addr: self.owner.node_addr(),
+            mode: mmp.mode(),
+            spin_bit_initiator: mmp.spin_bit.is_initiator(),
             srtt_ms: metrics.srtt_ms(),
             srtt_age_ms: metrics.srtt_age_ms(now),
             loss_rate: metrics.loss_rate(),
@@ -946,9 +959,30 @@ impl OwnerState {
                 .loss_trend
                 .initialized()
                 .then(|| metrics.loss_trend.long()),
+            smoothed_loss: metrics.smoothed_loss(),
             etx: metrics.etx,
+            smoothed_etx: metrics.smoothed_etx(),
             jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
             goodput_bps: metrics.goodput_bps(),
+            rtt_trend: metrics
+                .rtt_trend
+                .initialized()
+                .then(|| (metrics.rtt_trend.short(), metrics.rtt_trend.long())),
+            loss_trend: metrics
+                .loss_trend
+                .initialized()
+                .then(|| (metrics.loss_trend.short(), metrics.loss_trend.long())),
+            goodput_trend: metrics
+                .goodput_trend
+                .initialized()
+                .then(|| (metrics.goodput_trend.short(), metrics.goodput_trend.long())),
+            jitter_trend: metrics
+                .jitter_trend
+                .initialized()
+                .then(|| (metrics.jitter_trend.short(), metrics.jitter_trend.long())),
+            delivery_ratio_forward: metrics.delivery_ratio_forward,
+            delivery_ratio_reverse: metrics.delivery_ratio_reverse,
+            last_forward_loss_sample: metrics.last_forward_loss_sample(),
             tx_packets: mmp.sender.cumulative_packets_sent(),
             tx_bytes: mmp.sender.cumulative_bytes_sent(),
             rx_packets: mmp.receiver.cumulative_packets_recv(),
@@ -1361,6 +1395,8 @@ impl OwnerState {
             let metrics = &mmp.metrics;
             batch.metric_logs.push(PacketMover2FmpLinkMetrics {
                 node_addr,
+                mode: mmp.mode(),
+                spin_bit_initiator: mmp.spin_bit.is_initiator(),
                 srtt_ms: metrics
                     .rtt_trend
                     .initialized()
@@ -1371,9 +1407,30 @@ impl OwnerState {
                     .loss_trend
                     .initialized()
                     .then(|| metrics.loss_trend.long()),
+                smoothed_loss: metrics.smoothed_loss(),
                 etx: metrics.etx,
+                smoothed_etx: metrics.smoothed_etx(),
                 jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
                 goodput_bps: metrics.goodput_bps(),
+                rtt_trend: metrics
+                    .rtt_trend
+                    .initialized()
+                    .then(|| (metrics.rtt_trend.short(), metrics.rtt_trend.long())),
+                loss_trend: metrics
+                    .loss_trend
+                    .initialized()
+                    .then(|| (metrics.loss_trend.short(), metrics.loss_trend.long())),
+                goodput_trend: metrics
+                    .goodput_trend
+                    .initialized()
+                    .then(|| (metrics.goodput_trend.short(), metrics.goodput_trend.long())),
+                jitter_trend: metrics
+                    .jitter_trend
+                    .initialized()
+                    .then(|| (metrics.jitter_trend.short(), metrics.jitter_trend.long())),
+                delivery_ratio_forward: metrics.delivery_ratio_forward,
+                delivery_ratio_reverse: metrics.delivery_ratio_reverse,
+                last_forward_loss_sample: metrics.last_forward_loss_sample(),
                 tx_packets: mmp.sender.cumulative_packets_sent(),
                 tx_bytes: mmp.sender.cumulative_bytes_sent(),
                 rx_packets: mmp.receiver.cumulative_packets_recv(),

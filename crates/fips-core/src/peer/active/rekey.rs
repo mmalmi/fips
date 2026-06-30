@@ -149,12 +149,6 @@ impl ActivePeer {
         self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
 
-        // Reset MMP counters to avoid metric discontinuity
-        let now = Instant::now();
-        if let Some(mmp) = &mut self.mmp {
-            mmp.reset_for_rekey(now);
-        }
-
         self.previous_our_index
     }
 
@@ -189,12 +183,6 @@ impl ActivePeer {
         self.rekey_jitter_secs = draw_rekey_jitter();
         self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
-
-        // Reset MMP counters to avoid metric discontinuity
-        let now = Instant::now();
-        if let Some(mmp) = &mut self.mmp {
-            mmp.reset_for_rekey(now);
-        }
 
         self.previous_our_index
     }
