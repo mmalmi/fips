@@ -273,10 +273,12 @@ impl PacketMover2 {
 
         let ingress_seq = self.next_ingress_seq();
         let shard = self.owner_shard_index(packet.owner);
-        let admitted = self.shards[shard].submit_socket_packet_with_seq(packet, ingress_seq);
+        let lane_ready = self.shards[shard].submit_socket_packet_with_seq(packet, ingress_seq);
         self.admission_lens.increment(lane);
-        self.ingress_ready_shards.mark(shard, lane);
-        Ok(admitted)
+        if lane_ready {
+            self.ingress_ready_shards.mark(shard, lane);
+        }
+        Ok(ingress_seq)
     }
 
     fn submit_outbound_packet(
@@ -301,10 +303,12 @@ impl PacketMover2 {
 
         let ingress_seq = self.next_outbound_seq();
         let shard = self.owner_shard_index(packet.owner);
-        let admitted = self.shards[shard].submit_outbound_packet_with_seq(packet, ingress_seq);
+        let lane_ready = self.shards[shard].submit_outbound_packet_with_seq(packet, ingress_seq);
         self.outbound_admission_lens.increment(lane);
-        self.outbound_ready_shards.mark(shard, lane);
-        Ok(admitted)
+        if lane_ready {
+            self.outbound_ready_shards.mark(shard, lane);
+        }
+        Ok(ingress_seq)
     }
 
     fn queue_completion(&mut self, completion: CryptoCompletion) {
@@ -356,21 +360,29 @@ impl PacketMover2 {
                 let Some(shard) = self.completion_ready_shards.pop() else {
                     break;
                 };
-                let Some(owner_shard) = self.shards.get_mut(shard) else {
-                    continue;
+                let (got, ingress_ready_after, outbound_ready_after, has_queued_completions) = {
+                    let Some(owner_shard) = self.shards.get_mut(shard) else {
+                        continue;
+                    };
+                    let got = owner_shard.retire_queued_completions_into(
+                        shard_limit.min(limit.saturating_sub(retired_count)),
+                        retired,
+                        &mut self.drops,
+                    );
+                    (
+                        got,
+                        LaneLens::from_tuple(owner_shard.admission_ready_lens()),
+                        LaneLens::from_tuple(owner_shard.outbound_admission_ready_lens()),
+                        owner_shard.has_queued_completions(),
+                    )
                 };
-                let got = owner_shard.retire_queued_completions_into(
-                    shard_limit.min(limit.saturating_sub(retired_count)),
-                    retired,
-                    &mut self.drops,
-                );
                 retired_count = retired_count.saturating_add(got);
                 pass_retired = pass_retired.saturating_add(got);
-                if self
-                    .shards
-                    .get(shard)
-                    .is_some_and(PacketMover2OwnerShard::has_queued_completions)
-                {
+                self.ingress_ready_shards
+                    .mark_from_lens(shard, ingress_ready_after);
+                self.outbound_ready_shards
+                    .mark_from_lens(shard, outbound_ready_after);
+                if has_queued_completions {
                     self.completion_ready_shards.mark(shard);
                 }
             }
@@ -644,9 +656,10 @@ impl PacketMover2 {
                     &mut self.drops,
                 );
                 let after = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
+                let ready_after = LaneLens::from_tuple(self.shards[shard].admission_ready_lens());
                 self.admission_lens
                     .saturating_sub_assign(before.saturating_sub(after));
-                self.ingress_ready_shards.mark_from_lens(shard, after);
+                self.ingress_ready_shards.mark_from_lens(shard, ready_after);
                 dispatched = dispatched.saturating_add(got);
                 pass_dispatched = pass_dispatched.saturating_add(got);
             }
@@ -699,9 +712,11 @@ impl PacketMover2 {
                     &mut self.drops,
                 );
                 let after = LaneLens::from_tuple(self.shards[shard].outbound_admission_queue_lens());
+                let ready_after =
+                    LaneLens::from_tuple(self.shards[shard].outbound_admission_ready_lens());
                 self.outbound_admission_lens
                     .saturating_sub_assign(before.saturating_sub(after));
-                self.outbound_ready_shards.mark_from_lens(shard, after);
+                self.outbound_ready_shards.mark_from_lens(shard, ready_after);
                 dispatched = dispatched.saturating_add(got);
                 pass_dispatched = pass_dispatched.saturating_add(got);
             }

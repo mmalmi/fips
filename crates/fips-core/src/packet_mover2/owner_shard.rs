@@ -194,7 +194,7 @@ impl PacketMover2OwnerShard {
         &mut self,
         packet: SocketPacket,
         ingress_seq: u64,
-    ) -> u64 {
+    ) -> bool {
         self.admission.admit_with_seq(packet, ingress_seq)
     }
 
@@ -202,7 +202,7 @@ impl PacketMover2OwnerShard {
         &mut self,
         packet: OutboundPacket,
         ingress_seq: u64,
-    ) -> u64 {
+    ) -> bool {
         self.outbound_admission.admit_with_seq(packet, ingress_seq)
     }
 
@@ -377,7 +377,8 @@ impl PacketMover2OwnerShard {
     ) {
         let _timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2Retire);
-        let Some(owner) = self.owners.get_mut(&completion.reservation.owner) else {
+        let owner_id = completion.reservation.owner;
+        let Some(owner) = self.owners.get_mut(&owner_id) else {
             let drop = PacketDrop::from_completion(
                 &completion,
                 PacketDropReason::UnknownOwner,
@@ -388,7 +389,12 @@ impl PacketMover2OwnerShard {
             return;
         };
         let retired_start = retired.len();
+        let before_in_flight = owner.in_flight;
         owner.retire_into(completion, retired);
+        if owner.in_flight < before_in_flight {
+            self.admission.wake_owner(owner_id);
+            self.outbound_admission.wake_owner(owner_id);
+        }
         drops.extend(retired[retired_start..].iter().filter_map(|item| match item {
                 RetiredPacket::Drop(drop) => Some(drop.clone()),
                 RetiredPacket::Output(_) => None,
@@ -435,8 +441,16 @@ impl PacketMover2OwnerShard {
         self.admission.lens()
     }
 
+    fn admission_ready_lens(&self) -> (usize, usize) {
+        self.admission.ready_lens()
+    }
+
     fn outbound_admission_queue_lens(&self) -> (usize, usize) {
         self.outbound_admission.lens()
+    }
+
+    fn outbound_admission_ready_lens(&self) -> (usize, usize) {
+        self.outbound_admission.ready_lens()
     }
 
     fn record_authenticated_fsp_session(

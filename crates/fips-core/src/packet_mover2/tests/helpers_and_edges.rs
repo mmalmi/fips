@@ -1,4 +1,5 @@
     use super::*;
+    use crate::PeerIdentity;
     use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
     use ring::aead::UnboundKey;
 

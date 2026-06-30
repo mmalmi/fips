@@ -184,15 +184,15 @@ where
         self.priority_len.saturating_add(self.bulk_len)
     }
 
-    fn push_back(&mut self, item: T) {
-        self.push(item, false);
+    fn push_back(&mut self, item: T) -> bool {
+        self.push(item, false)
     }
 
-    fn push_front(&mut self, item: T) {
-        self.push(item, true);
+    fn push_front(&mut self, item: T) -> bool {
+        self.push(item, true)
     }
 
-    fn push(&mut self, item: T, front: bool) {
+    fn push(&mut self, item: T, front: bool) -> bool {
         let owner = item.owner();
         let lane = item.lane();
         let was_empty = {
@@ -209,6 +209,7 @@ where
         if was_empty {
             self.push_ready_back(lane, owner);
         }
+        was_empty
     }
 
     fn pop_next(&mut self) -> Option<OwnerAdmissionPop<T>> {
@@ -271,17 +272,27 @@ where
     }
 
     fn push_ready_back(&mut self, lane: Lane, owner: OwnerId) {
-        match lane {
-            Lane::Priority => self.priority_ready.push_back(owner),
-            Lane::Bulk => self.bulk_ready.push_back(owner),
+        let ready = match lane {
+            Lane::Priority => &mut self.priority_ready,
+            Lane::Bulk => &mut self.bulk_ready,
+        };
+        if !ready.contains(&owner) {
+            ready.push_back(owner);
         }
     }
 
     fn push_ready_front(&mut self, lane: Lane, owner: OwnerId) {
-        match lane {
-            Lane::Priority => self.priority_ready.push_front(owner),
-            Lane::Bulk => self.bulk_ready.push_front(owner),
+        let ready = match lane {
+            Lane::Priority => &mut self.priority_ready,
+            Lane::Bulk => &mut self.bulk_ready,
+        };
+        if !ready.contains(&owner) {
+            ready.push_front(owner);
         }
+    }
+
+    fn ready_lens(&self) -> (usize, usize) {
+        (self.priority_ready.len(), self.bulk_ready.len())
     }
 
     fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
@@ -299,7 +310,20 @@ where
             .lane_mut(lane)
             .push_front(pop.item);
         self.increment_lane_len(lane);
-        self.push_ready_back(lane, owner);
+    }
+
+    fn wake_owner(&mut self, owner: OwnerId) {
+        let Some(queues) = self.owners.get(&owner) else {
+            return;
+        };
+        let priority_ready = !queues.priority.is_empty();
+        let bulk_ready = !queues.bulk.is_empty();
+        if priority_ready {
+            self.push_ready_back(Lane::Priority, owner);
+        }
+        if bulk_ready {
+            self.push_ready_back(Lane::Bulk, owner);
+        }
     }
 }
 
@@ -315,12 +339,11 @@ impl AdmissionQueue {
         }
     }
 
-    fn admit_with_seq(&mut self, packet: SocketPacket, ingress_seq: u64) -> u64 {
+    fn admit_with_seq(&mut self, packet: SocketPacket, ingress_seq: u64) -> bool {
         self.queues.push_back(QueuedPacket {
             ingress_seq,
             packet,
-        });
-        ingress_seq
+        })
     }
 
     fn pop_next(&mut self) -> Option<OwnerAdmissionPop<QueuedPacket>> {
@@ -345,6 +368,14 @@ impl AdmissionQueue {
 
     fn lens(&self) -> (usize, usize) {
         self.queues.lens()
+    }
+
+    fn ready_lens(&self) -> (usize, usize) {
+        self.queues.ready_lens()
+    }
+
+    fn wake_owner(&mut self, owner: OwnerId) {
+        self.queues.wake_owner(owner);
     }
 }
 
@@ -391,12 +422,11 @@ impl OutboundAdmissionQueue {
         }
     }
 
-    fn admit_with_seq(&mut self, packet: OutboundPacket, ingress_seq: u64) -> u64 {
+    fn admit_with_seq(&mut self, packet: OutboundPacket, ingress_seq: u64) -> bool {
         self.queues.push_back(QueuedOutboundPacket {
             ingress_seq,
             packet,
-        });
-        ingress_seq
+        })
     }
 
     fn pop_next(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
@@ -421,5 +451,13 @@ impl OutboundAdmissionQueue {
 
     fn lens(&self) -> (usize, usize) {
         self.queues.lens()
+    }
+
+    fn ready_lens(&self) -> (usize, usize) {
+        self.queues.ready_lens()
+    }
+
+    fn wake_owner(&mut self, owner: OwnerId) {
+        self.queues.wake_owner(owner);
     }
 }

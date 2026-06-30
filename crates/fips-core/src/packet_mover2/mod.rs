@@ -30,7 +30,7 @@ use crate::transport::{
     TransportId,
 };
 use crate::upper::tun::TunOutboundRx;
-use crate::{NodeAddr, NodeError, PeerIdentity};
+use crate::{NodeAddr, NodeError};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;

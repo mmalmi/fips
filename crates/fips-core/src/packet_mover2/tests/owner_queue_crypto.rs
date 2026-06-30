@@ -286,12 +286,15 @@
         assert_eq!(work[0].packet.owner, runnable);
         assert_eq!(work[0].packet.counter, 1);
         assert_eq!(queue_lens(&mover), (0, 2));
+        assert!(mover.ingress_ready_shards.bulk.is_empty());
+        assert!(dispatch_available(&mut mover, 8).is_empty());
 
         let first_reservation = first[0].reservation.clone();
         retire_completion(&mut mover, CryptoCompletion {
             reservation: first_reservation,
             result: CryptoResult::Failed(CryptoFailureKind::Open),
         });
+        assert!(!mover.ingress_ready_shards.bulk.is_empty());
         let work = dispatch_available(&mut mover, 1);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].packet.owner, blocked);
@@ -794,12 +797,15 @@
         assert_eq!(work[0].reservation.owner, runnable);
         assert_eq!(work[0].reservation.counter, 380);
         assert_eq!(outbound_queue_lens(&mover), (0, 2));
+        assert!(mover.outbound_ready_shards.bulk.is_empty());
+        assert!(dispatch_outbound_available(&mut mover, 8).is_empty());
 
         let first_reservation = first[0].reservation.clone();
         retire_completion(&mut mover, CryptoCompletion {
             reservation: first_reservation,
             result: CryptoResult::Failed(CryptoFailureKind::Seal),
         });
+        assert!(!mover.outbound_ready_shards.bulk.is_empty());
         let work = dispatch_outbound_available(&mut mover, 1);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].reservation.owner, blocked);
