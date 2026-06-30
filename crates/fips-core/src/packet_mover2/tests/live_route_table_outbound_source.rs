@@ -25,6 +25,17 @@
         packet
     }
 
+    fn tun_tcp_data_packet(dest_addr: NodeAddr) -> Vec<u8> {
+        let tcp_payload_len = 512usize;
+        let tcp_len = 20 + tcp_payload_len;
+        let mut packet = tun_ipv6_packet(dest_addr, 40 + tcp_len);
+        packet[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
+        packet[6] = 6;
+        packet[52] = 5 << 4;
+        packet[53] = 0x18;
+        packet
+    }
+
     fn priority_endpoint_payload() -> Vec<u8> {
         let mut packet = vec![0u8; 48];
         packet[0] = 0x60;
@@ -44,6 +55,18 @@
 
     fn bulk_endpoint_payload() -> Vec<u8> {
         vec![0x01, 0x02, 0x03, 0x04]
+    }
+
+    fn bulk_tcp_endpoint_payload() -> Vec<u8> {
+        let tcp_payload_len = 512usize;
+        let tcp_len = 20 + tcp_payload_len;
+        let mut packet = vec![0u8; 40 + tcp_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
+        packet[6] = 6;
+        packet[52] = 5 << 4;
+        packet[53] = 0x18;
+        packet
     }
 
     #[test]
@@ -113,6 +136,51 @@
         assert_eq!(drops[0].payload_len(), invalid.len());
         assert_eq!(drops[1].payload_len(), oversize.len());
         assert_eq!(drops[1].packet(), oversize.as_slice());
+    }
+
+    #[test]
+    fn live_route_table_marks_tcp_tun_data_as_reliable_bulk() {
+        let dest = NodeAddr::from_bytes([0x63; 16]);
+        let owner = OwnerId::fmp_node(dest);
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_tun_destination(
+            dest,
+            PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
+                owner,
+                5,
+                PacketClass::Bulk,
+                610,
+                0x02,
+            )),
+        );
+
+        let tcp_data = tun_tcp_data_packet(dest);
+        let udp_data = tun_ipv6_packet(dest, 64);
+        let (tx, mut rx) = crate::upper::tun::tun_outbound_channel(8);
+        tx.try_send(tcp_data.clone())
+            .expect("enqueue TCP TUN packet");
+        tx.try_send(udp_data.clone())
+            .expect("enqueue UDP TUN packet");
+
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(1);
+        drop((priority_tx, bulk_tx));
+        let mut source = PacketMover2RouteTableOutboundSource::new(
+            &mut priority_rx,
+            &mut bulk_rx,
+            0,
+            &mut rx,
+            8,
+            &mut routes,
+        );
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 2);
+        assert_eq!(outbound.len(), 2);
+        assert_eq!(outbound[0].class, PacketClass::ReliableBulk);
+        assert_eq!(outbound[0].payload.as_ref(), tcp_data.as_slice());
+        assert_eq!(outbound[1].class, PacketClass::Bulk);
+        assert_eq!(outbound[1].payload.as_ref(), udp_data.as_slice());
     }
 
     #[test]
@@ -218,6 +286,56 @@
         assert_eq!(deferred.len(), 1);
         assert_eq!(deferred[0].lane(), EndpointCommandLane::Bulk);
         assert_eq!(deferred[0].packet_count(), 1);
+    }
+
+    #[test]
+    fn live_route_table_marks_tcp_endpoint_data_as_reliable_bulk() {
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let owner = OwnerId::fsp_node(*remote.node_addr());
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_endpoint_destination(
+            *remote.node_addr(),
+            PacketMover2EndpointCommandRoute::fsp(owner, 7, 0x03, 0x09),
+        );
+
+        let tcp_payload = bulk_tcp_endpoint_payload();
+        let udp_payload = bulk_endpoint_payload();
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(8);
+        drop(priority_tx);
+        bulk_tx
+            .try_send(
+                NodeEndpointCommand::send_batch_oneway(
+                    remote,
+                    vec![
+                        EndpointDataPayload::new(tcp_payload.clone()),
+                        EndpointDataPayload::new(udp_payload.clone()),
+                    ],
+                    None,
+                    EndpointCommandLane::Bulk,
+                )
+                .expect("bulk endpoint batch"),
+            )
+            .expect("enqueue bulk endpoint batch");
+
+        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
+        drop(tun_tx);
+        let mut source = PacketMover2RouteTableOutboundSource::new(
+            &mut priority_rx,
+            &mut bulk_rx,
+            8,
+            &mut tun_rx,
+            0,
+            &mut routes,
+        );
+        let mut outbound = Vec::new();
+
+        assert_eq!(source.drain_outbound(8, |packet| outbound.push(packet)), 1);
+        assert_eq!(outbound.len(), 2);
+        assert_eq!(outbound[0].class, PacketClass::ReliableBulk);
+        assert_eq!(outbound[0].payload.as_ref(), tcp_payload.as_slice());
+        assert_eq!(outbound[1].class, PacketClass::Bulk);
+        assert_eq!(outbound[1].payload.as_ref(), udp_payload.as_slice());
     }
 
     #[test]

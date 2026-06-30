@@ -148,10 +148,15 @@ impl PacketMover2TunOutboundRoute {
         }
         if crate::node::endpoint_payload_is_liveness_probe(payload) {
             PacketClass::Liveness
-        } else if crate::node::endpoint_payload_is_latency_sensitive(payload) {
-            PacketClass::Control
         } else {
-            PacketClass::Bulk
+            let traffic_class = crate::node::classify_endpoint_payload(payload);
+            if traffic_class.is_latency_sensitive() {
+                PacketClass::Control
+            } else if traffic_class.drop_on_backpressure() {
+                PacketClass::Bulk
+            } else {
+                PacketClass::ReliableBulk
+            }
         }
     }
 

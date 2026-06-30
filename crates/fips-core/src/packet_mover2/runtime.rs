@@ -188,16 +188,22 @@ impl PacketMover2TurnDriver {
         let plans = transport_output.plans();
         report.transport_planned = plans.len();
         let dropped_before = report.output_drops.len();
-        report.transport_sent = if collect_transport_sent_outputs {
-            send_packet_mover2_transport_plans_collect_sent(
-                transports,
-                plans,
-                &mut report.output_drops,
-                &mut report.transport_sent_outputs,
-            )
-            .await
-        } else {
-            send_packet_mover2_transport_plans(transports, plans, &mut report.output_drops).await
+        report.transport_sent = {
+            let _transport_send_timer = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::PacketMover2TransportSend,
+            );
+            if collect_transport_sent_outputs {
+                send_packet_mover2_transport_plans_collect_sent(
+                    transports,
+                    plans,
+                    &mut report.output_drops,
+                    &mut report.transport_sent_outputs,
+                )
+                .await
+            } else {
+                send_packet_mover2_transport_plans(transports, plans, &mut report.output_drops)
+                    .await
+            }
         };
         report.transport_dropped = report.output_drops.len().saturating_sub(dropped_before);
         debug_assert_eq!(
@@ -333,6 +339,9 @@ impl PacketMover2TurnDriver {
     where
         C: PacketMover2CompletionSource,
     {
+        let _completion_timer = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::PacketMover2CompletionDrain,
+        );
         self.reset_turn_buffers();
         let mut summary = PacketMover2RuntimeSummary::default();
         completions.drain_completions(completion_limit, |completion| {
@@ -373,6 +382,8 @@ impl PacketMover2TurnDriver {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        let admit_timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveAdmit);
         let mut outbound_firsts = outbound_firsts;
         let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
         if let Some(packet) = outbound_firsts.take_initial_outbound() {
@@ -432,6 +443,7 @@ impl PacketMover2TurnDriver {
             tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
             outbound_buffers = outbound_source.take_report_buffers();
         }
+        drop(admit_timer);
 
         let mut report = self
             .finish_aead_live_node_output_turn_with_executor(
@@ -649,7 +661,12 @@ impl PacketMover2TurnDriver {
         S: PacketMover2OutputSink,
     {
         let dropped_before = self.output_drops.len();
-        let sent = sink.send_batch(self.outputs.drain(..), &mut self.output_drops);
+        let sent = {
+            let _output_sink_timer = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::PacketMover2OutputSink,
+            );
+            sink.send_batch(self.outputs.drain(..), &mut self.output_drops)
+        };
         summary.outputs_sent += sent;
         summary.outputs_dropped += self.output_drops.len().saturating_sub(dropped_before);
 
@@ -840,16 +857,21 @@ impl PacketMover2TurnDriver {
     {
         let mut remaining = limit;
         while remaining > 0 {
-            let dispatched = self.mover.run_aead_available_into_with_executor(
-                remaining,
-                &mut self.open_work,
-                &mut self.seal_work,
-                &mut self.prepared_work,
-                &mut self.completion_work,
-                &mut self.retired,
-                &mut self.drops,
-                executor,
-            );
+            let dispatched = {
+                let _dispatch_timer = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::PacketMover2AeadDispatch,
+                );
+                self.mover.run_aead_available_into_with_executor(
+                    remaining,
+                    &mut self.open_work,
+                    &mut self.seal_work,
+                    &mut self.prepared_work,
+                    &mut self.completion_work,
+                    &mut self.retired,
+                    &mut self.drops,
+                    executor,
+                )
+            };
             summary.dispatched = summary.dispatched.saturating_add(dispatched);
             remaining = remaining.saturating_sub(dispatched);
 

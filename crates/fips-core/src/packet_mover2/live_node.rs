@@ -417,6 +417,8 @@ impl PacketMover2LiveNode {
         Resolver: PacketMover2EndpointIdentityResolver,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        let _turn_timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
         let summary = self
             .driver
             .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
@@ -552,6 +554,8 @@ impl PacketMover2LiveNode {
         } = self;
         empty_raw_ingress.clear();
 
+        let _turn_timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
         let summary = driver.start_aead_completion_turn(crypto_worker, crypto_limit);
         driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(

@@ -42,6 +42,7 @@ pub(crate) enum PacketClass {
     Rekey,
     Mmp,
     Liveness,
+    ReliableBulk,
     Bulk,
 }
 
@@ -49,7 +50,7 @@ impl PacketClass {
     fn lane(self) -> Lane {
         match self {
             Self::Control | Self::Rekey | Self::Mmp | Self::Liveness => Lane::Priority,
-            Self::Bulk => Lane::Bulk,
+            Self::ReliableBulk | Self::Bulk => Lane::Bulk,
         }
     }
 }

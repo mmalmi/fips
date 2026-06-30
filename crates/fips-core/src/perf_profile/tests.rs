@@ -264,6 +264,21 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
             Stage::PacketMover2FspOwnerSync,
             "packet_mover2_fsp_owner_sync",
         ),
+        (Stage::PacketMover2LiveTurn, "packet_mover2_live_turn"),
+        (
+            Stage::PacketMover2CompletionDrain,
+            "packet_mover2_completion_drain",
+        ),
+        (Stage::PacketMover2LiveAdmit, "packet_mover2_live_admit"),
+        (
+            Stage::PacketMover2AeadDispatch,
+            "packet_mover2_aead_dispatch",
+        ),
+        (Stage::PacketMover2OutputSink, "packet_mover2_output_sink"),
+        (
+            Stage::PacketMover2TransportSend,
+            "packet_mover2_transport_send",
+        ),
     ] {
         assert_eq!(stage_from_index(stage as usize).name(), name);
     }
@@ -278,9 +293,7 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
         (Stage::ReservedStage34, "reserved_stage_34"),
         (Stage::ReservedStage37, "reserved_stage_37"),
         (Stage::ReservedStage47, "reserved_stage_47"),
-        (Stage::ReservedStage59, "reserved_stage_59"),
-        (Stage::ReservedStage60, "reserved_stage_60"),
-        (Stage::ReservedStage61, "reserved_stage_61"),
+        (Stage::ReservedStage63, "reserved_stage_63"),
         (Stage::ReservedStage68, "reserved_stage_68"),
     ] {
         assert_eq!(stage_from_index(stage as usize).name(), name);

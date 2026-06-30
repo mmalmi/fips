@@ -87,7 +87,7 @@ impl PacketMover2 {
                 ));
                 continue;
             };
-            if !owner.can_reserve_lane(queued.packet.lane()) {
+            if !owner.can_reserve_class(queued.packet.class) {
                 self.admission.push_front(queued);
                 break;
             }
@@ -129,7 +129,7 @@ impl PacketMover2 {
             let owner_id = queued.packet.owner;
             let lane = queued.packet.lane();
             let ingress_seq = queued.ingress_seq;
-            if !owner.can_reserve_lane(lane) {
+            if !owner.can_reserve_class(queued.packet.class) {
                 self.outbound_admission.push_front(queued);
                 break;
             }
@@ -177,7 +177,7 @@ impl PacketMover2 {
             let owner_id = queued.packet.owner;
             let lane = queued.packet.lane();
             let ingress_seq = queued.ingress_seq;
-            if !owner.can_reserve_lane(lane) {
+            if !owner.can_reserve_class(queued.packet.class) {
                 self.outbound_admission.push_front(queued);
                 break;
             }

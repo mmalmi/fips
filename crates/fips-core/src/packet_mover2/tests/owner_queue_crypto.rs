@@ -500,6 +500,118 @@
     }
 
     #[test]
+    fn owner_reliable_bulk_window_feeds_deeper_without_widening_discardable_bulk() {
+        let owner = fsp_owner(34);
+        let mut state = OwnerState::new(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_bulk_in_flight_limit(2)
+                .with_reliable_bulk_in_flight_limit(4),
+        );
+
+        for counter in 10..12 {
+            state
+                .reserve(
+                    &packet(owner, 1, counter, PacketClass::Bulk, OutputTarget::Tun),
+                    counter,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            state.reserve(
+                &packet(owner, 1, 12, PacketClass::Bulk, OutputTarget::Tun),
+                12,
+            ),
+            Err(OwnerReserveError::InFlightFull)
+        );
+
+        for counter in 20..24 {
+            state
+                .reserve(
+                    &packet(
+                        owner,
+                        1,
+                        counter,
+                        PacketClass::ReliableBulk,
+                        OutputTarget::Tun,
+                    ),
+                    counter,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            state.reserve(
+                &packet(
+                    owner,
+                    1,
+                    24,
+                    PacketClass::ReliableBulk,
+                    OutputTarget::Tun,
+                ),
+                24,
+            ),
+            Err(OwnerReserveError::InFlightFull)
+        );
+
+        let liveness = state
+            .reserve(
+                &packet(owner, 1, 30, PacketClass::Liveness, OutputTarget::Tun),
+                30,
+            )
+            .unwrap();
+        assert_eq!(liveness.lane, Lane::Priority);
+        assert_eq!(state.in_flight, 7);
+    }
+
+    #[test]
+    fn owner_total_bulk_window_keeps_priority_reserve_across_bulk_classes() {
+        let owner = fsp_owner(35);
+        let mut state = OwnerState::new(
+            owner,
+            OwnerConfig::new(1, 4)
+                .with_bulk_in_flight_limit(3)
+                .with_reliable_bulk_in_flight_limit(3),
+        );
+
+        for counter in 10..13 {
+            state
+                .reserve(
+                    &packet(
+                        owner,
+                        1,
+                        counter,
+                        PacketClass::ReliableBulk,
+                        OutputTarget::Tun,
+                    ),
+                    counter,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            state.reserve(
+                &packet(
+                    owner,
+                    1,
+                    13,
+                    PacketClass::ReliableBulk,
+                    OutputTarget::Tun,
+                ),
+                13,
+            ),
+            Err(OwnerReserveError::InFlightFull)
+        );
+
+        let control = state
+            .reserve(
+                &packet(owner, 1, 20, PacketClass::Control, OutputTarget::Tun),
+                20,
+            )
+            .unwrap();
+        assert_eq!(control.lane, Lane::Priority);
+        assert_eq!(state.in_flight, 4);
+    }
+
+    #[test]
     fn outbound_dispatch_preserves_priority_when_bulk_in_flight_cap_is_full() {
         let owner = fsp_owner(36);
         let mut mover = PacketMover2::new(AdmissionConfig::new(8, 8));

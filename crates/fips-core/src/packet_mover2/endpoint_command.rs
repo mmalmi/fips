@@ -3,6 +3,7 @@ pub(crate) struct PacketMover2EndpointCommandPayload<'a> {
     dest_addr: NodeAddr,
     dest_pubkey: secp256k1::PublicKey,
     lane: EndpointCommandLane,
+    drop_on_backpressure: bool,
     payload: &'a [u8],
 }
 
@@ -12,6 +13,7 @@ impl<'a> PacketMover2EndpointCommandPayload<'a> {
             dest_addr: send.dest_addr(),
             dest_pubkey: send.dest_pubkey(),
             lane: send.payload().lane(),
+            drop_on_backpressure: send.payload().drop_on_backpressure(),
             payload: send.payload().as_slice(),
         }
     }
@@ -30,6 +32,10 @@ impl<'a> PacketMover2EndpointCommandPayload<'a> {
 
     pub(crate) fn payload(&self) -> &'a [u8] {
         self.payload
+    }
+
+    fn packet_class(&self) -> PacketClass {
+        endpoint_packet_class(self.lane, self.drop_on_backpressure)
     }
 }
 
@@ -53,6 +59,13 @@ impl PacketMover2EndpointCommandOwnedPayload {
 
     fn lane(&self) -> EndpointCommandLane {
         self.send.payload().lane()
+    }
+
+    fn packet_class(&self) -> PacketClass {
+        endpoint_packet_class(
+            self.send.payload().lane(),
+            self.send.payload().drop_on_backpressure(),
+        )
     }
 
     fn payload_len(&self) -> usize {
@@ -162,10 +175,7 @@ impl PacketMover2EndpointCommandRoute {
         request: PacketMover2EndpointCommandPayload<'_>,
     ) -> Result<OutboundPacket, PacketMover2EndpointCommandDropReason> {
         self.validate_payload_len(request.payload().len())?;
-        Ok(self.build_packet(
-            endpoint_packet_class(request.lane()),
-            request.payload().to_vec(),
-        ))
+        Ok(self.build_packet(request.packet_class(), request.payload().to_vec()))
     }
 
     fn route_owned_request(
@@ -176,7 +186,7 @@ impl PacketMover2EndpointCommandRoute {
         if let Err(reason) = self.validate_payload_len(request.payload_len()) {
             return Err((request, reason));
         }
-        let class = endpoint_packet_class(request.lane());
+        let class = request.packet_class();
         Ok(self.build_packet(class, request.into_payload_bytes()))
     }
 
@@ -214,10 +224,11 @@ impl PacketMover2EndpointCommandRoute {
     }
 }
 
-fn endpoint_packet_class(lane: EndpointCommandLane) -> PacketClass {
+fn endpoint_packet_class(lane: EndpointCommandLane, drop_on_backpressure: bool) -> PacketClass {
     match lane {
         EndpointCommandLane::Priority => PacketClass::Control,
-        EndpointCommandLane::Bulk => PacketClass::Bulk,
+        EndpointCommandLane::Bulk if drop_on_backpressure => PacketClass::Bulk,
+        EndpointCommandLane::Bulk => PacketClass::ReliableBulk,
     }
 }
 

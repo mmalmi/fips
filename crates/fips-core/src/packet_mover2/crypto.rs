@@ -7,6 +7,8 @@ pub(crate) enum PreparedCryptoWork {
     Completed(CryptoCompletion),
 }
 
+const PACKET_MOVER2_AEAD_WORKER_CHUNK_TARGET: usize = 16;
+
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
         Self::Open { work, cipher }
@@ -200,18 +202,31 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             return count;
         };
 
-        match work_tx.try_send(chunk) {
-            Ok(()) => {
-                self.in_flight
-                    .fetch_add(count, std::sync::atomic::Ordering::AcqRel);
+        let mut remaining = chunk.into_iter();
+        loop {
+            let work_chunk: Vec<_> = remaining
+                .by_ref()
+                .take(PACKET_MOVER2_AEAD_WORKER_CHUNK_TARGET)
+                .collect();
+            if work_chunk.is_empty() {
+                break;
             }
-            Err(crossbeam_channel::TrySendError::Full(mut chunk))
-            | Err(crossbeam_channel::TrySendError::Disconnected(mut chunk)) => {
-                completions.extend(
-                    chunk
-                        .drain(..)
-                        .map(PreparedCryptoWork::into_executor_failed_completion),
-                );
+            let chunk_len = work_chunk.len();
+            match work_tx.try_send(work_chunk) {
+                Ok(()) => {
+                    self.in_flight
+                        .fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
+                }
+                Err(crossbeam_channel::TrySendError::Full(mut work_chunk))
+                | Err(crossbeam_channel::TrySendError::Disconnected(mut work_chunk)) => {
+                    completions.extend(
+                        work_chunk
+                            .drain(..)
+                            .map(PreparedCryptoWork::into_executor_failed_completion),
+                    );
+                    completions.extend(remaining.map(PreparedCryptoWork::into_executor_failed_completion));
+                    break;
+                }
             }
         }
         count
