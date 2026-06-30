@@ -69,21 +69,21 @@ pub(crate) struct FspReceiveSync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FspReceiveSyncApply {
     applied: bool,
-    refresh_worker_session: bool,
+    refresh_packet_mover2_owner: bool,
 }
 
 impl FspReceiveSyncApply {
-    fn applied(refresh_worker_session: bool) -> Self {
+    fn applied(refresh_packet_mover2_owner: bool) -> Self {
         Self {
             applied: true,
-            refresh_worker_session,
+            refresh_packet_mover2_owner,
         }
     }
 
     fn stale() -> Self {
         Self {
             applied: false,
-            refresh_worker_session: false,
+            refresh_packet_mover2_owner: false,
         }
     }
 
@@ -91,8 +91,8 @@ impl FspReceiveSyncApply {
         self.applied
     }
 
-    pub(crate) fn refresh_worker_session(self) -> bool {
-        self.refresh_worker_session
+    pub(crate) fn refresh_packet_mover2_owner(self) -> bool {
+        self.refresh_packet_mover2_owner
     }
 }
 
@@ -688,11 +688,11 @@ impl SessionEntry {
         self.clear_rekey_msg3_payload();
     }
 
-    /// Mirror a frame authenticated by the decrypt worker into rx-loop-owned
+    /// Mirror a frame authenticated by packet_mover2 into rx-loop-owned
     /// session metadata.
     ///
-    /// The worker already performed AEAD verification and replay admission
-    /// against its owned snapshot. This method keeps the canonical
+    /// PM2 already performed AEAD verification and owner replay admission.
+    /// This method keeps the canonical
     /// `SessionEntry` coherent and performs the final rx-loop replay guard:
     /// replay windows are advanced for slow paths, pending epochs are
     /// promoted, MMP receive state is updated, and idle counters observe
@@ -707,7 +707,7 @@ impl SessionEntry {
             return FspReceiveSyncApply::stale();
         }
 
-        let mut refresh_worker_session = false;
+        let mut refresh_packet_mover2_owner = false;
         match sync.slot {
             EpochSlot::Current => {
                 let Some(session) = self.current_noise_session_mut() else {
@@ -731,11 +731,11 @@ impl SessionEntry {
                         self.confirm_peer_new_epoch();
                     }
                     self.handle_peer_kbit_flip(now_ms);
-                    refresh_worker_session = true;
+                    refresh_packet_mover2_owner = true;
                 } else if sync.received_k_bit == self.current_k_bit {
                     // A second pending-epoch event can reach rx_loop after an
                     // earlier event already promoted the pending session. The
-                    // worker authenticated it before promotion; mirror it into
+                    // PM2 authenticated it before promotion; mirror it into
                     // the now-current slot instead of dropping good data.
                     let Some(session) = self.current_noise_session_mut() else {
                         return FspReceiveSyncApply::stale();
@@ -782,7 +782,7 @@ impl SessionEntry {
             mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
         }
         self.touch_inbound_frame(now_ms);
-        FspReceiveSyncApply::applied(refresh_worker_session)
+        FspReceiveSyncApply::applied(refresh_packet_mover2_owner)
     }
 
     /// Store a completed rekey session.

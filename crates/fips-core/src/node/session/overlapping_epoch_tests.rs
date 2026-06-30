@@ -73,7 +73,7 @@ fn apply_fsp_receive_sync_current_advances_replay_and_inbound_state() {
     );
 
     assert!(applied.is_applied());
-    assert!(!applied.refresh_worker_session());
+    assert!(!applied.refresh_packet_mover2_owner());
     assert_eq!(entry.current_highest_counter(), Some(7));
     assert_eq!(entry.consecutive_decrypt_failures(), 0);
     assert_eq!(entry.last_inbound_frame_ms(), 2_000);
@@ -102,12 +102,12 @@ fn apply_fsp_receive_sync_rejects_seen_counter() {
                 Instant::now(),
             )
             .is_applied(),
-        "rx-loop mirror must not dispatch a worker-authenticated replay"
+        "rx-loop mirror must not dispatch a PM2-authenticated replay"
     );
 }
 
 #[test]
-fn apply_fsp_receive_sync_pending_promotes_epoch_and_refreshes_worker() {
+fn apply_fsp_receive_sync_pending_promotes_epoch_and_refreshes_pm2_owner() {
     let (_cur_send, cur_recv) = xk_pair(1, 2);
     let (_pending_send, pending_recv) = xk_pair(3, 4);
 
@@ -122,7 +122,7 @@ fn apply_fsp_receive_sync_pending_promotes_epoch_and_refreshes_worker() {
     );
 
     assert!(applied.is_applied());
-    assert!(applied.refresh_worker_session());
+    assert!(applied.refresh_packet_mover2_owner());
     assert!(entry.pending_new_session().is_none());
     assert_ne!(entry.current_k_bit(), k_before);
     assert!(entry.previous_highest_counter().is_some());
@@ -224,7 +224,7 @@ fn pending_sync_without_pending_session_is_stale_until_session_arrives() {
                 Instant::now(),
             )
             .is_applied(),
-        "rx loop cannot mirror a pending-epoch worker result before the owner has the pending session"
+        "rx loop cannot mirror a pending-epoch PM2 result before the owner has the pending session"
     );
 
     entry.set_pending_session(pending_recv);

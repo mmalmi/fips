@@ -240,7 +240,7 @@
     }
 
     #[test]
-    fn fsp_receive_sync_requests_worker_refresh_only_on_epoch_promotion() {
+    fn fsp_receive_sync_requests_pm2_owner_refresh_only_on_epoch_promotion() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let mut entry = established_entry(&local, &peer);
@@ -265,8 +265,8 @@
 
         assert!(promoted.is_applied());
         assert!(
-            promoted.refresh_worker_session(),
-            "pending promotion changes FSP epoch topology and must refresh worker snapshots"
+            promoted.refresh_packet_mover2_owner(),
+            "pending promotion changes FSP epoch topology and must refresh the PM2 owner"
         );
         assert_eq!(entry.current_k_bit(), !initial_k_bit);
         assert!(entry.pending_new_session().is_none());
@@ -289,8 +289,8 @@
 
         assert!(current.is_applied());
         assert!(
-            !current.refresh_worker_session(),
-            "ordinary current-epoch replay mirroring must not re-register workers"
+            !current.refresh_packet_mover2_owner(),
+            "ordinary current-epoch replay mirroring must not refresh the PM2 owner"
         );
     }
 
