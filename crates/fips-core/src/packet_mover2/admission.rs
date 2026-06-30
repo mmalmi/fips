@@ -81,7 +81,6 @@ struct QueuedOutboundPacket {
 trait OwnerQueuedAdmission {
     fn owner(&self) -> OwnerId;
     fn lane(&self) -> Lane;
-    fn ingress_seq(&self) -> u64;
 }
 
 impl OwnerQueuedAdmission for QueuedPacket {
@@ -93,9 +92,6 @@ impl OwnerQueuedAdmission for QueuedPacket {
         self.packet.lane()
     }
 
-    fn ingress_seq(&self) -> u64 {
-        self.ingress_seq
-    }
 }
 
 impl OwnerQueuedAdmission for QueuedOutboundPacket {
@@ -107,9 +103,6 @@ impl OwnerQueuedAdmission for QueuedOutboundPacket {
         self.packet.lane()
     }
 
-    fn ingress_seq(&self) -> u64 {
-        self.ingress_seq
-    }
 }
 
 #[derive(Debug)]
@@ -227,30 +220,8 @@ where
         self.pop_lane(Lane::Priority)
     }
 
-    fn peek_next_seq(&self) -> Option<u64> {
-        self.peek_lane_seq(Lane::Priority)
-            .or_else(|| self.peek_lane_seq(Lane::Bulk))
-    }
-
-    fn peek_next_priority_seq(&self) -> Option<u64> {
-        self.peek_lane_seq(Lane::Priority)
-    }
-
     fn has_priority_pending(&self) -> bool {
         self.priority_len > 0
-    }
-
-    fn peek_lane_seq(&self, lane: Lane) -> Option<u64> {
-        let ready = match lane {
-            Lane::Priority => &self.priority_ready,
-            Lane::Bulk => &self.bulk_ready,
-        };
-        ready.iter().find_map(|owner| {
-            self.owners
-                .get(owner)
-                .and_then(|queues| queues.lane(lane).front())
-                .map(OwnerQueuedAdmission::ingress_seq)
-        })
     }
 
     fn pop_lane(&mut self, lane: Lane) -> Option<OwnerAdmissionPop<T>> {
@@ -364,14 +335,6 @@ impl AdmissionQueue {
         self.queues.pop_next_priority()
     }
 
-    fn peek_next_seq(&self) -> Option<u64> {
-        self.queues.peek_next_seq()
-    }
-
-    fn peek_next_priority_seq(&self) -> Option<u64> {
-        self.queues.peek_next_priority_seq()
-    }
-
     fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
         self.queues.continue_owner_run(cursor);
     }
@@ -451,14 +414,6 @@ impl OutboundAdmissionQueue {
 
     fn pop_next_priority(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
         self.queues.pop_next_priority()
-    }
-
-    fn peek_next_seq(&self) -> Option<u64> {
-        self.queues.peek_next_seq()
-    }
-
-    fn peek_next_priority_seq(&self) -> Option<u64> {
-        self.queues.peek_next_priority_seq()
     }
 
     fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {

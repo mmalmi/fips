@@ -6,11 +6,6 @@ struct PacketMover2OwnerShard {
     drops: Vec<PacketDrop>,
 }
 
-enum OutboundDispatchResult {
-    Completed,
-    Blocked(QueuedOutboundPacket),
-}
-
 impl PacketMover2OwnerShard {
     fn new() -> Self {
         Self {
@@ -151,30 +146,6 @@ impl PacketMover2OwnerShard {
         self.outbound_admission.has_priority_pending()
     }
 
-    fn admission_len_for_priority(&self, priority_only: bool) -> usize {
-        if priority_only {
-            self.admission_lane_len(Lane::Priority)
-        } else {
-            self.admission.len()
-        }
-    }
-
-    fn peek_ingress_seq(&self, priority_only: bool) -> Option<u64> {
-        if priority_only {
-            self.admission.peek_next_priority_seq()
-        } else {
-            self.admission.peek_next_seq()
-        }
-    }
-
-    fn peek_outbound_seq(&self, priority_only: bool) -> Option<u64> {
-        if priority_only {
-            self.outbound_admission.peek_next_priority_seq()
-        } else {
-            self.outbound_admission.peek_next_seq()
-        }
-    }
-
     fn admission_lane_len(&self, lane: Lane) -> usize {
         let lens = self.admission.lens();
         match lane {
@@ -191,79 +162,86 @@ impl PacketMover2OwnerShard {
         }
     }
 
-    fn outbound_len(&self) -> usize {
-        self.outbound_admission.len()
-    }
-
-    fn pop_outbound(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
-        self.outbound_admission.pop_next()
-    }
-
-    fn pop_outbound_priority(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
-        self.outbound_admission.pop_next_priority()
-    }
-
-    fn continue_outbound_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
-        self.outbound_admission.continue_owner_run(cursor);
-    }
-
-    fn defer_outbound_owner_pop(&mut self, pop: OwnerAdmissionPop<QueuedOutboundPacket>) {
-        self.outbound_admission.defer_owner_pop(pop);
-    }
-
     fn dispatch_outbound_prepared_into(
         &mut self,
-        queued: QueuedOutboundPacket,
+        limit: usize,
         prepared: &mut Vec<PreparedCryptoWork>,
-    ) -> OutboundDispatchResult {
-        let owner_id = queued.packet.owner;
-        let lane = queued.packet.lane();
-        let class = queued.packet.class;
-        let ingress_seq = queued.ingress_seq;
+        priority_only: bool,
+    ) -> usize {
+        let start_len = prepared.len();
+        let target_len = start_len.saturating_add(limit);
+        let mut attempts_remaining = self.outbound_admission.len();
+        while prepared.len() < target_len && attempts_remaining > 0 {
+            let pop = if priority_only {
+                self.outbound_admission.pop_next_priority()
+            } else {
+                self.outbound_admission.pop_next()
+            };
+            let Some(OwnerAdmissionPop {
+                item: queued,
+                cursor,
+            }) = pop
+            else {
+                break;
+            };
+            attempts_remaining = attempts_remaining.saturating_sub(1);
+            let owner_id = queued.packet.owner;
+            let lane = queued.packet.lane();
+            let class = queued.packet.class;
+            let ingress_seq = queued.ingress_seq;
 
-        let Some(owner) = self.owners.get(&owner_id) else {
-            self.drops.push(PacketDrop::from_queued_outbound(
-                &queued,
-                PacketDropReason::UnknownOwner,
-            ));
-            return OutboundDispatchResult::Completed;
-        };
-        if !owner.can_reserve_class(class) {
-            record_owner_blocked(owner.reserve_block_reason(class));
-            return OutboundDispatchResult::Blocked(queued);
-        }
-        let keys = owner.crypto_keys();
-
-        let (reservation, packet) = {
-            let owner = self
-                .owners
-                .get_mut(&owner_id)
-                .expect("outbound owner checked before reservation");
-            match owner.reserve_outbound(queued.packet, ingress_seq) {
-                Ok(reserved) => reserved,
-                Err(error) => {
-                    self.drops.push(PacketDrop {
-                        owner: owner_id,
-                        counter: None,
-                        ingress_seq: Some(ingress_seq),
-                        lane,
-                        reason: error.into(),
-                        crypto_failure: None,
-                        wire_flags: None,
-                        authenticated_counter_highest: None,
-                    });
-                    return OutboundDispatchResult::Completed;
-                }
+            let Some(owner) = self.owners.get(&owner_id) else {
+                self.drops.push(PacketDrop::from_queued_outbound(
+                    &queued,
+                    PacketDropReason::UnknownOwner,
+                ));
+                self.outbound_admission.continue_owner_run(cursor);
+                continue;
+            };
+            if !owner.can_reserve_class(class) {
+                record_owner_blocked(owner.reserve_block_reason(class));
+                self.outbound_admission.defer_owner_pop(OwnerAdmissionPop {
+                    item: queued,
+                    cursor,
+                });
+                continue;
             }
-        };
+            let keys = owner.crypto_keys();
 
-        let work = OutboundCryptoWork::new(reservation.clone(), packet);
-        let prepared_work = match keys {
-            Some(keys) => PreparedCryptoWork::seal(work, keys.seal),
-            None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal),
-        };
-        prepared.push(prepared_work);
-        OutboundDispatchResult::Completed
+            let (reservation, packet) = {
+                let owner = self
+                    .owners
+                    .get_mut(&owner_id)
+                    .expect("outbound owner checked before reservation");
+                match owner.reserve_outbound(queued.packet, ingress_seq) {
+                    Ok(reserved) => reserved,
+                    Err(error) => {
+                        self.drops.push(PacketDrop {
+                            owner: owner_id,
+                            counter: None,
+                            ingress_seq: Some(ingress_seq),
+                            lane,
+                            reason: error.into(),
+                            crypto_failure: None,
+                            wire_flags: None,
+                            authenticated_counter_highest: None,
+                        });
+                        self.outbound_admission.continue_owner_run(cursor);
+                        continue;
+                    }
+                }
+            };
+
+            let work = OutboundCryptoWork::new(reservation.clone(), packet);
+            let prepared_work = match keys {
+                Some(keys) => PreparedCryptoWork::seal(work, keys.seal),
+                None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal),
+            };
+            prepared.push(prepared_work);
+            self.outbound_admission.continue_owner_run(cursor);
+            attempts_remaining = self.outbound_admission.len();
+        }
+        prepared.len().saturating_sub(start_len)
     }
 
     pub(crate) fn retire_completion(&mut self, completion: CryptoCompletion) -> Vec<RetiredPacket> {

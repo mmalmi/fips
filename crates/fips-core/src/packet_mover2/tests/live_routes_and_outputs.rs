@@ -316,25 +316,23 @@
         assert_eq!(turn.summary().outputs(), 2);
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.drops().is_empty());
+        let fmp_output = turn
+            .outputs()
+            .iter()
+            .find(|output| output.owner() == fmp_owner)
+            .expect("FMP output should be present");
+        let fsp_output = turn
+            .outputs()
+            .iter()
+            .find(|output| output.owner() == fsp_owner)
+            .expect("FSP output should be present");
+        assert_eq!(fmp_output.target(), OutputTarget::Endpoint);
+        assert_eq!(fsp_output.target(), OutputTarget::Tun);
         assert_eq!(
-            turn.outputs()
-                .iter()
-                .map(PacketOutput::owner)
-                .collect::<Vec<_>>(),
-            vec![fmp_owner, fsp_owner]
-        );
-        assert_eq!(
-            turn.outputs()
-                .iter()
-                .map(PacketOutput::target)
-                .collect::<Vec<_>>(),
-            vec![OutputTarget::Endpoint, OutputTarget::Tun]
-        );
-        assert_eq!(
-            &turn.outputs()[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            &fmp_output.payload()[FMP_ESTABLISHED_HEADER_SIZE..],
             b"fmp-live"
         );
-        assert_eq!(&turn.outputs()[1].payload[FSP_HEADER_SIZE..], b"fsp-live");
+        assert_eq!(&fsp_output.payload()[FSP_HEADER_SIZE..], b"fsp-live");
 
         let live_path = Some(TransportPath::live(transport_id, remote_addr));
         assert_eq!(
