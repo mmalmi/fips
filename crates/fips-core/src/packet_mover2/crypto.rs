@@ -94,6 +94,14 @@ impl PreparedCryptoWork {
         }
     }
 
+    fn owner(&self) -> OwnerId {
+        match self {
+            Self::Open { work, .. } => work.reservation.owner,
+            Self::Seal { work, .. } => work.reservation.owner,
+            Self::Completed(completion) => completion.reservation.owner,
+        }
+    }
+
     fn push_executor_failed_completions(self, completions: &mut Vec<CryptoCompletion>) {
         match self {
             Self::Open { work, .. } => completions.push(failed_crypto_completion(
@@ -221,11 +229,6 @@ impl PacketMover2AeadWorkerPool {
     pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
         Arc::clone(&self.completion_notify)
     }
-
-    fn worker_chunk_size(&self, packet_count: usize) -> usize {
-        let workers = self.workers.len().max(1);
-        packet_count.div_ceil(workers).max(1)
-    }
 }
 
 impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
@@ -259,12 +262,19 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             return count;
         };
 
-        let chunk_size = self.worker_chunk_size(count);
-        let mut remaining = chunk.into_iter();
-        loop {
-            let work_chunk: Vec<_> = remaining.by_ref().take(chunk_size).collect();
-            if work_chunk.is_empty() {
-                break;
+        let mut remaining = chunk.into_iter().peekable();
+        while let Some(first) = remaining.next() {
+            let owner = first.owner();
+            let mut work_chunk = vec![first];
+            while remaining
+                .peek()
+                .is_some_and(|work| work.owner() == owner)
+            {
+                work_chunk.push(
+                    remaining
+                        .next()
+                        .expect("peeked owner work must still be available"),
+                );
             }
             let chunk_len = work_chunk.len();
             match work_tx.try_send(work_chunk) {
