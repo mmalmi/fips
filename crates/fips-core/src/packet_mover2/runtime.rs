@@ -413,7 +413,7 @@ impl PacketMover2TurnDriver {
                     tun_tx,
                     endpoint_tx,
                     transports,
-                    crypto_limit,
+                    0,
                     collect_transport_sent_outputs,
                     executor,
                     transport_send_worker,
