@@ -98,7 +98,7 @@
     }
 
     #[test]
-    fn live_ingress_promotes_control_sized_fsp_before_decrypt() {
+    fn live_ingress_keeps_encrypted_fsp_bulk_before_decrypt() {
         let source = NodeAddr::from_bytes([0x43; 16]);
         let local = NodeAddr::from_bytes([0x44; 16]);
         let owner = OwnerId::fsp_node(source);
@@ -131,7 +131,7 @@
         assert_eq!(small_route.owner, owner);
         assert_eq!(small_route.generation, 3);
         assert_eq!(small_route.output, OutputTarget::SessionPayload { local_addr: local });
-        assert_eq!(small_route.class, PacketClass::Control);
+        assert_eq!(small_route.class, PacketClass::Bulk);
 
         let mut large_wire = fsp_wire(79, 0);
         large_wire.resize(
@@ -414,7 +414,7 @@
         )]);
         let mut tun = LiveTunRecorder::default();
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
 
         let turn = {
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
@@ -460,18 +460,19 @@
                 payload: b"endpoint-live".to_vec(),
             }]
         );
-        assert_eq!(transport.outputs.len(), 1);
-        let sent = &transport.outputs[0];
-        assert_eq!(sent.transport_id, transport_id);
-        assert_eq!(sent.remote_addr, remote_addr);
-        assert_eq!(sent.owner, fmp_owner);
-        assert_eq!(sent.counter, 700);
-        assert_eq!(sent.ingress_seq, 0);
-        let header = FmpWireHeader::parse(&sent.payload).unwrap();
+        assert_eq!(transport.plans().len(), 1);
+        let sent = &transport.plans()[0];
+        assert_eq!(sent.transport_id(), transport_id);
+        assert_eq!(sent.remote_addr(), &remote_addr);
+        let output = sent.output();
+        assert_eq!(output.owner(), fmp_owner);
+        assert_eq!(output.counter(), 700);
+        assert_eq!(output.ingress_seq(), 0);
+        let header = FmpWireHeader::parse(output.payload()).unwrap();
         assert_eq!(header.receiver_idx(), 451);
         assert_eq!(header.counter(), 700);
         assert_eq!(
-            open_fmp_wire_payload(&sent.payload, fmp_key),
+            open_fmp_wire_payload(output.payload(), fmp_key),
             b"transport-live"
         );
     }
@@ -549,14 +550,13 @@
                 fsp_source,
             ),
         ]));
-        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
         tun_outbound_tx
             .try_send(tun_ipv6_packet(fmp_source, 48))
             .expect("enqueue TUN outbound packet");
-        let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_endpoint_data_batches = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
@@ -564,12 +564,11 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
                 8,
-                &mut deferred_endpoint_commands,
+                &mut deferred_endpoint_data_batches,
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
@@ -599,22 +598,18 @@
             turn.output_drops()[0].reason(),
             PacketMover2OutputError::NoRoute
         );
-        assert!(turn.endpoint_command_drops().is_empty());
+        assert!(turn.endpoint_data_drops().is_empty());
         assert!(turn.tun_outbound_drops().is_empty());
         assert!(raw_source.source.is_empty());
         assert!(tun_outbound_rx.try_recv().is_err());
 
         assert_eq!(tun_rx.try_recv().unwrap(), b"tun-live-node".to_vec());
         match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            NodeEndpointEvent::Data {
-                source_peer: delivered_source,
-                payload,
-                ..
-            } => {
-                assert_eq!(delivered_source, source_peer);
-                assert_eq!(payload, b"endpoint-live-node");
+            NodeEndpointEvent { messages, .. } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].source_peer, source_peer);
+                assert_eq!(messages[0].payload, b"endpoint-live-node");
             }
-            event => panic!("expected single endpoint event, got {event:?}"),
         }
         assert_eq!(
             driver.owner_mut(fmp_owner).unwrap().active_path(),
@@ -657,11 +652,10 @@
             PacketMover2IngressRoute::new(fmp_owner, 1, OutputTarget::Tun)
                 .with_class(PacketClass::Liveness),
         );
-        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
-        let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_endpoint_data_batches = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(&mut packet_rx, None);
@@ -670,12 +664,11 @@
                 &mut raw_ingress,
                 &mut routes,
                 8,
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
                 8,
-                &mut deferred_endpoint_commands,
+                &mut deferred_endpoint_data_batches,
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
@@ -697,7 +690,7 @@
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());
-        assert!(turn.endpoint_command_drops().is_empty());
+        assert!(turn.endpoint_data_drops().is_empty());
         assert!(turn.tun_outbound_drops().is_empty());
         assert!(packet_rx.try_recv().is_err());
         assert_eq!(tun_rx.try_recv().unwrap(), b"packet-rx-tun".to_vec());

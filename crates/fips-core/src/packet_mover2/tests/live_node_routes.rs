@@ -252,8 +252,7 @@
                     93_000,
                 ),
             )]));
-        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
         let tun_packet = tun_ipv6_packet(source, 56);
@@ -267,8 +266,7 @@
                 &mut raw_source,
                 8,
                 PacketMover2LiveOutboundFirsts::default(),
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
                 8,
@@ -293,7 +291,7 @@
         assert!(first.output_drops().is_empty());
         assert!(first.drops().is_empty());
         assert!(first.tun_outbound_drops().is_empty());
-        assert!(first.endpoint_command_drops().is_empty());
+        assert!(first.endpoint_data_drops().is_empty());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint_io.event_rx.try_recv().is_err());
 

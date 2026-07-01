@@ -3,83 +3,21 @@ use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
 use crate::node::{
-    AuthenticatedFmpReceiveFacts, AuthenticatedLinkMessage, EndpointEventSender, FLAG_CE,
-    LocalSessionPayload, Node, NodeEndpointCommand,
+    AuthenticatedFmpReceiveFacts, AuthenticatedLinkMessage, EndpointDataBatchRx,
+    EndpointEventSender, FLAG_CE, LocalSessionPayload, Node,
 };
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
-use tokio::sync::mpsc::Receiver;
 use tracing::{debug, trace, warn};
 
 impl Node {
-    pub(in crate::node) async fn drain_packet_mover2_turn(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        packet_limit: usize,
-        endpoint_control_command_rx: &mut Receiver<NodeEndpointCommand>,
-        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        crypto_limit: usize,
-    ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        self.drain_packet_mover2_turn_with_first(
-            packet_rx,
-            None,
-            packet_limit,
-            endpoint_control_command_rx,
-            endpoint_command_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            crypto_limit,
-        )
-        .await
-    }
-
-    pub(in crate::node) async fn drain_packet_mover2_turn_with_first(
-        &mut self,
-        packet_rx: &mut PacketRx,
-        first_packet: Option<ReceivedPacket>,
-        packet_limit: usize,
-        endpoint_control_command_rx: &mut Receiver<NodeEndpointCommand>,
-        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        crypto_limit: usize,
-    ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        self.drain_packet_mover2_turn_with_firsts(
-            packet_rx,
-            crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
-                .with_raw_packet(first_packet),
-            packet_limit,
-            endpoint_control_command_rx,
-            endpoint_command_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            crypto_limit,
-        )
-        .await
-    }
-
     pub(in crate::node) async fn drain_packet_mover2_turn_with_firsts(
         &mut self,
         packet_rx: &mut PacketRx,
         firsts: crate::packet_mover2::PacketMover2LiveTurnFirsts,
         packet_limit: usize,
-        endpoint_control_command_rx: &mut Receiver<NodeEndpointCommand>,
-        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
         tun_limit: usize,
@@ -93,8 +31,7 @@ impl Node {
                 packet_rx,
                 firsts,
                 packet_limit,
-                endpoint_control_command_rx,
-                endpoint_command_rx,
+                endpoint_data_rx,
                 endpoint_limit,
                 tun_outbound_rx,
                 tun_limit,
@@ -207,8 +144,8 @@ impl Node {
             self.handle_packet_mover2_deferred_tun_packet(packet).await;
             processed += 1;
         }
-        for command in self.packet_mover2.take_deferred_endpoint_commands() {
-            self.handle_packet_mover2_deferred_endpoint_command(command)
+        for batch in self.packet_mover2.take_deferred_endpoint_data_batches() {
+            self.handle_endpoint_data_batch_no_established_flush(batch)
                 .await;
             processed += 1;
         }
@@ -338,13 +275,7 @@ impl Node {
         &mut self,
         receipt: &crate::packet_mover2::PacketMover2FmpIngressReceipt,
     ) -> bool {
-        let Some(source_peer) = self
-            .peers
-            .get(receipt.source_addr())
-            .map(|peer| *peer.identity())
-        else {
-            return false;
-        };
+        let source_peer = receipt.source_peer();
         let fmp = AuthenticatedFmpReceiveFacts::new(
             source_peer,
             receipt.transport_id(),
@@ -384,13 +315,7 @@ impl Node {
         ingress: crate::packet_mover2::PacketMover2FmpLinkIngress,
     ) -> bool {
         let receipt = ingress.receipt();
-        let Some(source_peer) = self
-            .peers
-            .get(receipt.source_addr())
-            .map(|peer| *peer.identity())
-        else {
-            return false;
-        };
+        let source_peer = receipt.source_peer();
         let fmp = AuthenticatedFmpReceiveFacts::new(
             source_peer,
             receipt.transport_id(),
@@ -449,7 +374,7 @@ impl Node {
             .saturating_add(turn.fsp_coord_warmups().len())
             .saturating_add(turn.fsp_local_session_ingress().len())
             .saturating_add(turn.fsp_session_ingress().len())
-            .saturating_add(turn.endpoint_deferred_commands())
+            .saturating_add(turn.deferred_endpoint_data_batches_count())
             .saturating_add(turn.tun_deferred_packets())
     }
 
@@ -473,7 +398,7 @@ impl Node {
                 fsp_session_ingress = turn.fsp_session_ingress().len(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
                 tun_outbound_drops = turn.tun_outbound_drops().len(),
-                endpoint_command_drops = turn.endpoint_command_drops().len(),
+                endpoint_data_drops = turn.endpoint_data_drops().len(),
                 tun_deferred_packets = turn.tun_deferred_packets(),
                 packet_drops = turn.drops().len(),
                 transport_dropped = turn.transport_dropped(),
@@ -489,12 +414,12 @@ impl Node {
                     "packet mover2 raw ingress dropped"
                 );
             }
-            for drop in turn.endpoint_command_drops() {
+            for drop in turn.endpoint_data_drops() {
                 debug!(
                     dest_addr = ?drop.dest_addr(),
                     payload_len = drop.payload_len(),
                     reason = ?drop.reason(),
-                    "packet mover2 endpoint command dropped"
+                    "packet mover2 endpoint data batch dropped"
                 );
             }
             return;
@@ -505,7 +430,7 @@ impl Node {
             outbound_admitted = summary.outbound_admitted(),
             outputs_sent = summary.outputs_sent(),
             transport_sent = turn.transport_sent(),
-            endpoint_deferred = turn.endpoint_deferred_commands(),
+            endpoint_deferred = turn.deferred_endpoint_data_batches_count(),
             tun_deferred = turn.tun_deferred_packets(),
             fmp_control_ingress = turn.fmp_control_ingress().len(),
             fmp_link_ingress = turn.fmp_link_ingress().len(),

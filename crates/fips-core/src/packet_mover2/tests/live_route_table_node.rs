@@ -32,21 +32,18 @@
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(8);
 
-        let (endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(8);
-        let (endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(8);
+        let (endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(8);
         let endpoint_payload = bulk_endpoint_payload();
-        endpoint_bulk_tx
-            .try_send(
-                NodeEndpointCommand::send_batch_oneway(
+        endpoint_data_tx
+            .send_or_drop(
+                NodeEndpointDataBatch::batch(
                     remote,
-                    vec![EndpointDataPayload::new(endpoint_payload.clone())],
+                    vec![endpoint_payload.clone()],
                     None,
                 )
-                .expect("endpoint batch command"),
+                .expect("endpoint data batch"),
             )
-            .expect("enqueue endpoint command");
-        drop(endpoint_control_tx);
-
+            .expect("enqueue endpoint data batch");
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(8);
         let tun_packet = tun_ipv6_packet(tun_dest, 48);
@@ -86,7 +83,7 @@
         let mut fsp_routes = PacketMover2LiveOwnerRoutes::new();
         fsp_routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(
             fsp_source,
-            PacketMover2EndpointCommandRoute::fsp(fsp_owner, 1, 0, 0)
+            PacketMover2EndpointDataRoute::fsp(fsp_owner, 1, 0, 0)
                 .with_max_payload_len(64),
         ));
         let mut fmp_routes = PacketMover2LiveOwnerRoutes::new();
@@ -121,8 +118,7 @@
                 &mut packet_rx,
                 PacketMover2LiveTurnFirsts::default(),
                 8,
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 8,
                 &mut tun_outbound_rx,
                 8,
@@ -143,8 +139,8 @@
         assert_eq!(first.summary().outputs_sent(), 0);
         assert_eq!(first.summary().outputs_dropped(), 0);
         assert!(first.raw_ingress_drops().is_empty());
-        assert!(first.endpoint_command_drops().is_empty());
-        assert_eq!(first.endpoint_deferred_commands(), 0);
+        assert!(first.endpoint_data_drops().is_empty());
+        assert_eq!(first.deferred_endpoint_data_batches_count(), 0);
         assert!(first.tun_outbound_drops().is_empty());
         assert!(first.output_drops().is_empty());
         assert!(first.drops().is_empty());
@@ -152,8 +148,7 @@
         assert_eq!(first.transport_sent(), 0);
         assert_eq!(first.transport_dropped(), 0);
         assert!(packet_rx.try_recv().is_err());
-        assert!(endpoint_control_rx.try_recv().is_err());
-        assert!(endpoint_bulk_rx.try_recv().is_err());
+        assert!(endpoint_data_rx.try_recv().is_err());
         assert!(tun_outbound_rx.try_recv().is_err());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint_io.event_rx.try_recv().is_err());
@@ -262,11 +257,10 @@
             ),
         ]));
 
-        let (endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
-        drop((endpoint_control_tx, endpoint_bulk_tx, tun_outbound_tx));
+        drop((endpoint_data_tx, tun_outbound_tx));
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(1).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
@@ -286,7 +280,7 @@
             PacketMover2IngressRoute::new(fsp_owner, 1, OutputTarget::Endpoint)
                 .with_class(PacketClass::Mmp),
         );
-        let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_endpoint_data_batches = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
@@ -294,12 +288,11 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 8,
                 &mut tun_outbound_rx,
                 8,
-                &mut deferred_endpoint_commands,
+                &mut deferred_endpoint_data_batches,
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
@@ -316,23 +309,19 @@
         assert_eq!(turn.summary().outputs_sent(), 1);
         assert_eq!(turn.summary().outputs_dropped(), 0);
         assert!(turn.raw_ingress_drops().is_empty());
-        assert!(turn.endpoint_command_drops().is_empty());
+        assert!(turn.endpoint_data_drops().is_empty());
         assert!(turn.tun_outbound_drops().is_empty());
         assert!(turn.output_drops().is_empty());
         assert!(turn.drops().is_empty());
-        assert!(deferred_endpoint_commands.is_empty());
+        assert!(deferred_endpoint_data_batches.is_empty());
         assert!(raw_source.source.is_empty());
         assert!(tun_rx.try_recv().is_err());
 
         match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            NodeEndpointEvent::Data {
-                source_peer: delivered_source,
-                payload,
-                ..
-            } => {
-                assert_eq!(delivered_source, source_peer);
-                assert_eq!(payload, b"route-table-fsp-ingress");
+            NodeEndpointEvent { messages, .. } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].source_peer, source_peer);
+                assert_eq!(messages[0].payload, b"route-table-fsp-ingress");
             }
-            event => panic!("expected endpoint data, got {event:?}"),
         }
     }

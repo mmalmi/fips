@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::link_registry::LinkAddressIndex;
 
 #[test]
 fn link_address_index_owns_lookup_replace_and_stale_safe_remove() {

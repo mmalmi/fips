@@ -1,7 +1,33 @@
+    fn test_peer() -> PeerIdentity {
+        PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full())
+    }
+
+    fn route_endpoint_payload(
+        routes: &mut PacketMover2LiveRouteTable,
+        remote: PeerIdentity,
+        payload: &[u8],
+    ) -> Result<OutboundPacket, PacketMover2EndpointDataDropReason> {
+        let route = routes.route_endpoint_data_batch(remote, vec![payload.to_vec()]);
+        let mut routed = Vec::new();
+        let mut drops = Vec::new();
+        let deferred = route.finish_batch(&mut drops, |packets| routed.extend(packets));
+        if deferred.is_some() {
+            return Err(PacketMover2EndpointDataDropReason::NoRoute);
+        }
+        if let Some(drop) = drops.first() {
+            return Err(drop.reason());
+        }
+        Ok(routed
+            .pop()
+            .expect("one-payload endpoint route should produce one outbound packet"))
+    }
+
     #[test]
     fn live_route_table_unregister_owner_prunes_output_routes() {
-        let stale = NodeAddr::from_bytes([0x63; 16]);
-        let keep = NodeAddr::from_bytes([0x64; 16]);
+        let stale_peer = test_peer();
+        let keep_peer = test_peer();
+        let stale = *stale_peer.node_addr();
+        let keep = *keep_peer.node_addr();
         let stale_fmp_owner = OwnerId::fmp_node(stale);
         let stale_fsp_owner = OwnerId::fsp_node(stale);
         let keep_fmp_owner = OwnerId::fmp_node(keep);
@@ -28,7 +54,7 @@
         );
         routes.register_endpoint_destination(
             stale,
-            PacketMover2EndpointCommandRoute::fsp(stale_fsp_owner, 2, 0, 0),
+            PacketMover2EndpointDataRoute::fsp(stale_fsp_owner, 2, 0, 0),
         );
         routes.register_tun_destination(
             keep,
@@ -42,7 +68,7 @@
         );
         routes.register_endpoint_destination(
             keep,
-            PacketMover2EndpointCommandRoute::fsp(keep_fsp_owner, 4, 0, 0),
+            PacketMover2EndpointDataRoute::fsp(keep_fsp_owner, 4, 0, 0),
         );
 
         assert_eq!(routes.unregister_owner(stale_fmp_owner), 2);
@@ -54,12 +80,8 @@
             Err(PacketMover2TunOutboundDropReason::NoRoute)
         );
         assert_eq!(
-            routes.route_endpoint_command_payload(PacketMover2EndpointCommandPayload {
-                dest_addr: stale,
-                dest_pubkey: crate::Identity::generate().pubkey_full(),
-                payload: b"stale",
-            }),
-            Err(PacketMover2EndpointCommandDropReason::NoRoute)
+            route_endpoint_payload(&mut routes, stale_peer, b"stale"),
+            Err(PacketMover2EndpointDataDropReason::NoRoute)
         );
         assert_eq!(
             routes
@@ -69,12 +91,7 @@
             keep_fmp_owner
         );
         assert_eq!(
-            routes
-                .route_endpoint_command_payload(PacketMover2EndpointCommandPayload {
-                    dest_addr: keep,
-                    dest_pubkey: crate::Identity::generate().pubkey_full(),
-                    payload: b"keep",
-                })
+            route_endpoint_payload(&mut routes, keep_peer, b"keep")
                 .expect("keep endpoint route")
                 .owner,
             keep_fsp_owner
@@ -84,8 +101,10 @@
     #[test]
     fn live_route_table_refresh_owner_generation_preserves_routes_across_rekey() {
         let fmp_source = NodeAddr::from_bytes([0x66; 16]);
-        let fsp_source = NodeAddr::from_bytes([0x67; 16]);
-        let keep = NodeAddr::from_bytes([0x68; 16]);
+        let fsp_peer = test_peer();
+        let keep_peer = test_peer();
+        let fsp_source = *fsp_peer.node_addr();
+        let keep = *keep_peer.node_addr();
         let fmp_owner = OwnerId::fmp_node(fmp_source);
         let fsp_owner = OwnerId::fsp_node(fsp_source);
         let keep_fmp_owner = OwnerId::fmp_node(keep);
@@ -118,7 +137,7 @@
         );
         routes.register_endpoint_destination(
             fsp_source,
-            PacketMover2EndpointCommandRoute::fsp(fsp_owner, 2, 0, 0),
+            PacketMover2EndpointDataRoute::fsp(fsp_owner, 2, 0, 0),
         );
         routes.register_fmp(
             keep_transport_id,
@@ -127,7 +146,7 @@
         );
         routes.register_endpoint_destination(
             keep,
-            PacketMover2EndpointCommandRoute::fsp(keep_fsp_owner, 6, 0, 0),
+            PacketMover2EndpointDataRoute::fsp(keep_fsp_owner, 6, 0, 0),
         );
 
         assert_eq!(routes.refresh_owner_generation(fmp_owner, 10), 2);
@@ -183,12 +202,7 @@
         assert_eq!(tun_route.owner(), fmp_owner);
         assert_eq!(tun_route.generation, 10);
 
-        let endpoint_packet = routes
-            .route_endpoint_command_payload(PacketMover2EndpointCommandPayload {
-                dest_addr: fsp_source,
-                dest_pubkey: crate::Identity::generate().pubkey_full(),
-                payload: b"after-rekey",
-            })
+        let endpoint_packet = route_endpoint_payload(&mut routes, fsp_peer, b"after-rekey")
             .expect("endpoint route survives refresh");
         assert_eq!(endpoint_packet.owner, fsp_owner);
         assert_eq!(endpoint_packet.generation, 11);
@@ -206,12 +220,7 @@
             PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&keep_raw.payload).unwrap());
         assert_eq!(routes.route(&keep_raw, header).unwrap().generation, 5);
         assert_eq!(
-            routes
-                .route_endpoint_command_payload(PacketMover2EndpointCommandPayload {
-                    dest_addr: keep,
-                    dest_pubkey: crate::Identity::generate().pubkey_full(),
-                    payload: b"keep",
-                })
+            route_endpoint_payload(&mut routes, keep_peer, b"keep")
                 .unwrap()
                 .generation,
             6

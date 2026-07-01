@@ -2,25 +2,6 @@ impl Node {
     const PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS: u64 = 2_000;
     const PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX: usize = 16;
 
-    fn deliver_endpoint_data(&mut self, delivery: EndpointDataDelivery) {
-        let src_addr = *delivery.source_peer.node_addr();
-        if !self.endpoint_events.is_attached() {
-            trace!(
-                src = %self.peer_display_name(&src_addr),
-                "Endpoint data received without an attached endpoint"
-            );
-            return;
-        }
-
-        if let Err(error) = self.deliver_endpoint_event_message(delivery) {
-            debug!(
-                src = %self.peer_display_name(&src_addr),
-                error = %error,
-                "Failed to deliver endpoint data event"
-            );
-        }
-    }
-
     fn deliver_endpoint_data_batch(&mut self, deliveries: Vec<EndpointDataDelivery>) {
         if deliveries.is_empty() {
             return;
@@ -342,18 +323,31 @@ impl Node {
     fn queue_pending_endpoint_data_with_enqueued_at_ms(
         &mut self,
         dest_addr: NodeAddr,
-        payload: impl Into<EndpointDataPayload>,
+        payload: Vec<u8>,
+        enqueued_at_ms: u64,
+    ) {
+        self.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            dest_addr,
+            vec![payload],
+            enqueued_at_ms,
+        );
+    }
+
+    fn queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+        &mut self,
+        dest_addr: NodeAddr,
+        payloads: Vec<Vec<u8>>,
         enqueued_at_ms: u64,
     ) {
         let admission = self
             .pending_session_traffic
-            .push_endpoint_data_with_enqueued_at_ms(
-            dest_addr,
-            payload,
-            self.config.node.session.pending_max_destinations,
-            self.config.node.session.pending_packets_per_dest,
-            enqueued_at_ms,
-        );
+            .push_endpoint_data_batch_with_enqueued_at_ms(
+                dest_addr,
+                payloads,
+                self.config.node.session.pending_max_destinations,
+                self.config.node.session.pending_packets_per_dest,
+                enqueued_at_ms,
+            );
         if admission.destination_dropped() {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PendingEndpointDestinationDropped,
@@ -411,41 +405,46 @@ impl Node {
 
         if let Some(payloads) = self.pending_session_traffic.take_endpoint_data(dest_addr) {
             let mut payloads = payloads.into_pending_payloads();
-            while let Some(first) = payloads.pop_front() {
-                let enqueued_at_ms = first.enqueued_at_ms();
-                let mut batch = vec![first.into_payload()];
-                while batch.len() < Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX
-                    && payloads.front().is_some_and(|payload| {
-                        payload.enqueued_at_ms() == enqueued_at_ms
-                    })
-                {
-                    let payload = payloads
-                        .pop_front()
-                        .expect("checked pending endpoint payload")
-                        .into_payload();
-                    batch.push(payload);
-                }
-
-                if let Err(e) = self
-                    .send_packet_mover2_cached_endpoint_payloads(
-                        dest_addr,
-                        batch.clone(),
-                        enqueued_at_ms,
-                    )
-                    .await
-                {
-                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
-                    let mut restore = std::collections::VecDeque::new();
-                    for payload in batch {
-                        restore.push_back(crate::node::PendingEndpointData::new(
-                            payload,
-                            enqueued_at_ms,
-                        ));
+            while let Some(pending) = payloads.pop_front() {
+                let enqueued_at_ms = pending.enqueued_at_ms();
+                let mut pending_payloads = pending.into_payloads().into_iter();
+                while let Some(first_payload) = pending_payloads.next() {
+                    let mut batch = vec![first_payload];
+                    while batch.len() < Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX {
+                        let Some(payload) = pending_payloads.next() else {
+                            break;
+                        };
+                        batch.push(payload);
                     }
-                    restore.append(&mut payloads);
-                    self.pending_session_traffic
-                        .restore_endpoint_data(*dest_addr, restore);
-                    break;
+
+                    if let Err(e) = self
+                        .send_packet_mover2_cached_endpoint_payloads(
+                            dest_addr,
+                            batch.clone(),
+                            enqueued_at_ms,
+                        )
+                        .await
+                    {
+                        debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
+                        let mut restore = std::collections::VecDeque::new();
+                        if let Some(pending) = crate::node::PendingEndpointData::new_batch(
+                            batch,
+                            enqueued_at_ms,
+                        ) {
+                            restore.push_back(pending);
+                        }
+                        let remaining = pending_payloads.collect::<Vec<_>>();
+                        if let Some(pending) = crate::node::PendingEndpointData::new_batch(
+                            remaining,
+                            enqueued_at_ms,
+                        ) {
+                            restore.push_back(pending);
+                        }
+                        restore.append(&mut payloads);
+                        self.pending_session_traffic
+                            .restore_endpoint_data(*dest_addr, restore);
+                        return;
+                    }
                 }
             }
         }

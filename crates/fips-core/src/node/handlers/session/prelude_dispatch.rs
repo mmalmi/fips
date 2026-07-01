@@ -8,10 +8,9 @@ use crate::node::session_wire::{
 };
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
-    EndpointDataDelivery, EndpointDataPayload, EndpointSendBatchCommand, EndpointSendCommand,
-    LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
-    NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    EndpointDataDelivery, LocalSessionPayload, Node, NodeEndpointControlCommand, NodeEndpointDataBatch,
+    NodeEndpointPeer, NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
+    SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,
@@ -379,7 +378,7 @@ impl AuthenticatedSessionDispatch {
                 }
             }
             Some(SessionMessageType::EndpointData) => {
-                node.deliver_endpoint_data(self.into_endpoint_data_delivery());
+                node.deliver_endpoint_data_batch(vec![self.into_endpoint_data_delivery()]);
             }
             Some(SessionMessageType::TraversalOffer) => {
                 let rest = self.body();

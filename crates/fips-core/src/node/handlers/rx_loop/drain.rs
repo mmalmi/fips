@@ -11,22 +11,8 @@ pub(super) struct RxLoopDataDrainStats {
 
 impl RxLoopDataDrainStats {
     #[cfg(test)]
-    pub(super) fn new(packets: usize, tun: usize, endpoint: usize) -> Self {
-        Self {
-            packets,
-            tun,
-            endpoint,
-            control: 0,
-        }
-    }
-
     pub(super) fn with_data(packets: usize, tun: usize, endpoint: usize) -> Self {
-        Self {
-            packets,
-            tun,
-            endpoint,
-            control: 0,
-        }
+        Self::new(packets, tun, endpoint, 0)
     }
 
     #[cfg(test)]
@@ -36,6 +22,10 @@ impl RxLoopDataDrainStats {
         endpoint: usize,
         control: usize,
     ) -> Self {
+        Self::new(packets, tun, endpoint, control)
+    }
+
+    pub(super) fn new(packets: usize, tun: usize, endpoint: usize, control: usize) -> Self {
         Self {
             packets,
             tun,

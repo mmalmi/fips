@@ -19,14 +19,6 @@ fn endpoint_drain_budget_caps_large_packet_turns() {
 }
 
 #[test]
-fn endpoint_control_pre_packet_turn_stays_bounded() {
-    assert!(
-        ENDPOINT_DRAIN_BUDGET <= 16,
-        "endpoint-control commands run before raw packet receive, so the turn must stay short"
-    );
-}
-
-#[test]
 fn tun_outbound_gets_dataplane_sized_packet_mover_turns() {
     assert_eq!(
         endpoint_drain_budget(PACKET_DRAIN_BUDGET),
@@ -64,7 +56,7 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     assert!(!empty.data_pressure(false));
     assert!(empty.data_pressure(true));
 
-    let drained = RxLoopDataDrainStats::new(2, 3, 5);
+    let drained = RxLoopDataDrainStats::with_data(2, 3, 5);
     assert_eq!(drained.data_total(), 10);
     assert_eq!(drained.total(), 10);
     assert!(drained.has_drained());
@@ -115,8 +107,7 @@ async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
@@ -124,10 +115,10 @@ async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
         .expect("endpoint io should attach before start");
 
     let turn = node
-        .drain_packet_mover2_turn(
+        .drain_packet_mover2_turn_with_firsts(
             &mut packet_rx,
+            crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
             4,
-            &mut endpoint_control_rx,
             &mut endpoint_rx,
             4,
             &mut tun_outbound_rx,
@@ -147,60 +138,8 @@ async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
     assert!(turn.raw_ingress_drops().is_empty());
     assert!(turn.output_drops().is_empty());
     assert!(turn.drops().is_empty());
-    assert!(turn.endpoint_command_drops().is_empty());
+    assert!(turn.endpoint_data_drops().is_empty());
     assert!(turn.tun_outbound_drops().is_empty());
-    assert!(tun_rx.try_recv().is_err());
-    assert!(endpoint_io.event_rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn packet_mover2_replays_deferred_endpoint_commands() {
-    let mut node =
-        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
-    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
-    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-    let mut endpoint_io = node
-        .attach_endpoint_data_io(1)
-        .expect("endpoint io should attach before start");
-    let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
-
-    endpoint_control_tx
-        .send(crate::node::NodeEndpointCommand::PeerSnapshot { response_tx })
-        .await
-        .expect("peer snapshot command queued");
-
-    let mut turn = node
-        .drain_packet_mover2_turn(
-            &mut packet_rx,
-            4,
-            &mut endpoint_control_rx,
-            &mut endpoint_rx,
-            4,
-            &mut tun_outbound_rx,
-            4,
-            &tun_tx,
-            &endpoint_io.event_tx,
-            4,
-        )
-        .await;
-
-    assert_eq!(turn.endpoint_deferred_commands(), 1);
-    assert!(matches!(
-        response_rx.try_recv(),
-        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-    ));
-
-    let processed = node.process_packet_mover2_control_ingress(&mut turn).await;
-
-    assert_eq!(processed, 1);
-    let peers = tokio::time::timeout(Duration::from_secs(1), response_rx)
-        .await
-        .expect("deferred endpoint command should complete")
-        .expect("peer snapshot sender should stay alive");
-    assert!(peers.is_empty());
     assert!(tun_rx.try_recv().is_err());
     assert!(endpoint_io.event_rx.try_recv().is_err());
 }
@@ -210,8 +149,7 @@ async fn packet_mover2_turn_reports_raw_ingress_failures() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     let mut endpoint_io = node
@@ -228,10 +166,10 @@ async fn packet_mover2_turn_reports_raw_ingress_failures() {
         .expect("malformed packet queued");
 
     let turn = node
-        .drain_packet_mover2_turn(
+        .drain_packet_mover2_turn_with_firsts(
             &mut packet_rx,
+            crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
             4,
-            &mut endpoint_control_rx,
             &mut endpoint_rx,
             4,
             &mut tun_outbound_rx,
@@ -258,7 +196,7 @@ async fn packet_mover2_turn_reports_raw_ingress_failures() {
     );
     assert!(turn.output_drops().is_empty());
     assert!(turn.drops().is_empty());
-    assert!(turn.endpoint_command_drops().is_empty());
+    assert!(turn.endpoint_data_drops().is_empty());
     assert!(turn.tun_outbound_drops().is_empty());
     assert!(packet_rx.try_recv().is_err());
     assert!(tun_rx.try_recv().is_err());
@@ -270,7 +208,7 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
     let start = Instant::now();
     let window = Duration::from_secs(2);
     let empty = RxLoopDataDrainStats::default();
-    let drained = RxLoopDataDrainStats::new(1, 0, 0);
+    let drained = RxLoopDataDrainStats::with_data(1, 0, 0);
     let mut state = RxLoopMaintenanceState::default();
 
     assert!(!state.data_pressure(empty, start, window));
@@ -306,7 +244,7 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
     let idle_timeout = Duration::from_millis(100);
     let busy_timeout = Duration::from_millis(10);
     let empty = RxLoopDataDrainStats::default();
-    let drained = RxLoopDataDrainStats::new(1, 0, 0);
+    let drained = RxLoopDataDrainStats::with_data(1, 0, 0);
     let mut state = RxLoopMaintenanceState::default();
 
     let idle = state.plan_maintenance(empty, start, window, idle_timeout, busy_timeout);
@@ -381,17 +319,17 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
 
 #[tokio::test]
 async fn single_lane_drain_leaves_other_lanes_for_later_turns() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+    let (selected_tx, mut selected_rx) = tokio::sync::mpsc::channel(4);
+    let (other_tx, mut other_rx) = tokio::sync::mpsc::channel(4);
 
-    priority_tx.send("queued-priority").await.unwrap();
-    bulk_tx.send("queued-bulk").await.unwrap();
-    let mut drain = SingleLaneDrainCursor::new(Some("selected-priority"), 4);
+    selected_tx.send("queued-selected").await.unwrap();
+    other_tx.send("queued-other").await.unwrap();
+    let mut drain = SingleLaneDrainCursor::new(Some("selected-first"), 4);
 
-    assert_eq!(drain.next(&mut priority_rx), Some("selected-priority"));
-    assert_eq!(drain.next(&mut priority_rx), Some("queued-priority"));
-    assert_eq!(drain.next(&mut priority_rx), None);
-    assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
+    assert_eq!(drain.next(&mut selected_rx), Some("selected-first"));
+    assert_eq!(drain.next(&mut selected_rx), Some("queued-selected"));
+    assert_eq!(drain.next(&mut selected_rx), None);
+    assert_eq!(other_rx.try_recv().ok(), Some("queued-other"));
     assert_eq!(drain.drained(), 2);
 }
 

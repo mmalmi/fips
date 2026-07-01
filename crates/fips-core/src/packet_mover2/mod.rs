@@ -22,15 +22,15 @@
 //! keep reserved progress outside bulk pressure.
 
 use crate::node::{
-    EndpointDataPayload, EndpointDataSend, EndpointEventSender, EndpointSendBatchCommand,
-    EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
+    EndpointDataBatchRx, EndpointDataDelivery, EndpointEventSender, NodeEndpointDataBatch,
+    NodeEndpointEvent, endpoint_data_batch_channel,
 };
 use crate::transport::{
     PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,
     TransportId,
 };
 use crate::upper::tun::TunOutboundRx;
-use crate::{NodeAddr, NodeError, PeerIdentity};
+use crate::{NodeAddr, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -57,7 +57,7 @@ include!("owner_shard.rs");
 include!("work.rs");
 include!("live_ingress.rs");
 include!("tun_outbound.rs");
-include!("endpoint_command.rs");
+include!("endpoint_data.rs");
 include!("session_handoff.rs");
 include!("live_output.rs");
 include!("live_transport.rs");

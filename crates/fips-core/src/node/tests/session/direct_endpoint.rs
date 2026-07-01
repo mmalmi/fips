@@ -105,18 +105,10 @@ fn test_endpoint_data_flushes_after_session_establishment() {
             "node 1 endpoint data",
         )
         .await;
-        match event {
-            NodeEndpointEvent::Data {
-                source_peer,
-                payload,
-                ..
-            } => {
-                assert_eq!(*source_peer.node_addr(), node0_addr);
-                assert_eq!(source_peer.npub(), nodes[0].node.npub());
-                assert_eq!(payload, b"ping");
-            }
-            NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-        }
+        let message = expect_single_endpoint_data_event(event);
+        assert_eq!(*message.source_peer.node_addr(), node0_addr);
+        assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
+        assert_eq!(message.payload, b"ping");
 
         send_endpoint_data_via_pm2(&mut nodes[1].node, node0_identity, b"pong".to_vec())
             .await
@@ -129,18 +121,10 @@ fn test_endpoint_data_flushes_after_session_establishment() {
             "node 0 endpoint data",
         )
         .await;
-        match event {
-            NodeEndpointEvent::Data {
-                source_peer,
-                payload,
-                ..
-            } => {
-                assert_eq!(*source_peer.node_addr(), node1_addr);
-                assert_eq!(source_peer.npub(), nodes[1].node.npub());
-                assert_eq!(payload, b"pong");
-            }
-            NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-        }
+        let message = expect_single_endpoint_data_event(event);
+        assert_eq!(*message.source_peer.node_addr(), node1_addr);
+        assert_eq!(message.source_peer.npub(), nodes[1].node.npub());
+        assert_eq!(message.payload, b"pong");
 
         cleanup_nodes(&mut nodes).await;
     });
@@ -161,21 +145,18 @@ fn test_endpoint_data_batch_flushes_after_session_establishment() {
 
         let node0_addr = *nodes[0].node.node_addr();
         let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
-        let payloads = vec![
-            crate::node::EndpointDataPayload::new(b"ping-1".to_vec()),
-            crate::node::EndpointDataPayload::new(b"ping-2".to_vec()),
-        ];
+        let payloads = vec![b"ping-1".to_vec(), b"ping-2".to_vec()];
 
-        let command = crate::node::NodeEndpointCommand::send_batch_oneway_with_enqueued_at_ms(
+        let batch = crate::node::NodeEndpointDataBatch::batch_with_enqueued_at_ms(
             node1_identity,
             payloads,
             None,
             1_234,
         )
-        .expect("endpoint batch command");
+        .expect("endpoint data batch");
         nodes[0]
             .node
-            .handle_endpoint_data_command_no_established_flush(command)
+            .handle_endpoint_data_batch_no_established_flush(batch)
             .await;
 
         let mut observed = Vec::new();
@@ -188,16 +169,7 @@ fn test_endpoint_data_batch_flushes_after_session_establishment() {
             )
             .await;
             match event {
-                NodeEndpointEvent::Data {
-                    source_peer,
-                    payload,
-                    ..
-                } => {
-                    assert_eq!(*source_peer.node_addr(), node0_addr);
-                    assert_eq!(source_peer.npub(), nodes[0].node.npub());
-                    observed.push(payload.as_slice().to_vec());
-                }
-                NodeEndpointEvent::DataBatch { messages, .. } => {
+                NodeEndpointEvent { messages, .. } => {
                     for message in messages {
                         assert_eq!(*message.source_peer.node_addr(), node0_addr);
                         assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
@@ -251,18 +223,10 @@ fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
             "alice to bob endpoint data",
         )
         .await;
-        match event {
-            NodeEndpointEvent::Data {
-                source_peer,
-                payload,
-                ..
-            } => {
-                assert_eq!(*source_peer.node_addr(), alice_addr);
-                assert_eq!(source_peer.npub(), nodes[0].node.npub());
-                assert_eq!(payload, b"alice-to-bob");
-            }
-            NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-        }
+        let message = expect_single_endpoint_data_event(event);
+        assert_eq!(*message.source_peer.node_addr(), alice_addr);
+        assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
+        assert_eq!(message.payload, b"alice-to-bob");
 
         assert!(
             nodes[1].node.get_session(&alice_addr).is_none(),
@@ -288,18 +252,10 @@ fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
             "bob to alice endpoint data",
         )
         .await;
-        match event {
-            NodeEndpointEvent::Data {
-                source_peer,
-                payload,
-                ..
-            } => {
-                assert_eq!(*source_peer.node_addr(), bob_addr);
-                assert_eq!(source_peer.npub(), nodes[2].node.npub());
-                assert_eq!(payload, b"bob-to-alice");
-            }
-            NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-        }
+        let message = expect_single_endpoint_data_event(event);
+        assert_eq!(*message.source_peer.node_addr(), bob_addr);
+        assert_eq!(message.source_peer.npub(), nodes[2].node.npub());
+        assert_eq!(message.payload, b"bob-to-alice");
         assert!(
             transit_endpoint.event_rx.try_recv().is_err(),
             "transit node must stay outside the app endpoint flow"
@@ -342,20 +298,10 @@ fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary() {
         for _ in 0..120 {
             drain_to_quiescence(&mut nodes).await;
             if let Ok(event) = bob_endpoint.event_rx.try_recv() {
-                match event {
-                    NodeEndpointEvent::Data {
-                        source_peer,
-                        payload,
-                        ..
-                    } => {
-                        assert_eq!(*source_peer.node_addr(), alice_addr);
-                        assert_eq!(source_peer.npub(), nodes[0].node.npub());
-                        assert_eq!(payload, b"first-contact");
-                    }
-                    NodeEndpointEvent::DataBatch { .. } => {
-                        panic!("expected single endpoint data event")
-                    }
-                }
+                let message = expect_single_endpoint_data_event(event);
+                assert_eq!(*message.source_peer.node_addr(), alice_addr);
+                assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
+                assert_eq!(message.payload, b"first-contact");
                 assert!(
                     nodes[1].node.get_session(&alice_addr).is_none(),
                     "transit node must not create an app endpoint session for Alice"

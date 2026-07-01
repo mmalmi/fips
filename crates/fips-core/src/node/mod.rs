@@ -9,7 +9,7 @@ mod acl;
 mod bloom;
 mod core_impl;
 mod discovery_rate_limit;
-mod endpoint_command;
+mod endpoint_channels;
 mod endpoint_event;
 mod endpoint_traffic;
 mod error;
@@ -45,35 +45,20 @@ pub use error::NodeError;
 pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
-pub(crate) use endpoint_command::{
-    ENDPOINT_STALE_BULK_DROP_MS, EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand,
+pub(crate) use endpoint_channels::{
+    ENDPOINT_STALE_DATA_DROP_MS, EndpointDataBatchRx, EndpointDataBatchTx,
+    NodeEndpointControlCommand, NodeEndpointDataBatch, endpoint_data_batch_channel,
 };
-#[cfg(test)]
-pub(in crate::node) use endpoint_event::EndpointEventDequeueCounts;
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
-#[cfg(test)]
-pub(in crate::node) use endpoint_event::release_endpoint_event_messages;
 pub(crate) use endpoint_event::{
     EndpointDataDelivery, EndpointDataIo, EndpointEventReceiver, EndpointEventSender,
     NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome,
 };
-#[cfg(test)]
-pub(crate) use endpoint_traffic::PendingEndpointDataQueue;
-#[cfg(all(test, unix))]
-pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
-#[cfg(test)]
-pub(in crate::node) use endpoint_traffic::fmp_plaintext_is_bulk_session_datagram;
-pub(crate) use endpoint_traffic::{
-    EndpointDataPayload, EndpointDataSend, PendingEndpointData, PendingSessionTrafficQueues,
-};
+pub(crate) use endpoint_traffic::{PendingEndpointData, PendingSessionTrafficQueues};
 pub(in crate::node) use identity_cache::IdentityCache;
-#[cfg(test)]
-pub(in crate::node) use link_registry::LinkAddressIndex;
 pub(in crate::node) use link_registry::{LinkRegistry, PendingConnect, TransportDropTracker};
 pub(in crate::node) use peer_lifecycle::*;
 pub(in crate::node) use peer_runtime::*;
-#[cfg(test)]
-pub(crate) use recent_requests::RecentRequest;
 pub(crate) use recent_requests::{RecentDiscoveryRequests, RecentResponseForward};
 pub(in crate::node) use session_registry::*;
 pub(in crate::node) use support_state::{
@@ -286,10 +271,10 @@ pub struct Node {
     tun_outbound_rx: Option<TunOutboundRx>,
     /// App-owned packet sink used by embedded/no-TUN integrations.
     external_packet_tx: Option<tokio::sync::mpsc::Sender<NodeDeliveredPacket>>,
-    /// Endpoint data command receiver used by embedded/no-daemon integrations.
-    endpoint_control_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
-    /// Bulk endpoint data command receiver used by embedded/no-daemon integrations.
-    endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
+    /// Endpoint control receiver used by embedded/no-daemon integrations.
+    endpoint_control_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointControlCommand>>,
+    /// Endpoint data batch receiver used by embedded/no-daemon integrations.
+    endpoint_data_rx: Option<EndpointDataBatchRx>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
     endpoint_events: EndpointEventRuntime,
     /// TUN reader thread handle.

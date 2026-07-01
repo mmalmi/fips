@@ -109,17 +109,9 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
         "initiator responder-proof endpoint data",
     )
     .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), node1_addr);
-            assert_eq!(payload, b"responder-proof");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), node1_addr);
+    assert_eq!(message.payload, b"responder-proof");
     assert!(
         nodes[0]
             .node
@@ -259,17 +251,9 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         "initiator old-session-proof endpoint data",
     )
     .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), node1_addr);
-            assert_eq!(payload, b"old-session-proof");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), node1_addr);
+    assert_eq!(message.payload, b"old-session-proof");
     assert!(
         nodes[0]
             .node

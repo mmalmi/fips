@@ -3086,40 +3086,6 @@
         }
     }
 
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    struct LiveTransportRecord {
-        transport_id: TransportId,
-        remote_addr: TransportAddr,
-        owner: OwnerId,
-        counter: u64,
-        ingress_seq: u64,
-        payload: Vec<u8>,
-    }
-
-    #[derive(Default)]
-    struct LiveTransportRecorder {
-        outputs: Vec<LiveTransportRecord>,
-    }
-
-    impl PacketMover2TransportOutput for LiveTransportRecorder {
-        fn send_transport(
-            &mut self,
-            transport_id: TransportId,
-            remote_addr: TransportAddr,
-            output: PacketOutput,
-        ) -> Result<(), PacketMover2OutputError> {
-            self.outputs.push(LiveTransportRecord {
-                transport_id,
-                remote_addr,
-                owner: output.owner(),
-                counter: output.counter(),
-                ingress_seq: output.ingress_seq(),
-                payload: output.payload().to_vec(),
-            });
-            Ok(())
-        }
-    }
-
     struct SimpleIngressRouter {
         owner: OwnerId,
         generation: u64,

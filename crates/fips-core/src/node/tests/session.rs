@@ -202,14 +202,28 @@ async fn recv_endpoint_event_while_draining(
     .unwrap_or_else(|_| panic!("{context}: endpoint data should not time out"))
 }
 
+fn expect_single_endpoint_data_event(
+    event: NodeEndpointEvent,
+) -> crate::node::EndpointDataDelivery {
+    match event {
+        NodeEndpointEvent { mut messages, .. } if messages.len() == 1 => {
+            messages.pop().expect("one endpoint data message")
+        }
+        NodeEndpointEvent { messages, .. } => {
+            panic!("expected one endpoint data message, got {}", messages.len())
+        }
+    }
+}
+
 async fn send_endpoint_data_via_pm2(
     node: &mut Node,
     remote: PeerIdentity,
     payload: Vec<u8>,
 ) -> Result<(), NodeError> {
     let dest_addr = *remote.node_addr();
-    node.handle_endpoint_data_command_no_established_flush(
-        crate::node::NodeEndpointCommand::send_oneway(remote, payload, None),
+    node.handle_endpoint_data_batch_no_established_flush(
+        crate::node::NodeEndpointDataBatch::batch(remote, vec![payload], None)
+            .expect("one-packet endpoint data batch"),
     )
     .await;
     if node

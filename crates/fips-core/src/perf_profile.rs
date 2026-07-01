@@ -286,7 +286,7 @@ pub enum Event {
     PendingEndpointPacketDropped = 19,
     ReservedEvent20 = 20,
     EndpointEventBacklogHigh = 21,
-    EndpointCommandBulkDropped = 22,
+    EndpointDataBulkDropped = 22,
     TransportChannelBacklogHigh = 23,
     TransportBulkDropped = 24,
     EndpointEventBulkDropped = 25,
@@ -476,11 +476,11 @@ pub enum Event {
     PacketMover2SealAllocated = 209,
     PacketMover2TransportSendWorkerBackpressure = 210,
     PacketMover2TransportSendWorkerDropped = 211,
-    ReservedEvent212 = 212,
-    ReservedEvent213 = 213,
-    ReservedEvent214 = 214,
-    ReservedEvent215 = 215,
-    ReservedEvent216 = 216,
+    PacketMover2IngressOwnerRunContinue = 212,
+    PacketMover2OutboundOwnerRunContinue = 213,
+    PacketMover2OutboundBatchAdmit = 214,
+    PacketMover2OutboundBatchPackets = 215,
+    PacketMover2TransportSendWorkerSendFailed = 216,
     ReservedEvent217 = 217,
     ReservedEvent218 = 218,
     ReservedEvent219 = 219,
@@ -512,7 +512,7 @@ impl Event {
             Event::PendingEndpointPacketDropped => "pending_endpoint_packet_dropped",
             Event::ReservedEvent20 => "reserved_event_20",
             Event::EndpointEventBacklogHigh => "endpoint_event_backlog_high",
-            Event::EndpointCommandBulkDropped => "endpoint_command_bulk_dropped",
+            Event::EndpointDataBulkDropped => "endpoint_data_bulk_dropped",
             Event::TransportChannelBacklogHigh => "transport_channel_backlog_high",
             Event::TransportBulkDropped => "transport_bulk_dropped",
             Event::EndpointEventBulkDropped => "endpoint_event_bulk_dropped",
@@ -710,11 +710,17 @@ impl Event {
             Event::PacketMover2TransportSendWorkerDropped => {
                 "packet_mover2_transport_send_worker_dropped"
             }
-            Event::ReservedEvent212 => "reserved_event_212",
-            Event::ReservedEvent213 => "reserved_event_213",
-            Event::ReservedEvent214 => "reserved_event_214",
-            Event::ReservedEvent215 => "reserved_event_215",
-            Event::ReservedEvent216 => "reserved_event_216",
+            Event::PacketMover2IngressOwnerRunContinue => {
+                "packet_mover2_ingress_owner_run_continue"
+            }
+            Event::PacketMover2OutboundOwnerRunContinue => {
+                "packet_mover2_outbound_owner_run_continue"
+            }
+            Event::PacketMover2OutboundBatchAdmit => "packet_mover2_outbound_batch_admit",
+            Event::PacketMover2OutboundBatchPackets => "packet_mover2_outbound_batch_packets",
+            Event::PacketMover2TransportSendWorkerSendFailed => {
+                "packet_mover2_transport_send_worker_send_failed"
+            }
             Event::ReservedEvent217 => "reserved_event_217",
             Event::ReservedEvent218 => "reserved_event_218",
             Event::ReservedEvent219 => "reserved_event_219",
@@ -747,7 +753,7 @@ fn event_from_index(idx: usize) -> Event {
         19 => Event::PendingEndpointPacketDropped,
         20 => Event::ReservedEvent20,
         21 => Event::EndpointEventBacklogHigh,
-        22 => Event::EndpointCommandBulkDropped,
+        22 => Event::EndpointDataBulkDropped,
         23 => Event::TransportChannelBacklogHigh,
         24 => Event::TransportBulkDropped,
         25 => Event::EndpointEventBulkDropped,
@@ -937,11 +943,11 @@ fn event_from_index(idx: usize) -> Event {
         209 => Event::PacketMover2SealAllocated,
         210 => Event::PacketMover2TransportSendWorkerBackpressure,
         211 => Event::PacketMover2TransportSendWorkerDropped,
-        212 => Event::ReservedEvent212,
-        213 => Event::ReservedEvent213,
-        214 => Event::ReservedEvent214,
-        215 => Event::ReservedEvent215,
-        216 => Event::ReservedEvent216,
+        212 => Event::PacketMover2IngressOwnerRunContinue,
+        213 => Event::PacketMover2OutboundOwnerRunContinue,
+        214 => Event::PacketMover2OutboundBatchAdmit,
+        215 => Event::PacketMover2OutboundBatchPackets,
+        216 => Event::PacketMover2TransportSendWorkerSendFailed,
         217 => Event::ReservedEvent217,
         218 => Event::ReservedEvent218,
         219 => Event::ReservedEvent219,

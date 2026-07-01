@@ -46,17 +46,17 @@ impl EndpointReceiveState {
     }
 
     pub(super) fn pop_pending(&mut self) -> Option<FipsEndpointMessage> {
-        self.pending
-            .pop_front()
-            .map(EndpointQueuedMessage::into_public)
+        let message = self.pending.pop_front()?;
+        self.rx.release_messages(1);
+        Some(message.into_public())
     }
 
     pub(super) fn drain_pending_into(&mut self, out: &mut Vec<FipsEndpointMessage>, limit: usize) {
         while out.len() < limit {
-            let Some(message) = self.pending.pop_front() else {
+            let Some(message) = self.pop_pending() else {
                 break;
             };
-            out.push(message.into_public());
+            out.push(message);
         }
     }
 
@@ -85,17 +85,7 @@ impl EndpointReceiveState {
         limit: usize,
     ) {
         match event {
-            NodeEndpointEvent::Data {
-                source_peer,
-                payload,
-                enqueued_at_ms,
-                ..
-            } => self.push_queued_into(
-                EndpointQueuedMessage::new(source_peer, payload, enqueued_at_ms),
-                out,
-                limit,
-            ),
-            NodeEndpointEvent::DataBatch { messages, .. } => {
+            NodeEndpointEvent { messages, .. } => {
                 for message in messages {
                     self.push_queued_into(
                         EndpointQueuedMessage::new(
@@ -118,6 +108,7 @@ impl EndpointReceiveState {
         limit: usize,
     ) {
         if out.len() < limit {
+            self.rx.release_messages(1);
             out.push(message.into_public());
         } else {
             self.pending.push_back(message);
@@ -136,18 +127,7 @@ impl EndpointReceiveState {
         handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
     ) -> bool {
         match event {
-            NodeEndpointEvent::Data {
-                source_peer,
-                payload,
-                enqueued_at_ms,
-                ..
-            } => self.push_queued_for_each(
-                EndpointQueuedMessage::new(source_peer, payload, enqueued_at_ms),
-                drained,
-                limit,
-                handle_message,
-            ),
-            NodeEndpointEvent::DataBatch { messages, .. } => {
+            NodeEndpointEvent { messages, .. } => {
                 let mut iter = messages.into_iter();
                 while let Some(message) = iter.next() {
                     let queued = EndpointQueuedMessage::new(
@@ -180,7 +160,9 @@ impl EndpointReceiveState {
     ) -> bool {
         if *drained < limit {
             *drained += 1;
-            handle_message(message.into_public())
+            let message = message.into_public();
+            self.rx.release_messages(1);
+            handle_message(message)
         } else {
             self.push_pending(message);
             false

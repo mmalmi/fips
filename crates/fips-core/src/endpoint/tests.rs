@@ -1,5 +1,5 @@
 use super::*;
-use crate::node::{EndpointDataDelivery, NodeEndpointPeer};
+use crate::node::{EndpointDataDelivery, NodeEndpointDataBatch, NodeEndpointPeer};
 
 fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
     let tcp_len = 20 + tcp_payload_len;
@@ -9,15 +9,6 @@ fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
     packet[6] = 6;
     packet[40 + 12] = 5 << 4;
     packet[40 + 13] = flags;
-    packet
-}
-
-fn ipv4_icmp_echo_packet() -> Vec<u8> {
-    let mut packet = vec![0u8; 28];
-    packet[0] = 0x45;
-    packet[2..4].copy_from_slice(&28u16.to_be_bytes());
-    packet[9] = 1;
-    packet[20] = 8;
     packet
 }
 
@@ -64,204 +55,118 @@ fn endpoint_peer_conversion_preserves_rekey_state() {
 }
 
 #[test]
-fn endpoint_command_tx_helper_sends_app_payloads_to_bulk_lane() {
-    let (priority_tx, _priority_rx) = mpsc::channel(1);
-    let (bulk_tx, _bulk_rx) = mpsc::channel(1);
+fn endpoint_data_batches_charge_drain_budget_by_small_packet_groups() {
     let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-
-    let tcp_ack = ipv6_tcp_packet(0x10, 0);
-    let tcp_ack = NodeEndpointCommand::send_oneway(remote, tcp_ack, None);
-    assert!(std::ptr::eq(
-        endpoint_command_tx_for_command(&tcp_ack, &priority_tx, &bulk_tx),
-        &bulk_tx,
-    ));
-
-    let icmpv4_ping = ipv4_icmp_echo_packet();
-    let icmpv4_ping = NodeEndpointCommand::send_oneway(remote, icmpv4_ping, None);
-    assert!(std::ptr::eq(
-        endpoint_command_tx_for_command(&icmpv4_ping, &priority_tx, &bulk_tx),
-        &bulk_tx,
-    ));
-
-    let bulk_tcp_data = ipv6_tcp_packet(0x18, 512);
-    let bulk_tcp_data = NodeEndpointCommand::send_oneway(remote, bulk_tcp_data, None);
-    assert!(std::ptr::eq(
-        endpoint_command_tx_for_command(&bulk_tcp_data, &priority_tx, &bulk_tx),
-        &bulk_tx,
-    ));
-}
-
-#[test]
-fn endpoint_command_tx_helper_sends_all_app_commands_to_bulk() {
-    let (priority_tx, _priority_rx) = mpsc::channel(1);
-    let (bulk_tx, _bulk_rx) = mpsc::channel(1);
-    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-
-    let tcp_ack = ipv6_tcp_packet(0x10, 0);
-    let reliable_command = NodeEndpointCommand::send_oneway(remote, tcp_ack, None);
-    assert!(std::ptr::eq(
-        endpoint_command_tx_for_command(&reliable_command, &priority_tx, &bulk_tx),
-        &bulk_tx,
-    ));
-
-    let bulk_tcp_data = ipv6_tcp_packet(0x18, 512);
-    let bulk_command = NodeEndpointCommand::send_oneway(remote, bulk_tcp_data, None);
-    assert!(std::ptr::eq(
-        endpoint_command_tx_for_command(&bulk_command, &priority_tx, &bulk_tx),
-        &bulk_tx,
-    ));
-
-    let batch_payload = crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512));
-    let batch_command = NodeEndpointCommand::send_batch_oneway(remote, vec![batch_payload], None)
-        .expect("non-empty batch command");
-    assert!(std::ptr::eq(
-        endpoint_command_tx_for_command(&batch_command, &priority_tx, &bulk_tx),
-        &bulk_tx,
-    ));
-}
-
-#[test]
-fn endpoint_command_owns_discard_policy_selected_at_construction() {
-    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-
-    let control_sized_app_data =
-        NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x10, 0), None);
-    assert!(control_sized_app_data.drop_on_backpressure());
-
-    let tcp_bulk = NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), None);
-    assert!(tcp_bulk.drop_on_backpressure());
-
-    let discardable_bulk = NodeEndpointCommand::send_oneway(remote, vec![0, 1, 2, 3], None);
-    assert!(discardable_bulk.drop_on_backpressure());
-
-    let mixed_app_batch = NodeEndpointCommand::send_batch_oneway(
-        remote,
-        vec![
-            crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512)),
-            crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]),
-        ],
-        None,
-    )
-    .expect("mixed bulk batch command");
-    assert!(mixed_app_batch.drop_on_backpressure());
-
-    let discardable_batch = NodeEndpointCommand::send_batch_oneway(
-        remote,
-        vec![
-            crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]),
-            crate::node::EndpointDataPayload::new(vec![4, 5, 6, 7]),
-        ],
-        None,
-    )
-    .expect("discardable bulk batch command");
-    assert!(discardable_batch.drop_on_backpressure());
-}
-
-#[test]
-fn endpoint_batch_commands_charge_drain_budget_by_small_packet_groups() {
-    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-    let bulk_payload = || crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512));
+    let bulk_payload = || ipv6_tcp_packet(0x18, 512);
     let payloads = |count: usize| (0..count).map(|_| bulk_payload()).collect::<Vec<_>>();
 
-    let single = NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), None);
+    let single = NodeEndpointDataBatch::batch(remote, vec![ipv6_tcp_packet(0x18, 512)], None)
+        .expect("one-packet endpoint data batch");
     assert_eq!(single.drain_cost(), 1);
 
-    let batch_1 = NodeEndpointCommand::send_batch_oneway(remote, payloads(1), None)
-        .expect("one-packet batch command");
+    let batch_1 =
+        NodeEndpointDataBatch::batch(remote, payloads(1), None).expect("one-packet batch");
     assert_eq!(batch_1.drain_cost(), 1);
 
-    let batch_8 = NodeEndpointCommand::send_batch_oneway(remote, payloads(8), None)
-        .expect("eight-packet batch command");
+    let batch_8 =
+        NodeEndpointDataBatch::batch(remote, payloads(8), None).expect("eight-packet batch");
     assert_eq!(batch_8.drain_cost(), 1);
 
-    let batch_9 = NodeEndpointCommand::send_batch_oneway(remote, payloads(9), None)
-        .expect("nine-packet batch command");
+    let batch_9 =
+        NodeEndpointDataBatch::batch(remote, payloads(9), None).expect("nine-packet batch");
     assert_eq!(batch_9.drain_cost(), 2);
 
-    let full_batch = NodeEndpointCommand::send_batch_oneway(
-        remote,
-        payloads(ENDPOINT_SEND_BATCH_COMMAND_MAX),
-        None,
-    )
-    .expect("full endpoint batch command");
-    assert_eq!(ENDPOINT_SEND_BATCH_COMMAND_MAX, 128);
+    let full_batch = NodeEndpointDataBatch::batch(remote, payloads(ENDPOINT_DATA_BATCH_MAX), None)
+        .expect("full endpoint batch");
+    assert_eq!(ENDPOINT_DATA_BATCH_MAX, 128);
     assert_eq!(full_batch.drain_cost(), 16);
 }
 
 #[test]
-fn endpoint_command_drop_accounting_counts_packets_not_drain_quanta() {
+fn endpoint_data_drop_accounting_counts_packets_not_drain_quanta() {
     let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-    let discardable_payload = || crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]);
-    let payloads = (0..ENDPOINT_SEND_BATCH_COMMAND_MAX)
+    let discardable_payload = || vec![0, 1, 2, 3];
+    let payloads = (0..ENDPOINT_DATA_BATCH_MAX)
         .map(|_| discardable_payload())
         .collect::<Vec<_>>();
-    let full_batch = NodeEndpointCommand::send_batch_oneway(remote, payloads, None)
-        .expect("full discardable endpoint batch command");
+    let full_batch = NodeEndpointDataBatch::batch(remote, payloads, None)
+        .expect("full discardable endpoint batch");
 
-    assert!(full_batch.drop_on_backpressure());
     assert_eq!(full_batch.drain_cost(), 16);
-    assert_eq!(full_batch.packet_count(), ENDPOINT_SEND_BATCH_COMMAND_MAX);
+    assert_eq!(full_batch.packet_count(), ENDPOINT_DATA_BATCH_MAX);
 }
 
 #[tokio::test]
-async fn endpoint_command_enqueue_drops_oneway_app_bulk_when_full() {
-    let (priority_tx, _priority_rx) = mpsc::channel(1);
-    let (bulk_tx, mut bulk_rx) = mpsc::channel(1);
+async fn endpoint_data_batch_enqueue_drops_when_full() {
+    let (batch_tx, mut batch_rx) = crate::node::endpoint_data_batch_channel(1);
     let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
 
-    let queued_app_data = NodeEndpointCommand::send_oneway(remote, vec![0, 1, 2, 3], None);
-    assert!(queued_app_data.drop_on_backpressure());
-    bulk_tx
-        .try_send(queued_app_data)
-        .expect("bulk queue should accept the first command");
+    let queued_data = NodeEndpointDataBatch::batch(remote, vec![vec![0, 1, 2, 3]], None)
+        .expect("one-packet endpoint data batch");
+    queue_endpoint_data_batch(queued_data, &batch_tx)
+        .expect("first endpoint data batch should enqueue");
 
-    let dropped_tcp = NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), None);
-    assert!(dropped_tcp.drop_on_backpressure());
-    send_endpoint_command(dropped_tcp, &priority_tx, &bulk_tx)
-        .await
-        .expect("oneway app bulk should be accepted as dropped");
+    let dropped_tcp = NodeEndpointDataBatch::batch(remote, vec![ipv6_tcp_packet(0x18, 512)], None)
+        .expect("one-packet endpoint data batch");
+    queue_endpoint_data_batch(dropped_tcp, &batch_tx)
+        .expect("endpoint data batch should be accepted as dropped");
 
-    let first = bulk_rx
+    let first = batch_rx
         .try_recv()
-        .expect("only the first command should remain queued");
-    assert!(first.drop_on_backpressure());
+        .expect("only the first batch should remain queued");
     assert!(matches!(
-        bulk_rx.try_recv(),
+        batch_rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert_eq!(first.packet_count(), 1);
+}
+
+#[tokio::test]
+async fn endpoint_data_batch_lane_charges_batches_by_packet_count() {
+    let (batch_tx, mut batch_rx) = crate::node::endpoint_data_batch_channel(2);
+    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+    let payloads = vec![vec![0, 1, 2, 3], vec![4, 5, 6, 7]];
+    let batch = NodeEndpointDataBatch::batch(remote, payloads, None).expect("non-empty batch");
+
+    queue_endpoint_data_batch(batch, &batch_tx)
+        .expect("two-packet batch should fill the two-packet lane");
+    queue_endpoint_data_batch(
+        NodeEndpointDataBatch::batch(remote, vec![vec![8, 9, 10, 11]], None)
+            .expect("one-packet endpoint data batch"),
+        &batch_tx,
+    )
+    .expect("overflowing endpoint data batch should be accepted as dropped");
+
+    let first = batch_rx
+        .try_recv()
+        .expect("the two-packet batch should remain queued");
+    assert_eq!(first.packet_count(), 2);
+    assert!(matches!(
+        batch_rx.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
 }
 
 #[test]
-fn endpoint_send_command_owns_payload_bytes_and_queue_stamp() {
+fn endpoint_data_batch_owns_payload_bytes_and_queue_stamp() {
     let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
     let payload = ipv6_tcp_packet(0x18, 512);
     let queued_at = Some(crate::perf_profile::test_stamp());
     let enqueued_at_ms = 1_234;
 
-    let command = crate::node::EndpointSendCommand::new_with_enqueued_at_ms(
+    let batch = crate::node::NodeEndpointDataBatch::batch_with_enqueued_at_ms(
         remote,
-        payload.clone(),
+        vec![payload.clone()],
         queued_at,
         enqueued_at_ms,
-    );
+    )
+    .expect("one-packet endpoint data batch");
 
-    let (owned_send, owned_queued_at, owned_enqueued_at_ms) = command.into_deferred_parts();
-    assert_eq!(owned_send.dest_addr(), *remote.node_addr());
-    assert_eq!(owned_send.dest_pubkey(), remote.pubkey_full());
-    assert_eq!(owned_send.payload().as_slice(), payload.as_slice());
+    let (owned_remote, owned_payloads, owned_queued_at, owned_enqueued_at_ms) = batch.into_parts();
+    assert_eq!(owned_remote, remote);
+    assert_eq!(owned_payloads, vec![payload]);
     assert_eq!(owned_queued_at, queued_at);
     assert_eq!(owned_enqueued_at_ms, enqueued_at_ms);
-}
-
-#[test]
-fn endpoint_data_send_owns_remote_identity_and_payload_bytes() {
-    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-    let payload = crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512));
-
-    let send = crate::node::EndpointDataSend::new(remote, payload.clone());
-    assert_eq!(send.dest_addr(), *remote.node_addr());
-    assert_eq!(send.dest_pubkey(), remote.pubkey_full());
-    assert_eq!(send.payload().as_slice(), payload.as_slice());
 }
 
 mod runtime;

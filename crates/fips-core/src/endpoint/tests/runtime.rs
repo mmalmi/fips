@@ -1,6 +1,16 @@
 use super::*;
 use std::time::Duration;
 
+fn one_message_endpoint_event(
+    source: PeerIdentity,
+    payload: impl Into<crate::transport::PacketBuffer>,
+) -> NodeEndpointEvent {
+    NodeEndpointEvent {
+        messages: vec![EndpointDataDelivery::new(source, payload)],
+        queued_at: crate::perf_profile::stamp(),
+    }
+}
+
 #[tokio::test]
 async fn endpoint_starts_without_system_tun() {
     let endpoint = FipsEndpoint::builder()
@@ -189,7 +199,7 @@ async fn recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
 
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
                 EndpointDataDelivery::new(local, b"first".to_vec()),
                 EndpointDataDelivery::new(local, b"second".to_vec()),
@@ -200,12 +210,7 @@ async fn recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
         .expect("inject internal batch");
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: local,
-            payload: b"fourth".to_vec().into(),
-            enqueued_at_ms: crate::time::now_ms(),
-            queued_at: crate::perf_profile::stamp(),
-        })
+        .send(one_message_endpoint_event(local, b"fourth".to_vec()))
         .expect("inject follow-on message");
 
     let mut messages = Vec::with_capacity(8);
@@ -245,7 +250,7 @@ async fn recv_batch_into_preserves_pending_batch_tail_fifo() {
 
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
                 EndpointDataDelivery::new(local, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
                 EndpointDataDelivery::new(local, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
@@ -267,12 +272,7 @@ async fn recv_batch_into_preserves_pending_batch_tail_fifo() {
 
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: local,
-            payload: vec![0x11; 32].into(),
-            enqueued_at_ms: crate::time::now_ms(),
-            queued_at: crate::perf_profile::stamp(),
-        })
+        .send(one_message_endpoint_event(local, vec![0x11; 32]))
         .expect("inject small follow-on");
 
     let received = tokio::time::timeout(
@@ -290,6 +290,51 @@ async fn recv_batch_into_preserves_pending_batch_tail_fifo() {
 }
 
 #[tokio::test]
+async fn recv_batch_into_releases_endpoint_event_credit_per_public_message() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+
+    endpoint
+        .inbound_endpoint_tx
+        .send(NodeEndpointEvent {
+            messages: vec![
+                EndpointDataDelivery::new(local, b"first".to_vec()),
+                EndpointDataDelivery::new(local, b"second".to_vec()),
+                EndpointDataDelivery::new(local, b"third".to_vec()),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("inject internal batch");
+    assert_eq!(endpoint.inbound_endpoint_tx.queued_messages(), 3);
+
+    let mut messages = Vec::with_capacity(8);
+    let received = tokio::time::timeout(
+        Duration::from_secs(1),
+        endpoint.recv_batch_into(&mut messages, 1),
+    )
+    .await
+    .expect("recv batch should not time out")
+    .expect("message should arrive");
+    assert_eq!(received, 1);
+    assert_eq!(messages[0].data, b"first");
+    assert_eq!(endpoint.inbound_endpoint_tx.queued_messages(), 2);
+
+    let message = endpoint.try_recv().expect("pending message");
+    assert_eq!(message.data, b"second");
+    assert_eq!(endpoint.inbound_endpoint_tx.queued_messages(), 1);
+
+    let message = endpoint.try_recv().expect("last pending message");
+    assert_eq!(message.data, b"third");
+    assert_eq!(endpoint.inbound_endpoint_tx.queued_messages(), 0);
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn try_recv_drains_pending_internal_endpoint_batch_tail() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()
@@ -300,7 +345,7 @@ async fn try_recv_drains_pending_internal_endpoint_batch_tail() {
 
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
                 EndpointDataDelivery::new(local, b"first".to_vec()),
                 EndpointDataDelivery::new(local, b"second".to_vec()),
@@ -330,7 +375,7 @@ async fn blocking_recv_drains_pending_internal_endpoint_batch_tail() {
 
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
                 EndpointDataDelivery::new(local, b"first".to_vec()),
                 EndpointDataDelivery::new(local, b"second".to_vec()),
@@ -363,7 +408,7 @@ async fn blocking_recv_batch_into_preserves_pending_batch_tail_fifo() {
 
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
                 EndpointDataDelivery::new(local, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
                 EndpointDataDelivery::new(local, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
@@ -382,12 +427,7 @@ async fn blocking_recv_batch_into_preserves_pending_batch_tail_fifo() {
         assert_eq!(messages[0].data[0], 0xaa);
 
         event_tx
-            .send(NodeEndpointEvent::Data {
-                source_peer: local,
-                payload: vec![0x11; 32].into(),
-                enqueued_at_ms: crate::time::now_ms(),
-                queued_at: crate::perf_profile::stamp(),
-            })
+            .send(one_message_endpoint_event(local, vec![0x11; 32]))
             .expect("inject small follow-on");
 
         let received = endpoint
@@ -506,7 +546,7 @@ async fn blocking_recv_batch_for_each_preserves_unhandled_internal_batch_tail() 
 
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
                 EndpointDataDelivery::new(local, b"first".to_vec()),
                 EndpointDataDelivery::new(local, b"second".to_vec()),
@@ -557,7 +597,7 @@ async fn blocking_recv_batch_into_splits_internal_endpoint_batches_without_reord
 
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
                 EndpointDataDelivery::new(local, b"first".to_vec()),
                 EndpointDataDelivery::new(local, b"second".to_vec()),
@@ -568,12 +608,7 @@ async fn blocking_recv_batch_into_splits_internal_endpoint_batches_without_reord
         .expect("inject internal batch");
     endpoint
         .inbound_endpoint_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: local,
-            payload: b"fourth".to_vec().into(),
-            enqueued_at_ms: crate::time::now_ms(),
-            queued_at: crate::perf_profile::stamp(),
-        })
+        .send(one_message_endpoint_event(local, b"fourth".to_vec()))
         .expect("inject follow-on message");
 
     let endpoint = tokio::task::spawn_blocking(move || {

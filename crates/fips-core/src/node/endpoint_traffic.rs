@@ -1,25 +1,5 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(in crate::node) struct FmpPlaintextTrafficClass {
-    pub(in crate::node) bulk_endpoint_data: bool,
-    pub(in crate::node) drop_on_backpressure: bool,
-}
-
-pub(in crate::node) fn classify_fmp_plaintext_traffic(
-    plaintext: &[u8],
-) -> FmpPlaintextTrafficClass {
-    let bulk_endpoint_data = fmp_plaintext_is_bulk_session_datagram(plaintext);
-    // At this layer established FSP payloads are already end-to-end encrypted,
-    // so a bulk SessionDatagram may still be TCP endpoint traffic. Keep it out
-    // of the control lane, but only the pre-FSP endpoint path may mark known
-    // non-TCP packets as discardable under sender backpressure.
-    FmpPlaintextTrafficClass {
-        bulk_endpoint_data,
-        drop_on_backpressure: false,
-    }
-}
-
 pub(in crate::node) fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
     if plaintext
         .first()
@@ -35,159 +15,125 @@ pub(in crate::node) fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) 
     })
 }
 
-/// Endpoint payload bytes selected at app ingress.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct EndpointDataPayload {
-    bytes: Vec<u8>,
-}
-
-impl EndpointDataPayload {
-    pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes }
-    }
-
-    pub(crate) fn as_slice(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    pub(crate) fn into_bytes(self) -> Vec<u8> {
-        self.bytes
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.bytes.len()
-    }
-}
-
-impl From<Vec<u8>> for EndpointDataPayload {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self::new(bytes)
-    }
-}
-
-/// Outbound endpoint data plus the peer identity it is bound to.
-#[derive(Debug)]
-pub(crate) struct EndpointDataSend {
-    dest_addr: NodeAddr,
-    dest_pubkey: secp256k1::PublicKey,
-    payload: EndpointDataPayload,
-}
-
-impl EndpointDataSend {
-    pub(crate) fn new(remote: PeerIdentity, payload: EndpointDataPayload) -> Self {
-        Self {
-            dest_addr: *remote.node_addr(),
-            dest_pubkey: remote.pubkey_full(),
-            payload,
-        }
-    }
-
-    pub(crate) fn dest_addr(&self) -> NodeAddr {
-        self.dest_addr
-    }
-
-    pub(crate) fn dest_pubkey(&self) -> secp256k1::PublicKey {
-        self.dest_pubkey
-    }
-
-    pub(crate) fn payload(&self) -> &EndpointDataPayload {
-        &self.payload
-    }
-
-    pub(crate) fn into_payload(self) -> EndpointDataPayload {
-        self.payload
-    }
-}
-
-/// Admission result for a bounded pending endpoint-data queue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PendingEndpointDataQueueAdmission {
-    dropped_oldest: bool,
-}
-
-impl PendingEndpointDataQueueAdmission {
-    pub(crate) fn dropped_oldest(&self) -> bool {
-        self.dropped_oldest
-    }
-}
-
-/// Per-destination endpoint payloads waiting for session establishment.
+/// Per-destination endpoint data batch waiting for session establishment.
 #[derive(Debug)]
 pub(crate) struct PendingEndpointData {
-    payload: EndpointDataPayload,
+    payloads: Vec<Vec<u8>>,
     enqueued_at_ms: u64,
 }
 
 impl PendingEndpointData {
-    pub(crate) fn new(payload: EndpointDataPayload, enqueued_at_ms: u64) -> Self {
-        Self {
-            payload,
-            enqueued_at_ms,
+    pub(crate) fn new_batch(payloads: Vec<Vec<u8>>, enqueued_at_ms: u64) -> Option<Self> {
+        if payloads.is_empty() {
+            return None;
         }
+        Some(Self {
+            payloads,
+            enqueued_at_ms,
+        })
     }
 
-    pub(crate) fn payload(&self) -> &EndpointDataPayload {
-        &self.payload
+    fn packet_count(&self) -> usize {
+        self.payloads.len()
     }
 
     pub(crate) fn enqueued_at_ms(&self) -> u64 {
         self.enqueued_at_ms
     }
 
-    pub(crate) fn into_payload(self) -> EndpointDataPayload {
-        self.payload
+    pub(crate) fn into_payloads(self) -> Vec<Vec<u8>> {
+        self.payloads
     }
 }
 
 /// Per-destination endpoint payloads waiting for session establishment.
 #[derive(Debug, Default)]
 pub(crate) struct PendingEndpointDataQueue {
-    payloads: VecDeque<PendingEndpointData>,
+    batches: VecDeque<PendingEndpointData>,
+    packet_count: usize,
 }
 
 impl PendingEndpointDataQueue {
     pub(crate) fn push_bounded(
         &mut self,
-        payload: EndpointDataPayload,
+        payload: Vec<u8>,
         enqueued_at_ms: u64,
         capacity: usize,
-    ) -> PendingEndpointDataQueueAdmission {
-        let dropped_oldest = self.payloads.len() >= capacity;
-        if dropped_oldest {
-            self.payloads.pop_front();
+    ) -> bool {
+        self.push_batch_bounded(vec![payload], enqueued_at_ms, capacity)
+    }
+
+    pub(crate) fn push_batch_bounded(
+        &mut self,
+        mut payloads: Vec<Vec<u8>>,
+        enqueued_at_ms: u64,
+        capacity: usize,
+    ) -> bool {
+        if payloads.is_empty() {
+            return false;
         }
-        self.payloads
-            .push_back(PendingEndpointData::new(payload, enqueued_at_ms));
-        PendingEndpointDataQueueAdmission { dropped_oldest }
+
+        let capacity = capacity.max(1);
+        let mut dropped_oldest = false;
+        if payloads.len() > capacity {
+            let drop_from_new = payloads.len().saturating_sub(capacity);
+            payloads.drain(..drop_from_new);
+            self.batches.clear();
+            self.packet_count = 0;
+            dropped_oldest = true;
+        } else {
+            let required_room = self
+                .packet_count
+                .saturating_add(payloads.len())
+                .saturating_sub(capacity);
+            if required_room > 0 {
+                self.drop_oldest_packets(required_room);
+                dropped_oldest = true;
+            }
+        }
+
+        let packet_count = payloads.len();
+        if let Some(batch) = PendingEndpointData::new_batch(payloads, enqueued_at_ms) {
+            self.packet_count = self.packet_count.saturating_add(packet_count);
+            self.batches.push_back(batch);
+        }
+        dropped_oldest
+    }
+
+    fn drop_oldest_packets(&mut self, mut count: usize) {
+        while count > 0 {
+            let Some(front) = self.batches.front_mut() else {
+                self.packet_count = 0;
+                return;
+            };
+            let front_count = front.packet_count();
+            if front_count <= count {
+                count -= front_count;
+                self.packet_count = self.packet_count.saturating_sub(front_count);
+                self.batches.pop_front();
+            } else {
+                front.payloads.drain(..count);
+                self.packet_count = self.packet_count.saturating_sub(count);
+                count = 0;
+            }
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.payloads.len()
+        self.packet_count
     }
 
     pub(crate) fn into_pending_payloads(self) -> VecDeque<PendingEndpointData> {
-        self.payloads
+        self.batches
     }
 
     fn append_payloads(&mut self, payloads: &mut VecDeque<PendingEndpointData>) {
-        self.payloads.append(payloads);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &EndpointDataPayload> {
-        self.payloads.iter().map(PendingEndpointData::payload)
-    }
-}
-
-/// Admission result for a bounded pending TUN packet queue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PendingTunPacketQueueAdmission {
-    dropped_oldest: bool,
-}
-
-impl PendingTunPacketQueueAdmission {
-    pub(crate) fn dropped_oldest(&self) -> bool {
-        self.dropped_oldest
+        let appended_count = payloads
+            .iter()
+            .map(PendingEndpointData::packet_count)
+            .sum::<usize>();
+        self.packet_count = self.packet_count.saturating_add(appended_count);
+        self.batches.append(payloads);
     }
 }
 
@@ -227,14 +173,14 @@ impl PendingTunPacketQueue {
         packet: Vec<u8>,
         queued_at_ms: u64,
         capacity: usize,
-    ) -> PendingTunPacketQueueAdmission {
+    ) -> bool {
         let dropped_oldest = self.packets.len() >= capacity;
         if dropped_oldest {
             self.packets.pop_front();
         }
         self.packets
             .push_back(PendingTunPacket::new(packet, queued_at_ms));
-        PendingTunPacketQueueAdmission { dropped_oldest }
+        dropped_oldest
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -332,7 +278,7 @@ impl PendingSessionTrafficQueues {
             };
         }
 
-        let admission = self.tun_packets.entry(dest_addr).or_default().push_bounded(
+        let dropped_oldest = self.tun_packets.entry(dest_addr).or_default().push_bounded(
             packet,
             crate::time::now_ms(),
             packets_per_dest,
@@ -340,14 +286,14 @@ impl PendingSessionTrafficQueues {
         self.pending_destinations.insert(dest_addr);
         PendingSessionTrafficAdmission {
             destination_dropped: false,
-            dropped_oldest: admission.dropped_oldest(),
+            dropped_oldest,
         }
     }
 
     pub(crate) fn push_endpoint_data_with_enqueued_at_ms(
         &mut self,
         dest_addr: NodeAddr,
-        payload: impl Into<EndpointDataPayload>,
+        payload: Vec<u8>,
         max_destinations: usize,
         packets_per_dest: usize,
         enqueued_at_ms: u64,
@@ -361,15 +307,50 @@ impl PendingSessionTrafficQueues {
             };
         }
 
-        let admission = self
+        let dropped_oldest = self
             .endpoint_data
             .entry(dest_addr)
             .or_default()
-            .push_bounded(payload.into(), enqueued_at_ms, packets_per_dest);
+            .push_bounded(payload, enqueued_at_ms, packets_per_dest);
         self.pending_destinations.insert(dest_addr);
         PendingSessionTrafficAdmission {
             destination_dropped: false,
-            dropped_oldest: admission.dropped_oldest(),
+            dropped_oldest,
+        }
+    }
+
+    pub(crate) fn push_endpoint_data_batch_with_enqueued_at_ms(
+        &mut self,
+        dest_addr: NodeAddr,
+        payloads: Vec<Vec<u8>>,
+        max_destinations: usize,
+        packets_per_dest: usize,
+        enqueued_at_ms: u64,
+    ) -> PendingSessionTrafficAdmission {
+        if payloads.is_empty() {
+            return PendingSessionTrafficAdmission {
+                destination_dropped: false,
+                dropped_oldest: false,
+            };
+        }
+        if !self.endpoint_data.contains_key(&dest_addr)
+            && self.endpoint_data.len() >= max_destinations
+        {
+            return PendingSessionTrafficAdmission {
+                destination_dropped: true,
+                dropped_oldest: false,
+            };
+        }
+
+        let dropped_oldest = self
+            .endpoint_data
+            .entry(dest_addr)
+            .or_default()
+            .push_batch_bounded(payloads, enqueued_at_ms, packets_per_dest);
+        self.pending_destinations.insert(dest_addr);
+        PendingSessionTrafficAdmission {
+            destination_dropped: false,
+            dropped_oldest,
         }
     }
 

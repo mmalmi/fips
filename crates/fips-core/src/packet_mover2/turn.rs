@@ -128,6 +128,7 @@ fn reserved_live_outbound_progress_limit(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2FmpIngressReceipt {
     source_addr: NodeAddr,
+    source_peer: crate::PeerIdentity,
     transport_id: TransportId,
     remote_addr: TransportAddr,
     packet_timestamp_ms: u64,
@@ -143,6 +144,10 @@ impl PacketMover2FmpIngressReceipt {
             return None;
         }
         let source_addr = output.owner().node_addr();
+        let source_peer = output.source_peer()?;
+        if source_peer.node_addr() != &source_addr {
+            return None;
+        }
         let Some(TransportPath::Live {
             transport_id,
             remote_addr,
@@ -161,6 +166,7 @@ impl PacketMover2FmpIngressReceipt {
             u32::from_le_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]);
         Some(Self {
             source_addr,
+            source_peer,
             transport_id: *transport_id,
             remote_addr: remote_addr.clone(),
             packet_timestamp_ms,
@@ -173,6 +179,10 @@ impl PacketMover2FmpIngressReceipt {
 
     pub(crate) fn source_addr(&self) -> &NodeAddr {
         &self.source_addr
+    }
+
+    pub(crate) fn source_peer(&self) -> crate::PeerIdentity {
+        self.source_peer
     }
 
     pub(crate) fn transport_id(&self) -> TransportId {
@@ -498,10 +508,10 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
-    endpoint_command_drops: Vec<PacketMover2EndpointCommandDrop>,
+    endpoint_data_drops: Vec<PacketMover2EndpointDataDrop>,
     tun_source_drained: usize,
     endpoint_source_drained: usize,
-    endpoint_deferred_commands: usize,
+    deferred_endpoint_data_batches_count: usize,
     tun_deferred_packets: usize,
     output_drops: Vec<PacketMover2OutputDrop>,
     drops: Vec<PacketDrop>,
@@ -523,10 +533,10 @@ impl PacketMover2LiveNodeTurn {
             fsp_session_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
             tun_outbound_drops: Vec::new(),
-            endpoint_command_drops: Vec::new(),
+            endpoint_data_drops: Vec::new(),
             tun_source_drained: 0,
             endpoint_source_drained: 0,
-            endpoint_deferred_commands: 0,
+            deferred_endpoint_data_batches_count: 0,
             tun_deferred_packets: 0,
             output_drops: turn.output_drops().to_vec(),
             drops: turn.drops().to_vec(),
@@ -627,12 +637,12 @@ impl PacketMover2LiveNodeTurn {
         self.tun_outbound_drops = drops;
     }
 
-    pub(crate) fn endpoint_command_drops(&self) -> &[PacketMover2EndpointCommandDrop] {
-        &self.endpoint_command_drops
+    pub(crate) fn endpoint_data_drops(&self) -> &[PacketMover2EndpointDataDrop] {
+        &self.endpoint_data_drops
     }
 
-    fn set_endpoint_command_drops(&mut self, drops: Vec<PacketMover2EndpointCommandDrop>) {
-        self.endpoint_command_drops = drops;
+    fn set_endpoint_data_drops(&mut self, drops: Vec<PacketMover2EndpointDataDrop>) {
+        self.endpoint_data_drops = drops;
     }
 
     pub(crate) fn tun_source_drained(&self) -> usize {
@@ -651,12 +661,12 @@ impl PacketMover2LiveNodeTurn {
         self.endpoint_source_drained = count;
     }
 
-    pub(crate) fn endpoint_deferred_commands(&self) -> usize {
-        self.endpoint_deferred_commands
+    pub(crate) fn deferred_endpoint_data_batches_count(&self) -> usize {
+        self.deferred_endpoint_data_batches_count
     }
 
-    fn set_endpoint_deferred_commands(&mut self, count: usize) {
-        self.endpoint_deferred_commands = count;
+    fn set_deferred_endpoint_data_batches_count(&mut self, count: usize) {
+        self.deferred_endpoint_data_batches_count = count;
     }
 
     pub(crate) fn tun_deferred_packets(&self) -> usize {
@@ -701,10 +711,10 @@ impl PacketMover2LiveNodeTurn {
             || !self.fsp_session_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
-            || !self.endpoint_command_drops.is_empty()
+            || !self.endpoint_data_drops.is_empty()
             || self.tun_source_drained > 0
             || self.endpoint_source_drained > 0
-            || self.endpoint_deferred_commands > 0
+            || self.deferred_endpoint_data_batches_count > 0
             || self.tun_deferred_packets > 0
             || !self.output_drops.is_empty()
             || !self.drops.is_empty()
@@ -718,7 +728,7 @@ impl PacketMover2LiveNodeTurn {
         self.summary.has_failures()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
-            || !self.endpoint_command_drops.is_empty()
+            || !self.endpoint_data_drops.is_empty()
             || !self.output_drops.is_empty()
             || !self.drops.is_empty()
             || self.transport_dropped > 0

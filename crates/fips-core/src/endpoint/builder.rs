@@ -125,8 +125,8 @@ impl FipsEndpointBuilder {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
         endpoint_debug_log("FipsEndpointBuilder::bind node task spawned");
-        let endpoint_control_commands = endpoint_data_io.control_command_tx;
-        let endpoint_commands = endpoint_data_io.command_tx;
+        let endpoint_control_tx = endpoint_data_io.control_tx;
+        let endpoint_data_batches = endpoint_data_io.data_batch_tx;
 
         Ok(FipsEndpoint {
             identity,
@@ -136,8 +136,8 @@ impl FipsEndpointBuilder {
             discovery_scope: self.discovery_scope,
             outbound_packets: packet_io.outbound_tx,
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
-            endpoint_control_commands,
-            endpoint_commands,
+            endpoint_control_tx,
+            endpoint_data_batches,
             inbound_endpoint_tx: endpoint_data_io.event_tx,
             inbound_endpoint_rx: Arc::new(Mutex::new(EndpointReceiveState::new(
                 endpoint_data_io.event_rx,

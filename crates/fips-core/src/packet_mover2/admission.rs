@@ -162,6 +162,12 @@ struct OwnerAdmissionPop<T> {
     cursor: OwnerAdmissionCursor,
 }
 
+#[derive(Debug)]
+struct OwnerAdmissionRun<T> {
+    items: Vec<T>,
+    cursor: OwnerAdmissionCursor,
+}
+
 impl<T> OwnerAdmissionQueues<T>
 where
     T: OwnerQueuedAdmission,
@@ -186,6 +192,32 @@ where
 
     fn push_back(&mut self, item: T) -> bool {
         self.push(item, false)
+    }
+
+    fn push_run_back<I>(&mut self, owner: OwnerId, lane: Lane, items: I) -> bool
+    where
+        I: IntoIterator<Item = T>,
+    {
+        let mut pushed = 0usize;
+        let was_empty = {
+            let queue = self.owners.entry(owner).or_default().lane_mut(lane);
+            let was_empty = queue.is_empty();
+            for item in items {
+                debug_assert_eq!(item.owner(), owner);
+                debug_assert_eq!(item.lane(), lane);
+                queue.push_back(item);
+                pushed = pushed.saturating_add(1);
+            }
+            was_empty
+        };
+        if pushed == 0 {
+            return false;
+        }
+        self.increment_lane_len_by(lane, pushed);
+        if was_empty {
+            self.push_ready_back(lane, owner);
+        }
+        was_empty
     }
 
     fn push_front(&mut self, item: T) -> bool {
@@ -221,6 +253,58 @@ where
         self.pop_lane(Lane::Priority)
     }
 
+    fn pop_next_run(&mut self, priority_only: bool, limit: usize) -> Option<OwnerAdmissionRun<T>> {
+        if limit == 0 {
+            return None;
+        }
+
+        let first = if priority_only {
+            self.pop_next_priority()
+        } else {
+            self.pop_next()
+        }?;
+        let mut cursor = first.cursor;
+        let mut items = Vec::with_capacity(limit.min(self.len().saturating_add(1)));
+        items.push(first.item);
+
+        while items.len() < limit && cursor.owner_has_more {
+            let Some(next) = self.pop_owner_continue(cursor) else {
+                cursor.owner_has_more = false;
+                break;
+            };
+            cursor = next.cursor;
+            items.push(next.item);
+        }
+
+        Some(OwnerAdmissionRun { items, cursor })
+    }
+
+    fn pop_owner_continue(
+        &mut self,
+        cursor: OwnerAdmissionCursor,
+    ) -> Option<OwnerAdmissionPop<T>> {
+        if !cursor.owner_has_more {
+            return None;
+        }
+        let Some((item, owner_has_more, owner_empty)) =
+            self.pop_owner_lane(cursor.owner, cursor.lane)
+        else {
+            return None;
+        };
+        self.decrement_lane_len(cursor.lane);
+        if owner_empty {
+            self.owners.remove(&cursor.owner);
+        }
+        Some(OwnerAdmissionPop {
+            item,
+            cursor: OwnerAdmissionCursor {
+                owner: cursor.owner,
+                lane: cursor.lane,
+                owner_has_more,
+            },
+        })
+    }
+
     fn pop_lane(&mut self, lane: Lane) -> Option<OwnerAdmissionPop<T>> {
         loop {
             let owner = self.pop_ready_front(lane)?;
@@ -251,9 +335,13 @@ where
     }
 
     fn increment_lane_len(&mut self, lane: Lane) {
+        self.increment_lane_len_by(lane, 1);
+    }
+
+    fn increment_lane_len_by(&mut self, lane: Lane, count: usize) {
         match lane {
-            Lane::Priority => self.priority_len = self.priority_len.saturating_add(1),
-            Lane::Bulk => self.bulk_len = self.bulk_len.saturating_add(1),
+            Lane::Priority => self.priority_len = self.priority_len.saturating_add(count),
+            Lane::Bulk => self.bulk_len = self.bulk_len.saturating_add(count),
         }
     }
 
@@ -301,15 +389,18 @@ where
         }
     }
 
-    fn defer_owner_pop(&mut self, pop: OwnerAdmissionPop<T>) {
-        let owner = pop.cursor.owner;
-        let lane = pop.cursor.lane;
-        self.owners
-            .entry(owner)
-            .or_default()
-            .lane_mut(lane)
-            .push_front(pop.item);
-        self.increment_lane_len(lane);
+    fn defer_owner_run(&mut self, run: OwnerAdmissionRun<T>) {
+        let owner = run.cursor.owner;
+        let lane = run.cursor.lane;
+        let count = run.items.len();
+        if count == 0 {
+            return;
+        }
+        let queue = self.owners.entry(owner).or_default().lane_mut(lane);
+        for item in run.items.into_iter().rev() {
+            queue.push_front(item);
+        }
+        self.increment_lane_len_by(lane, count);
     }
 
     fn wake_owner(&mut self, owner: OwnerId) {
@@ -346,20 +437,20 @@ impl AdmissionQueue {
         })
     }
 
-    fn pop_next(&mut self) -> Option<OwnerAdmissionPop<QueuedPacket>> {
-        self.queues.pop_next()
-    }
-
-    fn pop_next_priority(&mut self) -> Option<OwnerAdmissionPop<QueuedPacket>> {
-        self.queues.pop_next_priority()
+    fn pop_next_run(
+        &mut self,
+        priority_only: bool,
+        limit: usize,
+    ) -> Option<OwnerAdmissionRun<QueuedPacket>> {
+        self.queues.pop_next_run(priority_only, limit)
     }
 
     fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
         self.queues.continue_owner_lane(cursor);
     }
 
-    fn defer_owner_pop(&mut self, pop: OwnerAdmissionPop<QueuedPacket>) {
-        self.queues.defer_owner_pop(pop);
+    fn defer_owner_run(&mut self, run: OwnerAdmissionRun<QueuedPacket>) {
+        self.queues.defer_owner_run(run);
     }
 
     fn len(&self) -> usize {
@@ -429,20 +520,38 @@ impl OutboundAdmissionQueue {
         })
     }
 
-    fn pop_next(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
-        self.queues.pop_next()
+    fn admit_run_with_seq(&mut self, packets: Vec<OutboundPacket>, first_seq: u64) -> bool {
+        let Some(first) = packets.first() else {
+            return false;
+        };
+        let owner = first.owner;
+        let lane = first.lane();
+        let mut ingress_seq = first_seq;
+        let queued = packets.into_iter().map(move |packet| {
+            let queued = QueuedOutboundPacket {
+                ingress_seq,
+                packet,
+            };
+            ingress_seq = ingress_seq.wrapping_add(1);
+            queued
+        });
+        self.queues.push_run_back(owner, lane, queued)
     }
 
-    fn pop_next_priority(&mut self) -> Option<OwnerAdmissionPop<QueuedOutboundPacket>> {
-        self.queues.pop_next_priority()
+    fn pop_next_run(
+        &mut self,
+        priority_only: bool,
+        limit: usize,
+    ) -> Option<OwnerAdmissionRun<QueuedOutboundPacket>> {
+        self.queues.pop_next_run(priority_only, limit)
     }
 
     fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
         self.queues.continue_owner_lane(cursor);
     }
 
-    fn defer_owner_pop(&mut self, pop: OwnerAdmissionPop<QueuedOutboundPacket>) {
-        self.queues.defer_owner_pop(pop);
+    fn defer_owner_run(&mut self, run: OwnerAdmissionRun<QueuedOutboundPacket>) {
+        self.queues.defer_owner_run(run);
     }
 
     fn len(&self) -> usize {

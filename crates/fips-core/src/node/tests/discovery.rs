@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::config::RoutingMode;
-use crate::node::RecentRequest;
+use crate::node::recent_requests::RecentRequest;
 use crate::protocol::{LookupRequest, LookupResponse};
 use crate::tree::TreeCoordinate;
 use spanning_tree::{

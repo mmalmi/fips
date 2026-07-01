@@ -14,14 +14,14 @@ pub struct ExternalPacketIo {
 #[derive(Debug)]
 pub(crate) struct EndpointDataIo {
     /// Send endpoint management commands into the node RX loop ahead of queued
-    /// bulk endpoint data.
-    pub(crate) control_command_tx: tokio::sync::mpsc::Sender<NodeEndpointCommand>,
-    /// Send endpoint data commands into the node RX loop.
+    /// endpoint data.
+    pub(crate) control_tx: tokio::sync::mpsc::Sender<NodeEndpointControlCommand>,
+    /// Send endpoint data batches into the node RX loop.
     ///
     /// Bounded by the explicit endpoint packet capacity. Bulk backpressure is
     /// visible to the caller instead of hidden behind an environment-selected
     /// queue size.
-    pub(crate) command_tx: tokio::sync::mpsc::Sender<NodeEndpointCommand>,
+    pub(crate) data_batch_tx: EndpointDataBatchTx,
     /// Receive endpoint data delivered by FIPS sessions.
     ///
     /// Endpoint data uses one bounded app-data channel. Oversized batches split
@@ -145,27 +145,10 @@ impl EndpointEventSender {
         &self,
         event: NodeEndpointEvent,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        match event {
-            NodeEndpointEvent::Data { .. } => self.send_event(event, true),
-            NodeEndpointEvent::DataBatch {
-                messages,
-                queued_at,
-            } => self.send_data_batch(messages, queued_at),
-        }
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn send_data_batch(
-        &self,
-        messages: Vec<EndpointDataDelivery>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        if messages.is_empty() {
+        if event.messages.is_empty() {
             return Ok(());
         }
 
-        let event = NodeEndpointEvent::from_delivery_messages(messages, queued_at)
-            .expect("non-empty endpoint event batch should produce event");
         self.send_event(event, true)
     }
 
@@ -215,32 +198,36 @@ impl EndpointEventSender {
         &self,
         event: NodeEndpointEvent,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        let (mut messages, queued_at) = match event {
-            NodeEndpointEvent::DataBatch {
-                messages,
-                queued_at,
-            } => (messages, queued_at),
-            event => {
-                let count = event.message_count();
-                crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::EndpointEventBulkDropped,
-                    count as u64,
-                );
-                return Ok(());
-            }
-        };
+        let mut messages = event.messages;
+        let queued_at = event.queued_at;
         if messages.len() <= 1 {
-            let event = NodeEndpointEvent::from_delivery_messages(messages, queued_at)
-                .expect("non-empty split endpoint batch should produce an event");
-            return self.send_event(event, false);
+            return self.send_event(
+                NodeEndpointEvent {
+                    messages,
+                    queued_at,
+                },
+                false,
+            );
         }
 
         let right = messages.split_off(messages.len() / 2);
-        if let Some(left) = NodeEndpointEvent::from_delivery_messages(messages, queued_at) {
-            self.send_event(left, true)?;
+        if !messages.is_empty() {
+            self.send_event(
+                NodeEndpointEvent {
+                    messages,
+                    queued_at,
+                },
+                true,
+            )?;
         }
-        if let Some(right) = NodeEndpointEvent::from_delivery_messages(right, queued_at) {
-            self.send_event(right, true)?;
+        if !right.is_empty() {
+            self.send_event(
+                NodeEndpointEvent {
+                    messages: right,
+                    queued_at,
+                },
+                true,
+            )?;
         }
         Ok(())
     }
@@ -292,19 +279,6 @@ impl EndpointEventRuntime {
     }
 
     #[allow(clippy::result_large_err)]
-    pub(in crate::node) fn deliver_endpoint_data(
-        &mut self,
-        message: EndpointDataDelivery,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        self.send(NodeEndpointEvent::Data {
-            source_peer: message.source_peer,
-            payload: message.payload,
-            enqueued_at_ms: message.enqueued_at_ms,
-            queued_at: crate::perf_profile::stamp(),
-        })
-    }
-
-    #[allow(clippy::result_large_err)]
     pub(in crate::node) fn deliver_endpoint_data_batch(
         &mut self,
         messages: Vec<EndpointDataDelivery>,
@@ -313,7 +287,7 @@ impl EndpointEventRuntime {
             return Ok(());
         }
 
-        self.send(NodeEndpointEvent::DataBatch {
+        self.send(NodeEndpointEvent {
             messages,
             queued_at: crate::perf_profile::stamp(),
         })
@@ -336,7 +310,7 @@ impl EndpointEventRuntime {
 impl EndpointEventReceiver {
     pub(crate) async fn recv(&mut self) -> Option<NodeEndpointEvent> {
         let event = self.rx.recv().await?;
-        self.note_dequeued(&event);
+        self.note_observed(&event);
         Some(event)
     }
 
@@ -358,7 +332,7 @@ impl EndpointEventReceiver {
     ) -> Result<NodeEndpointEvent, tokio::sync::mpsc::error::TryRecvError> {
         match self.rx.try_recv() {
             Ok(event) => {
-                self.note_dequeued(&event);
+                self.note_observed(&event);
                 Ok(event)
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
@@ -375,10 +349,12 @@ impl EndpointEventReceiver {
         }
     }
 
-    fn note_dequeued(&self, event: &NodeEndpointEvent) {
+    pub(crate) fn release_messages(&self, count: usize) {
+        release_endpoint_event_messages(&self.queued_messages, count);
+    }
+
+    fn note_observed(&self, event: &NodeEndpointEvent) {
         event.record_dequeue_wait();
-        let counts = event.dequeue_counts();
-        release_endpoint_event_messages(&self.queued_messages, counts.total);
     }
 }
 
@@ -427,46 +403,18 @@ impl EndpointDataDelivery {
 
 /// Endpoint data events emitted by the node session receive path.
 #[derive(Debug)]
-pub(crate) enum NodeEndpointEvent {
-    Data {
-        source_peer: PeerIdentity,
-        payload: PacketBuffer,
-        enqueued_at_ms: u64,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-    },
-    DataBatch {
-        messages: Vec<EndpointDataDelivery>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::node) struct EndpointEventDequeueCounts {
-    pub(in crate::node) total: usize,
+pub(crate) struct NodeEndpointEvent {
+    pub(crate) messages: Vec<EndpointDataDelivery>,
+    pub(crate) queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 impl NodeEndpointEvent {
-    fn message_count(&self) -> usize {
-        match self {
-            NodeEndpointEvent::Data { .. } => 1,
-            NodeEndpointEvent::DataBatch { messages, .. } => messages.len(),
-        }
-    }
-
-    pub(in crate::node) fn dequeue_counts(&self) -> EndpointEventDequeueCounts {
-        match self {
-            NodeEndpointEvent::Data { .. } => EndpointEventDequeueCounts { total: 1 },
-            NodeEndpointEvent::DataBatch { messages, .. } => EndpointEventDequeueCounts {
-                total: messages.len(),
-            },
-        }
+    pub(in crate::node) fn message_count(&self) -> usize {
+        self.messages.len()
     }
 
     fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
-        match self {
-            NodeEndpointEvent::Data { queued_at, .. }
-            | NodeEndpointEvent::DataBatch { queued_at, .. } => *queued_at,
-        }
+        self.queued_at
     }
 
     fn record_dequeue_wait(&self) {
@@ -474,34 +422,11 @@ impl NodeEndpointEvent {
         if queued_at.is_none() {
             return;
         }
-        let counts = self.dequeue_counts();
         crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::EndpointEventWait,
             queued_at,
-            counts.total as u64,
+            self.message_count() as u64,
         );
-    }
-
-    fn from_delivery_messages(
-        mut messages: Vec<EndpointDataDelivery>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-    ) -> Option<Self> {
-        match messages.len() {
-            0 => None,
-            1 => {
-                let message = messages.pop().expect("one endpoint message should exist");
-                Some(NodeEndpointEvent::Data {
-                    source_peer: message.source_peer,
-                    payload: message.payload,
-                    enqueued_at_ms: message.enqueued_at_ms,
-                    queued_at,
-                })
-            }
-            _ => Some(NodeEndpointEvent::DataBatch {
-                messages,
-                queued_at,
-            }),
-        }
     }
 }
 

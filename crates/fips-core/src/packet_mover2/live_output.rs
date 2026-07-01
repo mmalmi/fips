@@ -2,8 +2,7 @@
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveOutboundFirsts {
     initial_outbound: Option<OutboundPacket>,
-    endpoint_control: Option<NodeEndpointCommand>,
-    endpoint_bulk: Option<NodeEndpointCommand>,
+    endpoint_data_batch: Option<NodeEndpointDataBatch>,
     tun_packet: Option<Vec<u8>>,
     collect_transport_sent_outputs: bool,
 }
@@ -18,13 +17,8 @@ impl PacketMover2LiveOutboundFirsts {
         self.initial_outbound.take()
     }
 
-    pub(crate) fn with_endpoint_control(mut self, command: Option<NodeEndpointCommand>) -> Self {
-        self.endpoint_control = command;
-        self
-    }
-
-    pub(crate) fn with_endpoint_bulk(mut self, command: Option<NodeEndpointCommand>) -> Self {
-        self.endpoint_bulk = command;
+    pub(crate) fn with_endpoint_data_batch(mut self, batch: Option<NodeEndpointDataBatch>) -> Self {
+        self.endpoint_data_batch = batch;
         self
     }
 
@@ -44,71 +38,70 @@ impl PacketMover2LiveOutboundFirsts {
 }
 
 pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
-    first_endpoint_control: Option<NodeEndpointCommand>,
-    first_endpoint_bulk: Option<NodeEndpointCommand>,
+    first_endpoint_data_batch: Option<NodeEndpointDataBatch>,
     first_tun_packet: Option<Vec<u8>>,
-    endpoint_control_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-    endpoint_bulk_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    endpoint_data_rx: &'a mut EndpointDataBatchRx,
     endpoint_limit: usize,
     tun_outbound_rx: &'a mut TunOutboundRx,
     tun_limit: usize,
     routes: &'a mut Routes,
-    endpoint_drops: Vec<PacketMover2EndpointCommandDrop>,
-    endpoint_deferred_commands: Vec<NodeEndpointCommand>,
+    endpoint_drops: Vec<PacketMover2EndpointDataDrop>,
+    deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     tun_drops: Vec<PacketMover2TunOutboundDrop>,
     tun_deferred_packets: Vec<Vec<u8>>,
     endpoint_drained: usize,
     tun_drained: usize,
-    endpoint_stale_bulk_drop_ms: u64,
+    endpoint_stale_data_drop_ms: u64,
 }
 
 #[derive(Default)]
 struct PacketMover2RouteTableOutboundBuffers {
-    endpoint_drops: Vec<PacketMover2EndpointCommandDrop>,
-    endpoint_deferred_commands: Vec<NodeEndpointCommand>,
+    endpoint_drops: Vec<PacketMover2EndpointDataDrop>,
+    deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     tun_drops: Vec<PacketMover2TunOutboundDrop>,
     tun_deferred_packets: Vec<Vec<u8>>,
 }
 
+pub(crate) enum PacketMover2RoutedOutbound {
+    Packet(OutboundPacket),
+    Batch(Vec<OutboundPacket>),
+}
+
 impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
     pub(crate) fn new(
-        endpoint_control_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &'a mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_data_rx: &'a mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &'a mut TunOutboundRx,
         tun_limit: usize,
         routes: &'a mut Routes,
     ) -> Self {
         Self {
-            first_endpoint_control: None,
-            first_endpoint_bulk: None,
+            first_endpoint_data_batch: None,
             first_tun_packet: None,
-            endpoint_control_rx,
-            endpoint_bulk_rx,
+            endpoint_data_rx,
             endpoint_limit,
             tun_outbound_rx,
             tun_limit,
             routes,
             endpoint_drops: Vec::new(),
-            endpoint_deferred_commands: Vec::new(),
+            deferred_endpoint_data_batches: Vec::new(),
             tun_drops: Vec::new(),
             tun_deferred_packets: Vec::new(),
             endpoint_drained: 0,
             tun_drained: 0,
-            endpoint_stale_bulk_drop_ms: crate::node::ENDPOINT_STALE_BULK_DROP_MS,
+            endpoint_stale_data_drop_ms: crate::node::ENDPOINT_STALE_DATA_DROP_MS,
         }
     }
 
     pub(crate) fn with_firsts(mut self, firsts: PacketMover2LiveOutboundFirsts) -> Self {
-        self.first_endpoint_control = firsts.endpoint_control;
-        self.first_endpoint_bulk = firsts.endpoint_bulk;
+        self.first_endpoint_data_batch = firsts.endpoint_data_batch;
         self.first_tun_packet = firsts.tun_packet;
         self
     }
 
     fn with_report_buffers(mut self, buffers: PacketMover2RouteTableOutboundBuffers) -> Self {
         self.endpoint_drops = buffers.endpoint_drops;
-        self.endpoint_deferred_commands = buffers.endpoint_deferred_commands;
+        self.deferred_endpoint_data_batches = buffers.deferred_endpoint_data_batches;
         self.tun_drops = buffers.tun_drops;
         self.tun_deferred_packets = buffers.tun_deferred_packets;
         self
@@ -117,32 +110,15 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
     fn take_report_buffers(&mut self) -> PacketMover2RouteTableOutboundBuffers {
         PacketMover2RouteTableOutboundBuffers {
             endpoint_drops: std::mem::take(&mut self.endpoint_drops),
-            endpoint_deferred_commands: std::mem::take(&mut self.endpoint_deferred_commands),
+            deferred_endpoint_data_batches: std::mem::take(&mut self.deferred_endpoint_data_batches),
             tun_drops: std::mem::take(&mut self.tun_drops),
             tun_deferred_packets: std::mem::take(&mut self.tun_deferred_packets),
         }
     }
 
-    fn take_endpoint_command_drops(&mut self) -> Vec<PacketMover2EndpointCommandDrop> {
-        std::mem::take(&mut self.endpoint_drops)
-    }
-
-    fn take_endpoint_deferred_commands(&mut self) -> Vec<NodeEndpointCommand> {
-        std::mem::take(&mut self.endpoint_deferred_commands)
-    }
-
-    fn take_tun_outbound_drops(&mut self) -> Vec<PacketMover2TunOutboundDrop> {
-        std::mem::take(&mut self.tun_drops)
-    }
-
-    fn take_tun_deferred_packets(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.tun_deferred_packets)
-    }
-
     fn take_firsts(&mut self) -> PacketMover2LiveOutboundFirsts {
         PacketMover2LiveOutboundFirsts::default()
-            .with_endpoint_control(self.first_endpoint_control.take())
-            .with_endpoint_bulk(self.first_endpoint_bulk.take())
+            .with_endpoint_data_batch(self.first_endpoint_data_batch.take())
             .with_tun_packet(self.first_tun_packet.take())
     }
 
@@ -157,7 +133,7 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
 
 impl<Routes> PacketMover2RouteTableOutboundSource<'_, Routes>
 where
-    Routes: PacketMover2EndpointCommandRouter + PacketMover2TunOutboundRouter,
+    Routes: PacketMover2EndpointDataRouter + PacketMover2TunOutboundRouter,
 {
     fn cache_first_tun_packet(&mut self) {
         if self.first_tun_packet.is_none() && let Ok(packet) = self.tun_outbound_rx.try_recv() {
@@ -165,85 +141,60 @@ where
         }
     }
 
-    fn drain_endpoint<F>(&mut self, limit: usize, mut push: F) -> usize
+    fn drain_endpoint_batched<F>(&mut self, limit: usize, mut push: F) -> usize
     where
-        F: FnMut(OutboundPacket),
+        F: FnMut(PacketMover2RoutedOutbound),
     {
         let mut drained_cost = 0usize;
         if drained_cost < limit {
-            if let Some(command) = self.first_endpoint_control.take() {
-                drained_cost = drained_cost.saturating_add(command.drain_cost());
-                route_endpoint_command_with_router(
-                    command,
-                    self.routes,
-                    &mut self.endpoint_drops,
-                    &mut self.endpoint_deferred_commands,
-                    &mut push,
-                );
+            if let Some(batch) = self.first_endpoint_data_batch.take() {
+                drained_cost = drained_cost.saturating_add(batch.drain_cost());
+                self.route_or_drop_endpoint_data_batch(batch, &mut push);
             }
         }
         while drained_cost < limit {
-            let Ok(command) = self.endpoint_control_rx.try_recv() else {
+            let Ok(batch) = self.endpoint_data_rx.try_recv() else {
                 break;
             };
-            drained_cost = drained_cost.saturating_add(command.drain_cost());
-            route_endpoint_command_with_router(
-                command,
-                self.routes,
-                &mut self.endpoint_drops,
-                &mut self.endpoint_deferred_commands,
-                &mut push,
-            );
-        }
-        if drained_cost < limit {
-            if let Some(command) = self.first_endpoint_bulk.take() {
-                drained_cost = drained_cost.saturating_add(command.drain_cost());
-                self.route_or_drop_bulk_endpoint_command(command, &mut push);
-            }
-        }
-        while drained_cost < limit {
-            let Ok(command) = self.endpoint_bulk_rx.try_recv() else {
-                break;
-            };
-            drained_cost = drained_cost.saturating_add(command.drain_cost());
-            self.route_or_drop_bulk_endpoint_command(command, &mut push);
+            drained_cost = drained_cost.saturating_add(batch.drain_cost());
+            self.route_or_drop_endpoint_data_batch(batch, &mut push);
         }
         drained_cost
     }
 
-    fn route_or_drop_bulk_endpoint_command<F>(
+    fn route_or_drop_endpoint_data_batch<F>(
         &mut self,
-        command: NodeEndpointCommand,
+        batch: NodeEndpointDataBatch,
         mut push: F,
     ) where
-        F: FnMut(OutboundPacket),
+        F: FnMut(PacketMover2RoutedOutbound),
     {
-        let drop_count = stale_bulk_endpoint_command_drop_count(
-            &command,
+        let drop_count = stale_endpoint_data_drop_count(
+            &batch,
             crate::time::now_ms(),
-            self.endpoint_stale_bulk_drop_ms,
+            self.endpoint_stale_data_drop_ms,
         );
         if drop_count > 0 {
             crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::EndpointCommandBulkDropped,
+                crate::perf_profile::Event::EndpointDataBulkDropped,
                 drop_count as u64,
             );
-            drop_stale_bulk_endpoint_command(command, &mut self.endpoint_drops);
+            drop_stale_endpoint_data_batch(batch, &mut self.endpoint_drops);
             return;
         }
 
-        route_endpoint_command_with_router(
-            command,
+        route_endpoint_data_batch_with_router(
+            batch,
             self.routes,
             &mut self.endpoint_drops,
-            &mut self.endpoint_deferred_commands,
-            &mut push,
+            &mut self.deferred_endpoint_data_batches,
+            |packets| push(PacketMover2RoutedOutbound::Batch(packets)),
         );
     }
 
-    fn drain_tun<F>(&mut self, limit: usize, mut push: F) -> usize
+    fn drain_tun_batched<F>(&mut self, limit: usize, mut push: F) -> usize
     where
-        F: FnMut(OutboundPacket),
+        F: FnMut(PacketMover2RoutedOutbound),
     {
         let mut drained = 0usize;
         self.cache_first_tun_packet();
@@ -254,7 +205,7 @@ where
                     self.routes,
                     &mut self.tun_drops,
                     &mut self.tun_deferred_packets,
-                    &mut push,
+                    |packet| push(PacketMover2RoutedOutbound::Packet(packet)),
                 );
                 drained += 1;
             }
@@ -268,29 +219,24 @@ where
                 self.routes,
                 &mut self.tun_drops,
                 &mut self.tun_deferred_packets,
-                &mut push,
+                |packet| push(PacketMover2RoutedOutbound::Packet(packet)),
             );
             drained += 1;
         }
         drained
     }
-}
 
-impl<Routes> PacketMover2OutboundSource for PacketMover2RouteTableOutboundSource<'_, Routes>
-where
-    Routes: PacketMover2EndpointCommandRouter + PacketMover2TunOutboundRouter,
-{
-    fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
+    fn drain_outbound_batched<F>(&mut self, limit: usize, mut push: F) -> usize
     where
-        F: FnMut(OutboundPacket),
+        F: FnMut(PacketMover2RoutedOutbound),
     {
         let endpoint_limit = self.endpoint_limit.min(limit);
-        let endpoint_drained = self.drain_endpoint(endpoint_limit, &mut push);
+        let endpoint_drained = self.drain_endpoint_batched(endpoint_limit, &mut push);
         self.endpoint_drained = self.endpoint_drained.saturating_add(endpoint_drained);
         let reserved_drained = endpoint_drained.min(endpoint_limit);
         let remaining = limit.saturating_sub(reserved_drained);
         let tun_limit = self.tun_limit.min(remaining);
-        let tun_drained = self.drain_tun(tun_limit, push);
+        let tun_drained = self.drain_tun_batched(tun_limit, push);
         self.tun_drained = self.tun_drained.saturating_add(tun_drained);
         endpoint_drained.saturating_add(tun_drained)
     }
@@ -586,10 +532,12 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
         }
 
         self.tx
-            .send(NodeEndpointEvent::Data {
-                source_peer,
-                payload,
-                enqueued_at_ms: crate::time::now_ms(),
+            .send(NodeEndpointEvent {
+                messages: vec![EndpointDataDelivery {
+                    source_peer,
+                    payload,
+                    enqueued_at_ms: crate::time::now_ms(),
+                }],
                 queued_at: crate::perf_profile::stamp(),
             })
             .map_err(|_| PacketMover2OutputError::Unavailable)
@@ -597,30 +545,32 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct PacketMover2LiveOutputSink<Tun, Endpoint, Transport> {
+struct PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
     tun: Tun,
     endpoint: Endpoint,
-    transport: Transport,
+    transport: &'a mut PacketMover2TransportSendPlanOutput,
     stale_bulk_output_drop_ms: u64,
 }
 
-impl<Tun, Endpoint, Transport> PacketMover2LiveOutputSink<Tun, Endpoint, Transport> {
-    pub(crate) fn new(tun: Tun, endpoint: Endpoint, transport: Transport) -> Self {
+impl<'a, Tun, Endpoint> PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
+    fn new(
+        tun: Tun,
+        endpoint: Endpoint,
+        transport: &'a mut PacketMover2TransportSendPlanOutput,
+    ) -> Self {
         Self {
             tun,
             endpoint,
             transport,
-            stale_bulk_output_drop_ms: crate::node::ENDPOINT_STALE_BULK_DROP_MS,
+            stale_bulk_output_drop_ms: crate::node::ENDPOINT_STALE_DATA_DROP_MS,
         }
     }
 }
 
-impl<Tun, Endpoint, Transport> PacketMover2OutputSink
-    for PacketMover2LiveOutputSink<Tun, Endpoint, Transport>
+impl<Tun, Endpoint> PacketMover2OutputSink for PacketMover2LiveOutputSink<'_, Tun, Endpoint>
 where
     Tun: PacketMover2TunOutput,
     Endpoint: PacketMover2EndpointOutput,
-    Transport: PacketMover2TransportOutput,
 {
     fn send(&mut self, mut output: PacketOutput) -> Result<(), PacketMover2OutputError> {
         if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {

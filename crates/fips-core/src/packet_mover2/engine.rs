@@ -311,6 +311,89 @@ impl PacketMover2 {
         Ok(ingress_seq)
     }
 
+    fn submit_outbound_packet_batch(&mut self, packets: Vec<OutboundPacket>) -> (usize, usize) {
+        let mut admitted = 0usize;
+        let mut dropped = 0usize;
+        let mut run = Vec::new();
+        let mut run_owner = None;
+        let mut run_lane = None;
+
+        for packet in packets {
+            let owner = packet.owner;
+            let lane = packet.lane();
+            if run_owner == Some(owner) && run_lane == Some(lane) {
+                run.push(packet);
+                continue;
+            }
+
+            let (run_admitted, run_dropped) = self.submit_outbound_packet_run(
+                run_owner,
+                run_lane,
+                std::mem::take(&mut run),
+            );
+            admitted = admitted.saturating_add(run_admitted);
+            dropped = dropped.saturating_add(run_dropped);
+            run_owner = Some(owner);
+            run_lane = Some(lane);
+            run.push(packet);
+        }
+
+        let (run_admitted, run_dropped) =
+            self.submit_outbound_packet_run(run_owner, run_lane, run);
+        admitted = admitted.saturating_add(run_admitted);
+        dropped = dropped.saturating_add(run_dropped);
+        (admitted, dropped)
+    }
+
+    fn submit_outbound_packet_run(
+        &mut self,
+        owner: Option<OwnerId>,
+        lane: Option<Lane>,
+        mut packets: Vec<OutboundPacket>,
+    ) -> (usize, usize) {
+        let (Some(owner), Some(lane)) = (owner, lane) else {
+            return (0, 0);
+        };
+        if packets.is_empty() {
+            return (0, 0);
+        }
+
+        let available = self
+            .config
+            .lane_capacity(lane)
+            .saturating_sub(self.outbound_admission_lens.lane(lane));
+        let admitted = available.min(packets.len());
+        let dropped_packets = packets.split_off(admitted);
+        let dropped = dropped_packets.len();
+        for packet in dropped_packets {
+            let drop = OutboundAdmissionDrop {
+                owner: packet.owner,
+                class: packet.class,
+                lane,
+                payload_len: packet.payload.len(),
+                reason: match lane {
+                    Lane::Priority => AdmissionDropReason::PriorityFull,
+                    Lane::Bulk => AdmissionDropReason::BulkFull,
+                },
+            };
+            self.record_drop(drop.clone().into());
+        }
+
+        if admitted == 0 {
+            return (0, dropped);
+        }
+
+        let first_seq = self.next_outbound_seq;
+        self.next_outbound_seq = self.next_outbound_seq.wrapping_add(admitted as u64);
+        let shard = self.owner_shard_index(owner);
+        let lane_ready = self.shards[shard].submit_outbound_packet_run_with_seq(packets, first_seq);
+        self.outbound_admission_lens.increment_by(lane, admitted);
+        if lane_ready {
+            self.outbound_ready_shards.mark(shard, lane);
+        }
+        (admitted, dropped)
+    }
+
     fn queue_completion(&mut self, completion: CryptoCompletion) {
         let shard = completion.reservation.owner_shard();
         debug_assert_eq!(shard, self.owner_shard_index(completion.reservation.owner));
@@ -774,9 +857,13 @@ impl LaneLens {
     }
 
     fn increment(&mut self, lane: Lane) {
+        self.increment_by(lane, 1);
+    }
+
+    fn increment_by(&mut self, lane: Lane, count: usize) {
         match lane {
-            Lane::Priority => self.priority = self.priority.saturating_add(1),
-            Lane::Bulk => self.bulk = self.bulk.saturating_add(1),
+            Lane::Priority => self.priority = self.priority.saturating_add(count),
+            Lane::Bulk => self.bulk = self.bulk.saturating_add(count),
         }
     }
 

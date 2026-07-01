@@ -200,17 +200,9 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
         "initial direct endpoint data",
     )
     .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), alice_addr);
-            assert_eq!(payload, b"direct-first");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), alice_addr);
+    assert_eq!(message.payload, b"direct-first");
 
     assert!(
         nodes[0]
@@ -262,17 +254,9 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
         "alice fallback endpoint data",
     )
     .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), alice_addr);
-            assert_eq!(payload, b"alice-fallback");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), alice_addr);
+    assert_eq!(message.payload, b"alice-fallback");
 
     let event = recv_endpoint_event_while_draining(
         &mut nodes,
@@ -281,17 +265,9 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
         "bob fallback endpoint data",
     )
     .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), bob_addr);
-            assert_eq!(payload, b"bob-fallback");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), bob_addr);
+    assert_eq!(message.payload, b"bob-fallback");
 
     cleanup_nodes(&mut nodes).await;
 }

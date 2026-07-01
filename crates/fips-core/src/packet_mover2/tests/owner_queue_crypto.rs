@@ -1262,6 +1262,47 @@
     }
 
     #[test]
+    fn outbound_owner_run_defers_suffix_when_bulk_in_flight_reserve_fills() {
+        let owner = fsp_owner(37);
+        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 8));
+        mover.register_owner(owner, OwnerConfig::new(1, 3).with_next_send_counter(20));
+
+        for payload in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
+            mover
+                .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, payload))
+                .unwrap();
+        }
+
+        let first = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            first.iter().map(outbound_crypto_work_order).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            first
+                .iter()
+                .map(|work| work.reservation.counter)
+                .collect::<Vec<_>>(),
+            vec![20, 21]
+        );
+        assert_eq!(outbound_queue_lens(&mover), (0, 1));
+
+        let release_one = CryptoCompletion {
+            reservation: first[0].reservation.clone(),
+            result: CryptoResult::Failed(CryptoFailureKind::Seal),
+        };
+        let _ = drops(retire_completion(&mut mover, release_one));
+
+        let second = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(second.len(), 1);
+        assert_eq!(outbound_crypto_work_order(&second[0]), 2);
+        assert_eq!(second[0].reservation.counter, 22);
+        assert_eq!(second[0].packet.payload.as_ref(), b"three");
+        assert_eq!(outbound_queue_lens(&mover), (0, 0));
+    }
+
+    #[test]
     fn outbound_owner_uses_shared_send_counter_authority() {
         let owner = fsp_owner(34);
         let authority = crate::noise::SendCounterAuthority::new_for_test(90);

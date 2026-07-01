@@ -7,7 +7,8 @@ use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, Ud
 #[cfg(test)]
 use crate::node::ENDPOINT_EVENT_TEST_PAYLOAD_LEN;
 use crate::node::{
-    EndpointDataPayload, EndpointEventSender, NodeEndpointCommand, NodeEndpointEvent,
+    EndpointDataBatchTx, EndpointEventSender, NodeEndpointControlCommand, NodeEndpointDataBatch,
+    NodeEndpointEvent,
 };
 use crate::upper::tun::TunOutboundTx;
 use crate::{
@@ -19,7 +20,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 128;
+const ENDPOINT_DATA_BATCH_MAX: usize = 128;
 const ENDPOINT_RECV_BATCH_MAX: usize = 128;
 
 mod builder;
@@ -242,8 +243,8 @@ pub struct FipsEndpoint {
     discovery_scope: Option<String>,
     outbound_packets: TunOutboundTx,
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
-    endpoint_control_commands: mpsc::Sender<NodeEndpointCommand>,
-    endpoint_commands: mpsc::Sender<NodeEndpointCommand>,
+    endpoint_control_tx: mpsc::Sender<NodeEndpointControlCommand>,
+    endpoint_data_batches: EndpointDataBatchTx,
     /// In-process loopback sender — `send()` to our own npub injects an
     /// event into the same queue without going through the wire/encrypt
     /// path. The node's rx_loop also sends into this channel directly
@@ -252,9 +253,9 @@ pub struct FipsEndpoint {
     inbound_endpoint_tx: EndpointEventSender,
     /// Unbounded receiver plus pending tail from an internal batch. This was
     /// previously fed by a per-packet relay task
-    /// that translated `NodeEndpointEvent::Data` into `FipsEndpointMessage`
+    /// that translated node endpoint events into `FipsEndpointMessage`
     /// across an additional bounded mpsc; collapsed into a single channel
-    /// — the translation happens inline in `recv()` and the second hop
+    /// -- the translation happens inline in `recv()` and the second hop
     /// (with its scheduler wake per packet) is gone.
     inbound_endpoint_rx: Arc<Mutex<EndpointReceiveState>>,
     /// Cache of resolved PeerIdentity by npub string. Avoids the per-packet
@@ -294,12 +295,10 @@ impl FipsEndpoint {
 
     /// Send application-owned endpoint data to a remote npub.
     ///
-    /// Fire-and-forget: enqueues the Send command on the node task and
-    /// returns once the command channel accepts it. The node task's send
-    /// result is discarded — TCP and the upper protocol handle loss
-    /// recovery, and the per-packet oneshot round-trip the previous design
-    /// used for error reporting added avoidable scheduler work to the hot
-    /// endpoint-data path.
+    /// Fire-and-forget: enqueues endpoint data on the PM2 bulk lane. TCP and
+    /// the upper protocol handle loss recovery, and the per-packet oneshot
+    /// round-trip the previous design used for error reporting added avoidable
+    /// scheduler work to the hot endpoint-data path.
     ///
     /// PeerIdentity for `remote_npub` is cached after first resolution to
     /// avoid the secp256k1 EC point parse on every packet.
@@ -323,7 +322,7 @@ impl FipsEndpoint {
     /// This is the fast path for applications that already validate and cache
     /// peer identities in their own routing table. It avoids per-packet npub
     /// allocation, endpoint cache lookup, and `PeerIdentity::from_npub` parsing
-    /// while preserving the same owned-payload command semantics as [`Self::send`].
+    /// while preserving the same owned-payload semantics as [`Self::send`].
     pub async fn send_to_peer(
         &self,
         remote: PeerIdentity,
@@ -335,15 +334,11 @@ impl FipsEndpoint {
         }
         // Fire-and-forget: caller already drops the result, so skip
         // the per-packet `oneshot::channel()` allocation entirely.
-        // The node task's `SendOneway` arm runs the same code path as
-        // `Send` but without writing the result into a oneshot.
-        let command = NodeEndpointCommand::send_oneway(remote, data, crate::perf_profile::stamp());
-        send_endpoint_command(
-            command,
-            &self.endpoint_control_commands,
-            &self.endpoint_commands,
-        )
-        .await?;
+        // Endpoint data now enters the PM2 bulk lane directly, without a
+        // per-packet oneshot or control-command hop.
+        let batch = NodeEndpointDataBatch::batch(remote, vec![data], crate::perf_profile::stamp())
+            .expect("one-packet endpoint data batch");
+        queue_endpoint_data_batch(batch, &self.endpoint_data_batches)?;
         Ok(())
     }
 
@@ -363,34 +358,27 @@ impl FipsEndpoint {
         if payloads.is_empty() {
             return Ok(());
         }
-        let payloads = payloads.into_iter().map(EndpointDataPayload::new).collect();
-        self.send_endpoint_command_batch(remote, payloads).await?;
+        self.send_endpoint_data_batch(remote, payloads).await?;
         Ok(())
     }
 
-    async fn send_endpoint_command_batch(
+    async fn send_endpoint_data_batch(
         &self,
         remote: PeerIdentity,
-        mut payloads: Vec<EndpointDataPayload>,
+        mut payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
         while !payloads.is_empty() {
-            let tail = if payloads.len() > ENDPOINT_SEND_BATCH_COMMAND_MAX {
-                payloads.split_off(ENDPOINT_SEND_BATCH_COMMAND_MAX)
+            let tail = if payloads.len() > ENDPOINT_DATA_BATCH_MAX {
+                payloads.split_off(ENDPOINT_DATA_BATCH_MAX)
             } else {
                 Vec::new()
             };
-            let batch = std::mem::replace(&mut payloads, tail);
+            let payload_batch = std::mem::replace(&mut payloads, tail);
             let queued_at = crate::perf_profile::stamp();
-            let Some(command) = NodeEndpointCommand::send_batch_oneway(remote, batch, queued_at)
-            else {
+            let Some(batch) = NodeEndpointDataBatch::batch(remote, payload_batch, queued_at) else {
                 continue;
             };
-            send_endpoint_command(
-                command,
-                &self.endpoint_control_commands,
-                &self.endpoint_commands,
-            )
-            .await?;
+            queue_endpoint_data_batch(batch, &self.endpoint_data_batches)?;
         }
         Ok(())
     }
@@ -419,10 +407,12 @@ impl FipsEndpoint {
 
     fn send_loopback(&self, data: Vec<u8>) -> Result<(), FipsEndpointError> {
         self.inbound_endpoint_tx
-            .send(NodeEndpointEvent::Data {
-                source_peer: self.identity,
-                payload: data.into(),
-                enqueued_at_ms: crate::time::now_ms(),
+            .send(NodeEndpointEvent {
+                messages: vec![crate::node::EndpointDataDelivery {
+                    source_peer: self.identity,
+                    payload: data.into(),
+                    enqueued_at_ms: crate::time::now_ms(),
+                }],
                 queued_at: crate::perf_profile::stamp(),
             })
             .map_err(|_| FipsEndpointError::Closed)
@@ -430,8 +420,8 @@ impl FipsEndpoint {
 
     /// Receive the next source-attributed endpoint data message.
     ///
-    /// Translation from the internal `NodeEndpointEvent::Data` shape to
-    /// the public `FipsEndpointMessage` shape happens inline here — the
+    /// Translation from the internal endpoint event batch to
+    /// the public `FipsEndpointMessage` shape happens inline here -- the
     /// rx_loop pushes directly onto this channel, no relay task in
     /// between, no extra cross-task hop per packet.
     pub async fn recv(&self) -> Option<FipsEndpointMessage> {
@@ -488,7 +478,7 @@ impl FipsEndpoint {
     }
 
     /// Synchronous blocking send — parks the calling **OS thread** on
-    /// the FIPS endpoint command channel until the runtime accepts
+    /// the FIPS endpoint data batch channel until the runtime accepts
     /// the send. MUST be called only from a thread spawned via
     /// `std::thread::spawn`, not from inside a tokio runtime.
     ///
@@ -513,7 +503,7 @@ impl FipsEndpoint {
     /// Synchronous blocking send to a resolved remote identity.
     ///
     /// This mirrors [`Self::send_to_peer`] for callers that already own a
-    /// `PeerIdentity` but need to use the blocking endpoint command path.
+    /// `PeerIdentity` but need to use the blocking endpoint data path.
     pub fn blocking_send_to_peer(
         &self,
         remote: PeerIdentity,
@@ -523,16 +513,9 @@ impl FipsEndpoint {
         if *remote.node_addr() == self.node_addr {
             return self.send_loopback(data);
         }
-        let (response_tx, _response_rx) = oneshot::channel();
-        let command =
-            NodeEndpointCommand::send(remote, data, crate::perf_profile::stamp(), response_tx);
-        endpoint_command_tx_for_command(
-            &command,
-            &self.endpoint_control_commands,
-            &self.endpoint_commands,
-        )
-        .blocking_send(command)
-        .map_err(|_| FipsEndpointError::Closed)?;
+        let batch = NodeEndpointDataBatch::batch(remote, vec![data], crate::perf_profile::stamp())
+            .expect("one-packet endpoint data batch");
+        queue_endpoint_data_batch(batch, &self.endpoint_data_batches)?;
         Ok(())
     }
 
@@ -660,8 +643,8 @@ impl FipsEndpoint {
         peers: Vec<crate::config::PeerConfig>,
     ) -> Result<UpdatePeersOutcome, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_commands
-            .send(NodeEndpointCommand::UpdatePeers { peers, response_tx })
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::UpdatePeers { peers, response_tx })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
 
@@ -682,8 +665,8 @@ impl FipsEndpoint {
     ) -> Result<usize, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
         let npubs = peers.into_iter().map(|peer| peer.npub()).collect();
-        self.endpoint_control_commands
-            .send(NodeEndpointCommand::RefreshPeerPaths { npubs, response_tx })
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::RefreshPeerPaths { npubs, response_tx })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
 
@@ -696,8 +679,8 @@ impl FipsEndpoint {
     /// Snapshot authenticated peers known by the endpoint.
     pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_commands
-            .send(NodeEndpointCommand::PeerSnapshot { response_tx })
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::PeerSnapshot { response_tx })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
 
@@ -713,8 +696,8 @@ impl FipsEndpoint {
         &self,
     ) -> Result<Vec<crate::discovery::nostr::OverlayEndpointAdvert>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_commands
-            .send(NodeEndpointCommand::LocalAdvertSnapshot { response_tx })
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::LocalAdvertSnapshot { response_tx })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
 
@@ -724,8 +707,8 @@ impl FipsEndpoint {
     /// Snapshot live Nostr relay states used by the embedded endpoint.
     pub async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_commands
-            .send(NodeEndpointCommand::RelaySnapshot { response_tx })
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::RelaySnapshot { response_tx })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
 
@@ -747,8 +730,8 @@ impl FipsEndpoint {
         dm_relays: Vec<String>,
     ) -> Result<(), FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_control_commands
-            .send(NodeEndpointCommand::UpdateRelays {
+        self.endpoint_control_tx
+            .send(NodeEndpointControlCommand::UpdateRelays {
                 advert_relays,
                 dm_relays,
                 response_tx,
@@ -815,47 +798,10 @@ impl Drop for FipsEndpoint {
     }
 }
 
-fn endpoint_command_tx_for_command<'a>(
-    command: &NodeEndpointCommand,
-    control_tx: &'a mpsc::Sender<NodeEndpointCommand>,
-    bulk_tx: &'a mpsc::Sender<NodeEndpointCommand>,
-) -> &'a mpsc::Sender<NodeEndpointCommand> {
-    match command {
-        NodeEndpointCommand::Send { .. }
-        | NodeEndpointCommand::SendOneway { .. }
-        | NodeEndpointCommand::SendBatchOneway { .. } => bulk_tx,
-        NodeEndpointCommand::PeerSnapshot { .. }
-        | NodeEndpointCommand::LocalAdvertSnapshot { .. }
-        | NodeEndpointCommand::RelaySnapshot { .. }
-        | NodeEndpointCommand::UpdateRelays { .. }
-        | NodeEndpointCommand::UpdatePeers { .. }
-        | NodeEndpointCommand::RefreshPeerPaths { .. } => control_tx,
-    }
-}
-
-async fn send_endpoint_command(
-    command: NodeEndpointCommand,
-    control_tx: &mpsc::Sender<NodeEndpointCommand>,
-    bulk_tx: &mpsc::Sender<NodeEndpointCommand>,
+fn queue_endpoint_data_batch(
+    batch: NodeEndpointDataBatch,
+    tx: &EndpointDataBatchTx,
 ) -> Result<(), FipsEndpointError> {
-    let command_tx = endpoint_command_tx_for_command(&command, control_tx, bulk_tx);
-
-    if command.drop_on_backpressure() {
-        match command_tx.try_send(command) {
-            Ok(()) => return Ok(()),
-            Err(mpsc::error::TrySendError::Full(command)) => {
-                crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::EndpointCommandBulkDropped,
-                    command.packet_count() as u64,
-                );
-                return Ok(());
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => return Err(FipsEndpointError::Closed),
-        }
-    }
-
-    command_tx
-        .send(command)
-        .await
+    tx.send_or_drop(batch)
         .map_err(|_| FipsEndpointError::Closed)
 }

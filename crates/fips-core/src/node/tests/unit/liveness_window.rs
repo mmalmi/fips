@@ -1197,12 +1197,8 @@ fn fmp_bulk_classifier_detects_established_session_datagrams() {
     let dst = make_node_addr(2);
     let fsp_payload = crate::node::session_wire::build_fsp_header(7, 0, 0).to_vec();
     let datagram = crate::protocol::SessionDatagram::new(src, dst, fsp_payload);
-    assert!(fmp_plaintext_is_bulk_session_datagram(&datagram.encode()));
-    let traffic = classify_fmp_plaintext_traffic(&datagram.encode());
-    assert!(traffic.bulk_endpoint_data);
     assert!(
-        !traffic.drop_on_backpressure,
-        "encrypted FSP bulk may carry TCP endpoint data, so the generic FMP path must not drop it"
+        crate::node::endpoint_traffic::fmp_plaintext_is_bulk_session_datagram(&datagram.encode())
     );
 
     let coords_payload =
@@ -1210,24 +1206,25 @@ fn fmp_bulk_classifier_detects_established_session_datagrams() {
             .to_vec();
     let coords_datagram = crate::protocol::SessionDatagram::new(src, dst, coords_payload);
     assert!(
-        !fmp_plaintext_is_bulk_session_datagram(&coords_datagram.encode()),
+        !crate::node::endpoint_traffic::fmp_plaintext_is_bulk_session_datagram(
+            &coords_datagram.encode()
+        ),
         "coordinate-carrying session packets warm fallback routes and must stay in the control lane"
     );
-    let traffic = classify_fmp_plaintext_traffic(&coords_datagram.encode());
-    assert!(!traffic.bulk_endpoint_data);
-    assert!(!traffic.drop_on_backpressure);
 
     let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
-    assert!(!fmp_plaintext_is_bulk_session_datagram(&heartbeat));
+    assert!(!crate::node::endpoint_traffic::fmp_plaintext_is_bulk_session_datagram(&heartbeat));
 
     let setup_prefix = crate::node::session_wire::build_fsp_handshake_prefix(
         crate::node::session_wire::FSP_PHASE_MSG1,
         0,
     );
     let setup_datagram = crate::protocol::SessionDatagram::new(src, dst, setup_prefix.to_vec());
-    assert!(!fmp_plaintext_is_bulk_session_datagram(
-        &setup_datagram.encode()
-    ));
+    assert!(
+        !crate::node::endpoint_traffic::fmp_plaintext_is_bulk_session_datagram(
+            &setup_datagram.encode()
+        )
+    );
 }
 
 #[tokio::test]
@@ -1851,7 +1848,7 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
     node.pending_session_traffic
         .push_endpoint_data_with_enqueued_at_ms(
             peer_addr,
-            crate::node::EndpointDataPayload::new(vec![4, 5, 6]),
+            vec![4, 5, 6],
             usize::MAX,
             usize::MAX,
             crate::time::now_ms(),

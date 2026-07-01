@@ -61,10 +61,7 @@ fn event_table_exposes_current_pm2_and_queue_events() {
             Event::EndpointEventBulkBacklogHigh,
             "endpoint_event_bulk_backlog_high",
         ),
-        (
-            Event::EndpointCommandBulkDropped,
-            "endpoint_command_bulk_dropped",
-        ),
+        (Event::EndpointDataBulkDropped, "endpoint_data_bulk_dropped"),
         (
             Event::TransportChannelBacklogHigh,
             "transport_channel_backlog_high",
@@ -200,6 +197,10 @@ fn event_table_exposes_current_pm2_and_queue_events() {
         (
             Event::PacketMover2TransportSendWorkerDropped,
             "packet_mover2_transport_send_worker_dropped",
+        ),
+        (
+            Event::PacketMover2TransportSendWorkerSendFailed,
+            "packet_mover2_transport_send_worker_send_failed",
         ),
     ];
     for (event, name) in live_events {
@@ -362,7 +363,7 @@ fn live_event_counters_increment() {
         (Event::EndpointEventBacklogHigh, 7),
         (Event::EndpointEventBulkBacklogHigh, 11),
         (Event::EndpointEventBulkDropped, 13),
-        (Event::EndpointCommandBulkDropped, 17),
+        (Event::EndpointDataBulkDropped, 17),
         (Event::TransportChannelBacklogHigh, 19),
         (Event::TransportBulkDropped, 23),
         (Event::PendingTunPacketDropped, 29),
@@ -386,6 +387,7 @@ fn live_event_counters_increment() {
         (Event::TunWriteBulkBacklogHigh, 97),
         (Event::PacketMover2TransportSendWorkerBackpressure, 101),
         (Event::PacketMover2TransportSendWorkerDropped, 103),
+        (Event::PacketMover2TransportSendWorkerSendFailed, 107),
     ];
 
     for (event, count) in samples {

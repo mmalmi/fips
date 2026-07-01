@@ -4,7 +4,9 @@
         let source_identity = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source_identity.pubkey_full());
         let source_addr = *source_peer.node_addr();
-        let next_hop = NodeAddr::from_bytes([0xa3; 16]);
+        let next_hop_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let next_hop = *next_hop_peer.node_addr();
         let fmp_owner = OwnerId::fmp_node(next_hop);
         let fsp_owner = OwnerId::fsp_node(source_addr);
         let fmp_key = 0xa4;
@@ -41,7 +43,10 @@
         let fmp_wire_len = fmp_wire.len();
 
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
+        driver.register_owner(
+            fmp_owner,
+            OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
+        );
         driver.register_owner(
             fsp_owner,
             OwnerConfig::new(1, 8).with_source_peer(source_peer),
@@ -84,14 +89,13 @@
                     fmp_timestamp,
                 ),
             )]));
-        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
         let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_endpoint_data_batches = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
@@ -99,12 +103,11 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
                 0,
-                &mut deferred_endpoint_commands,
+                &mut deferred_endpoint_data_batches,
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
@@ -157,7 +160,9 @@
         let source_identity = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source_identity.pubkey_full());
         let source_addr = *source_peer.node_addr();
-        let next_hop = NodeAddr::from_bytes([0xc3; 16]);
+        let next_hop_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let next_hop = *next_hop_peer.node_addr();
         let root_addr = NodeAddr::from_bytes([0xcf; 16]);
         let source_coords =
             crate::tree::TreeCoordinate::from_addrs(vec![source_addr, root_addr]).unwrap();
@@ -199,7 +204,10 @@
         let fmp_wire = fmp_encrypted_wire(0xc7, 199, 0, &fmp_plaintext, fmp_key);
 
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
+        driver.register_owner(
+            fmp_owner,
+            OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
+        );
         driver.register_owner(
             fsp_owner,
             OwnerConfig::new(1, 8).with_source_peer(source_peer),
@@ -242,14 +250,13 @@
                     fmp_timestamp,
                 ),
             )]));
-        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
         let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_endpoint_data_batches = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
@@ -257,12 +264,11 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
                 0,
-                &mut deferred_endpoint_commands,
+                &mut deferred_endpoint_data_batches,
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
@@ -305,7 +311,9 @@
     async fn live_node_session_ingress_keeps_fsp_handshake_on_local_session_path() {
         let local_addr = NodeAddr::from_bytes([0xac; 16]);
         let source_addr = NodeAddr::from_bytes([0xad; 16]);
-        let next_hop = NodeAddr::from_bytes([0xae; 16]);
+        let next_hop_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let next_hop = *next_hop_peer.node_addr();
         let fmp_owner = OwnerId::fmp_node(next_hop);
         let fmp_key = 0xaf;
         let transport_id = TransportId::new(0xb0);
@@ -333,7 +341,10 @@
         let fmp_wire_len = fmp_wire.len();
 
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
+        driver.register_owner(
+            fmp_owner,
+            OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
+        );
         driver
             .owner_mut(fmp_owner)
             .unwrap()
@@ -358,14 +369,13 @@
                     fmp_timestamp,
                 ),
             )]));
-        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
         let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_endpoint_data_batches = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
@@ -373,12 +383,11 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
                 0,
-                &mut deferred_endpoint_commands,
+                &mut deferred_endpoint_data_batches,
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,
@@ -417,7 +426,9 @@
     #[tokio::test]
     async fn live_node_session_ingress_reports_non_local_fmp_link_message() {
         let local_addr = NodeAddr::from_bytes([0xb1; 16]);
-        let next_hop = NodeAddr::from_bytes([0xb2; 16]);
+        let next_hop_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let next_hop = *next_hop_peer.node_addr();
         let fmp_owner = OwnerId::fmp_node(next_hop);
         let fmp_key = 0xb3;
         let transport_id = TransportId::new(0xb4);
@@ -432,7 +443,10 @@
         let fmp_wire_len = fmp_wire.len();
 
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(fmp_owner, OwnerConfig::new(1, 8));
+        driver.register_owner(
+            fmp_owner,
+            OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
+        );
         driver
             .owner_mut(fmp_owner)
             .unwrap()
@@ -457,14 +471,13 @@
                     fmp_timestamp,
                 ),
             )]));
-        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
         let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut deferred_endpoint_commands = Vec::new();
+        let mut deferred_endpoint_data_batches = Vec::new();
         let mut deferred_tun_packets = Vec::new();
         let transports = HashMap::<TransportId, TransportHandle>::new();
 
@@ -472,12 +485,11 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
                 0,
-                &mut deferred_endpoint_commands,
+                &mut deferred_endpoint_data_batches,
                 &mut deferred_tun_packets,
                 &tun_tx,
                 &endpoint_io.event_tx,

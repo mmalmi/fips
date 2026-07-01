@@ -153,21 +153,23 @@
         }
     }
 
-    impl PacketMover2OutboundSource for VecDeque<OutboundPacket> {
-        fn drain_outbound<F>(&mut self, limit: usize, mut push: F) -> usize
-        where
-            F: FnMut(OutboundPacket),
-        {
-            let mut drained = 0;
-            while drained < limit {
-                let Some(packet) = self.pop_front() else {
-                    break;
-                };
-                push(packet);
-                drained += 1;
-            }
-            drained
+    fn drain_test_outbound_packets<F>(
+        outbound: &mut VecDeque<OutboundPacket>,
+        limit: usize,
+        mut push: F,
+    ) -> usize
+    where
+        F: FnMut(OutboundPacket),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Some(packet) = outbound.pop_front() else {
+                break;
+            };
+            push(packet);
+            drained += 1;
         }
+        drained
     }
 
     impl PacketMover2CompletionSource for VecDeque<CryptoCompletion> {
@@ -441,14 +443,14 @@
         finish_aead_output_turn_with_inline(driver, summary, sink, limit)
     }
 
-    fn pump_aead_output_completion_turn<'a, C, RI, O, R, S>(
+    fn pump_aead_output_completion_turn<'a, C, RI, R, S>(
         driver: &'a mut PacketMover2TurnDriver,
         completions: &mut C,
         completion_limit: usize,
         raw_ingress: &mut RI,
         router: &mut R,
         raw_ingress_limit: usize,
-        outbound: &mut O,
+        outbound: &mut VecDeque<OutboundPacket>,
         outbound_limit: usize,
         sink: &mut S,
         crypto_limit: usize,
@@ -456,7 +458,6 @@
     where
         C: PacketMover2CompletionSource,
         RI: PacketMover2RawIngressSource,
-        O: PacketMover2OutboundSource,
         R: PacketMover2IngressRouter,
         S: PacketMover2OutputSink,
     {
@@ -476,19 +477,18 @@
         )
     }
 
-    fn pump_aead_output_turn<'a, RI, O, R, S>(
+    fn pump_aead_output_turn<'a, RI, R, S>(
         driver: &'a mut PacketMover2TurnDriver,
         raw_ingress: &mut RI,
         router: &mut R,
         raw_ingress_limit: usize,
-        outbound: &mut O,
+        outbound: &mut VecDeque<OutboundPacket>,
         outbound_limit: usize,
         sink: &mut S,
         crypto_limit: usize,
     ) -> PacketMover2RuntimeTurn<'a>
     where
         RI: PacketMover2RawIngressSource,
-        O: PacketMover2OutboundSource,
         R: PacketMover2IngressRouter,
         S: PacketMover2OutputSink,
     {
@@ -512,12 +512,11 @@
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
         raw_ingress_limit: usize,
-        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
         tun_limit: usize,
-        deferred_endpoint_commands: &mut Vec<NodeEndpointCommand>,
+        deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
         deferred_tun_packets: &mut Vec<Vec<u8>>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
@@ -531,21 +530,20 @@
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         let mut completions = VecDeque::<CryptoCompletion>::new();
         let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let summary = driver.start_aead_completion_turn(&mut completions, 0);
         driver
-            .pump_aead_live_node_route_table_completion_executor_turn_with_firsts(
-                &mut completions,
-                0,
+            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+                summary,
                 &mut executor,
                 raw_ingress,
                 routes,
                 raw_ingress_limit,
-                endpoint_control_rx,
-                endpoint_bulk_rx,
+                endpoint_data_rx,
                 endpoint_limit,
                 tun_outbound_rx,
                 tun_limit,
                 PacketMover2LiveOutboundFirsts::default(),
-                deferred_endpoint_commands,
+                deferred_endpoint_data_batches,
                 deferred_tun_packets,
                 tun_tx,
                 endpoint_tx,
@@ -586,7 +584,7 @@
         driver.send_collected_outputs(summary, sink)
     }
 
-    fn pump_aead_output_completion_executor_turn<'a, C, E, RI, O, R, S>(
+    fn pump_aead_output_completion_executor_turn<'a, C, E, RI, R, S>(
         completions: &mut C,
         completion_limit: usize,
         executor: &mut E,
@@ -594,7 +592,7 @@
         raw_ingress: &mut RI,
         router: &mut R,
         raw_ingress_limit: usize,
-        outbound: &mut O,
+        outbound: &mut VecDeque<OutboundPacket>,
         outbound_limit: usize,
         sink: &mut S,
         crypto_limit: usize,
@@ -603,7 +601,6 @@
         C: PacketMover2CompletionSource,
         E: PacketMover2CryptoExecutor,
         RI: PacketMover2RawIngressSource,
-        O: PacketMover2OutboundSource,
         R: PacketMover2IngressRouter,
         S: PacketMover2OutputSink,
     {
@@ -623,7 +620,7 @@
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
             driver.admit_raw_ingress_packet(packet, router, &mut summary);
         });
-        outbound.drain_outbound(outbound_limit, |packet| {
+        drain_test_outbound_packets(outbound, outbound_limit, |packet| {
             driver.admit_outbound_packet(packet, &mut summary);
         });
 

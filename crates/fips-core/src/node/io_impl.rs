@@ -56,30 +56,22 @@ impl Node {
         }
 
         let command_capacity = capacity.max(1);
-        let (control_command_tx, control_command_rx) = tokio::sync::mpsc::channel(command_capacity);
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(command_capacity);
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel(command_capacity);
+        let (data_batch_tx, data_rx) = endpoint_data_batch_channel(command_capacity);
         // Endpoint events use one bounded app-data channel. Protocol/control
         // progress is reserved before endpoint payload delivery reaches this
         // queue.
         let (event_tx, event_rx) = EndpointEventSender::channel(capacity);
-        self.endpoint_control_command_rx = Some(control_command_rx);
-        self.endpoint_command_rx = Some(command_rx);
+        self.endpoint_control_rx = Some(control_rx);
+        self.endpoint_data_rx = Some(data_rx);
         self.endpoint_events.attach(event_tx.clone());
 
         Ok(EndpointDataIo {
-            control_command_tx,
-            command_tx,
+            control_tx,
+            data_batch_tx,
             event_rx,
             event_tx,
         })
-    }
-
-    #[allow(clippy::result_large_err)]
-    pub(in crate::node) fn deliver_endpoint_event_message(
-        &mut self,
-        message: EndpointDataDelivery,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        self.endpoint_events.deliver_endpoint_data(message)
     }
 
     pub(crate) fn pubkey_for_node_addr(&self, addr: &NodeAddr) -> Option<secp256k1::PublicKey> {

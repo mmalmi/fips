@@ -59,33 +59,29 @@ impl Node {
         Ok(())
     }
 
-    pub(in crate::node) async fn handle_endpoint_data_command_no_established_flush(
+    pub(in crate::node) async fn handle_endpoint_data_batch_no_established_flush(
         &mut self,
-        command: NodeEndpointCommand,
+        batch: NodeEndpointDataBatch,
+    ) {
+        let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
+        self.queue_packet_mover2_unrouted_endpoint_batch(remote, payloads, enqueued_at_ms)
+            .await;
+    }
+
+    pub(in crate::node) async fn handle_endpoint_control(
+        &mut self,
+        command: NodeEndpointControlCommand,
     ) {
         match command {
-            NodeEndpointCommand::Send {
-                command,
-                response_tx,
-            } => {
-                let result = self.queue_packet_mover2_unrouted_endpoint_send(command).await;
-                let _ = response_tx.send(result);
-            }
-            NodeEndpointCommand::SendOneway { command } => {
-                let _ = self.queue_packet_mover2_unrouted_endpoint_send(command).await;
-            }
-            NodeEndpointCommand::SendBatchOneway { command } => {
-                self.queue_packet_mover2_unrouted_endpoint_batch(command).await;
-            }
-            NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
+            NodeEndpointControlCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
                 let _ = response_tx.send(result);
             }
-            NodeEndpointCommand::RefreshPeerPaths { npubs, response_tx } => {
+            NodeEndpointControlCommand::RefreshPeerPaths { npubs, response_tx } => {
                 let result = self.refresh_peer_paths(npubs).await;
                 let _ = response_tx.send(result);
             }
-            NodeEndpointCommand::PeerSnapshot { response_tx } => {
+            NodeEndpointControlCommand::PeerSnapshot { response_tx } => {
                 let snapshot_now = Instant::now();
                 let nostr_failure_state: std::collections::HashMap<String, _> = self
                     .nostr_discovery_handle()
@@ -223,7 +219,7 @@ impl Node {
 
                 let _ = response_tx.send(peers);
             }
-            NodeEndpointCommand::LocalAdvertSnapshot { response_tx } => {
+            NodeEndpointControlCommand::LocalAdvertSnapshot { response_tx } => {
                 let endpoints = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery.local_advert_endpoints().await
                 } else {
@@ -231,7 +227,7 @@ impl Node {
                 };
                 let _ = response_tx.send(endpoints);
             }
-            NodeEndpointCommand::RelaySnapshot { response_tx } => {
+            NodeEndpointControlCommand::RelaySnapshot { response_tx } => {
                 let relays = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery
                         .relay_statuses()
@@ -247,7 +243,7 @@ impl Node {
                 };
                 let _ = response_tx.send(relays);
             }
-            NodeEndpointCommand::UpdateRelays {
+            NodeEndpointControlCommand::UpdateRelays {
                 advert_relays,
                 dm_relays,
                 response_tx,

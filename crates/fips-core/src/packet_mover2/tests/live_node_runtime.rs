@@ -52,8 +52,7 @@
                 0,
             )),
         );
-        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
         let tun_packet = tun_ipv6_packet(fmp_source, 48);
@@ -66,8 +65,7 @@
                 &mut raw_source,
                 8,
                 PacketMover2LiveOutboundFirsts::default(),
-                &mut endpoint_control_rx,
-                &mut endpoint_bulk_rx,
+                &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
                 8,
@@ -93,7 +91,7 @@
         assert!(first.output_drops().is_empty());
         assert!(first.drops().is_empty());
         assert!(raw_source.source.is_empty());
-        assert!(first.endpoint_command_drops().is_empty());
+        assert!(first.endpoint_data_drops().is_empty());
         assert!(first.tun_outbound_drops().is_empty());
         assert!(tun_outbound_rx.try_recv().is_err());
         assert!(tun_rx.try_recv().is_err());
@@ -281,7 +279,7 @@
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x48; 16]));
         let output = opened_output(owner, 48, 0, OutputTarget::Tun, b"tun-node");
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
 
         let sent = {
             let tun = PacketMover2TunTxOutput::new(&tun_tx);
@@ -292,7 +290,7 @@
         assert_eq!(sent, Ok(()));
         assert_eq!(tun_rx.try_recv().unwrap(), b"tun-node".to_vec());
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
+        assert!(transport.plans().is_empty());
     }
 
     #[test]
@@ -300,7 +298,7 @@
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel_with_bulk_capacity(1);
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
         let mut sink = PacketMover2LiveOutputSink::new(
             PacketMover2TunTxOutput::new(&tun_tx),
             &mut endpoint,
@@ -324,7 +322,7 @@
         assert_eq!(tun_rx.try_recv().unwrap(), b"bulk-a".to_vec());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
+        assert!(transport.plans().is_empty());
     }
 
     #[test]
@@ -332,7 +330,7 @@
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x46; 16]));
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
         let mut sink = PacketMover2LiveOutputSink::new(
             PacketMover2TunTxOutput::new(&tun_tx),
             &mut endpoint,
@@ -372,10 +370,10 @@
         assert_eq!(tun_rx.try_recv().unwrap(), b"fresh-bulk".to_vec());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint.outputs.is_empty());
-        assert_eq!(transport.outputs.len(), 1);
-        assert_eq!(transport.outputs[0].transport_id, transport_id);
-        assert_eq!(transport.outputs[0].remote_addr, remote_addr);
-        assert_eq!(transport.outputs[0].payload, b"sealed-wire");
+        assert_eq!(transport.plans().len(), 1);
+        assert_eq!(transport.plans()[0].transport_id(), transport_id);
+        assert_eq!(transport.plans()[0].remote_addr(), &remote_addr);
+        assert_eq!(transport.plans()[0].output().payload(), b"sealed-wire");
     }
 
     #[test]
@@ -385,7 +383,7 @@
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x49; 16]));
         let output = opened_output(owner, 49, 0, OutputTarget::Tun, b"closed");
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
 
         let sent = {
             let tun = PacketMover2TunTxOutput::new(&tun_tx);
@@ -395,7 +393,7 @@
 
         assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
+        assert!(transport.plans().is_empty());
     }
 
     #[test]
@@ -407,7 +405,7 @@
         let owner = OwnerId::fsp_node(source_addr);
         let output = opened_endpoint_output(owner, source_peer, 50, 7, b"endpoint-node");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
 
         let sent = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
@@ -417,18 +415,14 @@
 
         assert_eq!(sent, Ok(()));
         match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            NodeEndpointEvent::Data {
-                source_peer: delivered_source,
-                payload,
-                ..
-            } => {
-                assert_eq!(delivered_source, source_peer);
-                assert_eq!(payload, b"endpoint-node");
+            NodeEndpointEvent { messages, .. } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].source_peer, source_peer);
+                assert_eq!(messages[0].payload, b"endpoint-node");
             }
-            event => panic!("expected single endpoint event, got {event:?}"),
         }
         assert!(tun.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
+        assert!(transport.plans().is_empty());
     }
 
     #[test]
@@ -442,7 +436,7 @@
         let owner = OwnerId::fsp_node(source_addr);
         let output = opened_endpoint_output(owner, source_peer, 53, 0, b"closed-endpoint");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
 
         let sent = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_tx);
@@ -452,7 +446,7 @@
 
         assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
         assert!(tun.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
+        assert!(transport.plans().is_empty());
     }
 
     #[test]
@@ -467,7 +461,7 @@
             opened_output(owner, 51, 0, OutputTarget::Endpoint, b"missing-identity");
         let mismatched_output = opened_endpoint_output(owner, wrong_peer, 52, 1, b"wrong-identity");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
 
         let missing = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
@@ -484,7 +478,7 @@
         assert_eq!(mismatched, Err(PacketMover2OutputError::NoRoute));
         assert!(endpoint_io.event_rx.try_recv().is_err());
         assert!(tun.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
+        assert!(transport.plans().is_empty());
     }
 
     #[test]
@@ -547,7 +541,7 @@
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+        let sent = send_packet_mover2_transport_plans_with_worker(
             &transports,
             vec![plan],
             &mut drops,
@@ -593,7 +587,7 @@
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+        let sent = send_packet_mover2_transport_plans_with_worker(
             &transports,
             vec![plan],
             &mut drops,
@@ -663,7 +657,7 @@
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+        let sent = send_packet_mover2_transport_plans_with_worker(
             &transports,
             vec![plan],
             &mut drops,
@@ -689,7 +683,7 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_bulk_worker_sends_bulk_after_inline_priority() {
+    async fn transport_plan_worker_preserves_retired_order_across_lanes() {
         let send_transport_id = TransportId::new(62);
         let recv_transport_id = TransportId::new(63);
         let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(8);
@@ -748,7 +742,7 @@
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+        let sent = send_packet_mover2_transport_plans_with_worker(
             &transports,
             plans,
             &mut drops,
@@ -768,9 +762,14 @@
                     .expect("packet channel open");
             payloads.push(received.data.as_slice().to_vec());
         }
-        assert_eq!(payloads[0], b"priority-worker");
-        assert!(payloads.contains(&b"bulk-worker-a".to_vec()));
-        assert!(payloads.contains(&b"bulk-worker-b".to_vec()));
+        assert_eq!(
+            payloads,
+            [
+                b"bulk-worker-a".to_vec(),
+                b"priority-worker".to_vec(),
+                b"bulk-worker-b".to_vec()
+            ]
+        );
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");
@@ -778,7 +777,7 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_bulk_worker_drops_bulk_without_inline_fallback() {
+    async fn transport_plan_worker_drops_bulk_without_inline_fallback() {
         let send_transport_id = TransportId::new(64);
         let recv_transport_id = TransportId::new(65);
         let (recv_packet_tx, _recv_packet_rx) = crate::transport::packet_channel(8);
@@ -830,9 +829,9 @@
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(1);
-        assert!(worker.try_reserve(1));
+        assert!(worker.try_reserve(Lane::Bulk, 1));
 
-        let sent = send_packet_mover2_transport_plans_with_bulk_worker(
+        let sent = send_packet_mover2_transport_plans_with_worker(
             &transports,
             plans,
             &mut drops,
@@ -855,106 +854,13 @@
     }
 
     #[test]
-    fn transport_batch_mapper_prioritizes_within_transport_runs() {
-        let transport_a = TransportId::new(60);
-        let transport_b = TransportId::new(61);
-        let remote_addr = TransportAddr::from_string("127.0.0.1:6000");
-        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x60; 16]));
-        let mut bulk_a0 = transport_output(
-            owner,
-            600,
-            10,
-            transport_a,
-            remote_addr.clone(),
-            b"bulk-a0".to_vec(),
-        );
-        let mut priority_a = transport_output(
-            owner,
-            601,
-            11,
-            transport_a,
-            remote_addr.clone(),
-            b"priority-a".to_vec(),
-        );
-        let mut bulk_a1 = transport_output(
-            owner,
-            602,
-            12,
-            transport_a,
-            remote_addr.clone(),
-            b"bulk-a1".to_vec(),
-        );
-        let mut priority_b = transport_output(
-            owner,
-            603,
-            13,
-            transport_b,
-            remote_addr.clone(),
-            b"priority-b".to_vec(),
-        );
-        let mut bulk_b = transport_output(
-            owner,
-            604,
-            14,
-            transport_b,
-            remote_addr.clone(),
-            b"bulk-b".to_vec(),
-        );
-        bulk_a0.lane = Lane::Bulk;
-        priority_a.lane = Lane::Priority;
-        bulk_a1.lane = Lane::Bulk;
-        priority_b.lane = Lane::Priority;
-        bulk_b.lane = Lane::Bulk;
-        let plans = vec![
-            PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), bulk_a0),
-            PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), priority_a),
-            PacketMover2TransportSendPlan::new(transport_a, remote_addr.clone(), bulk_a1),
-            PacketMover2TransportSendPlan::new(transport_b, remote_addr.clone(), priority_b),
-            PacketMover2TransportSendPlan::new(transport_b, remote_addr, bulk_b),
-        ];
-        let mut batch = Vec::new();
+    fn transport_send_worker_priority_reserve_survives_full_bulk_queue() {
+        let worker = PacketMover2TransportSendWorkerPool::new(1);
 
-        append_transport_batch_plans(&plans, 0, 3, Lane::Priority, &mut batch);
-        append_transport_batch_plans(&plans, 0, 3, Lane::Bulk, &mut batch);
-        append_transport_batch_plans(&plans, 3, plans.len(), Lane::Priority, &mut batch);
-        append_transport_batch_plans(&plans, 3, plans.len(), Lane::Bulk, &mut batch);
-
-        let indexes = batch
-            .iter()
-            .map(|(index, _, _)| *index)
-            .collect::<Vec<_>>();
-        assert_eq!(indexes, [1, 0, 2, 3, 4]);
-        let payloads = batch
-            .iter()
-            .map(|(_, _, payload)| *payload)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            payloads,
-            [
-                b"priority-a".as_slice(),
-                b"bulk-a0".as_slice(),
-                b"bulk-a1".as_slice(),
-                b"priority-b".as_slice(),
-                b"bulk-b".as_slice()
-            ]
-        );
-        assert_eq!(
-            next_transport_batch_range(&plans, 0),
-            Some((0, 3, transport_a))
-        );
-        assert_eq!(
-            next_transport_batch_range(&plans, 3),
-            Some((3, plans.len(), transport_b))
-        );
-        assert_eq!(next_transport_batch_range(&plans, plans.len()), None);
-        assert_eq!(
-            next_transport_priority_cut_in_batch_range(&plans, 0, 1),
-            Some((1, 3, transport_a))
-        );
-        assert_eq!(
-            next_transport_priority_cut_in_batch_range(&plans, 3, 32),
-            Some((3, plans.len(), transport_b))
-        );
+        assert!(worker.try_reserve(Lane::Bulk, 1));
+        assert!(!worker.try_reserve(Lane::Bulk, 1));
+        assert!(worker.try_reserve(Lane::Priority, 1));
+        assert!(!worker.try_reserve(Lane::Priority, 1));
     }
 
     #[test]
@@ -994,7 +900,7 @@
             OutboundPacket::fmp(owner, 1, PacketClass::Bulk, 471, 0, b"no-route".to_vec());
         let mut tun = LiveTunRecorder::default();
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = LiveTransportRecorder::default();
+        let mut transport = PacketMover2TransportSendPlanOutput::new();
 
         let turn = {
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
@@ -1013,7 +919,7 @@
         assert_eq!(turn.output_drops()[0].path(), None);
         assert!(tun.outputs.is_empty());
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.outputs.is_empty());
+        assert!(transport.plans().is_empty());
     }
 
     #[test]

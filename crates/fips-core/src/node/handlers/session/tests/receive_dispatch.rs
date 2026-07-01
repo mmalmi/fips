@@ -367,15 +367,11 @@
         node.deliver_endpoint_data_batch(vec![delivery]);
         assert!(pending_flush.is_empty());
         match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            crate::node::NodeEndpointEvent::Data {
-                source_peer: delivered_source,
-                payload,
-                ..
-            } => {
-                assert_eq!(delivered_source, source_peer);
-                assert_eq!(payload, endpoint_payload);
+            crate::node::NodeEndpointEvent { messages, .. } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].source_peer, source_peer);
+                assert_eq!(messages[0].payload, endpoint_payload);
             }
-            event => panic!("expected single endpoint data event, got {event:?}"),
         }
         assert!(node.sessions.get(&source_addr).is_some());
         assert!(

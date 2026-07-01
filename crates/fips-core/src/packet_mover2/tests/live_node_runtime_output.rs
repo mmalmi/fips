@@ -224,10 +224,10 @@
     }
 
     #[test]
-    fn runtime_keeps_opened_app_fsp_outputs_bulk() {
+    fn runtime_keeps_opened_fsp_data_outputs_bulk() {
         let owner = fsp_owner(88);
         let key = 88;
-        let payload = b"small-app-payload".to_vec();
+        let payload = b"small-data-payload".to_vec();
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
         driver

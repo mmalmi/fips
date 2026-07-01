@@ -1,33 +1,14 @@
-trait PacketMover2TransportOutput {
-    fn send_transport(
-        &mut self,
-        transport_id: TransportId,
-        remote_addr: TransportAddr,
-        output: PacketOutput,
-    ) -> Result<(), PacketMover2OutputError>;
-}
-
-impl<T: PacketMover2TransportOutput + ?Sized> PacketMover2TransportOutput for &mut T {
-    fn send_transport(
-        &mut self,
-        transport_id: TransportId,
-        remote_addr: TransportAddr,
-        output: PacketOutput,
-    ) -> Result<(), PacketMover2OutputError> {
-        (**self).send_transport(transport_id, remote_addr, output)
-    }
-}
-
-const TRANSPORT_PRIORITY_CUT_IN_PACKETS: usize = 32;
 const TRANSPORT_SEND_WORKER_COALESCE_PACKETS: usize = 64;
 const TRANSPORT_SEND_WORKER_DEFAULT_MAX_PACKETS: usize = 4096;
+const TRANSPORT_SEND_WORKER_PRIORITY_RESERVE_PACKETS: usize = 64;
 
 #[derive(Debug)]
 struct PacketMover2TransportSendJob {
+    lane: Lane,
     snapshot: crate::transport::udp::UdpSendSnapshot,
     transport_id: TransportId,
     remote_addr: std::net::SocketAddr,
-    packets: Vec<(usize, PacketOutput, std::net::SocketAddr)>,
+    packets: Vec<(PacketOutput, std::net::SocketAddr)>,
 }
 
 #[derive(Debug)]
@@ -35,7 +16,9 @@ pub(crate) struct PacketMover2TransportSendWorkerPool {
     senders: Vec<tokio::sync::mpsc::Sender<PacketMover2TransportSendJob>>,
     handles: Vec<tokio::task::JoinHandle<()>>,
     queued_packets: Arc<std::sync::atomic::AtomicUsize>,
+    queued_priority_packets: Arc<std::sync::atomic::AtomicUsize>,
     max_queued_packets: usize,
+    max_priority_queued_packets: usize,
     worker_count: usize,
 }
 
@@ -46,7 +29,11 @@ impl PacketMover2TransportSendWorkerPool {
             senders: Vec::new(),
             handles: Vec::new(),
             queued_packets: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            queued_priority_packets: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             max_queued_packets: max_queued_packets.max(1),
+            max_priority_queued_packets: max_queued_packets
+                .max(1)
+                .min(TRANSPORT_SEND_WORKER_PRIORITY_RESERVE_PACKETS),
             worker_count,
         }
     }
@@ -55,8 +42,11 @@ impl PacketMover2TransportSendWorkerPool {
         Self::new(TRANSPORT_SEND_WORKER_DEFAULT_MAX_PACKETS)
     }
 
-    fn max_job_packets(&self) -> usize {
-        self.max_queued_packets
+    fn max_job_packets_for_lane(&self, lane: Lane) -> usize {
+        match lane {
+            Lane::Priority => self.max_priority_queued_packets,
+            Lane::Bulk => self.max_queued_packets,
+        }
     }
 
     fn enqueue(
@@ -68,7 +58,7 @@ impl PacketMover2TransportSendWorkerPool {
             return Ok(0);
         }
         self.ensure_started();
-        if !self.try_reserve(packet_count) {
+        if !self.try_reserve(job.lane, packet_count) {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::PacketMover2TransportSendWorkerBackpressure,
                 packet_count as u64,
@@ -90,12 +80,11 @@ impl PacketMover2TransportSendWorkerPool {
         match sender.try_send(job) {
             Ok(()) => Ok(packet_count),
             Err(error) => {
-                self.queued_packets
-                    .fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
                 let job = match error {
                     tokio::sync::mpsc::error::TrySendError::Full(job)
                     | tokio::sync::mpsc::error::TrySendError::Closed(job) => job,
                 };
+                self.release(job.lane, packet_count);
                 Err(job)
             }
         }
@@ -106,41 +95,89 @@ impl PacketMover2TransportSendWorkerPool {
             return;
         }
         let worker_count = self.worker_count.max(1);
+        let channel_jobs = self
+            .max_queued_packets
+            .saturating_add(self.max_priority_queued_packets)
+            .max(1);
         self.senders.reserve(worker_count);
         self.handles.reserve(worker_count);
         for worker_idx in 0..worker_count {
-            let (tx, rx) = tokio::sync::mpsc::channel(self.max_queued_packets);
+            let (tx, rx) = tokio::sync::mpsc::channel(channel_jobs);
             let queued_packets = Arc::clone(&self.queued_packets);
+            let queued_priority_packets = Arc::clone(&self.queued_priority_packets);
             self.senders.push(tx);
             self.handles.push(tokio::spawn(async move {
-                packet_mover2_transport_send_worker_loop(worker_idx, rx, queued_packets).await;
+                packet_mover2_transport_send_worker_loop(
+                    worker_idx,
+                    rx,
+                    queued_packets,
+                    queued_priority_packets,
+                )
+                .await;
             }));
         }
     }
 
-    fn try_reserve(&self, packet_count: usize) -> bool {
-        if packet_count > self.max_queued_packets {
+    fn try_reserve(&self, lane: Lane, packet_count: usize) -> bool {
+        if packet_count > self.max_job_packets_for_lane(lane) {
             return false;
         }
-        let mut queued = self
-            .queued_packets
-            .load(std::sync::atomic::Ordering::Acquire);
-        loop {
-            let Some(next) = queued.checked_add(packet_count) else {
-                return false;
-            };
-            if next > self.max_queued_packets {
-                return false;
+        if lane == Lane::Priority
+            && !try_reserve_transport_send_packets(
+                &self.queued_priority_packets,
+                packet_count,
+                self.max_priority_queued_packets,
+            )
+        {
+            return false;
+        }
+        let total_limit = match lane {
+            Lane::Priority => self
+                .max_queued_packets
+                .saturating_add(self.max_priority_queued_packets),
+            Lane::Bulk => self.max_queued_packets,
+        };
+        if !try_reserve_transport_send_packets(&self.queued_packets, packet_count, total_limit) {
+            if lane == Lane::Priority {
+                self.queued_priority_packets
+                    .fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
             }
-            match self.queued_packets.compare_exchange_weak(
-                queued,
-                next,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(current) => queued = current,
-            }
+            return false;
+        }
+        true
+    }
+
+    fn release(&self, lane: Lane, packet_count: usize) {
+        self.queued_packets
+            .fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
+        if lane == Lane::Priority {
+            self.queued_priority_packets
+                .fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+
+fn try_reserve_transport_send_packets(
+    queued_packets: &std::sync::atomic::AtomicUsize,
+    packet_count: usize,
+    max_queued_packets: usize,
+) -> bool {
+    let mut queued = queued_packets.load(std::sync::atomic::Ordering::Acquire);
+    loop {
+        let Some(next) = queued.checked_add(packet_count) else {
+            return false;
+        };
+        if next > max_queued_packets {
+            return false;
+        }
+        match queued_packets.compare_exchange_weak(
+            queued,
+            next,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(current) => queued = current,
         }
     }
 }
@@ -164,6 +201,7 @@ async fn packet_mover2_transport_send_worker_loop(
     _worker_idx: usize,
     mut rx: tokio::sync::mpsc::Receiver<PacketMover2TransportSendJob>,
     queued_packets: Arc<std::sync::atomic::AtomicUsize>,
+    queued_priority_packets: Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let mut pending = None;
     loop {
@@ -179,21 +217,31 @@ async fn packet_mover2_transport_send_worker_loop(
             let Ok(next) = rx.try_recv() else {
                 break;
             };
-            if next.transport_id == job.transport_id && next.remote_addr == job.remote_addr {
+            if next.lane == job.lane
+                && next.transport_id == job.transport_id
+                && next.remote_addr == job.remote_addr
+            {
                 job.packets.extend(next.packets);
             } else {
                 pending = Some(next);
                 break;
             }
         }
-        send_packet_mover2_transport_worker_job(job, &queued_packets).await;
+        send_packet_mover2_transport_worker_job(
+            job,
+            &queued_packets,
+            &queued_priority_packets,
+        )
+        .await;
     }
 }
 
 async fn send_packet_mover2_transport_worker_job(
     job: PacketMover2TransportSendJob,
     queued_packets: &std::sync::atomic::AtomicUsize,
+    queued_priority_packets: &std::sync::atomic::AtomicUsize,
 ) {
+    let lane = job.lane;
     let packet_count = job.packets.len();
     let _timer = crate::perf_profile::Timer::start(
         crate::perf_profile::Stage::PacketMover2TransportSendWorker,
@@ -201,10 +249,26 @@ async fn send_packet_mover2_transport_worker_job(
     let owned_packets = job
         .packets
         .into_iter()
-        .map(|(index, output, addr)| (index, output.into_payload(), addr))
+        .enumerate()
+        .map(|(index, (output, addr))| (index, output.into_payload(), addr))
         .collect::<Vec<_>>();
-    let _ = job.snapshot.send_owned_batch(&owned_packets).await;
+    let failed = job
+        .snapshot
+        .send_owned_batch(&owned_packets)
+        .await
+        .into_iter()
+        .filter(|(_, result)| result.is_err())
+        .count();
+    if failed > 0 {
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::PacketMover2TransportSendWorkerSendFailed,
+            failed as u64,
+        );
+    }
     queued_packets.fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
+    if lane == Lane::Priority {
+        queued_priority_packets.fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 fn packet_mover2_transport_send_worker_count() -> usize {
@@ -283,9 +347,7 @@ impl PacketMover2TransportSendPlanOutput {
         let capacity = self.plans.capacity();
         std::mem::replace(&mut self.plans, Vec::with_capacity(capacity))
     }
-}
 
-impl PacketMover2TransportOutput for PacketMover2TransportSendPlanOutput {
     fn send_transport(
         &mut self,
         transport_id: TransportId,
@@ -298,20 +360,6 @@ impl PacketMover2TransportOutput for PacketMover2TransportSendPlanOutput {
             output,
         ));
         Ok(())
-    }
-}
-
-impl PacketMover2OutputSink for PacketMover2TransportSendPlanOutput {
-    fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError> {
-        let Some((transport_id, remote_addr)) = output.path.as_ref().and_then(|path| match path {
-            TransportPath::Live {
-                transport_id,
-                remote_addr,
-            } => Some((*transport_id, remote_addr.clone())),
-        }) else {
-            return Err(PacketMover2OutputError::NoRoute);
-        };
-        self.send_transport(transport_id, remote_addr, output)
     }
 }
 
@@ -340,7 +388,7 @@ impl<T: PacketMover2TransportResolver + ?Sized> PacketMover2TransportResolver fo
     }
 }
 
-async fn send_packet_mover2_transport_plans_with_bulk_worker<R>(
+async fn send_packet_mover2_transport_plans_with_worker<R>(
     transports: &R,
     plans: Vec<PacketMover2TransportSendPlan>,
     drops: &mut Vec<PacketMover2OutputDrop>,
@@ -355,91 +403,9 @@ where
     }
 
     let mut sent = 0usize;
-    let mut batch = Vec::new();
-    let priority_cut_in_end = send_transport_priority_cut_in(
-        transports,
-        &plans,
-        drops,
-        &mut sent_outputs,
-        &mut sent,
-        &mut batch,
-    )
-    .await;
-    send_remaining_transport_priority_plans(
-        transports,
-        &plans,
-        priority_cut_in_end,
-        drops,
-        &mut sent,
-        &mut batch,
-        &mut sent_outputs,
-    )
-    .await;
-    send_bulk_transport_plans_with_worker(
-        transports,
-        plans,
-        drops,
-        worker,
-        &mut sent_outputs,
-        &mut sent,
-    )
-    .await;
-    sent
-}
-
-async fn send_remaining_transport_priority_plans<'a, R>(
-    transports: &R,
-    plans: &'a [PacketMover2TransportSendPlan],
-    priority_cut_in_end: usize,
-    drops: &mut Vec<PacketMover2OutputDrop>,
-    sent: &mut usize,
-    batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
-) where
-    R: PacketMover2TransportResolver + ?Sized,
-{
-    let mut start = 0usize;
-    while let Some((range_start, range_end, transport_id)) =
-        next_transport_batch_range(plans, start)
-    {
-        batch.clear();
-        append_transport_batch_plans_skipping_priority_before(
-            plans,
-            range_start,
-            range_end,
-            Lane::Priority,
-            priority_cut_in_end,
-            batch,
-        );
-        send_transport_plan_batch(
-            transports,
-            plans,
-            transport_id,
-            batch,
-            sent,
-            drops,
-            sent_outputs,
-        )
-        .await;
-        start = range_end;
-    }
-}
-
-async fn send_bulk_transport_plans_with_worker<R>(
-    transports: &R,
-    plans: Vec<PacketMover2TransportSendPlan>,
-    drops: &mut Vec<PacketMover2OutputDrop>,
-    worker: &mut PacketMover2TransportSendWorkerPool,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
-    sent: &mut usize,
-) where
-    R: PacketMover2TransportResolver + ?Sized,
-{
     let mut pending_udp = PendingPacketMover2UdpSendJob::default();
-    for (plan_index, plan) in plans.into_iter().enumerate() {
-        if plan.output().lane() != Lane::Bulk {
-            continue;
-        }
+    for plan in plans {
+        let lane = plan.output().lane();
         let Some(transport) = transports.resolve_packet_mover2_transport(plan.transport_id())
         else {
             drops.push(PacketMover2OutputDrop::from_output(
@@ -454,24 +420,20 @@ async fn send_bulk_transport_plans_with_worker<R>(
                 &mut pending_udp,
                 drops,
                 worker,
-                sent_outputs,
-                sent,
+                &mut sent_outputs,
+                &mut sent,
             );
-            let result = transport
-                .send(plan.remote_addr(), plan.output().payload())
-                .await;
-            let plans = [plan];
-            record_transport_send_result(&plans, 0, result, sent, drops, sent_outputs);
+            send_non_udp_transport_plan(transport, plan, drops, &mut sent_outputs, &mut sent).await;
             continue;
         };
 
-        if !pending_udp.matches(plan.transport_id(), plan.remote_addr()) {
+        if !pending_udp.matches(lane, plan.transport_id(), plan.remote_addr()) {
             flush_pending_packet_mover2_udp_send_job(
                 &mut pending_udp,
                 drops,
                 worker,
-                sent_outputs,
-                sent,
+                &mut sent_outputs,
+                &mut sent,
             );
             let Some((snapshot, socket_addr)) =
                 prepare_packet_mover2_udp_worker_target(udp, &plan, drops).await
@@ -480,23 +442,55 @@ async fn send_bulk_transport_plans_with_worker<R>(
             };
             pending_udp.reset(
                 snapshot,
+                lane,
                 plan.transport_id(),
                 plan.remote_addr().clone(),
                 socket_addr,
             );
         }
-        pending_udp.validate_and_push(plan_index, plan, drops);
-        if pending_udp.len() >= worker.max_job_packets() {
+        pending_udp.validate_and_push(plan, drops);
+        if pending_udp.len() >= worker.max_job_packets_for_lane(lane) {
             flush_pending_packet_mover2_udp_send_job(
                 &mut pending_udp,
                 drops,
                 worker,
-                sent_outputs,
-                sent,
+                &mut sent_outputs,
+                &mut sent,
             );
         }
     }
-    flush_pending_packet_mover2_udp_send_job(&mut pending_udp, drops, worker, sent_outputs, sent);
+    flush_pending_packet_mover2_udp_send_job(
+        &mut pending_udp,
+        drops,
+        worker,
+        &mut sent_outputs,
+        &mut sent,
+    );
+    sent
+}
+
+async fn send_non_udp_transport_plan(
+    transport: &TransportHandle,
+    plan: PacketMover2TransportSendPlan,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+    sent: &mut usize,
+) {
+    match transport
+        .send(plan.remote_addr(), plan.output().payload())
+        .await
+    {
+        Ok(_) => {
+            *sent += 1;
+            if let Some(sent_outputs) = sent_outputs.as_deref_mut() {
+                sent_outputs.push(plan.output().clone());
+            }
+        }
+        Err(error) => drops.push(PacketMover2OutputDrop::from_output(
+            plan.output(),
+            packet_mover2_output_error_for_transport(&error),
+        )),
+    }
 }
 
 async fn prepare_packet_mover2_udp_worker_target(
@@ -529,27 +523,31 @@ async fn prepare_packet_mover2_udp_worker_target(
 
 #[derive(Default)]
 struct PendingPacketMover2UdpSendJob {
+    lane: Option<Lane>,
     snapshot: Option<crate::transport::udp::UdpSendSnapshot>,
     transport_id: Option<TransportId>,
     remote_transport_addr: Option<TransportAddr>,
     socket_addr: Option<std::net::SocketAddr>,
-    packets: Vec<(usize, PacketOutput, std::net::SocketAddr)>,
+    packets: Vec<(PacketOutput, std::net::SocketAddr)>,
 }
 
 impl PendingPacketMover2UdpSendJob {
-    fn matches(&self, transport_id: TransportId, remote_addr: &TransportAddr) -> bool {
-        self.transport_id == Some(transport_id)
+    fn matches(&self, lane: Lane, transport_id: TransportId, remote_addr: &TransportAddr) -> bool {
+        self.lane == Some(lane)
+            && self.transport_id == Some(transport_id)
             && self.remote_transport_addr.as_ref() == Some(remote_addr)
     }
 
     fn reset(
         &mut self,
         snapshot: crate::transport::udp::UdpSendSnapshot,
+        lane: Lane,
         transport_id: TransportId,
         remote_transport_addr: TransportAddr,
         socket_addr: std::net::SocketAddr,
     ) {
         debug_assert!(self.packets.is_empty());
+        self.lane = Some(lane);
         self.snapshot = Some(snapshot);
         self.transport_id = Some(transport_id);
         self.remote_transport_addr = Some(remote_transport_addr);
@@ -558,7 +556,6 @@ impl PendingPacketMover2UdpSendJob {
 
     fn validate_and_push(
         &mut self,
-        plan_index: usize,
         plan: PacketMover2TransportSendPlan,
         drops: &mut Vec<PacketMover2OutputDrop>,
     ) {
@@ -583,7 +580,7 @@ impl PendingPacketMover2UdpSendJob {
             ));
             return;
         }
-        self.packets.push((plan_index, plan.output, socket_addr));
+        self.packets.push((plan.output, socket_addr));
     }
 
     fn len(&self) -> usize {
@@ -594,11 +591,13 @@ impl PendingPacketMover2UdpSendJob {
         if self.packets.is_empty() {
             return None;
         }
+        let lane = self.lane.take()?;
         let snapshot = self.snapshot.take()?;
         let transport_id = self.transport_id.take()?;
         self.remote_transport_addr.take()?;
         let remote_addr = self.socket_addr.take()?;
         Some(PacketMover2TransportSendJob {
+            lane,
             snapshot,
             transport_id,
             remote_addr,
@@ -621,7 +620,7 @@ fn flush_pending_packet_mover2_udp_send_job(
         Some(
             job.packets
                 .iter()
-                .map(|(_, output, _)| output.clone())
+                .map(|(output, _)| output.clone())
                 .collect::<Vec<_>>(),
         )
     } else {
@@ -642,7 +641,7 @@ fn flush_pending_packet_mover2_udp_send_job(
                 crate::perf_profile::Event::PacketMover2TransportSendWorkerDropped,
                 dropped as u64,
             );
-            for (_, output, _) in job.packets.drain(..) {
+            for (output, _) in job.packets.drain(..) {
                 drops.push(PacketMover2OutputDrop::from_output(
                     &output,
                     PacketMover2OutputError::Unavailable,
@@ -650,194 +649,6 @@ fn flush_pending_packet_mover2_udp_send_job(
             }
         }
     }
-}
-
-async fn send_transport_priority_cut_in<'a, R>(
-    transports: &R,
-    plans: &'a [PacketMover2TransportSendPlan],
-    drops: &mut Vec<PacketMover2OutputDrop>,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
-    sent: &mut usize,
-    batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
-) -> usize
-where
-    R: PacketMover2TransportResolver + ?Sized,
-{
-    let mut start = 0usize;
-    let mut remaining = TRANSPORT_PRIORITY_CUT_IN_PACKETS;
-    let mut priority_cut_in_end = 0usize;
-    while remaining > 0 {
-        let Some((range_start, range_end, transport_id)) =
-            next_transport_priority_cut_in_batch_range(plans, start, remaining)
-        else {
-            break;
-        };
-        batch.clear();
-        append_transport_batch_plans(plans, range_start, range_end, Lane::Priority, batch);
-        let priority_packets = batch.len();
-        send_transport_plan_batch(
-            transports,
-            plans,
-            transport_id,
-            batch,
-            sent,
-            drops,
-            sent_outputs,
-        )
-        .await;
-        remaining = remaining.saturating_sub(priority_packets);
-        priority_cut_in_end = range_end;
-        start = range_end;
-    }
-    priority_cut_in_end
-}
-
-async fn send_transport_plan_batch<'a, R>(
-    transports: &R,
-    plans: &'a [PacketMover2TransportSendPlan],
-    transport_id: TransportId,
-    batch: &[(usize, &'a TransportAddr, &'a [u8])],
-    sent: &mut usize,
-    drops: &mut Vec<PacketMover2OutputDrop>,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
-) where
-    R: PacketMover2TransportResolver + ?Sized,
-{
-    if batch.is_empty() {
-        return;
-    }
-    let Some(transport) = transports.resolve_packet_mover2_transport(transport_id) else {
-        for (plan_index, _, _) in batch.iter().copied() {
-            drops.push(PacketMover2OutputDrop::from_output(
-                plans[plan_index].output(),
-                PacketMover2OutputError::NoRoute,
-            ));
-        }
-        return;
-    };
-
-    if batch.len() == 1 {
-        let plan_index = batch[0].0;
-        let plan = &plans[plan_index];
-        let result = transport
-            .send(plan.remote_addr(), plan.output().payload())
-            .await;
-        record_transport_send_result(plans, plan_index, result, sent, drops, sent_outputs);
-        return;
-    }
-
-    transport
-        .send_batch(batch, |plan_index, result| {
-            record_transport_send_result(plans, plan_index, result, sent, drops, sent_outputs);
-        })
-        .await;
-}
-
-fn next_transport_batch_range(
-    plans: &[PacketMover2TransportSendPlan],
-    start: usize,
-) -> Option<(usize, usize, TransportId)> {
-    let range_start = start;
-    if range_start == plans.len() {
-        return None;
-    }
-
-    let transport_id = plans[range_start].transport_id;
-    let mut range_end = range_start + 1;
-    while range_end < plans.len() && plans[range_end].transport_id == transport_id {
-        range_end += 1;
-    }
-    Some((range_start, range_end, transport_id))
-}
-
-fn next_transport_priority_cut_in_batch_range(
-    plans: &[PacketMover2TransportSendPlan],
-    start: usize,
-    max_packets: usize,
-) -> Option<(usize, usize, TransportId)> {
-    if max_packets == 0 {
-        return None;
-    }
-    let mut range_start = start;
-    while range_start < plans.len() && plans[range_start].output().lane() != Lane::Priority {
-        range_start += 1;
-    }
-    if range_start == plans.len() {
-        return None;
-    }
-
-    let transport_id = plans[range_start].transport_id;
-    let mut priority_packets = 1usize;
-    let mut range_end = range_start + 1;
-    while range_end < plans.len() {
-        let plan = &plans[range_end];
-        if plan.output().lane() == Lane::Priority {
-            if plan.transport_id != transport_id || priority_packets == max_packets {
-                break;
-            }
-            priority_packets += 1;
-        }
-        range_end += 1;
-    }
-    Some((range_start, range_end, transport_id))
-}
-
-fn record_transport_send_result(
-    plans: &[PacketMover2TransportSendPlan],
-    plan_index: usize,
-    result: Result<usize, TransportError>,
-    sent: &mut usize,
-    drops: &mut Vec<PacketMover2OutputDrop>,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
-) {
-    let plan = &plans[plan_index];
-    match result {
-        Ok(_) => {
-            *sent += 1;
-            if let Some(sent_outputs) = sent_outputs.as_deref_mut() {
-                sent_outputs.push(plan.output().clone());
-            }
-        }
-        Err(error) => drops.push(PacketMover2OutputDrop::from_output(
-            plan.output(),
-            packet_mover2_output_error_for_transport(&error),
-        )),
-    }
-}
-
-fn append_transport_batch_plans<'a>(
-    plans: &'a [PacketMover2TransportSendPlan],
-    start: usize,
-    end: usize,
-    lane: Lane,
-    batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
-) {
-    append_transport_batch_plans_skipping_priority_before(plans, start, end, lane, 0, batch);
-}
-
-fn append_transport_batch_plans_skipping_priority_before<'a>(
-    plans: &'a [PacketMover2TransportSendPlan],
-    start: usize,
-    end: usize,
-    lane: Lane,
-    skip_priority_before: usize,
-    batch: &mut Vec<(usize, &'a TransportAddr, &'a [u8])>,
-) {
-    batch.extend(
-        plans[start..end]
-            .iter()
-            .enumerate()
-            .filter_map(|(relative_index, plan)| {
-                let plan_index = start + relative_index;
-                if plan.output().lane() != lane {
-                    return None;
-                }
-                if lane == Lane::Priority && plan_index < skip_priority_before {
-                    return None;
-                }
-                Some((plan_index, plan.remote_addr(), plan.output().payload()))
-            }),
-    );
 }
 
 fn packet_mover2_output_error_for_transport(error: &TransportError) -> PacketMover2OutputError {

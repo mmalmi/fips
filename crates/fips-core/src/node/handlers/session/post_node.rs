@@ -45,53 +45,82 @@ mod pending_queue_tests {
         node.queue_pending_endpoint_data_with_enqueued_at_ms(endpoint_dest, vec![6], 1_002);
         let endpoint_payloads: Vec<Vec<u8>> = node
             .pending_session_traffic
-            .endpoint_data_for(&endpoint_dest)
+            .take_endpoint_data(&endpoint_dest)
             .expect("endpoint queue")
-            .iter()
-            .map(|payload| payload.as_slice().to_vec())
+            .into_pending_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.into_payloads())
             .collect();
         assert_eq!(endpoint_payloads, vec![vec![5], vec![6]]);
     }
 
     #[test]
     fn pending_endpoint_data_queue_owns_drop_oldest_policy() {
-        let mut queue = crate::node::PendingEndpointDataQueue::default();
-        assert!(!queue.push_bounded(vec![1].into(), 1_000, 2).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2].into(), 1_001, 2).dropped_oldest());
-        assert!(queue.push_bounded(vec![3].into(), 1_002, 2).dropped_oldest());
+        let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
+        assert!(!queue.push_bounded(vec![1], 1_000, 2));
+        assert!(!queue.push_bounded(vec![2], 1_001, 2));
+        assert!(queue.push_bounded(vec![3], 1_002, 2));
 
         let payloads: Vec<Vec<u8>> = queue
-            .iter()
-            .map(|payload| payload.as_slice().to_vec())
+            .into_pending_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.into_payloads())
             .collect();
         assert_eq!(payloads, vec![vec![2], vec![3]]);
     }
 
     #[test]
+    fn pending_endpoint_data_queue_preserves_batch_shape() {
+        let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
+        assert!(!queue.push_batch_bounded(vec![vec![1], vec![2]], 1_000, 4));
+
+        let mut batches = queue.into_pending_payloads();
+        let batch = batches.pop_front().expect("queued endpoint batch");
+        assert_eq!(batch.enqueued_at_ms(), 1_000);
+        assert_eq!(batch.into_payloads(), vec![vec![1], vec![2]]);
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn pending_endpoint_data_queue_bounds_batches_by_packet_count() {
+        let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
+        assert!(!queue.push_batch_bounded(vec![vec![1], vec![2]], 1_000, 3));
+        assert!(queue.push_batch_bounded(vec![vec![3], vec![4]], 1_001, 3));
+
+        let payloads: Vec<Vec<u8>> = queue
+            .into_pending_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.into_payloads())
+            .collect();
+        assert_eq!(payloads, vec![vec![2], vec![3], vec![4]]);
+    }
+
+    #[test]
     fn pending_endpoint_data_queue_preserves_enqueue_times() {
-        let mut queue = crate::node::PendingEndpointDataQueue::default();
-        assert!(!queue.push_bounded(vec![1].into(), 1_000, 4).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2].into(), 1_500, 4).dropped_oldest());
+        let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
+        assert!(!queue.push_bounded(vec![1], 1_000, 4));
+        assert!(!queue.push_bounded(vec![2], 1_500, 4));
 
         let payloads = queue.into_pending_payloads();
-        let observed: Vec<(Vec<u8>, u64)> = payloads
+        let observed: Vec<(Vec<Vec<u8>>, u64)> = payloads
             .into_iter()
             .map(|payload| {
-                (
-                    payload.payload().as_slice().to_vec(),
-                    payload.enqueued_at_ms(),
-                )
+                let enqueued_at_ms = payload.enqueued_at_ms();
+                (payload.into_payloads(), enqueued_at_ms)
             })
             .collect();
-        assert_eq!(observed, vec![(vec![1], 1_000), (vec![2], 1_500)]);
+        assert_eq!(
+            observed,
+            vec![(vec![vec![1]], 1_000), (vec![vec![2]], 1_500)]
+        );
     }
 
     #[test]
     fn pending_tun_packet_queue_owns_drop_oldest_policy() {
         let mut queue = crate::node::endpoint_traffic::PendingTunPacketQueue::default();
-        assert!(!queue.push_bounded(vec![1], 1_000, 2).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2], 1_001, 2).dropped_oldest());
-        assert!(queue.push_bounded(vec![3], 1_002, 2).dropped_oldest());
+        assert!(!queue.push_bounded(vec![1], 1_000, 2));
+        assert!(!queue.push_bounded(vec![2], 1_001, 2));
+        assert!(queue.push_bounded(vec![3], 1_002, 2));
 
         let packets: Vec<Vec<u8>> = queue.into_packets().into_iter().collect();
         assert_eq!(packets, vec![vec![2], vec![3]]);
@@ -100,8 +129,8 @@ mod pending_queue_tests {
     #[test]
     fn pending_tun_packet_queue_drops_stale_packets_on_fresh_drain() {
         let mut queue = crate::node::endpoint_traffic::PendingTunPacketQueue::default();
-        assert!(!queue.push_bounded(vec![1], 1_000, 8).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2], 3_500, 8).dropped_oldest());
+        assert!(!queue.push_bounded(vec![1], 1_000, 8));
+        assert!(!queue.push_bounded(vec![2], 3_500, 8));
 
         let (packets, stale) = queue.into_fresh_packets(4_000, 2_000);
 
@@ -256,15 +285,16 @@ mod pending_queue_tests {
         assert_eq!(
             payloads
                 .pop_front()
-                .map(|payload| payload.payload().as_slice().to_vec()),
-            Some(vec![3])
+                .map(|payload| payload.into_payloads()),
+            Some(vec![vec![3]])
         );
         queues.restore_endpoint_data(dest, payloads);
         let restored_endpoint: Vec<Vec<u8>> = queues
-            .endpoint_data_for(&dest)
+            .take_endpoint_data(&dest)
             .expect("restored endpoint queue")
-            .iter()
-            .map(|payload| payload.as_slice().to_vec())
+            .into_pending_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.into_payloads())
             .collect();
         assert_eq!(restored_endpoint, vec![vec![4]]);
     }

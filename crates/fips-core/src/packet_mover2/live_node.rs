@@ -58,11 +58,11 @@ impl PacketMover2LiveTunRoute {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2LiveEndpointRoute {
     dest_addr: NodeAddr,
-    route: PacketMover2EndpointCommandRoute,
+    route: PacketMover2EndpointDataRoute,
 }
 
 impl PacketMover2LiveEndpointRoute {
-    pub(crate) fn new(dest_addr: NodeAddr, route: PacketMover2EndpointCommandRoute) -> Self {
+    pub(crate) fn new(dest_addr: NodeAddr, route: PacketMover2EndpointDataRoute) -> Self {
         Self { dest_addr, route }
     }
 
@@ -166,10 +166,9 @@ impl PacketMover2LiveOwnerRouteSummary {
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveTurnFirsts {
     raw_packet: Option<ReceivedPacket>,
-    endpoint_control: Option<NodeEndpointCommand>,
-    endpoint_bulk: Option<NodeEndpointCommand>,
+    endpoint_data_batch: Option<NodeEndpointDataBatch>,
     tun_packet: Option<Vec<u8>>,
-    raw_ingress_first: bool,
+    raw_ingress_prefetch: bool,
 }
 
 impl PacketMover2LiveTurnFirsts {
@@ -178,13 +177,8 @@ impl PacketMover2LiveTurnFirsts {
         self
     }
 
-    pub(crate) fn with_endpoint_control(mut self, command: Option<NodeEndpointCommand>) -> Self {
-        self.endpoint_control = command;
-        self
-    }
-
-    pub(crate) fn with_endpoint_bulk(mut self, command: Option<NodeEndpointCommand>) -> Self {
-        self.endpoint_bulk = command;
+    pub(crate) fn with_endpoint_data_batch(mut self, batch: Option<NodeEndpointDataBatch>) -> Self {
+        self.endpoint_data_batch = batch;
         self
     }
 
@@ -193,8 +187,8 @@ impl PacketMover2LiveTurnFirsts {
         self
     }
 
-    pub(crate) fn with_raw_ingress_first(mut self, enabled: bool) -> Self {
-        self.raw_ingress_first = enabled;
+    pub(crate) fn with_raw_ingress_prefetch(mut self, enabled: bool) -> Self {
+        self.raw_ingress_prefetch = enabled;
         self
     }
 }
@@ -204,18 +198,16 @@ pub(crate) struct PacketMover2LiveNode {
     driver: PacketMover2TurnDriver,
     crypto_worker: PacketMover2AeadWorkerPool,
     routes: PacketMover2LiveRouteTable,
-    deferred_endpoint_commands: Vec<NodeEndpointCommand>,
+    deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: Vec<Vec<u8>>,
     empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
-    empty_endpoint_control_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-    empty_endpoint_bulk_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    empty_endpoint_data_rx: EndpointDataBatchRx,
     empty_tun_outbound_rx: TunOutboundRx,
 }
 
 impl PacketMover2LiveNode {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
-        let (_, empty_endpoint_control_rx) = tokio::sync::mpsc::channel(1);
-        let (_, empty_endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
+        let (_, empty_endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_, empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let worker_capacity = config.total_capacity().max(1);
         Self {
@@ -225,11 +217,10 @@ impl PacketMover2LiveNode {
                 worker_capacity,
             ),
             routes: PacketMover2LiveRouteTable::default(),
-            deferred_endpoint_commands: Vec::new(),
+            deferred_endpoint_data_batches: Vec::new(),
             deferred_tun_packets: Vec::new(),
             empty_raw_ingress: VecDeque::new(),
-            empty_endpoint_control_rx,
-            empty_endpoint_bulk_rx,
+            empty_endpoint_data_rx,
             empty_tun_outbound_rx,
         }
     }
@@ -658,8 +649,10 @@ impl PacketMover2LiveNode {
         Ok(self.routes.refresh_owner_generation(owner, generation))
     }
 
-    pub(crate) fn take_deferred_endpoint_commands(&mut self) -> Vec<NodeEndpointCommand> {
-        std::mem::take(&mut self.deferred_endpoint_commands)
+    pub(crate) fn take_deferred_endpoint_data_batches(
+        &mut self,
+    ) -> Vec<NodeEndpointDataBatch> {
+        std::mem::take(&mut self.deferred_endpoint_data_batches)
     }
 
     pub(crate) fn take_deferred_tun_packets(&mut self) -> Vec<Vec<u8>> {
@@ -672,48 +665,7 @@ impl PacketMover2LiveNode {
         raw_ingress: &mut RI,
         raw_ingress_limit: usize,
         outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        RI: PacketMover2RawIngressSource,
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        self.pump_turn_with_transport_worker_inner(
-            raw_ingress,
-            raw_ingress_limit,
-            false,
-            outbound_firsts,
-            endpoint_control_rx,
-            endpoint_bulk_rx,
-            endpoint_limit,
-            tun_outbound_rx,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            transports,
-            crypto_limit,
-            transport_send_worker,
-        )
-        .await
-    }
-
-    async fn pump_turn_with_transport_worker_inner<RI, Transports>(
-        &mut self,
-        raw_ingress: &mut RI,
-        raw_ingress_limit: usize,
-        raw_ingress_first: bool,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
         tun_limit: usize,
@@ -729,55 +681,30 @@ impl PacketMover2LiveNode {
     {
         let _turn_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
-        if raw_ingress_first && raw_ingress_limit > 0 {
-            self.driver
-                .pump_aead_live_node_route_table_ingress_first_executor_turn_with_firsts(
-                    &mut self.crypto_worker,
-                    raw_ingress,
-                    &mut self.routes,
-                    raw_ingress_limit,
-                    endpoint_control_rx,
-                    endpoint_bulk_rx,
-                    endpoint_limit,
-                    tun_outbound_rx,
-                    tun_limit,
-                    outbound_firsts,
-                    &mut self.deferred_endpoint_commands,
-                    &mut self.deferred_tun_packets,
-                    tun_tx,
-                    endpoint_tx,
-                    transports,
-                    crypto_limit,
-                    transport_send_worker,
-                )
-                .await
-        } else {
-            let summary = self
-                .driver
-                .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
-            self.driver
-                .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
-                    summary,
-                    &mut self.crypto_worker,
-                    raw_ingress,
-                    &mut self.routes,
-                    raw_ingress_limit,
-                    endpoint_control_rx,
-                    endpoint_bulk_rx,
-                    endpoint_limit,
-                    tun_outbound_rx,
-                    tun_limit,
-                    outbound_firsts,
-                    &mut self.deferred_endpoint_commands,
-                    &mut self.deferred_tun_packets,
-                    tun_tx,
-                    endpoint_tx,
-                    transports,
-                    crypto_limit,
-                    transport_send_worker,
-                )
-                .await
-        }
+        let summary = self
+            .driver
+            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
+        self.driver
+            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+                summary,
+                &mut self.crypto_worker,
+                raw_ingress,
+                &mut self.routes,
+                raw_ingress_limit,
+                endpoint_data_rx,
+                endpoint_limit,
+                tun_outbound_rx,
+                tun_limit,
+                outbound_firsts,
+                &mut self.deferred_endpoint_data_batches,
+                &mut self.deferred_tun_packets,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                transport_send_worker,
+            )
+            .await
     }
 
     pub(crate) async fn pump_completion_output_turn_with_transport_worker<Transports>(
@@ -826,42 +753,14 @@ impl PacketMover2LiveNode {
     where
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        self.pump_outbound_firsts_with_transport_worker_inner(
-            outbound_firsts,
-            endpoint_limit,
-            tun_limit,
-            tun_tx,
-            endpoint_tx,
-            transports,
-            crypto_limit,
-            transport_send_worker,
-        )
-        .await
-    }
-
-    async fn pump_outbound_firsts_with_transport_worker_inner<Transports>(
-        &mut self,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_limit: usize,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
         let Self {
             driver,
             crypto_worker,
             routes,
-            deferred_endpoint_commands,
+            deferred_endpoint_data_batches,
             deferred_tun_packets,
             empty_raw_ingress,
-            empty_endpoint_control_rx,
-            empty_endpoint_bulk_rx,
+            empty_endpoint_data_rx,
             empty_tun_outbound_rx,
             ..
         } = self;
@@ -877,13 +776,12 @@ impl PacketMover2LiveNode {
                 empty_raw_ingress,
                 routes,
                 0,
-                empty_endpoint_control_rx,
-                empty_endpoint_bulk_rx,
+                empty_endpoint_data_rx,
                 endpoint_limit,
                 empty_tun_outbound_rx,
                 tun_limit,
                 outbound_firsts,
-                deferred_endpoint_commands,
+                deferred_endpoint_data_batches,
                 deferred_tun_packets,
                 tun_tx,
                 endpoint_tx,
@@ -900,8 +798,7 @@ impl PacketMover2LiveNode {
         packet_rx: &mut PacketRx,
         firsts: PacketMover2LiveTurnFirsts,
         packet_limit: usize,
-        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
-        endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
         tun_limit: usize,
@@ -916,24 +813,46 @@ impl PacketMover2LiveNode {
     {
         let PacketMover2LiveTurnFirsts {
             raw_packet,
-            endpoint_control,
-            endpoint_bulk,
+            endpoint_data_batch,
             tun_packet,
-            raw_ingress_first,
+            raw_ingress_prefetch,
         } = firsts;
         let outbound_firsts = PacketMover2LiveOutboundFirsts::default()
-            .with_endpoint_control(endpoint_control)
-            .with_endpoint_bulk(endpoint_bulk)
+            .with_endpoint_data_batch(endpoint_data_batch)
             .with_tun_packet(tun_packet);
         let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, raw_packet);
+        if raw_ingress_prefetch && packet_limit > 0 {
+            let mut prefetched = std::mem::take(&mut self.empty_raw_ingress);
+            prefetched.clear();
+            raw_ingress.drain_raw_ingress(packet_limit, |packet| {
+                prefetched.push_back(packet);
+            });
+            let mut turn = self
+                .pump_turn_with_firsts_and_transport_worker(
+                    &mut prefetched,
+                    packet_limit,
+                    outbound_firsts,
+                    endpoint_data_rx,
+                    endpoint_limit,
+                    tun_outbound_rx,
+                    tun_limit,
+                    tun_tx,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_worker,
+                )
+                .await;
+            turn.set_fmp_control_ingress(raw_ingress.take_control_ingress());
+            self.empty_raw_ingress = prefetched;
+            return turn;
+        }
         let mut turn = self
-            .pump_turn_with_transport_worker_inner(
+            .pump_turn_with_firsts_and_transport_worker(
                 &mut raw_ingress,
                 packet_limit,
-                raw_ingress_first,
                 outbound_firsts,
-                endpoint_control_rx,
-                endpoint_bulk_rx,
+                endpoint_data_rx,
                 endpoint_limit,
                 tun_outbound_rx,
                 tun_limit,

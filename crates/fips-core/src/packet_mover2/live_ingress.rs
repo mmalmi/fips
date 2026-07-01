@@ -172,7 +172,7 @@ pub(crate) struct PacketMover2LiveRouteTable {
     fmp: HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
     fsp: HashMap<NodeAddr, PacketMover2IngressRoute>,
     tun_outbound: HashMap<FipsTunDestinationPrefix, PacketMover2TunDestinationRoute>,
-    endpoint: HashMap<NodeAddr, PacketMover2EndpointCommandRoute>,
+    endpoint: HashMap<NodeAddr, PacketMover2EndpointDataRoute>,
 }
 
 impl PacketMover2LiveRouteTable {
@@ -230,15 +230,15 @@ impl PacketMover2LiveRouteTable {
     pub(crate) fn register_endpoint_destination(
         &mut self,
         dest_addr: NodeAddr,
-        route: PacketMover2EndpointCommandRoute,
-    ) -> Option<PacketMover2EndpointCommandRoute> {
+        route: PacketMover2EndpointDataRoute,
+    ) -> Option<PacketMover2EndpointDataRoute> {
         self.endpoint.insert(dest_addr, route)
     }
 
     pub(crate) fn unregister_endpoint_destination(
         &mut self,
         dest_addr: NodeAddr,
-    ) -> Option<PacketMover2EndpointCommandRoute> {
+    ) -> Option<PacketMover2EndpointDataRoute> {
         self.endpoint.remove(&dest_addr)
     }
 
@@ -324,45 +324,20 @@ impl PacketMover2TunOutboundRouter for PacketMover2LiveRouteTable {
     }
 }
 
-impl PacketMover2EndpointCommandRouter for PacketMover2LiveRouteTable {
-    fn route_endpoint_command_payload(
+impl PacketMover2EndpointDataRouter for PacketMover2LiveRouteTable {
+    fn route_endpoint_data_batch(
         &mut self,
-        request: PacketMover2EndpointCommandPayload<'_>,
-    ) -> Result<OutboundPacket, PacketMover2EndpointCommandDropReason> {
-        self.endpoint
-            .get(&request.dest_addr())
-            .ok_or(PacketMover2EndpointCommandDropReason::NoRoute)?
-            .route_request(request)
-    }
-
-    fn route_endpoint_command_owned_payload(
-        &mut self,
-        request: PacketMover2EndpointCommandOwnedPayload,
-    ) -> Result<
-        OutboundPacket,
-        (
-            PacketMover2EndpointCommandOwnedPayload,
-            PacketMover2EndpointCommandDropReason,
-        ),
-    > {
-        let Some(route) = self.endpoint.get(&request.dest_addr()) else {
-            return Err((request, PacketMover2EndpointCommandDropReason::NoRoute));
-        };
-        route.route_owned_request(request)
-    }
-
-    fn route_endpoint_command_owned_batch(
-        &mut self,
-        request: PacketMover2EndpointCommandOwnedBatch,
-    ) -> PacketMover2EndpointCommandBatchRoute {
-        let Some(route) = self.endpoint.get(&request.dest_addr()) else {
-            let mut result = PacketMover2EndpointCommandBatchRoute::default();
-            if !request.is_empty() {
-                result.set_deferred_payloads(request.into_payloads());
+        remote: PeerIdentity,
+        payloads: Vec<Vec<u8>>,
+    ) -> PacketMover2EndpointDataBatchRoute {
+        let Some(route) = self.endpoint.get(remote.node_addr()) else {
+            let mut result = PacketMover2EndpointDataBatchRoute::default();
+            if !payloads.is_empty() {
+                result.set_deferred_payloads(payloads);
             }
             return result;
         };
-        route.route_owned_batch(request)
+        route.route_batch(remote, payloads)
     }
 }
 
@@ -505,12 +480,6 @@ pub(crate) trait PacketMover2RawIngressSource {
     fn drain_raw_ingress<F>(&mut self, limit: usize, push: F) -> usize
     where
         F: FnMut(PacketMover2RawIngress);
-}
-
-pub(crate) trait PacketMover2OutboundSource {
-    fn drain_outbound<F>(&mut self, limit: usize, push: F) -> usize
-    where
-        F: FnMut(OutboundPacket);
 }
 
 pub(crate) trait PacketMover2CompletionSource {
