@@ -26,6 +26,15 @@ struct PacketMover2LiveAdmissionResult {
     tun_drained: usize,
 }
 
+impl PacketMover2LiveAdmissionResult {
+    fn has_activity(&self) -> bool {
+        self.summary.has_activity()
+            || self.endpoint_drained > 0
+            || self.tun_drained > 0
+            || self.outbound_buffers.has_activity()
+    }
+}
+
 impl PacketMover2TurnDriver {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
@@ -444,8 +453,32 @@ impl PacketMover2TurnDriver {
             tun_limit,
             outbound_firsts,
         );
-        let report = self
-            .finish_live_node_turn_after_admission(
+        if let Some(mut completion_report) = completion_report {
+            if !admission.has_activity() {
+                return completion_report;
+            }
+            let report = self
+                .finish_live_node_turn_after_admission(
+                    admission.summary,
+                    admission.outbound_buffers,
+                    admission.endpoint_drained,
+                    admission.tun_drained,
+                    routes,
+                    tun_tx,
+                    endpoint_tx,
+                    transports,
+                    remaining_crypto_limit,
+                    collect_transport_sent_receipts,
+                    executor,
+                    transport_send_worker,
+                    deferred_endpoint_data_batches,
+                    deferred_tun_packets,
+                )
+                .await;
+            completion_report.absorb(report);
+            completion_report
+        } else {
+            self.finish_live_node_turn_after_admission(
                 admission.summary,
                 admission.outbound_buffers,
                 admission.endpoint_drained,
@@ -461,12 +494,7 @@ impl PacketMover2TurnDriver {
                 deferred_endpoint_data_batches,
                 deferred_tun_packets,
             )
-            .await;
-        if let Some(mut completion_report) = completion_report {
-            completion_report.absorb(report);
-            completion_report
-        } else {
-            report
+            .await
         }
     }
 

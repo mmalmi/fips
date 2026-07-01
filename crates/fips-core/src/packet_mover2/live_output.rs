@@ -57,6 +57,15 @@ struct PacketMover2RouteTableOutboundBuffers {
     tun_deferred_packets: Vec<Vec<u8>>,
 }
 
+impl PacketMover2RouteTableOutboundBuffers {
+    fn has_activity(&self) -> bool {
+        !self.endpoint_drops.is_empty()
+            || !self.deferred_endpoint_data_batches.is_empty()
+            || !self.tun_drops.is_empty()
+            || !self.tun_deferred_packets.is_empty()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct PacketMover2RouteTableOutboundDrain {
     total: usize,
