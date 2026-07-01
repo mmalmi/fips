@@ -82,7 +82,7 @@
             )]));
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
-        let (tun_tx, mut tun_rx) = crate::upper::tun::write_channel();
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut deferred_endpoint_data_batches = Vec::new();
