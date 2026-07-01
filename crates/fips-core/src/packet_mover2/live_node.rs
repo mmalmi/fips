@@ -381,6 +381,17 @@ impl PacketMover2LiveNode {
             .owner_fsp_activity(OwnerId::fsp_node(*node_addr))
     }
 
+    pub(crate) fn fsp_owner_has_pending_receive_epoch(
+        &self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> bool {
+        self.driver.owner_has_fsp_pending_receive_epoch(
+            OwnerId::fsp_node(*node_addr),
+            received_k_bit,
+        )
+    }
+
     pub(crate) fn fsp_mmp_snapshot(
         &self,
         node_addr: &NodeAddr,

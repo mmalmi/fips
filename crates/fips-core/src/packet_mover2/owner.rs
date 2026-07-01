@@ -787,6 +787,13 @@ impl OwnerState {
         true
     }
 
+    pub(crate) fn has_fsp_pending_receive_epoch(&self, received_k_bit: bool) -> bool {
+        self.owner.protocol() == PacketProtocol::Fsp
+            && self.pending_fsp_k_bit == Some(received_k_bit)
+            && self.pending_fsp_open.is_some()
+            && self.pending_fsp_replay_window.is_some()
+    }
+
     pub(crate) fn set_fsp_epoch(
         &mut self,
         current_k_bit: bool,

@@ -771,6 +771,12 @@ impl Node {
         node_addr: &NodeAddr,
         received_k_bit: bool,
     ) -> bool {
+        if !self
+            .packet_mover2
+            .fsp_owner_has_pending_receive_epoch(node_addr, received_k_bit)
+        {
+            return false;
+        }
         let now_ms = Self::now_ms();
         let promoted = {
             let Some(session) = self.sessions.get_mut(node_addr) else {
