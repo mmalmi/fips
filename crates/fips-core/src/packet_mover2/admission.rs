@@ -41,15 +41,20 @@ pub(crate) struct AdmissionDrop {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct QueuedPacket {
+struct QueuedAdmission<P> {
     ingress_seq: u64,
-    packet: SocketPacket,
+    packet: P,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct QueuedOutboundPacket {
-    ingress_seq: u64,
-    packet: OutboundPacket,
+type QueuedPacket = QueuedAdmission<SocketPacket>;
+type QueuedOutboundPacket = QueuedAdmission<OutboundPacket>;
+
+pub(crate) type AdmissionQueue = PacketAdmissionQueue<SocketPacket>;
+pub(crate) type OutboundAdmissionQueue = PacketAdmissionQueue<OutboundPacket>;
+
+pub(crate) trait AdmissionPacket {
+    fn owner(&self) -> OwnerId;
+    fn lane(&self) -> Lane;
 }
 
 trait OwnerQueuedAdmission {
@@ -57,26 +62,37 @@ trait OwnerQueuedAdmission {
     fn lane(&self) -> Lane;
 }
 
-impl OwnerQueuedAdmission for QueuedPacket {
+impl AdmissionPacket for SocketPacket {
     fn owner(&self) -> OwnerId {
-        self.packet.owner
+        self.owner
     }
 
     fn lane(&self) -> Lane {
-        self.packet.lane()
+        self.lane()
     }
-
 }
 
-impl OwnerQueuedAdmission for QueuedOutboundPacket {
+impl AdmissionPacket for OutboundPacket {
     fn owner(&self) -> OwnerId {
-        self.packet.owner
+        self.owner
+    }
+
+    fn lane(&self) -> Lane {
+        self.lane()
+    }
+}
+
+impl<P> OwnerQueuedAdmission for QueuedAdmission<P>
+where
+    P: AdmissionPacket,
+{
+    fn owner(&self) -> OwnerId {
+        self.packet.owner()
     }
 
     fn lane(&self) -> Lane {
         self.packet.lane()
     }
-
 }
 
 #[derive(Debug)]
@@ -371,33 +387,36 @@ where
 }
 
 #[derive(Debug)]
-pub(crate) struct AdmissionQueue {
-    queues: OwnerAdmissionQueues<QueuedPacket>,
+pub(crate) struct PacketAdmissionQueue<P> {
+    queues: OwnerAdmissionQueues<QueuedAdmission<P>>,
 }
 
-impl AdmissionQueue {
+impl<P> PacketAdmissionQueue<P>
+where
+    P: AdmissionPacket,
+{
     pub(crate) fn new() -> Self {
         Self {
             queues: OwnerAdmissionQueues::new(),
         }
     }
 
-    fn admit_with_seq(&mut self, packet: SocketPacket, ingress_seq: u64) -> bool {
-        self.queues.push_back(QueuedPacket {
+    fn admit_with_seq(&mut self, packet: P, ingress_seq: u64) -> bool {
+        self.queues.push_back(QueuedAdmission {
             ingress_seq,
             packet,
         })
     }
 
-    fn admit_run_with_seq(&mut self, packets: Vec<SocketPacket>, first_seq: u64) -> bool {
+    fn admit_run_with_seq(&mut self, packets: Vec<P>, first_seq: u64) -> bool {
         let Some(first) = packets.first() else {
             return false;
         };
-        let owner = first.owner;
+        let owner = first.owner();
         let lane = first.lane();
         let mut ingress_seq = first_seq;
         let queued = packets.into_iter().map(move |packet| {
-            let queued = QueuedPacket {
+            let queued = QueuedAdmission {
                 ingress_seq,
                 packet,
             };
@@ -411,7 +430,7 @@ impl AdmissionQueue {
         &mut self,
         priority_only: bool,
         limit: usize,
-    ) -> Option<OwnerAdmissionRun<QueuedPacket>> {
+    ) -> Option<OwnerAdmissionRun<QueuedAdmission<P>>> {
         self.queues.pop_next_run(priority_only, limit)
     }
 
@@ -419,7 +438,7 @@ impl AdmissionQueue {
         self.queues.continue_owner_lane(cursor);
     }
 
-    fn defer_owner_run(&mut self, run: OwnerAdmissionRun<QueuedPacket>) {
+    fn defer_owner_run(&mut self, run: OwnerAdmissionRun<QueuedAdmission<P>>) {
         self.queues.defer_owner_run(run);
     }
 
@@ -447,74 +466,4 @@ pub(crate) struct OutboundAdmissionDrop {
     lane: Lane,
     payload_len: usize,
     reason: AdmissionDropReason,
-}
-
-#[derive(Debug)]
-pub(crate) struct OutboundAdmissionQueue {
-    queues: OwnerAdmissionQueues<QueuedOutboundPacket>,
-}
-
-impl OutboundAdmissionQueue {
-    pub(crate) fn new() -> Self {
-        Self {
-            queues: OwnerAdmissionQueues::new(),
-        }
-    }
-
-    fn admit_with_seq(&mut self, packet: OutboundPacket, ingress_seq: u64) -> bool {
-        self.queues.push_back(QueuedOutboundPacket {
-            ingress_seq,
-            packet,
-        })
-    }
-
-    fn admit_run_with_seq(&mut self, packets: Vec<OutboundPacket>, first_seq: u64) -> bool {
-        let Some(first) = packets.first() else {
-            return false;
-        };
-        let owner = first.owner;
-        let lane = first.lane();
-        let mut ingress_seq = first_seq;
-        let queued = packets.into_iter().map(move |packet| {
-            let queued = QueuedOutboundPacket {
-                ingress_seq,
-                packet,
-            };
-            ingress_seq = ingress_seq.wrapping_add(1);
-            queued
-        });
-        self.queues.push_run_back(owner, lane, queued)
-    }
-
-    fn pop_next_run(
-        &mut self,
-        priority_only: bool,
-        limit: usize,
-    ) -> Option<OwnerAdmissionRun<QueuedOutboundPacket>> {
-        self.queues.pop_next_run(priority_only, limit)
-    }
-
-    fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
-        self.queues.continue_owner_lane(cursor);
-    }
-
-    fn defer_owner_run(&mut self, run: OwnerAdmissionRun<QueuedOutboundPacket>) {
-        self.queues.defer_owner_run(run);
-    }
-
-    fn len(&self) -> usize {
-        self.queues.len()
-    }
-
-    fn lens(&self) -> (usize, usize) {
-        self.queues.lens()
-    }
-
-    fn ready_lens(&self) -> (usize, usize) {
-        self.queues.ready_lens()
-    }
-
-    fn wake_owner(&mut self, owner: OwnerId) {
-        self.queues.wake_owner(owner);
-    }
 }

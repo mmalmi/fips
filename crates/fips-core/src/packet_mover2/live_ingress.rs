@@ -240,13 +240,9 @@ impl PacketMover2IngressRouter for PacketMover2LiveRouteTable {
                     header.receiver_idx(),
                 ))
                 .copied(),
-            (PacketProtocol::Fsp, PacketMover2IngressHeader::Fsp(header)) => packet
+            (PacketProtocol::Fsp, PacketMover2IngressHeader::Fsp(_)) => packet
                 .fsp_source
-                .and_then(|source_addr| self.fsp.get(&source_addr).copied())
-                .map(|route| {
-                    let _ = header;
-                    route
-                }),
+                .and_then(|source_addr| self.fsp.get(&source_addr).copied()),
             _ => None,
         }
     }
@@ -256,8 +252,8 @@ impl PacketMover2TunOutboundRouter for PacketMover2LiveRouteTable {
     fn route_tun_outbound(
         &mut self,
         packet: &[u8],
+        dest: FipsTunDestinationPrefix,
     ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason> {
-        let dest = FipsTunDestinationPrefix::from_ipv6_packet(packet)?;
         self.tun_outbound
             .get(&dest)
             .ok_or(PacketMover2TunOutboundDropReason::NoRoute)?
@@ -272,11 +268,7 @@ impl PacketMover2EndpointDataRouter for PacketMover2LiveRouteTable {
         payloads: Vec<Vec<u8>>,
     ) -> PacketMover2EndpointDataBatchRoute {
         let Some(route) = self.endpoint.get(remote.node_addr()) else {
-            let mut result = PacketMover2EndpointDataBatchRoute::default();
-            if !payloads.is_empty() {
-                result.deferred_payloads = Some(payloads);
-            }
-            return result;
+            return PacketMover2EndpointDataBatchRoute::deferred(payloads);
         };
         route.route_batch(payloads)
     }

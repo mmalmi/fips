@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct FipsTunDestinationPrefix([u8; 15]);
+pub(crate) struct FipsTunDestinationPrefix([u8; 15]);
 
 impl FipsTunDestinationPrefix {
     const IPV6_HEADER_LEN: usize = 40;
@@ -101,37 +101,33 @@ impl PacketMover2TunOutboundRoute {
         self,
         payload: Vec<u8>,
     ) -> Result<OutboundPacket, PacketMover2TunOutboundDropReason> {
-        let class = self.class;
-        let payload = self.encode_payload(payload)?;
-        let packet = match self.wire {
+        let Self {
+            owner,
+            generation,
+            class,
+            wire,
+            fsp_cleartext_prefix,
+            payload: payload_kind,
+        } = self;
+        let payload = Self::encode_payload(payload_kind, payload)?;
+        let packet = match wire {
             OutboundWire::Fmp {
                 receiver_idx,
                 flags,
-            } => OutboundPacket::fmp(
-                self.owner,
-                self.generation,
-                class,
-                receiver_idx,
-                flags,
-                payload,
-            ),
-            OutboundWire::Fsp { flags } => OutboundPacket::fsp(
-                self.owner,
-                self.generation,
-                class,
-                flags,
-                payload,
-            )
-            .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone()),
+            } => OutboundPacket::fmp(owner, generation, class, receiver_idx, flags, payload),
+            OutboundWire::Fsp { flags } => {
+                OutboundPacket::fsp(owner, generation, class, flags, payload)
+                    .with_fsp_cleartext_prefix(fsp_cleartext_prefix)
+            }
         };
-        Ok(self.apply_payload_transform(packet))
+        Ok(Self::apply_payload_transform(payload_kind, packet))
     }
 
     fn encode_payload(
-        &self,
+        payload_kind: PacketMover2TunPayload,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, PacketMover2TunOutboundDropReason> {
-        match self.payload {
+        match payload_kind {
             PacketMover2TunPayload::Raw => Ok(payload),
             PacketMover2TunPayload::Ipv6Shim { inner_flags: _ } => {
                 let compressed = crate::upper::ipv6_shim::compress_ipv6(&payload)
@@ -151,8 +147,11 @@ impl PacketMover2TunOutboundRoute {
         }
     }
 
-    fn apply_payload_transform(&self, packet: OutboundPacket) -> OutboundPacket {
-        match self.payload {
+    fn apply_payload_transform(
+        payload_kind: PacketMover2TunPayload,
+        packet: OutboundPacket,
+    ) -> OutboundPacket {
+        match payload_kind {
             PacketMover2TunPayload::Raw => packet,
             PacketMover2TunPayload::Ipv6Shim { inner_flags } => packet.with_fsp_inner_header(
                 crate::protocol::SessionMessageType::DataPacket.to_byte(),
@@ -250,19 +249,8 @@ pub(crate) trait PacketMover2TunOutboundRouter {
     fn route_tun_outbound(
         &mut self,
         packet: &[u8],
+        dest: FipsTunDestinationPrefix,
     ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason>;
-}
-
-impl<F> PacketMover2TunOutboundRouter for F
-where
-    F: FnMut(&[u8]) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason>,
-{
-    fn route_tun_outbound(
-        &mut self,
-        packet: &[u8],
-    ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason> {
-        self(packet)
-    }
 }
 
 fn route_tun_outbound_packet_with_router<R, F>(
@@ -277,7 +265,14 @@ fn route_tun_outbound_packet_with_router<R, F>(
     F: FnMut(OutboundPacket),
 {
     let payload_len = packet.len();
-    match router.route_tun_outbound(&packet) {
+    let dest = match FipsTunDestinationPrefix::from_ipv6_packet(&packet) {
+        Ok(dest) => dest,
+        Err(reason) => {
+            drops.push(PacketMover2TunOutboundDrop::new(packet, reason));
+            return;
+        }
+    };
+    match router.route_tun_outbound(&packet, dest) {
         Ok(route) => match route.into_outbound_packet(packet) {
             Ok(packet) => push(packet.with_activity_tick(activity_tick)),
             Err(reason) => {
@@ -288,13 +283,7 @@ fn route_tun_outbound_packet_with_router<R, F>(
                 ));
             }
         },
-        Err(PacketMover2TunOutboundDropReason::NoRoute) if tun_packet_can_defer_no_route(&packet) => {
-            deferred_packets.push(packet);
-        }
+        Err(PacketMover2TunOutboundDropReason::NoRoute) => deferred_packets.push(packet),
         Err(reason) => drops.push(PacketMover2TunOutboundDrop::new(packet, reason)),
     }
-}
-
-fn tun_packet_can_defer_no_route(packet: &[u8]) -> bool {
-    FipsTunDestinationPrefix::from_ipv6_packet(packet).is_ok()
 }

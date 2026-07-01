@@ -9,8 +9,14 @@ impl PacketMover2EndpointDataBatchRoute {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             routed: Vec::with_capacity(capacity),
-            dropped: Vec::new(),
-            deferred_payloads: None,
+            ..Default::default()
+        }
+    }
+
+    fn deferred(payloads: Vec<Vec<u8>>) -> Self {
+        Self {
+            deferred_payloads: (!payloads.is_empty()).then_some(payloads),
+            ..Default::default()
         }
     }
 
