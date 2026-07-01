@@ -1,19 +1,17 @@
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2EndpointDataBatchRoute {
     routed: Vec<OutboundPacket>,
-    dropped: Vec<(PeerIdentity, Vec<u8>, PacketMover2EndpointDataDropReason)>,
+    dropped: Vec<(usize, PacketMover2EndpointDataDropReason)>,
     deferred_payloads: Option<Vec<Vec<u8>>>,
 }
 
 impl PacketMover2EndpointDataBatchRoute {
-    fn routed_mut(&mut self) -> &mut Vec<OutboundPacket> {
-        &mut self.routed
-    }
-
-    fn dropped_mut(
-        &mut self,
-    ) -> &mut Vec<(PeerIdentity, Vec<u8>, PacketMover2EndpointDataDropReason)> {
-        &mut self.dropped
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            routed: Vec::with_capacity(capacity),
+            dropped: Vec::new(),
+            deferred_payloads: None,
+        }
     }
 
     fn set_deferred_payloads(&mut self, payloads: Vec<Vec<u8>>) {
@@ -24,6 +22,7 @@ impl PacketMover2EndpointDataBatchRoute {
 
     fn finish_batch<F>(
         self,
+        remote: PeerIdentity,
         drops: &mut Vec<PacketMover2EndpointDataDrop>,
         mut push: F,
     ) -> Option<Vec<Vec<u8>>>
@@ -33,8 +32,8 @@ impl PacketMover2EndpointDataBatchRoute {
         if !self.routed.is_empty() {
             push(self.routed);
         }
-        for (remote, payload, reason) in self.dropped {
-            push_endpoint_data_drop(remote, payload.len(), reason, drops);
+        for (payload_len, reason) in self.dropped {
+            push_endpoint_data_drop(remote, payload_len, reason, drops);
         }
         self.deferred_payloads
     }
@@ -69,22 +68,15 @@ impl PacketMover2EndpointDataRoute {
         self.owner
     }
 
-    fn route_batch<I>(
-        &self,
-        remote: PeerIdentity,
-        payloads: I,
-    ) -> PacketMover2EndpointDataBatchRoute
-    where
-        I: IntoIterator<Item = Vec<u8>>,
-    {
-        let mut result = PacketMover2EndpointDataBatchRoute::default();
+    fn route_batch(&self, payloads: Vec<Vec<u8>>) -> PacketMover2EndpointDataBatchRoute {
+        let mut result = PacketMover2EndpointDataBatchRoute::with_capacity(payloads.len());
         let routed_at_ms = crate::time::now_ms();
         for payload in payloads {
             if let Err(reason) = self.validate_payload_len(payload.len()) {
-                result.dropped_mut().push((remote, payload, reason));
+                result.dropped.push((payload.len(), reason));
                 continue;
             }
-            result.routed_mut().push(
+            result.routed.push(
                 self.build_bulk_packet(payload)
                     .with_activity_tick(ActivityTick::new(routed_at_ms)),
             );
@@ -192,7 +184,7 @@ fn route_endpoint_data_batch_with_router<R, F>(
 {
     let (remote, payloads, queued_at, enqueued_at_ms) = batch.into_parts();
     let route = router.route_endpoint_data_batch(remote, payloads);
-    let deferred_payloads = route.finish_batch(drops, &mut push);
+    let deferred_payloads = route.finish_batch(remote, drops, &mut push);
     if let Some(payloads) = deferred_payloads {
         let batch = NodeEndpointDataBatch::batch_with_enqueued_at_ms(
             remote,

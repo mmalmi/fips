@@ -278,7 +278,7 @@ impl PacketMover2EndpointDataRouter for PacketMover2LiveRouteTable {
             }
             return result;
         };
-        route.route_batch(remote, payloads)
+        route.route_batch(payloads)
     }
 }
 
