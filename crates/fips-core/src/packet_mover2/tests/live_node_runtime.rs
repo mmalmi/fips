@@ -1,3 +1,36 @@
+    async fn pump_live_node_outbound_firsts<Transports>(
+        live_node: &mut PacketMover2LiveNode,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::new());
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+        live_node
+            .pump_turn_with_firsts_and_transport_worker(
+                &mut raw_source,
+                0,
+                outbound_firsts,
+                &mut endpoint_data_rx,
+                0,
+                &mut tun_outbound_rx,
+                0,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                transport_worker,
+            )
+            .await
+    }
+
     #[tokio::test]
     async fn live_node_route_table_turn_flushes_planned_transport_output() {
         let send_transport_id = TransportId::new(76);
@@ -98,18 +131,16 @@
         assert!(endpoint_io.event_rx.try_recv().is_err());
 
         wait_for_live_worker_completion(&live_node).await;
-        let mut turn = live_node
-            .pump_outbound_firsts_with_transport_worker(
-                PacketMover2LiveOutboundFirsts::default(),
-                0,
-                0,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-                &mut transport_worker,
-            )
-            .await;
+        let mut turn = pump_live_node_outbound_firsts(
+            &mut live_node,
+            PacketMover2LiveOutboundFirsts::default(),
+            &tun_tx,
+            &endpoint_io.event_tx,
+            &transports,
+            8,
+            &mut transport_worker,
+        )
+        .await;
         assert_eq!(turn.summary().completions(), 1);
         assert_eq!(turn.summary().outputs(), 1);
         assert_eq!(turn.summary().outputs_sent(), 1);
@@ -431,38 +462,33 @@
             b"continuation".to_vec(),
         )
         .with_activity_tick(ActivityTick::new(1_234));
-        let mut first = live_node
-            .pump_outbound_firsts_with_transport_worker(
-                PacketMover2LiveOutboundFirsts::default()
-                    .with_initial_outbound(Some(outbound))
-                    .with_transport_sent_receipt_collection(true),
-                0,
-                0,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                0,
-                &mut transport_worker,
-            )
-            .await;
+        let mut first = pump_live_node_outbound_firsts(
+            &mut live_node,
+            PacketMover2LiveOutboundFirsts::default()
+                .with_initial_outbound(Some(outbound))
+                .with_transport_sent_receipt_collection(true),
+            &tun_tx,
+            &endpoint_io.event_tx,
+            &transports,
+            0,
+            &mut transport_worker,
+        )
+        .await;
         assert_eq!(first.summary().outbound_admitted(), 1);
         assert_eq!(first.summary().dispatched(), 0);
         assert_eq!(first.transport_sent(), 0);
         assert!(first.take_transport_sent_receipts().is_empty());
 
-        let mut second = live_node
-            .pump_outbound_firsts_with_transport_worker(
-                PacketMover2LiveOutboundFirsts::default()
-                    .with_transport_sent_receipt_collection(true),
-                0,
-                0,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                1,
-                &mut transport_worker,
-            )
-            .await;
+        let mut second = pump_live_node_outbound_firsts(
+            &mut live_node,
+            PacketMover2LiveOutboundFirsts::default().with_transport_sent_receipt_collection(true),
+            &tun_tx,
+            &endpoint_io.event_tx,
+            &transports,
+            1,
+            &mut transport_worker,
+        )
+        .await;
         assert_eq!(second.summary().dispatched(), 1);
         assert_eq!(second.summary().outputs(), 0);
         assert_eq!(second.transport_sent(), 0);
@@ -470,19 +496,16 @@
         assert!(second.take_transport_sent_receipts().is_empty());
 
         wait_for_live_worker_completion(&live_node).await;
-        let mut third = live_node
-            .pump_outbound_firsts_with_transport_worker(
-                PacketMover2LiveOutboundFirsts::default()
-                    .with_transport_sent_receipt_collection(true),
-                0,
-                0,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                1,
-                &mut transport_worker,
-            )
-            .await;
+        let mut third = pump_live_node_outbound_firsts(
+            &mut live_node,
+            PacketMover2LiveOutboundFirsts::default().with_transport_sent_receipt_collection(true),
+            &tun_tx,
+            &endpoint_io.event_tx,
+            &transports,
+            1,
+            &mut transport_worker,
+        )
+        .await;
         assert_eq!(third.summary().completions(), 1);
         assert_eq!(third.transport_sent(), 1);
         assert_eq!(third.transport_dropped(), 0);

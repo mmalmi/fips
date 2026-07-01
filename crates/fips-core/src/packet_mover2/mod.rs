@@ -21,9 +21,11 @@
 //! owner path for ordered retirement. Priority/control/rekey/liveness work must
 //! keep reserved progress outside bulk pressure.
 
+#[cfg(test)]
+use crate::node::endpoint_data_batch_channel;
 use crate::node::{
     EndpointDataBatchRx, EndpointDataDelivery, EndpointEventSender, NodeEndpointDataBatch,
-    NodeEndpointEvent, endpoint_data_batch_channel,
+    NodeEndpointEvent,
 };
 use crate::transport::{
     PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,

@@ -201,14 +201,10 @@ pub(crate) struct PacketMover2LiveNode {
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: Vec<Vec<u8>>,
     empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
-    empty_endpoint_data_rx: EndpointDataBatchRx,
-    empty_tun_outbound_rx: TunOutboundRx,
 }
 
 impl PacketMover2LiveNode {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
-        let (_, empty_endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (_, empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let worker_capacity = config.total_capacity().max(1);
         Self {
             driver: PacketMover2TurnDriver::new(config),
@@ -220,8 +216,6 @@ impl PacketMover2LiveNode {
             deferred_endpoint_data_batches: Vec::new(),
             deferred_tun_packets: Vec::new(),
             empty_raw_ingress: VecDeque::new(),
-            empty_endpoint_data_rx,
-            empty_tun_outbound_rx,
         }
     }
 
@@ -754,60 +748,6 @@ impl PacketMover2LiveNode {
                 crypto_limit,
                 false,
                 &mut self.crypto_worker,
-                transport_send_worker,
-            )
-            .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn pump_outbound_firsts_with_transport_worker<Transports>(
-        &mut self,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_limit: usize,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        let Self {
-            driver,
-            crypto_worker,
-            routes,
-            deferred_endpoint_data_batches,
-            deferred_tun_packets,
-            empty_raw_ingress,
-            empty_endpoint_data_rx,
-            empty_tun_outbound_rx,
-            ..
-        } = self;
-        empty_raw_ingress.clear();
-
-        let _turn_timer =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
-        let summary = driver.start_aead_completion_turn(crypto_worker, crypto_limit);
-        driver
-            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
-                summary,
-                crypto_worker,
-                empty_raw_ingress,
-                routes,
-                0,
-                empty_endpoint_data_rx,
-                endpoint_limit,
-                empty_tun_outbound_rx,
-                tun_limit,
-                outbound_firsts,
-                deferred_endpoint_data_batches,
-                deferred_tun_packets,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                crypto_limit,
                 transport_send_worker,
             )
             .await

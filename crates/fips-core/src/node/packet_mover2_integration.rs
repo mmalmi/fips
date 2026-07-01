@@ -350,11 +350,18 @@ impl Node {
             drop(rx);
             tx
         });
+        let mut empty_raw_ingress = std::collections::VecDeque::new();
+        let (_, mut empty_endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_, mut empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let turn = self
             .packet_mover2
-            .pump_outbound_firsts_with_transport_worker(
+            .pump_turn_with_firsts_and_transport_worker(
+                &mut empty_raw_ingress,
+                0,
                 firsts,
+                &mut empty_endpoint_data_rx,
                 endpoint_limit,
+                &mut empty_tun_outbound_rx,
                 tun_limit,
                 &tun_tx,
                 &endpoint_tx,
