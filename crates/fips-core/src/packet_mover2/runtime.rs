@@ -1001,16 +1001,25 @@ impl PacketMover2TurnDriver {
         mut summary: PacketMover2RuntimeSummary,
     ) -> PacketMover2RuntimeSummary {
         let mut retired = std::mem::take(&mut self.retired);
+        let mut outbound_packets = Vec::new();
         for packet in retired.drain(..) {
             match packet {
                 RetiredPacket::Output(output) => {
                     self.outputs.push(output);
                 }
                 RetiredPacket::Outbound(packet) => {
-                    self.admit_outbound_packet(packet, &mut summary);
+                    outbound_packets.push(packet);
                 }
                 RetiredPacket::Drop(_) => {}
             }
+        }
+        match outbound_packets.len() {
+            0 => {}
+            1 => {
+                let packet = outbound_packets.pop().expect("checked one packet");
+                self.admit_outbound_packet(packet, &mut summary);
+            }
+            _ => self.admit_outbound_packets(outbound_packets, &mut summary),
         }
         self.retired = retired;
         summary.outputs = self.outputs.len();
