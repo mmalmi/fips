@@ -648,18 +648,6 @@ impl PacketMover2LiveNode {
         })
     }
 
-    pub(crate) fn rekey_owner(
-        &mut self,
-        owner: OwnerId,
-        generation: u64,
-    ) -> Result<usize, PacketMover2LiveOwnerError> {
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return Err(PacketMover2LiveOwnerError::UnknownOwner);
-        };
-        owner_state.rekey(generation);
-        Ok(self.routes.refresh_owner_generation(owner, generation))
-    }
-
     pub(crate) fn take_deferred_endpoint_data_batches(
         &mut self,
     ) -> Vec<NodeEndpointDataBatch> {

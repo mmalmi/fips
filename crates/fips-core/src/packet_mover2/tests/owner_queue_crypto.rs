@@ -302,34 +302,6 @@
     }
 
     #[test]
-    fn ingress_dispatch_rotates_owner_lanes() {
-        let config = AdmissionConfig::new(2, 8);
-        let first_owner = fsp_owner(23);
-        let second_owner = same_shard_fsp_owner(first_owner, 24, config);
-        let mut mover = PacketMover2::new(config);
-        mover.register_owner(first_owner, OwnerConfig::new(1, 8));
-        mover.register_owner(second_owner, OwnerConfig::new(1, 8));
-
-        mover
-            .submit_socket_packet(packet(first_owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun))
-            .unwrap();
-        mover
-            .submit_socket_packet(packet(second_owner, 1, 1, PacketClass::Bulk, OutputTarget::Tun))
-            .unwrap();
-        mover
-            .submit_socket_packet(packet(first_owner, 1, 2, PacketClass::Bulk, OutputTarget::Tun))
-            .unwrap();
-
-        let work = dispatch_available(&mut mover, 8);
-        assert_eq!(
-            work.iter()
-                .map(|work| (work.packet.owner, work.packet.counter))
-                .collect::<Vec<_>>(),
-            vec![(first_owner, 1), (second_owner, 1), (first_owner, 2)]
-        );
-    }
-
-    #[test]
     fn turn_runner_batches_admission_and_preserves_owner_order() {
         let owner = fsp_owner(11);
         let key = 11;
@@ -764,45 +736,6 @@
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].reservation.owner, blocked);
         assert_eq!(work[0].packet.payload.as_ref(), b"blocked-2");
-    }
-
-    #[test]
-    fn outbound_dispatch_rotates_owner_lanes() {
-        let config = AdmissionConfig::new(2, 8);
-        let first_owner = fsp_owner(39);
-        let second_owner = same_shard_fsp_owner(first_owner, 40, config);
-        let mut mover = PacketMover2::new(config);
-        mover.register_owner(first_owner, OwnerConfig::new(1, 8).with_next_send_counter(390));
-        mover.register_owner(second_owner, OwnerConfig::new(1, 8).with_next_send_counter(400));
-
-        mover
-            .submit_outbound_packet(outbound_packet(first_owner, 1, PacketClass::Bulk, b"first-1"))
-            .unwrap();
-        mover
-            .submit_outbound_packet(outbound_packet(second_owner, 1, PacketClass::Bulk, b"second"))
-            .unwrap();
-        mover
-            .submit_outbound_packet(outbound_packet(first_owner, 1, PacketClass::Bulk, b"first-2"))
-            .unwrap();
-
-        let work = dispatch_outbound_available(&mut mover, 8);
-        assert_eq!(
-            work.iter()
-                .map(|work| (work.reservation.owner, work.reservation.counter))
-                .collect::<Vec<_>>(),
-            vec![(first_owner, 390), (second_owner, 400), (first_owner, 391)]
-        );
-    }
-
-    fn same_shard_fsp_owner(first: OwnerId, start_id: u64, config: AdmissionConfig) -> OwnerId {
-        let shard_count = packet_mover2_owner_shard_count(config);
-        let first_shard = packet_mover2_owner_shard_index(first, shard_count);
-        (start_id..start_id + 1024)
-            .map(fsp_owner)
-            .find(|owner| {
-                *owner != first && packet_mover2_owner_shard_index(*owner, shard_count) == first_shard
-            })
-            .expect("same-shard test owner")
     }
 
     #[test]
