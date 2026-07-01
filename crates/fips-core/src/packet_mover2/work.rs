@@ -10,12 +10,6 @@ pub(crate) struct OutboundCryptoWork {
     packet: OutboundPacket,
 }
 
-impl OutboundCryptoWork {
-    fn new(reservation: OwnerReservation, packet: OutboundPacket) -> Self {
-        Self { reservation, packet }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CryptoCompletion {
     reservation: OwnerReservation,
@@ -79,14 +73,6 @@ impl PacketOutput {
 
     pub(crate) fn source_path(&self) -> Option<&TransportPath> {
         self.source_path.as_ref()
-    }
-
-    pub(crate) fn take_source_path(&mut self) -> Option<TransportPath> {
-        self.source_path.take()
-    }
-
-    pub(crate) fn restore_source_path(&mut self, path: TransportPath) {
-        self.source_path = Some(path);
     }
 
     pub(crate) fn previous_hop(&self) -> Option<NodeAddr> {

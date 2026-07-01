@@ -385,7 +385,10 @@ impl PacketMover2OwnerShard {
                         let reservation = reservation.with_owner_shard(self.index);
                         let prepared_work = match owner.seal_key() {
                             Some(seal_key) => PreparedCryptoWork::seal(
-                                OutboundCryptoWork::new(reservation, packet),
+                                OutboundCryptoWork {
+                                    reservation,
+                                    packet,
+                                },
                                 seal_key,
                             ),
                             None => {

@@ -17,7 +17,7 @@ type PacketMover2SessionHandoffResult =
     Result<PacketMover2SessionIngressHandoff, (PacketOutput, PacketMover2SessionHandoffError)>;
 
 fn packet_mover2_session_ingress_from_output(
-    mut output: PacketOutput,
+    output: PacketOutput,
     local_addr: NodeAddr,
 ) -> PacketMover2SessionHandoffResult {
     if output.owner.protocol() != PacketProtocol::Fmp {
@@ -36,9 +36,13 @@ fn packet_mover2_session_ingress_from_output(
         Err(_) => return Err((output, PacketMover2SessionHandoffError::InvalidPacket)),
     };
 
-    if !matches!(output.source_path(), Some(TransportPath::Live { .. })) {
-        return Err((output, PacketMover2SessionHandoffError::NoRoute));
-    }
+    let (transport_id, remote_addr) = match output.source_path() {
+        Some(TransportPath::Live {
+            transport_id,
+            remote_addr,
+        }) => (*transport_id, remote_addr.clone()),
+        _ => return Err((output, PacketMover2SessionHandoffError::NoRoute)),
+    };
 
     let handoff_facts = {
         let Some(link_payload) = output.opened_payload() else {
@@ -86,28 +90,14 @@ fn packet_mover2_session_ingress_from_output(
         Err(error) => return Err((output, error)),
     };
 
-    let source_path = match output.take_source_path() {
-        Some(source_path @ TransportPath::Live { .. }) => source_path,
-        _ => return Err((output, PacketMover2SessionHandoffError::NoRoute)),
-    };
     let ce_flag = fmp_header.flags() & crate::node::wire::FLAG_CE != 0;
     let activity_tick = output.activity_tick;
-    let mut payload = match output.into_opened_payload() {
-        Ok(payload) => payload,
-        Err(mut output) => {
-            output.restore_source_path(source_path);
-            return Err((output, PacketMover2SessionHandoffError::InvalidPacket));
-        }
-    };
+    let mut payload = output
+        .into_opened_payload()
+        .map_err(|output| (output, PacketMover2SessionHandoffError::InvalidPacket))?;
     debug_assert!(payload.len() >= FMP_SESSION_PAYLOAD_OFFSET);
     payload.drain(..FMP_SESSION_PAYLOAD_OFFSET);
 
-    let (transport_id, remote_addr) = match source_path {
-        TransportPath::Live {
-            transport_id,
-            remote_addr,
-        } => (transport_id, remote_addr),
-    };
     let path = TransportPath::Live {
         transport_id,
         remote_addr: remote_addr.clone(),
