@@ -283,22 +283,7 @@ impl From<AdmissionDrop> for PacketDrop {
     fn from(drop: AdmissionDrop) -> Self {
         Self {
             owner: drop.owner,
-            counter: Some(drop.counter),
-            ingress_seq: None,
-            lane: drop.lane,
-            reason: PacketDropReason::Admission(drop.reason),
-            crypto_failure: None,
-            wire_flags: None,
-            authenticated_counter_highest: None,
-        }
-    }
-}
-
-impl From<OutboundAdmissionDrop> for PacketDrop {
-    fn from(drop: OutboundAdmissionDrop) -> Self {
-        Self {
-            owner: drop.owner,
-            counter: None,
+            counter: drop.counter,
             ingress_seq: None,
             lane: drop.lane,
             reason: PacketDropReason::Admission(drop.reason),

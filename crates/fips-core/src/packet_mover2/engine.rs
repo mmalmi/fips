@@ -265,17 +265,7 @@ impl PacketMover2 {
     ) -> Result<u64, AdmissionDrop> {
         let lane = packet.lane();
         if self.admission_lens.lane(lane) >= self.config.lane_capacity(lane) {
-            let drop = AdmissionDrop {
-                owner: packet.owner,
-                counter: packet.counter,
-                class: packet.class,
-                lane,
-                payload_len: packet.payload.len(),
-                reason: match lane {
-                    Lane::Priority => AdmissionDropReason::PriorityFull,
-                    Lane::Bulk => AdmissionDropReason::BulkFull,
-                },
-            };
+            let drop = AdmissionDrop::inbound(&packet);
             self.record_drop(drop.clone().into());
             return Err(drop);
         }
@@ -346,17 +336,7 @@ impl PacketMover2 {
         let dropped_packets = packets.split_off(admitted);
         let dropped = dropped_packets.len();
         for packet in dropped_packets {
-            let drop = AdmissionDrop {
-                owner: packet.owner,
-                counter: packet.counter,
-                class: packet.class,
-                lane,
-                payload_len: packet.payload.len(),
-                reason: match lane {
-                    Lane::Priority => AdmissionDropReason::PriorityFull,
-                    Lane::Bulk => AdmissionDropReason::BulkFull,
-                },
-            };
+            let drop = AdmissionDrop::inbound(&packet);
             self.record_drop(drop.clone().into());
         }
 
@@ -378,19 +358,10 @@ impl PacketMover2 {
     fn submit_outbound_packet(
         &mut self,
         packet: OutboundPacket,
-    ) -> Result<u64, OutboundAdmissionDrop> {
+    ) -> Result<u64, AdmissionDrop> {
         let lane = packet.lane();
         if self.outbound_admission_lens.lane(lane) >= self.config.lane_capacity(lane) {
-            let drop = OutboundAdmissionDrop {
-                owner: packet.owner,
-                class: packet.class,
-                lane,
-                payload_len: packet.payload.len(),
-                reason: match lane {
-                    Lane::Priority => AdmissionDropReason::PriorityFull,
-                    Lane::Bulk => AdmissionDropReason::BulkFull,
-                },
-            };
+            let drop = AdmissionDrop::outbound(&packet);
             self.record_drop(drop.clone().into());
             return Err(drop);
         }
@@ -464,16 +435,7 @@ impl PacketMover2 {
         let dropped_packets = packets.split_off(admitted);
         let dropped = dropped_packets.len();
         for packet in dropped_packets {
-            let drop = OutboundAdmissionDrop {
-                owner: packet.owner,
-                class: packet.class,
-                lane,
-                payload_len: packet.payload.len(),
-                reason: match lane {
-                    Lane::Priority => AdmissionDropReason::PriorityFull,
-                    Lane::Bulk => AdmissionDropReason::BulkFull,
-                },
-            };
+            let drop = AdmissionDrop::outbound(&packet);
             self.record_drop(drop.clone().into());
         }
 

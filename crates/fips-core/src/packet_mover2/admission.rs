@@ -33,11 +33,29 @@ pub(crate) enum AdmissionDropReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AdmissionDrop {
     owner: OwnerId,
-    counter: u64,
-    class: PacketClass,
+    counter: Option<u64>,
     lane: Lane,
-    payload_len: usize,
     reason: AdmissionDropReason,
+}
+
+impl AdmissionDrop {
+    fn inbound(packet: &SocketPacket) -> Self {
+        Self {
+            owner: packet.owner,
+            counter: Some(packet.counter),
+            lane: packet.lane(),
+            reason: admission_drop_reason(packet.lane()),
+        }
+    }
+
+    fn outbound(packet: &OutboundPacket) -> Self {
+        Self {
+            owner: packet.owner,
+            counter: None,
+            lane: packet.lane(),
+            reason: admission_drop_reason(packet.lane()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -454,11 +472,9 @@ where
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct OutboundAdmissionDrop {
-    owner: OwnerId,
-    class: PacketClass,
-    lane: Lane,
-    payload_len: usize,
-    reason: AdmissionDropReason,
+fn admission_drop_reason(lane: Lane) -> AdmissionDropReason {
+    match lane {
+        Lane::Priority => AdmissionDropReason::PriorityFull,
+        Lane::Bulk => AdmissionDropReason::BulkFull,
+    }
 }
