@@ -282,6 +282,20 @@ impl EndpointEventSender {
             return Ok(());
         }
 
+        if let Some(direct_sink) = self.direct_sink() {
+            let count = event.message_count();
+            if direct_sink
+                .deliver_endpoint_data_batch(event.messages)
+                .is_err()
+            {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::EndpointEventBulkDropped,
+                    count as u64,
+                );
+            }
+            return Ok(());
+        }
+
         self.send_event(event, true)
     }
 
