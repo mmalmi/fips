@@ -857,6 +857,28 @@
         }
     }
 
+    fn send_one_output<S>(
+        sink: &mut S,
+        output: PacketOutput,
+    ) -> Result<(), PacketMover2OutputError>
+    where
+        S: PacketMover2OutputSink,
+    {
+        let mut drops = Vec::new();
+        let sent = sink.send_batch(std::iter::once(output), &mut drops);
+        match sent {
+            1 => {
+                assert!(drops.is_empty());
+                Ok(())
+            }
+            0 => {
+                assert_eq!(drops.len(), 1);
+                Err(drops.pop().expect("one output drop").reason())
+            }
+            _ => panic!("single output batch reported {sent} sends"),
+        }
+    }
+
     fn test_cipher(byte: u8) -> LessSafeKey {
         let key = [byte; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key).unwrap();

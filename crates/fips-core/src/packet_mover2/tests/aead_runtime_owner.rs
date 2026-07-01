@@ -2073,32 +2073,12 @@
     }
 
     #[derive(Default)]
-    struct RecordingOutputSink {
-        outputs: Vec<PacketOutput>,
-        fail_counter: Option<u64>,
-    }
-
-    impl PacketMover2OutputSink for RecordingOutputSink {
-        fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError> {
-            if Some(output.counter) == self.fail_counter {
-                return Err(PacketMover2OutputError::Backpressure);
-            }
-            self.outputs.push(output);
-            Ok(())
-        }
-    }
-
-    #[derive(Default)]
     struct BatchRecordingOutputSink {
         batch_calls: usize,
         outputs: Vec<PacketOutput>,
     }
 
     impl PacketMover2OutputSink for BatchRecordingOutputSink {
-        fn send(&mut self, _output: PacketOutput) -> Result<(), PacketMover2OutputError> {
-            panic!("batch sink must not use per-output send")
-        }
-
         fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
         where
             I: IntoIterator<Item = PacketOutput>,

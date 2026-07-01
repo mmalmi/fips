@@ -429,26 +429,9 @@ impl PacketOutput {
 }
 
 pub(crate) trait PacketMover2OutputSink {
-    fn send(&mut self, output: PacketOutput) -> Result<(), PacketMover2OutputError>;
-
     fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
     where
-        I: IntoIterator<Item = PacketOutput>,
-    {
-        let mut sent = 0;
-        for output in outputs {
-            let mut drop =
-                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
-            match self.send(output) {
-                Ok(()) => sent += 1,
-                Err(reason) => {
-                    drop.reason = reason;
-                    drops.push(drop);
-                }
-            }
-        }
-        sent
-    }
+        I: IntoIterator<Item = PacketOutput>;
 }
 
 pub(crate) trait PacketMover2TunOutput {
@@ -728,29 +711,24 @@ where
         for output in outputs {
             match output.target() {
                 OutputTarget::Endpoint => {
-                    sent = sent.saturating_add(flush_tun_outputs(
-                        &mut self.tun,
-                        &mut tun_batch,
-                        drops,
-                    ));
+                    sent =
+                        sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
                     match self.prepare_opened_output(output, drops) {
                         Some(endpoint) => endpoint_batch.push(endpoint),
                         None => {
-                            sent = sent.saturating_add(flush_endpoint_outputs(
-                                &mut self.endpoint,
-                                &mut endpoint_batch,
-                                drops,
-                            ));
+                            sent = sent.saturating_add(
+                                self.endpoint
+                                    .send_endpoint_batch(&mut endpoint_batch, drops),
+                            );
                         }
                     }
                     continue;
                 }
                 OutputTarget::Tun => {
-                    sent = sent.saturating_add(flush_endpoint_outputs(
-                        &mut self.endpoint,
-                        &mut endpoint_batch,
-                        drops,
-                    ));
+                    sent = sent.saturating_add(
+                        self.endpoint
+                            .send_endpoint_batch(&mut endpoint_batch, drops),
+                    );
                     if let Some(tun) = self.prepare_opened_output(output, drops) {
                         tun_batch.push(tun);
                     }
@@ -759,15 +737,14 @@ where
                 _ => {}
             }
 
-            sent = sent.saturating_add(flush_endpoint_outputs(
-                &mut self.endpoint,
-                &mut endpoint_batch,
-                drops,
-            ));
-            sent = sent.saturating_add(flush_tun_outputs(&mut self.tun, &mut tun_batch, drops));
+            sent = sent.saturating_add(
+                self.endpoint
+                    .send_endpoint_batch(&mut endpoint_batch, drops),
+            );
+            sent = sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
             let mut drop =
                 PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
-            match self.send(output) {
+            match self.send_unbatched_output(output) {
                 Ok(()) => sent = sent.saturating_add(1),
                 Err(reason) => {
                     drop.reason = reason;
@@ -775,51 +752,11 @@ where
                 }
             }
         }
-        sent.saturating_add(flush_endpoint_outputs(
-            &mut self.endpoint,
-            &mut endpoint_batch,
-            drops,
-        ))
-        .saturating_add(flush_tun_outputs(&mut self.tun, &mut tun_batch, drops))
-    }
-
-    fn send(&mut self, mut output: PacketOutput) -> Result<(), PacketMover2OutputError> {
-        if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
-            record_stale_bulk_output_drop(output.target());
-            return Err(PacketMover2OutputError::StaleQueuedBulk);
-        }
-
-        match output.target {
-            OutputTarget::Tun => {
-                let payload = output
-                    .take_opened_payload()
-                    .ok_or(PacketMover2OutputError::Unavailable)?;
-                self.tun.send_tun(&output, payload)
-            }
-            OutputTarget::Endpoint => {
-                let payload = output
-                    .take_opened_payload()
-                    .ok_or(PacketMover2OutputError::Unavailable)?;
-                self.endpoint.send_endpoint(&output, payload)
-            }
-            OutputTarget::Transport => {
-                let Some((transport_id, remote_addr)) =
-                    output.path.as_ref().and_then(|path| match path {
-                        TransportPath::Live {
-                            transport_id,
-                            remote_addr,
-                        } => Some((*transport_id, remote_addr.clone())),
-                    })
-                else {
-                    return Err(PacketMover2OutputError::NoRoute);
-                };
-                self.transport
-                    .send_transport(transport_id, remote_addr, output)
-            }
-            OutputTarget::SessionIngress { .. } | OutputTarget::SessionPayload { .. } => {
-                Err(PacketMover2OutputError::NoRoute)
-            }
-        }
+        sent.saturating_add(
+            self.endpoint
+                .send_endpoint_batch(&mut endpoint_batch, drops),
+        )
+        .saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops))
     }
 }
 
@@ -852,28 +789,37 @@ where
             }
         }
     }
-}
 
-fn flush_endpoint_outputs<Endpoint>(
-    endpoint: &mut Endpoint,
-    batch: &mut Vec<(PacketOutput, PacketBuffer)>,
-    drops: &mut Vec<PacketMover2OutputDrop>,
-) -> usize
-where
-    Endpoint: PacketMover2EndpointOutput,
-{
-    endpoint.send_endpoint_batch(batch, drops)
-}
+    fn send_unbatched_output(
+        &mut self,
+        output: PacketOutput,
+    ) -> Result<(), PacketMover2OutputError> {
+        if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
+            record_stale_bulk_output_drop(output.target());
+            return Err(PacketMover2OutputError::StaleQueuedBulk);
+        }
 
-fn flush_tun_outputs<Tun>(
-    tun: &mut Tun,
-    batch: &mut Vec<(PacketOutput, PacketBuffer)>,
-    drops: &mut Vec<PacketMover2OutputDrop>,
-) -> usize
-where
-    Tun: PacketMover2TunOutput,
-{
-    tun.send_tun_batch(batch, drops)
+        match output.target {
+            OutputTarget::Transport => {
+                let Some((transport_id, remote_addr)) =
+                    output.path.as_ref().and_then(|path| match path {
+                        TransportPath::Live {
+                            transport_id,
+                            remote_addr,
+                        } => Some((*transport_id, remote_addr.clone())),
+                    })
+                else {
+                    return Err(PacketMover2OutputError::NoRoute);
+                };
+                self.transport
+                    .send_transport(transport_id, remote_addr, output)
+            }
+            OutputTarget::SessionIngress { .. }
+            | OutputTarget::SessionPayload { .. }
+            | OutputTarget::Tun
+            | OutputTarget::Endpoint => Err(PacketMover2OutputError::NoRoute),
+        }
+    }
 }
 
 fn stale_bulk_output(output: &PacketOutput, max_age_ms: u64) -> bool {

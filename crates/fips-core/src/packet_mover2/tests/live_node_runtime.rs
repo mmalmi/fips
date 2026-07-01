@@ -527,17 +527,23 @@
         );
 
         assert_eq!(
-            sink.send(opened_output(owner, 47, 0, OutputTarget::Tun, b"bulk-a")),
+            send_one_output(
+                &mut sink,
+                opened_output(owner, 47, 0, OutputTarget::Tun, b"bulk-a")
+            ),
             Ok(())
         );
         assert_eq!(
-            sink.send(opened_output(owner, 48, 1, OutputTarget::Tun, b"bulk-b")),
+            send_one_output(
+                &mut sink,
+                opened_output(owner, 48, 1, OutputTarget::Tun, b"bulk-b")
+            ),
             Err(PacketMover2OutputError::Backpressure)
         );
 
         let mut liveness = opened_output(owner, 49, 2, OutputTarget::Tun, b"live");
         liveness.lane = Lane::Priority;
-        assert_eq!(sink.send(liveness), Ok(()));
+        assert_eq!(send_one_output(&mut sink, liveness), Ok(()));
 
         assert_eq!(tun_rx.try_recv().unwrap(), b"live".to_vec());
         assert_eq!(tun_rx.try_recv().unwrap(), b"bulk-a".to_vec());
@@ -562,17 +568,17 @@
         let mut stale_bulk = opened_output(owner, 46, 0, OutputTarget::Tun, b"stale-bulk");
         stale_bulk.activity_tick = Some(ActivityTick::new(1));
         assert_eq!(
-            sink.send(stale_bulk),
+            send_one_output(&mut sink, stale_bulk),
             Err(PacketMover2OutputError::StaleQueuedBulk)
         );
 
         let mut stale_priority = opened_output(owner, 47, 1, OutputTarget::Tun, b"priority");
         stale_priority.lane = Lane::Priority;
         stale_priority.activity_tick = Some(ActivityTick::new(1));
-        assert_eq!(sink.send(stale_priority), Ok(()));
+        assert_eq!(send_one_output(&mut sink, stale_priority), Ok(()));
 
         let fresh_bulk = opened_output(owner, 48, 2, OutputTarget::Tun, b"fresh-bulk");
-        assert_eq!(sink.send(fresh_bulk), Ok(()));
+        assert_eq!(send_one_output(&mut sink, fresh_bulk), Ok(()));
 
         let transport_id = TransportId::new(46);
         let remote_addr = TransportAddr::from_string("198.51.100.46:9000");
@@ -585,7 +591,7 @@
             b"sealed-wire".to_vec(),
         );
         stale_transport.activity_tick = Some(ActivityTick::new(1));
-        assert_eq!(sink.send(stale_transport), Ok(()));
+        assert_eq!(send_one_output(&mut sink, stale_transport), Ok(()));
 
         assert_eq!(tun_rx.try_recv().unwrap(), b"priority".to_vec());
         assert_eq!(tun_rx.try_recv().unwrap(), b"fresh-bulk".to_vec());
@@ -615,7 +621,7 @@
         let sent = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_tx);
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            sink.send(output)
+            send_one_output(&mut sink, output)
         };
 
         assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
@@ -640,14 +646,14 @@
         let missing = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            sink.send(missing_output)
+            send_one_output(&mut sink, missing_output)
         };
         assert_eq!(missing, Err(PacketMover2OutputError::NoRoute));
 
         let mismatched = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            sink.send(mismatched_output)
+            send_one_output(&mut sink, mismatched_output)
         };
         assert_eq!(mismatched, Err(PacketMover2OutputError::NoRoute));
         assert!(endpoint_io.event_rx.try_recv().is_err());
@@ -674,7 +680,7 @@
 
         let sent = {
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
-            sink.send(output)
+            send_one_output(&mut sink, output)
         };
 
         assert_eq!(sent, Ok(()));
