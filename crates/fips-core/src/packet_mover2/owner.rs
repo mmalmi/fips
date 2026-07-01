@@ -12,7 +12,6 @@ pub(crate) struct OwnerConfig {
     fsp_current_k_bit: Option<bool>,
     fsp_previous_draining_k_bit: Option<bool>,
     fsp_coords_warmup: Option<(u8, Vec<u8>)>,
-    fsp_wrap_route: Option<PacketMover2FspWrapRoute>,
     fsp_mmp: Option<PacketMover2FspMmpConfig>,
     source_peer: Option<crate::PeerIdentity>,
 }
@@ -299,7 +298,6 @@ impl OwnerConfig {
             fsp_current_k_bit: None,
             fsp_previous_draining_k_bit: None,
             fsp_coords_warmup: None,
-            fsp_wrap_route: None,
             fsp_mmp: None,
             source_peer: None,
         }
@@ -367,11 +365,6 @@ impl OwnerConfig {
         } else {
             self.fsp_coords_warmup = Some((remaining, prefix));
         }
-        self
-    }
-
-    pub(crate) fn with_fsp_wrap_route(mut self, route: PacketMover2FspWrapRoute) -> Self {
-        self.fsp_wrap_route = Some(route);
         self
     }
 
@@ -666,7 +659,7 @@ impl OwnerState {
             fsp_coords_prefix: config
                 .fsp_coords_warmup
                 .map_or_else(Vec::new, |(_, prefix)| prefix),
-            fsp_wrap_route: config.fsp_wrap_route,
+            fsp_wrap_route: None,
             fsp_mmp: config
                 .fsp_mmp
                 .map(|mmp| crate::mmp::MmpSessionState::new(&mmp.config, mmp.is_initiator)),
@@ -884,9 +877,6 @@ impl OwnerState {
         if let Some((remaining, prefix)) = config.fsp_coords_warmup {
             self.fsp_coords_warmup_remaining = remaining;
             self.fsp_coords_prefix = prefix;
-        }
-        if let Some(route) = config.fsp_wrap_route {
-            self.fsp_wrap_route = Some(route);
         }
     }
 

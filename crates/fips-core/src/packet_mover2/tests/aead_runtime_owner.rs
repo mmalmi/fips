@@ -898,10 +898,12 @@
         let mut mover = mover();
         mover.register_owner(
             owner,
-            OwnerConfig::new(1, 8)
-                .with_next_send_counter(10)
-                .with_fsp_wrap_route(wrap),
+            OwnerConfig::new(1, 8).with_next_send_counter(10),
         );
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_fsp_wrap_route(Some(wrap));
 
         let outbound = OutboundPacket::fsp(owner, 1, PacketClass::Bulk, 0, b"payload".to_vec())
             .with_fsp_inner_header(crate::protocol::SessionMessageType::EndpointData.to_byte(), 0)
