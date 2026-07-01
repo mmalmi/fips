@@ -250,8 +250,7 @@ async fn send_packet_mover2_transport_worker_job(
     let socket_packets = job
         .packets
         .iter()
-        .enumerate()
-        .map(|(index, output)| (index, output.payload(), remote_addr))
+        .map(|output| (output.payload(), remote_addr))
         .collect::<Vec<_>>();
     let failed = job.snapshot.send_payload_batch(&socket_packets).await;
     if failed > 0 {

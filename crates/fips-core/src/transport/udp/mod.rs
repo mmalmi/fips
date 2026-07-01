@@ -76,7 +76,7 @@ impl UdpSendSnapshot {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) async fn send_payload_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> usize {
+    pub(crate) async fn send_payload_batch(&self, packets: &[(&[u8], SocketAddr)]) -> usize {
         if packets.is_empty() {
             return 0;
         }
@@ -94,7 +94,7 @@ impl UdpSendSnapshot {
                 Ok(sent) => {
                     let end = offset.saturating_add(sent).min(packets.len());
                     for batch_index in offset..end {
-                        let (_, data, _) = packets[batch_index];
+                        let (data, _) = packets[batch_index];
                         let bytes_sent = data.len();
                         self.stats.record_send(bytes_sent);
                     }
@@ -111,9 +111,9 @@ impl UdpSendSnapshot {
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub(crate) async fn send_payload_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> usize {
+    pub(crate) async fn send_payload_batch(&self, packets: &[(&[u8], SocketAddr)]) -> usize {
         let mut failed = 0usize;
-        for (_, data, addr) in packets {
+        for (data, addr) in packets {
             let result = self.socket.send_to(data, addr).await;
             if let Ok(bytes_sent) = result {
                 self.stats.record_send(bytes_sent);

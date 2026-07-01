@@ -596,7 +596,7 @@ mod platform {
         /// `sendmsg(2)+UDP_SEGMENT`. Returns the count actually sent. Caller is
         /// responsible for retrying remaining packets if `n < packets.len()`.
         #[cfg(target_os = "linux")]
-        pub fn send_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> std::io::Result<usize> {
+        pub fn send_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<usize> {
             let n = packets.len().min(SEND_BATCH_SIZE);
             if n == 0 {
                 return Ok(0);
@@ -631,7 +631,7 @@ mod platform {
             let mut msgs: [libc::mmsghdr; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
-                let (_, data, dest) = packets[i];
+                let (data, dest) = packets[i];
                 let sa: socket2::SockAddr = (dest).into();
                 let sa_len = sa.len();
                 debug_assert!(sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>());
@@ -662,15 +662,15 @@ mod platform {
         }
 
         #[cfg(target_os = "linux")]
-        fn send_gso_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> std::io::Result<()> {
+        fn send_gso_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<()> {
             debug_assert!(packets.len() > 1);
             let n = packets.len().min(UDP_GSO_MAX_SEGMENTS);
-            let segment_size = packets[0].1.len();
+            let segment_size = packets[0].0.len();
             debug_assert!(segment_size > 0);
             debug_assert!(segment_size <= u16::MAX as usize);
 
             let fd = self.inner.as_raw_fd();
-            let dest = packets[0].2;
+            let dest = packets[0].1;
             let sa: socket2::SockAddr = dest.into();
             let sa_len = sa.len();
             let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
@@ -683,7 +683,7 @@ mod platform {
             }
 
             let mut iovs: [libc::iovec; UDP_GSO_MAX_SEGMENTS] = unsafe { std::mem::zeroed() };
-            for (i, (_, data, _)) in packets[..n].iter().copied().enumerate() {
+            for (i, (data, _)) in packets[..n].iter().copied().enumerate() {
                 iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
                 iovs[i].iov_len = data.len();
             }
@@ -732,21 +732,21 @@ mod platform {
     }
 
     #[cfg(target_os = "linux")]
-    fn udp_gso_prefix_len(packets: &[(usize, &[u8], SocketAddr)]) -> usize {
+    fn udp_gso_prefix_len(packets: &[(&[u8], SocketAddr)]) -> usize {
         let max = packets.len().min(SEND_BATCH_SIZE).min(UDP_GSO_MAX_SEGMENTS);
         if max < 2 {
             return 0;
         }
 
-        let segment_size = packets[0].1.len();
+        let segment_size = packets[0].0.len();
         if segment_size == 0 || segment_size > u16::MAX as usize {
             return 0;
         }
-        let dest = packets[0].2;
+        let dest = packets[0].1;
         let mut total_payload = 0usize;
         let mut count = 0usize;
 
-        for (_, data, packet_dest) in packets.iter().take(max).copied() {
+        for (data, packet_dest) in packets.iter().take(max).copied() {
             let len = data.len();
             if packet_dest != dest || len == 0 || len > segment_size {
                 break;
@@ -880,7 +880,7 @@ mod platform {
         #[cfg(target_os = "linux")]
         pub async fn send_batch(
             &self,
-            packets: &[(usize, &[u8], SocketAddr)],
+            packets: &[(&[u8], SocketAddr)],
         ) -> Result<usize, TransportError> {
             loop {
                 let mut guard = self
