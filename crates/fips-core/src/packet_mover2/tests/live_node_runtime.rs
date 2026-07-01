@@ -142,7 +142,7 @@
     }
 
     #[tokio::test]
-    async fn live_completion_wake_sends_ready_output_before_feeding_unblocked_work() {
+    async fn live_completion_turn_sends_ready_output_and_dispatches_next_work() {
         let send_transport_id = TransportId::new(176);
         let recv_transport_id = TransportId::new(177);
         let owner = fmp_owner(176);

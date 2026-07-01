@@ -105,7 +105,7 @@ impl PacketMover2TunOutboundRoute {
         self,
         payload: Vec<u8>,
     ) -> Result<OutboundPacket, PacketMover2TunOutboundDropReason> {
-        let class = self.class_for_payload(&payload);
+        let class = self.class;
         let payload = self.encode_payload(payload)?;
         let packet = match self.wire {
             OutboundWire::Fmp {
@@ -129,10 +129,6 @@ impl PacketMover2TunOutboundRoute {
             .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone()),
         };
         Ok(self.apply_payload_transform(packet))
-    }
-
-    fn class_for_payload(&self, _payload: &[u8]) -> PacketClass {
-        self.class
     }
 
     fn encode_payload(

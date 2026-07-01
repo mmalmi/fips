@@ -89,7 +89,7 @@ impl PacketMover2EndpointDataRoute {
                 continue;
             }
             result.routed_mut().push(
-                self.build_packet(PacketClass::Bulk, payload)
+                self.build_bulk_packet(payload)
                     .with_activity_tick(ActivityTick::new(routed_at_ms)),
             );
         }
@@ -107,11 +107,11 @@ impl PacketMover2EndpointDataRoute {
         Ok(())
     }
 
-    fn build_packet(&self, class: PacketClass, payload: Vec<u8>) -> OutboundPacket {
+    fn build_bulk_packet(&self, payload: Vec<u8>) -> OutboundPacket {
         OutboundPacket::fsp(
             self.owner,
             self.generation,
-            class,
+            PacketClass::Bulk,
             self.flags,
             payload,
         )
