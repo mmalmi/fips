@@ -421,4 +421,17 @@ pub(crate) trait PacketMover2CompletionSource {
         limit: usize,
         completions: &mut Vec<CryptoCompletion>,
     ) -> usize;
+
+    fn drain_completion_batches_into(
+        &mut self,
+        limit: usize,
+        completion_batches: &mut Vec<Vec<CryptoCompletion>>,
+    ) -> usize {
+        let mut completions = Vec::new();
+        let drained = self.drain_completions_into(limit, &mut completions);
+        if !completions.is_empty() {
+            completion_batches.push(completions);
+        }
+        drained
+    }
 }

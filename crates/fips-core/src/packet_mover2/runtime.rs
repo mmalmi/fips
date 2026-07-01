@@ -3,6 +3,7 @@ pub(crate) struct PacketMover2TurnDriver {
     mover: PacketMover2,
     prepared_work: Vec<PreparedCryptoWork>,
     completion_work: Vec<CryptoCompletion>,
+    completion_batches: Vec<Vec<CryptoCompletion>>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
@@ -41,6 +42,7 @@ impl PacketMover2TurnDriver {
             mover: PacketMover2::new(config),
             prepared_work: Vec::new(),
             completion_work: Vec::new(),
+            completion_batches: Vec::new(),
             raw_ingress_drops: Vec::new(),
             output_drops: Vec::new(),
             outputs: Vec::new(),
@@ -378,12 +380,21 @@ impl PacketMover2TurnDriver {
         let _completion_timer = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::PacketMover2CompletionDrain,
         );
-        self.completion_work.clear();
-        let queued = completions.drain_completions_into(completion_limit, &mut self.completion_work);
+        let completion_limit = self.completion_drain_limit(completion_limit);
+        self.completion_batches.clear();
+        let queued =
+            completions.drain_completion_batches_into(completion_limit, &mut self.completion_batches);
         summary.completions = summary.completions.saturating_add(queued);
-        self.mover.queue_completion_batch(&mut self.completion_work);
+        self.mover.queue_completion_batches(&mut self.completion_batches);
         self.retire_queued_completed_aead_outputs(completion_limit);
         self.collect_retired_outputs(summary)
+    }
+
+    fn completion_drain_limit(&self, limit: usize) -> usize {
+        if limit < PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS || self.mover.has_priority_pending() {
+            return limit;
+        }
+        limit.saturating_mul(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
     }
 
     async fn pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts<

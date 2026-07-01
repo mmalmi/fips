@@ -3,7 +3,7 @@ struct PacketMover2OwnerShard {
     index: usize,
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
-    completed: VecDeque<CryptoCompletion>,
+    completed: VecDeque<Vec<CryptoCompletion>>,
     owners: HashMap<OwnerId, OwnerState>,
 }
 
@@ -457,8 +457,15 @@ impl PacketMover2OwnerShard {
     }
 
     fn queue_completion(&mut self, completion: CryptoCompletion) -> bool {
+        self.queue_completion_batch(vec![completion])
+    }
+
+    fn queue_completion_batch(&mut self, completions: Vec<CryptoCompletion>) -> bool {
+        if completions.is_empty() {
+            return false;
+        }
         let was_empty = self.completed.is_empty();
-        self.completed.push_back(completion);
+        self.completed.push_back(completions);
         was_empty
     }
 
@@ -470,11 +477,23 @@ impl PacketMover2OwnerShard {
     ) -> usize {
         let mut retired_count = 0usize;
         while retired_count < limit {
-            let Some(completion) = self.completed.pop_front() else {
+            let Some(mut batch) = self.completed.pop_front() else {
                 break;
             };
-            self.retire_completion_into(completion, retired, drops);
-            retired_count = retired_count.saturating_add(1);
+            let batch_limit = limit.saturating_sub(retired_count);
+            let pending = if batch.len() > batch_limit {
+                Some(batch.split_off(batch_limit))
+            } else {
+                None
+            };
+            for completion in batch {
+                self.retire_completion_into(completion, retired, drops);
+                retired_count = retired_count.saturating_add(1);
+            }
+            if let Some(pending) = pending {
+                self.completed.push_front(pending);
+                break;
+            }
         }
         retired_count
     }
