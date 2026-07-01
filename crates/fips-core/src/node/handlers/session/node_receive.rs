@@ -108,6 +108,72 @@ impl Node {
         processed
     }
 
+    pub(in crate::node) async fn process_packet_mover2_compact_endpoint_data(
+        &mut self,
+        ingress_batch: Vec<crate::packet_mover2::PacketMover2FspEndpointDataIngress>,
+    ) -> usize {
+        if ingress_batch.is_empty() {
+            return 0;
+        }
+        let Some(direct_sink) = self.packet_mover2_endpoint_direct_sink() else {
+            debug!(
+                messages = ingress_batch.len(),
+                "Dropping compact PM2 endpoint-data ingress without direct sink"
+            );
+            return 0;
+        };
+
+        let mut processed = 0usize;
+        let mut endpoint_commit = SessionReceiveBatchCommit::default();
+        let mut endpoint_deliveries = Vec::with_capacity(ingress_batch.len());
+        for ingress in ingress_batch {
+            let commit = ingress.commit();
+            let source_addr = commit.source_addr();
+            let previous_hop_addr = commit.previous_hop_addr();
+            if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
+                &source_addr,
+                commit.received_k_bit(),
+            ) {
+                debug!(
+                    src = %self.peer_display_name(&source_addr),
+                    received_k_bit = commit.received_k_bit(),
+                    "FSP rekey cutover complete after PM2 compact endpoint-data receive commit"
+                );
+            }
+            self.learn_reverse_route(source_addr, previous_hop_addr);
+            endpoint_commit.push_receive_completion(SessionReceiveCompletion {
+                source_addr,
+                previous_hop_addr,
+                direct_path: commit.direct_path(),
+            });
+            endpoint_deliveries.push(ingress.into_delivery());
+            processed = processed.saturating_add(1);
+        }
+
+        let pending_flush_destinations = endpoint_commit.finish(self);
+        let count = endpoint_deliveries.len();
+        if count > 0
+            && direct_sink
+                .deliver_endpoint_data_batch(endpoint_deliveries)
+                .is_err()
+        {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::EndpointEventBulkDropped,
+                count as u64,
+            );
+        }
+        for dest_addr in pending_flush_destinations {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+        processed
+    }
+
+    fn packet_mover2_endpoint_direct_sink(&self) -> Option<crate::node::EndpointDirectSink> {
+        self.endpoint_events
+            .sender()
+            .and_then(|sender| sender.direct_sink().cloned())
+    }
+
     fn packet_mover2_authenticated_session_dispatch(
         &mut self,
         ingress: crate::packet_mover2::PacketMover2FspSessionIngress,

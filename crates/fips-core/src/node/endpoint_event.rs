@@ -523,7 +523,7 @@ pub(crate) struct UpdatePeersOutcome {
 /// Keeping source identity and payload together makes the delivery-side
 /// ownership boundary explicit for the current rx loop and for a future
 /// peer/session runtime that can move endpoint-data delivery off the bounce path.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct EndpointDataDelivery {
     pub(crate) source_peer: PeerIdentity,
     pub(crate) payload: PacketBuffer,

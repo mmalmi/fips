@@ -517,6 +517,109 @@ impl PacketMover2FspSessionIngress {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspEndpointDataCommit {
+    source_addr: NodeAddr,
+    previous_hop_addr: NodeAddr,
+    received_k_bit: bool,
+    direct_path: bool,
+}
+
+impl PacketMover2FspEndpointDataCommit {
+    pub(crate) fn source_addr(self) -> NodeAddr {
+        self.source_addr
+    }
+
+    pub(crate) fn previous_hop_addr(self) -> NodeAddr {
+        self.previous_hop_addr
+    }
+
+    pub(crate) fn received_k_bit(self) -> bool {
+        self.received_k_bit
+    }
+
+    pub(crate) fn direct_path(self) -> bool {
+        self.direct_path
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PacketMover2FspEndpointDataIngress {
+    commit: PacketMover2FspEndpointDataCommit,
+    body_len: usize,
+    receive_sync: FspReceiveSync,
+    activity_tick: Option<ActivityTick>,
+    delivery: EndpointDataDelivery,
+}
+
+impl PacketMover2FspEndpointDataIngress {
+    fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
+        let source_addr = output.owner().node_addr();
+        let Some(source_peer) = output.source_peer() else {
+            return Err(output);
+        };
+        if source_peer.node_addr() != &source_addr {
+            return Err(output);
+        }
+
+        let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
+        let ce_flag = output.ce_flag();
+        let header = match FspWireHeader::parse(output.payload()) {
+            Ok(header) => header,
+            Err(_) => return Err(output),
+        };
+        let path_mtu = output.path_mtu();
+        let activity_tick = output.activity_tick;
+        let (timestamp_ms, inner_flags, plaintext_len, body_len) = {
+            let Some(plaintext) = output.opened_payload() else {
+                return Err(output);
+            };
+            let Some((timestamp_ms, msg_type, inner_flags, body)) =
+                crate::node::session_wire::fsp_strip_inner_header(plaintext)
+            else {
+                return Err(output);
+            };
+            if msg_type != crate::protocol::SessionMessageType::EndpointData.to_byte() {
+                return Err(output);
+            }
+            (timestamp_ms, inner_flags, plaintext.len(), body.len())
+        };
+        let receive_sync = FspReceiveSync {
+            counter: output.counter(),
+            received_k_bit: header.flags() & crate::node::session_wire::FSP_FLAG_K != 0,
+            timestamp: timestamp_ms,
+            plaintext_len,
+            ce_flag,
+            path_mtu,
+            spin_bit: inner_flags & 0x01 != 0,
+        };
+        let mut payload = output.into_opened_payload()?;
+        payload.drain(..FSP_INNER_HEADER_SIZE);
+        payload.truncate(body_len);
+
+        Ok(Self {
+            commit: PacketMover2FspEndpointDataCommit {
+                source_addr,
+                previous_hop_addr,
+                received_k_bit: receive_sync.received_k_bit,
+                direct_path: previous_hop_addr == source_addr,
+            },
+            body_len,
+            receive_sync,
+            activity_tick,
+            delivery: EndpointDataDelivery::new(source_peer, payload),
+        })
+    }
+
+    pub(crate) fn commit(&self) -> PacketMover2FspEndpointDataCommit {
+        self.commit
+    }
+
+    pub(crate) fn into_delivery(self) -> EndpointDataDelivery {
+        self.delivery
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PacketMover2LiveNodeTurn {
     summary: PacketMover2RuntimeSummary,
@@ -525,6 +628,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
+    fsp_endpoint_data_ingress: Vec<PacketMover2FspEndpointDataIngress>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
@@ -602,6 +706,16 @@ impl PacketMover2LiveNodeTurn {
         std::mem::take(&mut self.fsp_local_session_ingress)
     }
 
+    pub(crate) fn take_fsp_endpoint_data_ingress(
+        &mut self,
+    ) -> Vec<PacketMover2FspEndpointDataIngress> {
+        std::mem::take(&mut self.fsp_endpoint_data_ingress)
+    }
+
+    pub(crate) fn fsp_endpoint_data_ingress(&self) -> &[PacketMover2FspEndpointDataIngress] {
+        &self.fsp_endpoint_data_ingress
+    }
+
     pub(crate) fn fsp_session_ingress(&self) -> &[PacketMover2FspSessionIngress] {
         &self.fsp_session_ingress
     }
@@ -665,6 +779,7 @@ impl PacketMover2LiveNodeTurn {
             || !self.fmp_link_ingress.is_empty()
             || !self.fsp_coord_warmups.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
+            || !self.fsp_endpoint_data_ingress.is_empty()
             || !self.fsp_session_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
@@ -701,6 +816,8 @@ impl PacketMover2LiveNodeTurn {
         self.fsp_coord_warmups.append(&mut other.fsp_coord_warmups);
         self.fsp_local_session_ingress
             .append(&mut other.fsp_local_session_ingress);
+        self.fsp_endpoint_data_ingress
+            .append(&mut other.fsp_endpoint_data_ingress);
         self.fsp_session_ingress
             .append(&mut other.fsp_session_ingress);
         self.raw_ingress_drops.append(&mut other.raw_ingress_drops);
