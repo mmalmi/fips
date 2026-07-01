@@ -825,6 +825,8 @@ impl PacketMover2TurnDriver {
         R: PacketMover2IngressRouter,
     {
         let mut outputs = self.take_outputs_for_rewrite();
+        let mut raw_socket_packets = std::mem::take(&mut self.raw_socket_packets);
+        raw_socket_packets.clear();
         let dropped_before = self.output_drops.len();
         let admitted_before = summary.inbound_admitted;
         for output in outputs.drain(..) {
@@ -839,7 +841,14 @@ impl PacketMover2TurnDriver {
                             if !coord_warmup.is_empty() {
                                 self.fsp_coord_warmups.push(coord_warmup);
                             }
-                            self.admit_raw_ingress_packet(raw, router, summary);
+                            if let Some(socket_packet) = Self::raw_ingress_socket_packet(
+                                raw,
+                                router,
+                                summary,
+                                &mut self.raw_ingress_drops,
+                            ) {
+                                raw_socket_packets.push(socket_packet);
+                            }
                         }
                         Ok(PacketMover2SessionIngressHandoff::Local(ingress)) => {
                             if let Some(receipt) = receipt {
@@ -883,6 +892,8 @@ impl PacketMover2TurnDriver {
                 _ => self.outputs.push(output),
             }
         }
+        self.admit_socket_packets(&mut raw_socket_packets, summary);
+        self.raw_socket_packets = raw_socket_packets;
         self.output_rewrite_buffer = outputs;
         summary.outputs = self.outputs.len();
         summary.outputs_dropped = summary
