@@ -11,7 +11,7 @@
         let route_b = PacketMover2IngressRoute::new(owner_b, 8, OutputTarget::Endpoint)
             .with_class(PacketClass::Rekey);
         let mut routes = PacketMover2LiveRouteTable::default();
-        assert_eq!(routes.register_fmp(transport_id, 404, route_a), None);
+        routes.register_fmp(transport_id, 404, route_a);
 
         let raw = PacketMover2RawIngress::from_live_received(
             PacketProtocol::Fmp,
@@ -41,10 +41,7 @@
             PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&wrong_transport.payload).unwrap());
         assert_eq!(routes.route(&wrong_transport, header), None);
 
-        assert_eq!(
-            routes.register_fmp(transport_id, 404, route_b),
-            Some(route_a)
-        );
+        routes.register_fmp(transport_id, 404, route_b);
         let header = PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
         assert_eq!(routes.route(&raw, header), Some(route_b));
         assert_eq!(routes.unregister_owner(owner_b), 1);
@@ -61,7 +58,7 @@
             .with_class(PacketClass::Bulk);
         let new_route = PacketMover2IngressRoute::new(owner, 4, OutputTarget::Endpoint)
             .with_class(PacketClass::Mmp);
-        assert_eq!(routes.register_fsp(source, old_route), None);
+        routes.register_fsp(source, old_route);
 
         let bare_raw = PacketMover2RawIngress::from_live_received(
             PacketProtocol::Fsp,
@@ -87,7 +84,7 @@
         assert_eq!(routed.output, old_route.output);
         assert_eq!(routed.class, PacketClass::Bulk);
 
-        assert_eq!(routes.register_fsp(source, new_route), Some(old_route));
+        routes.register_fsp(source, new_route);
         let header =
             PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
         assert_eq!(routes.route(&sourced_raw, header), Some(new_route));
@@ -111,7 +108,7 @@
             OutputTarget::SessionPayload { local_addr: local },
         )
         .with_class(PacketClass::Bulk);
-        assert_eq!(routes.register_fsp(source, route), None);
+        routes.register_fsp(source, route);
 
         let mut large_wire = fsp_wire(79, 0);
         large_wire.resize(

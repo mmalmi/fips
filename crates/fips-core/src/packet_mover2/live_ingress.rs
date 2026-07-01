@@ -181,34 +181,34 @@ impl PacketMover2LiveRouteTable {
         transport_id: TransportId,
         receiver_idx: u32,
         route: PacketMover2IngressRoute,
-    ) -> Option<PacketMover2IngressRoute> {
+    ) {
         self.fmp
-            .insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route)
+            .insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route);
     }
 
     pub(crate) fn register_fsp(
         &mut self,
         source_addr: NodeAddr,
         route: PacketMover2IngressRoute,
-    ) -> Option<PacketMover2IngressRoute> {
-        self.fsp.insert(source_addr, route)
+    ) {
+        self.fsp.insert(source_addr, route);
     }
 
     pub(crate) fn register_tun_destination(
         &mut self,
         dest_addr: NodeAddr,
         route: PacketMover2TunDestinationRoute,
-    ) -> Option<PacketMover2TunDestinationRoute> {
+    ) {
         self.tun_outbound
-            .insert(FipsTunDestinationPrefix::from_node_addr(dest_addr), route)
+            .insert(FipsTunDestinationPrefix::from_node_addr(dest_addr), route);
     }
 
     pub(crate) fn register_endpoint_destination(
         &mut self,
         dest_addr: NodeAddr,
         route: PacketMover2EndpointDataRoute,
-    ) -> Option<PacketMover2EndpointDataRoute> {
-        self.endpoint.insert(dest_addr, route)
+    ) {
+        self.endpoint.insert(dest_addr, route);
     }
 
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> usize {
