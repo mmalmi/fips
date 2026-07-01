@@ -135,7 +135,9 @@
         let key = test_key(0);
         for shard in &mut mover.shards {
             for owner in shard.owners.values_mut() {
-                owner.set_crypto_keys(OwnerCryptoKeys::new(key.clone(), key.clone()));
+                if owner.crypto_keys.is_none() {
+                    owner.set_crypto_keys(OwnerCryptoKeys::new(key.clone(), key.clone()));
+                }
             }
         }
     }
@@ -953,9 +955,7 @@
     }
 
     fn open_aead_completion(work: CryptoWork, key: u8) -> CryptoCompletion {
-        AeadOpenWork::from_crypto_work(work, test_key(key))
-            .unwrap()
-            .execute()
+        PreparedCryptoWork::open(work, test_key(key)).execute()
     }
 
     fn retire_completion(

@@ -65,10 +65,6 @@ impl PacketOutput {
         self.counter
     }
 
-    pub(crate) fn ingress_seq(&self) -> u64 {
-        self.ingress_seq
-    }
-
     pub(crate) fn lane(&self) -> Lane {
         self.lane
     }
@@ -264,14 +260,6 @@ impl PacketDrop {
 
     pub(crate) fn counter(&self) -> Option<u64> {
         self.counter
-    }
-
-    pub(crate) fn ingress_seq(&self) -> Option<u64> {
-        self.ingress_seq
-    }
-
-    pub(crate) fn lane(&self) -> Lane {
-        self.lane
     }
 
     pub(crate) fn reason(&self) -> PacketDropReason {

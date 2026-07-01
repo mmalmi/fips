@@ -1445,9 +1445,8 @@
         assert_eq!(work.len(), 1);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 1);
 
-        let open_work =
-            AeadOpenWork::from_crypto_work(work.pop().unwrap(), test_key(open_key)).unwrap();
-        let completion = open_work.execute();
+        let completion =
+            PreparedCryptoWork::open(work.pop().unwrap(), test_key(open_key)).execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 8);
@@ -1509,11 +1508,7 @@
 
         let mut completions = work
             .drain(..)
-            .map(|work| {
-                AeadOpenWork::from_crypto_work(work, test_key(open_key))
-                    .unwrap()
-                    .execute()
-            })
+            .map(|work| PreparedCryptoWork::open(work, test_key(open_key)).execute())
             .collect::<VecDeque<_>>();
         let third = completions.pop_back().unwrap();
         let first = completions.pop_front().unwrap();
@@ -1615,11 +1610,7 @@
 
         let mut completions = work
             .drain(..)
-            .map(|work| {
-                AeadOpenWork::from_crypto_work(work, test_key(open_key))
-                    .unwrap()
-                    .execute()
-            })
+            .map(|work| PreparedCryptoWork::open(work, test_key(open_key)).execute())
             .collect::<Vec<_>>();
         assert_eq!(
             completions
@@ -1713,18 +1704,10 @@
         assert_eq!(new_work.len(), 1);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 2);
 
-        let old_completion = AeadOpenWork::from_crypto_work(
-            old_work.pop().unwrap(),
-            test_key(open_key),
-        )
-        .unwrap()
-        .execute();
-        let new_completion = AeadOpenWork::from_crypto_work(
-            new_work.pop().unwrap(),
-            test_key(open_key),
-        )
-        .unwrap()
-        .execute();
+        let old_completion =
+            PreparedCryptoWork::open(old_work.pop().unwrap(), test_key(open_key)).execute();
+        let new_completion =
+            PreparedCryptoWork::open(new_work.pop().unwrap(), test_key(open_key)).execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [new_completion], 8);
@@ -1814,9 +1797,7 @@
             .unwrap();
 
         let completion =
-            AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(seal_key))
-                .unwrap()
-                .execute();
+            PreparedCryptoWork::seal(seal_work.pop().unwrap(), test_key(seal_key)).execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 1);
@@ -1887,9 +1868,7 @@
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
 
         let completion =
-            AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(fsp_key))
-                .unwrap()
-                .execute();
+            PreparedCryptoWork::seal(seal_work.pop().unwrap(), test_key(fsp_key)).execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 1);
@@ -2021,8 +2000,8 @@
             .expect("admission drop");
         assert_eq!(admission_drop.owner(), owner);
         assert_eq!(admission_drop.counter(), Some(11));
-        assert_eq!(admission_drop.ingress_seq(), None);
-        assert_eq!(admission_drop.lane(), Lane::Bulk);
+        assert_eq!(admission_drop.ingress_seq, None);
+        assert_eq!(admission_drop.lane, Lane::Bulk);
 
         let crypto_drop = turn
             .drops()
@@ -2031,8 +2010,8 @@
             .expect("crypto drop");
         assert_eq!(crypto_drop.owner(), owner);
         assert_eq!(crypto_drop.counter(), Some(10));
-        assert_eq!(crypto_drop.ingress_seq(), Some(0));
-        assert_eq!(crypto_drop.lane(), Lane::Bulk);
+        assert_eq!(crypto_drop.ingress_seq, Some(0));
+        assert_eq!(crypto_drop.lane, Lane::Bulk);
     }
 
     struct FixedIngressRouter {
@@ -2112,7 +2091,7 @@
             Self {
                 owner: output.owner(),
                 counter: output.counter(),
-                ingress_seq: output.ingress_seq(),
+                ingress_seq: output.ingress_seq,
                 payload: payload.to_vec(),
             }
         }

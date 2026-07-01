@@ -740,7 +740,7 @@
         let output = &group.outputs[0];
         assert_eq!(output.owner(), owner);
         assert_eq!(output.counter(), 540);
-        assert_eq!(output.ingress_seq(), 12);
+        assert_eq!(output.ingress_seq, 12);
         assert_eq!(output.payload(), b"wire-packet");
         assert_eq!(
             output.path(),

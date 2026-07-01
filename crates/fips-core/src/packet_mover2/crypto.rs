@@ -661,7 +661,7 @@ impl AeadHeader {
     }
 }
 
-pub(crate) struct AeadOpenWork {
+struct AeadOpenWork {
     work: CryptoWork,
     cipher: AeadKey,
     header: AeadHeader,
@@ -669,10 +669,7 @@ pub(crate) struct AeadOpenWork {
 }
 
 impl AeadOpenWork {
-    pub(crate) fn from_crypto_work(
-        work: CryptoWork,
-        cipher: AeadKey,
-    ) -> Result<Self, WirePreflightError> {
+    fn from_crypto_work(work: CryptoWork, cipher: AeadKey) -> Result<Self, WirePreflightError> {
         let (header, ciphertext_offset, counter) = match work.packet.owner.protocol {
             PacketProtocol::Fmp => {
                 let header = FmpWireHeader::parse(&work.packet.payload)?;
@@ -702,7 +699,7 @@ impl AeadOpenWork {
             ciphertext_offset,
         })
     }
-    pub(crate) fn execute(self) -> CryptoCompletion {
+    fn execute(self) -> CryptoCompletion {
         let mut work = self;
         let reservation = work.work.reservation;
         let target = work.work.packet.output;
@@ -754,7 +751,7 @@ impl AeadOpenWork {
     }
 }
 
-pub(crate) struct AeadSealWork {
+struct AeadSealWork {
     work: OutboundCryptoWork,
     cipher: AeadKey,
     post_seal: OutboundPostSeal,
@@ -763,7 +760,7 @@ pub(crate) struct AeadSealWork {
 }
 
 impl AeadSealWork {
-    pub(crate) fn from_outbound_work(
+    fn from_outbound_work(
         mut work: OutboundCryptoWork,
         cipher: AeadKey,
     ) -> Result<Self, WireBuildError> {
@@ -839,7 +836,7 @@ impl AeadSealWork {
             ciphertext_offset,
         })
     }
-    pub(crate) fn execute(self) -> CryptoCompletion {
+    fn execute(self) -> CryptoCompletion {
         let mut work = self;
         let reservation = work.work.reservation;
         let tag = if work.aad_len <= work.ciphertext_offset
