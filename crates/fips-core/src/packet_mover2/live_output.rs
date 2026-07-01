@@ -181,12 +181,14 @@ where
         let mut drained = 0usize;
         let mut first_routed = None;
         let mut routed_batch = Vec::new();
+        let activity_tick = ActivityTick::new(crate::time::now_ms());
         self.cache_first_tun_packet();
         if drained < limit {
             if let Some(packet) = self.first_tun_packet.take() {
                 route_tun_outbound_packet_with_router(
                     packet,
                     self.routes,
+                    activity_tick,
                     &mut self.buffers.tun_drops,
                     &mut self.buffers.tun_deferred_packets,
                     |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
@@ -201,6 +203,7 @@ where
             route_tun_outbound_packet_with_router(
                 packet,
                 self.routes,
+                activity_tick,
                 &mut self.buffers.tun_drops,
                 &mut self.buffers.tun_deferred_packets,
                 |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),

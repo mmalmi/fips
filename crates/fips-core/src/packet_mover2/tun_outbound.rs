@@ -268,6 +268,7 @@ where
 fn route_tun_outbound_packet_with_router<R, F>(
     packet: Vec<u8>,
     router: &mut R,
+    activity_tick: ActivityTick,
     drops: &mut Vec<PacketMover2TunOutboundDrop>,
     deferred_packets: &mut Vec<Vec<u8>>,
     mut push: F,
@@ -278,7 +279,7 @@ fn route_tun_outbound_packet_with_router<R, F>(
     let payload_len = packet.len();
     match router.route_tun_outbound(&packet) {
         Ok(route) => match route.into_outbound_packet(packet) {
-            Ok(packet) => push(packet.with_activity_tick(ActivityTick::new(crate::time::now_ms()))),
+            Ok(packet) => push(packet.with_activity_tick(activity_tick)),
             Err(reason) => {
                 drops.push(PacketMover2TunOutboundDrop::with_payload_len(
                     Vec::new(),
