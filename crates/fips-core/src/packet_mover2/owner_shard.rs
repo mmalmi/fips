@@ -459,18 +459,6 @@ impl PacketMover2OwnerShard {
         was_empty
     }
 
-    fn retire_queued_completion_into(
-        &mut self,
-        retired: &mut Vec<RetiredPacket>,
-        drops: &mut Vec<PacketDrop>,
-    ) -> bool {
-        let Some(completion) = self.completed.pop_front() else {
-            return false;
-        };
-        self.retire_completion_into(completion, retired, drops);
-        true
-    }
-
     fn retire_queued_completions_into(
         &mut self,
         limit: usize,
@@ -478,7 +466,11 @@ impl PacketMover2OwnerShard {
         drops: &mut Vec<PacketDrop>,
     ) -> usize {
         let mut retired_count = 0usize;
-        while retired_count < limit && self.retire_queued_completion_into(retired, drops) {
+        while retired_count < limit {
+            let Some(completion) = self.completed.pop_front() else {
+                break;
+            };
+            self.retire_completion_into(completion, retired, drops);
             retired_count = retired_count.saturating_add(1);
         }
         retired_count
