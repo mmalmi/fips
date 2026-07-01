@@ -79,6 +79,26 @@ impl PacketMover2RuntimeSummary {
             || self.outputs_dropped > 0
             || self.drops > 0
     }
+
+    fn absorb(&mut self, other: Self) {
+        self.raw_ingress_dropped = self
+            .raw_ingress_dropped
+            .saturating_add(other.raw_ingress_dropped);
+        self.inbound_admitted = self.inbound_admitted.saturating_add(other.inbound_admitted);
+        self.inbound_dropped = self.inbound_dropped.saturating_add(other.inbound_dropped);
+        self.outbound_admitted = self
+            .outbound_admitted
+            .saturating_add(other.outbound_admitted);
+        self.outbound_dropped = self
+            .outbound_dropped
+            .saturating_add(other.outbound_dropped);
+        self.completions = self.completions.saturating_add(other.completions);
+        self.dispatched = self.dispatched.saturating_add(other.dispatched);
+        self.outputs = self.outputs.saturating_add(other.outputs);
+        self.outputs_sent = self.outputs_sent.saturating_add(other.outputs_sent);
+        self.outputs_dropped = self.outputs_dropped.saturating_add(other.outputs_dropped);
+        self.drops = self.drops.saturating_add(other.drops);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -732,5 +752,47 @@ impl PacketMover2LiveNodeTurn {
             || !self.output_drops.is_empty()
             || !self.drops.is_empty()
             || self.transport_dropped > 0
+    }
+
+    fn absorb(&mut self, mut other: Self) {
+        self.summary.absorb(other.summary);
+        self.fmp_control_ingress
+            .append(&mut other.fmp_control_ingress);
+        self.fmp_ingress_receipts
+            .append(&mut other.fmp_ingress_receipts);
+        self.fmp_link_ingress.append(&mut other.fmp_link_ingress);
+        self.fsp_coord_warmups.append(&mut other.fsp_coord_warmups);
+        self.fsp_local_session_ingress
+            .append(&mut other.fsp_local_session_ingress);
+        self.fsp_session_ingress
+            .append(&mut other.fsp_session_ingress);
+        self.raw_ingress_drops.append(&mut other.raw_ingress_drops);
+        self.tun_outbound_drops
+            .append(&mut other.tun_outbound_drops);
+        self.endpoint_data_drops
+            .append(&mut other.endpoint_data_drops);
+        self.tun_source_drained = self
+            .tun_source_drained
+            .saturating_add(other.tun_source_drained);
+        self.endpoint_source_drained = self
+            .endpoint_source_drained
+            .saturating_add(other.endpoint_source_drained);
+        self.deferred_endpoint_data_batches_count = self
+            .deferred_endpoint_data_batches_count
+            .saturating_add(other.deferred_endpoint_data_batches_count);
+        self.tun_deferred_packets = self
+            .tun_deferred_packets
+            .saturating_add(other.tun_deferred_packets);
+        self.output_drops.append(&mut other.output_drops);
+        self.drops.append(&mut other.drops);
+        self.transport_planned = self
+            .transport_planned
+            .saturating_add(other.transport_planned);
+        self.transport_sent = self.transport_sent.saturating_add(other.transport_sent);
+        self.transport_dropped = self
+            .transport_dropped
+            .saturating_add(other.transport_dropped);
+        self.transport_sent_outputs
+            .append(&mut other.transport_sent_outputs);
     }
 }

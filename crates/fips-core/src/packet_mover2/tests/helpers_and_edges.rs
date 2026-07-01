@@ -527,10 +527,54 @@
         RI: PacketMover2RawIngressSource,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         let mut completions = VecDeque::<CryptoCompletion>::new();
+        pump_aead_live_node_route_table_turn_with_completions(
+            driver,
+            &mut completions,
+            0,
+            raw_ingress,
+            routes,
+            raw_ingress_limit,
+            endpoint_data_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            deferred_endpoint_data_batches,
+            deferred_tun_packets,
+            tun_tx,
+            endpoint_tx,
+            transports,
+            crypto_limit,
+        )
+        .await
+    }
+
+    async fn pump_aead_live_node_route_table_turn_with_completions<C, RI, Transports>(
+        driver: &mut PacketMover2TurnDriver,
+        completions: &mut C,
+        completion_limit: usize,
+        raw_ingress: &mut RI,
+        routes: &mut PacketMover2LiveRouteTable,
+        raw_ingress_limit: usize,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        C: PacketMover2CompletionSource,
+        RI: PacketMover2RawIngressSource,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary = driver.start_aead_completion_turn(&mut completions, 0);
+        let summary = driver.start_aead_completion_turn(completions, completion_limit);
         driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,

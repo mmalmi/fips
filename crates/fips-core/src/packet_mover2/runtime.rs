@@ -403,8 +403,28 @@ impl PacketMover2TurnDriver {
         Transports: PacketMover2TransportResolver + ?Sized,
     {
         let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
+        let mut completion_report = None;
+        let mut admission_summary = summary;
+        if admission_summary.has_activity() {
+            let report = self
+                .finish_aead_live_node_output_turn_with_executor(
+                    admission_summary,
+                    routes,
+                    tun_tx,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    collect_transport_sent_outputs,
+                    executor,
+                    transport_send_worker,
+                )
+                .await;
+            self.reset_turn_buffers();
+            completion_report = Some(report);
+            admission_summary = PacketMover2RuntimeSummary::default();
+        }
         let admission = self.admit_live_node_route_table_turn_with_firsts(
-            summary,
+            admission_summary,
             raw_ingress,
             routes,
             raw_ingress_limit,
@@ -414,23 +434,30 @@ impl PacketMover2TurnDriver {
             tun_limit,
             outbound_firsts,
         );
-        self.finish_live_node_turn_after_admission(
-            admission.summary,
-            admission.outbound_buffers,
-            admission.endpoint_drained,
-            admission.tun_drained,
-            routes,
-            tun_tx,
-            endpoint_tx,
-            transports,
-            crypto_limit,
-            collect_transport_sent_outputs,
-            executor,
-            transport_send_worker,
-            deferred_endpoint_data_batches,
-            deferred_tun_packets,
-        )
-        .await
+        let report = self
+            .finish_live_node_turn_after_admission(
+                admission.summary,
+                admission.outbound_buffers,
+                admission.endpoint_drained,
+                admission.tun_drained,
+                routes,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                collect_transport_sent_outputs,
+                executor,
+                transport_send_worker,
+                deferred_endpoint_data_batches,
+                deferred_tun_packets,
+            )
+            .await;
+        if let Some(mut completion_report) = completion_report {
+            completion_report.absorb(report);
+            completion_report
+        } else {
+            report
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

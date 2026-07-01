@@ -142,6 +142,99 @@
     }
 
     #[tokio::test]
+    async fn live_route_table_turn_flushes_completed_output_before_fresh_admission() {
+        let transport_id = TransportId::new(178);
+        let receiver_idx = 780;
+        let remote_addr = TransportAddr::from_string("198.51.100.178:9000");
+        let owner = fmp_owner(178);
+        let key = 78;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(owner, OwnerConfig::new(1, 8));
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        driver
+            .mover
+            .submit_socket_packet(
+                SocketPacket::from_fmp_established_wire(
+                    owner,
+                    1,
+                    OutputTarget::Tun,
+                    fmp_encrypted_wire(receiver_idx, 10, 0, b"completed", key),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut work = dispatch_available(&mut driver.mover, 8);
+        assert_eq!(work.len(), 1);
+        let completion = open_aead_completion(work.pop().unwrap(), key);
+        let mut completions = VecDeque::from([completion]);
+
+        let raw = PacketMover2LiveIngressPacket::fmp(
+            ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr,
+                fmp_encrypted_wire(receiver_idx, 11, 0, b"fresh", key),
+                crate::time::now_ms(),
+            ),
+        );
+        let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::from([raw]));
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_fmp(
+            transport_id,
+            receiver_idx,
+            PacketMover2IngressRoute::new(owner, 1, OutputTarget::Tun),
+        );
+        let (endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
+        drop((endpoint_data_tx, tun_outbound_tx));
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(1).expect("endpoint io");
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        let mut deferred_endpoint_data_batches = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+
+        let turn = pump_aead_live_node_route_table_turn_with_completions(
+            &mut driver,
+            &mut completions,
+            8,
+            &mut raw_source,
+            &mut routes,
+            1,
+            &mut endpoint_data_rx,
+            0,
+            &mut tun_outbound_rx,
+            0,
+            &mut deferred_endpoint_data_batches,
+            &mut deferred_tun_packets,
+            &tun_tx,
+            &endpoint_io.event_tx,
+            &transports,
+            8,
+        )
+        .await;
+
+        assert_eq!(turn.summary().completions(), 1);
+        assert_eq!(turn.summary().inbound_admitted(), 1);
+        assert_eq!(turn.summary().dispatched(), 1);
+        assert_eq!(turn.summary().outputs_sent(), 2);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(turn.output_drops().is_empty());
+        assert!(turn.drops().is_empty());
+        assert!(raw_source.source.is_empty());
+        assert!(deferred_endpoint_data_batches.is_empty());
+        assert!(deferred_tun_packets.is_empty());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+        assert_eq!(tun_rx.try_recv().unwrap(), b"completed".to_vec());
+        assert_eq!(tun_rx.try_recv().unwrap(), b"fresh".to_vec());
+        assert!(tun_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn live_node_outbound_continuation_collects_transport_sent_outputs() {
         let send_transport_id = TransportId::new(176);
         let recv_transport_id = TransportId::new(177);
