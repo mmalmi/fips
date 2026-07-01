@@ -93,10 +93,6 @@ impl PreparedCryptoJob {
         }
     }
 
-    fn len(&self) -> usize {
-        self.work.len()
-    }
-
     fn bulk_count(&self) -> usize {
         self.bulk_count
     }
@@ -436,7 +432,7 @@ impl PacketMover2AeadWorkerPool {
         };
 
         let job = PreparedCryptoJob::new(work, bulk_count);
-        let chunk_len = job.len();
+        let chunk_len = job.work.len();
         let (in_flight, bulk_in_flight) = self.direction_counters(direction);
         in_flight.fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
         if bulk_count > 0 {
@@ -593,7 +589,7 @@ fn spawn_packet_mover2_aead_workers(
                             crate::perf_profile::Stage::PacketMover2AeadWorkerQueueWait,
                             job.queued_at,
                         );
-                        let count = job.len();
+                        let count = job.work.len();
                         let bulk_count = job.bulk_count();
                         let mut completions = Vec::with_capacity(count);
                         for work in job.work.drain(..) {

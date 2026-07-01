@@ -121,10 +121,6 @@ impl PacketOutput {
         self.source_wire_len
     }
 
-    pub(crate) fn fmp_timestamp_ms(&self) -> Option<u32> {
-        self.fmp_timestamp_ms
-    }
-
     pub(crate) fn fsp_send_receipt(&self) -> Option<PacketMover2FspSendReceipt> {
         self.fsp_send_receipt
     }
@@ -142,11 +138,11 @@ pub(crate) struct PacketMover2TransportSentReceipt {
 impl PacketMover2TransportSentReceipt {
     pub(crate) fn from_output(output: &PacketOutput) -> Self {
         Self {
-            owner: output.owner(),
-            counter: output.counter(),
-            fmp_timestamp_ms: output.fmp_timestamp_ms(),
-            payload_len: output.payload_len(),
-            fsp_send_receipt: output.fsp_send_receipt(),
+            owner: output.owner,
+            counter: output.counter,
+            fmp_timestamp_ms: output.fmp_timestamp_ms,
+            payload_len: output.payload.len(),
+            fsp_send_receipt: output.fsp_send_receipt,
         }
     }
 }

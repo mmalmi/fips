@@ -283,14 +283,6 @@
         }
     }
 
-    fn queue_lens(mover: &PacketMover2) -> (usize, usize) {
-        mover.admission_queue_lens()
-    }
-
-    fn outbound_queue_lens(mover: &PacketMover2) -> (usize, usize) {
-        mover.outbound_admission_queue_lens()
-    }
-
     fn run_aead_completion_turn<I>(
         driver: &mut PacketMover2TurnDriver,
         completions: I,

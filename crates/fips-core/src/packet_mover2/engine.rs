@@ -716,14 +716,6 @@ impl PacketMover2 {
         std::mem::take(&mut self.drops)
     }
 
-    pub(crate) fn admission_queue_lens(&self) -> (usize, usize) {
-        self.admission_lens.as_tuple()
-    }
-
-    pub(crate) fn outbound_admission_queue_lens(&self) -> (usize, usize) {
-        self.outbound_admission_lens.as_tuple()
-    }
-
     fn owner_shard_index(&self, owner: OwnerId) -> usize {
         packet_mover2_owner_shard_index(owner, self.shards.len())
     }
@@ -1019,10 +1011,6 @@ impl ReadyShardQueue {
 
     fn len(&self) -> usize {
         self.queue.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.queue.is_empty()
     }
 }
 

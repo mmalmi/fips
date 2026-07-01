@@ -40,32 +40,6 @@ pub(crate) struct AdmissionDrop {
     reason: AdmissionDropReason,
 }
 
-impl AdmissionDrop {
-    pub(crate) fn owner(&self) -> OwnerId {
-        self.owner
-    }
-
-    pub(crate) fn counter(&self) -> u64 {
-        self.counter
-    }
-
-    pub(crate) fn class(&self) -> PacketClass {
-        self.class
-    }
-
-    pub(crate) fn lane(&self) -> Lane {
-        self.lane
-    }
-
-    pub(crate) fn payload_len(&self) -> usize {
-        self.payload_len
-    }
-
-    pub(crate) fn reason(&self) -> AdmissionDropReason {
-        self.reason
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct QueuedPacket {
     ingress_seq: u64,
@@ -220,10 +194,6 @@ where
         was_empty
     }
 
-    fn push_front(&mut self, item: T) -> bool {
-        self.push(item, true)
-    }
-
     fn push(&mut self, item: T, front: bool) -> bool {
         let owner = item.owner();
         let lane = item.lane();
@@ -244,24 +214,16 @@ where
         was_empty
     }
 
-    fn pop_next(&mut self) -> Option<OwnerAdmissionPop<T>> {
-        self.pop_lane(Lane::Priority)
-            .or_else(|| self.pop_lane(Lane::Bulk))
-    }
-
-    fn pop_next_priority(&mut self) -> Option<OwnerAdmissionPop<T>> {
-        self.pop_lane(Lane::Priority)
-    }
-
     fn pop_next_run(&mut self, priority_only: bool, limit: usize) -> Option<OwnerAdmissionRun<T>> {
         if limit == 0 {
             return None;
         }
 
         let first = if priority_only {
-            self.pop_next_priority()
+            self.pop_lane(Lane::Priority)
         } else {
-            self.pop_next()
+            self.pop_lane(Lane::Priority)
+                .or_else(|| self.pop_lane(Lane::Bulk))
         }?;
         let mut cursor = first.cursor;
         let mut items = Vec::with_capacity(limit.min(self.len().saturating_add(1)));
@@ -485,28 +447,6 @@ pub(crate) struct OutboundAdmissionDrop {
     lane: Lane,
     payload_len: usize,
     reason: AdmissionDropReason,
-}
-
-impl OutboundAdmissionDrop {
-    pub(crate) fn owner(&self) -> OwnerId {
-        self.owner
-    }
-
-    pub(crate) fn class(&self) -> PacketClass {
-        self.class
-    }
-
-    pub(crate) fn lane(&self) -> Lane {
-        self.lane
-    }
-
-    pub(crate) fn payload_len(&self) -> usize {
-        self.payload_len
-    }
-
-    pub(crate) fn reason(&self) -> AdmissionDropReason {
-        self.reason
-    }
 }
 
 #[derive(Debug)]
