@@ -23,7 +23,6 @@ pub(crate) struct FmpWireHeader {
     counter: u64,
     flags: u8,
     header_bytes: [u8; FMP_ESTABLISHED_HEADER_SIZE],
-    ciphertext_offset: usize,
 }
 
 impl FmpWireHeader {
@@ -50,7 +49,6 @@ impl FmpWireHeader {
             ]),
             flags: data[1],
             header_bytes,
-            ciphertext_offset: FMP_ESTABLISHED_HEADER_SIZE,
         })
     }
 
@@ -71,7 +69,7 @@ impl FmpWireHeader {
     }
 
     pub(crate) fn ciphertext_offset(self) -> usize {
-        self.ciphertext_offset
+        FMP_ESTABLISHED_HEADER_SIZE
     }
 }
 
