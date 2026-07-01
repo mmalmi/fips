@@ -73,6 +73,16 @@ impl PreparedCryptoWork {
             Self::Completed(completion) => completion.reservation.lane,
         }
     }
+
+    fn open_worker_affinity(&self, worker_count: usize) -> Option<(usize, u64)> {
+        match self {
+            Self::Open { work, .. } => Some(packet_mover2_aead_open_worker_affinity(
+                &work.reservation,
+                worker_count,
+            )),
+            Self::Seal { .. } | Self::Completed(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -87,6 +97,7 @@ struct PreparedCryptoJobBuilder {
     job_packets: usize,
     work: Vec<PreparedCryptoWork>,
     bulk_count: usize,
+    worker_affinity: Option<(usize, u64)>,
     closed: bool,
 }
 
@@ -98,6 +109,7 @@ impl PreparedCryptoJobBuilder {
             job_packets,
             work: Vec::with_capacity(job_packets),
             bulk_count: 0,
+            worker_affinity: None,
             closed: false,
         }
     }
@@ -111,6 +123,23 @@ impl PreparedCryptoJobBuilder {
         if self.closed {
             work.push_executor_failed_completions(completions);
             return;
+        }
+        let worker_affinity = match self.direction {
+            PacketMover2AeadDirection::Open => work.open_worker_affinity(pool.open_txs.len()),
+            PacketMover2AeadDirection::Seal => None,
+        };
+        if self.direction == PacketMover2AeadDirection::Open
+            && !self.work.is_empty()
+            && self.worker_affinity != worker_affinity
+        {
+            self.flush(pool, completions);
+            if self.closed {
+                work.push_executor_failed_completions(completions);
+                return;
+            }
+        }
+        if self.work.is_empty() {
+            self.worker_affinity = worker_affinity;
         }
         if work.lane() == Lane::Bulk {
             self.bulk_count = self.bulk_count.saturating_add(1);
@@ -132,7 +161,11 @@ impl PreparedCryptoJobBuilder {
         let next = Vec::with_capacity(self.job_packets);
         let work = std::mem::replace(&mut self.work, next);
         let bulk_count = std::mem::take(&mut self.bulk_count);
-        if !pool.submit_prepared_job(self.direction, work, bulk_count, completions) {
+        let worker_shard = self
+            .worker_affinity
+            .take()
+            .map(|(worker_shard, _)| worker_shard);
+        if !pool.submit_prepared_job(self.direction, worker_shard, work, bulk_count, completions) {
             self.closed = true;
         }
     }
@@ -174,7 +207,7 @@ enum PacketMover2AeadDirection {
 
 #[derive(Debug)]
 pub(crate) struct PacketMover2AeadWorkerPool {
-    open_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
+    open_txs: Vec<crossbeam_channel::Sender<PreparedCryptoJob>>,
     seal_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
     completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
     completion_notify: Arc<tokio::sync::Notify>,
@@ -201,7 +234,7 @@ impl PacketMover2AeadWorkerPool {
         let seal_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let open_bulk_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seal_bulk_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (open_tx, open_workers) = spawn_packet_mover2_aead_workers(
+        let (open_txs, open_workers) = spawn_packet_mover2_aead_worker_shards(
             PacketMover2AeadDirection::Open,
             worker_count,
             max_in_flight,
@@ -221,7 +254,7 @@ impl PacketMover2AeadWorkerPool {
         );
 
         Self {
-            open_tx: Some(open_tx),
+            open_txs,
             seal_tx: Some(seal_tx),
             completion_rx: Some(completion_rx),
             completion_notify,
@@ -267,7 +300,7 @@ impl PacketMover2AeadWorkerPool {
         );
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::PacketMover2AeadOpenQueueDepth,
-            self.open_tx.as_ref().map_or(0, |tx| tx.len()) as u64,
+            self.open_txs.iter().map(|tx| tx.len()).sum::<usize>() as u64,
         );
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::PacketMover2AeadSealQueueDepth,
@@ -324,13 +357,10 @@ impl PacketMover2AeadWorkerPool {
         }
     }
 
-    fn direction_sender(
-        &self,
-        direction: PacketMover2AeadDirection,
-    ) -> Option<&crossbeam_channel::Sender<PreparedCryptoJob>> {
+    fn direction_has_sender(&self, direction: PacketMover2AeadDirection) -> bool {
         match direction {
-            PacketMover2AeadDirection::Open => self.open_tx.as_ref(),
-            PacketMover2AeadDirection::Seal => self.seal_tx.as_ref(),
+            PacketMover2AeadDirection::Open => !self.open_txs.is_empty(),
+            PacketMover2AeadDirection::Seal => self.seal_tx.is_some(),
         }
     }
 
@@ -342,7 +372,7 @@ impl PacketMover2AeadWorkerPool {
     }
 
     fn direction_capacity(&self, direction: PacketMover2AeadDirection) -> usize {
-        if self.direction_sender(direction).is_none() {
+        if !self.direction_has_sender(direction) {
             return 0;
         }
         let (in_flight, _) = self.direction_counters(direction);
@@ -367,6 +397,7 @@ impl PacketMover2AeadWorkerPool {
     fn submit_prepared_job(
         &self,
         direction: PacketMover2AeadDirection,
+        worker_shard: Option<usize>,
         work: Vec<PreparedCryptoWork>,
         bulk_count: usize,
         completions: &mut Vec<CryptoCompletion>,
@@ -374,7 +405,13 @@ impl PacketMover2AeadWorkerPool {
         if work.is_empty() {
             return true;
         }
-        let Some(work_tx) = self.direction_sender(direction) else {
+        let work_tx = match direction {
+            PacketMover2AeadDirection::Open => {
+                worker_shard.and_then(|worker_shard| self.open_txs.get(worker_shard))
+            }
+            PacketMover2AeadDirection::Seal => self.seal_tx.as_ref(),
+        };
+        let Some(work_tx) = work_tx else {
             push_failed_prepared_work(work, completions);
             return false;
         };
@@ -553,44 +590,90 @@ fn spawn_packet_mover2_aead_workers(
     let mut workers = Vec::with_capacity(worker_count);
     for worker_idx in 0..worker_count {
         let work_rx = work_rx.clone();
-        let completion_tx = completion_tx.clone();
-        let completion_notify = Arc::clone(&completion_notify);
-        let in_flight = Arc::clone(&in_flight);
-        let bulk_in_flight = Arc::clone(&bulk_in_flight);
-        workers.push(
-            std::thread::Builder::new()
-                .name(format!(
-                    "pm2-aead-{}-{worker_idx}",
-                    match direction {
-                        PacketMover2AeadDirection::Open => "open",
-                        PacketMover2AeadDirection::Seal => "seal",
-                    }
-                ))
-                .spawn(move || {
-                    while let Ok(job) = work_rx.recv() {
-                        crate::perf_profile::record_since(
-                            crate::perf_profile::Stage::PacketMover2AeadWorkerQueueWait,
-                            job.queued_at,
-                        );
-                        let count = job.work.len();
-                        let bulk_count = job.bulk_count;
-                        let mut completions = Vec::with_capacity(count);
-                        for work in job.work {
-                            CryptoCompletionBatch::push_grouped(work.execute(), &mut completions);
-                        }
-                        if completion_tx.send(completions).is_err() {
-                            in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
-                            bulk_in_flight
-                                .fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
-                            break;
-                        }
-                        completion_notify.notify_one();
-                    }
-                })
-                .expect("spawn packet_mover2 AEAD worker"),
-        );
+        workers.push(spawn_packet_mover2_aead_worker_thread(
+            direction,
+            worker_idx,
+            work_rx,
+            completion_tx.clone(),
+            Arc::clone(&completion_notify),
+            Arc::clone(&in_flight),
+            Arc::clone(&bulk_in_flight),
+        ));
     }
     (work_tx, workers)
+}
+
+fn spawn_packet_mover2_aead_worker_shards(
+    direction: PacketMover2AeadDirection,
+    worker_count: usize,
+    max_in_flight: usize,
+    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
+    completion_notify: Arc<tokio::sync::Notify>,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+) -> (
+    Vec<crossbeam_channel::Sender<PreparedCryptoJob>>,
+    Vec<std::thread::JoinHandle<()>>,
+) {
+    let mut work_txs = Vec::with_capacity(worker_count);
+    let mut workers = Vec::with_capacity(worker_count);
+    for worker_idx in 0..worker_count {
+        let (work_tx, work_rx): (
+            crossbeam_channel::Sender<PreparedCryptoJob>,
+            crossbeam_channel::Receiver<PreparedCryptoJob>,
+        ) = crossbeam_channel::bounded(max_in_flight);
+        work_txs.push(work_tx);
+        workers.push(spawn_packet_mover2_aead_worker_thread(
+            direction,
+            worker_idx,
+            work_rx,
+            completion_tx.clone(),
+            Arc::clone(&completion_notify),
+            Arc::clone(&in_flight),
+            Arc::clone(&bulk_in_flight),
+        ));
+    }
+    (work_txs, workers)
+}
+
+fn spawn_packet_mover2_aead_worker_thread(
+    direction: PacketMover2AeadDirection,
+    worker_idx: usize,
+    work_rx: crossbeam_channel::Receiver<PreparedCryptoJob>,
+    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
+    completion_notify: Arc<tokio::sync::Notify>,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name(format!(
+            "pm2-aead-{}-{worker_idx}",
+            match direction {
+                PacketMover2AeadDirection::Open => "open",
+                PacketMover2AeadDirection::Seal => "seal",
+            }
+        ))
+        .spawn(move || {
+            while let Ok(job) = work_rx.recv() {
+                crate::perf_profile::record_since(
+                    crate::perf_profile::Stage::PacketMover2AeadWorkerQueueWait,
+                    job.queued_at,
+                );
+                let count = job.work.len();
+                let bulk_count = job.bulk_count;
+                let mut completions = Vec::with_capacity(count);
+                for work in job.work {
+                    CryptoCompletionBatch::push_grouped(work.execute(), &mut completions);
+                }
+                if completion_tx.send(completions).is_err() {
+                    in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
+                    bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
+                    break;
+                }
+                completion_notify.notify_one();
+            }
+        })
+        .expect("spawn packet_mover2 AEAD worker")
 }
 
 fn packet_mover2_aead_direction_for_completion_source(
@@ -619,9 +702,23 @@ fn packet_mover2_aead_worker_job_packets(work_count: usize, worker_count: usize)
     work_count.max(1).min(PACKET_MOVER2_AEAD_WORKER_BATCH_PACKETS)
 }
 
+fn packet_mover2_aead_open_worker_affinity(
+    reservation: &OwnerReservation,
+    worker_count: usize,
+) -> (usize, u64) {
+    use std::hash::{Hash, Hasher};
+
+    let worker_count = worker_count.max(1);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    reservation.owner.hash(&mut hasher);
+    reservation.source_path.hash(&mut hasher);
+    let hash = hasher.finish();
+    ((hash as usize) % worker_count, hash)
+}
+
 impl Drop for PacketMover2AeadWorkerPool {
     fn drop(&mut self) {
-        self.open_tx.take();
+        self.open_txs.clear();
         self.seal_tx.take();
         self.completion_rx.take();
         for worker in self.open_workers.drain(..) {
