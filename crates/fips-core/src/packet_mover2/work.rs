@@ -129,10 +129,6 @@ impl PacketOutput {
         self.fsp_send_receipt
     }
 
-    pub(crate) fn into_payload(self) -> PacketBuffer {
-        self.payload
-    }
-
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

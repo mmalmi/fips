@@ -5,8 +5,8 @@
 #[cfg(target_os = "linux")]
 use super::received_timestamp_ms;
 use super::{
-    DiscoveredPeer, PacketBuffer, PacketTx, ReceivedPacket, Transport, TransportAddr,
-    TransportError, TransportId, TransportState, TransportType,
+    DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
+    TransportId, TransportState, TransportType,
 };
 #[cfg(target_os = "macos")]
 pub(crate) mod darwin_sockopts;
@@ -76,74 +76,53 @@ impl UdpSendSnapshot {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) async fn send_owned_batch(
-        &self,
-        packets: &[(usize, PacketBuffer, SocketAddr)],
-    ) -> Vec<(usize, Result<usize, TransportError>)> {
+    pub(crate) async fn send_payload_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> usize {
         if packets.is_empty() {
-            return Vec::new();
+            return 0;
         }
 
-        let socket_packets = packets
-            .iter()
-            .map(|(index, data, addr)| (*index, data.as_slice(), *addr))
-            .collect::<Vec<_>>();
-        let mut results = Vec::with_capacity(socket_packets.len());
+        let mut failed = 0usize;
         let mut offset = 0usize;
-        while offset < socket_packets.len() {
+        while offset < packets.len() {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-            match self.socket.send_batch(&socket_packets[offset..]).await {
+            match self.socket.send_batch(&packets[offset..]).await {
                 Ok(0) => {
                     self.stats.record_send_error();
-                    for (index, _, _) in socket_packets[offset..].iter().copied() {
-                        results.push((
-                            index,
-                            Err(TransportError::SendFailed(
-                                "sendmmsg made no packet progress".into(),
-                            )),
-                        ));
-                    }
+                    failed = failed.saturating_add(packets.len().saturating_sub(offset));
                     break;
                 }
                 Ok(sent) => {
-                    let end = offset.saturating_add(sent).min(socket_packets.len());
+                    let end = offset.saturating_add(sent).min(packets.len());
                     for batch_index in offset..end {
-                        let (index, data, _) = socket_packets[batch_index];
+                        let (_, data, _) = packets[batch_index];
                         let bytes_sent = data.len();
                         self.stats.record_send(bytes_sent);
-                        results.push((index, Ok(bytes_sent)));
                     }
                     offset = end;
                 }
-                Err(error) => {
+                Err(_) => {
                     self.stats.record_send_error();
-                    let message = error.to_string();
-                    for (index, _, _) in socket_packets[offset..].iter().copied() {
-                        results.push((index, Err(TransportError::SendFailed(message.clone()))));
-                    }
+                    failed = failed.saturating_add(packets.len().saturating_sub(offset));
                     break;
                 }
             }
         }
-        results
+        failed
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub(crate) async fn send_owned_batch(
-        &self,
-        packets: &[(usize, PacketBuffer, SocketAddr)],
-    ) -> Vec<(usize, Result<usize, TransportError>)> {
-        let mut results = Vec::with_capacity(packets.len());
-        for (index, data, addr) in packets {
-            let result = self.socket.send_to(data.as_slice(), addr).await;
+    pub(crate) async fn send_payload_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> usize {
+        let mut failed = 0usize;
+        for (_, data, addr) in packets {
+            let result = self.socket.send_to(data, addr).await;
             if let Ok(bytes_sent) = result {
                 self.stats.record_send(bytes_sent);
             } else {
                 self.stats.record_send_error();
+                failed = failed.saturating_add(1);
             }
-            results.push((*index, result));
         }
-        results
+        failed
     }
 }
 

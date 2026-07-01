@@ -247,19 +247,13 @@ async fn send_packet_mover2_transport_worker_job(
         crate::perf_profile::Stage::PacketMover2TransportSendWorker,
     );
     let remote_addr = job.remote_addr;
-    let owned_packets = job
+    let socket_packets = job
         .packets
-        .into_iter()
+        .iter()
         .enumerate()
-        .map(|(index, output)| (index, output.into_payload(), remote_addr))
+        .map(|(index, output)| (index, output.payload(), remote_addr))
         .collect::<Vec<_>>();
-    let failed = job
-        .snapshot
-        .send_owned_batch(&owned_packets)
-        .await
-        .into_iter()
-        .filter(|(_, result)| result.is_err())
-        .count();
+    let failed = job.snapshot.send_payload_batch(&socket_packets).await;
     if failed > 0 {
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::PacketMover2TransportSendWorkerSendFailed,
