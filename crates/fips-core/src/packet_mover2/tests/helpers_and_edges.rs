@@ -77,14 +77,6 @@
         }
     }
 
-    fn crypto_work_order(work: &CryptoWork) -> u64 {
-        work.reservation.order.0
-    }
-
-    fn outbound_crypto_work_order(work: &OutboundCryptoWork) -> u64 {
-        work.reservation.order.0
-    }
-
     fn dispatch_available(mover: &mut PacketMover2, limit: usize) -> Vec<CryptoWork> {
         capture_prepared_work(mover, limit)
             .into_iter()
@@ -742,6 +734,16 @@
         )
     }
 
+    fn tun_ipv6_packet(dest_addr: NodeAddr, len: usize) -> Vec<u8> {
+        assert!(len >= 40);
+        let mut packet = vec![0u8; len];
+        packet[0] = 0x60;
+        packet[6] = 17;
+        let dest = crate::FipsAddress::from_node_addr(&dest_addr);
+        packet[24..40].copy_from_slice(dest.as_bytes());
+        packet
+    }
+
     fn packet(
         owner: OwnerId,
         generation: u64,
@@ -803,12 +805,6 @@
         data[1] = flags;
         data[4..8].copy_from_slice(&receiver_idx.to_le_bytes());
         data[8..16].copy_from_slice(&counter.to_le_bytes());
-        data
-    }
-
-    fn fmp_prefix_wire(version: u8, phase: u8) -> Vec<u8> {
-        let mut data = vec![0u8; FMP_COMMON_PREFIX_SIZE];
-        data[0] = (version << 4) | phase;
         data
     }
 
@@ -992,24 +988,6 @@
         )
     }
 
-    fn encrypted_fsp_packet(
-        owner: OwnerId,
-        generation: u64,
-        counter: u64,
-        class: PacketClass,
-        output: OutputTarget,
-        key: u8,
-    ) -> SocketPacket {
-        SocketPacket::new(
-            owner,
-            generation,
-            counter,
-            class,
-            output,
-            fsp_encrypted_wire(counter, 0, &[counter as u8], key),
-        )
-    }
-
     fn open_aead_completion(work: CryptoWork, key: u8) -> CryptoCompletion {
         StatelessAeadOpenWorker.execute(AeadOpenWork::from_crypto_work(work, test_key(key)).unwrap())
     }
@@ -1022,15 +1000,6 @@
         mover.queue_completion(completion);
         mover.retire_queued_completions_into(1, &mut retired);
         retired
-    }
-
-    fn retire_open_aead(
-        mover: &mut PacketMover2,
-        work: CryptoWork,
-        key: u8,
-    ) -> Vec<RetiredPacket> {
-        let completion = open_aead_completion(work, key);
-        retire_completion(mover, completion)
     }
 
     fn empty_fsp_coords_prefix() -> Vec<u8> {
