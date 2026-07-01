@@ -35,7 +35,6 @@ pub(crate) struct PacketMover2TransportSendWorkerPool {
     senders: Vec<tokio::sync::mpsc::Sender<PacketMover2TransportSendJob>>,
     handles: Vec<tokio::task::JoinHandle<()>>,
     queued_packets: Arc<std::sync::atomic::AtomicUsize>,
-    capacity_notify: Arc<tokio::sync::Notify>,
     max_queued_packets: usize,
     worker_count: usize,
 }
@@ -47,7 +46,6 @@ impl PacketMover2TransportSendWorkerPool {
             senders: Vec::new(),
             handles: Vec::new(),
             queued_packets: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            capacity_notify: Arc::new(tokio::sync::Notify::new()),
             max_queued_packets: max_queued_packets.max(1),
             worker_count,
         }
@@ -61,7 +59,7 @@ impl PacketMover2TransportSendWorkerPool {
         self.max_queued_packets
     }
 
-    async fn enqueue(
+    fn enqueue(
         &mut self,
         job: PacketMover2TransportSendJob,
     ) -> Result<usize, PacketMover2TransportSendJob> {
@@ -70,7 +68,11 @@ impl PacketMover2TransportSendWorkerPool {
             return Ok(0);
         }
         self.ensure_started();
-        if !self.reserve(packet_count).await {
+        if !self.try_reserve(packet_count) {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::PacketMover2TransportSendWorkerBackpressure,
+                packet_count as u64,
+            );
             return Err(job);
         }
         let shard = packet_mover2_transport_send_worker_shard(
@@ -85,13 +87,16 @@ impl PacketMover2TransportSendWorkerPool {
                 packet_count as u64,
             );
         }
-        match sender.send(job).await {
+        match sender.try_send(job) {
             Ok(()) => Ok(packet_count),
             Err(error) => {
                 self.queued_packets
                     .fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
-                self.capacity_notify.notify_waiters();
-                Err(error.0)
+                let job = match error {
+                    tokio::sync::mpsc::error::TrySendError::Full(job)
+                    | tokio::sync::mpsc::error::TrySendError::Closed(job) => job,
+                };
+                Err(job)
             }
         }
     }
@@ -106,42 +111,17 @@ impl PacketMover2TransportSendWorkerPool {
         for worker_idx in 0..worker_count {
             let (tx, rx) = tokio::sync::mpsc::channel(self.max_queued_packets);
             let queued_packets = Arc::clone(&self.queued_packets);
-            let capacity_notify = Arc::clone(&self.capacity_notify);
             self.senders.push(tx);
             self.handles.push(tokio::spawn(async move {
-                packet_mover2_transport_send_worker_loop(
-                    worker_idx,
-                    rx,
-                    queued_packets,
-                    capacity_notify,
-                )
-                .await;
+                packet_mover2_transport_send_worker_loop(worker_idx, rx, queued_packets).await;
             }));
         }
     }
 
-    async fn reserve(&self, packet_count: usize) -> bool {
+    fn try_reserve(&self, packet_count: usize) -> bool {
         if packet_count > self.max_queued_packets {
             return false;
         }
-        let mut recorded_wait = false;
-        loop {
-            let notified = self.capacity_notify.notified();
-            if self.try_reserve(packet_count) {
-                return true;
-            }
-            if !recorded_wait {
-                crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::PacketMover2TransportSendWorkerBackpressure,
-                    packet_count as u64,
-                );
-                recorded_wait = true;
-            }
-            notified.await;
-        }
-    }
-
-    fn try_reserve(&self, packet_count: usize) -> bool {
         let mut queued = self
             .queued_packets
             .load(std::sync::atomic::Ordering::Acquire);
@@ -184,7 +164,6 @@ async fn packet_mover2_transport_send_worker_loop(
     _worker_idx: usize,
     mut rx: tokio::sync::mpsc::Receiver<PacketMover2TransportSendJob>,
     queued_packets: Arc<std::sync::atomic::AtomicUsize>,
-    capacity_notify: Arc<tokio::sync::Notify>,
 ) {
     let mut pending = None;
     loop {
@@ -207,14 +186,13 @@ async fn packet_mover2_transport_send_worker_loop(
                 break;
             }
         }
-        send_packet_mover2_transport_worker_job(job, &queued_packets, &capacity_notify).await;
+        send_packet_mover2_transport_worker_job(job, &queued_packets).await;
     }
 }
 
 async fn send_packet_mover2_transport_worker_job(
     job: PacketMover2TransportSendJob,
     queued_packets: &std::sync::atomic::AtomicUsize,
-    capacity_notify: &tokio::sync::Notify,
 ) {
     let packet_count = job.packets.len();
     let _timer = crate::perf_profile::Timer::start(
@@ -227,7 +205,6 @@ async fn send_packet_mover2_transport_worker_job(
         .collect::<Vec<_>>();
     let _ = job.snapshot.send_owned_batch(&owned_packets).await;
     queued_packets.fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
-    capacity_notify.notify_waiters();
 }
 
 fn packet_mover2_transport_send_worker_count() -> usize {
@@ -479,8 +456,7 @@ async fn send_bulk_transport_plans_with_worker<R>(
                 worker,
                 sent_outputs,
                 sent,
-            )
-            .await;
+            );
             let result = transport
                 .send(plan.remote_addr(), plan.output().payload())
                 .await;
@@ -496,8 +472,7 @@ async fn send_bulk_transport_plans_with_worker<R>(
                 worker,
                 sent_outputs,
                 sent,
-            )
-            .await;
+            );
             let Some((snapshot, socket_addr)) =
                 prepare_packet_mover2_udp_worker_target(udp, &plan, drops).await
             else {
@@ -518,12 +493,10 @@ async fn send_bulk_transport_plans_with_worker<R>(
                 worker,
                 sent_outputs,
                 sent,
-            )
-            .await;
+            );
         }
     }
-    flush_pending_packet_mover2_udp_send_job(&mut pending_udp, drops, worker, sent_outputs, sent)
-        .await;
+    flush_pending_packet_mover2_udp_send_job(&mut pending_udp, drops, worker, sent_outputs, sent);
 }
 
 async fn prepare_packet_mover2_udp_worker_target(
@@ -634,7 +607,7 @@ impl PendingPacketMover2UdpSendJob {
     }
 }
 
-async fn flush_pending_packet_mover2_udp_send_job(
+fn flush_pending_packet_mover2_udp_send_job(
     pending: &mut PendingPacketMover2UdpSendJob,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
@@ -654,7 +627,7 @@ async fn flush_pending_packet_mover2_udp_send_job(
     } else {
         None
     };
-    match worker.enqueue(job).await {
+    match worker.enqueue(job) {
         Ok(count) => {
             *sent += count;
             if let (Some(sent_outputs), Some(sent_receipts)) =
