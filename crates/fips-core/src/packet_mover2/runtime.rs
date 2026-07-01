@@ -416,6 +416,10 @@ impl PacketMover2TurnDriver {
         let collect_transport_sent_receipts = outbound_firsts.collect_transport_sent_receipts();
         let mut completion_report = None;
         let mut admission_summary = summary;
+        // Ready completions are already owner-ordered work. Let their local
+        // continuations consume this turn's bounded crypto budget before
+        // admitting fresh raw/outbound packets.
+        let mut remaining_crypto_limit = crypto_limit;
         if admission_summary.has_activity() {
             let report = self
                 .finish_aead_live_node_output_turn_with_executor(
@@ -424,12 +428,14 @@ impl PacketMover2TurnDriver {
                     tun_tx,
                     endpoint_tx,
                     transports,
-                    0,
+                    remaining_crypto_limit,
                     collect_transport_sent_receipts,
                     executor,
                     transport_send_worker,
                 )
                 .await;
+            remaining_crypto_limit =
+                remaining_crypto_limit.saturating_sub(report.summary().dispatched());
             self.reset_turn_buffers();
             completion_report = Some(report);
             admission_summary = PacketMover2RuntimeSummary::default();
@@ -455,7 +461,7 @@ impl PacketMover2TurnDriver {
                 tun_tx,
                 endpoint_tx,
                 transports,
-                crypto_limit,
+                remaining_crypto_limit,
                 collect_transport_sent_receipts,
                 executor,
                 transport_send_worker,
