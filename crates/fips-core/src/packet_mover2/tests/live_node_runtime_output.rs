@@ -224,7 +224,7 @@
     }
 
     #[test]
-    fn runtime_keeps_opened_fsp_data_outputs_bulk() {
+    fn runtime_keeps_opened_fsp_data_on_bulk_lane() {
         let owner = fsp_owner(88);
         let key = 88;
         let payload = b"small-data-payload".to_vec();
