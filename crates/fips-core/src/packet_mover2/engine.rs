@@ -291,6 +291,10 @@ impl PacketMover2 {
     }
 
     fn submit_socket_packet_batch(&mut self, packets: Vec<SocketPacket>) -> (usize, usize) {
+        if let Some((owner, lane)) = socket_packet_run_owner_lane(&packets) {
+            return self.submit_socket_packet_run(Some(owner), Some(lane), packets);
+        }
+
         let mut admitted = 0usize;
         let mut dropped = 0usize;
         let mut run = Vec::new();
@@ -402,6 +406,10 @@ impl PacketMover2 {
     }
 
     fn submit_outbound_packet_batch(&mut self, packets: Vec<OutboundPacket>) -> (usize, usize) {
+        if let Some((owner, lane)) = outbound_packet_run_owner_lane(&packets) {
+            return self.submit_outbound_packet_run(Some(owner), Some(lane), packets);
+        }
+
         let mut admitted = 0usize;
         let mut dropped = 0usize;
         let mut run = Vec::new();
@@ -1105,6 +1113,26 @@ where
         "PM2 crypto executor must accept an entire owner-reserved prepared chunk"
     );
     accepted
+}
+
+fn socket_packet_run_owner_lane(packets: &[SocketPacket]) -> Option<(OwnerId, Lane)> {
+    let first = packets.first()?;
+    let owner = first.owner;
+    let lane = first.lane();
+    packets
+        .iter()
+        .all(|packet| packet.owner == owner && packet.lane() == lane)
+        .then_some((owner, lane))
+}
+
+fn outbound_packet_run_owner_lane(packets: &[OutboundPacket]) -> Option<(OwnerId, Lane)> {
+    let first = packets.first()?;
+    let owner = first.owner;
+    let lane = first.lane();
+    packets
+        .iter()
+        .all(|packet| packet.owner == owner && packet.lane() == lane)
+        .then_some((owner, lane))
 }
 
 fn outbound_priority_dispatch_limit(limit: usize, has_priority_pending: bool) -> usize {
