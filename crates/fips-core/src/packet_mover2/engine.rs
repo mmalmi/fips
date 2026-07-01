@@ -629,9 +629,10 @@ impl PacketMover2 {
             )
             .min(open_priority_capacity);
 
-            let pre_priority_inbound_dispatched = self.dispatch_prepared_available_into(
+            let pre_priority_inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
                 pre_priority_inbound_limit,
                 prepared_work,
+                false,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
             );
@@ -642,11 +643,11 @@ impl PacketMover2 {
             let priority_outbound_limit = outbound_priority_reserve
                 .min(total_limit.saturating_sub(dispatched_total))
                 .min(seal_priority_capacity);
-            let priority_outbound_dispatched = self
-                .dispatch_outbound_prepared_priority_available_into(
-                    priority_outbound_limit,
-                    prepared_work,
-                );
+            let priority_outbound_dispatched = self.dispatch_outbound_prepared_shards_into(
+                priority_outbound_limit,
+                prepared_work,
+                true,
+            );
             dispatched_total = dispatched_total.saturating_add(priority_outbound_dispatched);
 
             let priority_inbound_limit = if inbound_priority_pending {
@@ -654,9 +655,10 @@ impl PacketMover2 {
             } else {
                 0
             };
-            let priority_inbound_dispatched = self.dispatch_prepared_priority_available_into(
+            let priority_inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
                 priority_inbound_limit,
                 prepared_work,
+                true,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
             );
@@ -666,19 +668,21 @@ impl PacketMover2 {
                 .saturating_sub(dispatched_total)
                 .min(open_bulk_capacity);
             let bulk_inbound_start = prepared_work.len();
-            let inbound_dispatched = self.dispatch_prepared_available_into(
+            let inbound_dispatched = self.dispatch_prepared_ingress_shards_into(
                 bulk_dispatch_capacity,
                 prepared_work,
+                false,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
             );
             dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
             let outbound_start = prepared_work.len();
-            let outbound_dispatched = self.dispatch_outbound_prepared_available_into(
+            let outbound_dispatched = self.dispatch_outbound_prepared_shards_into(
                 total_limit
                     .saturating_sub(dispatched_total)
                     .min(seal_bulk_capacity),
                 prepared_work,
+                false,
             );
             dispatched_total = dispatched_total.saturating_add(outbound_dispatched);
             debug_assert!(dispatched_total <= total_limit);
@@ -751,54 +755,6 @@ impl PacketMover2 {
 
     fn has_outbound_priority_pending(&self) -> bool {
         self.outbound_admission_lens.priority > 0
-    }
-
-    fn dispatch_prepared_available_into(
-        &mut self,
-        limit: usize,
-        prepared: &mut Vec<PreparedCryptoWork>,
-        fsp_path_open: &mut u64,
-        fsp_path_open_bulk: &mut u64,
-    ) -> usize {
-        self.dispatch_prepared_ingress_shards_into(
-            limit,
-            prepared,
-            false,
-            fsp_path_open,
-            fsp_path_open_bulk,
-        )
-    }
-
-    fn dispatch_prepared_priority_available_into(
-        &mut self,
-        limit: usize,
-        prepared: &mut Vec<PreparedCryptoWork>,
-        fsp_path_open: &mut u64,
-        fsp_path_open_bulk: &mut u64,
-    ) -> usize {
-        self.dispatch_prepared_ingress_shards_into(
-            limit,
-            prepared,
-            true,
-            fsp_path_open,
-            fsp_path_open_bulk,
-        )
-    }
-
-    fn dispatch_outbound_prepared_available_into(
-        &mut self,
-        limit: usize,
-        prepared: &mut Vec<PreparedCryptoWork>,
-    ) -> usize {
-        self.dispatch_outbound_prepared_shards_into(limit, prepared, false)
-    }
-
-    fn dispatch_outbound_prepared_priority_available_into(
-        &mut self,
-        limit: usize,
-        prepared: &mut Vec<PreparedCryptoWork>,
-    ) -> usize {
-        self.dispatch_outbound_prepared_shards_into(limit, prepared, true)
     }
 
     fn dispatch_prepared_ingress_shards_into(
