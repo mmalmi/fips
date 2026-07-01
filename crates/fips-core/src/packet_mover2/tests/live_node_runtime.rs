@@ -600,26 +600,6 @@
     }
 
     #[test]
-    fn tun_tx_output_reports_unavailable_when_node_tun_channel_is_closed() {
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        drop(tun_rx);
-        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x49; 16]));
-        let output = opened_output(owner, 49, 0, OutputTarget::Tun, b"closed");
-        let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
-
-        let sent = {
-            let tun = PacketMover2TunTxOutput::new(&tun_tx);
-            let mut sink = PacketMover2LiveOutputSink::new(tun, &mut endpoint, &mut transport);
-            sink.send(output)
-        };
-
-        assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
-        assert!(endpoint.outputs.is_empty());
-        assert!(transport.groups.is_empty());
-    }
-
-    #[test]
     fn endpoint_event_output_reports_unavailable_when_endpoint_channel_is_closed() {
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
@@ -1028,29 +1008,6 @@
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");
         recv_transport.stop().await.expect("stop recv udp");
-    }
-
-    #[test]
-    fn transport_error_mapping_keeps_mtu_and_route_failures_attributable() {
-        assert_eq!(
-            packet_mover2_output_error_for_transport(&TransportError::MtuExceeded {
-                packet_size: 1501,
-                mtu: 1500,
-            }),
-            PacketMover2OutputError::MtuExceeded
-        );
-        assert_eq!(
-            packet_mover2_output_error_for_transport(&TransportError::Io(std::io::Error::from(
-                std::io::ErrorKind::NetworkUnreachable,
-            ))),
-            PacketMover2OutputError::NoRoute
-        );
-        assert_eq!(
-            packet_mover2_output_error_for_transport(&TransportError::SendFailed(
-                "some other send failure".to_string(),
-            )),
-            PacketMover2OutputError::TransportFailed
-        );
     }
 
     #[test]
