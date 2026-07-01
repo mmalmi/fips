@@ -556,10 +556,10 @@ impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
         let failures = self.tx.send_batch_with_lanes(packets);
         let failure_count = failures.len();
         for failure in failures {
-            if let Some(output) = output_meta.get(failure.index()) {
+            if let Some(output) = output_meta.get(failure.index) {
                 drops.push(PacketMover2OutputDrop::from_output(
                     output,
-                    packet_mover2_output_error_for_tun_write(failure.kind()),
+                    packet_mover2_output_error_for_tun_write(failure.kind),
                 ));
             }
         }

@@ -48,18 +48,8 @@ impl std::error::Error for TunWriteError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TunWriteBatchError {
-    index: usize,
-    kind: TunWriteErrorKind,
-}
-
-impl TunWriteBatchError {
-    pub(crate) fn index(self) -> usize {
-        self.index
-    }
-
-    pub(crate) fn kind(self) -> TunWriteErrorKind {
-        self.kind
-    }
+    pub(crate) index: usize,
+    pub(crate) kind: TunWriteErrorKind,
 }
 
 #[derive(Debug)]
