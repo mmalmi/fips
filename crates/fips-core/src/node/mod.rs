@@ -51,8 +51,13 @@ pub(crate) use endpoint_channels::{
 };
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
 pub(crate) use endpoint_event::{
-    EndpointDataDelivery, EndpointDataIo, EndpointEventReceiver, EndpointEventSender,
-    NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome,
+    EndpointDataDelivery, EndpointDataIo, EndpointDirectSink, EndpointEventReceiver,
+    EndpointEventSender, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
+    UpdatePeersOutcome,
+};
+pub use endpoint_event::{
+    FipsEndpointDirectBatch, FipsEndpointDirectDeliveryError, FipsEndpointDirectMessage,
+    FipsEndpointDirectSink,
 };
 pub(crate) use endpoint_traffic::{PendingEndpointData, PendingSessionTrafficQueues};
 pub(in crate::node) use identity_cache::IdentityCache;

@@ -104,6 +104,25 @@ impl FipsEndpointBuilder {
 
     /// Bind and start the embedded endpoint.
     pub async fn bind(self) -> Result<FipsEndpoint, FipsEndpointError> {
+        self.bind_inner(None).await
+    }
+
+    /// Bind and start the endpoint with a direct PM2 endpoint-data sink.
+    ///
+    /// Decrypted PM2 endpoint output is delivered to `sink` synchronously from
+    /// the PM2 output path. Generic endpoint events, including loopback sends
+    /// and non-PM2 delivery, continue to use the regular receive queue.
+    pub async fn bind_with_direct_sink<S>(self, sink: S) -> Result<FipsEndpoint, FipsEndpointError>
+    where
+        S: FipsEndpointDirectSink,
+    {
+        self.bind_inner(Some(EndpointDirectSink::new(sink))).await
+    }
+
+    async fn bind_inner(
+        self,
+        direct_sink: Option<EndpointDirectSink>,
+    ) -> Result<FipsEndpoint, FipsEndpointError> {
         endpoint_debug_log("FipsEndpointBuilder::bind begin");
         let config = self.prepared_config();
         endpoint_debug_log("FipsEndpointBuilder::bind config prepared");
@@ -116,7 +135,12 @@ impl FipsEndpointBuilder {
         let address = *identity.address();
         let packet_io = node.attach_external_packet_io(self.packet_channel_capacity)?;
         endpoint_debug_log("FipsEndpointBuilder::bind packet io attached");
-        let endpoint_data_io = node.attach_endpoint_data_io(self.packet_channel_capacity)?;
+        let endpoint_data_io = match direct_sink {
+            Some(sink) => {
+                node.attach_endpoint_data_io_with_direct_sink(self.packet_channel_capacity, sink)?
+            }
+            None => node.attach_endpoint_data_io(self.packet_channel_capacity)?,
+        };
         endpoint_debug_log("FipsEndpointBuilder::bind endpoint data io attached");
         endpoint_debug_log("FipsEndpointBuilder::bind node.start begin");
         node.start().await?;

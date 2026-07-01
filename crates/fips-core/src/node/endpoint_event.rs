@@ -1,6 +1,126 @@
 use super::*;
 use crate::transport::PacketBuffer;
 
+/// One source-attributed endpoint payload delivered through the direct PM2 sink.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointDirectMessage {
+    /// Authenticated FIPS peer that originated the endpoint data.
+    pub source_peer: PeerIdentity,
+    /// Application-owned payload bytes.
+    pub data: PacketBuffer,
+    /// Unix-millisecond time when FIPS handed this message to the direct sink.
+    pub enqueued_at_ms: u64,
+}
+
+impl FipsEndpointDirectMessage {
+    /// FIPS node address that originated the endpoint data.
+    pub fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    /// Source Nostr public key as human-facing bech32 text.
+    pub fn source_npub(&self) -> String {
+        self.source_peer.npub()
+    }
+}
+
+/// A PM2 endpoint-output batch delivered without the endpoint-event queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointDirectBatch {
+    messages: Vec<FipsEndpointDirectMessage>,
+}
+
+impl FipsEndpointDirectBatch {
+    /// Messages in this direct delivery batch.
+    pub fn messages(&self) -> &[FipsEndpointDirectMessage] {
+        &self.messages
+    }
+
+    /// Take ownership of the delivered messages.
+    pub fn into_messages(self) -> Vec<FipsEndpointDirectMessage> {
+        self.messages
+    }
+
+    /// Number of endpoint messages in the batch.
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Whether the batch contains no messages.
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+}
+
+/// Error returned by an installed direct endpoint sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FipsEndpointDirectDeliveryError {
+    /// The sink could not accept this batch.
+    #[error("direct endpoint sink unavailable")]
+    Unavailable,
+}
+
+/// Application-provided direct PM2 endpoint delivery sink.
+///
+/// This sink is called synchronously from the PM2 output path with owned packet
+/// buffers. It should return quickly and avoid blocking unrelated PM2 progress.
+pub trait FipsEndpointDirectSink: Send + Sync + 'static {
+    /// Deliver one batch of decrypted endpoint data.
+    fn deliver_endpoint_batch(
+        &self,
+        batch: FipsEndpointDirectBatch,
+    ) -> Result<(), FipsEndpointDirectDeliveryError>;
+}
+
+impl<F> FipsEndpointDirectSink for F
+where
+    F: Fn(FipsEndpointDirectBatch) -> Result<(), FipsEndpointDirectDeliveryError>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn deliver_endpoint_batch(
+        &self,
+        batch: FipsEndpointDirectBatch,
+    ) -> Result<(), FipsEndpointDirectDeliveryError> {
+        self(batch)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct EndpointDirectSink {
+    sink: Arc<dyn FipsEndpointDirectSink>,
+}
+
+impl std::fmt::Debug for EndpointDirectSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EndpointDirectSink").finish_non_exhaustive()
+    }
+}
+
+impl EndpointDirectSink {
+    pub(crate) fn new<S>(sink: S) -> Self
+    where
+        S: FipsEndpointDirectSink,
+    {
+        Self {
+            sink: Arc::new(sink),
+        }
+    }
+
+    pub(crate) fn deliver_endpoint_data_batch(
+        &self,
+        messages: Vec<EndpointDataDelivery>,
+    ) -> Result<(), FipsEndpointDirectDeliveryError> {
+        let messages = messages
+            .into_iter()
+            .map(FipsEndpointDirectMessage::from)
+            .collect();
+        self.sink
+            .deliver_endpoint_batch(FipsEndpointDirectBatch { messages })
+    }
+}
+
 /// App-owned packet channels for embedding FIPS without a system TUN.
 #[derive(Debug)]
 pub struct ExternalPacketIo {
@@ -42,6 +162,7 @@ pub(crate) struct EndpointDataIo {
 #[derive(Debug, Clone)]
 pub(crate) struct EndpointEventSender {
     tx: tokio::sync::mpsc::Sender<NodeEndpointEvent>,
+    direct_sink: Option<EndpointDirectSink>,
     queued_messages: Arc<AtomicUsize>,
     ready: Arc<EndpointEventReady>,
     message_cap: usize,
@@ -120,6 +241,13 @@ pub(in crate::node) struct EndpointEventRuntime {
 
 impl EndpointEventSender {
     pub(in crate::node) fn channel(capacity: usize) -> (Self, EndpointEventReceiver) {
+        Self::channel_with_direct_sink(capacity, None)
+    }
+
+    pub(in crate::node) fn channel_with_direct_sink(
+        capacity: usize,
+        direct_sink: Option<EndpointDirectSink>,
+    ) -> (Self, EndpointEventReceiver) {
         let message_cap = endpoint_event_capacity(capacity);
         let (tx, rx) = tokio::sync::mpsc::channel(message_cap);
         let queued_messages = Arc::new(AtomicUsize::new(0));
@@ -127,6 +255,7 @@ impl EndpointEventSender {
         (
             Self {
                 tx,
+                direct_sink,
                 queued_messages: Arc::clone(&queued_messages),
                 ready: Arc::clone(&ready),
                 message_cap,
@@ -138,6 +267,10 @@ impl EndpointEventSender {
                 closed: false,
             },
         )
+    }
+
+    pub(crate) fn direct_sink(&self) -> Option<&EndpointDirectSink> {
+        self.direct_sink.as_ref()
     }
 
     #[allow(clippy::result_large_err)]
@@ -389,6 +522,16 @@ impl EndpointDataDelivery {
             source_peer,
             payload: payload.into(),
             enqueued_at_ms: crate::time::now_ms(),
+        }
+    }
+}
+
+impl From<EndpointDataDelivery> for FipsEndpointDirectMessage {
+    fn from(value: EndpointDataDelivery) -> Self {
+        Self {
+            source_peer: value.source_peer,
+            data: value.payload,
+            enqueued_at_ms: value.enqueued_at_ms,
         }
     }
 }

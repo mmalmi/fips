@@ -589,6 +589,16 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
             return Err(PacketMover2OutputError::NoRoute);
         }
 
+        if let Some(direct_sink) = self.tx.direct_sink() {
+            return direct_sink
+                .deliver_endpoint_data_batch(vec![EndpointDataDelivery {
+                    source_peer,
+                    payload,
+                    enqueued_at_ms: crate::time::now_ms(),
+                }])
+                .map_err(|_| PacketMover2OutputError::Unavailable);
+        }
+
         self.tx
             .send(NodeEndpointEvent {
                 messages: vec![EndpointDataDelivery {
@@ -641,6 +651,16 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
         }
 
         let sent = messages.len();
+        if let Some(direct_sink) = self.tx.direct_sink() {
+            return match direct_sink.deliver_endpoint_data_batch(messages) {
+                Ok(()) => sent,
+                Err(_) => {
+                    drops.append(&mut unavailable_drops);
+                    0
+                }
+            };
+        }
+
         match self.tx.send(NodeEndpointEvent {
             messages,
             queued_at: crate::perf_profile::stamp(),

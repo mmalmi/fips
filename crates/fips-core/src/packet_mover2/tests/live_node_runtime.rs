@@ -716,6 +716,84 @@
     }
 
     #[test]
+    fn endpoint_event_output_delivers_endpoint_batches_to_direct_sink() {
+        let direct_batches = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_batches = Arc::clone(&direct_batches);
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let direct_sink =
+            crate::node::EndpointDirectSink::new(move |batch: crate::FipsEndpointDirectBatch| {
+                captured_batches
+                    .lock()
+                    .expect("direct batches lock")
+                    .push(batch.into_messages());
+                Ok::<(), crate::FipsEndpointDirectDeliveryError>(())
+            });
+        let mut endpoint_io = node
+            .attach_endpoint_data_io_with_direct_sink(8, direct_sink)
+            .expect("endpoint io");
+        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let first = opened_endpoint_output(owner, source_peer, 53, 0, b"direct-one");
+        let second = opened_endpoint_output(owner, source_peer, 54, 1, b"direct-two");
+        let mut tun = LiveTunRecorder::default();
+        let mut transport = PacketMover2TransportSendGroups::new();
+        let mut drops = Vec::new();
+
+        let sent = {
+            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            sink.send_batch([first, second], &mut drops)
+        };
+
+        assert_eq!(sent, 2);
+        assert!(drops.is_empty());
+        assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+        assert!(tun.outputs.is_empty());
+        assert!(transport.groups.is_empty());
+
+        let direct_batches = direct_batches.lock().expect("direct batches lock");
+        assert_eq!(direct_batches.len(), 1);
+        let messages = &direct_batches[0];
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].source_peer, source_peer);
+        assert_eq!(messages[0].data.as_slice(), b"direct-one");
+        assert_eq!(messages[1].source_peer, source_peer);
+        assert_eq!(messages[1].data.as_slice(), b"direct-two");
+    }
+
+    #[test]
+    fn endpoint_event_output_does_not_fallback_to_events_when_direct_sink_fails() {
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let direct_sink =
+            crate::node::EndpointDirectSink::new(|_batch: crate::FipsEndpointDirectBatch| {
+                Err(crate::FipsEndpointDirectDeliveryError::Unavailable)
+            });
+        let mut endpoint_io = node
+            .attach_endpoint_data_io_with_direct_sink(8, direct_sink)
+            .expect("endpoint io");
+        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let output = opened_endpoint_output(owner, source_peer, 55, 0, b"direct-fail");
+        let mut tun = LiveTunRecorder::default();
+        let mut transport = PacketMover2TransportSendGroups::new();
+
+        let sent = {
+            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
+            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            send_one_output(&mut sink, output)
+        };
+
+        assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
+        assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+        assert!(tun.outputs.is_empty());
+        assert!(transport.groups.is_empty());
+    }
+
+    #[test]
     fn transport_plan_output_takes_owned_wire_payload_from_live_sink() {
         let transport_id = TransportId::new(54);
         let remote_addr = TransportAddr::from_string("198.51.100.54:9000");

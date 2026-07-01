@@ -7,8 +7,8 @@ use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, Ud
 #[cfg(test)]
 use crate::node::ENDPOINT_EVENT_TEST_PAYLOAD_LEN;
 use crate::node::{
-    EndpointDataBatchTx, EndpointEventSender, NodeEndpointControlCommand, NodeEndpointDataBatch,
-    NodeEndpointEvent,
+    EndpointDataBatchTx, EndpointDirectSink, EndpointEventSender, NodeEndpointControlCommand,
+    NodeEndpointDataBatch, NodeEndpointEvent,
 };
 use crate::upper::tun::TunOutboundTx;
 use crate::{
@@ -30,6 +30,10 @@ mod status;
 #[cfg(test)]
 mod tests;
 
+pub use crate::node::{
+    FipsEndpointDirectBatch, FipsEndpointDirectDeliveryError, FipsEndpointDirectMessage,
+    FipsEndpointDirectSink,
+};
 pub use builder::FipsEndpointBuilder;
 use receive::EndpointReceiveState;
 pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};

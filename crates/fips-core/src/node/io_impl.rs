@@ -49,6 +49,22 @@ impl Node {
         &mut self,
         capacity: usize,
     ) -> Result<EndpointDataIo, NodeError> {
+        self.attach_endpoint_data_io_inner(capacity, None)
+    }
+
+    pub(crate) fn attach_endpoint_data_io_with_direct_sink(
+        &mut self,
+        capacity: usize,
+        direct_sink: EndpointDirectSink,
+    ) -> Result<EndpointDataIo, NodeError> {
+        self.attach_endpoint_data_io_inner(capacity, Some(direct_sink))
+    }
+
+    fn attach_endpoint_data_io_inner(
+        &mut self,
+        capacity: usize,
+        direct_sink: Option<EndpointDirectSink>,
+    ) -> Result<EndpointDataIo, NodeError> {
         if self.state != NodeState::Created {
             return Err(NodeError::Config(ConfigError::Validation(
                 "endpoint data I/O must be attached before node start".to_string(),
@@ -61,7 +77,8 @@ impl Node {
         // Endpoint events use one bounded app-data channel. Protocol/control
         // progress is reserved before endpoint payload delivery reaches this
         // queue.
-        let (event_tx, event_rx) = EndpointEventSender::channel(capacity);
+        let (event_tx, event_rx) =
+            EndpointEventSender::channel_with_direct_sink(capacity, direct_sink);
         self.endpoint_control_rx = Some(control_rx);
         self.endpoint_data_rx = Some(data_rx);
         self.endpoint_events.attach(event_tx.clone());
