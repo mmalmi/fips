@@ -505,10 +505,9 @@
         let header = FmpWireHeader::parse(&received.data).unwrap();
         assert_eq!(header.receiver_idx(), 1761);
         assert_eq!(header.counter(), 1760);
-        assert_eq!(
-            open_fmp_wire_payload(&received.data, key),
-            b"continuation"
-        );
+        let mut expected_payload = 234u32.to_le_bytes().to_vec();
+        expected_payload.extend_from_slice(b"continuation");
+        assert_eq!(open_fmp_wire_payload(&received.data, key), expected_payload);
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");
