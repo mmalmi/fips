@@ -437,6 +437,24 @@ impl AdmissionQueue {
         })
     }
 
+    fn admit_run_with_seq(&mut self, packets: Vec<SocketPacket>, first_seq: u64) -> bool {
+        let Some(first) = packets.first() else {
+            return false;
+        };
+        let owner = first.owner;
+        let lane = first.lane();
+        let mut ingress_seq = first_seq;
+        let queued = packets.into_iter().map(move |packet| {
+            let queued = QueuedPacket {
+                ingress_seq,
+                packet,
+            };
+            ingress_seq = ingress_seq.wrapping_add(1);
+            queued
+        });
+        self.queues.push_run_back(owner, lane, queued)
+    }
+
     fn pop_next_run(
         &mut self,
         priority_only: bool,

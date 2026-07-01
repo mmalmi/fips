@@ -7,6 +7,7 @@ pub(crate) struct PacketMover2TurnDriver {
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,
     output_rewrite_buffer: Vec<PacketOutput>,
+    raw_socket_packets: Vec<SocketPacket>,
     retired: Vec<RetiredPacket>,
     transport_output: PacketMover2TransportSendPlanOutput,
     drops: Vec<PacketDrop>,
@@ -34,6 +35,7 @@ impl PacketMover2TurnDriver {
             output_drops: Vec::new(),
             outputs: Vec::new(),
             output_rewrite_buffer: Vec::new(),
+            raw_socket_packets: Vec::new(),
             retired: Vec::new(),
             transport_output: PacketMover2TransportSendPlanOutput::new(),
             drops: Vec::new(),
@@ -483,9 +485,20 @@ impl PacketMover2TurnDriver {
             outbound_buffers = outbound_source.take_report_buffers();
         }
 
-        raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
-            self.admit_raw_ingress_packet(packet, routes, &mut summary);
-        });
+        let mut raw_socket_packets = std::mem::take(&mut self.raw_socket_packets);
+        raw_socket_packets.clear();
+        {
+            let raw_ingress_drops = &mut self.raw_ingress_drops;
+            raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
+                if let Some(socket_packet) =
+                    Self::raw_ingress_socket_packet(packet, routes, &mut summary, raw_ingress_drops)
+                {
+                    raw_socket_packets.push(socket_packet);
+                }
+            });
+        }
+        self.admit_socket_packets(&mut raw_socket_packets, &mut summary);
+        self.raw_socket_packets = raw_socket_packets;
 
         let remaining_outbound_limit =
             outbound_limit.saturating_sub(outbound_drained.min(outbound_limit));
@@ -588,6 +601,7 @@ impl PacketMover2TurnDriver {
     fn reset_turn_buffers(&mut self) {
         self.outputs.clear();
         self.output_rewrite_buffer.clear();
+        self.raw_socket_packets.clear();
         self.retired.clear();
         self.transport_output.clear();
         self.drops.clear();
@@ -608,41 +622,55 @@ impl PacketMover2TurnDriver {
     ) where
         R: PacketMover2IngressRouter,
     {
+        let Some(socket_packet) =
+            Self::raw_ingress_socket_packet(packet, router, summary, &mut self.raw_ingress_drops)
+        else {
+            return;
+        };
+        self.admit_socket_packet(socket_packet, summary);
+    }
+
+    fn raw_ingress_socket_packet<R>(
+        packet: PacketMover2RawIngress,
+        router: &mut R,
+        summary: &mut PacketMover2RuntimeSummary,
+        raw_ingress_drops: &mut Vec<PacketMover2RawIngressDrop>,
+    ) -> Option<SocketPacket>
+    where
+        R: PacketMover2IngressRouter,
+    {
         let header = match packet.protocol {
             PacketProtocol::Fmp => match FmpWireHeader::parse(&packet.payload) {
                 Ok(header) => PacketMover2IngressHeader::Fmp(header),
                 Err(error) => {
                     summary.raw_ingress_dropped += 1;
-                    self.raw_ingress_drops
-                        .push(PacketMover2RawIngressDrop::from_packet(
-                            packet,
-                            PacketMover2RawIngressDropReason::Wire(error),
-                        ));
-                    return;
+                    raw_ingress_drops.push(PacketMover2RawIngressDrop::from_packet(
+                        packet,
+                        PacketMover2RawIngressDropReason::Wire(error),
+                    ));
+                    return None;
                 }
             },
             PacketProtocol::Fsp => match FspWireHeader::parse(&packet.payload) {
                 Ok(header) => PacketMover2IngressHeader::Fsp(header),
                 Err(error) => {
                     summary.raw_ingress_dropped += 1;
-                    self.raw_ingress_drops
-                        .push(PacketMover2RawIngressDrop::from_packet(
-                            packet,
-                            PacketMover2RawIngressDropReason::Wire(error),
-                        ));
-                    return;
+                    raw_ingress_drops.push(PacketMover2RawIngressDrop::from_packet(
+                        packet,
+                        PacketMover2RawIngressDropReason::Wire(error),
+                    ));
+                    return None;
                 }
             },
         };
 
         let Some(route) = router.route(&packet, header) else {
             summary.raw_ingress_dropped += 1;
-            self.raw_ingress_drops
-                .push(PacketMover2RawIngressDrop::from_packet(
-                    packet,
-                    PacketMover2RawIngressDropReason::Unrouted,
-                ));
-            return;
+            raw_ingress_drops.push(PacketMover2RawIngressDrop::from_packet(
+                packet,
+                PacketMover2RawIngressDropReason::Unrouted,
+            ));
+            return None;
         };
 
         let wire_flags = header.flags();
@@ -673,7 +701,7 @@ impl PacketMover2TurnDriver {
         }
         socket_packet = socket_packet.with_ce_flag(ce_flag);
         socket_packet = socket_packet.with_wire_flags(wire_flags);
-        self.admit_socket_packet(socket_packet, summary);
+        Some(socket_packet)
     }
 
     fn admit_socket_packet(
@@ -684,6 +712,27 @@ impl PacketMover2TurnDriver {
         match self.mover.submit_socket_packet(packet) {
             Ok(_) => summary.inbound_admitted += 1,
             Err(_) => summary.inbound_dropped += 1,
+        }
+    }
+
+    fn admit_socket_packets(
+        &mut self,
+        packets: &mut Vec<SocketPacket>,
+        summary: &mut PacketMover2RuntimeSummary,
+    ) {
+        match packets.len() {
+            0 => {}
+            1 => {
+                let packet = packets.pop().expect("checked one packet");
+                self.admit_socket_packet(packet, summary);
+            }
+            _ => {
+                let capacity = packets.capacity();
+                let batch = std::mem::replace(packets, Vec::with_capacity(capacity));
+                let (admitted, dropped) = self.mover.submit_socket_packet_batch(batch);
+                summary.inbound_admitted = summary.inbound_admitted.saturating_add(admitted);
+                summary.inbound_dropped = summary.inbound_dropped.saturating_add(dropped);
+            }
         }
     }
 

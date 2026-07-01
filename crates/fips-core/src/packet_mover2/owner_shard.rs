@@ -198,6 +198,14 @@ impl PacketMover2OwnerShard {
         self.admission.admit_with_seq(packet, ingress_seq)
     }
 
+    fn submit_socket_packet_run_with_seq(
+        &mut self,
+        packets: Vec<SocketPacket>,
+        first_seq: u64,
+    ) -> bool {
+        self.admission.admit_run_with_seq(packets, first_seq)
+    }
+
     fn submit_outbound_packet_with_seq(
         &mut self,
         packet: OutboundPacket,
