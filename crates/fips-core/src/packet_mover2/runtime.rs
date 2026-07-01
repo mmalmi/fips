@@ -3,7 +3,7 @@ pub(crate) struct PacketMover2TurnDriver {
     mover: PacketMover2,
     prepared_work: Vec<PreparedCryptoWork>,
     completion_work: Vec<CryptoCompletion>,
-    completion_batches: Vec<Vec<CryptoCompletion>>,
+    completion_batches: Vec<CryptoCompletionBatch>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     output_drops: Vec<PacketMover2OutputDrop>,
     outputs: Vec<PacketOutput>,

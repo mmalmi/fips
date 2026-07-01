@@ -469,55 +469,37 @@ impl PacketMover2 {
     }
 
     fn queue_completion_batch(&mut self, completions: &mut Vec<CryptoCompletion>) -> usize {
-        let count = completions.len();
-        let mut batch_shard = None;
-        let mut batch = Vec::new();
-        for completion in completions.drain(..) {
-            let shard = completion.reservation.owner_shard();
-            if shard >= self.shards.len() {
-                let drop =
-                    PacketDrop::from_completion(&completion, PacketDropReason::UnknownOwner, None);
-                self.drops.push(drop);
-                continue;
-            }
-            debug_assert_eq!(shard, self.owner_shard_index(completion.reservation.owner));
-            if batch_shard == Some(shard) {
-                batch.push(completion);
-                continue;
-            }
-            self.queue_completion_run(batch_shard, &mut batch);
-            batch_shard = Some(shard);
-            batch.push(completion);
-        }
-        self.queue_completion_run(batch_shard, &mut batch);
+        let mut batches = Vec::new();
+        let count =
+            CryptoCompletionBatch::drain_completion_vec_into_batches(completions, &mut batches);
+        self.queue_completion_batches(&mut batches);
         count
     }
 
-    fn queue_completion_batches(&mut self, batches: &mut Vec<Vec<CryptoCompletion>>) -> usize {
+    fn queue_completion_batches(&mut self, batches: &mut Vec<CryptoCompletionBatch>) -> usize {
         let mut count = 0usize;
-        for mut batch in batches.drain(..) {
+        for batch in batches.drain(..) {
             count = count.saturating_add(batch.len());
-            self.queue_completion_batch(&mut batch);
+            self.queue_completion_run(batch);
         }
         count
     }
 
-    fn queue_completion_run(&mut self, shard: Option<usize>, batch: &mut Vec<CryptoCompletion>) {
-        let Some(shard) = shard else {
-            return;
-        };
+    fn queue_completion_run(&mut self, batch: CryptoCompletionBatch) {
         if batch.is_empty() {
             return;
         }
+        let shard = batch.owner_shard();
+        let expected_shard = self.owner_shard_index(batch.owner());
         let Some(owner_shard) = self.shards.get_mut(shard) else {
-            for completion in batch.drain(..) {
+            for completion in batch.into_completions() {
                 let drop =
                     PacketDrop::from_completion(&completion, PacketDropReason::UnknownOwner, None);
                 self.drops.push(drop);
             }
             return;
         };
-        let batch = std::mem::take(batch);
+        debug_assert_eq!(shard, expected_shard);
         if owner_shard.queue_completion_batch(batch) {
             self.completion_ready_shards.mark(shard);
         }

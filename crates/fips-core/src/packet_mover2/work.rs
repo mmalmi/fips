@@ -16,6 +16,124 @@ pub(crate) struct CryptoCompletion {
     result: CryptoResult,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CryptoCompletionSource {
+    Open,
+    Seal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CryptoCompletionBatch {
+    owner_shard: usize,
+    owner: OwnerId,
+    generation: u64,
+    lane: Lane,
+    source: CryptoCompletionSource,
+    completions: Vec<CryptoCompletion>,
+}
+
+impl CryptoCompletion {
+    fn source(&self) -> CryptoCompletionSource {
+        match &self.result {
+            CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => {
+                CryptoCompletionSource::Open
+            }
+            CryptoResult::Sealed(_)
+            | CryptoResult::Outbound(_)
+            | CryptoResult::Failed(CryptoFailureKind::Seal) => CryptoCompletionSource::Seal,
+        }
+    }
+}
+
+impl CryptoCompletionBatch {
+    pub(crate) fn from_completion(completion: CryptoCompletion) -> Self {
+        let owner_shard = completion.reservation.owner_shard();
+        let owner = completion.reservation.owner;
+        let generation = completion.reservation.generation;
+        let lane = completion.reservation.lane;
+        let source = completion.source();
+        Self {
+            owner_shard,
+            owner,
+            generation,
+            lane,
+            source,
+            completions: vec![completion],
+        }
+    }
+
+    pub(crate) fn push_grouped(
+        completion: CryptoCompletion,
+        batches: &mut Vec<CryptoCompletionBatch>,
+    ) {
+        if let Some(last) = batches.last_mut()
+            && last.matches(&completion)
+        {
+            last.completions.push(completion);
+            return;
+        }
+        batches.push(Self::from_completion(completion));
+    }
+
+    pub(crate) fn drain_completion_vec_into_batches(
+        completions: &mut Vec<CryptoCompletion>,
+        batches: &mut Vec<CryptoCompletionBatch>,
+    ) -> usize {
+        let count = completions.len();
+        for completion in completions.drain(..) {
+            Self::push_grouped(completion, batches);
+        }
+        count
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.completions.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.completions.is_empty()
+    }
+
+    pub(crate) fn owner_shard(&self) -> usize {
+        self.owner_shard
+    }
+
+    pub(crate) fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    pub(crate) fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    pub(crate) fn source(&self) -> CryptoCompletionSource {
+        self.source
+    }
+
+    pub(crate) fn split_off(&mut self, at: usize) -> Self {
+        Self {
+            owner_shard: self.owner_shard,
+            owner: self.owner,
+            generation: self.generation,
+            lane: self.lane,
+            source: self.source,
+            completions: self.completions.split_off(at),
+        }
+    }
+
+    pub(crate) fn into_completions(self) -> Vec<CryptoCompletion> {
+        self.completions
+    }
+
+    fn matches(&self, completion: &CryptoCompletion) -> bool {
+        self.owner_shard == completion.reservation.owner_shard()
+            && self.owner == completion.reservation.owner
+            && self.generation == completion.reservation.generation
+            && self.lane == completion.reservation.lane
+            && self.source == completion.source()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CryptoResult {
     Opened(PacketOutput),

@@ -1730,8 +1730,26 @@ impl OwnerState {
         completion: CryptoCompletion,
         retired: &mut Vec<RetiredPacket>,
     ) {
-        self.pending.insert(completion.reservation.order, completion);
+        self.stage_retire_completion(completion);
+        self.drain_ready_retirements_into(retired);
+    }
 
+    pub(crate) fn retire_batch_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut Vec<RetiredPacket>,
+    ) {
+        for completion in batch.into_completions() {
+            self.stage_retire_completion(completion);
+        }
+        self.drain_ready_retirements_into(retired);
+    }
+
+    fn stage_retire_completion(&mut self, completion: CryptoCompletion) {
+        self.pending.insert(completion.reservation.order, completion);
+    }
+
+    fn drain_ready_retirements_into(&mut self, retired: &mut Vec<RetiredPacket>) {
         while let Some(completion) = self.pending.remove(&OrderToken(self.next_retire)) {
             self.next_retire = self.next_retire.wrapping_add(1);
             self.in_flight = self.in_flight.saturating_sub(1);

@@ -3,7 +3,7 @@ struct PacketMover2OwnerShard {
     index: usize,
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
-    completed: VecDeque<Vec<CryptoCompletion>>,
+    completed: VecDeque<CryptoCompletionBatch>,
     owners: HashMap<OwnerId, OwnerState>,
 }
 
@@ -429,22 +429,37 @@ impl PacketMover2OwnerShard {
         retired: &mut Vec<RetiredPacket>,
         drops: &mut Vec<PacketDrop>,
     ) {
+        self.retire_completion_batch_into(
+            CryptoCompletionBatch::from_completion(completion),
+            retired,
+            drops,
+        );
+    }
+
+    pub(crate) fn retire_completion_batch_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut Vec<RetiredPacket>,
+        drops: &mut Vec<PacketDrop>,
+    ) {
         let _timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2Retire);
-        let owner_id = completion.reservation.owner;
+        let owner_id = batch.owner();
         let Some(owner) = self.owners.get_mut(&owner_id) else {
-            let drop = PacketDrop::from_completion(
-                &completion,
-                PacketDropReason::UnknownOwner,
-                None,
-            );
-            drops.push(drop.clone());
-            retired.push(RetiredPacket::Drop(drop));
+            for completion in batch.into_completions() {
+                let drop = PacketDrop::from_completion(
+                    &completion,
+                    PacketDropReason::UnknownOwner,
+                    None,
+                );
+                drops.push(drop.clone());
+                retired.push(RetiredPacket::Drop(drop));
+            }
             return;
         };
         let retired_start = retired.len();
         let before_in_flight = owner.in_flight;
-        owner.retire_into(completion, retired);
+        owner.retire_batch_into(batch, retired);
         if owner.in_flight < before_in_flight {
             self.admission.wake_owner(owner_id);
             self.outbound_admission.wake_owner(owner_id);
@@ -457,15 +472,15 @@ impl PacketMover2OwnerShard {
     }
 
     fn queue_completion(&mut self, completion: CryptoCompletion) -> bool {
-        self.queue_completion_batch(vec![completion])
+        self.queue_completion_batch(CryptoCompletionBatch::from_completion(completion))
     }
 
-    fn queue_completion_batch(&mut self, completions: Vec<CryptoCompletion>) -> bool {
-        if completions.is_empty() {
+    fn queue_completion_batch(&mut self, batch: CryptoCompletionBatch) -> bool {
+        if batch.is_empty() {
             return false;
         }
         let was_empty = self.completed.is_empty();
-        self.completed.push_back(completions);
+        self.completed.push_back(batch);
         was_empty
     }
 
@@ -486,10 +501,9 @@ impl PacketMover2OwnerShard {
             } else {
                 None
             };
-            for completion in batch {
-                self.retire_completion_into(completion, retired, drops);
-                retired_count = retired_count.saturating_add(1);
-            }
+            let batch_len = batch.len();
+            self.retire_completion_batch_into(batch, retired, drops);
+            retired_count = retired_count.saturating_add(batch_len);
             if let Some(pending) = pending {
                 self.completed.push_front(pending);
                 break;
