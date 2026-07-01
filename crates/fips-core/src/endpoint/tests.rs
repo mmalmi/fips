@@ -103,12 +103,16 @@ async fn endpoint_data_batch_enqueue_drops_when_full() {
 
     let queued_data = NodeEndpointDataBatch::batch(remote, vec![vec![0, 1, 2, 3]], None)
         .expect("one-packet endpoint data batch");
-    queue_endpoint_data_batch(queued_data, &batch_tx)
+    batch_tx
+        .send_or_drop(queued_data)
+        .map_err(|_| FipsEndpointError::Closed)
         .expect("first endpoint data batch should enqueue");
 
     let dropped_tcp = NodeEndpointDataBatch::batch(remote, vec![ipv6_tcp_packet(0x18, 512)], None)
         .expect("one-packet endpoint data batch");
-    queue_endpoint_data_batch(dropped_tcp, &batch_tx)
+    batch_tx
+        .send_or_drop(dropped_tcp)
+        .map_err(|_| FipsEndpointError::Closed)
         .expect("endpoint data batch should be accepted as dropped");
 
     let first = batch_rx
@@ -128,14 +132,17 @@ async fn endpoint_data_batch_lane_charges_batches_by_packet_count() {
     let payloads = vec![vec![0, 1, 2, 3], vec![4, 5, 6, 7]];
     let batch = NodeEndpointDataBatch::batch(remote, payloads, None).expect("non-empty batch");
 
-    queue_endpoint_data_batch(batch, &batch_tx)
+    batch_tx
+        .send_or_drop(batch)
+        .map_err(|_| FipsEndpointError::Closed)
         .expect("two-packet batch should fill the two-packet lane");
-    queue_endpoint_data_batch(
-        NodeEndpointDataBatch::batch(remote, vec![vec![8, 9, 10, 11]], None)
-            .expect("one-packet endpoint data batch"),
-        &batch_tx,
-    )
-    .expect("overflowing endpoint data batch should be accepted as dropped");
+    batch_tx
+        .send_or_drop(
+            NodeEndpointDataBatch::batch(remote, vec![vec![8, 9, 10, 11]], None)
+                .expect("one-packet endpoint data batch"),
+        )
+        .map_err(|_| FipsEndpointError::Closed)
+        .expect("overflowing endpoint data batch should be accepted as dropped");
 
     let first = batch_rx
         .try_recv()

@@ -83,8 +83,7 @@
         let mut fsp_routes = PacketMover2LiveOwnerRoutes::new();
         fsp_routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(
             fsp_source,
-            PacketMover2EndpointDataRoute::fsp(fsp_owner, 1, 0, 0)
-                .with_max_payload_len(64),
+            PacketMover2EndpointDataRoute::fsp(fsp_owner, 1, 0, 0),
         ));
         let mut fmp_routes = PacketMover2LiveOwnerRoutes::new();
         fmp_routes.push_tun_destination(PacketMover2LiveTunRoute::new(

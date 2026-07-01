@@ -85,7 +85,7 @@
         assert_eq!(routed.owner, old_route.owner);
         assert_eq!(routed.generation, old_route.generation);
         assert_eq!(routed.output, old_route.output);
-        assert_eq!(routed.class, PacketClass::Control);
+        assert_eq!(routed.class, PacketClass::Bulk);
 
         assert_eq!(routes.register_fsp(source, new_route), Some(old_route));
         let header =

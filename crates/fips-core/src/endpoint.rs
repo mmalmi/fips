@@ -338,7 +338,9 @@ impl FipsEndpoint {
         // per-packet oneshot or control-command hop.
         let batch = NodeEndpointDataBatch::batch(remote, vec![data], crate::perf_profile::stamp())
             .expect("one-packet endpoint data batch");
-        queue_endpoint_data_batch(batch, &self.endpoint_data_batches)?;
+        self.endpoint_data_batches
+            .send_or_drop(batch)
+            .map_err(|_| FipsEndpointError::Closed)?;
         Ok(())
     }
 
@@ -378,7 +380,9 @@ impl FipsEndpoint {
             let Some(batch) = NodeEndpointDataBatch::batch(remote, payload_batch, queued_at) else {
                 continue;
             };
-            queue_endpoint_data_batch(batch, &self.endpoint_data_batches)?;
+            self.endpoint_data_batches
+                .send_or_drop(batch)
+                .map_err(|_| FipsEndpointError::Closed)?;
         }
         Ok(())
     }
@@ -515,7 +519,9 @@ impl FipsEndpoint {
         }
         let batch = NodeEndpointDataBatch::batch(remote, vec![data], crate::perf_profile::stamp())
             .expect("one-packet endpoint data batch");
-        queue_endpoint_data_batch(batch, &self.endpoint_data_batches)?;
+        self.endpoint_data_batches
+            .send_or_drop(batch)
+            .map_err(|_| FipsEndpointError::Closed)?;
         Ok(())
     }
 
@@ -796,12 +802,4 @@ impl Drop for FipsEndpoint {
             task.abort();
         }
     }
-}
-
-fn queue_endpoint_data_batch(
-    batch: NodeEndpointDataBatch,
-    tx: &EndpointDataBatchTx,
-) -> Result<(), FipsEndpointError> {
-    tx.send_or_drop(batch)
-        .map_err(|_| FipsEndpointError::Closed)
 }

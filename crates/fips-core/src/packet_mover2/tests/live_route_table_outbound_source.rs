@@ -191,12 +191,10 @@
         let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_endpoint_destination(
             *remote.node_addr(),
-            PacketMover2EndpointDataRoute::fsp(owner, 7, 0x03, 0x09)
-                .with_max_payload_len(64),
+            PacketMover2EndpointDataRoute::fsp(owner, 7, 0x03, 0x09),
         );
         let app_payload = app_endpoint_payload();
         let bulk_payload = bulk_endpoint_payload();
-        let oversized_payload = vec![0xaa; 65];
         let missing_payload = b"missing-route".to_vec();
         let (bulk_tx, mut bulk_rx) = endpoint_data_batch_channel(8);
         bulk_tx
@@ -206,7 +204,6 @@
                     vec![
                         app_payload.clone(),
                         bulk_payload.clone(),
-                        oversized_payload.clone(),
                     ],
                     None,
                 )
@@ -255,14 +252,7 @@
         );
         assert_eq!(outbound[1].payload.as_ref(), bulk_payload.as_slice());
         let report = source.take_report_buffers();
-        let drops = report.endpoint_drops;
-        assert_eq!(drops.len(), 1);
-        assert_eq!(drops[0].dest_addr(), *remote.node_addr());
-        assert_eq!(drops[0].payload_len(), oversized_payload.len());
-        assert_eq!(
-            drops[0].reason(),
-            PacketMover2EndpointDataDropReason::MtuExceeded
-        );
+        assert!(report.endpoint_drops.is_empty());
         let deferred = report.deferred_endpoint_data_batches;
         assert_eq!(deferred.len(), 1);
         assert_eq!(deferred[0].packet_count(), 1);
@@ -354,8 +344,7 @@
         let mut routes = PacketMover2LiveRouteTable::default();
         routes.register_endpoint_destination(
             *remote.node_addr(),
-            PacketMover2EndpointDataRoute::fsp(owner, 7, 0x03, 0x09)
-                .with_max_payload_len(64),
+            PacketMover2EndpointDataRoute::fsp(owner, 7, 0x03, 0x09),
         );
 
         let first_bulk_payload = b"first-bulk".to_vec();

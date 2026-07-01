@@ -47,7 +47,6 @@ pub(crate) struct PacketMover2EndpointDataRoute {
     flags: u8,
     inner_flags: u8,
     fsp_cleartext_prefix: Vec<u8>,
-    max_payload_len: Option<usize>,
 }
 
 impl PacketMover2EndpointDataRoute {
@@ -58,17 +57,11 @@ impl PacketMover2EndpointDataRoute {
             flags,
             inner_flags,
             fsp_cleartext_prefix: Vec::new(),
-            max_payload_len: None,
         }
     }
 
     pub(crate) fn with_fsp_cleartext_prefix(mut self, prefix: Vec<u8>) -> Self {
         self.fsp_cleartext_prefix = prefix;
-        self
-    }
-
-    pub(crate) fn with_max_payload_len(mut self, max_payload_len: usize) -> Self {
-        self.max_payload_len = Some(max_payload_len);
         self
     }
 
@@ -107,12 +100,6 @@ impl PacketMover2EndpointDataRoute {
         &self,
         payload_len: usize,
     ) -> Result<(), PacketMover2EndpointDataDropReason> {
-        if self
-            .max_payload_len
-            .is_some_and(|max_payload_len| payload_len > max_payload_len)
-        {
-            return Err(PacketMover2EndpointDataDropReason::MtuExceeded);
-        }
         let max_fsp_payload = u16::MAX as usize - crate::node::session_wire::FSP_INNER_HEADER_SIZE;
         if payload_len > max_fsp_payload {
             return Err(PacketMover2EndpointDataDropReason::InvalidPayload);
@@ -140,7 +127,6 @@ impl PacketMover2EndpointDataRoute {
 pub(crate) enum PacketMover2EndpointDataDropReason {
     InvalidPayload,
     NoRoute,
-    MtuExceeded,
     StaleQueuedBatch,
 }
 
