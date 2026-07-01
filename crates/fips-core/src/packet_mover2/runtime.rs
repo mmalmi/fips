@@ -62,8 +62,8 @@ impl PacketMover2TurnDriver {
         self.mover.register_owner(owner, config);
     }
 
-    pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> bool {
-        self.mover.unregister_owner(owner)
+    pub(crate) fn unregister_owner(&mut self, owner: OwnerId) {
+        self.mover.unregister_owner(owner);
     }
 
     pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {

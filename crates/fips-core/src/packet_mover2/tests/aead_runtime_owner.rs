@@ -1445,10 +1445,9 @@
         assert_eq!(work.len(), 1);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 1);
 
-        let worker = StatelessAeadOpenWorker;
         let open_work =
             AeadOpenWork::from_crypto_work(work.pop().unwrap(), test_key(open_key)).unwrap();
-        let completion = worker.execute(open_work);
+        let completion = open_work.execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 8);
@@ -1508,11 +1507,12 @@
         let mut work = dispatch_available(&mut driver.mover, 8);
         assert_eq!(work.len(), 3);
 
-        let worker = StatelessAeadOpenWorker;
         let mut completions = work
             .drain(..)
             .map(|work| {
-                worker.execute(AeadOpenWork::from_crypto_work(work, test_key(open_key)).unwrap())
+                AeadOpenWork::from_crypto_work(work, test_key(open_key))
+                    .unwrap()
+                    .execute()
             })
             .collect::<VecDeque<_>>();
         let third = completions.pop_back().unwrap();
@@ -1613,11 +1613,12 @@
         assert_eq!(work.len(), 3);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 3);
 
-        let worker = StatelessAeadOpenWorker;
         let mut completions = work
             .drain(..)
             .map(|work| {
-                worker.execute(AeadOpenWork::from_crypto_work(work, test_key(open_key)).unwrap())
+                AeadOpenWork::from_crypto_work(work, test_key(open_key))
+                    .unwrap()
+                    .execute()
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -1712,13 +1713,18 @@
         assert_eq!(new_work.len(), 1);
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 2);
 
-        let worker = StatelessAeadOpenWorker;
-        let old_completion = worker.execute(
-            AeadOpenWork::from_crypto_work(old_work.pop().unwrap(), test_key(open_key)).unwrap(),
-        );
-        let new_completion = worker.execute(
-            AeadOpenWork::from_crypto_work(new_work.pop().unwrap(), test_key(open_key)).unwrap(),
-        );
+        let old_completion = AeadOpenWork::from_crypto_work(
+            old_work.pop().unwrap(),
+            test_key(open_key),
+        )
+        .unwrap()
+        .execute();
+        let new_completion = AeadOpenWork::from_crypto_work(
+            new_work.pop().unwrap(),
+            test_key(open_key),
+        )
+        .unwrap()
+        .execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [new_completion], 8);
@@ -1807,11 +1813,10 @@
             ))
             .unwrap();
 
-        let worker = StatelessAeadSealWorker;
-        let completion = worker.execute(
+        let completion =
             AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(seal_key))
-                .unwrap(),
-        );
+                .unwrap()
+                .execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 1);
@@ -1881,10 +1886,10 @@
         assert_eq!(seal_work.len(), 1);
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 1);
 
-        let worker = StatelessAeadSealWorker;
-        let completion = worker.execute(
-            AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(fsp_key)).unwrap(),
-        );
+        let completion =
+            AeadSealWork::from_outbound_work(seal_work.pop().unwrap(), test_key(fsp_key))
+                .unwrap()
+                .execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 1);

@@ -19,11 +19,7 @@ impl PreparedCryptoWork {
         Self::Completed(failed_crypto_completion(reservation, kind))
     }
 
-    pub(crate) fn execute(
-        self,
-        opened: &StatelessAeadOpenWorker,
-        sealed: &StatelessAeadSealWorker,
-    ) -> CryptoCompletion {
+    pub(crate) fn execute(self) -> CryptoCompletion {
         match self {
             Self::Open { work, cipher } => {
                 let reservation = work.reservation.clone();
@@ -31,7 +27,7 @@ impl PreparedCryptoWork {
                     crate::perf_profile::Stage::PacketMover2AeadOpen,
                 );
                 match AeadOpenWork::from_crypto_work(work, cipher) {
-                    Ok(work) => opened.execute(work),
+                    Ok(work) => work.execute(),
                     Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Open),
                 }
             }
@@ -44,7 +40,7 @@ impl PreparedCryptoWork {
                     crate::perf_profile::Stage::PacketMover2AeadSeal,
                 );
                 match AeadSealWork::from_outbound_work(work, cipher) {
-                    Ok(work) => sealed.execute(work),
+                    Ok(work) => work.execute(),
                     Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Seal),
                 }
             }
@@ -563,8 +559,6 @@ fn spawn_packet_mover2_aead_workers(
                     }
                 ))
                 .spawn(move || {
-                    let opened = StatelessAeadOpenWorker;
-                    let sealed = StatelessAeadSealWorker;
                     while let Ok(job) = work_rx.recv() {
                         crate::perf_profile::record_since(
                             crate::perf_profile::Stage::PacketMover2AeadWorkerQueueWait,
@@ -574,7 +568,7 @@ fn spawn_packet_mover2_aead_workers(
                         let bulk_count = job.bulk_count;
                         let mut completions = Vec::with_capacity(count);
                         for work in job.work {
-                            completions.push(work.execute(&opened, &sealed));
+                            completions.push(work.execute());
                         }
                         if completion_tx.send(completions).is_err() {
                             in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
@@ -708,13 +702,8 @@ impl AeadOpenWork {
             ciphertext_offset,
         })
     }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct StatelessAeadOpenWorker;
-
-impl StatelessAeadOpenWorker {
-    pub(crate) fn execute(&self, mut work: AeadOpenWork) -> CryptoCompletion {
+    pub(crate) fn execute(self) -> CryptoCompletion {
+        let mut work = self;
         let reservation = work.work.reservation;
         let target = work.work.packet.output;
         let header = work.header;
@@ -850,14 +839,8 @@ impl AeadSealWork {
             ciphertext_offset,
         })
     }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct StatelessAeadSealWorker;
-
-impl StatelessAeadSealWorker {
-    pub(crate) fn execute(&self, work: AeadSealWork) -> CryptoCompletion {
-        let mut work = work;
+    pub(crate) fn execute(self) -> CryptoCompletion {
+        let mut work = self;
         let reservation = work.work.reservation;
         let tag = if work.aad_len <= work.ciphertext_offset
             && work.ciphertext_offset <= work.work.packet.payload.len()

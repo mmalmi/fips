@@ -39,10 +39,7 @@
     }
 
     #[derive(Debug, Default)]
-    struct InlinePacketMover2CryptoExecutor {
-        opened: StatelessAeadOpenWorker,
-        sealed: StatelessAeadSealWorker,
-    }
+    struct InlinePacketMover2CryptoExecutor;
 
     impl PacketMover2CryptoExecutor for InlinePacketMover2CryptoExecutor {
         fn execute_prepared_chunk(
@@ -53,7 +50,7 @@
             completions.clear();
             let count = prepared.len();
             for work in prepared.drain(..) {
-                completions.push(work.execute(&self.opened, &self.sealed));
+                completions.push(work.execute());
             }
             count
         }
@@ -213,49 +210,31 @@
         }
     }
 
-    trait PacketMover2LiveIngressDrain {
-        fn drain_live_ingress<F>(&mut self, limit: usize, push: F) -> usize
-        where
-            F: FnMut(PacketMover2LiveIngressPacket);
-    }
-
-    impl PacketMover2LiveIngressDrain for VecDeque<PacketMover2LiveIngressPacket> {
-        fn drain_live_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
-        where
-            F: FnMut(PacketMover2LiveIngressPacket),
-        {
-            let mut drained = 0;
-            while drained < limit {
-                let Some(packet) = self.pop_front() else {
-                    break;
-                };
-                push(packet);
-                drained += 1;
-            }
-            drained
-        }
-    }
-
     #[derive(Clone, Debug)]
-    struct PacketMover2LiveRawIngressSource<S> {
-        source: S,
+    struct PacketMover2LiveRawIngressSource {
+        source: VecDeque<PacketMover2LiveIngressPacket>,
     }
 
-    impl<S> PacketMover2LiveRawIngressSource<S> {
-        fn new(source: S) -> Self {
+    impl PacketMover2LiveRawIngressSource {
+        fn new(source: VecDeque<PacketMover2LiveIngressPacket>) -> Self {
             Self { source }
         }
     }
 
-    impl<S: PacketMover2LiveIngressDrain> PacketMover2RawIngressSource
-        for PacketMover2LiveRawIngressSource<S>
-    {
+    impl PacketMover2RawIngressSource for PacketMover2LiveRawIngressSource {
         fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
         where
             F: FnMut(PacketMover2RawIngress),
         {
-            self.source
-                .drain_live_ingress(limit, |packet| push(packet.into_raw_ingress()))
+            let mut drained = 0;
+            while drained < limit {
+                let Some(packet) = self.source.pop_front() else {
+                    break;
+                };
+                push(packet.into_raw_ingress());
+                drained += 1;
+            }
+            drained
         }
     }
 
@@ -974,7 +953,9 @@
     }
 
     fn open_aead_completion(work: CryptoWork, key: u8) -> CryptoCompletion {
-        StatelessAeadOpenWorker.execute(AeadOpenWork::from_crypto_work(work, test_key(key)).unwrap())
+        AeadOpenWork::from_crypto_work(work, test_key(key))
+            .unwrap()
+            .execute()
     }
 
     fn retire_completion(
