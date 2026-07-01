@@ -252,7 +252,7 @@
                     93_000,
                 ),
             )]));
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
@@ -267,7 +267,7 @@
                 &mut raw_source,
                 8,
                 PacketMover2LiveOutboundFirsts::default(),
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,

@@ -55,33 +55,23 @@ impl Node {
             )));
         }
 
-        let command_capacity = endpoint_data_command_capacity(capacity);
-        let (priority_command_tx, priority_command_rx) =
-            tokio::sync::mpsc::channel(command_capacity);
+        let command_capacity = capacity.max(1);
+        let (control_command_tx, control_command_rx) = tokio::sync::mpsc::channel(command_capacity);
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(command_capacity);
-        // Endpoint events keep priority delivery wait-free and bound bulk
-        // backlog by the caller's packet-channel capacity.
+        // Endpoint events use one bounded app-data channel. Protocol/control
+        // progress is reserved before endpoint payload delivery reaches this
+        // queue.
         let (event_tx, event_rx) = EndpointEventSender::channel(capacity);
-        self.endpoint_priority_command_rx = Some(priority_command_rx);
+        self.endpoint_control_command_rx = Some(control_command_rx);
         self.endpoint_command_rx = Some(command_rx);
         self.endpoint_events.attach(event_tx.clone());
 
         Ok(EndpointDataIo {
-            priority_command_tx,
+            control_command_tx,
             command_tx,
             event_rx,
             event_tx,
         })
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn begin_endpoint_event_batch(&mut self) {
-        self.endpoint_events.begin_batch();
-    }
-
-    #[cfg(test)]
-    pub(in crate::node) fn finish_endpoint_event_batch(&mut self) {
-        self.endpoint_events.finish_batch();
     }
 
     #[allow(clippy::result_large_err)]

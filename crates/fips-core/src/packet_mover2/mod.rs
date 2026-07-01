@@ -22,8 +22,8 @@
 //! keep reserved progress outside bulk pressure.
 
 use crate::node::{
-    EndpointCommandLane, EndpointDataPayload, EndpointDataSend, EndpointEventSender,
-    EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
+    EndpointDataPayload, EndpointDataSend, EndpointEventSender, EndpointSendBatchCommand,
+    EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
 };
 use crate::transport::{
     PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,

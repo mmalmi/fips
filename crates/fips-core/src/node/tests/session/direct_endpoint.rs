@@ -165,14 +165,11 @@ fn test_endpoint_data_batch_flushes_after_session_establishment() {
             crate::node::EndpointDataPayload::new(b"ping-1".to_vec()),
             crate::node::EndpointDataPayload::new(b"ping-2".to_vec()),
         ];
-        let lane = payloads[0].lane();
-        assert!(payloads.iter().all(|payload| payload.lane() == lane));
 
         let command = crate::node::NodeEndpointCommand::send_batch_oneway_with_enqueued_at_ms(
             node1_identity,
             payloads,
             None,
-            lane,
             1_234,
         )
         .expect("endpoint batch command");

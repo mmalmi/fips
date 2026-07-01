@@ -57,8 +57,6 @@
             routes.route_endpoint_command_payload(PacketMover2EndpointCommandPayload {
                 dest_addr: stale,
                 dest_pubkey: crate::Identity::generate().pubkey_full(),
-                lane: EndpointCommandLane::Bulk,
-                drop_on_backpressure: true,
                 payload: b"stale",
             }),
             Err(PacketMover2EndpointCommandDropReason::NoRoute)
@@ -75,8 +73,6 @@
                 .route_endpoint_command_payload(PacketMover2EndpointCommandPayload {
                     dest_addr: keep,
                     dest_pubkey: crate::Identity::generate().pubkey_full(),
-                    lane: EndpointCommandLane::Bulk,
-                    drop_on_backpressure: true,
                     payload: b"keep",
                 })
                 .expect("keep endpoint route")
@@ -191,8 +187,6 @@
             .route_endpoint_command_payload(PacketMover2EndpointCommandPayload {
                 dest_addr: fsp_source,
                 dest_pubkey: crate::Identity::generate().pubkey_full(),
-                lane: EndpointCommandLane::Bulk,
-                drop_on_backpressure: true,
                 payload: b"after-rekey",
             })
             .expect("endpoint route survives refresh");
@@ -216,8 +210,6 @@
                 .route_endpoint_command_payload(PacketMover2EndpointCommandPayload {
                     dest_addr: keep,
                     dest_pubkey: crate::Identity::generate().pubkey_full(),
-                    lane: EndpointCommandLane::Bulk,
-                    drop_on_backpressure: true,
                     payload: b"keep",
                 })
                 .unwrap()

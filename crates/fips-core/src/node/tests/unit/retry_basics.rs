@@ -730,7 +730,7 @@ async fn process_packet_ignores_punch_and_non_fmp_noise_for_bootstrap_cooldown()
 async fn process_packet_mover2_control_packet_for_test(node: &mut Node, packet: ReceivedPacket) {
     let (packet_tx, mut packet_rx) = packet_channel(1);
     packet_tx.send(packet).expect("packet should enqueue");
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
@@ -740,7 +740,7 @@ async fn process_packet_mover2_control_packet_for_test(node: &mut Node, packet: 
         .drain_packet_mover2_turn(
             &mut packet_rx,
             1,
-            &mut endpoint_priority_rx,
+            &mut endpoint_control_rx,
             &mut endpoint_rx,
             0,
             &mut tun_outbound_rx,

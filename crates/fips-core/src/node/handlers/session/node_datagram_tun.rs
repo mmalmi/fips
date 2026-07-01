@@ -21,6 +21,28 @@ impl Node {
         }
     }
 
+    fn deliver_endpoint_data_batch(&mut self, deliveries: Vec<EndpointDataDelivery>) {
+        if deliveries.is_empty() {
+            return;
+        }
+        if !self.endpoint_events.is_attached() {
+            trace!(
+                messages = deliveries.len(),
+                "Endpoint data batch received without an attached endpoint"
+            );
+            return;
+        }
+
+        let count = deliveries.len();
+        if let Err(error) = self.endpoint_events.deliver_endpoint_data_batch(deliveries) {
+            debug!(
+                messages = count,
+                error = %error,
+                "Failed to deliver endpoint data event batch"
+            );
+        }
+    }
+
     /// Send a non-data session message (reports, notifications) over an established session.
     ///
     /// Similar to endpoint/TUN PM2 data sends, but:
@@ -390,13 +412,11 @@ impl Node {
         if let Some(payloads) = self.pending_session_traffic.take_endpoint_data(dest_addr) {
             let mut payloads = payloads.into_pending_payloads();
             while let Some(first) = payloads.pop_front() {
-                let lane = first.payload().lane();
                 let enqueued_at_ms = first.enqueued_at_ms();
                 let mut batch = vec![first.into_payload()];
                 while batch.len() < Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX
                     && payloads.front().is_some_and(|payload| {
-                        payload.payload().lane() == lane
-                            && payload.enqueued_at_ms() == enqueued_at_ms
+                        payload.enqueued_at_ms() == enqueued_at_ms
                     })
                 {
                     let payload = payloads
@@ -410,7 +430,6 @@ impl Node {
                     .send_packet_mover2_cached_endpoint_payloads(
                         dest_addr,
                         batch.clone(),
-                        lane,
                         enqueued_at_ms,
                     )
                     .await

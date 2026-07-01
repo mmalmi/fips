@@ -19,10 +19,10 @@ fn endpoint_drain_budget_caps_large_packet_turns() {
 }
 
 #[test]
-fn endpoint_priority_pre_packet_turn_stays_bounded() {
+fn endpoint_control_pre_packet_turn_stays_bounded() {
     assert!(
         ENDPOINT_DRAIN_BUDGET <= 16,
-        "endpoint-priority commands run before raw packet receive, so the turn must stay short"
+        "endpoint-control commands run before raw packet receive, so the turn must stay short"
     );
 }
 
@@ -115,7 +115,7 @@ async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
@@ -127,7 +127,7 @@ async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
         .drain_packet_mover2_turn(
             &mut packet_rx,
             4,
-            &mut endpoint_priority_rx,
+            &mut endpoint_control_rx,
             &mut endpoint_rx,
             4,
             &mut tun_outbound_rx,
@@ -158,7 +158,7 @@ async fn packet_mover2_replays_deferred_endpoint_commands() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
@@ -167,7 +167,7 @@ async fn packet_mover2_replays_deferred_endpoint_commands() {
         .expect("endpoint io should attach before start");
     let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
 
-    endpoint_priority_tx
+    endpoint_control_tx
         .send(crate::node::NodeEndpointCommand::PeerSnapshot { response_tx })
         .await
         .expect("peer snapshot command queued");
@@ -176,7 +176,7 @@ async fn packet_mover2_replays_deferred_endpoint_commands() {
         .drain_packet_mover2_turn(
             &mut packet_rx,
             4,
-            &mut endpoint_priority_rx,
+            &mut endpoint_control_rx,
             &mut endpoint_rx,
             4,
             &mut tun_outbound_rx,
@@ -210,7 +210,7 @@ async fn packet_mover2_turn_reports_raw_ingress_failures() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
@@ -231,7 +231,7 @@ async fn packet_mover2_turn_reports_raw_ingress_failures() {
         .drain_packet_mover2_turn(
             &mut packet_rx,
             4,
-            &mut endpoint_priority_rx,
+            &mut endpoint_control_rx,
             &mut endpoint_rx,
             4,
             &mut tun_outbound_rx,

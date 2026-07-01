@@ -41,17 +41,12 @@ mod tree;
 pub(crate) mod wire;
 
 pub use endpoint_event::ExternalPacketIo;
-pub use endpoint_traffic::{
-    EndpointPayloadClass, EndpointPayloadLane, classify_endpoint_payload,
-    endpoint_payload_is_latency_sensitive,
-};
 pub use error::NodeError;
 pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
 pub(crate) use endpoint_command::{
-    EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand,
-    endpoint_data_command_capacity, endpoint_stale_bulk_drop_ms,
+    ENDPOINT_STALE_BULK_DROP_MS, EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand,
 };
 #[cfg(test)]
 pub(in crate::node) use endpoint_event::EndpointEventDequeueCounts;
@@ -69,8 +64,7 @@ pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
 #[cfg(test)]
 pub(in crate::node) use endpoint_traffic::fmp_plaintext_is_bulk_session_datagram;
 pub(crate) use endpoint_traffic::{
-    EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingEndpointData,
-    PendingSessionTrafficQueues, endpoint_payload_is_liveness_probe,
+    EndpointDataPayload, EndpointDataSend, PendingEndpointData, PendingSessionTrafficQueues,
 };
 pub(in crate::node) use identity_cache::IdentityCache;
 #[cfg(test)]
@@ -131,7 +125,8 @@ use tracing::{debug, warn};
 type PacketMover2Node = PacketMover2LiveNode;
 
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
-pub(crate) const ENDPOINT_EVENT_PRIORITY_MAX_LEN: usize = 512;
+#[cfg(test)]
+pub(crate) const ENDPOINT_EVENT_TEST_PAYLOAD_LEN: usize = 512;
 const SESSION_DIRECT_DEGRADED_HOLD_MS: u64 = 20_000;
 const SESSION_DIRECT_DEGRADED_MIN_SAMPLE: u64 = 16;
 const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.08;
@@ -292,7 +287,7 @@ pub struct Node {
     /// App-owned packet sink used by embedded/no-TUN integrations.
     external_packet_tx: Option<tokio::sync::mpsc::Sender<NodeDeliveredPacket>>,
     /// Endpoint data command receiver used by embedded/no-daemon integrations.
-    endpoint_priority_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
+    endpoint_control_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Bulk endpoint data command receiver used by embedded/no-daemon integrations.
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.

@@ -224,10 +224,10 @@
     }
 
     #[test]
-    fn runtime_promotes_opened_latency_sensitive_fsp_outputs() {
+    fn runtime_keeps_opened_app_fsp_outputs_bulk() {
         let owner = fsp_owner(88);
         let key = 88;
-        let payload = priority_endpoint_payload();
+        let payload = b"small-app-payload".to_vec();
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
         driver
@@ -250,7 +250,7 @@
         assert_eq!(turn.summary().outputs_sent(), 1);
         assert!(turn.output_drops().is_empty());
         assert_eq!(sink.outputs.len(), 1);
-        assert_eq!(sink.outputs[0].lane(), Lane::Priority);
+        assert_eq!(sink.outputs[0].lane(), Lane::Bulk);
         assert_eq!(sink.outputs[0].target(), OutputTarget::Tun);
         assert_eq!(sink.outputs[0].opened_payload(), Some(payload.as_slice()));
     }

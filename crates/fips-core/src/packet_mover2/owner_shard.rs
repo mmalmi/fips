@@ -239,7 +239,7 @@ impl PacketMover2OwnerShard {
 
             let Some(owner) = self.owners.get_mut(&queued.packet.owner) else {
                 drops.push(PacketDrop::from_queued(&queued, PacketDropReason::UnknownOwner));
-                self.admission.continue_owner_run(cursor);
+                self.admission.continue_owner_lane(cursor);
                 continue;
             };
             if !owner.can_reserve_class(queued.packet.class) {
@@ -266,12 +266,12 @@ impl PacketMover2OwnerShard {
                     };
                     prepared.push(prepared_work);
                     dispatched = dispatched.saturating_add(1);
-                    self.admission.continue_owner_run(cursor);
+                    self.admission.continue_owner_lane(cursor);
                     attempts_remaining = self.admission.len();
                 }
                 Err(error) => {
                     drops.push(PacketDrop::from_queued(&queued, error.into()));
-                    self.admission.continue_owner_run(cursor);
+                    self.admission.continue_owner_lane(cursor);
                 }
             }
         }
@@ -318,7 +318,7 @@ impl PacketMover2OwnerShard {
                     &queued,
                     PacketDropReason::UnknownOwner,
                 ));
-                self.outbound_admission.continue_owner_run(cursor);
+                self.outbound_admission.continue_owner_lane(cursor);
                 continue;
             };
             if !owner.can_reserve_class(class) {
@@ -351,7 +351,7 @@ impl PacketMover2OwnerShard {
                             wire_flags: None,
                             authenticated_counter_highest: None,
                         });
-                        self.outbound_admission.continue_owner_run(cursor);
+                        self.outbound_admission.continue_owner_lane(cursor);
                         continue;
                     }
                 }
@@ -363,7 +363,7 @@ impl PacketMover2OwnerShard {
                 None => PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal),
             };
             prepared.push(prepared_work);
-            self.outbound_admission.continue_owner_run(cursor);
+            self.outbound_admission.continue_owner_lane(cursor);
             attempts_remaining = self.outbound_admission.len();
         }
         prepared.len().saturating_sub(start_len)

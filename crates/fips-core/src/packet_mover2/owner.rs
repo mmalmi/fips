@@ -2,8 +2,6 @@
 pub(crate) struct OwnerConfig {
     generation: u64,
     in_flight_limit: usize,
-    bulk_in_flight_limit: usize,
-    reliable_bulk_in_flight_limit: usize,
     next_send_counter: u64,
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     fmp_session_start_ms: Option<u64>,
@@ -291,8 +289,6 @@ impl OwnerConfig {
         Self {
             generation,
             in_flight_limit,
-            bulk_in_flight_limit: in_flight_limit,
-            reliable_bulk_in_flight_limit: in_flight_limit,
             next_send_counter: 0,
             send_counter_authority: None,
             fmp_session_start_ms: None,
@@ -307,21 +303,6 @@ impl OwnerConfig {
             fsp_mmp: None,
             source_peer: None,
         }
-    }
-
-    pub(crate) fn with_bulk_in_flight_limit(mut self, bulk_in_flight_limit: usize) -> Self {
-        self.bulk_in_flight_limit = bulk_in_flight_limit.min(self.in_flight_limit).max(1);
-        self
-    }
-
-    pub(crate) fn with_reliable_bulk_in_flight_limit(
-        mut self,
-        reliable_bulk_in_flight_limit: usize,
-    ) -> Self {
-        self.reliable_bulk_in_flight_limit = reliable_bulk_in_flight_limit
-            .min(self.in_flight_limit)
-            .max(1);
-        self
     }
 
     pub(crate) fn with_next_send_counter(mut self, next_send_counter: u64) -> Self {
@@ -478,8 +459,6 @@ pub(crate) enum OwnerReserveError {
 pub(crate) enum OwnerReserveBlockReason {
     TotalInFlight,
     BulkLane,
-    DiscardableBulk,
-    ReliableBulk,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -612,12 +591,8 @@ pub(crate) struct OwnerState {
     owner: OwnerId,
     generation: u64,
     in_flight_limit: usize,
-    bulk_in_flight_limit: usize,
-    reliable_bulk_in_flight_limit: usize,
     in_flight: usize,
     bulk_in_flight: usize,
-    discardable_bulk_in_flight: usize,
-    reliable_bulk_in_flight: usize,
     next_order: u64,
     next_retire: u64,
     next_send_counter: u64,
@@ -665,12 +640,8 @@ impl OwnerState {
             owner,
             generation: config.generation,
             in_flight_limit: config.in_flight_limit,
-            bulk_in_flight_limit: config.bulk_in_flight_limit,
-            reliable_bulk_in_flight_limit: config.reliable_bulk_in_flight_limit,
             in_flight: 0,
             bulk_in_flight: 0,
-            discardable_bulk_in_flight: 0,
-            reliable_bulk_in_flight: 0,
             next_order: 0,
             next_retire: 0,
             next_send_counter: config.next_send_counter,
@@ -1023,22 +994,7 @@ impl OwnerState {
         if class.lane() == Lane::Bulk && self.bulk_in_flight >= self.bulk_lane_in_flight_limit() {
             return Some(OwnerReserveBlockReason::BulkLane);
         }
-        match class {
-            PacketClass::Bulk if self.discardable_bulk_in_flight >= self.bulk_in_flight_limit => {
-                Some(OwnerReserveBlockReason::DiscardableBulk)
-            }
-            PacketClass::ReliableBulk
-                if self.reliable_bulk_in_flight >= self.reliable_bulk_in_flight_limit =>
-            {
-                Some(OwnerReserveBlockReason::ReliableBulk)
-            }
-            PacketClass::Control
-            | PacketClass::Rekey
-            | PacketClass::Mmp
-            | PacketClass::Liveness
-            | PacketClass::Bulk
-            | PacketClass::ReliableBulk => None,
-        }
+        None
     }
 
     fn bulk_lane_in_flight_limit(&self) -> usize {
@@ -1811,20 +1767,6 @@ impl OwnerState {
             self.in_flight = self.in_flight.saturating_sub(1);
             if completion.reservation.lane == Lane::Bulk {
                 self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
-                match completion.reservation.class {
-                    PacketClass::Bulk => {
-                        self.discardable_bulk_in_flight =
-                            self.discardable_bulk_in_flight.saturating_sub(1);
-                    }
-                    PacketClass::ReliableBulk => {
-                        self.reliable_bulk_in_flight =
-                            self.reliable_bulk_in_flight.saturating_sub(1);
-                    }
-                    PacketClass::Control
-                    | PacketClass::Rekey
-                    | PacketClass::Mmp
-                    | PacketClass::Liveness => {}
-                }
             }
 
             if completion.reservation.generation != self.generation {
@@ -1863,20 +1805,6 @@ impl OwnerState {
         self.in_flight = self.in_flight.saturating_add(1);
         if class.lane() == Lane::Bulk {
             self.bulk_in_flight = self.bulk_in_flight.saturating_add(1);
-            match class {
-                PacketClass::Bulk => {
-                    self.discardable_bulk_in_flight =
-                        self.discardable_bulk_in_flight.saturating_add(1);
-                }
-                PacketClass::ReliableBulk => {
-                    self.reliable_bulk_in_flight =
-                        self.reliable_bulk_in_flight.saturating_add(1);
-                }
-                PacketClass::Control
-                | PacketClass::Rekey
-                | PacketClass::Mmp
-                | PacketClass::Liveness => {}
-            }
         }
     }
 }

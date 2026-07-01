@@ -17,7 +17,7 @@ impl Node {
         &mut self,
         packet_rx: &mut PacketRx,
         packet_limit: usize,
-        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_control_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -30,7 +30,7 @@ impl Node {
             packet_rx,
             None,
             packet_limit,
-            endpoint_priority_command_rx,
+            endpoint_control_command_rx,
             endpoint_command_rx,
             endpoint_limit,
             tun_outbound_rx,
@@ -47,7 +47,7 @@ impl Node {
         packet_rx: &mut PacketRx,
         first_packet: Option<ReceivedPacket>,
         packet_limit: usize,
-        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_control_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -61,7 +61,7 @@ impl Node {
             crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
                 .with_raw_packet(first_packet),
             packet_limit,
-            endpoint_priority_command_rx,
+            endpoint_control_command_rx,
             endpoint_command_rx,
             endpoint_limit,
             tun_outbound_rx,
@@ -78,7 +78,7 @@ impl Node {
         packet_rx: &mut PacketRx,
         firsts: crate::packet_mover2::PacketMover2LiveTurnFirsts,
         packet_limit: usize,
-        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_control_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -93,7 +93,7 @@ impl Node {
                 packet_rx,
                 firsts,
                 packet_limit,
-                endpoint_priority_command_rx,
+                endpoint_control_command_rx,
                 endpoint_command_rx,
                 endpoint_limit,
                 tun_outbound_rx,
@@ -186,14 +186,10 @@ impl Node {
                 processed += 1;
             }
         }
-        for ingress in turn.take_fsp_session_ingress() {
-            if self
-                .process_packet_mover2_authenticated_session(ingress)
-                .await
-            {
-                processed += 1;
-            }
-        }
+        processed = processed.saturating_add(
+            self.process_packet_mover2_authenticated_sessions(turn.take_fsp_session_ingress())
+                .await,
+        );
         for control in turn.take_fmp_control_ingress() {
             if self
                 .process_packet_mover2_fmp_control_ingress(control)
@@ -496,7 +492,6 @@ impl Node {
             for drop in turn.endpoint_command_drops() {
                 debug!(
                     dest_addr = ?drop.dest_addr(),
-                    lane = ?drop.lane(),
                     payload_len = drop.payload_len(),
                     reason = ?drop.reason(),
                     "packet mover2 endpoint command dropped"

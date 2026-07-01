@@ -84,6 +84,11 @@ fn event_table_exposes_current_pm2_and_queue_events() {
         ),
         (Event::UdpSendSendmmsgBatch, "udp_send_sendmmsg_batch"),
         (Event::UdpSendSendmmsgPackets, "udp_send_sendmmsg_packets"),
+        (Event::UdpSendGsoBatch, "udp_send_gso_batch"),
+        (Event::UdpSendGsoPackets, "udp_send_gso_packets"),
+        (Event::UdpSendGsoBatchGe32, "udp_send_gso_batch_ge32"),
+        (Event::UdpSendGsoBatchGe48, "udp_send_gso_batch_ge48"),
+        (Event::UdpSendGsoBatchEq64, "udp_send_gso_batch_eq64"),
         (
             Event::UdpSendSendmmsgBatchGe32,
             "udp_send_sendmmsg_batch_ge32",
@@ -189,12 +194,12 @@ fn event_table_exposes_current_pm2_and_queue_events() {
             "packet_mover2_dispatch_owner_blocked_bulk_lane",
         ),
         (
-            Event::PacketMover2DispatchOwnerBlockedDiscardableBulk,
-            "packet_mover2_dispatch_owner_blocked_discardable_bulk",
+            Event::PacketMover2TransportSendWorkerBackpressure,
+            "packet_mover2_transport_send_worker_backpressure",
         ),
         (
-            Event::PacketMover2DispatchOwnerBlockedReliableBulk,
-            "packet_mover2_dispatch_owner_blocked_reliable_bulk",
+            Event::PacketMover2TransportSendWorkerDropped,
+            "packet_mover2_transport_send_worker_dropped",
         ),
     ];
     for (event, name) in live_events {
@@ -271,11 +276,8 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
         (Stage::UdpSend, "udp_send"),
         (Stage::EndpointDeliver, "endpoint_deliver"),
         (Stage::EndpointEventWait, "endpoint_event_wait"),
-        (
-            Stage::EndpointPriorityEventWait,
-            "endpoint_priority_event_wait",
-        ),
-        (Stage::EndpointBulkEventWait, "endpoint_bulk_event_wait"),
+        (Stage::ReservedStage18, "reserved_stage_18"),
+        (Stage::ReservedStage19, "reserved_stage_19"),
         (Stage::TransportChannelWait, "transport_channel_wait"),
         (
             Stage::TransportPriorityChannelWait,
@@ -382,6 +384,8 @@ fn live_event_counters_increment() {
         (Event::UdpNamespaceRcvbufErrors, 83),
         (Event::TunWriteBulkDropped, 89),
         (Event::TunWriteBulkBacklogHigh, 97),
+        (Event::PacketMover2TransportSendWorkerBackpressure, 101),
+        (Event::PacketMover2TransportSendWorkerDropped, 103),
     ];
 
     for (event, count) in samples {

@@ -349,7 +349,7 @@ impl PacketMover2TurnDriver {
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
         raw_ingress_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -376,7 +376,7 @@ impl PacketMover2TurnDriver {
             raw_ingress,
             routes,
             raw_ingress_limit,
-            endpoint_priority_rx,
+            endpoint_control_rx,
             endpoint_bulk_rx,
             endpoint_limit,
             tun_outbound_rx,
@@ -440,7 +440,7 @@ impl PacketMover2TurnDriver {
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
         raw_ingress_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -465,7 +465,7 @@ impl PacketMover2TurnDriver {
             raw_ingress,
             routes,
             raw_ingress_limit,
-            endpoint_priority_rx,
+            endpoint_control_rx,
             endpoint_bulk_rx,
             endpoint_limit,
             tun_outbound_rx,
@@ -502,7 +502,7 @@ impl PacketMover2TurnDriver {
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
         raw_ingress_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -528,18 +528,19 @@ impl PacketMover2TurnDriver {
             raw_ingress,
             routes,
             raw_ingress_limit,
-            endpoint_priority_rx,
+            endpoint_control_rx,
             endpoint_bulk_rx,
             endpoint_limit,
             tun_outbound_rx,
             tun_limit,
             outbound_firsts,
         );
-        let summary = self.drain_aead_completion_turn_into_summary(
-            admission.summary,
-            executor,
-            crypto_limit,
-        );
+        let dispatch_start = admission.summary.dispatched;
+        let summary =
+            self.collect_aead_outputs_with_executor(admission.summary, crypto_limit, executor);
+        let early_dispatched = summary.dispatched.saturating_sub(dispatch_start);
+        let remaining_crypto_limit = crypto_limit.saturating_sub(early_dispatched);
+        let summary = self.drain_aead_completion_turn_into_summary(summary, executor, crypto_limit);
         self.finish_live_node_turn_after_admission(
             summary,
             admission.outbound_buffers,
@@ -549,7 +550,7 @@ impl PacketMover2TurnDriver {
             tun_tx,
             endpoint_tx,
             transports,
-            crypto_limit,
+            remaining_crypto_limit,
             collect_transport_sent_outputs,
             executor,
             transport_send_worker,
@@ -566,7 +567,7 @@ impl PacketMover2TurnDriver {
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
         raw_ingress_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -594,7 +595,7 @@ impl PacketMover2TurnDriver {
 
         if reserved_outbound_limit > 0 {
             let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
-                endpoint_priority_rx,
+                endpoint_control_rx,
                 endpoint_bulk_rx,
                 endpoint_limit,
                 tun_outbound_rx,
@@ -620,7 +621,7 @@ impl PacketMover2TurnDriver {
             outbound_limit.saturating_sub(outbound_drained.min(outbound_limit));
         if remaining_outbound_limit > 0 {
             let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
-                endpoint_priority_rx,
+                endpoint_control_rx,
                 endpoint_bulk_rx,
                 endpoint_limit,
                 tun_outbound_rx,
@@ -1002,6 +1003,7 @@ impl PacketMover2TurnDriver {
         E: PacketMover2CryptoExecutor,
     {
         let mut remaining = crypto_limit;
+        self.admit_session_ingress_outputs(router, &mut summary);
         loop {
             let dispatched_before = summary.dispatched;
             summary = self.collect_aead_outputs_with_executor(summary, remaining, executor);
@@ -1071,8 +1073,7 @@ impl PacketMover2TurnDriver {
         let mut retired = std::mem::take(&mut self.retired);
         for packet in retired.drain(..) {
             match packet {
-                RetiredPacket::Output(mut output) => {
-                    output.promote_opened_latency_sensitive_payload();
+                RetiredPacket::Output(output) => {
                     self.outputs.push(output);
                 }
                 RetiredPacket::Outbound(packet) => {

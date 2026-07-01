@@ -848,17 +848,25 @@ impl AeadSealWork {
             .len()
             .saturating_add(coord_prefix.len())
             .saturating_add(inner_prefix.len());
-        let plaintext = std::mem::take(&mut work.packet.payload);
-        let mut payload = Vec::with_capacity(
-            prefix_len
-                .saturating_add(plaintext.len())
-                .saturating_add(AEAD_TAG_SIZE),
-        );
-        payload.extend_from_slice(aad);
-        payload.extend_from_slice(&coord_prefix);
-        payload.extend_from_slice(&inner_prefix);
-        payload.extend_from_slice(&plaintext);
-        work.packet.payload = payload.into();
+        if work.packet.payload.try_prepend_slices(
+            &[aad, coord_prefix.as_slice(), inner_prefix.as_slice()],
+            AEAD_TAG_SIZE,
+        ) {
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2SealInPlace);
+        } else {
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2SealAllocated);
+            let plaintext = std::mem::take(&mut work.packet.payload);
+            let mut payload = Vec::with_capacity(
+                prefix_len
+                    .saturating_add(plaintext.len())
+                    .saturating_add(AEAD_TAG_SIZE),
+            );
+            payload.extend_from_slice(aad);
+            payload.extend_from_slice(&coord_prefix);
+            payload.extend_from_slice(&inner_prefix);
+            payload.extend_from_slice(&plaintext);
+            work.packet.payload = payload.into();
+        }
 
         Ok(Self {
             post_seal: work.packet.post_seal,

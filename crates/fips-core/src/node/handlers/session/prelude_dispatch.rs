@@ -170,9 +170,78 @@ struct SessionDispatchFinish {
     pending_flush_dest: Option<NodeAddr>,
 }
 
+#[derive(Debug, Default)]
+struct SessionReceiveBatchCommit {
+    previous_hops: Vec<NodeAddr>,
+    direct_sources: Vec<NodeAddr>,
+    retry_peers: Vec<NodeAddr>,
+    pending_flush_sources: Vec<NodeAddr>,
+}
+
 impl SessionDispatchFinish {
     fn pending_flush_dest(&self) -> Option<NodeAddr> {
         self.pending_flush_dest
+    }
+}
+
+impl SessionReceiveBatchCommit {
+    fn push_unique(list: &mut Vec<NodeAddr>, addr: NodeAddr) {
+        if !list.contains(&addr) {
+            list.push(addr);
+        }
+    }
+
+    fn push_receive_completion(&mut self, completion: SessionReceiveCompletion) {
+        Self::push_unique(&mut self.previous_hops, completion.previous_hop_addr);
+        let retry_peer = if completion.direct_path {
+            Self::push_unique(&mut self.direct_sources, completion.source_addr);
+            completion.source_addr
+        } else {
+            completion.previous_hop_addr
+        };
+        Self::push_unique(&mut self.retry_peers, retry_peer);
+        Self::push_unique(&mut self.pending_flush_sources, completion.source_addr);
+    }
+
+    fn push_dispatch(&mut self, dispatch: &AuthenticatedSessionDispatch) {
+        if let Some(completion) = dispatch.receive_completion() {
+            self.push_receive_completion(completion);
+        }
+    }
+
+    fn finish(self, node: &mut Node) -> Vec<NodeAddr> {
+        if self.previous_hops.is_empty()
+            && self.direct_sources.is_empty()
+            && self.retry_peers.is_empty()
+            && self.pending_flush_sources.is_empty()
+        {
+            return Vec::new();
+        }
+
+        let now_ms = Node::now_ms();
+        for previous_hop in self.previous_hops {
+            if let Some(peer) = node.peers.get_mut(&previous_hop) {
+                peer.touch(now_ms);
+            }
+        }
+
+        for source_addr in self.direct_sources {
+            if node.clear_session_direct_path_degraded(&source_addr) {
+                debug!(
+                    src = %node.peer_display_name(&source_addr),
+                    "Authenticated direct endpoint data restored direct payload routing"
+                );
+            }
+        }
+
+        for retry_peer in self.retry_peers {
+            node.clear_retry_unless_direct_refresh_needed(&retry_peer);
+        }
+
+        self.pending_flush_sources
+            .into_iter()
+            .filter(|source_addr| node.pending_session_traffic.has_traffic_for(source_addr))
+            .collect()
     }
 }
 
@@ -350,16 +419,16 @@ impl AuthenticatedSessionDispatch {
         commit.finalize(node).await;
     }
 
-    fn dispatch_endpoint_data_fast(self, node: &mut Node) -> SessionDispatchFinish {
+    fn dispatch_endpoint_data_batched(
+        self,
+        node: &mut Node,
+        commit: &mut SessionReceiveBatchCommit,
+    ) -> EndpointDataDelivery {
         debug_assert!(self.is_endpoint_data());
 
-        // Reverse-route learning still belongs to the authenticated dispatch
-        // edge; the endpoint-data fast branch only avoids the async dispatcher.
         node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
-
-        let commit = self.commit();
-        node.deliver_endpoint_data(self.into_endpoint_data_delivery());
-        commit.finish_receive(node)
+        commit.push_dispatch(&self);
+        self.into_endpoint_data_delivery()
     }
 }
 

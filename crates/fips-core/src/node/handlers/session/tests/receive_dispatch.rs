@@ -328,7 +328,7 @@
     }
 
     #[test]
-    fn endpoint_data_fast_dispatch_finishes_receive_without_pending_flush() {
+    fn endpoint_data_batched_dispatch_finishes_receive_without_pending_flush() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
@@ -361,8 +361,11 @@
         node.sessions
             .insert(source_addr, established_entry(&local, &peer));
 
-        let finish = dispatch.dispatch_endpoint_data_fast(&mut node);
-        assert_eq!(finish.pending_flush_dest(), None);
+        let mut commit = SessionReceiveBatchCommit::default();
+        let delivery = dispatch.dispatch_endpoint_data_batched(&mut node, &mut commit);
+        let pending_flush = commit.finish(&mut node);
+        node.deliver_endpoint_data_batch(vec![delivery]);
+        assert!(pending_flush.is_empty());
         match endpoint_io.event_rx.try_recv().expect("endpoint event") {
             crate::node::NodeEndpointEvent::Data {
                 source_peer: delivered_source,
@@ -382,7 +385,7 @@
     }
 
     #[test]
-    fn endpoint_data_fast_dispatch_reports_pending_flush_owner() {
+    fn endpoint_data_batched_dispatch_reports_pending_flush_owner() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
@@ -421,11 +424,13 @@
                 .destination_dropped()
         );
 
-        let finish = dispatch.dispatch_endpoint_data_fast(&mut node);
+        let mut commit = SessionReceiveBatchCommit::default();
+        let _delivery = dispatch.dispatch_endpoint_data_batched(&mut node, &mut commit);
+        let pending_flush = commit.finish(&mut node);
 
-        assert_eq!(finish.pending_flush_dest(), Some(source_addr));
+        assert_eq!(pending_flush, vec![source_addr]);
         assert!(
             node.pending_session_traffic.has_traffic_for(&source_addr),
-            "fast dispatch should report, not synchronously drain, pending traffic"
+            "batched dispatch should report, not synchronously drain, pending traffic"
         );
     }

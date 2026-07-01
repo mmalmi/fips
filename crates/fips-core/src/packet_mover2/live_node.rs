@@ -166,7 +166,7 @@ impl PacketMover2LiveOwnerRouteSummary {
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveTurnFirsts {
     raw_packet: Option<ReceivedPacket>,
-    endpoint_priority: Option<NodeEndpointCommand>,
+    endpoint_control: Option<NodeEndpointCommand>,
     endpoint_bulk: Option<NodeEndpointCommand>,
     tun_packet: Option<Vec<u8>>,
     raw_ingress_first: bool,
@@ -178,8 +178,8 @@ impl PacketMover2LiveTurnFirsts {
         self
     }
 
-    pub(crate) fn with_endpoint_priority(mut self, command: Option<NodeEndpointCommand>) -> Self {
-        self.endpoint_priority = command;
+    pub(crate) fn with_endpoint_control(mut self, command: Option<NodeEndpointCommand>) -> Self {
+        self.endpoint_control = command;
         self
     }
 
@@ -207,14 +207,14 @@ pub(crate) struct PacketMover2LiveNode {
     deferred_endpoint_commands: Vec<NodeEndpointCommand>,
     deferred_tun_packets: Vec<Vec<u8>>,
     empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
-    empty_endpoint_priority_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+    empty_endpoint_control_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
     empty_endpoint_bulk_rx: tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
     empty_tun_outbound_rx: TunOutboundRx,
 }
 
 impl PacketMover2LiveNode {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
-        let (_, empty_endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_, empty_endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_, empty_endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_, empty_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let worker_capacity = config.total_capacity().max(1);
@@ -228,7 +228,7 @@ impl PacketMover2LiveNode {
             deferred_endpoint_commands: Vec::new(),
             deferred_tun_packets: Vec::new(),
             empty_raw_ingress: VecDeque::new(),
-            empty_endpoint_priority_rx,
+            empty_endpoint_control_rx,
             empty_endpoint_bulk_rx,
             empty_tun_outbound_rx,
         }
@@ -672,7 +672,7 @@ impl PacketMover2LiveNode {
         raw_ingress: &mut RI,
         raw_ingress_limit: usize,
         outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -692,7 +692,7 @@ impl PacketMover2LiveNode {
             raw_ingress_limit,
             false,
             outbound_firsts,
-            endpoint_priority_rx,
+            endpoint_control_rx,
             endpoint_bulk_rx,
             endpoint_limit,
             tun_outbound_rx,
@@ -712,7 +712,7 @@ impl PacketMover2LiveNode {
         raw_ingress_limit: usize,
         raw_ingress_first: bool,
         outbound_firsts: PacketMover2LiveOutboundFirsts,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -736,7 +736,7 @@ impl PacketMover2LiveNode {
                     raw_ingress,
                     &mut self.routes,
                     raw_ingress_limit,
-                    endpoint_priority_rx,
+                    endpoint_control_rx,
                     endpoint_bulk_rx,
                     endpoint_limit,
                     tun_outbound_rx,
@@ -762,7 +762,7 @@ impl PacketMover2LiveNode {
                     raw_ingress,
                     &mut self.routes,
                     raw_ingress_limit,
-                    endpoint_priority_rx,
+                    endpoint_control_rx,
                     endpoint_bulk_rx,
                     endpoint_limit,
                     tun_outbound_rx,
@@ -860,7 +860,7 @@ impl PacketMover2LiveNode {
             deferred_endpoint_commands,
             deferred_tun_packets,
             empty_raw_ingress,
-            empty_endpoint_priority_rx,
+            empty_endpoint_control_rx,
             empty_endpoint_bulk_rx,
             empty_tun_outbound_rx,
             ..
@@ -877,7 +877,7 @@ impl PacketMover2LiveNode {
                 empty_raw_ingress,
                 routes,
                 0,
-                empty_endpoint_priority_rx,
+                empty_endpoint_control_rx,
                 empty_endpoint_bulk_rx,
                 endpoint_limit,
                 empty_tun_outbound_rx,
@@ -900,7 +900,7 @@ impl PacketMover2LiveNode {
         packet_rx: &mut PacketRx,
         firsts: PacketMover2LiveTurnFirsts,
         packet_limit: usize,
-        endpoint_priority_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
+        endpoint_control_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_bulk_rx: &mut tokio::sync::mpsc::Receiver<NodeEndpointCommand>,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
@@ -916,13 +916,13 @@ impl PacketMover2LiveNode {
     {
         let PacketMover2LiveTurnFirsts {
             raw_packet,
-            endpoint_priority,
+            endpoint_control,
             endpoint_bulk,
             tun_packet,
             raw_ingress_first,
         } = firsts;
         let outbound_firsts = PacketMover2LiveOutboundFirsts::default()
-            .with_endpoint_priority(endpoint_priority)
+            .with_endpoint_control(endpoint_control)
             .with_endpoint_bulk(endpoint_bulk)
             .with_tun_packet(tun_packet);
         let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, raw_packet);
@@ -932,7 +932,7 @@ impl PacketMover2LiveNode {
                 packet_limit,
                 raw_ingress_first,
                 outbound_firsts,
-                endpoint_priority_rx,
+                endpoint_control_rx,
                 endpoint_bulk_rx,
                 endpoint_limit,
                 tun_outbound_rx,

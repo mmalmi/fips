@@ -6,50 +6,6 @@ pub(in crate::node) struct FmpPlaintextTrafficClass {
     pub(in crate::node) drop_on_backpressure: bool,
 }
 
-/// Priority/bulk lane selected for an app-owned endpoint payload.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EndpointPayloadLane {
-    #[default]
-    Priority,
-    Bulk,
-}
-
-impl EndpointPayloadLane {
-    fn command_lane(self) -> EndpointCommandLane {
-        match self {
-            Self::Priority => EndpointCommandLane::Priority,
-            Self::Bulk => EndpointCommandLane::Bulk,
-        }
-    }
-}
-
-/// Traffic policy selected for an app-owned endpoint payload.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EndpointPayloadClass {
-    lane: EndpointPayloadLane,
-    drop_on_backpressure: bool,
-}
-
-impl EndpointPayloadClass {
-    pub fn lane(self) -> EndpointPayloadLane {
-        self.lane
-    }
-
-    pub fn is_latency_sensitive(self) -> bool {
-        self.lane == EndpointPayloadLane::Priority
-    }
-
-    pub fn drop_on_backpressure(self) -> bool {
-        self.drop_on_backpressure
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum EndpointCommandLane {
-    Priority,
-    Bulk,
-}
-
 pub(in crate::node) fn classify_fmp_plaintext_traffic(
     plaintext: &[u8],
 ) -> FmpPlaintextTrafficClass {
@@ -79,75 +35,15 @@ pub(in crate::node) fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) 
     })
 }
 
-/// Classify an app-owned endpoint payload for queue admission and pressure policy.
-pub fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadClass {
-    const IPPROTO_ICMP: u8 = 1;
-    const IPPROTO_TCP: u8 = 6;
-    const IPPROTO_ICMPV6: u8 = 58;
-
-    match parse_endpoint_payload_ip_proto(payload) {
-        Some((IPPROTO_ICMP, _)) => EndpointPayloadClass::default(),
-        Some((IPPROTO_ICMPV6, _)) => EndpointPayloadClass::default(),
-        Some((IPPROTO_TCP, offset)) => {
-            let latency_sensitive = endpoint_tcp_payload_is_latency_sensitive(payload, offset);
-            EndpointPayloadClass {
-                lane: if latency_sensitive {
-                    EndpointPayloadLane::Priority
-                } else {
-                    EndpointPayloadLane::Bulk
-                },
-                drop_on_backpressure: false,
-            }
-        }
-        _ => EndpointPayloadClass {
-            lane: EndpointPayloadLane::Bulk,
-            drop_on_backpressure: true,
-        },
-    }
-}
-
-/// Return true when an app-owned endpoint payload should retain priority-lane progress.
-///
-/// Embedders that stage packets before calling `FipsEndpoint::send*_to_peer`
-/// can use this to apply the same priority/bulk policy as the FIPS endpoint
-/// command queue without duplicating IP/TCP parsing.
-pub fn endpoint_payload_is_latency_sensitive(payload: &[u8]) -> bool {
-    classify_endpoint_payload(payload).is_latency_sensitive()
-}
-
-/// Endpoint payload bytes plus the traffic policy selected at app ingress.
+/// Endpoint payload bytes selected at app ingress.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EndpointDataPayload {
     bytes: Vec<u8>,
-    traffic_class: EndpointPayloadClass,
 }
 
 impl EndpointDataPayload {
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        let traffic_class = classify_endpoint_payload(&bytes);
-        Self {
-            bytes,
-            traffic_class,
-        }
-    }
-
-    pub(crate) fn from_classified(bytes: Vec<u8>, traffic_class: EndpointPayloadClass) -> Self {
-        Self {
-            bytes,
-            traffic_class,
-        }
-    }
-
-    pub(crate) fn lane(&self) -> EndpointCommandLane {
-        self.traffic_class.lane().command_lane()
-    }
-
-    pub(crate) fn drop_on_backpressure(&self) -> bool {
-        self.traffic_class.drop_on_backpressure()
-    }
-
-    pub(crate) fn triggers_stale_bulk_drop(&self) -> bool {
-        endpoint_payload_is_liveness_probe(&self.bytes)
+        Self { bytes }
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {
@@ -559,149 +455,4 @@ impl PendingSessionTrafficQueues {
     pub(crate) fn tun_packet_count(&self) -> usize {
         self.tun_packets.values().map(|q| q.len()).sum()
     }
-}
-
-fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) -> bool {
-    const TCP_MIN_HEADER_LEN: usize = 20;
-    const TCP_FLAG_FIN: u8 = 0x01;
-    const TCP_FLAG_SYN: u8 = 0x02;
-    const TCP_FLAG_RST: u8 = 0x04;
-    const INTERACTIVE_TCP_PAYLOAD_MAX: usize = 256;
-
-    if payload.len() < tcp_offset + TCP_MIN_HEADER_LEN {
-        return true;
-    }
-
-    let tcp_header_len = usize::from(payload[tcp_offset + 12] >> 4) * 4;
-    if tcp_header_len < TCP_MIN_HEADER_LEN || payload.len() < tcp_offset + tcp_header_len {
-        return true;
-    }
-
-    let flags = payload[tcp_offset + 13];
-    if flags & (TCP_FLAG_FIN | TCP_FLAG_SYN | TCP_FLAG_RST) != 0 {
-        return true;
-    }
-
-    let payload_len = endpoint_ip_payload_len(payload)
-        .and_then(|ip_payload_len| ip_payload_len.checked_sub(tcp_header_len))
-        .unwrap_or_else(|| payload.len().saturating_sub(tcp_offset + tcp_header_len));
-    payload_len <= INTERACTIVE_TCP_PAYLOAD_MAX
-}
-
-pub(crate) fn endpoint_payload_is_liveness_probe(payload: &[u8]) -> bool {
-    const IPPROTO_ICMP: u8 = 1;
-    const IPPROTO_ICMPV6: u8 = 58;
-
-    matches!(
-        parse_endpoint_payload_ip_proto(payload),
-        Some((IPPROTO_ICMP | IPPROTO_ICMPV6, _))
-    )
-}
-
-fn endpoint_ip_payload_len(payload: &[u8]) -> Option<usize> {
-    const IPV4_MIN_HEADER_LEN: usize = 20;
-    const IPV6_HEADER_LEN: usize = 40;
-
-    let version_ihl = payload.first().copied()?;
-    match version_ihl >> 4 {
-        4 => {
-            if payload.len() < IPV4_MIN_HEADER_LEN {
-                return None;
-            }
-            let header_len = usize::from(version_ihl & 0x0f) * 4;
-            if header_len < IPV4_MIN_HEADER_LEN || payload.len() < header_len {
-                return None;
-            }
-            let total_len = usize::from(u16::from_be_bytes([payload[2], payload[3]]));
-            total_len.checked_sub(header_len)
-        }
-        6 => {
-            if payload.len() < IPV6_HEADER_LEN {
-                return None;
-            }
-            Some(usize::from(u16::from_be_bytes([payload[4], payload[5]])))
-        }
-        _ => None,
-    }
-}
-
-fn parse_endpoint_payload_ip_proto(payload: &[u8]) -> Option<(u8, usize)> {
-    const IPV4_MIN_HEADER_LEN: usize = 20;
-
-    let version_ihl = payload.first().copied()?;
-
-    match version_ihl >> 4 {
-        4 => {
-            if payload.len() < IPV4_MIN_HEADER_LEN {
-                return None;
-            }
-            let header_len = usize::from(version_ihl & 0x0f) * 4;
-            if header_len >= IPV4_MIN_HEADER_LEN && payload.len() >= header_len {
-                Some((payload[9], header_len))
-            } else {
-                None
-            }
-        }
-        6 => ipv6_payload_next_header(payload),
-        _ => None,
-    }
-}
-
-fn ipv6_payload_next_header(payload: &[u8]) -> Option<(u8, usize)> {
-    ipv6_payload_next_header_with_fragment(payload)
-        .map(|(next_header, offset, _)| (next_header, offset))
-}
-
-fn ipv6_payload_next_header_with_fragment(payload: &[u8]) -> Option<(u8, usize, bool)> {
-    const IPV6_HEADER_LEN: usize = 40;
-    const IPV6_FRAGMENT_HEADER_LEN: usize = 8;
-
-    if payload.len() < IPV6_HEADER_LEN || payload[0] >> 4 != 6 {
-        return None;
-    }
-
-    let mut next_header = payload[6];
-    let mut offset = IPV6_HEADER_LEN;
-    let mut extension_count = 0usize;
-    let mut fragmented = false;
-    while ipv6_extension_header_is_skippable(next_header) {
-        if next_header == 44 {
-            if payload.len() < offset + IPV6_FRAGMENT_HEADER_LEN {
-                return None;
-            }
-            fragmented = true;
-            next_header = payload[offset];
-            offset += IPV6_FRAGMENT_HEADER_LEN;
-        } else if next_header == 51 {
-            if payload.len() < offset + 2 {
-                return None;
-            }
-            let header_len = (usize::from(payload[offset + 1]) + 2) * 4;
-            if payload.len() < offset + header_len {
-                return None;
-            }
-            next_header = payload[offset];
-            offset += header_len;
-        } else {
-            if payload.len() < offset + 2 {
-                return None;
-            }
-            let header_len = (usize::from(payload[offset + 1]) + 1) * 8;
-            if payload.len() < offset + header_len {
-                return None;
-            }
-            next_header = payload[offset];
-            offset += header_len;
-        }
-        extension_count += 1;
-        if extension_count > 8 {
-            return None;
-        }
-    }
-
-    Some((next_header, offset, fragmented))
-}
-
-fn ipv6_extension_header_is_skippable(next_header: u8) -> bool {
-    matches!(next_header, 0 | 43 | 44 | 51 | 60 | 135)
 }

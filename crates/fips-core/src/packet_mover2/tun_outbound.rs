@@ -131,22 +131,8 @@ impl PacketMover2TunOutboundRoute {
         Ok(self.apply_payload_transform(packet))
     }
 
-    fn class_for_payload(&self, payload: &[u8]) -> PacketClass {
-        if self.class != PacketClass::Bulk {
-            return self.class;
-        }
-        if crate::node::endpoint_payload_is_liveness_probe(payload) {
-            PacketClass::Liveness
-        } else {
-            let traffic_class = crate::node::classify_endpoint_payload(payload);
-            if traffic_class.is_latency_sensitive() {
-                PacketClass::Control
-            } else if traffic_class.drop_on_backpressure() {
-                PacketClass::Bulk
-            } else {
-                PacketClass::ReliableBulk
-            }
-        }
+    fn class_for_payload(&self, _payload: &[u8]) -> PacketClass {
+        self.class
     }
 
     fn encode_payload(

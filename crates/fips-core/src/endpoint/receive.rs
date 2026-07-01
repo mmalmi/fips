@@ -1,6 +1,6 @@
 use super::FipsEndpointMessage;
 use crate::PeerIdentity;
-use crate::node::{ENDPOINT_EVENT_PRIORITY_MAX_LEN, EndpointEventReceiver, NodeEndpointEvent};
+use crate::node::{EndpointEventReceiver, NodeEndpointEvent};
 use crate::transport::PacketBuffer;
 use std::collections::VecDeque;
 
@@ -26,7 +26,7 @@ impl EndpointQueuedMessage {
     fn into_public(self) -> FipsEndpointMessage {
         FipsEndpointMessage {
             source_peer: self.source_peer,
-            data: self.payload.into_vec(),
+            data: self.payload,
             enqueued_at_ms: self.enqueued_at_ms,
         }
     }
@@ -34,83 +34,40 @@ impl EndpointQueuedMessage {
 
 pub(super) struct EndpointReceiveState {
     pub(super) rx: EndpointEventReceiver,
-    pending_priority: VecDeque<EndpointQueuedMessage>,
-    pending_bulk: VecDeque<EndpointQueuedMessage>,
+    pending: VecDeque<EndpointQueuedMessage>,
 }
 
 impl EndpointReceiveState {
     pub(super) fn new(rx: EndpointEventReceiver) -> Self {
         Self {
             rx,
-            pending_priority: VecDeque::new(),
-            pending_bulk: VecDeque::new(),
+            pending: VecDeque::new(),
         }
     }
 
-    pub(super) fn pop_pending_priority(&mut self) -> Option<FipsEndpointMessage> {
-        self.pending_priority
+    pub(super) fn pop_pending(&mut self) -> Option<FipsEndpointMessage> {
+        self.pending
             .pop_front()
             .map(EndpointQueuedMessage::into_public)
     }
 
-    pub(super) fn pop_pending_bulk(&mut self) -> Option<FipsEndpointMessage> {
-        self.pending_bulk
-            .pop_front()
-            .map(EndpointQueuedMessage::into_public)
-    }
-
-    pub(super) fn drain_priority_pending_into(
-        &mut self,
-        out: &mut Vec<FipsEndpointMessage>,
-        limit: usize,
-    ) {
+    pub(super) fn drain_pending_into(&mut self, out: &mut Vec<FipsEndpointMessage>, limit: usize) {
         while out.len() < limit {
-            let Some(message) = self.pop_pending_priority() else {
-                break;
-            };
-            out.push(message);
-        }
-    }
-
-    pub(super) fn drain_bulk_pending_into(
-        &mut self,
-        out: &mut Vec<FipsEndpointMessage>,
-        limit: usize,
-    ) {
-        while out.len() < limit {
-            let Some(message) = self.pending_bulk.pop_front() else {
+            let Some(message) = self.pending.pop_front() else {
                 break;
             };
             out.push(message.into_public());
         }
     }
 
-    pub(super) fn drain_priority_pending_for_each(
+    pub(super) fn drain_pending_for_each(
         &mut self,
         drained: &mut usize,
         limit: usize,
         handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
     ) -> bool {
         while *drained < limit {
-            let Some(message) = self.pop_pending_priority() else {
-                break;
-            };
-            *drained += 1;
-            if !handle_message(message) {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub(super) fn drain_bulk_pending_for_each(
-        &mut self,
-        drained: &mut usize,
-        limit: usize,
-        handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
-    ) -> bool {
-        while *drained < limit {
-            let Some(message) = self.pop_pending_bulk() else {
+            let Some(message) = self.pop_pending() else {
                 break;
             };
             *drained += 1;
@@ -162,19 +119,13 @@ impl EndpointReceiveState {
     ) {
         if out.len() < limit {
             out.push(message.into_public());
-        } else if message.payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN {
-            self.pending_priority.push_back(message);
         } else {
-            self.pending_bulk.push_back(message);
+            self.pending.push_back(message);
         }
     }
 
     fn push_pending(&mut self, message: EndpointQueuedMessage) {
-        if message.payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN {
-            self.pending_priority.push_back(message);
-        } else {
-            self.pending_bulk.push_back(message);
-        }
+        self.pending.push_back(message);
     }
 
     pub(super) fn push_event_for_each(

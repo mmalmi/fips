@@ -74,10 +74,44 @@ impl Node {
         }
     }
 
-    pub(in crate::node) async fn process_packet_mover2_authenticated_session(
+    pub(in crate::node) async fn process_packet_mover2_authenticated_sessions(
+        &mut self,
+        ingress_batch: Vec<crate::packet_mover2::PacketMover2FspSessionIngress>,
+    ) -> usize {
+        let mut processed = 0usize;
+        let mut endpoint_deliveries = Vec::new();
+        let mut endpoint_commit = SessionReceiveBatchCommit::default();
+
+        for ingress in ingress_batch {
+            let Some(dispatch) = self.packet_mover2_authenticated_session_dispatch(ingress) else {
+                continue;
+            };
+
+            if dispatch.is_endpoint_data() {
+                let delivery = dispatch.dispatch_endpoint_data_batched(self, &mut endpoint_commit);
+                endpoint_deliveries.push(delivery);
+                processed = processed.saturating_add(1);
+                continue;
+            }
+
+            self.flush_packet_mover2_endpoint_session_batch(
+                &mut endpoint_deliveries,
+                &mut endpoint_commit,
+            )
+            .await;
+            dispatch.dispatch(self).await;
+            processed = processed.saturating_add(1);
+        }
+
+        self.flush_packet_mover2_endpoint_session_batch(&mut endpoint_deliveries, &mut endpoint_commit)
+            .await;
+        processed
+    }
+
+    fn packet_mover2_authenticated_session_dispatch(
         &mut self,
         ingress: crate::packet_mover2::PacketMover2FspSessionIngress,
-    ) -> bool {
+    ) -> Option<AuthenticatedSessionDispatch> {
         let received_k_bit = ingress.received_k_bit();
         let (
             source_addr,
@@ -118,17 +152,35 @@ impl Node {
 
         let message =
             AuthenticatedSessionMessage::new(source_peer, plaintext, msg_type, inner_flags, timestamp_ms);
-        let dispatch =
-            AuthenticatedSessionDispatch::new(source_addr, previous_hop_addr, ce_flag, message);
-        if dispatch.is_endpoint_data() {
-            let finish = dispatch.dispatch_endpoint_data_fast(self);
-            if let Some(dest_addr) = finish.pending_flush_dest() {
-                self.flush_pending_packets(&dest_addr).await;
-            }
-            return true;
+        Some(AuthenticatedSessionDispatch::new(
+            source_addr,
+            previous_hop_addr,
+            ce_flag,
+            message,
+        ))
+    }
+
+    async fn flush_packet_mover2_endpoint_session_batch(
+        &mut self,
+        endpoint_deliveries: &mut Vec<EndpointDataDelivery>,
+        endpoint_commit: &mut SessionReceiveBatchCommit,
+    ) {
+        if endpoint_deliveries.is_empty()
+            && endpoint_commit.previous_hops.is_empty()
+            && endpoint_commit.direct_sources.is_empty()
+            && endpoint_commit.retry_peers.is_empty()
+            && endpoint_commit.pending_flush_sources.is_empty()
+        {
+            return;
         }
-        dispatch.dispatch(self).await;
-        true
+
+        let pending_flush_destinations = std::mem::take(endpoint_commit).finish(self);
+        if !endpoint_deliveries.is_empty() {
+            self.deliver_endpoint_data_batch(std::mem::take(endpoint_deliveries));
+        }
+        for dest_addr in pending_flush_destinations {
+            self.flush_pending_packets(&dest_addr).await;
+        }
     }
 
     pub(in crate::node) fn record_authenticated_fmp_receive_facts(

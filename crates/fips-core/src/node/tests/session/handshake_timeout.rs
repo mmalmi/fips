@@ -218,8 +218,11 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     let reduced_mtu = local_transport_mtu - 200;
     nodes[0]
         .node
-        .packet_mover2
-        .apply_fsp_path_mtu_signal(node1_addr, reduced_mtu, std::time::Instant::now())
+        .apply_packet_mover2_fsp_path_mtu_signal(
+            &node1_addr,
+            reduced_mtu,
+            std::time::Instant::now(),
+        )
         .expect("PM2 FSP owner should accept path MTU signal");
     assert_eq!(
         nodes[0]

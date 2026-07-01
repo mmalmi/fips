@@ -302,10 +302,11 @@
     }
 
     #[test]
-    fn ingress_dispatch_feeds_contiguous_owner_run() {
+    fn ingress_dispatch_rotates_owner_lanes() {
+        let config = AdmissionConfig::new(2, 8);
         let first_owner = fsp_owner(23);
-        let second_owner = fsp_owner(24);
-        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 8));
+        let second_owner = same_shard_fsp_owner(first_owner, 24, config);
+        let mut mover = PacketMover2::new(config);
         mover.register_owner(first_owner, OwnerConfig::new(1, 8));
         mover.register_owner(second_owner, OwnerConfig::new(1, 8));
 
@@ -324,7 +325,7 @@
             work.iter()
                 .map(|work| (work.packet.owner, work.packet.counter))
                 .collect::<Vec<_>>(),
-            vec![(first_owner, 1), (first_owner, 2), (second_owner, 1)]
+            vec![(first_owner, 1), (second_owner, 1), (first_owner, 2)]
         );
     }
 
@@ -504,82 +505,112 @@
     }
 
     #[test]
-    fn owner_bulk_in_flight_cap_preserves_priority_reservations() {
+    fn owner_bulk_lane_preserves_priority_reservations() {
         let owner = fsp_owner(33);
-        let mut inbound =
-            OwnerState::new(owner, OwnerConfig::new(1, 4).with_bulk_in_flight_limit(2));
+        let mut inbound = OwnerState::new(owner, OwnerConfig::new(1, 4));
 
-        inbound
-            .reserve(
-                &packet(owner, 1, 10, PacketClass::Bulk, OutputTarget::Tun),
-                0,
-            )
-            .unwrap();
-        inbound
-            .reserve(
-                &packet(owner, 1, 11, PacketClass::Bulk, OutputTarget::Tun),
-                1,
-            )
-            .unwrap();
+        for counter in 10..13 {
+            inbound
+                .reserve(
+                    &packet(owner, 1, counter, PacketClass::Bulk, OutputTarget::Tun),
+                    counter,
+                )
+                .unwrap();
+        }
         assert_eq!(
             inbound.reserve(
-                &packet(owner, 1, 12, PacketClass::Bulk, OutputTarget::Tun),
-                2,
+                &packet(owner, 1, 13, PacketClass::Bulk, OutputTarget::Tun),
+                13,
             ),
             Err(OwnerReserveError::InFlightFull)
         );
 
         let liveness = inbound
             .reserve(
-                &packet(owner, 1, 13, PacketClass::Liveness, OutputTarget::Tun),
-                3,
+                &packet(owner, 1, 14, PacketClass::Liveness, OutputTarget::Tun),
+                14,
             )
             .unwrap();
         assert_eq!(liveness.lane, Lane::Priority);
-        assert_eq!(liveness.counter, 13);
-        assert_eq!(inbound.in_flight, 3);
+        assert_eq!(liveness.counter, 14);
+        assert_eq!(inbound.in_flight, 4);
 
-        let mut outbound =
-            OwnerState::new(owner, OwnerConfig::new(1, 4).with_bulk_in_flight_limit(2));
-        outbound
-            .reserve_outbound(
-                outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-1"),
-                0,
-            )
-            .unwrap();
-        outbound
-            .reserve_outbound(
-                outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-2"),
-                1,
-            )
-            .unwrap();
+        let mut outbound = OwnerState::new(owner, OwnerConfig::new(1, 4));
+        for seq in 0..3 {
+            outbound
+                .reserve_outbound(
+                    outbound_packet(owner, 1, PacketClass::Bulk, b"bulk"),
+                    seq,
+                )
+                .unwrap();
+        }
         assert!(matches!(
             outbound.reserve_outbound(
-                outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-3"),
-                2,
+                outbound_packet(owner, 1, PacketClass::Bulk, b"bulk"),
+                3,
             ),
             Err(OwnerReserveError::InFlightFull)
         ));
 
         let (mmp, _) = outbound
-            .reserve_outbound(outbound_packet(owner, 1, PacketClass::Mmp, b"mmp"), 3)
+            .reserve_outbound(outbound_packet(owner, 1, PacketClass::Mmp, b"mmp"), 4)
             .unwrap();
         assert_eq!(mmp.lane, Lane::Priority);
-        assert_eq!(mmp.counter, 2);
-        assert_eq!(outbound.in_flight, 3);
+        assert_eq!(mmp.counter, 3);
+        assert_eq!(outbound.in_flight, 4);
     }
 
     #[test]
-    fn owner_reliable_bulk_window_feeds_deeper_without_widening_discardable_bulk() {
+    fn owner_bulk_lane_preserves_priority_reserve() {
         let owner = fsp_owner(34);
-        let mut state = OwnerState::new(
-            owner,
-            OwnerConfig::new(1, 8)
-                .with_bulk_in_flight_limit(2)
-                .with_reliable_bulk_in_flight_limit(4),
-        );
+        let mut state = OwnerState::new(owner, OwnerConfig::new(1, 8));
 
-        for counter in 10..12 {
+        for counter in 10..13 {
+            state
+                .reserve(
+                    &packet(owner, 1, counter, PacketClass::Bulk, OutputTarget::Tun),
+                    counter,
+                )
+                .unwrap();
+        }
+        state
+            .reserve(
+                &packet(owner, 1, 20, PacketClass::Bulk, OutputTarget::Tun),
+                20,
+            )
+            .unwrap();
+        for counter in 21..24 {
+            state
+                .reserve(
+                    &packet(owner, 1, counter, PacketClass::Bulk, OutputTarget::Tun),
+                    counter,
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            state.reserve(
+                    &packet(owner, 1, 24, PacketClass::Bulk, OutputTarget::Tun),
+                    24,
+                ),
+            Err(OwnerReserveError::InFlightFull)
+        ));
+
+        let liveness = state
+            .reserve(
+                &packet(owner, 1, 30, PacketClass::Liveness, OutputTarget::Tun),
+                30,
+            )
+            .unwrap();
+        assert_eq!(liveness.lane, Lane::Priority);
+        assert_eq!(state.in_flight, 8);
+    }
+
+    #[test]
+    fn owner_total_bulk_window_keeps_priority_reserve() {
+        let owner = fsp_owner(35);
+        let mut state = OwnerState::new(owner, OwnerConfig::new(1, 4));
+
+        for counter in 10..13 {
             state
                 .reserve(
                     &packet(owner, 1, counter, PacketClass::Bulk, OutputTarget::Tun),
@@ -589,85 +620,9 @@
         }
         assert_eq!(
             state.reserve(
-                &packet(owner, 1, 12, PacketClass::Bulk, OutputTarget::Tun),
-                12,
-            ),
-            Err(OwnerReserveError::InFlightFull)
-        );
-
-        for counter in 20..24 {
-            state
-                .reserve(
-                    &packet(
-                        owner,
-                        1,
-                        counter,
-                        PacketClass::ReliableBulk,
-                        OutputTarget::Tun,
-                    ),
-                    counter,
-                )
-                .unwrap();
-        }
-        assert_eq!(
-            state.reserve(
-                &packet(
-                    owner,
-                    1,
-                    24,
-                    PacketClass::ReliableBulk,
-                    OutputTarget::Tun,
-                ),
-                24,
-            ),
-            Err(OwnerReserveError::InFlightFull)
-        );
-
-        let liveness = state
-            .reserve(
-                &packet(owner, 1, 30, PacketClass::Liveness, OutputTarget::Tun),
-                30,
-            )
-            .unwrap();
-        assert_eq!(liveness.lane, Lane::Priority);
-        assert_eq!(state.in_flight, 7);
-    }
-
-    #[test]
-    fn owner_total_bulk_window_keeps_priority_reserve_across_bulk_classes() {
-        let owner = fsp_owner(35);
-        let mut state = OwnerState::new(
-            owner,
-            OwnerConfig::new(1, 4)
-                .with_bulk_in_flight_limit(3)
-                .with_reliable_bulk_in_flight_limit(3),
-        );
-
-        for counter in 10..13 {
-            state
-                .reserve(
-                    &packet(
-                        owner,
-                        1,
-                        counter,
-                        PacketClass::ReliableBulk,
-                        OutputTarget::Tun,
-                    ),
-                    counter,
-                )
-                .unwrap();
-        }
-        assert_eq!(
-            state.reserve(
-                &packet(
-                    owner,
-                    1,
+                    &packet(owner, 1, 13, PacketClass::Bulk, OutputTarget::Tun),
                     13,
-                    PacketClass::ReliableBulk,
-                    OutputTarget::Tun,
                 ),
-                13,
-            ),
             Err(OwnerReserveError::InFlightFull)
         );
 
@@ -724,15 +679,10 @@
     }
 
     #[test]
-    fn outbound_dispatch_preserves_priority_when_bulk_in_flight_cap_is_full() {
+    fn outbound_dispatch_preserves_priority_when_bulk_lane_is_full() {
         let owner = fsp_owner(36);
         let mut mover = PacketMover2::new(AdmissionConfig::new(8, 8));
-        mover.register_owner(
-            owner,
-            OwnerConfig::new(1, 4)
-                .with_next_send_counter(10)
-                .with_bulk_in_flight_limit(2),
-        );
+        mover.register_owner(owner, OwnerConfig::new(1, 4).with_next_send_counter(10));
 
         mover
             .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-1"))
@@ -740,14 +690,18 @@
         mover
             .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-2"))
             .unwrap();
-        let work = dispatch_outbound_available(&mut mover, 8);
-        assert_eq!(work.len(), 2);
-        assert_eq!(work[0].reservation.counter, 10);
-        assert_eq!(work[1].reservation.counter, 11);
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 2);
-
         mover
             .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-3"))
+            .unwrap();
+        let work = dispatch_outbound_available(&mut mover, 8);
+        assert_eq!(work.len(), 3);
+        assert_eq!(work[0].reservation.counter, 10);
+        assert_eq!(work[1].reservation.counter, 11);
+        assert_eq!(work[2].reservation.counter, 12);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 3);
+
+        mover
+            .submit_outbound_packet(outbound_packet(owner, 1, PacketClass::Bulk, b"bulk-4"))
             .unwrap();
         mover
             .submit_outbound_packet(outbound_packet(
@@ -761,8 +715,8 @@
         let work = dispatch_outbound_available(&mut mover, 8);
         assert_eq!(work.len(), 1);
         assert_eq!(work[0].packet.class, PacketClass::Liveness);
-        assert_eq!(work[0].reservation.counter, 12);
-        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 3);
+        assert_eq!(work[0].reservation.counter, 13);
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 4);
         assert_eq!(outbound_queue_lens(&mover), (0, 1));
         assert!(mover.drain_drops().is_empty());
     }
@@ -813,10 +767,11 @@
     }
 
     #[test]
-    fn outbound_dispatch_feeds_contiguous_owner_run() {
+    fn outbound_dispatch_rotates_owner_lanes() {
+        let config = AdmissionConfig::new(2, 8);
         let first_owner = fsp_owner(39);
-        let second_owner = fsp_owner(40);
-        let mut mover = PacketMover2::new(AdmissionConfig::new(2, 8));
+        let second_owner = same_shard_fsp_owner(first_owner, 40, config);
+        let mut mover = PacketMover2::new(config);
         mover.register_owner(first_owner, OwnerConfig::new(1, 8).with_next_send_counter(390));
         mover.register_owner(second_owner, OwnerConfig::new(1, 8).with_next_send_counter(400));
 
@@ -835,8 +790,19 @@
             work.iter()
                 .map(|work| (work.reservation.owner, work.reservation.counter))
                 .collect::<Vec<_>>(),
-            vec![(first_owner, 390), (first_owner, 391), (second_owner, 400)]
+            vec![(first_owner, 390), (second_owner, 400), (first_owner, 391)]
         );
+    }
+
+    fn same_shard_fsp_owner(first: OwnerId, start_id: u64, config: AdmissionConfig) -> OwnerId {
+        let shard_count = packet_mover2_owner_shard_count(config);
+        let first_shard = packet_mover2_owner_shard_index(first, shard_count);
+        (start_id..start_id + 1024)
+            .map(fsp_owner)
+            .find(|owner| {
+                *owner != first && packet_mover2_owner_shard_index(*owner, shard_count) == first_shard
+            })
+            .expect("same-shard test owner")
     }
 
     #[test]

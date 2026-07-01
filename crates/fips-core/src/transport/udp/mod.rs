@@ -91,7 +91,6 @@ impl UdpSendSnapshot {
         let mut results = Vec::with_capacity(socket_packets.len());
         let mut offset = 0usize;
         while offset < socket_packets.len() {
-            crate::perf_profile::record_udp_send_sendmmsg_batch(socket_packets.len() - offset);
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
             match self.socket.send_batch(&socket_packets[offset..]).await {
                 Ok(0) => {
@@ -696,7 +695,6 @@ impl UdpTransport {
 
         let mut offset = 0usize;
         while offset < socket_packets.len() {
-            crate::perf_profile::record_udp_send_sendmmsg_batch(socket_packets.len() - offset);
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
             match socket.send_batch(&socket_packets[offset..]).await {
                 Ok(0) => {

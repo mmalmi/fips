@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 #[tokio::test]
 async fn endpoint_starts_without_system_tun() {
@@ -234,7 +235,7 @@ async fn recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
 }
 
 #[tokio::test]
-async fn recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
+async fn recv_batch_into_preserves_pending_batch_tail_fifo() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()
         .bind()
@@ -246,12 +247,12 @@ async fn recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
         .inbound_endpoint_tx
         .send(NodeEndpointEvent::DataBatch {
             messages: vec![
-                EndpointDataDelivery::new(local, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
-                EndpointDataDelivery::new(local, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+                EndpointDataDelivery::new(local, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                EndpointDataDelivery::new(local, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("inject bulk internal batch");
+        .expect("inject internal batch");
 
     let mut messages = Vec::with_capacity(8);
     let received = tokio::time::timeout(
@@ -272,7 +273,7 @@ async fn recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
             enqueued_at_ms: crate::time::now_ms(),
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("inject priority follow-on");
+        .expect("inject small follow-on");
 
     let received = tokio::time::timeout(
         Duration::from_secs(1),
@@ -282,8 +283,8 @@ async fn recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
     .expect("recv batch should not time out")
     .expect("messages should arrive");
     assert_eq!(received, 2);
-    assert_eq!(messages[0].data[0], 0x11);
-    assert_eq!(messages[1].data[0], 0xbb);
+    assert_eq!(messages[0].data[0], 0xbb);
+    assert_eq!(messages[1].data[0], 0x11);
 
     endpoint.shutdown().await.expect("shutdown should succeed");
 }
@@ -352,7 +353,7 @@ async fn blocking_recv_drains_pending_internal_endpoint_batch_tail() {
 }
 
 #[tokio::test]
-async fn blocking_recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
+async fn blocking_recv_batch_into_preserves_pending_batch_tail_fifo() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()
         .bind()
@@ -364,14 +365,14 @@ async fn blocking_recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
         .inbound_endpoint_tx
         .send(NodeEndpointEvent::DataBatch {
             messages: vec![
-                EndpointDataDelivery::new(local, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
-                EndpointDataDelivery::new(local, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+                EndpointDataDelivery::new(local, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                EndpointDataDelivery::new(local, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("inject bulk internal batch");
+        .expect("inject internal batch");
 
-    let priority_tx = endpoint.inbound_endpoint_tx.clone();
+    let event_tx = endpoint.inbound_endpoint_tx.clone();
     let endpoint = tokio::task::spawn_blocking(move || {
         let mut messages = Vec::with_capacity(8);
         let received = endpoint
@@ -380,21 +381,21 @@ async fn blocking_recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
         assert_eq!(received, 1);
         assert_eq!(messages[0].data[0], 0xaa);
 
-        priority_tx
+        event_tx
             .send(NodeEndpointEvent::Data {
                 source_peer: local,
                 payload: vec![0x11; 32].into(),
                 enqueued_at_ms: crate::time::now_ms(),
                 queued_at: crate::perf_profile::stamp(),
             })
-            .expect("inject priority follow-on");
+            .expect("inject small follow-on");
 
         let received = endpoint
             .blocking_recv_batch_into(&mut messages, 8)
             .expect("messages should arrive");
         assert_eq!(received, 2);
-        assert_eq!(messages[0].data[0], 0x11);
-        assert_eq!(messages[1].data[0], 0xbb);
+        assert_eq!(messages[0].data[0], 0xbb);
+        assert_eq!(messages[1].data[0], 0x11);
         endpoint
     })
     .await

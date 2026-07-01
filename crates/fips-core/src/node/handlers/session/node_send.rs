@@ -74,7 +74,7 @@ impl Node {
             NodeEndpointCommand::SendOneway { command } => {
                 let _ = self.queue_packet_mover2_unrouted_endpoint_send(command).await;
             }
-            NodeEndpointCommand::SendBatchOneway { command, .. } => {
+            NodeEndpointCommand::SendBatchOneway { command } => {
                 self.queue_packet_mover2_unrouted_endpoint_batch(command).await;
             }
             NodeEndpointCommand::UpdatePeers { peers, response_tx } => {

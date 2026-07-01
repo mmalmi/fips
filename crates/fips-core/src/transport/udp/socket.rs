@@ -49,6 +49,13 @@ mod platform {
     /// per-call kernel fixed cost / N.
     #[cfg(target_os = "linux")]
     const SEND_BATCH_SIZE: usize = 256;
+    #[cfg(target_os = "linux")]
+    const UDP_GSO_MAX_SEGMENTS: usize = 64;
+    #[cfg(target_os = "linux")]
+    const UDP_GSO_MAX_PAYLOAD: usize = u16::MAX as usize - 8;
+    #[cfg(target_os = "linux")]
+    static UDP_GSO_DISABLED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
 
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
@@ -585,15 +592,36 @@ mod platform {
         }
 
         /// Send up to `SEND_BATCH_SIZE` datagrams in a single sendmmsg
-        /// syscall (Linux only). Returns the count actually sent. Caller
-        /// is responsible for retrying remaining packets if
-        /// `n < packets.len()`.
+        /// syscall (Linux only), or a same-destination/same-size prefix via
+        /// `sendmsg(2)+UDP_SEGMENT`. Returns the count actually sent. Caller is
+        /// responsible for retrying remaining packets if `n < packets.len()`.
         #[cfg(target_os = "linux")]
         pub fn send_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> std::io::Result<usize> {
             let n = packets.len().min(SEND_BATCH_SIZE);
             if n == 0 {
                 return Ok(0);
             }
+
+            if !UDP_GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
+                let gso_n = udp_gso_prefix_len(&packets[..n]);
+                if gso_n > 1 {
+                    match self.send_gso_batch(&packets[..gso_n]) {
+                        Ok(()) => {
+                            crate::perf_profile::record_udp_send_gso_batch(gso_n);
+                            return Ok(gso_n);
+                        }
+                        Err(error) if is_udp_gso_capability_error(&error) => {
+                            UDP_GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                            tracing::warn!(
+                                error = %error,
+                                "UDP_GSO refused by kernel; falling back to sendmmsg"
+                            );
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+
             let fd = self.inner.as_raw_fd();
 
             let mut iovs: [libc::iovec; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
@@ -628,7 +656,69 @@ mod platform {
             if r < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            Ok(r as usize)
+            let sent = r as usize;
+            crate::perf_profile::record_udp_send_sendmmsg_batch(sent);
+            Ok(sent)
+        }
+
+        #[cfg(target_os = "linux")]
+        fn send_gso_batch(&self, packets: &[(usize, &[u8], SocketAddr)]) -> std::io::Result<()> {
+            debug_assert!(packets.len() > 1);
+            let n = packets.len().min(UDP_GSO_MAX_SEGMENTS);
+            let segment_size = packets[0].1.len();
+            debug_assert!(segment_size > 0);
+            debug_assert!(segment_size <= u16::MAX as usize);
+
+            let fd = self.inner.as_raw_fd();
+            let dest = packets[0].2;
+            let sa: socket2::SockAddr = dest.into();
+            let sa_len = sa.len();
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    sa.as_ptr() as *const u8,
+                    &mut storage as *mut _ as *mut u8,
+                    sa_len as usize,
+                );
+            }
+
+            let mut iovs: [libc::iovec; UDP_GSO_MAX_SEGMENTS] = unsafe { std::mem::zeroed() };
+            for (i, (_, data, _)) in packets[..n].iter().copied().enumerate() {
+                iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = data.len();
+            }
+
+            let cmsg_space =
+                unsafe { libc::CMSG_SPACE(std::mem::size_of::<u16>() as u32) as usize };
+            let mut cmsg_buf = [0u8; 64];
+            debug_assert!(cmsg_space <= cmsg_buf.len());
+
+            let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+            msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+            msg.msg_namelen = sa_len;
+            msg.msg_iov = iovs.as_mut_ptr();
+            msg.msg_iovlen = n as _;
+            msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+            msg.msg_controllen = cmsg_space as _;
+
+            unsafe {
+                let cmsg = libc::CMSG_FIRSTHDR(&msg);
+                if cmsg.is_null() {
+                    return Err(std::io::Error::other("CMSG_FIRSTHDR returned null"));
+                }
+                (*cmsg).cmsg_level = libc::IPPROTO_UDP as _;
+                (*cmsg).cmsg_type = libc::UDP_SEGMENT as _;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<u16>() as u32) as _;
+                let data = libc::CMSG_DATA(cmsg) as *mut u16;
+                *data = segment_size as u16;
+            }
+
+            let result = unsafe { libc::sendmsg(fd, &msg, 0) };
+            if result < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
         }
 
         /// Wrap this socket in a tokio `AsyncFd` for async I/O.
@@ -639,6 +729,46 @@ mod platform {
                 inner: Arc::new(async_fd),
             })
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn udp_gso_prefix_len(packets: &[(usize, &[u8], SocketAddr)]) -> usize {
+        let max = packets.len().min(SEND_BATCH_SIZE).min(UDP_GSO_MAX_SEGMENTS);
+        if max < 2 {
+            return 0;
+        }
+
+        let segment_size = packets[0].1.len();
+        if segment_size == 0 || segment_size > u16::MAX as usize {
+            return 0;
+        }
+        let dest = packets[0].2;
+        let mut total_payload = 0usize;
+        let mut count = 0usize;
+
+        for (_, data, packet_dest) in packets.iter().take(max).copied() {
+            let len = data.len();
+            if packet_dest != dest || len == 0 || len > segment_size {
+                break;
+            }
+            if count > 0 && total_payload.saturating_add(len) > UDP_GSO_MAX_PAYLOAD {
+                break;
+            }
+            total_payload = total_payload.saturating_add(len);
+            count += 1;
+            if len < segment_size {
+                break;
+            }
+        }
+
+        if count > 1 { count } else { 0 }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_udp_gso_capability_error(error: &std::io::Error) -> bool {
+        error.kind() == std::io::ErrorKind::InvalidInput
+            || matches!(error.raw_os_error(), Some(code)
+                if code == libc::EOPNOTSUPP || code == libc::ENOPROTOOPT || code == libc::EIO)
     }
 
     impl AsRawFd for UdpRawSocket {

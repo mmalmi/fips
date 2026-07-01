@@ -49,15 +49,30 @@ impl PacketMover2FspWrapRoute {
         self.fmp_owner.node_addr()
     }
 
+    fn fmp_payload_header(self) -> [u8; crate::protocol::SESSION_DATAGRAM_HEADER_SIZE] {
+        let mut header = [0u8; crate::protocol::SESSION_DATAGRAM_HEADER_SIZE];
+        header[0] = crate::protocol::LinkMessageType::SessionDatagram.to_byte();
+        header[1] = self.ttl;
+        header[2..4].copy_from_slice(&self.path_mtu.to_le_bytes());
+        header[4..20].copy_from_slice(self.source_addr.as_bytes());
+        header[20..36].copy_from_slice(self.dest_addr.as_bytes());
+        header
+    }
+
     fn fmp_payload(self, fsp_wire: PacketBuffer) -> PacketBuffer {
+        let mut fsp_wire = fsp_wire;
+        let header = self.fmp_payload_header();
+        let outer_fmp_tail = FMP_ESTABLISHED_HEADER_SIZE
+            .saturating_add(std::mem::size_of::<u32>())
+            .saturating_add(AEAD_TAG_SIZE);
+        if fsp_wire.try_prepend_slices(&[&header], outer_fmp_tail) {
+            return fsp_wire;
+        }
+
         let fsp_wire = fsp_wire.into_vec();
         let mut payload =
             Vec::with_capacity(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE + fsp_wire.len());
-        payload.push(crate::protocol::LinkMessageType::SessionDatagram.to_byte());
-        payload.push(self.ttl);
-        payload.extend_from_slice(&self.path_mtu.to_le_bytes());
-        payload.extend_from_slice(self.source_addr.as_bytes());
-        payload.extend_from_slice(self.dest_addr.as_bytes());
+        payload.extend_from_slice(&header);
         payload.extend_from_slice(&fsp_wire);
         payload.into()
     }

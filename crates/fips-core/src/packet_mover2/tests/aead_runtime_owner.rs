@@ -1242,15 +1242,11 @@
             PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             fsp_owner,
-            OwnerConfig::new(1, 8)
-                .with_bulk_in_flight_limit(2)
-                .with_next_send_counter(10),
+            OwnerConfig::new(1, 8).with_next_send_counter(10),
         );
         driver.register_owner(
             fmp_owner,
-            OwnerConfig::new(1, 8)
-                .with_bulk_in_flight_limit(2)
-                .with_next_send_counter(20),
+            OwnerConfig::new(1, 8).with_next_send_counter(20),
         );
         driver
             .owner_mut(fsp_owner)
@@ -2632,9 +2628,7 @@
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             owner,
-            OwnerConfig::new(1, 3)
-                .with_bulk_in_flight_limit(1)
-                .with_next_send_counter(10),
+            OwnerConfig::new(1, 3).with_next_send_counter(10),
         );
         driver
             .owner_mut(owner)
@@ -2827,7 +2821,7 @@
         let packet = OutboundPacket::fsp(
             fsp_owner,
             1,
-            PacketClass::ReliableBulk,
+            PacketClass::Bulk,
             0x03,
             b"failed-wrap".to_vec(),
         )

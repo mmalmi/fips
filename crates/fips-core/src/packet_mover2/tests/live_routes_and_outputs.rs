@@ -137,7 +137,7 @@
         large_wire.resize(
             FSP_HEADER_SIZE
                 .saturating_add(FSP_INNER_HEADER_SIZE)
-                .saturating_add(crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN)
+                .saturating_add(crate::node::ENDPOINT_EVENT_TEST_PAYLOAD_LEN)
                 .saturating_add(AEAD_TAG_SIZE)
                 .saturating_add(1),
             0,
@@ -549,7 +549,7 @@
                 fsp_source,
             ),
         ]));
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
@@ -564,7 +564,7 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,
@@ -657,7 +657,7 @@
             PacketMover2IngressRoute::new(fmp_owner, 1, OutputTarget::Tun)
                 .with_class(PacketClass::Liveness),
         );
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
@@ -670,7 +670,7 @@
                 &mut raw_ingress,
                 &mut routes,
                 8,
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,

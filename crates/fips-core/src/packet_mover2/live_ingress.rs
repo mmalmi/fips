@@ -302,35 +302,13 @@ impl PacketMover2IngressRouter for PacketMover2LiveRouteTable {
             (PacketProtocol::Fsp, PacketMover2IngressHeader::Fsp(header)) => packet
                 .fsp_source
                 .and_then(|source_addr| self.fsp.get(&source_addr).copied())
-                .map(|route| route.classify_fsp_ingress(packet, header)),
+                .map(|route| {
+                    let _ = header;
+                    route
+                }),
             _ => None,
         }
     }
-}
-
-impl PacketMover2IngressRoute {
-    fn classify_fsp_ingress(
-        mut self,
-        packet: &PacketMover2RawIngress,
-        header: FspWireHeader,
-    ) -> Self {
-        if self.class == PacketClass::Bulk && fsp_ingress_is_priority_sized(packet, header) {
-            self.class = PacketClass::Control;
-        }
-        self
-    }
-}
-
-fn fsp_ingress_is_priority_sized(
-    packet: &PacketMover2RawIngress,
-    header: FspWireHeader,
-) -> bool {
-    packet.payload_len()
-        <= header
-            .ciphertext_offset()
-            .saturating_add(FSP_INNER_HEADER_SIZE)
-            .saturating_add(crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN)
-            .saturating_add(AEAD_TAG_SIZE)
 }
 
 impl PacketMover2TunOutboundRouter for PacketMover2LiveRouteTable {

@@ -909,12 +909,6 @@ fn record_owner_blocked(reason: Option<OwnerReserveBlockReason>) {
         Some(OwnerReserveBlockReason::BulkLane) => {
             record_event(Event::PacketMover2DispatchOwnerBlockedBulkLane);
         }
-        Some(OwnerReserveBlockReason::DiscardableBulk) => {
-            record_event(Event::PacketMover2DispatchOwnerBlockedDiscardableBulk);
-        }
-        Some(OwnerReserveBlockReason::ReliableBulk) => {
-            record_event(Event::PacketMover2DispatchOwnerBlockedReliableBulk);
-        }
         None => {}
     }
 }

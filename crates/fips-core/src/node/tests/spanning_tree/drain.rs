@@ -28,19 +28,19 @@ async fn process_packet_mover2_turn(
     packet_limit: usize,
 ) -> usize {
     let (_packet_tx, mut empty_packet_rx) = crate::transport::packet_channel(1);
-    let (_endpoint_priority_tx, mut dummy_endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_control_tx, mut dummy_endpoint_control_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut dummy_endpoint_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_outbound_tx, mut dummy_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
     let (dummy_tun_tx, _dummy_tun_rx) = crate::upper::tun::write_channel();
     let (dummy_endpoint_tx, _dummy_endpoint_rx) = crate::node::EndpointEventSender::channel(1);
 
-    let mut endpoint_priority_rx_slot = node.node.endpoint_priority_command_rx.take();
+    let mut endpoint_control_rx_slot = node.node.endpoint_control_command_rx.take();
     let mut endpoint_rx_slot = node.node.endpoint_command_rx.take();
     let mut tun_outbound_rx_slot = node.node.tun_outbound_rx.take();
 
-    let endpoint_priority_rx = match endpoint_priority_rx_slot.as_mut() {
+    let endpoint_control_rx = match endpoint_control_rx_slot.as_mut() {
         Some(rx) => rx,
-        None => &mut dummy_endpoint_priority_rx,
+        None => &mut dummy_endpoint_control_rx,
     };
     let endpoint_rx = match endpoint_rx_slot.as_mut() {
         Some(rx) => rx,
@@ -63,7 +63,7 @@ async fn process_packet_mover2_turn(
             &mut empty_packet_rx,
             first_packet,
             packet_limit,
-            endpoint_priority_rx,
+            endpoint_control_rx,
             endpoint_rx,
             64,
             tun_outbound_rx,
@@ -97,7 +97,7 @@ async fn process_packet_mover2_turn(
                 &mut empty_packet_rx,
                 None,
                 0,
-                endpoint_priority_rx,
+                endpoint_control_rx,
                 endpoint_rx,
                 64,
                 tun_outbound_rx,
@@ -120,7 +120,7 @@ async fn process_packet_mover2_turn(
         }
     }
 
-    node.node.endpoint_priority_command_rx = endpoint_priority_rx_slot.take();
+    node.node.endpoint_control_command_rx = endpoint_control_rx_slot.take();
     node.node.endpoint_command_rx = endpoint_rx_slot.take();
     node.node.tun_outbound_rx = tun_outbound_rx_slot.take();
 

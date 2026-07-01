@@ -134,8 +134,8 @@ impl Node {
         };
 
         let peer_name = self.peer_display_name(src_addr);
-        let change = match self.packet_mover2.apply_fsp_path_mtu_signal(
-            *src_addr,
+        let change = match self.apply_packet_mover2_fsp_path_mtu_signal(
+            src_addr,
             notif.path_mtu,
             std::time::Instant::now(),
         ) {
@@ -195,8 +195,6 @@ impl Node {
                 );
             }
         }
-
-        let _ = self.refresh_packet_mover2_fsp_owner_routes(src_addr);
     }
 
     /// Handle a CoordsRequired error signal from a transit router.
@@ -348,8 +346,8 @@ impl Node {
         );
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
-        let path_mtu_changed = match self.packet_mover2.apply_fsp_path_mtu_signal(
-            msg.dest_addr,
+        match self.apply_packet_mover2_fsp_path_mtu_signal(
+            &msg.dest_addr,
             msg.mtu,
             std::time::Instant::now(),
         ) {
@@ -361,11 +359,10 @@ impl Node {
                     reporter = %msg.reporter,
                     "Path MTU decreased via reactive MtuExceeded signal"
                 );
-                true
             }
             Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Unchanged)
             | Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner)
-            | Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => false,
+            | Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => {}
         };
 
         // Mirror the bottleneck into the FipsAddress-keyed lookup used by
@@ -407,9 +404,6 @@ impl Node {
                     "path_mtu_lookup write lock poisoned; reactive MtuExceeded not reflected"
                 );
             }
-        }
-        if path_mtu_changed {
-            let _ = self.refresh_packet_mover2_fsp_owner_routes(&msg.dest_addr);
         }
     }
 

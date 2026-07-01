@@ -65,8 +65,8 @@ impl Node {
 
         // Take the endpoint-data command receiver, or create a dummy channel
         // when the embedded endpoint API is not in use.
-        let (mut endpoint_priority_command_rx, _endpoint_priority_command_guard) =
-            match self.endpoint_priority_command_rx.take() {
+        let (mut endpoint_control_command_rx, _endpoint_control_command_guard) =
+            match self.endpoint_control_command_rx.take() {
                 Some(rx) => (rx, None),
                 None => {
                     let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -145,7 +145,7 @@ impl Node {
                     let drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
                         &mut tun_outbound_rx,
-                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_control_command_rx,
                         &mut endpoint_command_rx,
                         &packet_mover2_tun_tx,
                         &packet_mover2_endpoint_tx,
@@ -180,7 +180,7 @@ impl Node {
                     let post_drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
                         &mut tun_outbound_rx,
-                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_control_command_rx,
                         &mut endpoint_command_rx,
                         &packet_mover2_tun_tx,
                         &packet_mover2_endpoint_tx,
@@ -204,19 +204,17 @@ impl Node {
                         ENDPOINT_DRAIN_BUDGET,
                     ).await;
                 }
-                // Endpoint priority is app-owned latency-sensitive traffic
-                // (ICMP, TCP ACK/SYN, tiny TCP data). On platforms without the
-                // endpoint channel producing a steady wake stream, this branch
-                // is the outbound dataplane path, so give it an explicit turn
-                // before hot raw receive. Bulk endpoint commands intentionally
-                // remain below packet_rx.
-                Some(command) = endpoint_priority_command_rx.recv() => {
+                // Endpoint control carries management/lifecycle commands.
+                // App payloads stay on the bulk endpoint lane; this branch
+                // keeps control work from waiting behind hot raw receive.
+                // Bulk endpoint commands intentionally remain below packet_rx.
+                Some(command) = endpoint_control_command_rx.recv() => {
                     let mut turn = self.drain_packet_mover2_turn_with_firsts(
                         &mut packet_rx,
                         crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
-                            .with_endpoint_priority(Some(command)),
+                            .with_endpoint_control(Some(command)),
                         0,
-                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_control_command_rx,
                         &mut endpoint_command_rx,
                         ENDPOINT_DRAIN_BUDGET,
                         &mut tun_outbound_rx,
@@ -236,21 +234,20 @@ impl Node {
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => {
-                            let latency_packet = p.is_priority_sized();
+                            let latency_packet = p.is_transport_priority();
                             let mut firsts = crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
                                 .with_raw_packet(Some(p));
-                            let mut side_latency_ready = false;
-                            if let Ok(command) = endpoint_priority_command_rx.try_recv() {
-                                firsts = firsts.with_endpoint_priority(Some(command));
-                                side_latency_ready = true;
+                            let mut control_side_ready = false;
+                            if let Ok(command) = endpoint_control_command_rx.try_recv() {
+                                firsts = firsts.with_endpoint_control(Some(command));
+                                control_side_ready = true;
                             }
-                            if let Ok(packet) = tun_outbound_rx.try_recv_priority_first() {
+                            if let Ok(packet) = tun_outbound_rx.try_recv() {
                                 firsts = firsts.with_tun_packet(Some(packet));
-                                side_latency_ready = true;
                             }
                             let latency_work_ready = latency_packet
                                 || packet_rx.priority_ready_packets() > 0
-                                || side_latency_ready;
+                                || control_side_ready;
                             if !latency_work_ready {
                                 firsts = firsts.with_raw_ingress_first(true);
                             }
@@ -266,7 +263,7 @@ impl Node {
                                 &mut packet_rx,
                                 firsts,
                                 packet_budget,
-                                &mut endpoint_priority_command_rx,
+                                &mut endpoint_control_command_rx,
                                 &mut endpoint_command_rx,
                                 endpoint_budget,
                                 &mut tun_outbound_rx,
@@ -312,7 +309,7 @@ impl Node {
                         crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
                             .with_tun_packet(Some(ipv6_packet)),
                         0,
-                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_control_command_rx,
                         &mut endpoint_command_rx,
                         0,
                         &mut tun_outbound_rx,
@@ -342,7 +339,7 @@ impl Node {
                         crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
                             .with_endpoint_bulk(Some(command)),
                         0,
-                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_control_command_rx,
                         &mut endpoint_command_rx,
                         ENDPOINT_DRAIN_BUDGET,
                         &mut tun_outbound_rx,
@@ -378,7 +375,7 @@ impl Node {
         &mut self,
         packet_rx: &mut PacketRx,
         tun_outbound_rx: &mut TunOutboundRx,
-        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_control_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
@@ -391,7 +388,7 @@ impl Node {
             .drain_packet_mover2_turn(
                 packet_rx,
                 budget,
-                endpoint_priority_command_rx,
+                endpoint_control_command_rx,
                 endpoint_command_rx,
                 endpoint_budget,
                 tun_outbound_rx,

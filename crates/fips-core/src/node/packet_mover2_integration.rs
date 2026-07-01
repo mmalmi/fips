@@ -14,9 +14,6 @@ use crate::protocol::SessionMessageType;
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
 const PACKET_MOVER2_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
-const PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT: usize = 64;
-const PACKET_MOVER2_DEFAULT_OWNER_RELIABLE_BULK_IN_FLIGHT_LIMIT: usize = 64;
-
 struct PacketMover2FmpOwnerSeed {
     owner: OwnerId,
     config: OwnerConfig,
@@ -260,13 +257,11 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
         payloads: Vec<EndpointDataPayload>,
-        lane: EndpointCommandLane,
         enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
         if payloads.is_empty() {
             return Ok(());
         }
-        debug_assert!(payloads.iter().all(|payload| payload.lane() == lane));
         if !self.packet_mover2_has_fsp_owner(dest_addr) {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
@@ -298,19 +293,11 @@ impl Node {
                 remote,
                 payloads,
                 None,
-                lane,
                 enqueued_at_ms,
             )
             .expect("checked pending endpoint payload batch")
         };
-        let firsts = match lane {
-            EndpointCommandLane::Priority => {
-                PacketMover2LiveOutboundFirsts::default().with_endpoint_priority(Some(command))
-            }
-            EndpointCommandLane::Bulk => {
-                PacketMover2LiveOutboundFirsts::default().with_endpoint_bulk(Some(command))
-            }
-        };
+        let firsts = PacketMover2LiveOutboundFirsts::default().with_endpoint_bulk(Some(command));
         let turn = self
             .pump_packet_mover2_pending_outbound_firsts(firsts, payload_count, 0, payload_count)
             .await;
@@ -744,6 +731,27 @@ impl Node {
         self.refresh_packet_mover2_fsp_owner_routes(node_addr) && warmup_applied
     }
 
+    pub(in crate::node) fn apply_packet_mover2_fsp_path_mtu_signal(
+        &mut self,
+        node_addr: &NodeAddr,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<
+        crate::packet_mover2::PacketMover2FspPathMtuApplyResult,
+        crate::packet_mover2::PacketMover2FspMmpSkip,
+    > {
+        let result = self
+            .packet_mover2
+            .apply_fsp_path_mtu_signal(*node_addr, path_mtu, now)?;
+        if matches!(
+            result,
+            crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Changed(_)
+        ) {
+            let _ = self.refresh_packet_mover2_fsp_owner_routes(node_addr);
+        }
+        Ok(result)
+    }
+
     pub(in crate::node) fn set_packet_mover2_fsp_owner_epoch(
         &mut self,
         node_addr: &NodeAddr,
@@ -1127,12 +1135,7 @@ impl Node {
 
     fn packet_mover2_owner_config(&self, generation: u64) -> OwnerConfig {
         let in_flight_limit = self.packet_mover2_owner_in_flight_limit();
-        let bulk_in_flight_limit = packet_mover2_owner_bulk_in_flight_limit(in_flight_limit);
-        let reliable_bulk_in_flight_limit =
-            packet_mover2_owner_reliable_bulk_in_flight_limit(in_flight_limit);
         OwnerConfig::new(generation, in_flight_limit)
-            .with_bulk_in_flight_limit(bulk_in_flight_limit)
-            .with_reliable_bulk_in_flight_limit(reliable_bulk_in_flight_limit)
     }
 
     fn packet_mover2_generation_from_session_start_ms(session_start_ms: u64) -> u64 {
@@ -1191,22 +1194,6 @@ fn packet_mover2_fmp_link_class(plaintext: &[u8]) -> PacketClass {
     }
 }
 
-fn packet_mover2_owner_bulk_in_flight_limit(in_flight_limit: usize) -> usize {
-    let in_flight_limit = in_flight_limit.max(1);
-    let priority_reserve = usize::from(in_flight_limit > 1);
-    PACKET_MOVER2_DEFAULT_OWNER_BULK_IN_FLIGHT_LIMIT
-        .min(in_flight_limit.saturating_sub(priority_reserve))
-        .max(1)
-}
-
-fn packet_mover2_owner_reliable_bulk_in_flight_limit(in_flight_limit: usize) -> usize {
-    let in_flight_limit = in_flight_limit.max(1);
-    let priority_reserve = usize::from(in_flight_limit > 1);
-    PACKET_MOVER2_DEFAULT_OWNER_RELIABLE_BULK_IN_FLIGHT_LIMIT
-        .min(in_flight_limit.saturating_sub(priority_reserve))
-        .max(1)
-}
-
 fn packet_mover2_fsp_control_class(msg_type: u8) -> PacketClass {
     match SessionMessageType::from_byte(msg_type) {
         Some(
@@ -1215,27 +1202,5 @@ fn packet_mover2_fsp_control_class(msg_type: u8) -> PacketClass {
             | SessionMessageType::PathMtuNotification,
         ) => PacketClass::Mmp,
         _ => PacketClass::Control,
-    }
-}
-
-#[cfg(test)]
-mod packet_mover2_integration_tests {
-    use super::*;
-
-    #[test]
-    fn owner_bulk_in_flight_limit_reserves_priority_slot() {
-        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(0), 1);
-        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(1), 1);
-        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(2), 1);
-        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(64), 63);
-        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(65), 64);
-        assert_eq!(packet_mover2_owner_bulk_in_flight_limit(128), 64);
-
-        assert_eq!(packet_mover2_owner_reliable_bulk_in_flight_limit(0), 1);
-        assert_eq!(packet_mover2_owner_reliable_bulk_in_flight_limit(1), 1);
-        assert_eq!(packet_mover2_owner_reliable_bulk_in_flight_limit(2), 1);
-        assert_eq!(packet_mover2_owner_reliable_bulk_in_flight_limit(64), 63);
-        assert_eq!(packet_mover2_owner_reliable_bulk_in_flight_limit(65), 64);
-        assert_eq!(packet_mover2_owner_reliable_bulk_in_flight_limit(128), 64);
     }
 }

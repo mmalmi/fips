@@ -32,7 +32,7 @@
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(8);
 
-        let (endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(8);
+        let (endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(8);
         let (endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(8);
         let endpoint_payload = bulk_endpoint_payload();
         endpoint_bulk_tx
@@ -41,12 +41,11 @@
                     remote,
                     vec![EndpointDataPayload::new(endpoint_payload.clone())],
                     None,
-                    EndpointCommandLane::Bulk,
                 )
                 .expect("endpoint batch command"),
             )
             .expect("enqueue endpoint command");
-        drop(endpoint_priority_tx);
+        drop(endpoint_control_tx);
 
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(8);
@@ -122,7 +121,7 @@
                 &mut packet_rx,
                 PacketMover2LiveTurnFirsts::default(),
                 8,
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 8,
                 &mut tun_outbound_rx,
@@ -153,7 +152,7 @@
         assert_eq!(first.transport_sent(), 0);
         assert_eq!(first.transport_dropped(), 0);
         assert!(packet_rx.try_recv().is_err());
-        assert!(endpoint_priority_rx.try_recv().is_err());
+        assert!(endpoint_control_rx.try_recv().is_err());
         assert!(endpoint_bulk_rx.try_recv().is_err());
         assert!(tun_outbound_rx.try_recv().is_err());
         assert!(tun_rx.try_recv().is_err());
@@ -263,11 +262,11 @@
             ),
         ]));
 
-        let (endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
-        drop((endpoint_priority_tx, endpoint_bulk_tx, tun_outbound_tx));
+        drop((endpoint_control_tx, endpoint_bulk_tx, tun_outbound_tx));
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(1).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
@@ -295,7 +294,7 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 8,
                 &mut tun_outbound_rx,

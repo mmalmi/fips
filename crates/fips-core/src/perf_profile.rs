@@ -57,8 +57,8 @@ pub enum Stage {
     EndpointEventWait = 15,
     ReservedStage16 = 16,
     ReservedStage17 = 17,
-    EndpointPriorityEventWait = 18,
-    EndpointBulkEventWait = 19,
+    ReservedStage18 = 18,
+    ReservedStage19 = 19,
     TransportChannelWait = 20,
     TransportPriorityChannelWait = 21,
     TransportBulkChannelWait = 22,
@@ -131,8 +131,8 @@ impl Stage {
             Stage::EndpointEventWait => "endpoint_event_wait",
             Stage::ReservedStage16 => "reserved_stage_16",
             Stage::ReservedStage17 => "reserved_stage_17",
-            Stage::EndpointPriorityEventWait => "endpoint_priority_event_wait",
-            Stage::EndpointBulkEventWait => "endpoint_bulk_event_wait",
+            Stage::ReservedStage18 => "reserved_stage_18",
+            Stage::ReservedStage19 => "reserved_stage_19",
             Stage::TransportChannelWait => "transport_channel_wait",
             Stage::TransportPriorityChannelWait => "transport_priority_channel_wait",
             Stage::TransportBulkChannelWait => "transport_bulk_channel_wait",
@@ -206,8 +206,8 @@ fn stage_from_index(idx: usize) -> Stage {
         15 => Stage::EndpointEventWait,
         16 => Stage::ReservedStage16,
         17 => Stage::ReservedStage17,
-        18 => Stage::EndpointPriorityEventWait,
-        19 => Stage::EndpointBulkEventWait,
+        18 => Stage::ReservedStage18,
+        19 => Stage::ReservedStage19,
         20 => Stage::TransportChannelWait,
         21 => Stage::TransportPriorityChannelWait,
         22 => Stage::TransportBulkChannelWait,
@@ -312,11 +312,11 @@ pub enum Event {
     ReservedEvent45 = 45,
     UdpSendSendmmsgBatch = 46,
     UdpSendSendmmsgPackets = 47,
-    ReservedEvent48 = 48,
-    ReservedEvent49 = 49,
-    ReservedEvent50 = 50,
-    ReservedEvent51 = 51,
-    ReservedEvent52 = 52,
+    UdpSendGsoBatch = 48,
+    UdpSendGsoPackets = 49,
+    UdpSendGsoBatchGe32 = 50,
+    UdpSendGsoBatchGe48 = 51,
+    UdpSendGsoBatchEq64 = 52,
     ReservedEvent53 = 53,
     ReservedEvent54 = 54,
     ReservedEvent55 = 55,
@@ -471,11 +471,11 @@ pub enum Event {
     PacketMover2DispatchExecutorFull = 204,
     PacketMover2DispatchOwnerBlockedTotal = 205,
     PacketMover2DispatchOwnerBlockedBulkLane = 206,
-    PacketMover2DispatchOwnerBlockedDiscardableBulk = 207,
-    PacketMover2DispatchOwnerBlockedReliableBulk = 208,
-    ReservedEvent209 = 209,
-    ReservedEvent210 = 210,
-    ReservedEvent211 = 211,
+    ReservedEvent207 = 207,
+    PacketMover2SealInPlace = 208,
+    PacketMover2SealAllocated = 209,
+    PacketMover2TransportSendWorkerBackpressure = 210,
+    PacketMover2TransportSendWorkerDropped = 211,
     ReservedEvent212 = 212,
     ReservedEvent213 = 213,
     ReservedEvent214 = 214,
@@ -538,11 +538,11 @@ impl Event {
             Event::ReservedEvent45 => "reserved_event_45",
             Event::UdpSendSendmmsgBatch => "udp_send_sendmmsg_batch",
             Event::UdpSendSendmmsgPackets => "udp_send_sendmmsg_packets",
-            Event::ReservedEvent48 => "reserved_event_48",
-            Event::ReservedEvent49 => "reserved_event_49",
-            Event::ReservedEvent50 => "reserved_event_50",
-            Event::ReservedEvent51 => "reserved_event_51",
-            Event::ReservedEvent52 => "reserved_event_52",
+            Event::UdpSendGsoBatch => "udp_send_gso_batch",
+            Event::UdpSendGsoPackets => "udp_send_gso_packets",
+            Event::UdpSendGsoBatchGe32 => "udp_send_gso_batch_ge32",
+            Event::UdpSendGsoBatchGe48 => "udp_send_gso_batch_ge48",
+            Event::UdpSendGsoBatchEq64 => "udp_send_gso_batch_eq64",
             Event::ReservedEvent53 => "reserved_event_53",
             Event::ReservedEvent54 => "reserved_event_54",
             Event::ReservedEvent55 => "reserved_event_55",
@@ -701,15 +701,15 @@ impl Event {
             Event::PacketMover2DispatchOwnerBlockedBulkLane => {
                 "packet_mover2_dispatch_owner_blocked_bulk_lane"
             }
-            Event::PacketMover2DispatchOwnerBlockedDiscardableBulk => {
-                "packet_mover2_dispatch_owner_blocked_discardable_bulk"
+            Event::ReservedEvent207 => "reserved_event_207",
+            Event::PacketMover2SealInPlace => "packet_mover2_seal_in_place",
+            Event::PacketMover2SealAllocated => "packet_mover2_seal_allocated",
+            Event::PacketMover2TransportSendWorkerBackpressure => {
+                "packet_mover2_transport_send_worker_backpressure"
             }
-            Event::PacketMover2DispatchOwnerBlockedReliableBulk => {
-                "packet_mover2_dispatch_owner_blocked_reliable_bulk"
+            Event::PacketMover2TransportSendWorkerDropped => {
+                "packet_mover2_transport_send_worker_dropped"
             }
-            Event::ReservedEvent209 => "reserved_event_209",
-            Event::ReservedEvent210 => "reserved_event_210",
-            Event::ReservedEvent211 => "reserved_event_211",
             Event::ReservedEvent212 => "reserved_event_212",
             Event::ReservedEvent213 => "reserved_event_213",
             Event::ReservedEvent214 => "reserved_event_214",
@@ -773,11 +773,11 @@ fn event_from_index(idx: usize) -> Event {
         45 => Event::ReservedEvent45,
         46 => Event::UdpSendSendmmsgBatch,
         47 => Event::UdpSendSendmmsgPackets,
-        48 => Event::ReservedEvent48,
-        49 => Event::ReservedEvent49,
-        50 => Event::ReservedEvent50,
-        51 => Event::ReservedEvent51,
-        52 => Event::ReservedEvent52,
+        48 => Event::UdpSendGsoBatch,
+        49 => Event::UdpSendGsoPackets,
+        50 => Event::UdpSendGsoBatchGe32,
+        51 => Event::UdpSendGsoBatchGe48,
+        52 => Event::UdpSendGsoBatchEq64,
         53 => Event::ReservedEvent53,
         54 => Event::ReservedEvent54,
         55 => Event::ReservedEvent55,
@@ -932,11 +932,11 @@ fn event_from_index(idx: usize) -> Event {
         204 => Event::PacketMover2DispatchExecutorFull,
         205 => Event::PacketMover2DispatchOwnerBlockedTotal,
         206 => Event::PacketMover2DispatchOwnerBlockedBulkLane,
-        207 => Event::PacketMover2DispatchOwnerBlockedDiscardableBulk,
-        208 => Event::PacketMover2DispatchOwnerBlockedReliableBulk,
-        209 => Event::ReservedEvent209,
-        210 => Event::ReservedEvent210,
-        211 => Event::ReservedEvent211,
+        207 => Event::ReservedEvent207,
+        208 => Event::PacketMover2SealInPlace,
+        209 => Event::PacketMover2SealAllocated,
+        210 => Event::PacketMover2TransportSendWorkerBackpressure,
+        211 => Event::PacketMover2TransportSendWorkerDropped,
         212 => Event::ReservedEvent212,
         213 => Event::ReservedEvent213,
         214 => Event::ReservedEvent214,
@@ -1057,6 +1057,17 @@ pub(crate) fn record_since(stage: Stage, start: Option<TraceStamp>) {
         return;
     };
     record_count(stage, start.elapsed_ns().max(1), 1);
+}
+
+#[inline]
+pub(crate) fn record_since_count(stage: Stage, start: Option<TraceStamp>, count: u64) {
+    if !enabled() || count == 0 {
+        return;
+    }
+    let Some(start) = start else {
+        return;
+    };
+    record_count(stage, start.elapsed_ns().max(1), count);
 }
 
 /// Record one queue wait into aggregate + priority/bulk split counters.
@@ -1197,6 +1208,19 @@ pub(crate) fn record_udp_send_sendmmsg_batch(packets: usize) {
         Event::UdpSendSendmmsgBatchGe32,
         Event::UdpSendSendmmsgBatchGe48,
         Event::UdpSendSendmmsgBatchEq64,
+    );
+}
+
+/// Record Linux `sendmsg(2)+UDP_SEGMENT` batches submitted by the PM2 send side.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_send_gso_batch(packets: usize) {
+    record_udp_send_batch(Event::UdpSendGsoBatch, Event::UdpSendGsoPackets, packets);
+    record_udp_send_batch_tail_buckets(
+        packets,
+        Event::UdpSendGsoBatchGe32,
+        Event::UdpSendGsoBatchGe48,
+        Event::UdpSendGsoBatchEq64,
     );
 }
 

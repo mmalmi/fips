@@ -12,9 +12,9 @@ pub(super) const ENDPOINT_DRAIN_BUDGET: usize = 16;
 /// high-throughput streams from paying scheduler overhead on every kernel
 /// drain.
 pub(super) const PACKET_DRAIN_BUDGET: usize = 512;
-/// Raw receive burst cap when latency-sensitive packet, TUN, or endpoint work
-/// is already waiting. Two Linux UDP receive batches are enough to amortize
-/// kernel drains without sitting on the runtime for a long GSO-heavy turn.
+/// Raw receive burst cap when protocol/control, TUN, or endpoint work is
+/// already waiting. Two Linux UDP receive batches are enough to amortize kernel
+/// drains without sitting on the runtime for a long GSO-heavy turn.
 pub(super) const LATENCY_PACKET_DRAIN_BUDGET: usize = 256;
 /// TUN outbound is canonical packet ingress, not a side-control queue. Give it
 /// a dataplane-sized slice whenever it is co-drained with hot UDP receive.

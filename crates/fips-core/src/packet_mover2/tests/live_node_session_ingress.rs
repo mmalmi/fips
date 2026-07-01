@@ -84,7 +84,7 @@
                     fmp_timestamp,
                 ),
             )]));
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
@@ -99,7 +99,7 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,
@@ -242,7 +242,7 @@
                     fmp_timestamp,
                 ),
             )]));
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
@@ -257,7 +257,7 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,
@@ -358,7 +358,7 @@
                     fmp_timestamp,
                 ),
             )]));
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
@@ -373,7 +373,7 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,
@@ -457,7 +457,7 @@
                     fmp_timestamp,
                 ),
             )]));
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
@@ -472,7 +472,7 @@
                 &mut raw_source,
                 &mut routes,
                 8,
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,

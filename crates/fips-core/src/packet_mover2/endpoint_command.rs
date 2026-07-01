@@ -2,8 +2,6 @@
 pub(crate) struct PacketMover2EndpointCommandPayload<'a> {
     dest_addr: NodeAddr,
     dest_pubkey: secp256k1::PublicKey,
-    lane: EndpointCommandLane,
-    drop_on_backpressure: bool,
     payload: &'a [u8],
 }
 
@@ -12,8 +10,6 @@ impl<'a> PacketMover2EndpointCommandPayload<'a> {
         Self {
             dest_addr: send.dest_addr(),
             dest_pubkey: send.dest_pubkey(),
-            lane: send.payload().lane(),
-            drop_on_backpressure: send.payload().drop_on_backpressure(),
             payload: send.payload().as_slice(),
         }
     }
@@ -26,16 +22,12 @@ impl<'a> PacketMover2EndpointCommandPayload<'a> {
         self.dest_pubkey
     }
 
-    pub(crate) fn lane(&self) -> EndpointCommandLane {
-        self.lane
-    }
-
     pub(crate) fn payload(&self) -> &'a [u8] {
         self.payload
     }
 
     fn packet_class(&self) -> PacketClass {
-        endpoint_packet_class(self.lane, self.drop_on_backpressure)
+        endpoint_app_packet_class()
     }
 }
 
@@ -55,17 +47,6 @@ impl PacketMover2EndpointCommandOwnedPayload {
 
     fn dest_addr(&self) -> NodeAddr {
         self.send.dest_addr()
-    }
-
-    fn lane(&self) -> EndpointCommandLane {
-        self.send.payload().lane()
-    }
-
-    fn packet_class(&self) -> PacketClass {
-        endpoint_packet_class(
-            self.send.payload().lane(),
-            self.send.payload().drop_on_backpressure(),
-        )
     }
 
     fn payload_len(&self) -> usize {
@@ -214,8 +195,7 @@ impl PacketMover2EndpointCommandRoute {
         if let Err(reason) = self.validate_payload_len(request.payload_len()) {
             return Err((request, reason));
         }
-        let class = request.packet_class();
-        Ok(self.build_packet(class, request.into_payload_bytes()))
+        Ok(self.build_packet(endpoint_app_packet_class(), request.into_payload_bytes()))
     }
 
     fn route_owned_batch(
@@ -230,12 +210,8 @@ impl PacketMover2EndpointCommandRoute {
                 result.dropped_mut().push((send, reason));
                 continue;
             }
-            let class = endpoint_packet_class(
-                send.payload().lane(),
-                send.payload().drop_on_backpressure(),
-            );
             result.routed_mut().push(
-                self.build_packet(class, send.into_payload().into_bytes())
+                self.build_packet(endpoint_app_packet_class(), send.into_payload().into_bytes())
                     .with_activity_tick(ActivityTick::new(routed_at_ms)),
             );
         }
@@ -275,12 +251,8 @@ impl PacketMover2EndpointCommandRoute {
     }
 }
 
-fn endpoint_packet_class(lane: EndpointCommandLane, drop_on_backpressure: bool) -> PacketClass {
-    match lane {
-        EndpointCommandLane::Priority => PacketClass::Control,
-        EndpointCommandLane::Bulk if drop_on_backpressure => PacketClass::Bulk,
-        EndpointCommandLane::Bulk => PacketClass::ReliableBulk,
-    }
+fn endpoint_app_packet_class() -> PacketClass {
+    PacketClass::Bulk
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -296,7 +268,6 @@ pub(crate) enum PacketMover2EndpointCommandDropReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2EndpointCommandDrop {
     dest_addr: NodeAddr,
-    lane: EndpointCommandLane,
     payload_len: usize,
     reason: PacketMover2EndpointCommandDropReason,
 }
@@ -308,7 +279,6 @@ impl PacketMover2EndpointCommandDrop {
     ) -> Self {
         Self {
             dest_addr: request.dest_addr(),
-            lane: request.lane(),
             payload_len: request.payload().len(),
             reason,
         }
@@ -316,10 +286,6 @@ impl PacketMover2EndpointCommandDrop {
 
     pub(crate) fn dest_addr(&self) -> NodeAddr {
         self.dest_addr
-    }
-
-    pub(crate) fn lane(&self) -> EndpointCommandLane {
-        self.lane
     }
 
     pub(crate) fn payload_len(&self) -> usize {
@@ -493,7 +459,7 @@ fn route_endpoint_command_with_router<R, F>(
                 }
             }
         }
-        NodeEndpointCommand::SendBatchOneway { command, lane } => {
+        NodeEndpointCommand::SendBatchOneway { command } => {
             let (remote, payloads, queued_at, enqueued_at_ms) = command.into_deferred_parts();
             let route = router.route_endpoint_command_owned_batch(
                 PacketMover2EndpointCommandOwnedBatch::new(remote, payloads),
@@ -507,7 +473,7 @@ fn route_endpoint_command_with_router<R, F>(
                     enqueued_at_ms,
                 )
                     .expect("deferred endpoint batch should remain non-empty");
-                deferred_commands.push(NodeEndpointCommand::SendBatchOneway { command, lane });
+                deferred_commands.push(NodeEndpointCommand::SendBatchOneway { command });
             }
         }
         other => deferred_commands.push(other),
@@ -520,14 +486,11 @@ fn stale_bulk_endpoint_command_drop_count(
     max_age_ms: u64,
 ) -> usize {
     match command {
-        NodeEndpointCommand::SendOneway { command }
-            if command.lane() == EndpointCommandLane::Bulk
-                && command.stale_at(now_ms, max_age_ms) =>
-        {
+        NodeEndpointCommand::SendOneway { command } if command.stale_at(now_ms, max_age_ms) => {
             1
         }
-        NodeEndpointCommand::SendBatchOneway { command, lane }
-            if *lane == EndpointCommandLane::Bulk && command.stale_at(now_ms, max_age_ms) =>
+        NodeEndpointCommand::SendBatchOneway { command }
+            if command.stale_at(now_ms, max_age_ms) =>
         {
             command.len()
         }
@@ -547,7 +510,7 @@ fn drop_stale_bulk_endpoint_command(
                 drops,
             );
         }
-        NodeEndpointCommand::SendBatchOneway { command, .. } => {
+        NodeEndpointCommand::SendBatchOneway { command } => {
             let (remote, payloads, _) = command.into_parts();
             for payload in payloads {
                 let send = EndpointDataSend::new(remote, payload);

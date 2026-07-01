@@ -52,7 +52,7 @@
                 0,
             )),
         );
-        let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+        let (_endpoint_control_tx, mut endpoint_control_rx) = tokio::sync::mpsc::channel(1);
         let (_endpoint_bulk_tx, mut endpoint_bulk_rx) = tokio::sync::mpsc::channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
             crate::upper::tun::tun_outbound_channel(1);
@@ -66,7 +66,7 @@
                 &mut raw_source,
                 8,
                 PacketMover2LiveOutboundFirsts::default(),
-                &mut endpoint_priority_rx,
+                &mut endpoint_control_rx,
                 &mut endpoint_bulk_rx,
                 0,
                 &mut tun_outbound_rx,
@@ -778,7 +778,7 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_bulk_worker_full_drops_bulk_without_inline_fallback() {
+    async fn transport_plan_bulk_worker_backpressures_bulk_without_inline_fallback() {
         let send_transport_id = TransportId::new(64);
         let recv_transport_id = TransportId::new(65);
         let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(8);
@@ -840,17 +840,18 @@
         )
         .await;
 
-        assert_eq!(sent, 0);
-        assert_eq!(drops.len(), 2);
-        assert!(drops
-            .iter()
-            .all(|drop| drop.reason() == PacketMover2OutputError::Unavailable));
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            recv_packet_rx.recv()
-        )
-        .await
-        .is_err());
+        assert_eq!(sent, 2);
+        assert!(drops.is_empty());
+        let mut payloads = Vec::new();
+        for _ in 0..2 {
+            let received =
+                tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                    .await
+                    .expect("receive backpressured worker packet")
+                    .expect("packet channel open");
+            payloads.push(received.data.as_slice().to_vec());
+        }
+        assert_eq!(payloads, vec![b"bulk-full-a".to_vec(), b"bulk-full-b".to_vec()]);
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");

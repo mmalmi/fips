@@ -295,9 +295,9 @@ where
         (self.priority_ready.len(), self.bulk_ready.len())
     }
 
-    fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
+    fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
         if cursor.owner_has_more {
-            self.push_ready_front(cursor.lane, cursor.owner);
+            self.push_ready_back(cursor.lane, cursor.owner);
         }
     }
 
@@ -354,8 +354,8 @@ impl AdmissionQueue {
         self.queues.pop_next_priority()
     }
 
-    fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
-        self.queues.continue_owner_run(cursor);
+    fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
+        self.queues.continue_owner_lane(cursor);
     }
 
     fn defer_owner_pop(&mut self, pop: OwnerAdmissionPop<QueuedPacket>) {
@@ -437,8 +437,8 @@ impl OutboundAdmissionQueue {
         self.queues.pop_next_priority()
     }
 
-    fn continue_owner_run(&mut self, cursor: OwnerAdmissionCursor) {
-        self.queues.continue_owner_run(cursor);
+    fn continue_owner_lane(&mut self, cursor: OwnerAdmissionCursor) {
+        self.queues.continue_owner_lane(cursor);
     }
 
     fn defer_owner_pop(&mut self, pop: OwnerAdmissionPop<QueuedOutboundPacket>) {
