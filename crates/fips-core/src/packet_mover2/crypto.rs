@@ -281,6 +281,41 @@ impl PacketMover2AeadWorkerPool {
         Arc::clone(&self.completion_notify)
     }
 
+    pub(crate) fn record_perf_depths(&self) {
+        if !crate::perf_profile::enabled() {
+            return;
+        }
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::PacketMover2AeadOpenInFlight,
+            self.open_in_flight
+                .load(std::sync::atomic::Ordering::Acquire) as u64,
+        );
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::PacketMover2AeadSealInFlight,
+            self.seal_in_flight
+                .load(std::sync::atomic::Ordering::Acquire) as u64,
+        );
+        let pending_completion_depth = self
+            .pending_completion_batches
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>();
+        let completion_depth =
+            pending_completion_depth.saturating_add(self.completion_rx.as_ref().map_or(0, |rx| rx.len()));
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::PacketMover2AeadCompletionQueueDepth,
+            completion_depth as u64,
+        );
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::PacketMover2AeadOpenQueueDepth,
+            self.open_tx.as_ref().map_or(0, |tx| tx.len()) as u64,
+        );
+        crate::perf_profile::record_event_count(
+            crate::perf_profile::Event::PacketMover2AeadSealQueueDepth,
+            self.seal_tx.as_ref().map_or(0, |tx| tx.len()) as u64,
+        );
+    }
+
     fn finish_drained_completions(
         &self,
         direction: PacketMover2AeadDirection,
@@ -300,6 +335,7 @@ impl PacketMover2AeadWorkerPool {
         limit: usize,
         out: &mut Vec<Vec<CryptoCompletion>>,
     ) -> (usize, Option<Vec<CryptoCompletion>>) {
+        crate::perf_profile::record_packet_mover2_aead_completion_batch(batch.len());
         let drained = batch.len().min(limit);
         if drained == 0 {
             return (0, Some(batch));
@@ -408,7 +444,10 @@ impl PacketMover2AeadWorkerPool {
             bulk_count,
         };
         match work_tx.try_send(job) {
-            Ok(()) => true,
+            Ok(()) => {
+                crate::perf_profile::record_packet_mover2_aead_prepared_job(chunk_len);
+                true
+            }
             Err(crossbeam_channel::TrySendError::Full(job))
             | Err(crossbeam_channel::TrySendError::Disconnected(job)) => {
                 in_flight.fetch_sub(chunk_len, std::sync::atomic::Ordering::AcqRel);

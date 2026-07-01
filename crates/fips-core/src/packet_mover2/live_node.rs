@@ -639,10 +639,11 @@ impl PacketMover2LiveNode {
     {
         let _turn_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
+        self.crypto_worker.record_perf_depths();
         let summary = self
             .driver
             .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
-        self.driver
+        let turn = self.driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,
                 &mut self.crypto_worker,
@@ -662,7 +663,9 @@ impl PacketMover2LiveNode {
                 crypto_limit,
                 transport_send_worker,
             )
-            .await
+            .await;
+        record_packet_mover2_live_turn_perf(&turn);
+        turn
     }
 
     pub(crate) async fn pump_completion_output_turn_with_transport_worker<Transports>(
@@ -678,13 +681,14 @@ impl PacketMover2LiveNode {
     {
         let _turn_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
+        self.crypto_worker.record_perf_depths();
         let summary = self
             .driver
             .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
         if !summary.has_activity() {
             return PacketMover2LiveNodeTurn::default();
         }
-        self.driver
+        let turn = self.driver
             .finish_aead_live_node_output_turn_with_executor(
                 summary,
                 &mut self.routes,
@@ -696,7 +700,9 @@ impl PacketMover2LiveNode {
                 &mut self.crypto_worker,
                 transport_send_worker,
             )
-            .await
+            .await;
+        record_packet_mover2_live_turn_perf(&turn);
+        turn
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -782,4 +788,31 @@ fn packet_mover2_aead_worker_count() -> usize {
         .map(|count| count.get())
         .unwrap_or(1)
         .max(1)
+}
+
+fn record_packet_mover2_live_turn_perf(turn: &PacketMover2LiveNodeTurn) {
+    if !crate::perf_profile::enabled() {
+        return;
+    }
+    let summary = turn.summary();
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LivePreparedDispatched,
+        summary.dispatched() as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LiveCompletionsDrained,
+        summary.completions() as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LiveRetiredOutputs,
+        summary.outputs() as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LiveRetiredDrops,
+        summary.drops() as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LiveOutputDrops,
+        summary.outputs_dropped() as u64,
+    );
 }

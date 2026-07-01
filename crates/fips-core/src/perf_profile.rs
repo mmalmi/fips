@@ -32,7 +32,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 69;
-const N_EVENTS: usize = 221;
+const N_EVENTS: usize = 241;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -485,6 +485,26 @@ pub enum Event {
     ReservedEvent218 = 218,
     ReservedEvent219 = 219,
     ReservedEvent220 = 220,
+    PacketMover2LiveRawAdmitted = 221,
+    PacketMover2LiveEndpointAdmitted = 222,
+    PacketMover2LiveTunAdmitted = 223,
+    PacketMover2LivePreparedDispatched = 224,
+    PacketMover2LiveCompletionsDrained = 225,
+    PacketMover2LiveRetiredOutputs = 226,
+    PacketMover2LiveRetiredDrops = 227,
+    PacketMover2LiveOutputDrops = 228,
+    PacketMover2AeadOpenInFlight = 229,
+    PacketMover2AeadSealInFlight = 230,
+    PacketMover2AeadCompletionQueueDepth = 231,
+    PacketMover2AeadCompletionBatch = 232,
+    PacketMover2AeadCompletionBatchPackets = 233,
+    PacketMover2AeadPreparedJob = 234,
+    PacketMover2AeadPreparedJobPackets = 235,
+    PacketMover2LiveCompletionsRetired = 236,
+    PacketMover2LiveOutputBatch = 237,
+    PacketMover2LiveOutputBatchPackets = 238,
+    PacketMover2AeadOpenQueueDepth = 239,
+    PacketMover2AeadSealQueueDepth = 240,
 }
 
 impl Event {
@@ -725,6 +745,30 @@ impl Event {
             Event::ReservedEvent218 => "reserved_event_218",
             Event::ReservedEvent219 => "reserved_event_219",
             Event::ReservedEvent220 => "reserved_event_220",
+            Event::PacketMover2LiveRawAdmitted => "packet_mover2_live_raw_admitted",
+            Event::PacketMover2LiveEndpointAdmitted => "packet_mover2_live_endpoint_admitted",
+            Event::PacketMover2LiveTunAdmitted => "packet_mover2_live_tun_admitted",
+            Event::PacketMover2LivePreparedDispatched => "packet_mover2_live_prepared_dispatched",
+            Event::PacketMover2LiveCompletionsDrained => "packet_mover2_live_completions_drained",
+            Event::PacketMover2LiveRetiredOutputs => "packet_mover2_live_retired_outputs",
+            Event::PacketMover2LiveRetiredDrops => "packet_mover2_live_retired_drops",
+            Event::PacketMover2LiveOutputDrops => "packet_mover2_live_output_drops",
+            Event::PacketMover2AeadOpenInFlight => "packet_mover2_aead_open_in_flight",
+            Event::PacketMover2AeadSealInFlight => "packet_mover2_aead_seal_in_flight",
+            Event::PacketMover2AeadCompletionQueueDepth => {
+                "packet_mover2_aead_completion_queue_depth"
+            }
+            Event::PacketMover2AeadCompletionBatch => "packet_mover2_aead_completion_batch",
+            Event::PacketMover2AeadCompletionBatchPackets => {
+                "packet_mover2_aead_completion_batch_packets"
+            }
+            Event::PacketMover2AeadPreparedJob => "packet_mover2_aead_prepared_job",
+            Event::PacketMover2AeadPreparedJobPackets => "packet_mover2_aead_prepared_job_packets",
+            Event::PacketMover2LiveCompletionsRetired => "packet_mover2_live_completions_retired",
+            Event::PacketMover2LiveOutputBatch => "packet_mover2_live_output_batch",
+            Event::PacketMover2LiveOutputBatchPackets => "packet_mover2_live_output_batch_packets",
+            Event::PacketMover2AeadOpenQueueDepth => "packet_mover2_aead_open_queue_depth",
+            Event::PacketMover2AeadSealQueueDepth => "packet_mover2_aead_seal_queue_depth",
         }
     }
 }
@@ -952,6 +996,26 @@ fn event_from_index(idx: usize) -> Event {
         218 => Event::ReservedEvent218,
         219 => Event::ReservedEvent219,
         220 => Event::ReservedEvent220,
+        221 => Event::PacketMover2LiveRawAdmitted,
+        222 => Event::PacketMover2LiveEndpointAdmitted,
+        223 => Event::PacketMover2LiveTunAdmitted,
+        224 => Event::PacketMover2LivePreparedDispatched,
+        225 => Event::PacketMover2LiveCompletionsDrained,
+        226 => Event::PacketMover2LiveRetiredOutputs,
+        227 => Event::PacketMover2LiveRetiredDrops,
+        228 => Event::PacketMover2LiveOutputDrops,
+        229 => Event::PacketMover2AeadOpenInFlight,
+        230 => Event::PacketMover2AeadSealInFlight,
+        231 => Event::PacketMover2AeadCompletionQueueDepth,
+        232 => Event::PacketMover2AeadCompletionBatch,
+        233 => Event::PacketMover2AeadCompletionBatchPackets,
+        234 => Event::PacketMover2AeadPreparedJob,
+        235 => Event::PacketMover2AeadPreparedJobPackets,
+        236 => Event::PacketMover2LiveCompletionsRetired,
+        237 => Event::PacketMover2LiveOutputBatch,
+        238 => Event::PacketMover2LiveOutputBatchPackets,
+        239 => Event::PacketMover2AeadOpenQueueDepth,
+        240 => Event::PacketMover2AeadSealQueueDepth,
         _ => unreachable!(),
     }
 }
@@ -1189,6 +1253,41 @@ fn record_packet_mover2_crypto_batch(batch_event: Event, packet_event: Event, pa
 #[inline]
 fn packet_mover2_crypto_batch_bucket_flags(packets: usize) -> (bool, bool, bool, bool) {
     (packets == 1, packets >= 8, packets >= 32, packets >= 64)
+}
+
+#[inline]
+pub(crate) fn record_packet_mover2_aead_completion_batch(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::PacketMover2AeadCompletionBatch, 1);
+    record_event_count_sample(
+        Event::PacketMover2AeadCompletionBatchPackets,
+        packets as u64,
+    );
+}
+
+#[inline]
+pub(crate) fn record_packet_mover2_aead_prepared_job(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::PacketMover2AeadPreparedJob, 1);
+    record_event_count_sample(Event::PacketMover2AeadPreparedJobPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_packet_mover2_live_completions_retired(count: usize) {
+    record_event_count(Event::PacketMover2LiveCompletionsRetired, count as u64);
+}
+
+#[inline]
+pub(crate) fn record_packet_mover2_live_output_batch(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::PacketMover2LiveOutputBatch, 1);
+    record_event_count_sample(Event::PacketMover2LiveOutputBatchPackets, packets as u64);
 }
 
 #[inline]

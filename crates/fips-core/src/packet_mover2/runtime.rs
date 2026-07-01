@@ -527,6 +527,7 @@ impl PacketMover2TurnDriver {
     {
         let admit_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveAdmit);
+        let trace_enabled = crate::perf_profile::enabled();
         let mut outbound_firsts = outbound_firsts;
         if let Some(packet) = outbound_firsts.initial_outbound.take() {
             self.admit_outbound_packet(packet, &mut summary);
@@ -540,6 +541,8 @@ impl PacketMover2TurnDriver {
         let mut endpoint_drained = 0usize;
         let mut tun_drained = 0usize;
         let mut outbound_drained = 0usize;
+        let mut endpoint_admitted = 0usize;
+        let mut tun_admitted = 0usize;
 
         if reserved_outbound_limit > 0 {
             let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
@@ -552,8 +555,22 @@ impl PacketMover2TurnDriver {
             )
             .with_firsts(outbound_firsts);
             let (drained_total, endpoint, tun) =
-                outbound_source.drain_outbound_batched(reserved_outbound_limit, |routed| {
-                    self.admit_routed_outbound(routed, &mut summary);
+                outbound_source.drain_outbound_batched(reserved_outbound_limit, |source, routed| {
+                    if trace_enabled {
+                        let admitted_before = summary.outbound_admitted;
+                        self.admit_routed_outbound(routed, &mut summary);
+                        let admitted = summary.outbound_admitted.saturating_sub(admitted_before);
+                        match source {
+                            PacketMover2OutboundSource::Endpoint => {
+                                endpoint_admitted = endpoint_admitted.saturating_add(admitted);
+                            }
+                            PacketMover2OutboundSource::Tun => {
+                                tun_admitted = tun_admitted.saturating_add(admitted);
+                            }
+                        }
+                    } else {
+                        self.admit_routed_outbound(routed, &mut summary);
+                    }
                 });
             outbound_drained = drained_total;
             endpoint_drained = endpoint_drained.saturating_add(endpoint);
@@ -563,6 +580,11 @@ impl PacketMover2TurnDriver {
 
         let mut raw_socket_packets = std::mem::take(&mut self.raw_socket_packets);
         raw_socket_packets.clear();
+        let raw_admitted_before = if trace_enabled {
+            summary.inbound_admitted
+        } else {
+            0
+        };
         {
             let raw_ingress_drops = &mut self.raw_ingress_drops;
             raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
@@ -575,6 +597,14 @@ impl PacketMover2TurnDriver {
         }
         self.admit_socket_packets(&mut raw_socket_packets, &mut summary);
         self.raw_socket_packets = raw_socket_packets;
+        if trace_enabled {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::PacketMover2LiveRawAdmitted,
+                summary
+                    .inbound_admitted
+                    .saturating_sub(raw_admitted_before) as u64,
+            );
+        }
 
         let remaining_outbound_limit =
             outbound_limit.saturating_sub(outbound_drained.min(outbound_limit));
@@ -589,11 +619,35 @@ impl PacketMover2TurnDriver {
             )
             .with_firsts(outbound_firsts);
             let (_, endpoint, tun) =
-                outbound_source.drain_outbound_batched(remaining_outbound_limit, |routed| {
-                    self.admit_routed_outbound(routed, &mut summary);
+                outbound_source.drain_outbound_batched(remaining_outbound_limit, |source, routed| {
+                    if trace_enabled {
+                        let admitted_before = summary.outbound_admitted;
+                        self.admit_routed_outbound(routed, &mut summary);
+                        let admitted = summary.outbound_admitted.saturating_sub(admitted_before);
+                        match source {
+                            PacketMover2OutboundSource::Endpoint => {
+                                endpoint_admitted = endpoint_admitted.saturating_add(admitted);
+                            }
+                            PacketMover2OutboundSource::Tun => {
+                                tun_admitted = tun_admitted.saturating_add(admitted);
+                            }
+                        }
+                    } else {
+                        self.admit_routed_outbound(routed, &mut summary);
+                    }
                 });
             endpoint_drained = endpoint_drained.saturating_add(endpoint);
             tun_drained = tun_drained.saturating_add(tun);
+        }
+        if trace_enabled {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::PacketMover2LiveEndpointAdmitted,
+                endpoint_admitted as u64,
+            );
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::PacketMover2LiveTunAdmitted,
+                tun_admitted as u64,
+            );
         }
         drop(admit_timer);
 
@@ -844,6 +898,7 @@ impl PacketMover2TurnDriver {
         S: PacketMover2OutputSink,
     {
         let dropped_before = self.output_drops.len();
+        crate::perf_profile::record_packet_mover2_live_output_batch(self.outputs.len());
         let sent = {
             let _output_sink_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::PacketMover2OutputSink,
@@ -950,8 +1005,10 @@ impl PacketMover2TurnDriver {
 
     fn retire_queued_completed_aead_outputs(&mut self, limit: usize) {
         let retired_start = self.retired.len();
-        self.mover
+        let retired_completions = self
+            .mover
             .retire_queued_completions_into(limit, &mut self.retired);
+        crate::perf_profile::record_packet_mover2_live_completions_retired(retired_completions);
         let mut mover_drops = self.mover.drain_drops();
         let emitted_drop_start = self.drops.len();
         self.drops.append(&mut mover_drops);

@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_current_pm2_and_queue_events() {
-    assert_eq!(N_EVENTS, 221);
+    assert_eq!(N_EVENTS, 241);
     assert!(
-        (Event::ReservedEvent220 as usize) < N_EVENTS,
+        (Event::PacketMover2AeadSealQueueDepth as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
 
@@ -201,6 +201,86 @@ fn event_table_exposes_current_pm2_and_queue_events() {
         (
             Event::PacketMover2TransportSendWorkerSendFailed,
             "packet_mover2_transport_send_worker_send_failed",
+        ),
+        (
+            Event::PacketMover2LiveRawAdmitted,
+            "packet_mover2_live_raw_admitted",
+        ),
+        (
+            Event::PacketMover2LiveEndpointAdmitted,
+            "packet_mover2_live_endpoint_admitted",
+        ),
+        (
+            Event::PacketMover2LiveTunAdmitted,
+            "packet_mover2_live_tun_admitted",
+        ),
+        (
+            Event::PacketMover2LivePreparedDispatched,
+            "packet_mover2_live_prepared_dispatched",
+        ),
+        (
+            Event::PacketMover2LiveCompletionsDrained,
+            "packet_mover2_live_completions_drained",
+        ),
+        (
+            Event::PacketMover2LiveRetiredOutputs,
+            "packet_mover2_live_retired_outputs",
+        ),
+        (
+            Event::PacketMover2LiveRetiredDrops,
+            "packet_mover2_live_retired_drops",
+        ),
+        (
+            Event::PacketMover2LiveOutputDrops,
+            "packet_mover2_live_output_drops",
+        ),
+        (
+            Event::PacketMover2AeadOpenInFlight,
+            "packet_mover2_aead_open_in_flight",
+        ),
+        (
+            Event::PacketMover2AeadSealInFlight,
+            "packet_mover2_aead_seal_in_flight",
+        ),
+        (
+            Event::PacketMover2AeadCompletionQueueDepth,
+            "packet_mover2_aead_completion_queue_depth",
+        ),
+        (
+            Event::PacketMover2AeadCompletionBatch,
+            "packet_mover2_aead_completion_batch",
+        ),
+        (
+            Event::PacketMover2AeadCompletionBatchPackets,
+            "packet_mover2_aead_completion_batch_packets",
+        ),
+        (
+            Event::PacketMover2AeadPreparedJob,
+            "packet_mover2_aead_prepared_job",
+        ),
+        (
+            Event::PacketMover2AeadPreparedJobPackets,
+            "packet_mover2_aead_prepared_job_packets",
+        ),
+        (
+            Event::PacketMover2LiveCompletionsRetired,
+            "packet_mover2_live_completions_retired",
+        ),
+        (
+            Event::PacketMover2LiveOutputBatch,
+            "packet_mover2_live_output_batch",
+        ),
+        (
+            Event::PacketMover2LiveOutputBatchPackets,
+            "packet_mover2_live_output_batch_packets",
+        ),
+        (
+            Event::PacketMover2AeadOpenQueueDepth,
+            "packet_mover2_aead_open_queue_depth",
+        ),
+        (
+            Event::PacketMover2AeadSealQueueDepth,
+            "packet_mover2_aead_seal_queue_depth",
         ),
     ];
     for (event, name) in live_events {

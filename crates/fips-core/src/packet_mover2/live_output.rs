@@ -41,6 +41,12 @@ pub(crate) enum PacketMover2RoutedOutbound {
     Batch(Vec<OutboundPacket>),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PacketMover2OutboundSource {
+    Endpoint,
+    Tun,
+}
+
 impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
     fn new(
         endpoint_data_rx: &'a mut EndpointDataBatchRx,
@@ -90,7 +96,7 @@ where
 
     fn drain_endpoint_batched<F>(&mut self, limit: usize, mut push: F) -> usize
     where
-        F: FnMut(PacketMover2RoutedOutbound),
+        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
     {
         let mut drained_cost = 0usize;
         if drained_cost < limit {
@@ -114,7 +120,7 @@ where
         batch: NodeEndpointDataBatch,
         mut push: F,
     ) where
-        F: FnMut(PacketMover2RoutedOutbound),
+        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
     {
         let drop_count = stale_endpoint_data_drop_count(
             &batch,
@@ -135,13 +141,13 @@ where
             self.routes,
             &mut self.buffers.endpoint_drops,
             &mut self.buffers.deferred_endpoint_data_batches,
-            |packets| push(PacketMover2RoutedOutbound::Batch(packets)),
+            |packets| push(PacketMover2OutboundSource::Endpoint, PacketMover2RoutedOutbound::Batch(packets)),
         );
     }
 
     fn drain_tun_batched<F>(&mut self, limit: usize, mut push: F) -> usize
     where
-        F: FnMut(PacketMover2RoutedOutbound),
+        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
     {
         let mut drained = 0usize;
         let mut first_routed = None;
@@ -175,13 +181,15 @@ where
             );
             drained += 1;
         }
-        flush_tun_routed_packets(first_routed, routed_batch, &mut push);
+        flush_tun_routed_packets(first_routed, routed_batch, &mut |routed| {
+            push(PacketMover2OutboundSource::Tun, routed);
+        });
         drained
     }
 
     fn drain_outbound_batched<F>(&mut self, limit: usize, mut push: F) -> (usize, usize, usize)
     where
-        F: FnMut(PacketMover2RoutedOutbound),
+        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
     {
         let endpoint_limit = self.endpoint_limit.min(limit);
         let endpoint_drained = self.drain_endpoint_batched(endpoint_limit, &mut push);
