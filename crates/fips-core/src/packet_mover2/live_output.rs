@@ -656,7 +656,7 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
 struct PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
     tun: Tun,
     endpoint: Endpoint,
-    transport: &'a mut PacketMover2TransportSendPlanOutput,
+    transport: &'a mut PacketMover2TransportSendGroups,
     stale_bulk_output_drop_ms: u64,
 }
 
@@ -664,7 +664,7 @@ impl<'a, Tun, Endpoint> PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
     fn new(
         tun: Tun,
         endpoint: Endpoint,
-        transport: &'a mut PacketMover2TransportSendPlanOutput,
+        transport: &'a mut PacketMover2TransportSendGroups,
     ) -> Self {
         Self {
             tun,

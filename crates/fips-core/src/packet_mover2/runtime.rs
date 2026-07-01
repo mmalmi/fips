@@ -10,7 +10,7 @@ pub(crate) struct PacketMover2TurnDriver {
     raw_socket_packets: Vec<SocketPacket>,
     retired_outbound_packets: Vec<OutboundPacket>,
     retired: Vec<RetiredPacket>,
-    transport_output: PacketMover2TransportSendPlanOutput,
+    transport_output: PacketMover2TransportSendGroups,
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
@@ -39,7 +39,7 @@ impl PacketMover2TurnDriver {
             raw_socket_packets: Vec::new(),
             retired_outbound_packets: Vec::new(),
             retired: Vec::new(),
-            transport_output: PacketMover2TransportSendPlanOutput::new(),
+            transport_output: PacketMover2TransportSendGroups::new(),
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
@@ -303,27 +303,27 @@ impl PacketMover2TurnDriver {
         report.set_fsp_coord_warmups(std::mem::take(&mut self.fsp_coord_warmups));
         report.set_fsp_local_session_ingress(std::mem::take(&mut self.fsp_local_session_ingress));
         report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
-        report.transport_planned = transport_output.plans().len();
+        report.transport_planned = transport_output.planned_packets();
         let dropped_before = report.output_drops.len();
         report.transport_sent = {
             let _transport_send_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::PacketMover2TransportSend,
             );
             if collect_transport_sent_outputs {
-                let plans = transport_output.take_plans_preserving_capacity();
-                send_packet_mover2_transport_plans_with_worker(
+                let groups = transport_output.take_groups_preserving_capacity();
+                send_packet_mover2_transport_groups_with_worker(
                     transports,
-                    plans,
+                    groups,
                     &mut report.output_drops,
                     transport_send_worker,
                     Some(&mut report.transport_sent_outputs),
                 )
                 .await
             } else {
-                let plans = transport_output.take_plans_preserving_capacity();
-                send_packet_mover2_transport_plans_with_worker(
+                let groups = transport_output.take_groups_preserving_capacity();
+                send_packet_mover2_transport_groups_with_worker(
                     transports,
-                    plans,
+                    groups,
                     &mut report.output_drops,
                     transport_send_worker,
                     None,

@@ -514,7 +514,7 @@
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x48; 16]));
         let output = opened_output(owner, 48, 0, OutputTarget::Tun, b"tun-node");
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
 
         let sent = {
             let tun = PacketMover2TunTxOutput::new(&tun_tx);
@@ -525,7 +525,7 @@
         assert_eq!(sent, Ok(()));
         assert_eq!(tun_rx.try_recv().unwrap(), b"tun-node".to_vec());
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.plans().is_empty());
+        assert!(transport.groups.is_empty());
     }
 
     #[test]
@@ -533,7 +533,7 @@
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel_with_bulk_capacity(1);
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
         let mut sink = PacketMover2LiveOutputSink::new(
             PacketMover2TunTxOutput::new(&tun_tx),
             &mut endpoint,
@@ -557,7 +557,7 @@
         assert_eq!(tun_rx.try_recv().unwrap(), b"bulk-a".to_vec());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.plans().is_empty());
+        assert!(transport.groups.is_empty());
     }
 
     #[test]
@@ -565,7 +565,7 @@
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x46; 16]));
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
         let mut sink = PacketMover2LiveOutputSink::new(
             PacketMover2TunTxOutput::new(&tun_tx),
             &mut endpoint,
@@ -605,10 +605,12 @@
         assert_eq!(tun_rx.try_recv().unwrap(), b"fresh-bulk".to_vec());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint.outputs.is_empty());
-        assert_eq!(transport.plans().len(), 1);
-        assert_eq!(transport.plans()[0].transport_id(), transport_id);
-        assert_eq!(transport.plans()[0].remote_addr(), &remote_addr);
-        assert_eq!(transport.plans()[0].output().payload(), b"sealed-wire");
+        assert_eq!(transport.groups.len(), 1);
+        let group = &transport.groups[0];
+        assert_eq!(group.transport_id, transport_id);
+        assert_eq!(group.remote_addr, remote_addr);
+        assert_eq!(group.outputs.len(), 1);
+        assert_eq!(group.outputs[0].payload(), b"sealed-wire");
     }
 
     #[test]
@@ -618,7 +620,7 @@
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x49; 16]));
         let output = opened_output(owner, 49, 0, OutputTarget::Tun, b"closed");
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
 
         let sent = {
             let tun = PacketMover2TunTxOutput::new(&tun_tx);
@@ -628,7 +630,7 @@
 
         assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.plans().is_empty());
+        assert!(transport.groups.is_empty());
     }
 
     #[test]
@@ -640,7 +642,7 @@
         let owner = OwnerId::fsp_node(source_addr);
         let output = opened_endpoint_output(owner, source_peer, 50, 7, b"endpoint-node");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
 
         let sent = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
@@ -657,7 +659,7 @@
             }
         }
         assert!(tun.outputs.is_empty());
-        assert!(transport.plans().is_empty());
+        assert!(transport.groups.is_empty());
     }
 
     #[test]
@@ -671,7 +673,7 @@
         let owner = OwnerId::fsp_node(source_addr);
         let output = opened_endpoint_output(owner, source_peer, 53, 0, b"closed-endpoint");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
 
         let sent = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_tx);
@@ -681,7 +683,7 @@
 
         assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
         assert!(tun.outputs.is_empty());
-        assert!(transport.plans().is_empty());
+        assert!(transport.groups.is_empty());
     }
 
     #[test]
@@ -696,7 +698,7 @@
             opened_output(owner, 51, 0, OutputTarget::Endpoint, b"missing-identity");
         let mismatched_output = opened_endpoint_output(owner, wrong_peer, 52, 1, b"wrong-identity");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
 
         let missing = {
             let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
@@ -713,7 +715,7 @@
         assert_eq!(mismatched, Err(PacketMover2OutputError::NoRoute));
         assert!(endpoint_io.event_rx.try_recv().is_err());
         assert!(tun.outputs.is_empty());
-        assert!(transport.plans().is_empty());
+        assert!(transport.groups.is_empty());
     }
 
     #[test]
@@ -731,7 +733,7 @@
         );
         let mut tun = LiveTunRecorder::default();
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
 
         let sent = {
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
@@ -741,16 +743,18 @@
         assert_eq!(sent, Ok(()));
         assert!(tun.outputs.is_empty());
         assert!(endpoint.outputs.is_empty());
-        assert_eq!(transport.plans().len(), 1);
-        let plan = &transport.plans()[0];
-        assert_eq!(plan.transport_id(), transport_id);
-        assert_eq!(plan.remote_addr(), &remote_addr);
-        assert_eq!(plan.output().owner(), owner);
-        assert_eq!(plan.output().counter(), 540);
-        assert_eq!(plan.output().ingress_seq(), 12);
-        assert_eq!(plan.output().payload(), b"wire-packet");
+        assert_eq!(transport.groups.len(), 1);
+        let group = &transport.groups[0];
+        assert_eq!(group.transport_id, transport_id);
+        assert_eq!(group.remote_addr, remote_addr);
+        assert_eq!(group.outputs.len(), 1);
+        let output = &group.outputs[0];
+        assert_eq!(output.owner(), owner);
+        assert_eq!(output.counter(), 540);
+        assert_eq!(output.ingress_seq(), 12);
+        assert_eq!(output.payload(), b"wire-packet");
         assert_eq!(
-            plan.output().path(),
+            output.path(),
             Some(TransportPath::live(transport_id, remote_addr))
         );
     }
@@ -760,7 +764,7 @@
         let transport_id = TransportId::new(55);
         let remote_addr = TransportAddr::from_string("198.51.100.55:9000");
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x55; 16]));
-        let plan = PacketMover2TransportSendPlan::new(
+        let plan = PacketMover2TransportPlanGroup::new(
             transport_id,
             remote_addr.clone(),
             transport_output(
@@ -776,7 +780,7 @@
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans_with_worker(
+        let sent = send_packet_mover2_transport_groups_with_worker(
             &transports,
             vec![plan],
             &mut drops,
@@ -805,7 +809,7 @@
         let transport_id = TransportId::new(56);
         let remote_addr = TransportAddr::from_string("127.0.0.1:9");
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x56; 16]));
-        let plan = PacketMover2TransportSendPlan::new(
+        let plan = PacketMover2TransportPlanGroup::new(
             transport_id,
             remote_addr.clone(),
             transport_output(
@@ -822,7 +826,7 @@
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans_with_worker(
+        let sent = send_packet_mover2_transport_groups_with_worker(
             &transports,
             vec![plan],
             &mut drops,
@@ -876,7 +880,7 @@
                 .to_string(),
         );
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x57; 16]));
-        let plan = PacketMover2TransportSendPlan::new(
+        let plan = PacketMover2TransportPlanGroup::new(
             send_transport_id,
             remote_addr.clone(),
             transport_output(
@@ -892,7 +896,7 @@
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans_with_worker(
+        let sent = send_packet_mover2_transport_groups_with_worker(
             &transports,
             vec![plan],
             &mut drops,
@@ -968,18 +972,18 @@
             b"bulk-worker-b".to_vec(),
         );
         bulk_b.lane = Lane::Bulk;
-        let plans = vec![
-            PacketMover2TransportSendPlan::new(send_transport_id, remote_addr.clone(), bulk_a),
-            PacketMover2TransportSendPlan::new(send_transport_id, remote_addr.clone(), priority),
-            PacketMover2TransportSendPlan::new(send_transport_id, remote_addr, bulk_b),
+        let groups = vec![
+            PacketMover2TransportPlanGroup::new(send_transport_id, remote_addr.clone(), bulk_a),
+            PacketMover2TransportPlanGroup::new(send_transport_id, remote_addr.clone(), priority),
+            PacketMover2TransportPlanGroup::new(send_transport_id, remote_addr, bulk_b),
         ];
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_plans_with_worker(
+        let sent = send_packet_mover2_transport_groups_with_worker(
             &transports,
-            plans,
+                    groups,
             &mut drops,
             &mut worker,
             None,
@@ -1035,8 +1039,8 @@
         let mut send_transport = unstarted_udp_transport(send_transport_id);
         send_transport.start().await.expect("start send udp");
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x64; 16]));
-        let plans = vec![
-            PacketMover2TransportSendPlan::new(
+        let groups = vec![
+            PacketMover2TransportPlanGroup::new(
                 send_transport_id,
                 remote_addr.clone(),
                 transport_output(
@@ -1048,7 +1052,7 @@
                     b"bulk-full-a".to_vec(),
                 ),
             ),
-            PacketMover2TransportSendPlan::new(
+            PacketMover2TransportPlanGroup::new(
                 send_transport_id,
                 remote_addr.clone(),
                 transport_output(
@@ -1066,9 +1070,9 @@
         let mut worker = PacketMover2TransportSendWorkerPool::new(1);
         assert!(worker.try_reserve(Lane::Bulk, 1));
 
-        let sent = send_packet_mover2_transport_plans_with_worker(
+        let sent = send_packet_mover2_transport_groups_with_worker(
             &transports,
-            plans,
+                    groups,
             &mut drops,
             &mut worker,
             None,
@@ -1135,7 +1139,7 @@
             OutboundPacket::fmp(owner, 1, PacketClass::Bulk, 471, 0, b"no-route".to_vec());
         let mut tun = LiveTunRecorder::default();
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendPlanOutput::new();
+        let mut transport = PacketMover2TransportSendGroups::new();
 
         let turn = {
             let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
@@ -1154,7 +1158,7 @@
         assert_eq!(turn.output_drops()[0].path(), None);
         assert!(tun.outputs.is_empty());
         assert!(endpoint.outputs.is_empty());
-        assert!(transport.plans().is_empty());
+        assert!(transport.groups.is_empty());
     }
 
     #[test]

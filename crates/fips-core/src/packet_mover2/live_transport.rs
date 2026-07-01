@@ -294,59 +294,63 @@ fn packet_mover2_transport_send_worker_shard(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PacketMover2TransportSendPlan {
+struct PacketMover2TransportPlanGroup {
+    lane: Lane,
     transport_id: TransportId,
     remote_addr: TransportAddr,
-    output: PacketOutput,
+    outputs: Vec<PacketOutput>,
 }
 
-impl PacketMover2TransportSendPlan {
+impl PacketMover2TransportPlanGroup {
     fn new(
         transport_id: TransportId,
         remote_addr: TransportAddr,
         output: PacketOutput,
     ) -> Self {
+        let lane = output.lane();
         Self {
+            lane,
             transport_id,
             remote_addr,
-            output,
+            outputs: vec![output],
         }
     }
 
-    fn transport_id(&self) -> TransportId {
-        self.transport_id
+    fn matches(&self, lane: Lane, transport_id: TransportId, remote_addr: &TransportAddr) -> bool {
+        self.lane == lane && self.transport_id == transport_id && &self.remote_addr == remote_addr
     }
 
-    fn remote_addr(&self) -> &TransportAddr {
-        &self.remote_addr
+    fn push(&mut self, output: PacketOutput) {
+        debug_assert_eq!(self.lane, output.lane());
+        self.outputs.push(output);
     }
 
-    fn output(&self) -> &PacketOutput {
-        &self.output
+    fn len(&self) -> usize {
+        self.outputs.len()
     }
 }
 
 #[derive(Debug, Default)]
-struct PacketMover2TransportSendPlanOutput {
-    plans: Vec<PacketMover2TransportSendPlan>,
+struct PacketMover2TransportSendGroups {
+    groups: Vec<PacketMover2TransportPlanGroup>,
 }
 
-impl PacketMover2TransportSendPlanOutput {
+impl PacketMover2TransportSendGroups {
     fn new() -> Self {
         Self::default()
     }
 
     fn clear(&mut self) {
-        self.plans.clear();
+        self.groups.clear();
     }
 
-    fn plans(&self) -> &[PacketMover2TransportSendPlan] {
-        &self.plans
+    fn planned_packets(&self) -> usize {
+        self.groups.iter().map(PacketMover2TransportPlanGroup::len).sum()
     }
 
-    fn take_plans_preserving_capacity(&mut self) -> Vec<PacketMover2TransportSendPlan> {
-        let capacity = self.plans.capacity();
-        std::mem::replace(&mut self.plans, Vec::with_capacity(capacity))
+    fn take_groups_preserving_capacity(&mut self) -> Vec<PacketMover2TransportPlanGroup> {
+        let capacity = self.groups.capacity();
+        std::mem::replace(&mut self.groups, Vec::with_capacity(capacity))
     }
 
     fn send_transport(
@@ -355,11 +359,15 @@ impl PacketMover2TransportSendPlanOutput {
         remote_addr: TransportAddr,
         output: PacketOutput,
     ) -> Result<(), PacketMover2OutputError> {
-        self.plans.push(PacketMover2TransportSendPlan::new(
-            transport_id,
-            remote_addr,
-            output,
-        ));
+        let lane = output.lane();
+        if let Some(group) = self.groups.last_mut()
+            && group.matches(lane, transport_id, &remote_addr)
+        {
+            group.push(output);
+            return Ok(());
+        }
+        self.groups
+            .push(PacketMover2TransportPlanGroup::new(transport_id, remote_addr, output));
         Ok(())
     }
 }
@@ -389,9 +397,9 @@ impl<T: PacketMover2TransportResolver + ?Sized> PacketMover2TransportResolver fo
     }
 }
 
-async fn send_packet_mover2_transport_plans_with_worker<R>(
+async fn send_packet_mover2_transport_groups_with_worker<R>(
     transports: &R,
-    plans: Vec<PacketMover2TransportSendPlan>,
+    groups: Vec<PacketMover2TransportPlanGroup>,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
     mut sent_outputs: Option<&mut Vec<PacketOutput>>,
@@ -399,224 +407,164 @@ async fn send_packet_mover2_transport_plans_with_worker<R>(
 where
     R: PacketMover2TransportResolver + ?Sized,
 {
-    if plans.is_empty() {
+    if groups.is_empty() {
         return 0;
     }
 
     let mut sent = 0usize;
-    let mut pending_udp = PendingPacketMover2UdpSendJob::default();
-    for plan in plans {
-        let lane = plan.output().lane();
-        let Some(transport) = transports.resolve_packet_mover2_transport(plan.transport_id())
+    for group in groups {
+        let Some(transport) = transports.resolve_packet_mover2_transport(group.transport_id)
         else {
-            drops.push(PacketMover2OutputDrop::from_output(
-                plan.output(),
-                PacketMover2OutputError::NoRoute,
-            ));
+            drop_transport_plan_group(group, drops, PacketMover2OutputError::NoRoute);
             continue;
         };
 
         let TransportHandle::Udp(udp) = transport else {
-            flush_pending_packet_mover2_udp_send_job(
-                &mut pending_udp,
-                drops,
-                worker,
-                &mut sent_outputs,
-                &mut sent,
-            );
-            send_non_udp_transport_plan(transport, plan, drops, &mut sent_outputs, &mut sent).await;
+            send_non_udp_transport_plan_group(transport, group, drops, &mut sent_outputs, &mut sent)
+                .await;
             continue;
         };
 
-        if !pending_udp.matches(lane, plan.transport_id(), plan.remote_addr()) {
-            flush_pending_packet_mover2_udp_send_job(
-                &mut pending_udp,
-                drops,
-                worker,
-                &mut sent_outputs,
-                &mut sent,
-            );
-            let Some((snapshot, socket_addr)) =
-                prepare_packet_mover2_udp_worker_target(udp, &plan, drops).await
-            else {
-                continue;
-            };
-            pending_udp.reset(
-                snapshot,
-                lane,
-                plan.transport_id(),
-                plan.remote_addr().clone(),
-                socket_addr,
-            );
-        }
-        pending_udp.validate_and_push(plan, drops);
-        if pending_udp.len() >= worker.max_job_packets_for_lane(lane) {
-            flush_pending_packet_mover2_udp_send_job(
-                &mut pending_udp,
-                drops,
-                worker,
-                &mut sent_outputs,
-                &mut sent,
-            );
-        }
+        send_udp_transport_plan_group(
+            udp,
+            group,
+            drops,
+            worker,
+            &mut sent_outputs,
+            &mut sent,
+        )
+        .await;
     }
-    flush_pending_packet_mover2_udp_send_job(
-        &mut pending_udp,
-        drops,
-        worker,
-        &mut sent_outputs,
-        &mut sent,
-    );
     sent
 }
 
-async fn send_non_udp_transport_plan(
+async fn send_non_udp_transport_plan_group(
     transport: &TransportHandle,
-    plan: PacketMover2TransportSendPlan,
+    group: PacketMover2TransportPlanGroup,
     drops: &mut Vec<PacketMover2OutputDrop>,
     sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
     sent: &mut usize,
 ) {
-    match transport
-        .send(plan.remote_addr(), plan.output().payload())
-        .await
-    {
+    for output in group.outputs {
+        send_non_udp_transport_output(
+            transport,
+            &group.remote_addr,
+            output,
+            drops,
+            sent_outputs,
+            sent,
+        )
+        .await;
+    }
+}
+
+async fn send_non_udp_transport_output(
+    transport: &TransportHandle,
+    remote_addr: &TransportAddr,
+    output: PacketOutput,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+    sent: &mut usize,
+) {
+    match transport.send(remote_addr, output.payload()).await {
         Ok(_) => {
             *sent += 1;
             if let Some(sent_outputs) = sent_outputs.as_deref_mut() {
-                sent_outputs.push(plan.output().clone());
+                sent_outputs.push(output);
             }
         }
         Err(error) => drops.push(PacketMover2OutputDrop::from_output(
-            plan.output(),
+            &output,
             packet_mover2_output_error_for_transport(&error),
         )),
     }
 }
 
-async fn prepare_packet_mover2_udp_worker_target(
+async fn send_udp_transport_plan_group(
     udp: &crate::transport::udp::UdpTransport,
-    plan: &PacketMover2TransportSendPlan,
-    drops: &mut Vec<PacketMover2OutputDrop>,
-) -> Option<(crate::transport::udp::UdpSendSnapshot, std::net::SocketAddr)> {
-    let snapshot = match udp.send_snapshot() {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            drops.push(PacketMover2OutputDrop::from_output(
-                plan.output(),
-                packet_mover2_output_error_for_transport(&error),
-            ));
-            return None;
-        }
-    };
-    let socket_addr = match udp.resolve_for_off_task(plan.remote_addr()).await {
-        Ok(socket_addr) => socket_addr,
-        Err(error) => {
-            drops.push(PacketMover2OutputDrop::from_output(
-                plan.output(),
-                packet_mover2_output_error_for_transport(&error),
-            ));
-            return None;
-        }
-    };
-    Some((snapshot, socket_addr))
-}
-
-#[derive(Default)]
-struct PendingPacketMover2UdpSendJob {
-    lane: Option<Lane>,
-    snapshot: Option<crate::transport::udp::UdpSendSnapshot>,
-    transport_id: Option<TransportId>,
-    remote_transport_addr: Option<TransportAddr>,
-    socket_addr: Option<std::net::SocketAddr>,
-    packets: Vec<PacketOutput>,
-}
-
-impl PendingPacketMover2UdpSendJob {
-    fn matches(&self, lane: Lane, transport_id: TransportId, remote_addr: &TransportAddr) -> bool {
-        self.lane == Some(lane)
-            && self.transport_id == Some(transport_id)
-            && self.remote_transport_addr.as_ref() == Some(remote_addr)
-    }
-
-    fn reset(
-        &mut self,
-        snapshot: crate::transport::udp::UdpSendSnapshot,
-        lane: Lane,
-        transport_id: TransportId,
-        remote_transport_addr: TransportAddr,
-        socket_addr: std::net::SocketAddr,
-    ) {
-        debug_assert!(self.packets.is_empty());
-        self.lane = Some(lane);
-        self.snapshot = Some(snapshot);
-        self.transport_id = Some(transport_id);
-        self.remote_transport_addr = Some(remote_transport_addr);
-        self.socket_addr = Some(socket_addr);
-    }
-
-    fn validate_and_push(
-        &mut self,
-        plan: PacketMover2TransportSendPlan,
-        drops: &mut Vec<PacketMover2OutputDrop>,
-    ) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            drops.push(PacketMover2OutputDrop::from_output(
-                plan.output(),
-                PacketMover2OutputError::Unavailable,
-            ));
-            return;
-        };
-        let Some(socket_addr) = self.socket_addr else {
-            drops.push(PacketMover2OutputDrop::from_output(
-                plan.output(),
-                PacketMover2OutputError::Unavailable,
-            ));
-            return;
-        };
-        if let Err(error) = snapshot.validate_packet(plan.output().payload_len(), socket_addr) {
-            drops.push(PacketMover2OutputDrop::from_output(
-                plan.output(),
-                packet_mover2_output_error_for_transport(&error),
-            ));
-            return;
-        }
-        self.packets.push(plan.output);
-    }
-
-    fn len(&self) -> usize {
-        self.packets.len()
-    }
-
-    fn take_job(&mut self) -> Option<PacketMover2TransportSendJob> {
-        if self.packets.is_empty() {
-            return None;
-        }
-        let lane = self.lane.take()?;
-        let snapshot = self.snapshot.take()?;
-        let transport_id = self.transport_id.take()?;
-        self.remote_transport_addr.take()?;
-        let remote_addr = self.socket_addr.take()?;
-        Some(PacketMover2TransportSendJob {
-            lane,
-            snapshot,
-            transport_id,
-            remote_addr,
-            packets: std::mem::take(&mut self.packets),
-        })
-    }
-}
-
-fn flush_pending_packet_mover2_udp_send_job(
-    pending: &mut PendingPacketMover2UdpSendJob,
+    group: PacketMover2TransportPlanGroup,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
     sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
     sent: &mut usize,
 ) {
-    let Some(job) = pending.take_job() else {
-        return;
+    let snapshot = match udp.send_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            drop_transport_plan_group(
+                group,
+                drops,
+                packet_mover2_output_error_for_transport(&error),
+            );
+            return;
+        }
     };
+    let socket_addr = match udp.resolve_for_off_task(&group.remote_addr).await {
+        Ok(socket_addr) => socket_addr,
+        Err(error) => {
+            drop_transport_plan_group(
+                group,
+                drops,
+                packet_mover2_output_error_for_transport(&error),
+            );
+            return;
+        }
+    };
+
+    let lane = group.lane;
+    let transport_id = group.transport_id;
+    let max_job_packets = worker.max_job_packets_for_lane(group.lane);
+    let mut packets = Vec::new();
+    for output in group.outputs {
+        if let Err(error) = snapshot.validate_packet(output.payload_len(), socket_addr) {
+            drops.push(PacketMover2OutputDrop::from_output(
+                &output,
+                packet_mover2_output_error_for_transport(&error),
+            ));
+            continue;
+        }
+        packets.push(output);
+        if packets.len() >= max_job_packets {
+            flush_packet_mover2_udp_send_job(
+                PacketMover2TransportSendJob {
+                    lane,
+                    snapshot: snapshot.clone(),
+                    transport_id,
+                    remote_addr: socket_addr,
+                    packets: std::mem::take(&mut packets),
+                },
+                drops,
+                worker,
+                sent_outputs,
+                sent,
+            );
+        }
+    }
+    flush_packet_mover2_udp_send_job(
+        PacketMover2TransportSendJob {
+            lane,
+            snapshot,
+            transport_id,
+            remote_addr: socket_addr,
+            packets,
+        },
+        drops,
+        worker,
+        sent_outputs,
+        sent,
+    );
+}
+
+fn flush_packet_mover2_udp_send_job(
+    job: PacketMover2TransportSendJob,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    worker: &mut PacketMover2TransportSendWorkerPool,
+    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+    sent: &mut usize,
+) {
+    if job.packets.is_empty() {
+        return;
+    }
     let sent_receipts = if sent_outputs.is_some() {
         Some(
             job.packets
@@ -649,6 +597,16 @@ fn flush_pending_packet_mover2_udp_send_job(
                 ));
             }
         }
+    }
+}
+
+fn drop_transport_plan_group(
+    mut group: PacketMover2TransportPlanGroup,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    reason: PacketMover2OutputError,
+) {
+    for output in group.outputs.drain(..) {
+        drops.push(PacketMover2OutputDrop::from_output(&output, reason));
     }
 }
 
