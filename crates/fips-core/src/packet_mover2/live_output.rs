@@ -197,6 +197,8 @@ where
         F: FnMut(PacketMover2RoutedOutbound),
     {
         let mut drained = 0usize;
+        let mut first_routed = None;
+        let mut routed_batch = Vec::new();
         self.cache_first_tun_packet();
         if drained < limit {
             if let Some(packet) = self.first_tun_packet.take() {
@@ -205,7 +207,7 @@ where
                     self.routes,
                     &mut self.tun_drops,
                     &mut self.tun_deferred_packets,
-                    |packet| push(PacketMover2RoutedOutbound::Packet(packet)),
+                    |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
                 );
                 drained += 1;
             }
@@ -219,10 +221,11 @@ where
                 self.routes,
                 &mut self.tun_drops,
                 &mut self.tun_deferred_packets,
-                |packet| push(PacketMover2RoutedOutbound::Packet(packet)),
+                |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
             );
             drained += 1;
         }
+        flush_tun_routed_packets(first_routed, routed_batch, &mut push);
         drained
     }
 
@@ -239,6 +242,39 @@ where
         let tun_drained = self.drain_tun_batched(tun_limit, push);
         self.tun_drained = self.tun_drained.saturating_add(tun_drained);
         endpoint_drained.saturating_add(tun_drained)
+    }
+}
+
+fn collect_tun_routed_packet(
+    packet: OutboundPacket,
+    first: &mut Option<OutboundPacket>,
+    batch: &mut Vec<OutboundPacket>,
+) {
+    if batch.is_empty() {
+        if first.is_none() {
+            *first = Some(packet);
+            return;
+        }
+        if let Some(first) = first.take() {
+            batch.push(first);
+        }
+    }
+    batch.push(packet);
+}
+
+fn flush_tun_routed_packets<F>(
+    first: Option<OutboundPacket>,
+    batch: Vec<OutboundPacket>,
+    push: &mut F,
+) where
+    F: FnMut(PacketMover2RoutedOutbound),
+{
+    if batch.is_empty() {
+        if let Some(packet) = first {
+            push(PacketMover2RoutedOutbound::Packet(packet));
+        }
+    } else {
+        push(PacketMover2RoutedOutbound::Batch(batch));
     }
 }
 
