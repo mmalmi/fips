@@ -591,21 +591,27 @@ mod platform {
             Ok((count, drops))
         }
 
-        /// Send up to `SEND_BATCH_SIZE` datagrams in a single sendmmsg
-        /// syscall (Linux only), or a same-destination/same-size prefix via
-        /// `sendmsg(2)+UDP_SEGMENT`. Returns the count actually sent. Caller is
-        /// responsible for retrying remaining packets if `n < packets.len()`.
+        /// Send same-destination payloads without first materializing
+        /// `(payload, addr)` tuples for every packet.
         #[cfg(target_os = "linux")]
-        pub fn send_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<usize> {
-            let n = packets.len().min(SEND_BATCH_SIZE);
+        pub fn send_batch_to<B>(
+            &self,
+            payloads: &B,
+            offset: usize,
+            dest: SocketAddr,
+        ) -> std::io::Result<usize>
+        where
+            B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+        {
+            let n = payloads.len().saturating_sub(offset).min(SEND_BATCH_SIZE);
             if n == 0 {
                 return Ok(0);
             }
 
             if !UDP_GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
-                let gso_n = udp_gso_prefix_len(&packets[..n]);
+                let gso_n = udp_gso_prefix_len(payloads, offset, n);
                 if gso_n > 1 {
-                    match self.send_gso_batch(&packets[..gso_n]) {
+                    match self.send_gso_batch_to(payloads, offset, dest, gso_n) {
                         Ok(()) => {
                             crate::perf_profile::record_udp_send_gso_batch(gso_n);
                             return Ok(gso_n);
@@ -623,31 +629,28 @@ mod platform {
             }
 
             let fd = self.inner.as_raw_fd();
+            let sa: socket2::SockAddr = dest.into();
+            let sa_len = sa.len();
+            debug_assert!(sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>());
+
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    sa.as_ptr() as *const u8,
+                    &mut storage as *mut _ as *mut u8,
+                    sa_len as usize,
+                );
+            }
 
             let mut iovs: [libc::iovec; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storages: [libc::sockaddr_storage; SEND_BATCH_SIZE] =
-                unsafe { std::mem::zeroed() };
-            let mut storage_lens: [libc::socklen_t; SEND_BATCH_SIZE] = [0; SEND_BATCH_SIZE];
             let mut msgs: [libc::mmsghdr; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
-                let (data, dest) = packets[i];
-                let sa: socket2::SockAddr = (dest).into();
-                let sa_len = sa.len();
-                debug_assert!(sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>());
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        sa.as_ptr() as *const u8,
-                        &mut storages[i] as *mut _ as *mut u8,
-                        sa_len as usize,
-                    );
-                }
-                storage_lens[i] = sa_len;
-
+                let data = payloads.payload(offset + i);
                 iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
                 iovs[i].iov_len = data.len();
-                msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
-                msgs[i].msg_hdr.msg_namelen = storage_lens[i];
+                msgs[i].msg_hdr.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+                msgs[i].msg_hdr.msg_namelen = sa_len;
                 msgs[i].msg_hdr.msg_iov = &mut iovs[i];
                 msgs[i].msg_hdr.msg_iovlen = 1;
             }
@@ -662,15 +665,23 @@ mod platform {
         }
 
         #[cfg(target_os = "linux")]
-        fn send_gso_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<()> {
-            debug_assert!(packets.len() > 1);
-            let n = packets.len().min(UDP_GSO_MAX_SEGMENTS);
-            let segment_size = packets[0].0.len();
+        fn send_gso_batch_to<B>(
+            &self,
+            payloads: &B,
+            offset: usize,
+            dest: SocketAddr,
+            count: usize,
+        ) -> std::io::Result<()>
+        where
+            B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+        {
+            debug_assert!(count > 1);
+            let n = count.min(UDP_GSO_MAX_SEGMENTS);
+            let segment_size = payloads.payload(offset).len();
             debug_assert!(segment_size > 0);
             debug_assert!(segment_size <= u16::MAX as usize);
 
             let fd = self.inner.as_raw_fd();
-            let dest = packets[0].1;
             let sa: socket2::SockAddr = dest.into();
             let sa_len = sa.len();
             let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
@@ -683,7 +694,8 @@ mod platform {
             }
 
             let mut iovs: [libc::iovec; UDP_GSO_MAX_SEGMENTS] = unsafe { std::mem::zeroed() };
-            for (i, (data, _)) in packets[..n].iter().copied().enumerate() {
+            for i in 0..n {
+                let data = payloads.payload(offset + i);
                 iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
                 iovs[i].iov_len = data.len();
             }
@@ -732,23 +744,30 @@ mod platform {
     }
 
     #[cfg(target_os = "linux")]
-    fn udp_gso_prefix_len(packets: &[(&[u8], SocketAddr)]) -> usize {
-        let max = packets.len().min(SEND_BATCH_SIZE).min(UDP_GSO_MAX_SEGMENTS);
+    fn udp_gso_prefix_len<B>(payloads: &B, offset: usize, candidate: usize) -> usize
+    where
+        B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+    {
+        let max = payloads
+            .len()
+            .saturating_sub(offset)
+            .min(candidate)
+            .min(SEND_BATCH_SIZE)
+            .min(UDP_GSO_MAX_SEGMENTS);
         if max < 2 {
             return 0;
         }
 
-        let segment_size = packets[0].0.len();
+        let segment_size = payloads.payload(offset).len();
         if segment_size == 0 || segment_size > u16::MAX as usize {
             return 0;
         }
-        let dest = packets[0].1;
         let mut total_payload = 0usize;
         let mut count = 0usize;
 
-        for (data, packet_dest) in packets.iter().take(max).copied() {
-            let len = data.len();
-            if packet_dest != dest || len == 0 || len > segment_size {
+        for i in 0..max {
+            let len = payloads.payload(offset + i).len();
+            if len == 0 || len > segment_size {
                 break;
             }
             if count > 0 && total_payload.saturating_add(len) > UDP_GSO_MAX_PAYLOAD {
@@ -874,14 +893,18 @@ mod platform {
             }
         }
 
-        /// Push up to `SEND_BATCH_SIZE` datagrams to the kernel via `sendmmsg`
-        /// (Linux). Returns the count actually sent. Caller is responsible
-        /// for retrying remaining packets if `n < packets.len()`.
+        /// Push same-destination datagrams to the kernel via sendmmsg/GSO
+        /// without building a per-packet address tuple batch first.
         #[cfg(target_os = "linux")]
-        pub async fn send_batch(
+        pub async fn send_batch_to<B>(
             &self,
-            packets: &[(&[u8], SocketAddr)],
-        ) -> Result<usize, TransportError> {
+            payloads: &B,
+            offset: usize,
+            dest: SocketAddr,
+        ) -> Result<usize, TransportError>
+        where
+            B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+        {
             loop {
                 let mut guard = self
                     .inner
@@ -889,7 +912,7 @@ mod platform {
                     .await
                     .map_err(|e| TransportError::SendFailed(format!("writable wait: {}", e)))?;
 
-                match guard.try_io(|inner| inner.get_ref().send_batch(packets)) {
+                match guard.try_io(|inner| inner.get_ref().send_batch_to(payloads, offset, dest)) {
                     Ok(Ok(n)) => return Ok(n),
                     Ok(Err(e)) => return Err(TransportError::SendFailed(format!("{}", e))),
                     Err(_would_block) => continue,

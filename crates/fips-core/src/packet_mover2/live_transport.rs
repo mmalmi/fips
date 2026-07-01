@@ -236,6 +236,16 @@ async fn packet_mover2_transport_send_worker_loop(
     }
 }
 
+impl crate::transport::udp::UdpPayloadBatch for [PacketOutput] {
+    fn len(&self) -> usize {
+        <[PacketOutput]>::len(self)
+    }
+
+    fn payload(&self, index: usize) -> &[u8] {
+        self[index].payload()
+    }
+}
+
 async fn send_packet_mover2_transport_worker_job(
     job: PacketMover2TransportSendJob,
     queued_packets: &std::sync::atomic::AtomicUsize,
@@ -247,12 +257,10 @@ async fn send_packet_mover2_transport_worker_job(
         crate::perf_profile::Stage::PacketMover2TransportSendWorker,
     );
     let remote_addr = job.remote_addr;
-    let socket_packets = job
-        .packets
-        .iter()
-        .map(|output| (output.payload(), remote_addr))
-        .collect::<Vec<_>>();
-    let failed = job.snapshot.send_payload_batch(&socket_packets).await;
+    let failed = job
+        .snapshot
+        .send_payload_batch_to(job.packets.as_slice(), remote_addr)
+        .await;
     if failed > 0 {
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::PacketMover2TransportSendWorkerSendFailed,

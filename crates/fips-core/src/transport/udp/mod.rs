@@ -44,6 +44,11 @@ pub(crate) struct UdpSendSnapshot {
     stats: Arc<UdpStats>,
 }
 
+pub(crate) trait UdpPayloadBatch {
+    fn len(&self) -> usize;
+    fn payload(&self, index: usize) -> &[u8];
+}
+
 impl std::fmt::Debug for UdpSendSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UdpSendSnapshot")
@@ -76,33 +81,43 @@ impl UdpSendSnapshot {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) async fn send_payload_batch(&self, packets: &[(&[u8], SocketAddr)]) -> usize {
-        if packets.is_empty() {
+    pub(crate) async fn send_payload_batch_to<B>(
+        &self,
+        payloads: &B,
+        remote_addr: SocketAddr,
+    ) -> usize
+    where
+        B: UdpPayloadBatch + ?Sized,
+    {
+        let packet_count = payloads.len();
+        if packet_count == 0 {
             return 0;
         }
 
         let mut failed = 0usize;
         let mut offset = 0usize;
-        while offset < packets.len() {
+        while offset < packet_count {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-            match self.socket.send_batch(&packets[offset..]).await {
+            match self
+                .socket
+                .send_batch_to(payloads, offset, remote_addr)
+                .await
+            {
                 Ok(0) => {
                     self.stats.record_send_error();
-                    failed = failed.saturating_add(packets.len().saturating_sub(offset));
+                    failed = failed.saturating_add(packet_count.saturating_sub(offset));
                     break;
                 }
                 Ok(sent) => {
-                    let end = offset.saturating_add(sent).min(packets.len());
+                    let end = offset.saturating_add(sent).min(packet_count);
                     for batch_index in offset..end {
-                        let (data, _) = packets[batch_index];
-                        let bytes_sent = data.len();
-                        self.stats.record_send(bytes_sent);
+                        self.stats.record_send(payloads.payload(batch_index).len());
                     }
                     offset = end;
                 }
                 Err(_) => {
                     self.stats.record_send_error();
-                    failed = failed.saturating_add(packets.len().saturating_sub(offset));
+                    failed = failed.saturating_add(packet_count.saturating_sub(offset));
                     break;
                 }
             }
@@ -111,10 +126,18 @@ impl UdpSendSnapshot {
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub(crate) async fn send_payload_batch(&self, packets: &[(&[u8], SocketAddr)]) -> usize {
+    pub(crate) async fn send_payload_batch_to<B>(
+        &self,
+        payloads: &B,
+        remote_addr: SocketAddr,
+    ) -> usize
+    where
+        B: UdpPayloadBatch + ?Sized,
+    {
         let mut failed = 0usize;
-        for (data, addr) in packets {
-            let result = self.socket.send_to(data, addr).await;
+        for index in 0..payloads.len() {
+            let data = payloads.payload(index);
+            let result = self.socket.send_to(data, &remote_addr).await;
             if let Ok(bytes_sent) = result {
                 self.stats.record_send(bytes_sent);
             } else {
