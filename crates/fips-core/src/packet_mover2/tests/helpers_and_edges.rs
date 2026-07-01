@@ -431,7 +431,7 @@
             driver.admit_outbound_packet(packet, &mut summary);
         });
 
-        summary = driver.collect_aead_outputs_with_executor(summary, crypto_limit, executor);
+        summary = driver.collect_aead_outputs_with_executor(summary, crypto_limit, &mut executor);
         driver.send_collected_outputs(summary, sink)
     }
 
