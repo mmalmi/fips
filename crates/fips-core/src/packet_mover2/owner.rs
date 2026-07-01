@@ -888,18 +888,8 @@ impl OwnerState {
         self.send_counter_authority = Some(authority);
     }
 
-    fn crypto_keys(&self) -> Option<OwnerCryptoKeys> {
-        self.crypto_keys.clone()
-    }
-
-    fn open_key_for_packet(&self, packet: &SocketPacket) -> Option<AeadKey> {
-        if self.uses_previous_fsp_receive_epoch(packet) {
-            return self.previous_fsp_open.clone();
-        }
-        if self.uses_pending_fsp_receive_epoch(packet) {
-            return self.pending_fsp_open.clone();
-        }
-        self.crypto_keys.as_ref().map(|keys| keys.open.clone())
+    fn seal_key(&self) -> Option<AeadKey> {
+        self.crypto_keys.as_ref().map(|keys| keys.seal.clone())
     }
 
     fn uses_previous_fsp_receive_epoch(&self, packet: &SocketPacket) -> bool {
@@ -1126,7 +1116,7 @@ impl OwnerState {
         &mut self,
         packet: &SocketPacket,
         ingress_seq: u64,
-    ) -> Result<OwnerReservation, OwnerReserveError> {
+    ) -> Result<(OwnerReservation, Option<AeadKey>), OwnerReserveError> {
         if packet.generation != self.generation {
             return Err(OwnerReserveError::StaleGeneration);
         }
@@ -1147,13 +1137,17 @@ impl OwnerState {
         } else {
             &mut self.replay_window
         };
-        if replay_window.is_replay(packet.counter) {
-            return Err(OwnerReserveError::Replay);
-        }
 
         if !replay_window.accept(packet.counter) {
             return Err(OwnerReserveError::Replay);
         }
+        let open_key = if use_previous_epoch {
+            self.previous_fsp_open.clone()
+        } else if use_pending_epoch {
+            self.pending_fsp_open.clone()
+        } else {
+            self.crypto_keys.as_ref().map(|keys| keys.open.clone())
+        };
         if let Some(path) = packet.source_path.clone() {
             self.active_path = Some(path);
         }
@@ -1163,26 +1157,29 @@ impl OwnerState {
         self.reserve_class(packet.class);
         let order = OrderToken(self.next_order);
         self.next_order = self.next_order.wrapping_add(1);
-        Ok(OwnerReservation {
-            owner: self.owner,
-            owner_shard: 0,
-            generation: self.generation,
-            order,
-            ingress_seq,
-            counter: packet.counter,
-            class: packet.class,
-            lane,
-            source_path: packet.source_path.clone(),
-            previous_hop: packet.previous_hop,
-            ce_flag: packet.ce_flag,
-            path_mtu: packet.path_mtu,
-            wire_flags: packet.wire_flags,
-            source_peer: self.source_peer,
-            output_path: None,
-            activity_tick: packet.activity_tick,
-            fmp_timestamp_ms: None,
-            fsp_timestamp_ms: None,
-        })
+        Ok((
+            OwnerReservation {
+                owner: self.owner,
+                owner_shard: 0,
+                generation: self.generation,
+                order,
+                ingress_seq,
+                counter: packet.counter,
+                class: packet.class,
+                lane,
+                source_path: packet.source_path.clone(),
+                previous_hop: packet.previous_hop,
+                ce_flag: packet.ce_flag,
+                path_mtu: packet.path_mtu,
+                wire_flags: packet.wire_flags,
+                source_peer: self.source_peer,
+                output_path: None,
+                activity_tick: packet.activity_tick,
+                fmp_timestamp_ms: None,
+                fsp_timestamp_ms: None,
+            },
+            open_key,
+        ))
     }
 
     pub(crate) fn reserve_outbound(
@@ -1815,21 +1812,6 @@ impl Default for ReplayWindow {
 impl ReplayWindow {
     fn clear(&mut self) {
         *self = Self::default();
-    }
-
-    fn is_replay(&self, counter: u64) -> bool {
-        let Some(highest) = self.highest else {
-            return false;
-        };
-        if counter > highest {
-            return false;
-        }
-
-        let behind = highest - counter;
-        if behind > REPLAY_WINDOW_SIZE {
-            return true;
-        }
-        self.ring[ring_index(counter)] & counter_bit(counter) != 0
     }
 
     fn accept(&mut self, counter: u64) -> bool {

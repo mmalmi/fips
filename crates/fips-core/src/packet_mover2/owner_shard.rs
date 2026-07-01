@@ -284,20 +284,21 @@ impl PacketMover2OwnerShard {
                 }
 
                 match owner.reserve(&queued.packet, queued.ingress_seq) {
-                    Ok(reservation) => {
+                    Ok((reservation, open_key)) => {
                         let reservation = reservation.with_owner_shard(self.index);
                         count_fsp_path_open_dispatch(
                             &reservation,
                             fsp_path_open,
                             fsp_path_open_bulk,
                         );
-                        let open_key = owner.open_key_for_packet(&queued.packet);
-                        let work = CryptoWork {
-                            reservation: reservation.clone(),
-                            packet: queued.packet,
-                        };
                         let prepared_work = match open_key {
-                            Some(open_key) => PreparedCryptoWork::open(work, open_key),
+                            Some(open_key) => PreparedCryptoWork::open(
+                                CryptoWork {
+                                    reservation,
+                                    packet: queued.packet,
+                                },
+                                open_key,
+                            ),
                             None => {
                                 PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open)
                             }
@@ -355,7 +356,7 @@ impl PacketMover2OwnerShard {
             }
             let owner_id = run.cursor.owner;
 
-            let Some(owner) = self.owners.get(&owner_id) else {
+            let Some(owner) = self.owners.get_mut(&owner_id) else {
                 for queued in &run.items {
                     drops.push(PacketDrop::from_queued_outbound(
                         queued,
@@ -365,12 +366,7 @@ impl PacketMover2OwnerShard {
                 self.outbound_admission.continue_owner_lane(run.cursor);
                 continue;
             };
-            let keys = owner.crypto_keys();
 
-            let owner = self
-                .owners
-                .get_mut(&owner_id)
-                .expect("outbound owner checked before reservation");
             let mut remaining = Vec::new();
             let mut items = std::mem::take(&mut run.items).into_iter();
             while let Some(queued) = items.next() {
@@ -387,9 +383,11 @@ impl PacketMover2OwnerShard {
                 match owner.reserve_outbound(queued.packet, ingress_seq) {
                     Ok((reservation, packet)) => {
                         let reservation = reservation.with_owner_shard(self.index);
-                        let work = OutboundCryptoWork::new(reservation.clone(), packet);
-                        let prepared_work = match &keys {
-                            Some(keys) => PreparedCryptoWork::seal(work, keys.seal.clone()),
+                        let prepared_work = match owner.seal_key() {
+                            Some(seal_key) => PreparedCryptoWork::seal(
+                                OutboundCryptoWork::new(reservation, packet),
+                                seal_key,
+                            ),
                             None => {
                                 PreparedCryptoWork::failed(reservation, CryptoFailureKind::Seal)
                             }

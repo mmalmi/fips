@@ -138,9 +138,7 @@
         let key = test_key(0);
         for shard in &mut mover.shards {
             for owner in shard.owners.values_mut() {
-                if owner.crypto_keys().is_none() {
-                    owner.set_crypto_keys(OwnerCryptoKeys::new(key.clone(), key.clone()));
-                }
+                owner.set_crypto_keys(OwnerCryptoKeys::new(key.clone(), key.clone()));
             }
         }
     }
