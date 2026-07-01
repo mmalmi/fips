@@ -120,10 +120,6 @@ impl PacketOutput {
     pub(crate) fn source_wire_len(&self) -> Option<usize> {
         self.source_wire_len
     }
-
-    pub(crate) fn fsp_send_receipt(&self) -> Option<PacketMover2FspSendReceipt> {
-        self.fsp_send_receipt
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -362,7 +362,7 @@
         assert_eq!(output.counter(), 70);
         assert_eq!(output.target(), OutputTarget::Transport);
         assert_eq!(output.path(), Some(fmp_path));
-        let receipt = output.fsp_send_receipt().expect("wrapped FSP receipt");
+        let receipt = output.fsp_send_receipt.expect("wrapped FSP receipt");
         assert_eq!(receipt.owner(), fsp_owner);
         assert_eq!(receipt.counter(), 50);
         assert_eq!(receipt.timestamp_ms(), Some(234));
