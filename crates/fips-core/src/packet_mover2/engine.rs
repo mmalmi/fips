@@ -704,8 +704,8 @@ impl PacketMover2 {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::PacketMover2CompletionQueue,
             );
-            let completed = self.queue_completion_batch(completion_work);
-            self.retire_queued_completions_into(completed, retired);
+            self.queue_completion_batch(completion_work);
+            self.retire_queued_completions_into(limit, retired);
         }
 
         drops.append(&mut self.drops);
