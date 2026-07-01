@@ -723,19 +723,38 @@ impl PacketMover2LiveNode {
         let summary = self
             .driver
             .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
-        self.driver
+        let mut report = self
+            .driver
             .finish_aead_live_node_output_turn_with_executor(
                 summary,
                 &mut self.routes,
                 tun_tx,
                 endpoint_tx,
                 transports,
-                crypto_limit,
+                0,
                 false,
                 &mut self.crypto_worker,
                 transport_send_worker,
             )
-            .await
+            .await;
+        if crypto_limit > 0 {
+            let feed_report = self
+                .driver
+                .finish_aead_live_node_output_turn_with_executor(
+                    PacketMover2RuntimeSummary::default(),
+                    &mut self.routes,
+                    tun_tx,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    false,
+                    &mut self.crypto_worker,
+                    transport_send_worker,
+                )
+                .await;
+            report.absorb(feed_report);
+        }
+        report
     }
 
     #[allow(clippy::too_many_arguments)]

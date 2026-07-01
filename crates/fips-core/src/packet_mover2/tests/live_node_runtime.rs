@@ -142,6 +142,148 @@
     }
 
     #[tokio::test]
+    async fn live_completion_wake_sends_ready_output_before_feeding_unblocked_work() {
+        let send_transport_id = TransportId::new(176);
+        let recv_transport_id = TransportId::new(177);
+        let owner = fmp_owner(176);
+        let key = 176;
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(4);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let path = TransportPath::live(send_transport_id, remote_addr);
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
+        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+        live_node.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_next_send_counter(900),
+        );
+        live_node
+            .driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_active_path(path);
+        live_node
+            .driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        live_node
+            .driver
+            .mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                901,
+                0,
+                b"ready-first".to_vec(),
+            ))
+            .unwrap();
+        let first_feed = live_node
+            .pump_completion_output_turn_with_transport_worker(
+                &tun_tx,
+                &endpoint_io.event_tx,
+                &transports,
+                8,
+                &mut transport_worker,
+            )
+            .await;
+        assert_eq!(first_feed.summary().completions(), 0);
+        assert_eq!(first_feed.summary().dispatched(), 1);
+        assert_eq!(first_feed.summary().outputs_sent(), 0);
+
+        wait_for_live_worker_completion(&live_node).await;
+        live_node
+            .driver
+            .mover
+            .submit_outbound_packet(OutboundPacket::fmp(
+                owner,
+                1,
+                PacketClass::Bulk,
+                901,
+                0,
+                b"fed-after-output".to_vec(),
+            ))
+            .unwrap();
+        let completion_turn = live_node
+            .pump_completion_output_turn_with_transport_worker(
+                &tun_tx,
+                &endpoint_io.event_tx,
+                &transports,
+                8,
+                &mut transport_worker,
+            )
+            .await;
+        assert_eq!(completion_turn.summary().completions(), 1);
+        assert_eq!(completion_turn.summary().outputs_sent(), 1);
+        assert_eq!(completion_turn.summary().dispatched(), 1);
+        assert_eq!(completion_turn.transport_sent(), 1);
+
+        let first_received =
+            tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                .await
+                .expect("receive first output")
+                .expect("packet channel open");
+        assert_eq!(
+            open_fmp_wire_payload(&first_received.data, key),
+            b"ready-first"
+        );
+        assert!(
+            recv_packet_rx.try_recv().is_err(),
+            "newly fed work must wait for its own completion turn"
+        );
+
+        wait_for_live_worker_completion(&live_node).await;
+        let second_turn = live_node
+            .pump_completion_output_turn_with_transport_worker(
+                &tun_tx,
+                &endpoint_io.event_tx,
+                &transports,
+                8,
+                &mut transport_worker,
+            )
+            .await;
+        assert_eq!(second_turn.summary().completions(), 1);
+        assert_eq!(second_turn.summary().outputs_sent(), 1);
+        assert_eq!(second_turn.summary().dispatched(), 0);
+        assert_eq!(second_turn.transport_sent(), 1);
+        let second_received =
+            tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                .await
+                .expect("receive second output")
+                .expect("packet channel open");
+        assert_eq!(
+            open_fmp_wire_payload(&second_received.data, key),
+            b"fed-after-output"
+        );
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
+    }
+
+    #[tokio::test]
     async fn live_route_table_turn_flushes_completed_output_before_fresh_admission() {
         let transport_id = TransportId::new(178);
         let receiver_idx = 780;
