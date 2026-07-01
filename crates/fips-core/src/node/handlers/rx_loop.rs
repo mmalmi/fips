@@ -214,15 +214,17 @@ impl Node {
                     match packet {
                         Some(p) => {
                             let latency_packet = p.is_transport_priority();
-                            let mut firsts = crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
-                                .with_raw_packet(Some(p));
+                            let mut firsts = crate::packet_mover2::PacketMover2LiveTurnFirsts {
+                                raw_packet: Some(p),
+                                ..Default::default()
+                            };
                             if let Ok(packet) = tun_outbound_rx.try_recv() {
-                                firsts = firsts.with_tun_packet(Some(packet));
+                                firsts.tun_packet = Some(packet);
                             }
                             let latency_work_ready = latency_packet
                                 || packet_rx.priority_ready_packets() > 0;
                             if !latency_work_ready {
-                                firsts = firsts.with_raw_ingress_prefetch(true);
+                                firsts.raw_ingress_prefetch = true;
                             }
                             let packet_budget = packet_drain_budget(latency_work_ready);
                             let endpoint_budget = endpoint_drain_budget(packet_budget);
@@ -271,8 +273,10 @@ impl Node {
                     let tun_budget = tun_drain_budget(LATENCY_PACKET_DRAIN_BUDGET);
                     let mut turn = self.drain_packet_mover2_turn_with_firsts(
                         &mut packet_rx,
-                        crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
-                            .with_tun_packet(Some(ipv6_packet)),
+                        crate::packet_mover2::PacketMover2LiveTurnFirsts {
+                            tun_packet: Some(ipv6_packet),
+                            ..Default::default()
+                        },
                         0,
                         &mut endpoint_data_rx,
                         0,
@@ -299,8 +303,10 @@ impl Node {
                 Some(batch) = endpoint_data_rx.recv() => {
                     let mut turn = self.drain_packet_mover2_turn_with_firsts(
                         &mut packet_rx,
-                        crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
-                            .with_endpoint_data_batch(Some(batch)),
+                        crate::packet_mover2::PacketMover2LiveTurnFirsts {
+                            endpoint_data_batch: Some(batch),
+                            ..Default::default()
+                        },
                         0,
                         &mut endpoint_data_rx,
                         ENDPOINT_DRAIN_BUDGET,

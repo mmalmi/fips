@@ -487,9 +487,11 @@
         .with_activity_tick(ActivityTick::new(1_234));
         let mut first = pump_live_node_outbound_firsts(
             &mut live_node,
-            PacketMover2LiveOutboundFirsts::default()
-                .with_initial_outbound(Some(outbound))
-                .with_transport_sent_receipt_collection(true),
+            PacketMover2LiveOutboundFirsts {
+                initial_outbound: Some(outbound),
+                collect_transport_sent_receipts: true,
+                ..Default::default()
+            },
             &tun_tx,
             &endpoint_io.event_tx,
             &transports,
@@ -504,7 +506,10 @@
 
         let mut second = pump_live_node_outbound_firsts(
             &mut live_node,
-            PacketMover2LiveOutboundFirsts::default().with_transport_sent_receipt_collection(true),
+            PacketMover2LiveOutboundFirsts {
+                collect_transport_sent_receipts: true,
+                ..Default::default()
+            },
             &tun_tx,
             &endpoint_io.event_tx,
             &transports,
@@ -521,7 +526,10 @@
         wait_for_live_worker_completion(&live_node).await;
         let mut third = pump_live_node_outbound_firsts(
             &mut live_node,
-            PacketMover2LiveOutboundFirsts::default().with_transport_sent_receipt_collection(true),
+            PacketMover2LiveOutboundFirsts {
+                collect_transport_sent_receipts: true,
+                ..Default::default()
+            },
             &tun_tx,
             &endpoint_io.event_tx,
             &transports,

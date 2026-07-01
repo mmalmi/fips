@@ -137,32 +137,10 @@ pub(crate) enum PacketMover2LiveOwnerError {
 
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveTurnFirsts {
-    raw_packet: Option<ReceivedPacket>,
-    endpoint_data_batch: Option<NodeEndpointDataBatch>,
-    tun_packet: Option<Vec<u8>>,
-    raw_ingress_prefetch: bool,
-}
-
-impl PacketMover2LiveTurnFirsts {
-    pub(crate) fn with_raw_packet(mut self, packet: Option<ReceivedPacket>) -> Self {
-        self.raw_packet = packet;
-        self
-    }
-
-    pub(crate) fn with_endpoint_data_batch(mut self, batch: Option<NodeEndpointDataBatch>) -> Self {
-        self.endpoint_data_batch = batch;
-        self
-    }
-
-    pub(crate) fn with_tun_packet(mut self, packet: Option<Vec<u8>>) -> Self {
-        self.tun_packet = packet;
-        self
-    }
-
-    pub(crate) fn with_raw_ingress_prefetch(mut self, enabled: bool) -> Self {
-        self.raw_ingress_prefetch = enabled;
-        self
-    }
+    pub(crate) raw_packet: Option<ReceivedPacket>,
+    pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
+    pub(crate) tun_packet: Option<Vec<u8>>,
+    pub(crate) raw_ingress_prefetch: bool,
 }
 
 #[derive(Debug)]
@@ -746,9 +724,11 @@ impl PacketMover2LiveNode {
             tun_packet,
             raw_ingress_prefetch,
         } = firsts;
-        let outbound_firsts = PacketMover2LiveOutboundFirsts::default()
-            .with_endpoint_data_batch(endpoint_data_batch)
-            .with_tun_packet(tun_packet);
+        let outbound_firsts = PacketMover2LiveOutboundFirsts {
+            endpoint_data_batch,
+            tun_packet,
+            ..Default::default()
+        };
         let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, raw_packet);
         if raw_ingress_prefetch && packet_limit > 0 {
             let mut prefetched = std::mem::take(&mut self.empty_raw_ingress);

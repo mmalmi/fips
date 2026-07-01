@@ -1,40 +1,10 @@
 
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveOutboundFirsts {
-    initial_outbound: Option<OutboundPacket>,
-    endpoint_data_batch: Option<NodeEndpointDataBatch>,
-    tun_packet: Option<Vec<u8>>,
-    collect_transport_sent_receipts: bool,
-}
-
-impl PacketMover2LiveOutboundFirsts {
-    pub(crate) fn with_initial_outbound(mut self, packet: Option<OutboundPacket>) -> Self {
-        self.initial_outbound = packet;
-        self
-    }
-
-    pub(crate) fn take_initial_outbound(&mut self) -> Option<OutboundPacket> {
-        self.initial_outbound.take()
-    }
-
-    pub(crate) fn with_endpoint_data_batch(mut self, batch: Option<NodeEndpointDataBatch>) -> Self {
-        self.endpoint_data_batch = batch;
-        self
-    }
-
-    pub(crate) fn with_tun_packet(mut self, packet: Option<Vec<u8>>) -> Self {
-        self.tun_packet = packet;
-        self
-    }
-
-    pub(crate) fn with_transport_sent_receipt_collection(mut self, collect: bool) -> Self {
-        self.collect_transport_sent_receipts = collect;
-        self
-    }
-
-    pub(crate) fn collect_transport_sent_receipts(&self) -> bool {
-        self.collect_transport_sent_receipts
-    }
+    pub(crate) initial_outbound: Option<OutboundPacket>,
+    pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
+    pub(crate) tun_packet: Option<Vec<u8>>,
+    pub(crate) collect_transport_sent_receipts: bool,
 }
 
 pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
@@ -66,13 +36,6 @@ impl PacketMover2RouteTableOutboundBuffers {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct PacketMover2RouteTableOutboundDrain {
-    total: usize,
-    endpoint: usize,
-    tun: usize,
-}
-
 pub(crate) enum PacketMover2RoutedOutbound {
     Packet(OutboundPacket),
     Batch(Vec<OutboundPacket>),
@@ -100,16 +63,18 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         }
     }
 
-    pub(crate) fn with_firsts(mut self, firsts: PacketMover2LiveOutboundFirsts) -> Self {
+    fn with_firsts(mut self, firsts: PacketMover2LiveOutboundFirsts) -> Self {
         self.first_endpoint_data_batch = firsts.endpoint_data_batch;
         self.first_tun_packet = firsts.tun_packet;
         self
     }
 
     fn take_firsts(&mut self) -> PacketMover2LiveOutboundFirsts {
-        PacketMover2LiveOutboundFirsts::default()
-            .with_endpoint_data_batch(self.first_endpoint_data_batch.take())
-            .with_tun_packet(self.first_tun_packet.take())
+        PacketMover2LiveOutboundFirsts {
+            endpoint_data_batch: self.first_endpoint_data_batch.take(),
+            tun_packet: self.first_tun_packet.take(),
+            ..Default::default()
+        }
     }
 }
 
@@ -214,11 +179,7 @@ where
         drained
     }
 
-    fn drain_outbound_batched<F>(
-        &mut self,
-        limit: usize,
-        mut push: F,
-    ) -> PacketMover2RouteTableOutboundDrain
+    fn drain_outbound_batched<F>(&mut self, limit: usize, mut push: F) -> (usize, usize, usize)
     where
         F: FnMut(PacketMover2RoutedOutbound),
     {
@@ -228,11 +189,11 @@ where
         let remaining = limit.saturating_sub(reserved_drained);
         let tun_limit = self.tun_limit.min(remaining);
         let tun_drained = self.drain_tun_batched(tun_limit, push);
-        PacketMover2RouteTableOutboundDrain {
-            total: endpoint_drained.saturating_add(tun_drained),
-            endpoint: endpoint_drained,
-            tun: tun_drained,
-        }
+        (
+            endpoint_drained.saturating_add(tun_drained),
+            endpoint_drained,
+            tun_drained,
+        )
     }
 }
 

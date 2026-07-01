@@ -55,8 +55,10 @@ async fn process_packet_mover2_turn(
         .node
         .drain_packet_mover2_turn_with_firsts(
             &mut empty_packet_rx,
-            crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
-                .with_raw_packet(first_packet),
+            crate::packet_mover2::PacketMover2LiveTurnFirsts {
+                raw_packet: first_packet,
+                ..Default::default()
+            },
             packet_limit,
             endpoint_rx,
             64,

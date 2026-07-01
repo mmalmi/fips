@@ -108,9 +108,11 @@ impl Node {
             plaintext.to_vec(),
         )
         .with_activity_tick(ActivityTick::new(Self::now_ms()));
-        let firsts = PacketMover2LiveOutboundFirsts::default()
-            .with_initial_outbound(Some(outbound))
-            .with_transport_sent_receipt_collection(true);
+        let firsts = PacketMover2LiveOutboundFirsts {
+            initial_outbound: Some(outbound),
+            collect_transport_sent_receipts: true,
+            ..Default::default()
+        };
         let mut turn = self
             .pump_packet_mover2_pending_outbound_firsts(firsts, 0, 0, 1)
             .await;
@@ -204,7 +206,10 @@ impl Node {
 
         let turn = self
             .pump_packet_mover2_pending_outbound_firsts(
-                PacketMover2LiveOutboundFirsts::default().with_tun_packet(Some(packet)),
+                PacketMover2LiveOutboundFirsts {
+                    tun_packet: Some(packet),
+                    ..Default::default()
+                },
                 0,
                 1,
                 1,
@@ -281,8 +286,10 @@ impl Node {
         // live endpoint stale-bulk guard.
         let batch = NodeEndpointDataBatch::batch(remote, payloads, None)
             .expect("checked pending endpoint payload batch");
-        let firsts =
-            PacketMover2LiveOutboundFirsts::default().with_endpoint_data_batch(Some(batch));
+        let firsts = PacketMover2LiveOutboundFirsts {
+            endpoint_data_batch: Some(batch),
+            ..Default::default()
+        };
         let turn = self
             .pump_packet_mover2_pending_outbound_firsts(firsts, payload_count, 0, payload_count)
             .await;
@@ -422,9 +429,11 @@ impl Node {
             outbound = outbound.without_fsp_auto_coords_warmup();
         }
 
-        let firsts = PacketMover2LiveOutboundFirsts::default()
-            .with_initial_outbound(Some(outbound))
-            .with_transport_sent_receipt_collection(true);
+        let firsts = PacketMover2LiveOutboundFirsts {
+            initial_outbound: Some(outbound),
+            collect_transport_sent_receipts: true,
+            ..Default::default()
+        };
         let turn = self
             .pump_packet_mover2_pending_outbound_firsts(firsts, 0, 0, 2)
             .await;
@@ -515,8 +524,10 @@ impl Node {
             }
             turn = self
                 .pump_packet_mover2_pending_outbound_firsts(
-                    PacketMover2LiveOutboundFirsts::default()
-                        .with_transport_sent_receipt_collection(collect_transport_sent_receipts),
+                    PacketMover2LiveOutboundFirsts {
+                        collect_transport_sent_receipts,
+                        ..Default::default()
+                    },
                     0,
                     0,
                     1,

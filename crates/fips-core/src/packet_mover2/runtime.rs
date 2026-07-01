@@ -415,7 +415,7 @@ impl PacketMover2TurnDriver {
         RI: PacketMover2RawIngressSource,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let collect_transport_sent_receipts = outbound_firsts.collect_transport_sent_receipts();
+        let collect_transport_sent_receipts = outbound_firsts.collect_transport_sent_receipts;
         let mut completion_report = None;
         let mut admission_summary = summary;
         // Ready completions are already owner-ordered work. Let their local
@@ -517,7 +517,7 @@ impl PacketMover2TurnDriver {
         let admit_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveAdmit);
         let mut outbound_firsts = outbound_firsts;
-        if let Some(packet) = outbound_firsts.take_initial_outbound() {
+        if let Some(packet) = outbound_firsts.initial_outbound.take() {
             self.admit_outbound_packet(packet, &mut summary);
         }
 
@@ -540,13 +540,13 @@ impl PacketMover2TurnDriver {
                 &mut outbound_buffers,
             )
             .with_firsts(outbound_firsts);
-            let drained =
+            let (drained_total, endpoint, tun) =
                 outbound_source.drain_outbound_batched(reserved_outbound_limit, |routed| {
                     self.admit_routed_outbound(routed, &mut summary);
                 });
-            outbound_drained = drained.total;
-            endpoint_drained = endpoint_drained.saturating_add(drained.endpoint);
-            tun_drained = tun_drained.saturating_add(drained.tun);
+            outbound_drained = drained_total;
+            endpoint_drained = endpoint_drained.saturating_add(endpoint);
+            tun_drained = tun_drained.saturating_add(tun);
             outbound_firsts = outbound_source.take_firsts();
         }
 
@@ -577,11 +577,12 @@ impl PacketMover2TurnDriver {
                 &mut outbound_buffers,
             )
             .with_firsts(outbound_firsts);
-            let drained = outbound_source.drain_outbound_batched(remaining_outbound_limit, |routed| {
-                self.admit_routed_outbound(routed, &mut summary);
-            });
-            endpoint_drained = endpoint_drained.saturating_add(drained.endpoint);
-            tun_drained = tun_drained.saturating_add(drained.tun);
+            let (_, endpoint, tun) =
+                outbound_source.drain_outbound_batched(remaining_outbound_limit, |routed| {
+                    self.admit_routed_outbound(routed, &mut summary);
+                });
+            endpoint_drained = endpoint_drained.saturating_add(endpoint);
+            tun_drained = tun_drained.saturating_add(tun);
         }
         drop(admit_timer);
 
