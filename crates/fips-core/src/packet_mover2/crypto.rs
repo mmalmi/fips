@@ -84,20 +84,6 @@ struct PreparedCryptoJob {
     bulk_count: usize,
 }
 
-impl PreparedCryptoJob {
-    fn new(work: Vec<PreparedCryptoWork>, bulk_count: usize) -> Self {
-        Self {
-            queued_at: crate::perf_profile::stamp(),
-            work,
-            bulk_count,
-        }
-    }
-
-    fn bulk_count(&self) -> usize {
-        self.bulk_count
-    }
-}
-
 struct PreparedCryptoJobBuilder {
     direction: PacketMover2AeadDirection,
     job_packets: usize,
@@ -159,10 +145,6 @@ pub(crate) trait PacketMover2CryptoExecutor {
         usize::MAX
     }
 
-    fn available_capacity_for_lane(&self, _lane: Lane) -> usize {
-        self.available_capacity()
-    }
-
     fn available_open_capacity(&self) -> usize {
         self.available_capacity()
     }
@@ -171,12 +153,12 @@ pub(crate) trait PacketMover2CryptoExecutor {
         self.available_capacity()
     }
 
-    fn available_open_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.available_capacity_for_lane(lane)
+    fn available_open_capacity_for_lane(&self, _lane: Lane) -> usize {
+        self.available_open_capacity()
     }
 
-    fn available_seal_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.available_capacity_for_lane(lane)
+    fn available_seal_capacity_for_lane(&self, _lane: Lane) -> usize {
+        self.available_seal_capacity()
     }
 
     fn execute_prepared_chunk(
@@ -431,13 +413,17 @@ impl PacketMover2AeadWorkerPool {
             return false;
         };
 
-        let job = PreparedCryptoJob::new(work, bulk_count);
-        let chunk_len = job.work.len();
+        let chunk_len = work.len();
         let (in_flight, bulk_in_flight) = self.direction_counters(direction);
         in_flight.fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
         if bulk_count > 0 {
             bulk_in_flight.fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
         }
+        let job = PreparedCryptoJob {
+            queued_at: crate::perf_profile::stamp(),
+            work,
+            bulk_count,
+        };
         match work_tx.try_send(job) {
             Ok(()) => true,
             Err(crossbeam_channel::TrySendError::Full(job))
@@ -457,11 +443,6 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
     fn available_capacity(&self) -> usize {
         self.available_open_capacity()
             .saturating_add(self.available_seal_capacity())
-    }
-
-    fn available_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.available_open_capacity_for_lane(lane)
-            .saturating_add(self.available_seal_capacity_for_lane(lane))
     }
 
     fn available_open_capacity(&self) -> usize {
@@ -584,15 +565,15 @@ fn spawn_packet_mover2_aead_workers(
                 .spawn(move || {
                     let opened = StatelessAeadOpenWorker;
                     let sealed = StatelessAeadSealWorker;
-                    while let Ok(mut job) = work_rx.recv() {
+                    while let Ok(job) = work_rx.recv() {
                         crate::perf_profile::record_since(
                             crate::perf_profile::Stage::PacketMover2AeadWorkerQueueWait,
                             job.queued_at,
                         );
                         let count = job.work.len();
-                        let bulk_count = job.bulk_count();
+                        let bulk_count = job.bulk_count;
                         let mut completions = Vec::with_capacity(count);
-                        for work in job.work.drain(..) {
+                        for work in job.work {
                             completions.push(work.execute(&opened, &sealed));
                         }
                         if completion_tx.send(completions).is_err() {
@@ -610,11 +591,8 @@ fn spawn_packet_mover2_aead_workers(
     (work_tx, workers)
 }
 
-fn push_failed_prepared_work(
-    mut work: Vec<PreparedCryptoWork>,
-    completions: &mut Vec<CryptoCompletion>,
-) {
-    for work in work.drain(..) {
+fn push_failed_prepared_work(work: Vec<PreparedCryptoWork>, completions: &mut Vec<CryptoCompletion>) {
+    for work in work {
         work.push_executor_failed_completions(completions);
     }
 }
