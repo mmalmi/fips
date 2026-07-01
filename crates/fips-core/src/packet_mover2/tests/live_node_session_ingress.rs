@@ -19,6 +19,103 @@
         assert_eq!(receipt.fmp_flags(), fmp_flags);
     }
 
+    fn register_keyed_owner(
+        driver: &mut PacketMover2TurnDriver,
+        owner: OwnerId,
+        config: OwnerConfig,
+        key: u8,
+    ) {
+        driver.register_owner(owner, config);
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+    }
+
+    fn register_fmp_session_ingress_route(
+        routes: &mut PacketMover2LiveRouteTable,
+        transport_id: TransportId,
+        receiver_idx: u32,
+        owner: OwnerId,
+        local_addr: NodeAddr,
+    ) {
+        routes.register_fmp(
+            transport_id,
+            receiver_idx,
+            PacketMover2IngressRoute::new(
+                owner,
+                1,
+                OutputTarget::SessionIngress { local_addr },
+            )
+            .with_class(PacketClass::Liveness),
+        );
+    }
+
+    fn register_fsp_session_payload_route(
+        routes: &mut PacketMover2LiveRouteTable,
+        source_addr: NodeAddr,
+        owner: OwnerId,
+        local_addr: NodeAddr,
+    ) {
+        routes.register_fsp(
+            source_addr,
+            PacketMover2IngressRoute::new(
+                owner,
+                1,
+                OutputTarget::SessionPayload { local_addr },
+            )
+            .with_class(PacketClass::Liveness),
+        );
+    }
+
+    async fn pump_one_fmp_session_ingress_turn(
+        driver: &mut PacketMover2TurnDriver,
+        routes: &mut PacketMover2LiveRouteTable,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        wire: Vec<u8>,
+        timestamp_ms: u64,
+    ) -> PacketMover2LiveNodeTurn {
+        let mut raw_source =
+            PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fmp(
+                ReceivedPacket::with_timestamp(transport_id, remote_addr, wire, timestamp_ms),
+            )]));
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+        let (tun_tx, mut tun_rx) = crate::upper::tun::write_channel();
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let mut deferred_endpoint_data_batches = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+
+        let turn = pump_aead_live_node_route_table_turn(
+            driver,
+            &mut raw_source,
+            routes,
+            8,
+            &mut endpoint_data_rx,
+            0,
+            &mut tun_outbound_rx,
+            0,
+            &mut deferred_endpoint_data_batches,
+            &mut deferred_tun_packets,
+            &tun_tx,
+            &endpoint_io.event_tx,
+            &transports,
+            8,
+        )
+        .await;
+
+        assert!(raw_source.source.is_empty());
+        assert!(deferred_endpoint_data_batches.is_empty());
+        assert!(deferred_tun_packets.is_empty());
+        assert!(tun_outbound_rx.try_recv().is_err());
+        assert!(tun_rx.try_recv().is_err());
+        assert!(endpoint_io.event_rx.try_recv().is_err());
+        turn
+    }
+
     #[tokio::test]
     async fn live_node_session_ingress_reports_fmp_receipt_before_fast_fsp_delivery() {
         let local_addr = NodeAddr::from_bytes([0xa1; 16]);
@@ -64,83 +161,36 @@
         let fmp_wire_len = fmp_wire.len();
 
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(
+        register_keyed_owner(
+            &mut driver,
             fmp_owner,
             OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
+            fmp_key,
         );
-        driver.register_owner(
+        register_keyed_owner(
+            &mut driver,
             fsp_owner,
             OwnerConfig::new(1, 8).with_source_peer(source_peer),
+            fsp_key,
         );
-        driver
-            .owner_mut(fmp_owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
-        driver
-            .owner_mut(fsp_owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
 
         let mut routes = PacketMover2LiveRouteTable::default();
-        routes.register_fmp(
-            transport_id,
-            0xa7,
-            PacketMover2IngressRoute::new(
-                fmp_owner,
-                1,
-                OutputTarget::SessionIngress { local_addr },
-            )
-            .with_class(PacketClass::Liveness),
-        );
-        routes.register_fsp(
-            source_addr,
-            PacketMover2IngressRoute::new(
-                fsp_owner,
-                1,
-                OutputTarget::SessionPayload { local_addr },
-            )
-            .with_class(PacketClass::Liveness),
-        );
-        let mut raw_source =
-            PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fmp(
-                ReceivedPacket::with_timestamp(
-                    transport_id,
-                    remote_addr.clone(),
-                    fmp_wire,
-                    fmp_timestamp,
-                ),
-            )]));
-        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (_tun_outbound_tx, mut tun_outbound_rx) =
-            crate::upper::tun::tun_outbound_channel(1);
-        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut deferred_endpoint_data_batches = Vec::new();
-        let mut deferred_tun_packets = Vec::new();
-        let transports = HashMap::<TransportId, TransportHandle>::new();
+        register_fmp_session_ingress_route(&mut routes, transport_id, 0xa7, fmp_owner, local_addr);
+        register_fsp_session_payload_route(&mut routes, source_addr, fsp_owner, local_addr);
 
-        let turn = pump_aead_live_node_route_table_turn(&mut driver,
-                &mut raw_source,
-                &mut routes,
-                8,
-                &mut endpoint_data_rx,
-                0,
-                &mut tun_outbound_rx,
-                0,
-                &mut deferred_endpoint_data_batches,
-                &mut deferred_tun_packets,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-            )
-            .await;
+        let turn = pump_one_fmp_session_ingress_turn(
+            &mut driver,
+            &mut routes,
+            transport_id,
+            remote_addr.clone(),
+            fmp_wire,
+            fmp_timestamp,
+        )
+        .await;
 
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        assert!(deferred_tun_packets.is_empty());
         assert_eq!(turn.fmp_ingress_receipts().len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
         assert_fmp_receipt(
@@ -154,7 +204,6 @@
             fmp_inner_timestamp,
             fmp_flags,
         );
-        assert!(endpoint_io.event_rx.try_recv().is_err());
         assert!(driver
             .owner_fsp_activity(fsp_owner)
             .unwrap()
@@ -227,78 +276,32 @@
         let fmp_wire = fmp_encrypted_wire(0xc7, 199, 0, &fmp_plaintext, fmp_key);
 
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(
+        register_keyed_owner(
+            &mut driver,
             fmp_owner,
             OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
+            fmp_key,
         );
-        driver.register_owner(
+        register_keyed_owner(
+            &mut driver,
             fsp_owner,
             OwnerConfig::new(1, 8).with_source_peer(source_peer),
+            fsp_key,
         );
-        driver
-            .owner_mut(fmp_owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
-        driver
-            .owner_mut(fsp_owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
         assert_eq!(driver.record_fsp_decrypt_failure(fsp_owner), Some(1));
         let mut routes = PacketMover2LiveRouteTable::default();
-        routes.register_fmp(
-            transport_id,
-            0xc7,
-            PacketMover2IngressRoute::new(
-                fmp_owner,
-                1,
-                OutputTarget::SessionIngress { local_addr },
-            )
-            .with_class(PacketClass::Liveness),
-        );
-        routes.register_fsp(
-            source_addr,
-            PacketMover2IngressRoute::new(
-                fsp_owner,
-                1,
-                OutputTarget::SessionPayload { local_addr },
-            )
-            .with_class(PacketClass::Liveness),
-        );
-        let mut raw_source =
-            PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fmp(
-                ReceivedPacket::with_timestamp(
-                    transport_id,
-                    remote_addr,
-                    fmp_wire,
-                    fmp_timestamp,
-                ),
-            )]));
-        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (_tun_outbound_tx, mut tun_outbound_rx) =
-            crate::upper::tun::tun_outbound_channel(1);
-        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut deferred_endpoint_data_batches = Vec::new();
-        let mut deferred_tun_packets = Vec::new();
-        let transports = HashMap::<TransportId, TransportHandle>::new();
+        register_fmp_session_ingress_route(&mut routes, transport_id, 0xc7, fmp_owner, local_addr);
+        register_fsp_session_payload_route(&mut routes, source_addr, fsp_owner, local_addr);
 
-        let turn = pump_aead_live_node_route_table_turn(&mut driver,
-                &mut raw_source,
-                &mut routes,
-                8,
-                &mut endpoint_data_rx,
-                0,
-                &mut tun_outbound_rx,
-                0,
-                &mut deferred_endpoint_data_batches,
-                &mut deferred_tun_packets,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-            )
-            .await;
+        let turn = pump_one_fmp_session_ingress_turn(
+            &mut driver,
+            &mut routes,
+            transport_id,
+            remote_addr,
+            fmp_wire,
+            fmp_timestamp,
+        )
+        .await;
 
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 2);
@@ -364,65 +367,28 @@
         let fmp_wire_len = fmp_wire.len();
 
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(
+        register_keyed_owner(
+            &mut driver,
             fmp_owner,
             OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
+            fmp_key,
         );
-        driver
-            .owner_mut(fmp_owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
         let mut routes = PacketMover2LiveRouteTable::default();
-        routes.register_fmp(
-            transport_id,
-            0xb1,
-            PacketMover2IngressRoute::new(
-                fmp_owner,
-                1,
-                OutputTarget::SessionIngress { local_addr },
-            )
-            .with_class(PacketClass::Liveness),
-        );
-        let mut raw_source =
-            PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fmp(
-                ReceivedPacket::with_timestamp(
-                    transport_id,
-                    remote_addr.clone(),
-                    fmp_wire,
-                    fmp_timestamp,
-                ),
-            )]));
-        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (_tun_outbound_tx, mut tun_outbound_rx) =
-            crate::upper::tun::tun_outbound_channel(1);
-        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut deferred_endpoint_data_batches = Vec::new();
-        let mut deferred_tun_packets = Vec::new();
-        let transports = HashMap::<TransportId, TransportHandle>::new();
+        register_fmp_session_ingress_route(&mut routes, transport_id, 0xb1, fmp_owner, local_addr);
 
-        let turn = pump_aead_live_node_route_table_turn(&mut driver,
-                &mut raw_source,
-                &mut routes,
-                8,
-                &mut endpoint_data_rx,
-                0,
-                &mut tun_outbound_rx,
-                0,
-                &mut deferred_endpoint_data_batches,
-                &mut deferred_tun_packets,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-            )
-            .await;
+        let turn = pump_one_fmp_session_ingress_turn(
+            &mut driver,
+            &mut routes,
+            transport_id,
+            remote_addr.clone(),
+            fmp_wire,
+            fmp_timestamp,
+        )
+        .await;
 
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        assert!(deferred_tun_packets.is_empty());
         assert_eq!(turn.fmp_ingress_receipts().len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
         assert!(turn.fsp_session_ingress().is_empty());
@@ -468,66 +434,29 @@
         let fmp_wire_len = fmp_wire.len();
 
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
-        driver.register_owner(
+        register_keyed_owner(
+            &mut driver,
             fmp_owner,
             OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
+            fmp_key,
         );
-        driver
-            .owner_mut(fmp_owner)
-            .unwrap()
-            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
         let mut routes = PacketMover2LiveRouteTable::default();
-        routes.register_fmp(
-            transport_id,
-            0xb5,
-            PacketMover2IngressRoute::new(
-                fmp_owner,
-                1,
-                OutputTarget::SessionIngress { local_addr },
-            )
-            .with_class(PacketClass::Liveness),
-        );
-        let mut raw_source =
-            PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fmp(
-                ReceivedPacket::with_timestamp(
-                    transport_id,
-                    remote_addr.clone(),
-                    fmp_wire,
-                    fmp_timestamp,
-                ),
-            )]));
-        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
-        let (_tun_outbound_tx, mut tun_outbound_rx) =
-            crate::upper::tun::tun_outbound_channel(1);
-        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut deferred_endpoint_data_batches = Vec::new();
-        let mut deferred_tun_packets = Vec::new();
-        let transports = HashMap::<TransportId, TransportHandle>::new();
+        register_fmp_session_ingress_route(&mut routes, transport_id, 0xb5, fmp_owner, local_addr);
 
-        let turn = pump_aead_live_node_route_table_turn(&mut driver,
-                &mut raw_source,
-                &mut routes,
-                8,
-                &mut endpoint_data_rx,
-                0,
-                &mut tun_outbound_rx,
-                0,
-                &mut deferred_endpoint_data_batches,
-                &mut deferred_tun_packets,
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-            )
-            .await;
+        let turn = pump_one_fmp_session_ingress_turn(
+            &mut driver,
+            &mut routes,
+            transport_id,
+            remote_addr.clone(),
+            fmp_wire,
+            fmp_timestamp,
+        )
+        .await;
 
         assert_eq!(turn.summary().raw_ingress_dropped(), 0);
         assert_eq!(turn.summary().inbound_admitted(), 1);
         assert_eq!(turn.summary().outputs(), 0);
         assert_eq!(turn.summary().outputs_dropped(), 0);
-        assert!(deferred_tun_packets.is_empty());
         assert!(turn.fmp_ingress_receipts().is_empty());
         assert_eq!(turn.fmp_link_ingress().len(), 1);
         let ingress = &turn.fmp_link_ingress()[0];

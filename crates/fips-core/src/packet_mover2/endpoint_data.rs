@@ -71,9 +71,12 @@ impl PacketMover2EndpointDataRoute {
     fn route_batch(&self, payloads: Vec<Vec<u8>>) -> PacketMover2EndpointDataBatchRoute {
         let mut result = PacketMover2EndpointDataBatchRoute::with_capacity(payloads.len());
         let routed_at_ms = crate::time::now_ms();
+        let max_fsp_payload = u16::MAX as usize - crate::node::session_wire::FSP_INNER_HEADER_SIZE;
         for payload in payloads {
-            if let Err(reason) = self.validate_payload_len(payload.len()) {
-                result.dropped.push((payload.len(), reason));
+            if payload.len() > max_fsp_payload {
+                result
+                    .dropped
+                    .push((payload.len(), PacketMover2EndpointDataDropReason::InvalidPayload));
                 continue;
             }
             result.routed.push(
@@ -82,17 +85,6 @@ impl PacketMover2EndpointDataRoute {
             );
         }
         result
-    }
-
-    fn validate_payload_len(
-        &self,
-        payload_len: usize,
-    ) -> Result<(), PacketMover2EndpointDataDropReason> {
-        let max_fsp_payload = u16::MAX as usize - crate::node::session_wire::FSP_INNER_HEADER_SIZE;
-        if payload_len > max_fsp_payload {
-            return Err(PacketMover2EndpointDataDropReason::InvalidPayload);
-        }
-        Ok(())
     }
 
     fn build_bulk_packet(&self, payload: Vec<u8>) -> OutboundPacket {

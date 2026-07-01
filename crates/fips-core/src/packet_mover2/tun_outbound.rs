@@ -99,7 +99,7 @@ impl PacketMover2TunOutboundRoute {
 
     fn into_outbound_packet(
         self,
-        payload: Vec<u8>,
+        mut payload: Vec<u8>,
     ) -> Result<OutboundPacket, PacketMover2TunOutboundDropReason> {
         let Self {
             owner,
@@ -109,27 +109,9 @@ impl PacketMover2TunOutboundRoute {
             fsp_cleartext_prefix,
             payload: payload_kind,
         } = self;
-        let payload = Self::encode_payload(payload_kind, payload)?;
-        let packet = match wire {
-            OutboundWire::Fmp {
-                receiver_idx,
-                flags,
-            } => OutboundPacket::fmp(owner, generation, class, receiver_idx, flags, payload),
-            OutboundWire::Fsp { flags } => {
-                OutboundPacket::fsp(owner, generation, class, flags, payload)
-                    .with_fsp_cleartext_prefix(fsp_cleartext_prefix)
-            }
-        };
-        Ok(Self::apply_payload_transform(payload_kind, packet))
-    }
-
-    fn encode_payload(
-        payload_kind: PacketMover2TunPayload,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, PacketMover2TunOutboundDropReason> {
-        match payload_kind {
-            PacketMover2TunPayload::Raw => Ok(payload),
-            PacketMover2TunPayload::Ipv6Shim { inner_flags: _ } => {
+        let inner_flags = match payload_kind {
+            PacketMover2TunPayload::Raw => None,
+            PacketMover2TunPayload::Ipv6Shim { inner_flags } => {
                 let compressed = crate::upper::ipv6_shim::compress_ipv6(&payload)
                     .ok_or(PacketMover2TunOutboundDropReason::InvalidPacket)?;
                 let mut port_payload = Vec::with_capacity(
@@ -142,22 +124,27 @@ impl PacketMover2TunOutboundRoute {
                     &crate::node::session_wire::FSP_PORT_IPV6_SHIM.to_le_bytes(),
                 );
                 port_payload.extend_from_slice(&compressed);
-                Ok(port_payload)
+                payload = port_payload;
+                Some(inner_flags)
             }
-        }
-    }
-
-    fn apply_payload_transform(
-        payload_kind: PacketMover2TunPayload,
-        packet: OutboundPacket,
-    ) -> OutboundPacket {
-        match payload_kind {
-            PacketMover2TunPayload::Raw => packet,
-            PacketMover2TunPayload::Ipv6Shim { inner_flags } => packet.with_fsp_inner_header(
+        };
+        let mut packet = match wire {
+            OutboundWire::Fmp {
+                receiver_idx,
+                flags,
+            } => OutboundPacket::fmp(owner, generation, class, receiver_idx, flags, payload),
+            OutboundWire::Fsp { flags } => {
+                OutboundPacket::fsp(owner, generation, class, flags, payload)
+                    .with_fsp_cleartext_prefix(fsp_cleartext_prefix)
+            }
+        };
+        if let Some(inner_flags) = inner_flags {
+            packet = packet.with_fsp_inner_header(
                 crate::protocol::SessionMessageType::DataPacket.to_byte(),
                 inner_flags,
-            ),
+            );
         }
+        Ok(packet)
     }
 }
 
@@ -188,12 +175,11 @@ impl PacketMover2TunDestinationRoute {
         &self,
         packet: &[u8],
     ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason> {
-        if self
-            .max_packet_len
-            .is_some_and(|max_packet_len| packet.len() > max_packet_len)
+        if let Some(max_packet_len) = self.max_packet_len
+            && packet.len() > max_packet_len
         {
             return Err(PacketMover2TunOutboundDropReason::MtuExceeded {
-                mtu: self.max_packet_len.unwrap_or_default() as u32,
+                mtu: max_packet_len as u32,
             });
         }
         Ok(self.route.clone())

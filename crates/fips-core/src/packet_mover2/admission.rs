@@ -180,10 +180,6 @@ where
         self.priority_len.saturating_add(self.bulk_len)
     }
 
-    fn push_back(&mut self, item: T) -> bool {
-        self.push(item, false)
-    }
-
     fn push_run_back<I>(&mut self, owner: OwnerId, lane: Lane, items: I) -> bool
     where
         I: IntoIterator<Item = T>,
@@ -223,7 +219,7 @@ where
             }
             was_empty
         };
-        self.increment_lane_len(lane);
+        self.increment_lane_len_by(lane, 1);
         if was_empty {
             self.push_ready_back(lane, owner);
         }
@@ -312,10 +308,6 @@ where
         Some((item, owner_has_more, owner_empty))
     }
 
-    fn increment_lane_len(&mut self, lane: Lane) {
-        self.increment_lane_len_by(lane, 1);
-    }
-
     fn increment_lane_len_by(&mut self, lane: Lane, count: usize) {
         match lane {
             Lane::Priority => self.priority_len = self.priority_len.saturating_add(count),
@@ -402,10 +394,13 @@ where
     }
 
     fn admit_with_seq(&mut self, packet: P, ingress_seq: u64) -> bool {
-        self.queues.push_back(QueuedAdmission {
-            ingress_seq,
-            packet,
-        })
+        self.queues.push(
+            QueuedAdmission {
+                ingress_seq,
+                packet,
+            },
+            false,
+        )
     }
 
     fn admit_run_with_seq(&mut self, packets: Vec<P>, first_seq: u64) -> bool {
