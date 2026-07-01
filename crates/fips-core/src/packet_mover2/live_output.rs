@@ -711,24 +711,30 @@ where
         for output in outputs {
             match output.target() {
                 OutputTarget::Endpoint => {
-                    sent =
-                        sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
+                    if !tun_batch.is_empty() {
+                        sent =
+                            sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
+                    }
                     match self.prepare_opened_output(output, drops) {
                         Some(endpoint) => endpoint_batch.push(endpoint),
                         None => {
-                            sent = sent.saturating_add(
-                                self.endpoint
-                                    .send_endpoint_batch(&mut endpoint_batch, drops),
-                            );
+                            if !endpoint_batch.is_empty() {
+                                sent = sent.saturating_add(
+                                    self.endpoint
+                                        .send_endpoint_batch(&mut endpoint_batch, drops),
+                                );
+                            }
                         }
                     }
                     continue;
                 }
                 OutputTarget::Tun => {
-                    sent = sent.saturating_add(
-                        self.endpoint
-                            .send_endpoint_batch(&mut endpoint_batch, drops),
-                    );
+                    if !endpoint_batch.is_empty() {
+                        sent = sent.saturating_add(
+                            self.endpoint
+                                .send_endpoint_batch(&mut endpoint_batch, drops),
+                        );
+                    }
                     if let Some(tun) = self.prepare_opened_output(output, drops) {
                         tun_batch.push(tun);
                     }
@@ -737,11 +743,15 @@ where
                 _ => {}
             }
 
-            sent = sent.saturating_add(
-                self.endpoint
-                    .send_endpoint_batch(&mut endpoint_batch, drops),
-            );
-            sent = sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
+            if !endpoint_batch.is_empty() {
+                sent = sent.saturating_add(
+                    self.endpoint
+                        .send_endpoint_batch(&mut endpoint_batch, drops),
+                );
+            }
+            if !tun_batch.is_empty() {
+                sent = sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
+            }
             let mut drop =
                 PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
             match self.send_unbatched_output(output) {
@@ -752,11 +762,16 @@ where
                 }
             }
         }
-        sent.saturating_add(
-            self.endpoint
-                .send_endpoint_batch(&mut endpoint_batch, drops),
-        )
-        .saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops))
+        if !endpoint_batch.is_empty() {
+            sent = sent.saturating_add(
+                self.endpoint
+                    .send_endpoint_batch(&mut endpoint_batch, drops),
+            );
+        }
+        if !tun_batch.is_empty() {
+            sent = sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
+        }
+        sent
     }
 }
 
