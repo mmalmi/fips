@@ -8,6 +8,7 @@ pub(crate) struct PacketMover2TurnDriver {
     outputs: Vec<PacketOutput>,
     output_rewrite_buffer: Vec<PacketOutput>,
     raw_socket_packets: Vec<SocketPacket>,
+    retired_outbound_packets: Vec<OutboundPacket>,
     retired: Vec<RetiredPacket>,
     transport_output: PacketMover2TransportSendPlanOutput,
     drops: Vec<PacketDrop>,
@@ -36,6 +37,7 @@ impl PacketMover2TurnDriver {
             outputs: Vec::new(),
             output_rewrite_buffer: Vec::new(),
             raw_socket_packets: Vec::new(),
+            retired_outbound_packets: Vec::new(),
             retired: Vec::new(),
             transport_output: PacketMover2TransportSendPlanOutput::new(),
             drops: Vec::new(),
@@ -617,6 +619,7 @@ impl PacketMover2TurnDriver {
         self.outputs.clear();
         self.output_rewrite_buffer.clear();
         self.raw_socket_packets.clear();
+        self.retired_outbound_packets.clear();
         self.retired.clear();
         self.transport_output.clear();
         self.drops.clear();
@@ -762,7 +765,7 @@ impl PacketMover2TurnDriver {
         }
     }
 
-    fn admit_outbound_packets(
+    fn admit_outbound_packet_batch(
         &mut self,
         packets: Vec<OutboundPacket>,
         summary: &mut PacketMover2RuntimeSummary,
@@ -778,6 +781,25 @@ impl PacketMover2TurnDriver {
         summary.outbound_dropped = summary.outbound_dropped.saturating_add(dropped);
     }
 
+    fn admit_outbound_packets(
+        &mut self,
+        packets: &mut Vec<OutboundPacket>,
+        summary: &mut PacketMover2RuntimeSummary,
+    ) {
+        match packets.len() {
+            0 => {}
+            1 => {
+                let packet = packets.pop().expect("checked one packet");
+                self.admit_outbound_packet(packet, summary);
+            }
+            _ => {
+                let capacity = packets.capacity();
+                let batch = std::mem::replace(packets, Vec::with_capacity(capacity));
+                self.admit_outbound_packet_batch(batch, summary);
+            }
+        }
+    }
+
     fn admit_routed_outbound(
         &mut self,
         routed: PacketMover2RoutedOutbound,
@@ -785,7 +807,9 @@ impl PacketMover2TurnDriver {
     ) {
         match routed {
             PacketMover2RoutedOutbound::Packet(packet) => self.admit_outbound_packet(packet, summary),
-            PacketMover2RoutedOutbound::Batch(packets) => self.admit_outbound_packets(packets, summary),
+            PacketMover2RoutedOutbound::Batch(packets) => {
+                self.admit_outbound_packet_batch(packets, summary)
+            }
         }
     }
 
@@ -1001,7 +1025,8 @@ impl PacketMover2TurnDriver {
         mut summary: PacketMover2RuntimeSummary,
     ) -> PacketMover2RuntimeSummary {
         let mut retired = std::mem::take(&mut self.retired);
-        let mut outbound_packets = Vec::new();
+        let mut outbound_packets = std::mem::take(&mut self.retired_outbound_packets);
+        outbound_packets.clear();
         for packet in retired.drain(..) {
             match packet {
                 RetiredPacket::Output(output) => {
@@ -1013,14 +1038,8 @@ impl PacketMover2TurnDriver {
                 RetiredPacket::Drop(_) => {}
             }
         }
-        match outbound_packets.len() {
-            0 => {}
-            1 => {
-                let packet = outbound_packets.pop().expect("checked one packet");
-                self.admit_outbound_packet(packet, &mut summary);
-            }
-            _ => self.admit_outbound_packets(outbound_packets, &mut summary),
-        }
+        self.admit_outbound_packets(&mut outbound_packets, &mut summary);
+        self.retired_outbound_packets = outbound_packets;
         self.retired = retired;
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
