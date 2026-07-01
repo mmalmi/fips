@@ -1,3 +1,24 @@
+    fn assert_fmp_receipt(
+        receipt: &PacketMover2FmpIngressReceipt,
+        source_addr: NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+        packet_timestamp_ms: u64,
+        packet_len: usize,
+        fmp_counter: u64,
+        inner_timestamp_ms: u32,
+        fmp_flags: u8,
+    ) {
+        assert_eq!(receipt.source_addr(), &source_addr);
+        assert_eq!(receipt.transport_id(), transport_id);
+        assert_eq!(receipt.remote_addr(), remote_addr);
+        assert_eq!(receipt.packet_timestamp_ms(), packet_timestamp_ms);
+        assert_eq!(receipt.packet_len(), packet_len);
+        assert_eq!(receipt.fmp_counter(), fmp_counter);
+        assert_eq!(receipt.inner_timestamp_ms(), inner_timestamp_ms);
+        assert_eq!(receipt.fmp_flags(), fmp_flags);
+    }
+
     #[tokio::test]
     async fn live_node_session_ingress_reports_fmp_receipt_before_fast_fsp_delivery() {
         let local_addr = NodeAddr::from_bytes([0xa1; 16]);
@@ -122,15 +143,17 @@
         assert!(deferred_tun_packets.is_empty());
         assert_eq!(turn.fmp_ingress_receipts().len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
-        let receipt = &turn.fmp_ingress_receipts()[0];
-        assert_eq!(receipt.source_addr(), &next_hop);
-        assert_eq!(receipt.transport_id(), transport_id);
-        assert_eq!(receipt.remote_addr(), &remote_addr);
-        assert_eq!(receipt.packet_timestamp_ms(), fmp_timestamp);
-        assert_eq!(receipt.packet_len(), fmp_wire_len);
-        assert_eq!(receipt.fmp_counter(), fmp_counter);
-        assert_eq!(receipt.inner_timestamp_ms(), fmp_inner_timestamp);
-        assert_eq!(receipt.fmp_flags(), fmp_flags);
+        assert_fmp_receipt(
+            &turn.fmp_ingress_receipts()[0],
+            next_hop,
+            transport_id,
+            &remote_addr,
+            fmp_timestamp,
+            fmp_wire_len,
+            fmp_counter,
+            fmp_inner_timestamp,
+            fmp_flags,
+        );
         assert!(endpoint_io.event_rx.try_recv().is_err());
         assert!(driver
             .owner_fsp_activity(fsp_owner)
@@ -404,15 +427,17 @@
         assert!(turn.fmp_link_ingress().is_empty());
         assert!(turn.fsp_session_ingress().is_empty());
         assert_eq!(turn.fsp_local_session_ingress().len(), 1);
-        let receipt = &turn.fmp_ingress_receipts()[0];
-        assert_eq!(receipt.source_addr(), &next_hop);
-        assert_eq!(receipt.transport_id(), transport_id);
-        assert_eq!(receipt.remote_addr(), &remote_addr);
-        assert_eq!(receipt.packet_timestamp_ms(), fmp_timestamp);
-        assert_eq!(receipt.packet_len(), fmp_wire_len);
-        assert_eq!(receipt.fmp_counter(), fmp_counter);
-        assert_eq!(receipt.inner_timestamp_ms(), fmp_inner_timestamp);
-        assert_eq!(receipt.fmp_flags(), fmp_flags);
+        assert_fmp_receipt(
+            &turn.fmp_ingress_receipts()[0],
+            next_hop,
+            transport_id,
+            &remote_addr,
+            fmp_timestamp,
+            fmp_wire_len,
+            fmp_counter,
+            fmp_inner_timestamp,
+            fmp_flags,
+        );
         let local_ingress = &turn.fsp_local_session_ingress()[0];
         assert_eq!(local_ingress.source_addr(), source_addr);
         assert_eq!(local_ingress.previous_hop_addr(), next_hop);
@@ -511,14 +536,16 @@
             Some(crate::protocol::LinkMessageType::Heartbeat.to_byte())
         );
         assert_eq!(ingress.payload(), &[] as &[u8]);
-        let receipt = ingress.receipt();
-        assert_eq!(receipt.source_addr(), &next_hop);
-        assert_eq!(receipt.transport_id(), transport_id);
-        assert_eq!(receipt.remote_addr(), &remote_addr);
-        assert_eq!(receipt.packet_timestamp_ms(), fmp_timestamp);
-        assert_eq!(receipt.packet_len(), fmp_wire_len);
-        assert_eq!(receipt.fmp_counter(), fmp_counter);
-        assert_eq!(receipt.inner_timestamp_ms(), fmp_inner_timestamp);
-        assert_eq!(receipt.fmp_flags(), fmp_flags);
+        assert_fmp_receipt(
+            ingress.receipt(),
+            next_hop,
+            transport_id,
+            &remote_addr,
+            fmp_timestamp,
+            fmp_wire_len,
+            fmp_counter,
+            fmp_inner_timestamp,
+            fmp_flags,
+        );
         assert!(turn.output_drops().is_empty());
     }
