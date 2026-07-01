@@ -54,15 +54,6 @@ pub(crate) struct PendingEndpointDataQueue {
 }
 
 impl PendingEndpointDataQueue {
-    pub(crate) fn push_bounded(
-        &mut self,
-        payload: Vec<u8>,
-        enqueued_at_ms: u64,
-        capacity: usize,
-    ) -> bool {
-        self.push_batch_bounded(vec![payload], enqueued_at_ms, capacity)
-    }
-
     pub(crate) fn push_batch_bounded(
         &mut self,
         mut payloads: Vec<Vec<u8>>,
@@ -283,35 +274,6 @@ impl PendingSessionTrafficQueues {
             crate::time::now_ms(),
             packets_per_dest,
         );
-        self.pending_destinations.insert(dest_addr);
-        PendingSessionTrafficAdmission {
-            destination_dropped: false,
-            dropped_oldest,
-        }
-    }
-
-    pub(crate) fn push_endpoint_data_with_enqueued_at_ms(
-        &mut self,
-        dest_addr: NodeAddr,
-        payload: Vec<u8>,
-        max_destinations: usize,
-        packets_per_dest: usize,
-        enqueued_at_ms: u64,
-    ) -> PendingSessionTrafficAdmission {
-        if !self.endpoint_data.contains_key(&dest_addr)
-            && self.endpoint_data.len() >= max_destinations
-        {
-            return PendingSessionTrafficAdmission {
-                destination_dropped: true,
-                dropped_oldest: false,
-            };
-        }
-
-        let dropped_oldest = self
-            .endpoint_data
-            .entry(dest_addr)
-            .or_default()
-            .push_bounded(payload, enqueued_at_ms, packets_per_dest);
         self.pending_destinations.insert(dest_addr);
         PendingSessionTrafficAdmission {
             destination_dropped: false,

@@ -320,19 +320,6 @@ impl Node {
         }
     }
 
-    fn queue_pending_endpoint_data_with_enqueued_at_ms(
-        &mut self,
-        dest_addr: NodeAddr,
-        payload: Vec<u8>,
-        enqueued_at_ms: u64,
-    ) {
-        self.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
-            dest_addr,
-            vec![payload],
-            enqueued_at_ms,
-        );
-    }
-
     fn queue_pending_endpoint_data_batch_with_enqueued_at_ms(
         &mut self,
         dest_addr: NodeAddr,

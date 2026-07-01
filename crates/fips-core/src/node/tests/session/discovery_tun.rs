@@ -207,9 +207,9 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
     nodes[0]
         .node
         .pending_session_traffic
-        .push_endpoint_data_with_enqueued_at_ms(
+        .push_endpoint_data_batch_with_enqueued_at_ms(
             dest_addr,
-            b"queued".to_vec(),
+            vec![b"queued".to_vec()],
             usize::MAX,
             usize::MAX,
             crate::time::now_ms(),

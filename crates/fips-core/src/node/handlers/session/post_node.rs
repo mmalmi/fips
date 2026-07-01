@@ -40,9 +40,21 @@ mod pending_queue_tests {
         assert_eq!(tun_packets, vec![vec![2], vec![3]]);
 
         let endpoint_dest = make_node_addr(0x42);
-        node.queue_pending_endpoint_data_with_enqueued_at_ms(endpoint_dest, vec![4], 1_000);
-        node.queue_pending_endpoint_data_with_enqueued_at_ms(endpoint_dest, vec![5], 1_001);
-        node.queue_pending_endpoint_data_with_enqueued_at_ms(endpoint_dest, vec![6], 1_002);
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            endpoint_dest,
+            vec![vec![4]],
+            1_000,
+        );
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            endpoint_dest,
+            vec![vec![5]],
+            1_001,
+        );
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            endpoint_dest,
+            vec![vec![6]],
+            1_002,
+        );
         let endpoint_payloads: Vec<Vec<u8>> = node
             .pending_session_traffic
             .take_endpoint_data(&endpoint_dest)
@@ -57,9 +69,9 @@ mod pending_queue_tests {
     #[test]
     fn pending_endpoint_data_queue_owns_drop_oldest_policy() {
         let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
-        assert!(!queue.push_bounded(vec![1], 1_000, 2));
-        assert!(!queue.push_bounded(vec![2], 1_001, 2));
-        assert!(queue.push_bounded(vec![3], 1_002, 2));
+        assert!(!queue.push_batch_bounded(vec![vec![1]], 1_000, 2));
+        assert!(!queue.push_batch_bounded(vec![vec![2]], 1_001, 2));
+        assert!(queue.push_batch_bounded(vec![vec![3]], 1_002, 2));
 
         let payloads: Vec<Vec<u8>> = queue
             .into_pending_payloads()
@@ -98,8 +110,8 @@ mod pending_queue_tests {
     #[test]
     fn pending_endpoint_data_queue_preserves_enqueue_times() {
         let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
-        assert!(!queue.push_bounded(vec![1], 1_000, 4));
-        assert!(!queue.push_bounded(vec![2], 1_500, 4));
+        assert!(!queue.push_batch_bounded(vec![vec![1]], 1_000, 4));
+        assert!(!queue.push_batch_bounded(vec![vec![2]], 1_500, 4));
 
         let payloads = queue.into_pending_payloads();
         let observed: Vec<(Vec<Vec<u8>>, u64)> = payloads
@@ -167,15 +179,21 @@ mod pending_queue_tests {
 
         assert!(
             !queues
-                .push_endpoint_data_with_enqueued_at_ms(endpoint_dest, vec![3], 1, 2, 1_000)
+                .push_endpoint_data_batch_with_enqueued_at_ms(
+                    endpoint_dest,
+                    vec![vec![3]],
+                    1,
+                    2,
+                    1_000,
+                )
                 .destination_dropped()
         );
         assert!(queues.has_traffic_for(&endpoint_dest));
         assert!(
             queues
-                .push_endpoint_data_with_enqueued_at_ms(
+                .push_endpoint_data_batch_with_enqueued_at_ms(
                     rejected_endpoint_dest,
-                    vec![4],
+                    vec![vec![4]],
                     1,
                     2,
                     1_001,
@@ -221,7 +239,7 @@ mod pending_queue_tests {
         );
         assert!(
             !queues
-                .push_endpoint_data_with_enqueued_at_ms(dest, vec![2], 8, 2, 1_000)
+                .push_endpoint_data_batch_with_enqueued_at_ms(dest, vec![vec![2]], 8, 2, 1_000)
                 .destination_dropped()
         );
         assert!(queues.has_traffic_for(&dest));
@@ -270,12 +288,12 @@ mod pending_queue_tests {
 
         assert!(
             !queues
-                .push_endpoint_data_with_enqueued_at_ms(dest, vec![3], 8, 4, 1_000)
+                .push_endpoint_data_batch_with_enqueued_at_ms(dest, vec![vec![3]], 8, 4, 1_000)
                 .destination_dropped()
         );
         assert!(
             !queues
-                .push_endpoint_data_with_enqueued_at_ms(dest, vec![4], 8, 4, 1_001)
+                .push_endpoint_data_batch_with_enqueued_at_ms(dest, vec![vec![4]], 8, 4, 1_001)
                 .destination_dropped()
         );
         let mut payloads = queues
@@ -321,14 +339,14 @@ mod pending_queue_tests {
 
         let accepted_endpoint_dest = make_node_addr(0x61);
         let rejected_endpoint_dest = make_node_addr(0x62);
-        node.queue_pending_endpoint_data_with_enqueued_at_ms(
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
             accepted_endpoint_dest,
-            vec![3],
+            vec![vec![3]],
             1_000,
         );
-        node.queue_pending_endpoint_data_with_enqueued_at_ms(
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
             rejected_endpoint_dest,
-            vec![4],
+            vec![vec![4]],
             1_001,
         );
         assert!(

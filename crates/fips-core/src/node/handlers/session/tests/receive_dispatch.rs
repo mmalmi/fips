@@ -416,7 +416,7 @@
         assert!(
             !node
                 .pending_session_traffic
-                .push_endpoint_data_with_enqueued_at_ms(source_addr, vec![0xaa], 8, 8, 1_000)
+                .push_endpoint_data_batch_with_enqueued_at_ms(source_addr, vec![vec![0xaa]], 8, 8, 1_000)
                 .destination_dropped()
         );
 
