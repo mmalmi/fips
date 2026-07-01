@@ -173,6 +173,17 @@ impl PacketMover2LiveNode {
         self.crypto_worker.completion_notify()
     }
 
+    pub(crate) fn attach_established_fast_ingress(
+        &self,
+        packet_tx: &mut PacketTx,
+    ) -> PacketMover2FastIngressRx {
+        let (sink, rx) = PacketMover2EstablishedFastIngressSink::channel(
+            self.routes.established_fast_ingress_snapshot(),
+        );
+        packet_tx.set_fast_ingress_sink(Arc::new(sink));
+        rx
+    }
+
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
         self.driver.register_owner(owner, config);
     }
@@ -647,6 +658,7 @@ impl PacketMover2LiveNode {
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,
                 &mut self.crypto_worker,
+                None,
                 raw_ingress,
                 &mut self.routes,
                 raw_ingress_limit,
@@ -701,6 +713,58 @@ impl PacketMover2LiveNode {
                 transport_send_worker,
             )
             .await;
+        record_packet_mover2_live_turn_perf(&turn);
+        turn
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn pump_fast_ingress_turn_with_transport_worker<Transports>(
+        &mut self,
+        fast_ingress: PacketMover2FastIngressBatch,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let _turn_timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
+        self.crypto_worker.record_perf_depths();
+        let summary = self
+            .driver
+            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
+        let mut empty_raw_ingress = std::mem::take(&mut self.empty_raw_ingress);
+        empty_raw_ingress.clear();
+        let turn = self.driver
+            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+                summary,
+                &mut self.crypto_worker,
+                Some(fast_ingress),
+                &mut empty_raw_ingress,
+                &mut self.routes,
+                0,
+                endpoint_data_rx,
+                endpoint_limit,
+                tun_outbound_rx,
+                tun_limit,
+                PacketMover2LiveOutboundFirsts::default(),
+                &mut self.deferred_endpoint_data_batches,
+                &mut self.deferred_tun_packets,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                transport_send_worker,
+            )
+            .await;
+        self.empty_raw_ingress = empty_raw_ingress;
         record_packet_mover2_live_turn_perf(&turn);
         turn
     }

@@ -28,14 +28,14 @@ use crate::node::{
     NodeEndpointEvent,
 };
 use crate::transport::{
-    PacketBuffer, PacketRx, ReceivedPacket, TransportAddr, TransportError, TransportHandle,
-    TransportId,
+    PacketBuffer, PacketFastIngressSink, PacketRx, PacketTx, ReceivedPacket, TransportAddr,
+    TransportError, TransportHandle, TransportId,
 };
 use crate::upper::tun::TunOutboundRx;
 use crate::{NodeAddr, PeerIdentity};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
 const FMP_PHASE_ESTABLISHED: u8 = crate::node::wire::PHASE_ESTABLISHED;

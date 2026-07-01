@@ -790,6 +790,7 @@ async fn udp_receive_loop(
                         packets.push(packet);
                     }
 
+                    packet_tx.try_fast_ingress_packet_batch(&mut packets);
                     if !packets.is_empty() && packet_tx.send_packet_batch(packets).is_err() {
                         debug!(
                             transport_id = %transport_id,
@@ -845,6 +846,10 @@ async fn udp_receive_loop(
                         "UDP packet received"
                     );
 
+                    let packet = match packet_tx.try_fast_ingress_packet(packet) {
+                        Ok(()) => continue,
+                        Err(packet) => packet,
+                    };
                     if packet_tx.send(packet).is_err() {
                         debug!(
                             transport_id = %transport_id,
@@ -899,6 +904,10 @@ async fn udp_receive_loop(
                         "UDP packet received"
                     );
 
+                    let packet = match packet_tx.try_fast_ingress_packet(packet) {
+                        Ok(()) => continue,
+                        Err(packet) => packet,
+                    };
                     if packet_tx.send(packet).is_err() {
                         debug!(
                             transport_id = %transport_id,

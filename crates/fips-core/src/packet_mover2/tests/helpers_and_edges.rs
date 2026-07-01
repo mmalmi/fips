@@ -281,10 +281,9 @@
             .mover
             .queue_completion_batch(&mut driver.completion_work);
         driver.retire_queued_completed_aead_outputs(queued);
-        let summary = driver.collect_retired_outputs(summary, false);
+        let summary = driver.collect_retired_outputs(summary);
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary =
-            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
+        let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
 
         PacketMover2RuntimeTurn {
             summary,
@@ -423,7 +422,7 @@
             .mover
             .queue_completion_batch(&mut driver.completion_work);
         driver.retire_queued_completed_aead_outputs(completion_limit);
-        summary = driver.collect_retired_outputs(summary, false);
+        summary = driver.collect_retired_outputs(summary);
 
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
             admit_test_raw_ingress_packet(driver, packet, router, &mut summary);
@@ -432,8 +431,7 @@
             driver.admit_outbound_packet(packet, &mut summary);
         });
 
-        summary =
-            driver.collect_aead_outputs_with_executor(summary, crypto_limit, &mut executor, false);
+        summary = driver.collect_aead_outputs_with_executor(summary, crypto_limit, &mut executor);
         driver.send_collected_outputs(summary, sink)
     }
 
@@ -509,6 +507,7 @@
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,
                 &mut executor,
+                None,
                 raw_ingress,
                 routes,
                 raw_ingress_limit,
@@ -534,8 +533,7 @@
         limit: usize,
     ) -> PacketMover2RuntimeTurn<'_> {
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary =
-            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
+        let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
         PacketMover2RuntimeTurn {
             summary,
             raw_ingress_drops: &driver.raw_ingress_drops,
@@ -555,8 +553,7 @@
         S: PacketMover2OutputSink,
     {
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary =
-            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
+        let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
         driver.send_collected_outputs(summary, sink)
     }
 

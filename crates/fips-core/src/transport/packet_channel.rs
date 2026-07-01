@@ -13,6 +13,11 @@ use tokio::sync::mpsc::{
     error::{TryRecvError, TrySendError},
 };
 
+pub(crate) trait PacketFastIngressSink: std::fmt::Debug + Send + Sync {
+    fn try_ingest_packet(&self, packet: ReceivedPacket) -> Result<(), ReceivedPacket>;
+    fn try_ingest_batch(&self, packets: &mut Vec<ReceivedPacket>) -> usize;
+}
+
 /// A packet received from a transport.
 #[derive(Clone, Debug)]
 pub struct ReceivedPacket {
@@ -324,6 +329,7 @@ const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
 pub struct PacketTx {
     priority: UnboundedSender<PacketQueueItem>,
     bulk: Sender<PacketQueueItem>,
+    fast_ingress: Option<Arc<dyn PacketFastIngressSink>>,
     batch_pool: PacketBatchPool,
     buffer_pool: PacketBufferPool,
     /// Packet-count ready hint for priority lane probes. Bulk batch tails check
@@ -698,6 +704,29 @@ impl PendingPackets {
 }
 
 impl PacketTx {
+    pub(crate) fn set_fast_ingress_sink(&mut self, sink: Arc<dyn PacketFastIngressSink>) {
+        self.fast_ingress = Some(sink);
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    pub(crate) fn try_fast_ingress_packet(
+        &self,
+        packet: ReceivedPacket,
+    ) -> Result<(), ReceivedPacket> {
+        let Some(sink) = &self.fast_ingress else {
+            return Err(packet);
+        };
+        sink.try_ingest_packet(packet)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn try_fast_ingress_packet_batch(&self, batch: &mut PacketBatch) -> usize {
+        let Some(sink) = &self.fast_ingress else {
+            return 0;
+        };
+        sink.try_ingest_batch(&mut batch.packets)
+    }
+
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn packet_batch(&self, capacity: usize) -> PacketBatch {
         self.batch_pool.take(capacity)
@@ -1277,6 +1306,7 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
         PacketTx {
             priority: priority_tx,
             bulk: bulk_tx,
+            fast_ingress: None,
             batch_pool: PacketBatchPool::new(),
             buffer_pool: PacketBufferPool::new(),
             priority_queued_packets: Arc::clone(&priority_queued_packets),

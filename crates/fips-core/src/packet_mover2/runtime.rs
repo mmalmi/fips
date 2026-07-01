@@ -432,6 +432,7 @@ impl PacketMover2TurnDriver {
         &mut self,
         summary: PacketMover2RuntimeSummary,
         executor: &mut E,
+        fast_ingress: Option<PacketMover2FastIngressBatch>,
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
         raw_ingress_limit: usize,
@@ -482,6 +483,7 @@ impl PacketMover2TurnDriver {
         }
         let admission = self.admit_live_node_route_table_turn_with_firsts(
             admission_summary,
+            fast_ingress,
             raw_ingress,
             routes,
             raw_ingress_limit,
@@ -540,6 +542,7 @@ impl PacketMover2TurnDriver {
     fn admit_live_node_route_table_turn_with_firsts<RI>(
         &mut self,
         mut summary: PacketMover2RuntimeSummary,
+        fast_ingress: Option<PacketMover2FastIngressBatch>,
         raw_ingress: &mut RI,
         routes: &mut PacketMover2LiveRouteTable,
         raw_ingress_limit: usize,
@@ -612,6 +615,9 @@ impl PacketMover2TurnDriver {
         } else {
             0
         };
+        if let Some(fast_ingress) = fast_ingress {
+            raw_socket_packets.extend(fast_ingress.into_packets());
+        }
         {
             let raw_ingress_drops = &mut self.raw_ingress_drops;
             raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {

@@ -167,15 +167,163 @@ impl FmpIngressRouteKey {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PacketMover2EstablishedFastIngressSnapshot {
+    fmp: Arc<RwLock<HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>>>,
+}
+
+impl PacketMover2EstablishedFastIngressSnapshot {
+    fn register_fmp(
+        &self,
+        transport_id: TransportId,
+        receiver_idx: u32,
+        route: PacketMover2IngressRoute,
+    ) {
+        self.fmp
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route);
+    }
+
+    fn unregister_owner(&self, owner: OwnerId) {
+        self.fmp
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|_, route| route.owner != owner);
+    }
+
+    fn lookup_fmp(
+        &self,
+        transport_id: TransportId,
+        receiver_idx: u32,
+    ) -> Option<PacketMover2IngressRoute> {
+        self.fmp
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&FmpIngressRouteKey::new(transport_id, receiver_idx))
+            .copied()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2FastIngressBatch {
+    packets: Vec<SocketPacket>,
+}
+
+impl PacketMover2FastIngressBatch {
+    fn new(packets: Vec<SocketPacket>) -> Self {
+        Self { packets }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    fn into_packets(self) -> Vec<SocketPacket> {
+        self.packets
+    }
+}
+
+pub(crate) type PacketMover2FastIngressRx =
+    tokio::sync::mpsc::UnboundedReceiver<PacketMover2FastIngressBatch>;
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2EstablishedFastIngressSink {
+    routes: PacketMover2EstablishedFastIngressSnapshot,
+    tx: tokio::sync::mpsc::UnboundedSender<PacketMover2FastIngressBatch>,
+}
+
+impl PacketMover2EstablishedFastIngressSink {
+    fn channel(
+        routes: PacketMover2EstablishedFastIngressSnapshot,
+    ) -> (Self, PacketMover2FastIngressRx) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Self { routes, tx }, rx)
+    }
+
+    fn socket_packet_from_received(
+        &self,
+        packet: ReceivedPacket,
+    ) -> Result<SocketPacket, ReceivedPacket> {
+        let Ok(header) = FmpWireHeader::parse(&packet.data) else {
+            return Err(packet);
+        };
+        let Some(route) = self
+            .routes
+            .lookup_fmp(packet.transport_id, header.receiver_idx())
+        else {
+            return Err(packet);
+        };
+
+        let source_path = TransportPath::live(packet.transport_id, packet.remote_addr.clone());
+        let activity_tick = ActivityTick::new(packet.timestamp_ms);
+        let mut socket_packet = SocketPacket::new(
+            route.owner,
+            route.generation,
+            header.counter(),
+            route.class,
+            route.output,
+            packet.data,
+        )
+        .with_source_path(source_path)
+        .with_activity_tick(activity_tick)
+        .with_wire_flags(header.flags());
+        socket_packet = socket_packet.with_path_mtu(u16::MAX);
+        Ok(socket_packet)
+    }
+}
+
+impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
+    fn try_ingest_packet(&self, packet: ReceivedPacket) -> Result<(), ReceivedPacket> {
+        if self.tx.is_closed() {
+            return Err(packet);
+        }
+        let socket_packet = self.socket_packet_from_received(packet)?;
+        let _ = self
+            .tx
+            .send(PacketMover2FastIngressBatch::new(vec![socket_packet]));
+        Ok(())
+    }
+
+    fn try_ingest_batch(&self, packets: &mut Vec<ReceivedPacket>) -> usize {
+        if packets.is_empty() || self.tx.is_closed() {
+            return 0;
+        }
+
+        let mut misses = Vec::with_capacity(packets.len());
+        let mut fast_packets = Vec::with_capacity(packets.len());
+        for packet in std::mem::take(packets) {
+            match self.socket_packet_from_received(packet) {
+                Ok(packet) => fast_packets.push(packet),
+                Err(packet) => misses.push(packet),
+            }
+        }
+        *packets = misses;
+
+        let accepted = fast_packets.len();
+        if accepted > 0 {
+            let _ = self.tx.send(PacketMover2FastIngressBatch::new(fast_packets));
+        }
+        accepted
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveRouteTable {
     fmp: HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
     fsp: HashMap<NodeAddr, PacketMover2IngressRoute>,
     tun_outbound: HashMap<FipsTunDestinationPrefix, PacketMover2TunDestinationRoute>,
     endpoint: HashMap<NodeAddr, PacketMover2EndpointDataRoute>,
+    established_fast_ingress: PacketMover2EstablishedFastIngressSnapshot,
 }
 
 impl PacketMover2LiveRouteTable {
+    pub(crate) fn established_fast_ingress_snapshot(
+        &self,
+    ) -> PacketMover2EstablishedFastIngressSnapshot {
+        self.established_fast_ingress.clone()
+    }
+
     pub(crate) fn register_fmp(
         &mut self,
         transport_id: TransportId,
@@ -184,6 +332,8 @@ impl PacketMover2LiveRouteTable {
     ) {
         self.fmp
             .insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route);
+        self.established_fast_ingress
+            .register_fmp(transport_id, receiver_idx, route);
     }
 
     pub(crate) fn register_fsp(
@@ -219,6 +369,7 @@ impl PacketMover2LiveRouteTable {
         self.tun_outbound
             .retain(|_, route| route.owner() != owner);
         self.endpoint.retain(|_, route| route.owner() != owner);
+        self.established_fast_ingress.unregister_owner(owner);
         let after =
             self.fmp.len() + self.fsp.len() + self.tun_outbound.len() + self.endpoint.len();
         before.saturating_sub(after)

@@ -81,7 +81,8 @@ use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
 use crate::packet_mover2::{
-    AdmissionConfig, PacketMover2LiveNode, PacketMover2TransportSendWorkerPool,
+    AdmissionConfig, PacketMover2FastIngressRx, PacketMover2LiveNode,
+    PacketMover2TransportSendWorkerPool,
 };
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -220,6 +221,8 @@ pub struct Node {
     /// Canonical packet_mover2 dataplane state owned by the node.
     #[allow(dead_code)]
     packet_mover2: PacketMover2Node,
+    /// Pre-routed established FMP packets accepted directly from UDP receive.
+    packet_mover2_fast_ingress_rx: Option<PacketMover2FastIngressRx>,
     /// Bounded PM2 bulk UDP send executor used by the live daemon path.
     packet_mover2_transport_send_worker: PacketMover2TransportSendWorkerPool,
 

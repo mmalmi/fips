@@ -82,6 +82,14 @@ impl Node {
                 (rx, Some(tx))
             }
         };
+        let (mut packet_mover2_fast_ingress_rx, _packet_mover2_fast_ingress_guard) =
+            match self.packet_mover2_fast_ingress_rx.take() {
+                Some(rx) => (rx, None),
+                None => {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    (rx, Some(tx))
+                }
+            };
 
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
@@ -209,6 +217,32 @@ impl Node {
                 // Endpoint data batches intentionally remain below packet_rx.
                 Some(command) = endpoint_control_rx.recv() => {
                     self.handle_endpoint_control(command).await;
+                }
+                Some(fast_ingress) = packet_mover2_fast_ingress_rx.recv() => {
+                    let packet_budget = packet_drain_budget(false).max(fast_ingress.len());
+                    let endpoint_budget = endpoint_drain_budget(packet_budget);
+                    let tun_budget = tun_drain_budget(packet_budget);
+                    let crypto_budget = mixed_dataplane_crypto_budget(
+                        packet_budget,
+                        endpoint_budget,
+                        tun_budget,
+                    );
+                    let mut turn = self.drain_packet_mover2_fast_ingress_turn(
+                        fast_ingress,
+                        &mut endpoint_data_rx,
+                        endpoint_budget,
+                        &mut tun_outbound_rx,
+                        tun_budget,
+                        &packet_mover2_tun_tx,
+                        &packet_mover2_endpoint_tx,
+                        crypto_budget,
+                    ).await;
+                    self.finish_packet_mover2_turn(
+                        &mut turn,
+                        &mut maintenance_state,
+                        &mut control_query_rx,
+                        CONTROL_QUERY_INTERLEAVE_BUDGET,
+                    ).await;
                 }
                 packet = packet_rx.recv() => {
                     match packet {
