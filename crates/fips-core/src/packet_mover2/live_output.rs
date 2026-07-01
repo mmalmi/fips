@@ -45,12 +45,7 @@ pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
     tun_outbound_rx: &'a mut TunOutboundRx,
     tun_limit: usize,
     routes: &'a mut Routes,
-    endpoint_drops: Vec<PacketMover2EndpointDataDrop>,
-    deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
-    tun_drops: Vec<PacketMover2TunOutboundDrop>,
-    tun_deferred_packets: Vec<Vec<u8>>,
-    endpoint_drained: usize,
-    tun_drained: usize,
+    buffers: &'a mut PacketMover2RouteTableOutboundBuffers,
     endpoint_stale_data_drop_ms: u64,
 }
 
@@ -62,18 +57,26 @@ struct PacketMover2RouteTableOutboundBuffers {
     tun_deferred_packets: Vec<Vec<u8>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PacketMover2RouteTableOutboundDrain {
+    total: usize,
+    endpoint: usize,
+    tun: usize,
+}
+
 pub(crate) enum PacketMover2RoutedOutbound {
     Packet(OutboundPacket),
     Batch(Vec<OutboundPacket>),
 }
 
 impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
-    pub(crate) fn new(
+    fn new(
         endpoint_data_rx: &'a mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &'a mut TunOutboundRx,
         tun_limit: usize,
         routes: &'a mut Routes,
+        buffers: &'a mut PacketMover2RouteTableOutboundBuffers,
     ) -> Self {
         Self {
             first_endpoint_data_batch: None,
@@ -83,12 +86,7 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
             tun_outbound_rx,
             tun_limit,
             routes,
-            endpoint_drops: Vec::new(),
-            deferred_endpoint_data_batches: Vec::new(),
-            tun_drops: Vec::new(),
-            tun_deferred_packets: Vec::new(),
-            endpoint_drained: 0,
-            tun_drained: 0,
+            buffers,
             endpoint_stale_data_drop_ms: crate::node::ENDPOINT_STALE_DATA_DROP_MS,
         }
     }
@@ -99,35 +97,10 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         self
     }
 
-    fn with_report_buffers(mut self, buffers: PacketMover2RouteTableOutboundBuffers) -> Self {
-        self.endpoint_drops = buffers.endpoint_drops;
-        self.deferred_endpoint_data_batches = buffers.deferred_endpoint_data_batches;
-        self.tun_drops = buffers.tun_drops;
-        self.tun_deferred_packets = buffers.tun_deferred_packets;
-        self
-    }
-
-    fn take_report_buffers(&mut self) -> PacketMover2RouteTableOutboundBuffers {
-        PacketMover2RouteTableOutboundBuffers {
-            endpoint_drops: std::mem::take(&mut self.endpoint_drops),
-            deferred_endpoint_data_batches: std::mem::take(&mut self.deferred_endpoint_data_batches),
-            tun_drops: std::mem::take(&mut self.tun_drops),
-            tun_deferred_packets: std::mem::take(&mut self.tun_deferred_packets),
-        }
-    }
-
     fn take_firsts(&mut self) -> PacketMover2LiveOutboundFirsts {
         PacketMover2LiveOutboundFirsts::default()
             .with_endpoint_data_batch(self.first_endpoint_data_batch.take())
             .with_tun_packet(self.first_tun_packet.take())
-    }
-
-    fn endpoint_drained(&self) -> usize {
-        self.endpoint_drained
-    }
-
-    fn tun_drained(&self) -> usize {
-        self.tun_drained
     }
 }
 
@@ -179,15 +152,15 @@ where
                 crate::perf_profile::Event::EndpointDataBulkDropped,
                 drop_count as u64,
             );
-            drop_stale_endpoint_data_batch(batch, &mut self.endpoint_drops);
+            drop_stale_endpoint_data_batch(batch, &mut self.buffers.endpoint_drops);
             return;
         }
 
         route_endpoint_data_batch_with_router(
             batch,
             self.routes,
-            &mut self.endpoint_drops,
-            &mut self.deferred_endpoint_data_batches,
+            &mut self.buffers.endpoint_drops,
+            &mut self.buffers.deferred_endpoint_data_batches,
             |packets| push(PacketMover2RoutedOutbound::Batch(packets)),
         );
     }
@@ -205,8 +178,8 @@ where
                 route_tun_outbound_packet_with_router(
                     packet,
                     self.routes,
-                    &mut self.tun_drops,
-                    &mut self.tun_deferred_packets,
+                    &mut self.buffers.tun_drops,
+                    &mut self.buffers.tun_deferred_packets,
                     |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
                 );
                 drained += 1;
@@ -219,8 +192,8 @@ where
             route_tun_outbound_packet_with_router(
                 packet,
                 self.routes,
-                &mut self.tun_drops,
-                &mut self.tun_deferred_packets,
+                &mut self.buffers.tun_drops,
+                &mut self.buffers.tun_deferred_packets,
                 |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
             );
             drained += 1;
@@ -229,19 +202,25 @@ where
         drained
     }
 
-    fn drain_outbound_batched<F>(&mut self, limit: usize, mut push: F) -> usize
+    fn drain_outbound_batched<F>(
+        &mut self,
+        limit: usize,
+        mut push: F,
+    ) -> PacketMover2RouteTableOutboundDrain
     where
         F: FnMut(PacketMover2RoutedOutbound),
     {
         let endpoint_limit = self.endpoint_limit.min(limit);
         let endpoint_drained = self.drain_endpoint_batched(endpoint_limit, &mut push);
-        self.endpoint_drained = self.endpoint_drained.saturating_add(endpoint_drained);
         let reserved_drained = endpoint_drained.min(endpoint_limit);
         let remaining = limit.saturating_sub(reserved_drained);
         let tun_limit = self.tun_limit.min(remaining);
         let tun_drained = self.drain_tun_batched(tun_limit, push);
-        self.tun_drained = self.tun_drained.saturating_add(tun_drained);
-        endpoint_drained.saturating_add(tun_drained)
+        PacketMover2RouteTableOutboundDrain {
+            total: endpoint_drained.saturating_add(tun_drained),
+            endpoint: endpoint_drained,
+            tun: tun_drained,
+        }
     }
 }
 

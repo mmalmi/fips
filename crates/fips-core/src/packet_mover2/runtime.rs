@@ -509,17 +509,17 @@ impl PacketMover2TurnDriver {
                 tun_outbound_rx,
                 tun_limit,
                 routes,
+                &mut outbound_buffers,
             )
-            .with_firsts(outbound_firsts)
-            .with_report_buffers(outbound_buffers);
-            outbound_drained =
+            .with_firsts(outbound_firsts);
+            let drained =
                 outbound_source.drain_outbound_batched(reserved_outbound_limit, |routed| {
                     self.admit_routed_outbound(routed, &mut summary);
                 });
-            endpoint_drained = endpoint_drained.saturating_add(outbound_source.endpoint_drained());
-            tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
+            outbound_drained = drained.total;
+            endpoint_drained = endpoint_drained.saturating_add(drained.endpoint);
+            tun_drained = tun_drained.saturating_add(drained.tun);
             outbound_firsts = outbound_source.take_firsts();
-            outbound_buffers = outbound_source.take_report_buffers();
         }
 
         let mut raw_socket_packets = std::mem::take(&mut self.raw_socket_packets);
@@ -546,15 +546,14 @@ impl PacketMover2TurnDriver {
                 tun_outbound_rx,
                 tun_limit,
                 routes,
+                &mut outbound_buffers,
             )
-            .with_firsts(outbound_firsts)
-            .with_report_buffers(outbound_buffers);
-            outbound_source.drain_outbound_batched(remaining_outbound_limit, |routed| {
+            .with_firsts(outbound_firsts);
+            let drained = outbound_source.drain_outbound_batched(remaining_outbound_limit, |routed| {
                 self.admit_routed_outbound(routed, &mut summary);
             });
-            endpoint_drained = endpoint_drained.saturating_add(outbound_source.endpoint_drained());
-            tun_drained = tun_drained.saturating_add(outbound_source.tun_drained());
-            outbound_buffers = outbound_source.take_report_buffers();
+            endpoint_drained = endpoint_drained.saturating_add(drained.endpoint);
+            tun_drained = tun_drained.saturating_add(drained.tun);
         }
         drop(admit_timer);
 
