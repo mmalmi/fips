@@ -45,7 +45,7 @@ impl PacketMover2FspWrapRoute {
         self
     }
 
-    fn next_hop_addr(self) -> NodeAddr {
+    pub(crate) fn next_hop_addr(self) -> NodeAddr {
         self.fmp_owner.node_addr()
     }
 

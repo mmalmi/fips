@@ -28,7 +28,6 @@ struct PacketMover2FspOwnerSeed {
     keys: OwnerCryptoKeys,
     routes: PacketMover2LiveOwnerRoutes,
     wrap: Option<PacketMover2FspWrapRoute>,
-    next_hop: Option<NodeAddr>,
 }
 
 pub(in crate::node) struct PacketMover2FspOwnerSessionSnapshot {
@@ -45,7 +44,16 @@ pub(in crate::node) struct PacketMover2FspOwnerSessionSnapshot {
 struct PacketMover2FspOwnerRouteUpdate {
     routes: PacketMover2LiveOwnerRoutes,
     wrap: Option<PacketMover2FspWrapRoute>,
-    next_hop: Option<NodeAddr>,
+}
+
+impl PacketMover2FspOwnerRouteUpdate {
+    fn route_ready(&self) -> bool {
+        self.wrap.is_some()
+    }
+
+    fn next_hop(&self) -> Option<NodeAddr> {
+        self.wrap.map(PacketMover2FspWrapRoute::next_hop_addr)
+    }
 }
 
 enum PacketMover2PendingOutboundFailure {
@@ -668,17 +676,13 @@ impl Node {
             send_context.fsp_flags(),
             send_context.inner_flags(),
         );
-        let route_ready = update.wrap.is_some();
+        let route_ready = update.route_ready();
         let next_hop_ready = update
-            .next_hop
+            .next_hop()
             .is_some_and(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
         self.packet_mover2
-            .set_owner_fsp_wrap_route(owner, update.wrap)
+            .replace_owner_fsp_routes(owner, update.routes, update.wrap)
             .is_ok()
-            && self
-                .packet_mover2
-                .replace_owner_routes(owner, update.routes)
-                .is_ok()
             && route_ready
             && next_hop_ready
     }
@@ -862,7 +866,8 @@ impl Node {
         self.packet_mover2
             .register_owner_if_missing(seed.owner, seed.config.clone());
         let next_hop_ready = seed
-            .next_hop
+            .wrap
+            .map(PacketMover2FspWrapRoute::next_hop_addr)
             .is_none_or(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
         let synced = self
             .packet_mover2
@@ -870,11 +875,7 @@ impl Node {
             .is_ok()
             && self
                 .packet_mover2
-                .set_owner_fsp_wrap_route(seed.owner, seed.wrap)
-                .is_ok()
-            && self
-                .packet_mover2
-                .replace_owner_routes(seed.owner, seed.routes)
+                .replace_owner_fsp_routes(seed.owner, seed.routes, seed.wrap)
                 .is_ok()
             && next_hop_ready;
         if synced {
@@ -1002,7 +1003,6 @@ impl Node {
             keys: OwnerCryptoKeys::new(Arc::new(snapshot.open), Arc::new(snapshot.seal)),
             routes: route_update.routes,
             wrap: route_update.wrap,
-            next_hop: route_update.next_hop,
         })
     }
 
@@ -1036,11 +1036,10 @@ impl Node {
         inner_flags: u8,
     ) -> PacketMover2FspOwnerRouteUpdate {
         let owner = OwnerId::fsp_node(*node_addr);
-        let Some((wrap, next_hop)) = self.packet_mover2_fsp_wrap_route(node_addr) else {
+        let Some(wrap) = self.packet_mover2_fsp_wrap_route(node_addr) else {
             return PacketMover2FspOwnerRouteUpdate {
                 routes: PacketMover2LiveOwnerRoutes::new(),
                 wrap: None,
-                next_hop: None,
             };
         };
 
@@ -1076,14 +1075,13 @@ impl Node {
         PacketMover2FspOwnerRouteUpdate {
             routes,
             wrap: Some(wrap),
-            next_hop: Some(next_hop),
         }
     }
 
     fn packet_mover2_fsp_wrap_route(
         &mut self,
         dest_addr: &NodeAddr,
-    ) -> Option<(PacketMover2FspWrapRoute, NodeAddr)> {
+    ) -> Option<PacketMover2FspWrapRoute> {
         let next_hop = {
             let peer = self.find_next_hop(dest_addr)?;
             *peer.node_addr()
@@ -1111,7 +1109,7 @@ impl Node {
         .with_fmp_flags(fmp_flags)
         .with_ttl(self.config.node.session.default_ttl)
         .with_path_mtu(path_mtu);
-        Some((wrap, next_hop))
+        Some(wrap)
     }
 
     fn packet_mover2_tun_max_packet_len(&self, dest_addr: &NodeAddr) -> usize {

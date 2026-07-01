@@ -322,20 +322,6 @@ impl PacketMover2LiveNode {
         Ok(())
     }
 
-    pub(crate) fn set_owner_fsp_wrap_route(
-        &mut self,
-        owner: OwnerId,
-        route: Option<PacketMover2FspWrapRoute>,
-    ) -> Result<(), PacketMover2LiveOwnerError> {
-        let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return Err(PacketMover2LiveOwnerError::UnknownOwner);
-        };
-        if !owner_state.set_fsp_wrap_route(route) {
-            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
-        }
-        Ok(())
-    }
-
     pub(crate) fn install_owner_fsp_pending_receive_epoch(
         &mut self,
         owner: OwnerId,
@@ -634,6 +620,33 @@ impl PacketMover2LiveNode {
             return Err(PacketMover2LiveOwnerError::UnknownOwner);
         }
         if routes.has_owner_mismatch(owner) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+
+        let routes_added = routes.len();
+        let routes_removed = self.routes.unregister_owner(owner);
+        routes.apply_to(&mut self.routes);
+
+        Ok(PacketMover2LiveOwnerRouteSummary {
+            owner_removed: false,
+            routes_removed,
+            routes_added,
+        })
+    }
+
+    pub(crate) fn replace_owner_fsp_routes(
+        &mut self,
+        owner: OwnerId,
+        routes: PacketMover2LiveOwnerRoutes,
+        wrap: Option<PacketMover2FspWrapRoute>,
+    ) -> Result<PacketMover2LiveOwnerRouteSummary, PacketMover2LiveOwnerError> {
+        if routes.has_owner_mismatch(owner) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.set_fsp_wrap_route(wrap) {
             return Err(PacketMover2LiveOwnerError::OwnerMismatch);
         }
 
