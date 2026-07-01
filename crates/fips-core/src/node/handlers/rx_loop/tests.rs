@@ -56,7 +56,7 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     assert!(!empty.data_pressure(false));
     assert!(empty.data_pressure(true));
 
-    let drained = RxLoopDataDrainStats::with_data(2, 3, 5);
+    let drained = RxLoopDataDrainStats::new(2, 3, 5, 0);
     assert_eq!(drained.data_total(), 10);
     assert_eq!(drained.total(), 10);
     assert!(drained.has_drained());
@@ -64,7 +64,7 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     assert!(drained.data_pressure(false));
     assert!(drained.data_pressure(true));
 
-    let control_only = RxLoopDataDrainStats::with_control(0, 0, 0, 2);
+    let control_only = RxLoopDataDrainStats::new(0, 0, 0, 2);
     assert_eq!(control_only.data_total(), 0);
     assert_eq!(control_only.total(), 2);
     assert!(control_only.has_drained());
@@ -208,7 +208,7 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
     let start = Instant::now();
     let window = Duration::from_secs(2);
     let empty = RxLoopDataDrainStats::default();
-    let drained = RxLoopDataDrainStats::with_data(1, 0, 0);
+    let drained = RxLoopDataDrainStats::new(1, 0, 0, 0);
     let mut state = RxLoopMaintenanceState::default();
 
     assert!(!state.data_pressure(empty, start, window));
@@ -244,7 +244,7 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
     let idle_timeout = Duration::from_millis(100);
     let busy_timeout = Duration::from_millis(10);
     let empty = RxLoopDataDrainStats::default();
-    let drained = RxLoopDataDrainStats::with_data(1, 0, 0);
+    let drained = RxLoopDataDrainStats::new(1, 0, 0, 0);
     let mut state = RxLoopMaintenanceState::default();
 
     let idle = state.plan_maintenance(empty, start, window, idle_timeout, busy_timeout);

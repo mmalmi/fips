@@ -57,15 +57,6 @@ enum PacketMover2PendingOutboundFailure {
     Exhausted(PacketMover2LiveNodeTurn),
 }
 
-impl PacketMover2PendingOutboundFailure {
-    fn turn(&self) -> &PacketMover2LiveNodeTurn {
-        match self {
-            Self::TurnFailed(turn) | Self::Exhausted(turn) => turn,
-            Self::Stopped { turn, .. } => turn,
-        }
-    }
-}
-
 impl Node {
     pub(in crate::node) async fn send_packet_mover2_fmp_link_plaintext(
         &mut self,
@@ -109,8 +100,11 @@ impl Node {
             plaintext.to_vec(),
         )
         .with_activity_tick(ActivityTick::new(Self::now_ms()));
+        let firsts = PacketMover2LiveOutboundFirsts::default()
+            .with_initial_outbound(Some(outbound))
+            .with_transport_sent_output_collection(true);
         let mut turn = self
-            .pump_packet_mover2_initial_outbound(outbound, 1, true)
+            .pump_packet_mover2_pending_outbound_firsts(firsts, 0, 0, 1)
             .await;
         turn = match self
             .drive_packet_mover2_pending_outbound_turn(turn, true)
@@ -118,7 +112,12 @@ impl Node {
         {
             Ok(turn) => turn,
             Err(failure) => {
-                if let Some(drop) = failure.turn().output_drops().first() {
+                let failure_turn = match &failure {
+                    PacketMover2PendingOutboundFailure::TurnFailed(turn)
+                    | PacketMover2PendingOutboundFailure::Exhausted(turn) => turn,
+                    PacketMover2PendingOutboundFailure::Stopped { turn, .. } => turn,
+                };
+                if let Some(drop) = failure_turn.output_drops().first() {
                     return Err(self.packet_mover2_fmp_output_drop_error(*node_addr, drop));
                 }
                 return Err(NodeError::SendFailed {
@@ -355,21 +354,6 @@ impl Node {
         turn
     }
 
-    async fn pump_packet_mover2_initial_outbound(
-        &mut self,
-        outbound: OutboundPacket,
-        crypto_limit: usize,
-        collect_transport_sent_outputs: bool,
-    ) -> PacketMover2LiveNodeTurn {
-        let firsts = PacketMover2LiveOutboundFirsts::default()
-            .with_initial_outbound(Some(outbound))
-            .with_transport_sent_output_collection(collect_transport_sent_outputs);
-        let turn = self
-            .pump_packet_mover2_pending_outbound_firsts(firsts, 0, 0, crypto_limit)
-            .await;
-        turn
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn send_packet_mover2_fsp_control_outbound(
         &mut self,
@@ -418,8 +402,11 @@ impl Node {
             outbound = outbound.without_fsp_auto_coords_warmup();
         }
 
+        let firsts = PacketMover2LiveOutboundFirsts::default()
+            .with_initial_outbound(Some(outbound))
+            .with_transport_sent_output_collection(true);
         let turn = self
-            .pump_packet_mover2_initial_outbound(outbound, 2, true)
+            .pump_packet_mover2_pending_outbound_firsts(firsts, 0, 0, 2)
             .await;
         let mut turn = match self
             .finish_packet_mover2_pending_outbound_turn(dest_addr, label, turn, true)

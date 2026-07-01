@@ -620,14 +620,12 @@ pub(crate) struct OwnerState {
     last_rx_data_activity: Option<ActivityTick>,
     last_tx_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
-    last_hard_event: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
     data_packets_sent: u64,
     data_packets_recv: u64,
     data_bytes_sent: u64,
     data_bytes_recv: u64,
     consecutive_decrypt_failures: u32,
-    hard_events: u64,
     authenticated_counter_highest: u64,
     replay_window: ReplayWindow,
     previous_fsp_replay_window: Option<ReplayWindow>,
@@ -678,14 +676,12 @@ impl OwnerState {
             last_rx_data_activity: None,
             last_tx_activity: None,
             last_tx_data_activity: None,
-            last_hard_event: None,
             last_outbound_next_hop: None,
             data_packets_sent: 0,
             data_packets_recv: 0,
             data_bytes_sent: 0,
             data_bytes_recv: 0,
             consecutive_decrypt_failures: 0,
-            hard_events: 0,
             authenticated_counter_highest: 0,
             replay_window: ReplayWindow::default(),
             previous_fsp_replay_window: None,
@@ -973,13 +969,6 @@ impl OwnerState {
         Some(PacketMover2FspSendContext::new(self.generation, headers))
     }
 
-    pub(crate) fn can_reserve_lane(&self, lane: Lane) -> bool {
-        if self.in_flight >= self.in_flight_limit {
-            return false;
-        }
-        lane != Lane::Bulk || self.bulk_in_flight < self.bulk_lane_in_flight_limit()
-    }
-
     pub(crate) fn can_reserve_class(&self, class: PacketClass) -> bool {
         self.reserve_block_reason(class).is_none()
     }
@@ -1126,19 +1115,6 @@ impl OwnerState {
                 .fmp_mmp
                 .as_ref()
                 .is_some_and(|mmp| mmp.metrics.srtt_ms().is_some())
-    }
-
-    pub(crate) fn last_hard_event(&self) -> Option<ActivityTick> {
-        self.last_hard_event
-    }
-
-    pub(crate) fn hard_events(&self) -> u64 {
-        self.hard_events
-    }
-
-    pub(crate) fn record_hard_event(&mut self, tick: ActivityTick) {
-        self.hard_events = self.hard_events.saturating_add(1);
-        note_activity(&mut self.last_hard_event, tick);
     }
 
     pub(crate) fn record_fsp_decrypt_failure(&mut self) -> Option<u32> {

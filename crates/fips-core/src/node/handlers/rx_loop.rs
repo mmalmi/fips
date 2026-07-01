@@ -5,7 +5,7 @@ use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
 use crate::node::{
     EndpointDataBatchRx, EndpointEventSender, Node, NodeError, endpoint_data_batch_channel,
 };
-use crate::transport::PacketRx;
+use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
@@ -213,39 +213,13 @@ impl Node {
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => {
-                            let latency_packet = p.is_transport_priority();
-                            let mut firsts = crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
-                                .with_raw_packet(Some(p));
-                            if let Ok(packet) = tun_outbound_rx.try_recv() {
-                                firsts = firsts.with_tun_packet(Some(packet));
-                            }
-                            let latency_work_ready = latency_packet
-                                || packet_rx.priority_ready_packets() > 0;
-                            if !latency_work_ready {
-                                firsts = firsts.with_raw_ingress_prefetch(true);
-                            }
-                            let packet_budget = packet_drain_budget(latency_work_ready);
-                            let endpoint_budget = endpoint_drain_budget(packet_budget);
-                            let tun_budget = tun_drain_budget(packet_budget);
-                            let crypto_budget = mixed_dataplane_crypto_budget(
-                                packet_budget,
-                                endpoint_budget,
-                                tun_budget,
-                            );
-                            let mut turn = self.drain_packet_mover2_turn_with_firsts(
+                            self.drain_packet_mover2_raw_packet_turn(
                                 &mut packet_rx,
-                                firsts,
-                                packet_budget,
-                                &mut endpoint_data_rx,
-                                endpoint_budget,
+                                p,
                                 &mut tun_outbound_rx,
-                                tun_budget,
+                                &mut endpoint_data_rx,
                                 &packet_mover2_tun_tx,
                                 &packet_mover2_endpoint_tx,
-                                crypto_budget,
-                            ).await;
-                            self.finish_packet_mover2_turn(
-                                &mut turn,
                                 &mut maintenance_state,
                                 &mut control_query_rx,
                                 CONTROL_QUERY_INTERLEAVE_BUDGET,
@@ -255,17 +229,31 @@ impl Node {
                     }
                 }
                 _ = packet_mover2_completion_notify.notified() => {
-                    let mut turn = self.drain_packet_mover2_completion_turn(
-                        &packet_mover2_tun_tx,
-                        &packet_mover2_endpoint_tx,
-                        LATENCY_PACKET_DRAIN_BUDGET,
-                    ).await;
-                    self.finish_packet_mover2_turn(
-                        &mut turn,
-                        &mut maintenance_state,
-                        &mut control_query_rx,
-                        0,
-                    ).await;
+                    if let Ok(p) = packet_rx.try_recv() {
+                        self.drain_packet_mover2_raw_packet_turn(
+                            &mut packet_rx,
+                            p,
+                            &mut tun_outbound_rx,
+                            &mut endpoint_data_rx,
+                            &packet_mover2_tun_tx,
+                            &packet_mover2_endpoint_tx,
+                            &mut maintenance_state,
+                            &mut control_query_rx,
+                            0,
+                        ).await;
+                    } else {
+                        let mut turn = self.drain_packet_mover2_completion_turn(
+                            &packet_mover2_tun_tx,
+                            &packet_mover2_endpoint_tx,
+                            LATENCY_PACKET_DRAIN_BUDGET,
+                        ).await;
+                        self.finish_packet_mover2_turn(
+                            &mut turn,
+                            &mut maintenance_state,
+                            &mut control_query_rx,
+                            0,
+                        ).await;
+                    }
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     let tun_budget = tun_drain_budget(LATENCY_PACKET_DRAIN_BUDGET);
@@ -366,6 +354,56 @@ impl Node {
             turn.endpoint_source_drained(),
             control_drained,
         )
+    }
+
+    async fn drain_packet_mover2_raw_packet_turn(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        packet: ReceivedPacket,
+        tun_outbound_rx: &mut TunOutboundRx,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        maintenance_state: &mut RxLoopMaintenanceState,
+        control_query_rx: &mut Receiver<ControlMessage>,
+        control_query_budget: usize,
+    ) {
+        let latency_packet = packet.is_transport_priority();
+        let mut firsts = crate::packet_mover2::PacketMover2LiveTurnFirsts::default()
+            .with_raw_packet(Some(packet));
+        if let Ok(packet) = tun_outbound_rx.try_recv() {
+            firsts = firsts.with_tun_packet(Some(packet));
+        }
+        let latency_work_ready = latency_packet || packet_rx.priority_ready_packets() > 0;
+        if !latency_work_ready {
+            firsts = firsts.with_raw_ingress_prefetch(true);
+        }
+        let packet_budget = packet_drain_budget(latency_work_ready);
+        let endpoint_budget = endpoint_drain_budget(packet_budget);
+        let tun_budget = tun_drain_budget(packet_budget);
+        let crypto_budget =
+            mixed_dataplane_crypto_budget(packet_budget, endpoint_budget, tun_budget);
+        let mut turn = self
+            .drain_packet_mover2_turn_with_firsts(
+                packet_rx,
+                firsts,
+                packet_budget,
+                endpoint_data_rx,
+                endpoint_budget,
+                tun_outbound_rx,
+                tun_budget,
+                tun_tx,
+                endpoint_tx,
+                crypto_budget,
+            )
+            .await;
+        self.finish_packet_mover2_turn(
+            &mut turn,
+            maintenance_state,
+            control_query_rx,
+            control_query_budget,
+        )
+        .await;
     }
 
     async fn finish_packet_mover2_turn(

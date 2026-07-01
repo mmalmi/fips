@@ -186,28 +186,12 @@ impl PacketMover2LiveRouteTable {
             .insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route)
     }
 
-    pub(crate) fn unregister_fmp(
-        &mut self,
-        transport_id: TransportId,
-        receiver_idx: u32,
-    ) -> Option<PacketMover2IngressRoute> {
-        self.fmp
-            .remove(&FmpIngressRouteKey::new(transport_id, receiver_idx))
-    }
-
     pub(crate) fn register_fsp(
         &mut self,
         source_addr: NodeAddr,
         route: PacketMover2IngressRoute,
     ) -> Option<PacketMover2IngressRoute> {
         self.fsp.insert(source_addr, route)
-    }
-
-    pub(crate) fn unregister_fsp(
-        &mut self,
-        source_addr: NodeAddr,
-    ) -> Option<PacketMover2IngressRoute> {
-        self.fsp.remove(&source_addr)
     }
 
     pub(crate) fn register_tun_destination(
@@ -219,27 +203,12 @@ impl PacketMover2LiveRouteTable {
             .insert(FipsTunDestinationPrefix::from_node_addr(dest_addr), route)
     }
 
-    pub(crate) fn unregister_tun_destination(
-        &mut self,
-        dest_addr: NodeAddr,
-    ) -> Option<PacketMover2TunDestinationRoute> {
-        self.tun_outbound
-            .remove(&FipsTunDestinationPrefix::from_node_addr(dest_addr))
-    }
-
     pub(crate) fn register_endpoint_destination(
         &mut self,
         dest_addr: NodeAddr,
         route: PacketMover2EndpointDataRoute,
     ) -> Option<PacketMover2EndpointDataRoute> {
         self.endpoint.insert(dest_addr, route)
-    }
-
-    pub(crate) fn unregister_endpoint_destination(
-        &mut self,
-        dest_addr: NodeAddr,
-    ) -> Option<PacketMover2EndpointDataRoute> {
-        self.endpoint.remove(&dest_addr)
     }
 
     pub(crate) fn unregister_owner(&mut self, owner: OwnerId) -> usize {

@@ -47,7 +47,7 @@
         );
         let header = PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
         assert_eq!(routes.route(&raw, header), Some(route_b));
-        assert_eq!(routes.unregister_fmp(transport_id, 404), Some(route_b));
+        assert_eq!(routes.unregister_owner(owner_b), 1);
         let header = PacketMover2IngressHeader::Fmp(FmpWireHeader::parse(&raw.payload).unwrap());
         assert_eq!(routes.route(&raw, header), None);
     }
@@ -91,7 +91,7 @@
         let header =
             PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
         assert_eq!(routes.route(&sourced_raw, header), Some(new_route));
-        assert_eq!(routes.unregister_fsp(source), Some(new_route));
+        assert_eq!(routes.unregister_owner(owner), 1);
         let header =
             PacketMover2IngressHeader::Fsp(FspWireHeader::parse(&sourced_raw.payload).unwrap());
         assert_eq!(routes.route(&sourced_raw, header), None);

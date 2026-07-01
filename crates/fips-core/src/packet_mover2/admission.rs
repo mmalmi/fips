@@ -369,16 +369,6 @@ where
         }
     }
 
-    fn push_ready_front(&mut self, lane: Lane, owner: OwnerId) {
-        let ready = match lane {
-            Lane::Priority => &mut self.priority_ready,
-            Lane::Bulk => &mut self.bulk_ready,
-        };
-        if !ready.contains(&owner) {
-            ready.push_front(owner);
-        }
-    }
-
     fn ready_lens(&self) -> (usize, usize) {
         (self.priority_ready.len(), self.bulk_ready.len())
     }

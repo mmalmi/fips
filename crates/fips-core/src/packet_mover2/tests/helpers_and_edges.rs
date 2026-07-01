@@ -336,8 +336,16 @@
     {
         driver.reset_turn_buffers();
 
-        let summary = driver
-            .collect_completed_aead_outputs(PacketMover2RuntimeSummary::default(), completions);
+        driver.completion_work.clear();
+        driver.completion_work.extend(completions);
+        let queued = driver.completion_work.len();
+        let mut summary = PacketMover2RuntimeSummary::default();
+        summary.completions = summary.completions.saturating_add(queued);
+        driver
+            .mover
+            .queue_completion_batch(&mut driver.completion_work);
+        driver.retire_queued_completed_aead_outputs(queued);
+        let summary = driver.collect_retired_outputs(summary);
         let mut executor = InlinePacketMover2CryptoExecutor::default();
         let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
 
@@ -419,7 +427,13 @@
     {
         driver.reset_turn_buffers();
 
-        let summary = driver.admit_raw_ingress_turn(inbound, router, outbound);
+        let mut summary = PacketMover2RuntimeSummary::default();
+        for packet in inbound {
+            driver.admit_raw_ingress_packet(packet, router, &mut summary);
+        }
+        for packet in outbound {
+            driver.admit_outbound_packet(packet, &mut summary);
+        }
         finish_aead_turn_with_inline(driver, summary, limit)
     }
 
@@ -439,7 +453,13 @@
     {
         driver.reset_turn_buffers();
 
-        let summary = driver.admit_raw_ingress_turn(inbound, router, outbound);
+        let mut summary = PacketMover2RuntimeSummary::default();
+        for packet in inbound {
+            driver.admit_raw_ingress_packet(packet, router, &mut summary);
+        }
+        for packet in outbound {
+            driver.admit_outbound_packet(packet, &mut summary);
+        }
         finish_aead_output_turn_with_inline(driver, summary, sink, limit)
     }
 

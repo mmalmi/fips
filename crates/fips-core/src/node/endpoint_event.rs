@@ -287,23 +287,15 @@ impl EndpointEventRuntime {
             return Ok(());
         }
 
-        self.send(NodeEndpointEvent {
-            messages,
-            queued_at: crate::perf_profile::stamp(),
-        })
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn send(
-        &self,
-        event: NodeEndpointEvent,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
         let Some(sender) = &self.sender else {
             return Ok(());
         };
         let _t_deliver =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
-        sender.send(event)
+        sender.send(NodeEndpointEvent {
+            messages,
+            queued_at: crate::perf_profile::stamp(),
+        })
     }
 }
 

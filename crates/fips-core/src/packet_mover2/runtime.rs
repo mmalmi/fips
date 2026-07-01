@@ -604,27 +604,6 @@ impl PacketMover2TurnDriver {
         report
     }
 
-    fn admit_raw_ingress_turn<I, O, R>(
-        &mut self,
-        inbound: I,
-        router: &mut R,
-        outbound: O,
-    ) -> PacketMover2RuntimeSummary
-    where
-        I: IntoIterator<Item = PacketMover2RawIngress>,
-        O: IntoIterator<Item = OutboundPacket>,
-        R: PacketMover2IngressRouter,
-    {
-        let mut summary = PacketMover2RuntimeSummary::default();
-        for packet in inbound {
-            self.admit_raw_ingress_packet(packet, router, &mut summary);
-        }
-        for packet in outbound {
-            self.admit_outbound_packet(packet, &mut summary);
-        }
-        summary
-    }
-
     fn reset_turn_buffers(&mut self) {
         self.outputs.clear();
         self.output_rewrite_buffer.clear();
@@ -901,33 +880,6 @@ impl PacketMover2TurnDriver {
             .outputs_dropped
             .saturating_add(self.output_drops.len().saturating_sub(dropped_before));
         summary.inbound_admitted.saturating_sub(admitted_before)
-    }
-
-    fn collect_completed_aead_outputs<I>(
-        &mut self,
-        mut summary: PacketMover2RuntimeSummary,
-        completions: I,
-    ) -> PacketMover2RuntimeSummary
-    where
-        I: IntoIterator<Item = CryptoCompletion>,
-    {
-        self.completion_work.clear();
-        self.completion_work.extend(completions);
-        let queued = self.completion_work.len();
-        summary.completions = summary.completions.saturating_add(queued);
-        self.mover.queue_completion_batch(&mut self.completion_work);
-        self.retire_queued_completed_aead_outputs(queued);
-        self.collect_retired_outputs(summary)
-    }
-
-    fn collect_completed_aead_output(
-        &mut self,
-        summary: &mut PacketMover2RuntimeSummary,
-        completion: CryptoCompletion,
-    ) {
-        self.mover.queue_completion(completion);
-        summary.completions = summary.completions.saturating_add(1);
-        self.retire_queued_completed_aead_outputs(1);
     }
 
     fn retire_queued_completed_aead_outputs(&mut self, limit: usize) {

@@ -2111,23 +2111,6 @@
     }
 
     #[test]
-    fn hard_event_liveness_state_stays_owner_owned_across_rekey() {
-        let owner = fmp_owner(79);
-        let mut state = OwnerState::new(owner, OwnerConfig::new(1, 8));
-
-        state.record_hard_event(ActivityTick::new(100));
-        state.record_hard_event(ActivityTick::new(90));
-        assert_eq!(state.hard_events(), 2);
-        assert_eq!(state.last_hard_event(), Some(ActivityTick::new(100)));
-
-        state.rekey(2);
-        assert_eq!(state.hard_events(), 2);
-        assert_eq!(state.last_hard_event(), Some(ActivityTick::new(100)));
-        assert_eq!(state.last_rx_activity(), None);
-        assert_eq!(state.last_tx_activity(), None);
-    }
-
-    #[test]
     fn runtime_turn_driver_runs_classified_inbound_and_outbound_once() {
         let owner = fmp_owner(78);
         let open_key = 31;
