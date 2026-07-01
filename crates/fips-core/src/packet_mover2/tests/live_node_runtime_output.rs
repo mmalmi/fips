@@ -46,8 +46,12 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
         output: OutputTarget::Tun,
     };
     let mut sink = BatchRecordingOutputSink::default();
+    let mut completions = VecDeque::<CryptoCompletion>::new();
 
-    let first = pump_aead_output_turn(&mut driver,
+    let first = pump_aead_output_completion_turn(
+        &mut driver,
+        &mut completions,
+        0,
         &mut raw_source,
         &mut router,
         1,
@@ -68,7 +72,10 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
     assert_eq!(outbound_source.len(), 1);
     assert_eq!(sink.batch_calls, 1);
 
-    let second = pump_aead_output_turn(&mut driver,
+    let second = pump_aead_output_completion_turn(
+        &mut driver,
+        &mut completions,
+        0,
         &mut raw_source,
         &mut router,
         1,
