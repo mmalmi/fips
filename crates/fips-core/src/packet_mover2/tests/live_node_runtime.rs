@@ -409,7 +409,12 @@
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
-        live_node.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(1760));
+        live_node.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(1760)
+                .with_fmp_session_start_ms(1_000),
+        );
         live_node.driver.owner_mut(owner)
             .unwrap()
             .set_active_path(live_path);
@@ -424,7 +429,8 @@
             1761,
             0,
             b"continuation".to_vec(),
-        );
+        )
+        .with_activity_tick(ActivityTick::new(1_234));
         let mut first = live_node
             .pump_outbound_firsts_with_transport_worker(
                 PacketMover2LiveOutboundFirsts::default()
@@ -485,7 +491,7 @@
         let sent = sent_receipts.pop().unwrap();
         assert_eq!(sent.owner, owner);
         assert_eq!(sent.counter, 1760);
-        assert!(sent.fmp_timestamp_ms.is_some());
+        assert_eq!(sent.fmp_timestamp_ms, Some(234));
         assert!(sent.payload_len > b"continuation".len());
         assert!(tun_rx.try_recv().is_err());
         assert!(endpoint_io.event_rx.try_recv().is_err());

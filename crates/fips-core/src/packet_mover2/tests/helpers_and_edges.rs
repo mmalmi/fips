@@ -689,7 +689,7 @@
         driver
             .mover
             .queue_completion_batch(&mut driver.completion_work);
-        driver.retire_queued_completed_aead_outputs(queued);
+        driver.retire_queued_completed_aead_outputs(completion_limit);
         summary = driver.collect_retired_outputs(summary);
 
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {

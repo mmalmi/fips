@@ -380,7 +380,7 @@ impl PacketMover2TurnDriver {
         let queued = completions.drain_completions_into(completion_limit, &mut self.completion_work);
         summary.completions = summary.completions.saturating_add(queued);
         self.mover.queue_completion_batch(&mut self.completion_work);
-        self.retire_queued_completed_aead_outputs(queued);
+        self.retire_queued_completed_aead_outputs(completion_limit);
         self.collect_retired_outputs(summary)
     }
 
