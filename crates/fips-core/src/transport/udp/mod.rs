@@ -275,29 +275,13 @@ impl UdpTransport {
     /// Resolve a transport address (which may be a string like
     /// `"1.2.3.4:5678"` or a hostname) to a kernel `SocketAddr`,
     /// using the per-transport DNS cache. Public companion to
-    /// `async_socket()` for off-task workers that want to skip the
-    /// per-packet address parse / DNS lookup that `send_async` does
-    /// inline. Returns `Err` if neither numeric parse nor DNS resolves
-    /// the address.
+    /// `send_async` does inline. Returns `Err` if neither numeric parse nor DNS
+    /// resolves the address.
     pub async fn resolve_for_off_task(
         &self,
         addr: &TransportAddr,
     ) -> Result<SocketAddr, TransportError> {
         self.resolve_cached(addr).await
-    }
-
-    /// Clone the underlying async UDP socket (internally an
-    /// `Arc<AsyncFd<UdpRawSocket>>`, so the "clone" is just a refcount
-    /// bump). Returns `None` if the transport hasn't been started yet.
-    ///
-    /// Intended for off-task workers that need to issue raw
-    /// `send_to` / `send_batch` calls — useful when the AEAD
-    /// encrypt + UDP-send pipeline is parallelised across N worker
-    /// threads that each own a shared handle to the same kernel
-    /// socket. The kernel serialises concurrent `sendto` calls
-    /// itself, so concurrent userland sends are safe.
-    pub fn async_socket(&self) -> Option<AsyncUdpSocket> {
-        self.socket.clone()
     }
 
     pub(crate) fn send_snapshot(&self) -> Result<UdpSendSnapshot, TransportError> {
@@ -581,131 +565,6 @@ impl UdpTransport {
             Err(e) => {
                 self.stats.record_send_error();
                 Err(e)
-            }
-        }
-    }
-
-    /// Send indexed packet-mover batches through the UDP socket in transport order.
-    ///
-    /// On Linux this maps to `sendmmsg(2)` via `AsyncUdpSocket::send_batch`.
-    /// Other platforms keep the same per-packet `send_async` behavior. The
-    /// callback receives the caller-supplied packet index so packet_mover2 can
-    /// reorder priority ahead of bulk and still account drops without retries.
-    pub async fn send_batch_async<F>(&self, packets: &[(usize, &TransportAddr, &[u8])], record: F)
-    where
-        F: FnMut(usize, Result<usize, TransportError>),
-    {
-        #[cfg(not(target_os = "linux"))]
-        {
-            let mut record = record;
-            for (index, addr, data) in packets.iter().copied() {
-                record(index, self.send_async(addr, data).await);
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            self.send_batch_async_linux(packets, record).await
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn send_batch_async_linux<F>(
-        &self,
-        packets: &[(usize, &TransportAddr, &[u8])],
-        mut record: F,
-    ) where
-        F: FnMut(usize, Result<usize, TransportError>),
-    {
-        if packets.is_empty() {
-            return;
-        }
-        if !self.state.is_operational() {
-            for (index, _, _) in packets.iter().copied() {
-                record(index, Err(TransportError::NotStarted));
-            }
-            return;
-        }
-        let Some(socket) = self.socket.as_ref() else {
-            for (index, _, _) in packets.iter().copied() {
-                record(index, Err(TransportError::NotStarted));
-            }
-            return;
-        };
-        let Some(local_addr) = self.local_addr else {
-            for (index, _, _) in packets.iter().copied() {
-                record(index, Err(TransportError::NotStarted));
-            }
-            return;
-        };
-
-        let mut socket_packets = Vec::with_capacity(packets.len());
-        let mtu = self.config.mtu() as usize;
-        for (index, addr, data) in packets.iter().copied() {
-            if data.len() > mtu {
-                self.stats.record_mtu_exceeded();
-                record(
-                    index,
-                    Err(TransportError::MtuExceeded {
-                        packet_size: data.len(),
-                        mtu: self.config.mtu(),
-                    }),
-                );
-                continue;
-            }
-            let socket_addr = match self.resolve_cached(addr).await {
-                Ok(socket_addr) => socket_addr,
-                Err(error) => {
-                    record(index, Err(error));
-                    continue;
-                }
-            };
-            if !socket_addr_families_compatible(local_addr, socket_addr) {
-                record(
-                    index,
-                    Err(TransportError::InvalidAddress(format!(
-                        "remote address family {socket_addr} is incompatible with local UDP socket {local_addr}"
-                    ))),
-                );
-                continue;
-            }
-            socket_packets.push((index, data, socket_addr));
-        }
-
-        let mut offset = 0usize;
-        while offset < socket_packets.len() {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-            match socket.send_batch(&socket_packets[offset..]).await {
-                Ok(0) => {
-                    self.stats.record_send_error();
-                    for (index, _, _) in socket_packets[offset..].iter().copied() {
-                        record(
-                            index,
-                            Err(TransportError::SendFailed(
-                                "sendmmsg made no packet progress".into(),
-                            )),
-                        );
-                    }
-                    break;
-                }
-                Ok(sent) => {
-                    let end = offset.saturating_add(sent).min(socket_packets.len());
-                    for batch_index in offset..end {
-                        let (index, data, _) = socket_packets[batch_index];
-                        let bytes_sent = data.len();
-                        self.stats.record_send(bytes_sent);
-                        record(index, Ok(bytes_sent));
-                    }
-                    offset = end;
-                }
-                Err(error) => {
-                    self.stats.record_send_error();
-                    let message = error.to_string();
-                    for (index, _, _) in socket_packets[offset..].iter().copied() {
-                        record(index, Err(TransportError::SendFailed(message.clone())));
-                    }
-                    break;
-                }
             }
         }
     }
