@@ -391,41 +391,4 @@ impl SocketPacket {
         self.class.lane()
     }
 
-    pub(crate) fn from_fmp_established_wire(
-        owner: OwnerId,
-        generation: u64,
-        output: OutputTarget,
-        data: impl Into<PacketBuffer>,
-    ) -> Result<Self, WirePreflightError> {
-        let payload: PacketBuffer = data.into();
-        let header = FmpWireHeader::parse(&payload)?;
-        Ok(Self::new(
-            owner,
-            generation,
-            header.counter,
-            PacketClass::Bulk,
-            output,
-            payload,
-        )
-        .with_wire_flags(header.flags()))
-    }
-
-    pub(crate) fn from_fsp_established_wire(
-        owner: OwnerId,
-        generation: u64,
-        output: OutputTarget,
-        data: impl Into<PacketBuffer>,
-    ) -> Result<Self, WirePreflightError> {
-        let payload: PacketBuffer = data.into();
-        let header = FspWireHeader::parse(&payload)?;
-        Ok(Self::new(
-            owner,
-            generation,
-            header.counter,
-            PacketClass::Bulk,
-            output,
-            payload,
-        )
-        .with_wire_flags(header.flags()))
-    }
 }

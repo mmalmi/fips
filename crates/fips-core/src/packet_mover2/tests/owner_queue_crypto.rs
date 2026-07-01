@@ -68,7 +68,7 @@
         );
 
         let owner = fmp_owner(77);
-        let packet = SocketPacket::from_fmp_established_wire(
+        let packet = fmp_socket_packet(
             owner,
             5,
             OutputTarget::Transport,
@@ -861,13 +861,13 @@
 
         mover
             .submit_socket_packet(
-                SocketPacket::from_fmp_established_wire(fmp, 1, OutputTarget::Transport, fmp_wire)
+                fmp_socket_packet(fmp, 1, OutputTarget::Transport, fmp_wire)
                     .unwrap(),
             )
             .unwrap();
         mover
             .submit_socket_packet(
-                SocketPacket::from_fsp_established_wire(fsp, 1, OutputTarget::Tun, fsp_wire)
+                fsp_socket_packet(fsp, 1, OutputTarget::Tun, fsp_wire)
                     .unwrap(),
             )
             .unwrap();
@@ -907,7 +907,7 @@
         mover.register_owner(owner, OwnerConfig::new(1, 8));
         mover
             .submit_socket_packet(
-                SocketPacket::from_fmp_established_wire(
+                fmp_socket_packet(
                     owner,
                     1,
                     OutputTarget::Transport,
@@ -918,7 +918,7 @@
             .unwrap();
         mover
             .submit_socket_packet(
-                SocketPacket::from_fmp_established_wire(
+                fmp_socket_packet(
                     owner,
                     1,
                     OutputTarget::Transport,

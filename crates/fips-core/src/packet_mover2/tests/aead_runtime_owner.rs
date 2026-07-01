@@ -12,7 +12,7 @@
 
         mover
             .submit_socket_packet(
-                SocketPacket::from_fmp_established_wire(
+                fmp_socket_packet(
                     owner,
                     1,
                     OutputTarget::Tun,
@@ -557,7 +557,7 @@
         for counter in counters {
             mover
                 .submit_socket_packet(
-                    SocketPacket::from_fmp_established_wire(
+                    fmp_socket_packet(
                         owner,
                         1,
                         OutputTarget::Tun,
@@ -632,7 +632,7 @@
         for counter in 100..104 {
             mover
                 .submit_socket_packet(
-                    SocketPacket::from_fmp_established_wire(
+                    fmp_socket_packet(
                         owner,
                         1,
                         OutputTarget::Tun,
@@ -1320,7 +1320,7 @@
         for counter in 100..104 {
             mover
                 .submit_socket_packet(
-                    SocketPacket::from_fmp_established_wire(
+                    fmp_socket_packet(
                         owner,
                         1,
                         OutputTarget::Tun,
@@ -1441,7 +1441,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
 
-        let inbound_a = SocketPacket::from_fmp_established_wire(
+        let inbound_a = fmp_socket_packet(
             owner,
             1,
             OutputTarget::Tun,
@@ -1475,7 +1475,7 @@
         assert_eq!(output.path(), Some(path_a));
         assert_eq!(open_sealed_output(output, seal_key), b"out-a");
 
-        let inbound_b = SocketPacket::from_fmp_established_wire(
+        let inbound_b = fmp_socket_packet(
             owner,
             1,
             OutputTarget::Tun,
@@ -2123,7 +2123,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
 
-        let inbound = SocketPacket::from_fmp_established_wire(
+        let inbound = fmp_socket_packet(
             owner,
             1,
             OutputTarget::Tun,
@@ -2191,7 +2191,7 @@
         driver
             .mover
             .submit_socket_packet(
-                SocketPacket::from_fmp_established_wire(
+                fmp_socket_packet(
                     owner,
                     1,
                     OutputTarget::Tun,
@@ -2254,7 +2254,7 @@
             driver
                 .mover
                 .submit_socket_packet(
-                    SocketPacket::from_fmp_established_wire(
+                    fmp_socket_packet(
                         owner,
                         1,
                         OutputTarget::Tun,
@@ -2358,7 +2358,7 @@
             driver
                 .mover
                 .submit_socket_packet(
-                    SocketPacket::from_fmp_established_wire(
+                    fmp_socket_packet(
                         owner,
                         1,
                         OutputTarget::Tun,
@@ -2451,7 +2451,7 @@
             driver
                 .mover
                 .submit_socket_packet(
-                    SocketPacket::from_fmp_established_wire(
+                    fmp_socket_packet(
                         owner,
                         1,
                         OutputTarget::Tun,
@@ -2536,7 +2536,7 @@
         driver
             .mover
             .submit_socket_packet(
-                SocketPacket::from_fmp_established_wire(
+                fmp_socket_packet(
                     owner,
                     1,
                     OutputTarget::Tun,
@@ -2552,7 +2552,7 @@
         driver
             .mover
             .submit_socket_packet(
-                SocketPacket::from_fmp_established_wire(
+                fmp_socket_packet(
                     owner,
                     2,
                     OutputTarget::Tun,
@@ -2836,14 +2836,14 @@
         let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(1, 1));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
 
-        let first = SocketPacket::from_fsp_established_wire(
+        let first = fsp_socket_packet(
             owner,
             1,
             OutputTarget::Tun,
             fsp_encrypted_wire(10, 0, b"first", 40),
         )
         .unwrap();
-        let second = SocketPacket::from_fsp_established_wire(
+        let second = fsp_socket_packet(
             owner,
             1,
             OutputTarget::Tun,
@@ -2895,7 +2895,7 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
 
-        let inbound = SocketPacket::from_fsp_established_wire(
+        let inbound = fsp_socket_packet(
             owner,
             1,
             OutputTarget::Endpoint,

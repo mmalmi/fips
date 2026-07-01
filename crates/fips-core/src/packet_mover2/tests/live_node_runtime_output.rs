@@ -172,14 +172,14 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
 
-        let inbound_tun = SocketPacket::from_fmp_established_wire(
+        let inbound_tun = fmp_socket_packet(
             owner,
             1,
             OutputTarget::Tun,
             fmp_encrypted_wire(83, 10, 0, b"tun", key),
         )
         .unwrap();
-        let inbound_endpoint = SocketPacket::from_fmp_established_wire(
+        let inbound_endpoint = fmp_socket_packet(
             owner,
             1,
             OutputTarget::Endpoint,
@@ -234,7 +234,7 @@
             .owner_mut(owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
-        let packet = SocketPacket::from_fsp_established_wire(
+        let packet = fsp_socket_packet(
             owner,
             1,
             OutputTarget::Tun,
@@ -266,21 +266,21 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
         let packets = [
-            SocketPacket::from_fsp_established_wire(
+            fsp_socket_packet(
                 owner,
                 1,
                 OutputTarget::Tun,
                 fsp_encrypted_wire(20, 0, b"first", key),
             )
             .unwrap(),
-            SocketPacket::from_fsp_established_wire(
+            fsp_socket_packet(
                 owner,
                 1,
                 OutputTarget::Endpoint,
                 fsp_encrypted_wire(21, 0, b"second", key),
             )
             .unwrap(),
-            SocketPacket::from_fsp_established_wire(
+            fsp_socket_packet(
                 owner,
                 1,
                 OutputTarget::Transport,
