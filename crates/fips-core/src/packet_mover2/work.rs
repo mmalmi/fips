@@ -128,7 +128,27 @@ impl PacketOutput {
     pub(crate) fn fsp_send_receipt(&self) -> Option<PacketMover2FspSendReceipt> {
         self.fsp_send_receipt
     }
+}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2TransportSentReceipt {
+    pub(crate) owner: OwnerId,
+    pub(crate) counter: u64,
+    pub(crate) fmp_timestamp_ms: Option<u32>,
+    pub(crate) payload_len: usize,
+    pub(crate) fsp_send_receipt: Option<PacketMover2FspSendReceipt>,
+}
+
+impl PacketMover2TransportSentReceipt {
+    pub(crate) fn from_output(output: &PacketOutput) -> Self {
+        Self {
+            owner: output.owner(),
+            counter: output.counter(),
+            fmp_timestamp_ms: output.fmp_timestamp_ms(),
+            payload_len: output.payload_len(),
+            fsp_send_receipt: output.fsp_send_receipt(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

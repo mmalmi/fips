@@ -396,7 +396,7 @@ async fn send_packet_mover2_transport_groups_with_worker<R>(
     groups: Vec<PacketMover2TransportPlanGroup>,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
-    mut sent_outputs: Option<&mut Vec<PacketOutput>>,
+    mut sent_receipts: Option<&mut Vec<PacketMover2TransportSentReceipt>>,
 ) -> usize
 where
     R: PacketMover2TransportResolver + ?Sized,
@@ -414,8 +414,14 @@ where
         };
 
         let TransportHandle::Udp(udp) = transport else {
-            send_non_udp_transport_plan_group(transport, group, drops, &mut sent_outputs, &mut sent)
-                .await;
+            send_non_udp_transport_plan_group(
+                transport,
+                group,
+                drops,
+                &mut sent_receipts,
+                &mut sent,
+            )
+            .await;
             continue;
         };
 
@@ -424,7 +430,7 @@ where
             group,
             drops,
             worker,
-            &mut sent_outputs,
+            &mut sent_receipts,
             &mut sent,
         )
         .await;
@@ -436,7 +442,7 @@ async fn send_non_udp_transport_plan_group(
     transport: &TransportHandle,
     group: PacketMover2TransportPlanGroup,
     drops: &mut Vec<PacketMover2OutputDrop>,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+    sent_receipts: &mut Option<&mut Vec<PacketMover2TransportSentReceipt>>,
     sent: &mut usize,
 ) {
     for output in group.outputs {
@@ -445,7 +451,7 @@ async fn send_non_udp_transport_plan_group(
             &group.remote_addr,
             output,
             drops,
-            sent_outputs,
+            sent_receipts,
             sent,
         )
         .await;
@@ -457,14 +463,14 @@ async fn send_non_udp_transport_output(
     remote_addr: &TransportAddr,
     output: PacketOutput,
     drops: &mut Vec<PacketMover2OutputDrop>,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+    sent_receipts: &mut Option<&mut Vec<PacketMover2TransportSentReceipt>>,
     sent: &mut usize,
 ) {
     match transport.send(remote_addr, output.payload()).await {
         Ok(_) => {
             *sent += 1;
-            if let Some(sent_outputs) = sent_outputs.as_deref_mut() {
-                sent_outputs.push(output);
+            if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
+                sent_receipts.push(PacketMover2TransportSentReceipt::from_output(&output));
             }
         }
         Err(error) => drops.push(PacketMover2OutputDrop::from_output(
@@ -479,7 +485,7 @@ async fn send_udp_transport_plan_group(
     group: PacketMover2TransportPlanGroup,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+    sent_receipts: &mut Option<&mut Vec<PacketMover2TransportSentReceipt>>,
     sent: &mut usize,
 ) {
     let snapshot = match udp.send_snapshot() {
@@ -529,7 +535,7 @@ async fn send_udp_transport_plan_group(
                 },
                 drops,
                 worker,
-                sent_outputs,
+                sent_receipts,
                 sent,
             );
         }
@@ -544,7 +550,7 @@ async fn send_udp_transport_plan_group(
         },
         drops,
         worker,
-        sent_outputs,
+        sent_receipts,
         sent,
     );
 }
@@ -553,17 +559,17 @@ fn flush_packet_mover2_udp_send_job(
     job: PacketMover2TransportSendJob,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
-    sent_outputs: &mut Option<&mut Vec<PacketOutput>>,
+    sent_receipts: &mut Option<&mut Vec<PacketMover2TransportSentReceipt>>,
     sent: &mut usize,
 ) {
     if job.packets.is_empty() {
         return;
     }
-    let sent_receipts = if sent_outputs.is_some() {
+    let job_receipts = if sent_receipts.is_some() {
         Some(
             job.packets
                 .iter()
-                .map(PacketOutput::clone)
+                .map(PacketMover2TransportSentReceipt::from_output)
                 .collect::<Vec<_>>(),
         )
     } else {
@@ -572,10 +578,10 @@ fn flush_packet_mover2_udp_send_job(
     match worker.enqueue(job) {
         Ok(count) => {
             *sent += count;
-            if let (Some(sent_outputs), Some(sent_receipts)) =
-                (sent_outputs.as_deref_mut(), sent_receipts)
+            if let (Some(sent_receipts), Some(job_receipts)) =
+                (sent_receipts.as_deref_mut(), job_receipts)
             {
-                sent_outputs.extend(sent_receipts);
+                sent_receipts.extend(job_receipts);
             }
         }
         Err(mut job) => {

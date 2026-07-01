@@ -4,7 +4,7 @@ pub(crate) struct PacketMover2LiveOutboundFirsts {
     initial_outbound: Option<OutboundPacket>,
     endpoint_data_batch: Option<NodeEndpointDataBatch>,
     tun_packet: Option<Vec<u8>>,
-    collect_transport_sent_outputs: bool,
+    collect_transport_sent_receipts: bool,
 }
 
 impl PacketMover2LiveOutboundFirsts {
@@ -27,13 +27,13 @@ impl PacketMover2LiveOutboundFirsts {
         self
     }
 
-    pub(crate) fn with_transport_sent_output_collection(mut self, collect: bool) -> Self {
-        self.collect_transport_sent_outputs = collect;
+    pub(crate) fn with_transport_sent_receipt_collection(mut self, collect: bool) -> Self {
+        self.collect_transport_sent_receipts = collect;
         self
     }
 
-    pub(crate) fn collect_transport_sent_outputs(&self) -> bool {
-        self.collect_transport_sent_outputs
+    pub(crate) fn collect_transport_sent_receipts(&self) -> bool {
+        self.collect_transport_sent_receipts
     }
 }
 

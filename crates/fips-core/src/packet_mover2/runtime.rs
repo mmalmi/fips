@@ -278,7 +278,7 @@ impl PacketMover2TurnDriver {
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
         crypto_limit: usize,
-        collect_transport_sent_outputs: bool,
+        collect_transport_sent_receipts: bool,
         executor: &mut E,
         transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
     ) -> PacketMover2LiveNodeTurn
@@ -309,14 +309,14 @@ impl PacketMover2TurnDriver {
             let _transport_send_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::PacketMover2TransportSend,
             );
-            if collect_transport_sent_outputs {
+            if collect_transport_sent_receipts {
                 let groups = transport_output.take_groups_preserving_capacity();
                 send_packet_mover2_transport_groups_with_worker(
                     transports,
                     groups,
                     &mut report.output_drops,
                     transport_send_worker,
-                    Some(&mut report.transport_sent_outputs),
+                    Some(&mut report.transport_sent_receipts),
                 )
                 .await
             } else {
@@ -413,7 +413,7 @@ impl PacketMover2TurnDriver {
         RI: PacketMover2RawIngressSource,
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let collect_transport_sent_outputs = outbound_firsts.collect_transport_sent_outputs();
+        let collect_transport_sent_receipts = outbound_firsts.collect_transport_sent_receipts();
         let mut completion_report = None;
         let mut admission_summary = summary;
         if admission_summary.has_activity() {
@@ -425,7 +425,7 @@ impl PacketMover2TurnDriver {
                     endpoint_tx,
                     transports,
                     0,
-                    collect_transport_sent_outputs,
+                    collect_transport_sent_receipts,
                     executor,
                     transport_send_worker,
                 )
@@ -456,7 +456,7 @@ impl PacketMover2TurnDriver {
                 endpoint_tx,
                 transports,
                 crypto_limit,
-                collect_transport_sent_outputs,
+                collect_transport_sent_receipts,
                 executor,
                 transport_send_worker,
                 deferred_endpoint_data_batches,
@@ -579,7 +579,7 @@ impl PacketMover2TurnDriver {
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
         crypto_limit: usize,
-        collect_transport_sent_outputs: bool,
+        collect_transport_sent_receipts: bool,
         executor: &mut E,
         transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
         deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
@@ -597,7 +597,7 @@ impl PacketMover2TurnDriver {
                 endpoint_tx,
                 transports,
                 crypto_limit,
-                collect_transport_sent_outputs,
+                collect_transport_sent_receipts,
                 executor,
                 transport_send_worker,
             )

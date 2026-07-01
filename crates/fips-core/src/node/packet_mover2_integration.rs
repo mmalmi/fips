@@ -102,7 +102,7 @@ impl Node {
         .with_activity_tick(ActivityTick::new(Self::now_ms()));
         let firsts = PacketMover2LiveOutboundFirsts::default()
             .with_initial_outbound(Some(outbound))
-            .with_transport_sent_output_collection(true);
+            .with_transport_sent_receipt_collection(true);
         let mut turn = self
             .pump_packet_mover2_pending_outbound_firsts(firsts, 0, 0, 1)
             .await;
@@ -141,8 +141,8 @@ impl Node {
                 ),
             });
         }
-        let mut sent_outputs = turn.take_transport_sent_outputs();
-        if sent_outputs.len() != 1 {
+        let mut sent_receipts = turn.take_transport_sent_receipts();
+        if sent_receipts.len() != 1 {
             return Err(NodeError::SendFailed {
                 node_addr: *node_addr,
                 reason: format!(
@@ -151,23 +151,29 @@ impl Node {
                 ),
             });
         }
-        let output = sent_outputs.pop().expect("checked one sent output");
-        let timestamp_ms = output
-            .fmp_timestamp_ms()
+        let receipt = sent_receipts.pop().expect("checked one sent receipt");
+        if receipt.owner != OwnerId::fmp_node(*node_addr) {
+            return Err(NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "packet_mover2 FMP send receipt owner mismatch".into(),
+            });
+        }
+        let timestamp_ms = receipt
+            .fmp_timestamp_ms
             .ok_or_else(|| NodeError::SendFailed {
                 node_addr: *node_addr,
                 reason: "packet_mover2 FMP timestamp missing".into(),
             })?;
-        let bytes_sent = output.payload_len();
+        let bytes_sent = receipt.payload_len;
         let _ = self.packet_mover2.record_fmp_mmp_send_result(
             node_addr,
-            output.counter(),
+            receipt.counter,
             timestamp_ms,
             bytes_sent,
         );
         let _ = self.peers.record_fmp_send_bookkeeping(
             node_addr,
-            output.counter(),
+            receipt.counter,
             timestamp_ms,
             bytes_sent,
         );
@@ -403,7 +409,7 @@ impl Node {
 
         let firsts = PacketMover2LiveOutboundFirsts::default()
             .with_initial_outbound(Some(outbound))
-            .with_transport_sent_output_collection(true);
+            .with_transport_sent_receipt_collection(true);
         let turn = self
             .pump_packet_mover2_pending_outbound_firsts(firsts, 0, 0, 2)
             .await;
@@ -442,10 +448,10 @@ impl Node {
         dest_addr: &NodeAddr,
         label: &str,
         turn: PacketMover2LiveNodeTurn,
-        collect_transport_sent_outputs: bool,
+        collect_transport_sent_receipts: bool,
     ) -> Result<PacketMover2LiveNodeTurn, NodeError> {
         let result = self
-            .drive_packet_mover2_pending_outbound_turn(turn, collect_transport_sent_outputs)
+            .drive_packet_mover2_pending_outbound_turn(turn, collect_transport_sent_receipts)
             .await;
         self.process_packet_mover2_pending_outbound_bookkeeping()
             .await;
@@ -461,7 +467,7 @@ impl Node {
     async fn drive_packet_mover2_pending_outbound_turn(
         &mut self,
         mut turn: PacketMover2LiveNodeTurn,
-        collect_transport_sent_outputs: bool,
+        collect_transport_sent_receipts: bool,
     ) -> Result<PacketMover2LiveNodeTurn, PacketMover2PendingOutboundFailure> {
         for continuation in 0..=PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS {
             let summary = turn.summary();
@@ -495,7 +501,7 @@ impl Node {
             turn = self
                 .pump_packet_mover2_pending_outbound_firsts(
                     PacketMover2LiveOutboundFirsts::default()
-                        .with_transport_sent_output_collection(collect_transport_sent_outputs),
+                        .with_transport_sent_receipt_collection(collect_transport_sent_receipts),
                     0,
                     0,
                     1,
@@ -521,8 +527,8 @@ impl Node {
     ) -> Option<PacketMover2FspSendReceipt> {
         let owner = OwnerId::fsp_node(dest_addr);
         let mut sent_receipt = None;
-        for output in turn.take_transport_sent_outputs() {
-            if let Some(receipt) = output.fsp_send_receipt()
+        for transport_receipt in turn.take_transport_sent_receipts() {
+            if let Some(receipt) = transport_receipt.fsp_send_receipt
                 && receipt.owner() == owner
             {
                 sent_receipt = Some(receipt);
