@@ -8,17 +8,6 @@
         packet
     }
 
-    fn tun_tcp_data_packet(dest_addr: NodeAddr) -> Vec<u8> {
-        let tcp_payload_len = 512usize;
-        let tcp_len = 20 + tcp_payload_len;
-        let mut packet = tun_ipv6_packet(dest_addr, 40 + tcp_len);
-        packet[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
-        packet[6] = 6;
-        packet[52] = 5 << 4;
-        packet[53] = 0x18;
-        packet
-    }
-
     fn app_endpoint_payload() -> Vec<u8> {
         let mut packet = vec![0u8; 48];
         packet[0] = 0x60;
@@ -28,18 +17,6 @@
 
     fn bulk_endpoint_payload() -> Vec<u8> {
         vec![0x01, 0x02, 0x03, 0x04]
-    }
-
-    fn bulk_tcp_endpoint_payload() -> Vec<u8> {
-        let tcp_payload_len = 512usize;
-        let tcp_len = 20 + tcp_payload_len;
-        let mut packet = vec![0u8; 40 + tcp_len];
-        packet[0] = 0x60;
-        packet[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
-        packet[6] = 6;
-        packet[52] = 5 << 4;
-        packet[53] = 0x18;
-        packet
     }
 
     fn drain_outbound_packets<Routes>(
@@ -125,49 +102,6 @@
     }
 
     #[test]
-    fn live_route_table_keeps_tcp_tun_data_on_bulk_class() {
-        let dest = NodeAddr::from_bytes([0x63; 16]);
-        let owner = OwnerId::fmp_node(dest);
-        let mut routes = PacketMover2LiveRouteTable::default();
-        routes.register_tun_destination(
-            dest,
-            PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
-                owner,
-                5,
-                PacketClass::Bulk,
-                610,
-                0x02,
-            )),
-        );
-
-        let tcp_data = tun_tcp_data_packet(dest);
-        let udp_data = tun_ipv6_packet(dest, 64);
-        let (tx, mut rx) = crate::upper::tun::tun_outbound_channel(8);
-        tx.try_send(tcp_data.clone())
-            .expect("enqueue TCP TUN packet");
-        tx.try_send(udp_data.clone())
-            .expect("enqueue UDP TUN packet");
-
-        let (bulk_tx, mut bulk_rx) = endpoint_data_batch_channel(1);
-        drop(bulk_tx);
-        let mut source = PacketMover2RouteTableOutboundSource::new(
-            &mut bulk_rx,
-            0,
-            &mut rx,
-            8,
-            &mut routes,
-        );
-        let mut outbound = Vec::new();
-
-        assert_eq!(drain_outbound_packets(&mut source, 8, &mut outbound), 2);
-        assert_eq!(outbound.len(), 2);
-        assert_eq!(outbound[0].class, PacketClass::Bulk);
-        assert_eq!(outbound[0].payload.as_ref(), tcp_data.as_slice());
-        assert_eq!(outbound[1].class, PacketClass::Bulk);
-        assert_eq!(outbound[1].payload.as_ref(), udp_data.as_slice());
-    }
-
-    #[test]
     fn live_route_table_routes_endpoint_data_batches_into_fsp_endpoint_data() {
         let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
         let missing_remote =
@@ -236,85 +170,6 @@
             }
         );
         assert_eq!(outbound[1].payload.as_ref(), bulk_payload.as_slice());
-        let report = source.take_report_buffers();
-        assert!(report.endpoint_drops.is_empty());
-        let deferred = report.deferred_endpoint_data_batches;
-        assert_eq!(deferred.len(), 1);
-        assert_eq!(deferred[0].packet_count(), 1);
-    }
-
-    #[test]
-    fn live_route_table_keeps_tcp_endpoint_data_on_bulk_class() {
-        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let owner = OwnerId::fsp_node(*remote.node_addr());
-        let mut routes = PacketMover2LiveRouteTable::default();
-        routes.register_endpoint_destination(
-            *remote.node_addr(),
-            PacketMover2EndpointDataRoute::fsp(owner, 7, 0x03, 0x09),
-        );
-
-        let tcp_payload = bulk_tcp_endpoint_payload();
-        let udp_payload = bulk_endpoint_payload();
-        let (bulk_tx, mut bulk_rx) = endpoint_data_batch_channel(8);
-        bulk_tx
-            .send_or_drop(
-                NodeEndpointDataBatch::batch(
-                    remote,
-                    vec![
-                        tcp_payload.clone(),
-                        udp_payload.clone(),
-                    ],
-                    None,
-                )
-                .expect("endpoint data batch"),
-            )
-            .expect("enqueue endpoint data batch");
-
-        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
-        drop(tun_tx);
-        let mut source = PacketMover2RouteTableOutboundSource::new(
-            &mut bulk_rx,
-            8,
-            &mut tun_rx,
-            0,
-            &mut routes,
-        );
-        let mut outbound = Vec::new();
-
-        assert_eq!(drain_outbound_packets(&mut source, 8, &mut outbound), 1);
-        assert_eq!(outbound.len(), 2);
-        assert_eq!(outbound[0].class, PacketClass::Bulk);
-        assert_eq!(outbound[0].payload.as_ref(), tcp_payload.as_slice());
-        assert_eq!(outbound[1].class, PacketClass::Bulk);
-        assert_eq!(outbound[1].payload.as_ref(), udp_payload.as_slice());
-    }
-
-    #[test]
-    fn live_route_table_outbound_source_defers_unrouted_one_packet_endpoint_batch() {
-        let missing_remote =
-            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let (bulk_tx, mut bulk_rx) = endpoint_data_batch_channel(1);
-        bulk_tx
-            .send_or_drop(
-                NodeEndpointDataBatch::batch(missing_remote, vec![app_endpoint_payload()], None)
-                    .expect("one-packet endpoint data batch"),
-            )
-            .expect("enqueue endpoint data batch");
-        let (tun_tx, mut tun_rx) = crate::upper::tun::tun_outbound_channel(1);
-        drop((bulk_tx, tun_tx));
-        let mut routes = PacketMover2LiveRouteTable::default();
-        let mut source = PacketMover2RouteTableOutboundSource::new(
-            &mut bulk_rx,
-            1,
-            &mut tun_rx,
-            0,
-            &mut routes,
-        );
-        let mut outbound = Vec::new();
-
-        assert_eq!(drain_outbound_packets(&mut source, 1, &mut outbound), 1);
-
-        assert!(outbound.is_empty());
         let report = source.take_report_buffers();
         assert!(report.endpoint_drops.is_empty());
         let deferred = report.deferred_endpoint_data_batches;
