@@ -383,6 +383,27 @@ impl Node {
             .saturating_add(turn.tun_deferred_packets())
     }
 
+    pub(super) fn packet_mover2_raw_ingress_activity(
+        turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
+    ) -> usize {
+        let summary = turn.summary();
+        summary
+            .raw_ingress_dropped()
+            .saturating_add(summary.inbound_admitted())
+            .saturating_add(summary.inbound_dropped())
+            .saturating_add(turn.fmp_control_ingress().len())
+    }
+
+    pub(super) fn packet_mover2_control_activity(
+        turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
+    ) -> usize {
+        turn.fmp_control_ingress()
+            .len()
+            .saturating_add(turn.fmp_link_ingress().len())
+            .saturating_add(turn.fsp_coord_warmups().len())
+            .saturating_add(turn.fsp_local_session_ingress().len())
+    }
+
     pub(in crate::node) fn observe_packet_mover2_turn(
         turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
     ) {
