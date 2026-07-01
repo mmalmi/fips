@@ -504,7 +504,7 @@
     {
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary = driver.start_aead_completion_turn(completions, completion_limit, false);
+        let summary = driver.start_aead_completion_turn(completions, completion_limit);
         driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,

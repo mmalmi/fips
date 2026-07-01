@@ -383,7 +383,6 @@ impl PacketMover2TurnDriver {
         &mut self,
         completions: &mut C,
         completion_limit: usize,
-        compact_endpoint_data: bool,
     ) -> PacketMover2RuntimeSummary
     where
         C: PacketMover2CompletionSource,
@@ -393,7 +392,6 @@ impl PacketMover2TurnDriver {
             PacketMover2RuntimeSummary::default(),
             completions,
             completion_limit,
-            compact_endpoint_data,
         )
     }
 
@@ -402,7 +400,6 @@ impl PacketMover2TurnDriver {
         mut summary: PacketMover2RuntimeSummary,
         completions: &mut C,
         completion_limit: usize,
-        compact_endpoint_data: bool,
     ) -> PacketMover2RuntimeSummary
     where
         C: PacketMover2CompletionSource,
@@ -417,7 +414,7 @@ impl PacketMover2TurnDriver {
         summary.completions = summary.completions.saturating_add(queued);
         self.mover.queue_completion_batches(&mut self.completion_batches);
         self.retire_queued_completed_aead_outputs(completion_limit);
-        self.collect_retired_outputs(summary, compact_endpoint_data)
+        self.collect_retired_outputs(summary)
     }
 
     fn completion_drain_limit(&self, limit: usize) -> usize {
@@ -1087,7 +1084,6 @@ impl PacketMover2TurnDriver {
                 summary,
                 remaining,
                 executor,
-                compact_endpoint_data,
             );
             let dispatched = summary.dispatched.saturating_sub(dispatched_before);
             remaining = remaining.saturating_sub(dispatched);
@@ -1114,7 +1110,6 @@ impl PacketMover2TurnDriver {
         mut summary: PacketMover2RuntimeSummary,
         limit: usize,
         executor: &mut E,
-        compact_endpoint_data: bool,
     ) -> PacketMover2RuntimeSummary
     where
         E: PacketMover2CryptoExecutor,
@@ -1138,7 +1133,7 @@ impl PacketMover2TurnDriver {
             remaining = remaining.saturating_sub(dispatched);
 
             let outbound_admitted_before = summary.outbound_admitted;
-            summary = self.collect_retired_outputs(summary, compact_endpoint_data);
+            summary = self.collect_retired_outputs(summary);
 
             if dispatched == 0 && summary.outbound_admitted == outbound_admitted_before {
                 break;
@@ -1153,7 +1148,6 @@ impl PacketMover2TurnDriver {
     fn collect_retired_outputs(
         &mut self,
         mut summary: PacketMover2RuntimeSummary,
-        compact_endpoint_data: bool,
     ) -> PacketMover2RuntimeSummary {
         let mut retired = std::mem::take(&mut self.retired);
         let mut outbound_packets = std::mem::take(&mut self.retired_outbound_packets);
@@ -1161,7 +1155,7 @@ impl PacketMover2TurnDriver {
         for packet in retired.drain(..) {
             match packet {
                 RetiredPacket::Output(output) => {
-                    self.collect_retired_output(output, compact_endpoint_data);
+                    self.outputs.push(output);
                 }
                 RetiredPacket::Outbound(packet) => {
                     outbound_packets.push(packet);
@@ -1175,21 +1169,5 @@ impl PacketMover2TurnDriver {
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
         summary
-    }
-
-    fn collect_retired_output(&mut self, output: PacketOutput, compact_endpoint_data: bool) {
-        let output = if compact_endpoint_data {
-            match PacketMover2FspEndpointDataIngress::from_output(output) {
-                Ok(ingress) => {
-                    self.record_fsp_endpoint_data_ingress_activity(&ingress);
-                    self.fsp_endpoint_data_ingress.push(ingress);
-                    return;
-                }
-                Err(output) => output,
-            }
-        } else {
-            output
-        };
-        self.outputs.push(output);
     }
 }

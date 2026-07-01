@@ -642,11 +642,7 @@ impl PacketMover2LiveNode {
         self.crypto_worker.record_perf_depths();
         let summary = self
             .driver
-            .start_aead_completion_turn(
-                &mut self.crypto_worker,
-                crypto_limit,
-                endpoint_tx.direct_sink().is_some(),
-            );
+            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
         let turn = self.driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,
@@ -688,11 +684,7 @@ impl PacketMover2LiveNode {
         self.crypto_worker.record_perf_depths();
         let summary = self
             .driver
-            .start_aead_completion_turn(
-                &mut self.crypto_worker,
-                crypto_limit,
-                endpoint_tx.direct_sink().is_some(),
-            );
+            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
         if !summary.has_activity() {
             return PacketMover2LiveNodeTurn::default();
         }
