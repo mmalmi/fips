@@ -8,7 +8,7 @@ struct PacketMover2TransportSendJob {
     snapshot: crate::transport::udp::UdpSendSnapshot,
     transport_id: TransportId,
     remote_addr: std::net::SocketAddr,
-    packets: Vec<(PacketOutput, std::net::SocketAddr)>,
+    packets: Vec<PacketOutput>,
 }
 
 #[derive(Debug)]
@@ -246,11 +246,12 @@ async fn send_packet_mover2_transport_worker_job(
     let _timer = crate::perf_profile::Timer::start(
         crate::perf_profile::Stage::PacketMover2TransportSendWorker,
     );
+    let remote_addr = job.remote_addr;
     let owned_packets = job
         .packets
         .into_iter()
         .enumerate()
-        .map(|(index, (output, addr))| (index, output.into_payload(), addr))
+        .map(|(index, output)| (index, output.into_payload(), remote_addr))
         .collect::<Vec<_>>();
     let failed = job
         .snapshot
@@ -528,7 +529,7 @@ struct PendingPacketMover2UdpSendJob {
     transport_id: Option<TransportId>,
     remote_transport_addr: Option<TransportAddr>,
     socket_addr: Option<std::net::SocketAddr>,
-    packets: Vec<(PacketOutput, std::net::SocketAddr)>,
+    packets: Vec<PacketOutput>,
 }
 
 impl PendingPacketMover2UdpSendJob {
@@ -580,7 +581,7 @@ impl PendingPacketMover2UdpSendJob {
             ));
             return;
         }
-        self.packets.push((plan.output, socket_addr));
+        self.packets.push(plan.output);
     }
 
     fn len(&self) -> usize {
@@ -620,7 +621,7 @@ fn flush_pending_packet_mover2_udp_send_job(
         Some(
             job.packets
                 .iter()
-                .map(|(output, _)| output.clone())
+                .map(PacketOutput::clone)
                 .collect::<Vec<_>>(),
         )
     } else {
@@ -641,7 +642,7 @@ fn flush_pending_packet_mover2_udp_send_job(
                 crate::perf_profile::Event::PacketMover2TransportSendWorkerDropped,
                 dropped as u64,
             );
-            for (output, _) in job.packets.drain(..) {
+            for output in job.packets.drain(..) {
                 drops.push(PacketMover2OutputDrop::from_output(
                     &output,
                     PacketMover2OutputError::Unavailable,
