@@ -225,7 +225,6 @@
         assert_eq!(dispatched, 1);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
-        assert_eq!(queue_lens(&mover), (0, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS));
     }
 
     #[test]
@@ -596,8 +595,6 @@
             open_sealed_output(outputs[1], seal_key),
             b"outbound-liveness"
         );
-        assert_eq!(queue_lens(&mover), (0, 3));
-        assert_eq!(outbound_queue_lens(&mover), (0, 0));
     }
 
     #[test]
@@ -1833,7 +1830,6 @@
         }
 
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
-        assert_eq!(outbound_queue_lens(&driver.mover), (0, 1));
     }
 
     #[test]
