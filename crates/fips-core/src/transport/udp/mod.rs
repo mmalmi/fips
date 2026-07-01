@@ -33,7 +33,7 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 /// and the current measured bottleneck is pre-`PacketRx` dequeue backlog, so a
 /// wider receive batch reduces syscall/channel-item churn without changing the
 /// priority/bulk lane contract at the packet channel boundary.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 
 #[derive(Clone)]

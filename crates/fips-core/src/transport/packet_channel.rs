@@ -369,7 +369,7 @@ pub(crate) struct PacketBatch {
 #[derive(Debug)]
 enum PacketQueueItem {
     One(ReceivedPacket),
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Batch(PacketBatch),
 }
 
@@ -698,7 +698,7 @@ impl PendingPackets {
 }
 
 impl PacketTx {
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn packet_batch(&self, capacity: usize) -> PacketBatch {
         self.batch_pool.take(capacity)
     }
@@ -736,7 +736,7 @@ impl PacketTx {
         self.send_packet_batch(PacketBatch::from_vec(packets))
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn send_packet_batch(&self, mut batch: PacketBatch) -> Result<(), ()> {
         if batch.is_empty() {
             return Ok(());
@@ -771,7 +771,7 @@ impl PacketTx {
         Ok(())
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn send_packet_items(&self, tx: PacketQueueTx, mut packets: PacketBatch) -> Result<(), ()> {
         if matches!(tx, PacketQueueTx::Bulk) {
             return self.send_bulk_packet_items(packets);
@@ -787,7 +787,7 @@ impl PacketTx {
         self.send_item(tx, item).map_err(|_| ())
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn send_bulk_packet_items(&self, mut packets: PacketBatch) -> Result<(), ()> {
         let packet_count = packets.len();
         if packet_count == 0 {
@@ -921,6 +921,7 @@ impl PacketTx {
             .is_ok()
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn try_reserve_bulk_packet_prefix(&self, requested: usize) -> usize {
         if requested == 0 {
             return 0;

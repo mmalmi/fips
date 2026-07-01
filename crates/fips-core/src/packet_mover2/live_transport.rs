@@ -71,12 +71,6 @@ impl PacketMover2TransportSendWorkerPool {
             self.senders.len(),
         );
         let sender = &self.senders[shard];
-        if sender.capacity() == 0 {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::PacketMover2TransportSendWorkerBackpressure,
-                packet_count as u64,
-            );
-        }
         match sender.try_send(job) {
             Ok(()) => Ok(packet_count),
             Err(error) => {
@@ -521,8 +515,9 @@ async fn send_udp_transport_plan_group(
     let lane = group.lane;
     let transport_id = group.transport_id;
     let max_job_packets = worker.max_job_packets_for_lane(group.lane);
-    let mut packets = Vec::new();
-    for output in group.outputs {
+    let total_outputs = group.outputs.len();
+    let mut packets = Vec::with_capacity(total_outputs.min(max_job_packets));
+    for (index, output) in group.outputs.into_iter().enumerate() {
         if let Err(error) = snapshot.validate_packet(output.payload_len(), socket_addr) {
             drops.push(PacketMover2OutputDrop::from_output(
                 &output,
@@ -532,13 +527,16 @@ async fn send_udp_transport_plan_group(
         }
         packets.push(output);
         if packets.len() >= max_job_packets {
+            let next_capacity = total_outputs
+                .saturating_sub(index.saturating_add(1))
+                .min(max_job_packets);
             flush_packet_mover2_udp_send_job(
                 PacketMover2TransportSendJob {
                     lane,
                     snapshot: snapshot.clone(),
                     transport_id,
                     remote_addr: socket_addr,
-                    packets: std::mem::take(&mut packets),
+                    packets: std::mem::replace(&mut packets, Vec::with_capacity(next_capacity)),
                 },
                 drops,
                 worker,
@@ -591,13 +589,13 @@ fn flush_packet_mover2_udp_send_job(
                 sent_receipts.extend(job_receipts);
             }
         }
-        Err(mut job) => {
+        Err(job) => {
             let dropped = job.packets.len();
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::PacketMover2TransportSendWorkerDropped,
                 dropped as u64,
             );
-            for output in job.packets.drain(..) {
+            for output in job.packets {
                 drops.push(PacketMover2OutputDrop::from_output(
                     &output,
                     PacketMover2OutputError::Unavailable,
@@ -608,11 +606,11 @@ fn flush_packet_mover2_udp_send_job(
 }
 
 fn drop_transport_plan_group(
-    mut group: PacketMover2TransportPlanGroup,
+    group: PacketMover2TransportPlanGroup,
     drops: &mut Vec<PacketMover2OutputDrop>,
     reason: PacketMover2OutputError,
 ) {
-    for output in group.outputs.drain(..) {
+    for output in group.outputs {
         drops.push(PacketMover2OutputDrop::from_output(&output, reason));
     }
 }
