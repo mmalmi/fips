@@ -28,11 +28,6 @@ impl SendCounterAuthority {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn new_for_test(next: u64) -> Self {
-        Self::new(next)
-    }
-
     pub(crate) fn current(&self) -> u64 {
         self.next.load(Ordering::Relaxed)
     }
