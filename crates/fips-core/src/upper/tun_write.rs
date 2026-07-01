@@ -46,6 +46,22 @@ impl std::fmt::Display for TunWriteError {
 
 impl std::error::Error for TunWriteError {}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TunWriteBatchError {
+    index: usize,
+    kind: TunWriteErrorKind,
+}
+
+impl TunWriteBatchError {
+    pub(crate) fn index(self) -> usize {
+        self.index
+    }
+
+    pub(crate) fn kind(self) -> TunWriteErrorKind {
+        self.kind
+    }
+}
+
 #[derive(Debug)]
 struct TunWriteQueue {
     state: Mutex<TunWriteState>,
@@ -177,32 +193,71 @@ impl TunTx {
             });
         }
 
-        match lane {
-            TunWriteLane::Priority => state.priority.push_back(packet),
-            TunWriteLane::Bulk => {
-                if state.bulk.len() >= state.bulk_capacity {
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::TunWriteBulkDropped,
-                    );
-                    return Err(TunWriteError {
-                        packet,
-                        kind: TunWriteErrorKind::BulkFull,
-                    });
-                }
-                let high_water = (state.bulk_capacity / 2).max(1);
-                let previous = state.bulk.len();
-                state.bulk.push_back(packet);
-                if previous < high_water && state.bulk.len() >= high_water {
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::TunWriteBulkBacklogHigh,
-                    );
-                }
-            }
-        }
+        enqueue_tun_write_packet(&mut state, packet, lane)?;
         drop(state);
         self.queue.ready.notify_one();
         Ok(())
     }
+
+    pub(crate) fn send_batch_with_lanes<I, P>(&self, packets: I) -> Vec<TunWriteBatchError>
+    where
+        I: IntoIterator<Item = (P, TunWriteLane)>,
+        P: Into<TunWritePacket>,
+    {
+        let mut state = self.queue.lock();
+        let mut failures = Vec::new();
+        let mut sent = 0usize;
+        for (index, (packet, lane)) in packets.into_iter().enumerate() {
+            let packet = packet.into();
+            if !state.receiver_alive {
+                failures.push(TunWriteBatchError {
+                    index,
+                    kind: TunWriteErrorKind::Closed,
+                });
+                continue;
+            }
+            match enqueue_tun_write_packet(&mut state, packet, lane) {
+                Ok(()) => sent = sent.saturating_add(1),
+                Err(error) => failures.push(TunWriteBatchError {
+                    index,
+                    kind: error.kind,
+                }),
+            }
+        }
+        drop(state);
+        if sent > 0 {
+            self.queue.ready.notify_one();
+        }
+        failures
+    }
+}
+
+fn enqueue_tun_write_packet(
+    state: &mut TunWriteState,
+    packet: TunWritePacket,
+    lane: TunWriteLane,
+) -> Result<(), TunWriteError> {
+    match lane {
+        TunWriteLane::Priority => state.priority.push_back(packet),
+        TunWriteLane::Bulk => {
+            if state.bulk.len() >= state.bulk_capacity {
+                crate::perf_profile::record_event(crate::perf_profile::Event::TunWriteBulkDropped);
+                return Err(TunWriteError {
+                    packet,
+                    kind: TunWriteErrorKind::BulkFull,
+                });
+            }
+            let high_water = (state.bulk_capacity / 2).max(1);
+            let previous = state.bulk.len();
+            state.bulk.push_back(packet);
+            if previous < high_water && state.bulk.len() >= high_water {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::TunWriteBulkBacklogHigh,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 impl TunRx {

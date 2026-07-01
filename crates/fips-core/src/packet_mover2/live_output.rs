@@ -478,6 +478,26 @@ pub(crate) trait PacketMover2TunOutput {
         output: &PacketOutput,
         payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError>;
+
+    fn send_tun_batch(
+        &mut self,
+        outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> usize {
+        let mut sent = 0usize;
+        for (output, payload) in outputs.drain(..) {
+            let mut drop =
+                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+            match self.send_tun(&output, payload) {
+                Ok(()) => sent = sent.saturating_add(1),
+                Err(reason) => {
+                    drop.reason = reason;
+                    drops.push(drop);
+                }
+            }
+        }
+        sent
+    }
 }
 
 impl<T: PacketMover2TunOutput + ?Sized> PacketMover2TunOutput for &mut T {
@@ -513,14 +533,53 @@ impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
         };
         self.tx
             .send_with_lane(payload, lane)
-            .map_err(|error| match error.kind() {
-                crate::upper::tun::TunWriteErrorKind::Closed => {
-                    PacketMover2OutputError::Unavailable
-                }
-                crate::upper::tun::TunWriteErrorKind::BulkFull => {
-                    PacketMover2OutputError::Backpressure
-                }
-            })
+            .map_err(|error| packet_mover2_output_error_for_tun_write(error.kind()))
+    }
+
+    fn send_tun_batch(
+        &mut self,
+        outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> usize {
+        if outputs.is_empty() {
+            return 0;
+        }
+
+        let mut output_meta = Vec::with_capacity(outputs.len());
+        let mut packets = Vec::with_capacity(outputs.len());
+        for (output, payload) in outputs.drain(..) {
+            let lane = tun_write_lane_for_output(&output);
+            output_meta.push(output);
+            packets.push((payload, lane));
+        }
+
+        let failures = self.tx.send_batch_with_lanes(packets);
+        let failure_count = failures.len();
+        for failure in failures {
+            if let Some(output) = output_meta.get(failure.index()) {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    output,
+                    packet_mover2_output_error_for_tun_write(failure.kind()),
+                ));
+            }
+        }
+        output_meta.len().saturating_sub(failure_count)
+    }
+}
+
+fn tun_write_lane_for_output(output: &PacketOutput) -> crate::upper::tun::TunWriteLane {
+    match output.lane() {
+        Lane::Priority => crate::upper::tun::TunWriteLane::Priority,
+        Lane::Bulk => crate::upper::tun::TunWriteLane::Bulk,
+    }
+}
+
+fn packet_mover2_output_error_for_tun_write(
+    kind: crate::upper::tun::TunWriteErrorKind,
+) -> PacketMover2OutputError {
+    match kind {
+        crate::upper::tun::TunWriteErrorKind::Closed => PacketMover2OutputError::Unavailable,
+        crate::upper::tun::TunWriteErrorKind::BulkFull => PacketMover2OutputError::Backpressure,
     }
 }
 
@@ -686,17 +745,39 @@ where
     {
         let mut sent = 0usize;
         let mut endpoint_batch = Vec::new();
+        let mut tun_batch = Vec::new();
         for output in outputs {
-            if output.target() == OutputTarget::Endpoint {
-                match self.prepare_endpoint_output(output, drops) {
-                    Some(endpoint) => endpoint_batch.push(endpoint),
-                    None => {
-                        sent = sent.saturating_add(
-                            self.endpoint.send_endpoint_batch(&mut endpoint_batch, drops),
-                        );
+            match output.target() {
+                OutputTarget::Endpoint => {
+                    sent = sent.saturating_add(flush_tun_outputs(
+                        &mut self.tun,
+                        &mut tun_batch,
+                        drops,
+                    ));
+                    match self.prepare_opened_output(output, drops) {
+                        Some(endpoint) => endpoint_batch.push(endpoint),
+                        None => {
+                            sent = sent.saturating_add(flush_endpoint_outputs(
+                                &mut self.endpoint,
+                                &mut endpoint_batch,
+                                drops,
+                            ));
+                        }
                     }
+                    continue;
                 }
-                continue;
+                OutputTarget::Tun => {
+                    sent = sent.saturating_add(flush_endpoint_outputs(
+                        &mut self.endpoint,
+                        &mut endpoint_batch,
+                        drops,
+                    ));
+                    if let Some(tun) = self.prepare_opened_output(output, drops) {
+                        tun_batch.push(tun);
+                    }
+                    continue;
+                }
+                _ => {}
             }
 
             sent = sent.saturating_add(flush_endpoint_outputs(
@@ -704,6 +785,7 @@ where
                 &mut endpoint_batch,
                 drops,
             ));
+            sent = sent.saturating_add(flush_tun_outputs(&mut self.tun, &mut tun_batch, drops));
             let mut drop =
                 PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
             match self.send(output) {
@@ -719,6 +801,7 @@ where
             &mut endpoint_batch,
             drops,
         ))
+        .saturating_add(flush_tun_outputs(&mut self.tun, &mut tun_batch, drops))
     }
 
     fn send(&mut self, mut output: PacketOutput) -> Result<(), PacketMover2OutputError> {
@@ -766,7 +849,7 @@ where
     Tun: PacketMover2TunOutput,
     Endpoint: PacketMover2EndpointOutput,
 {
-    fn prepare_endpoint_output(
+    fn prepare_opened_output(
         &mut self,
         mut output: PacketOutput,
         drops: &mut Vec<PacketMover2OutputDrop>,
@@ -801,6 +884,17 @@ where
     Endpoint: PacketMover2EndpointOutput,
 {
     endpoint.send_endpoint_batch(batch, drops)
+}
+
+fn flush_tun_outputs<Tun>(
+    tun: &mut Tun,
+    batch: &mut Vec<(PacketOutput, PacketBuffer)>,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+) -> usize
+where
+    Tun: PacketMover2TunOutput,
+{
+    tun.send_tun_batch(batch, drops)
 }
 
 fn stale_bulk_output(output: &PacketOutput, max_age_ms: u64) -> bool {
