@@ -19,9 +19,6 @@ pub(crate) enum WireBuildError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FmpWireHeader {
-    receiver_idx: u32,
-    counter: u64,
-    flags: u8,
     header_bytes: [u8; FMP_ESTABLISHED_HEADER_SIZE],
 }
 
@@ -42,26 +39,23 @@ impl FmpWireHeader {
         let mut header_bytes = [0u8; FMP_ESTABLISHED_HEADER_SIZE];
         header_bytes.copy_from_slice(&data[..FMP_ESTABLISHED_HEADER_SIZE]);
 
-        Ok(Self {
-            receiver_idx: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
-            counter: u64::from_le_bytes([
-                data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
-            ]),
-            flags: data[1],
-            header_bytes,
-        })
+        Ok(Self { header_bytes })
     }
 
-    pub(crate) fn receiver_idx(self) -> u32 {
-        self.receiver_idx
+    pub(crate) fn receiver_idx(&self) -> u32 {
+        let bytes = &self.header_bytes;
+        u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]])
     }
 
-    pub(crate) fn counter(self) -> u64 {
-        self.counter
+    pub(crate) fn counter(&self) -> u64 {
+        let bytes = &self.header_bytes;
+        u64::from_le_bytes([
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ])
     }
 
-    pub(crate) fn flags(self) -> u8 {
-        self.flags
+    pub(crate) fn flags(&self) -> u8 {
+        self.header_bytes[1]
     }
 
     pub(crate) fn header_bytes(self) -> [u8; FMP_ESTABLISHED_HEADER_SIZE] {
@@ -75,8 +69,6 @@ impl FmpWireHeader {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FspWireHeader {
-    counter: u64,
-    flags: u8,
     header_bytes: [u8; FSP_HEADER_SIZE],
     ciphertext_offset: usize,
 }
@@ -111,21 +103,20 @@ impl FspWireHeader {
         }
 
         Ok(Self {
-            counter: u64::from_le_bytes([
-                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
-            ]),
-            flags,
             header_bytes,
             ciphertext_offset,
         })
     }
 
-    pub(crate) fn counter(self) -> u64 {
-        self.counter
+    pub(crate) fn counter(&self) -> u64 {
+        let bytes = &self.header_bytes;
+        u64::from_le_bytes([
+            bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
+        ])
     }
 
-    pub(crate) fn flags(self) -> u8 {
-        self.flags
+    pub(crate) fn flags(&self) -> u8 {
+        self.header_bytes[1]
     }
 
     pub(crate) fn header_bytes(self) -> [u8; FSP_HEADER_SIZE] {
