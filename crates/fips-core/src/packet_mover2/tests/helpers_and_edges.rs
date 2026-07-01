@@ -182,33 +182,6 @@
         }
     }
 
-    impl PacketMover2CompletionSource for VecDeque<Vec<CryptoCompletion>> {
-        fn drain_completions_into(
-            &mut self,
-            limit: usize,
-            completions: &mut Vec<CryptoCompletion>,
-        ) -> usize {
-            let mut drained = 0;
-            while drained < limit {
-                let Some(mut batch) = self.pop_front() else {
-                    break;
-                };
-                if batch.is_empty() {
-                    continue;
-                }
-
-                let remaining = limit - drained;
-                if batch.len() > remaining {
-                    let rest = batch.split_off(remaining);
-                    self.push_front(rest);
-                }
-                drained += batch.len();
-                completions.extend(batch);
-            }
-            drained
-        }
-    }
-
     #[derive(Clone, Debug)]
     struct PacketMover2LiveIngressPacket {
         protocol: PacketProtocol,
