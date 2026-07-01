@@ -10,12 +10,7 @@ fn test_packet_mover2_fmp_owner_update_refreshes_fsp_owner_wrap_route() {
     assert!(node.sync_packet_mover2_fmp_owner(&next_hop));
     node.learn_reverse_route(remote_addr, next_hop);
     install_established_session_with_mmp(&mut node, &remote);
-    let snapshot = node
-        .sessions
-        .get(&remote_addr)
-        .and_then(Node::packet_mover2_fsp_owner_session_snapshot)
-        .expect("established session should seed PM2 FSP owner");
-    assert!(node.sync_packet_mover2_fsp_owner_from_session_snapshot(&remote_addr, snapshot, 0));
+    assert!(node.sync_packet_mover2_fsp_owner_from_current_session(&remote_addr, 0));
     assert_eq!(
         node.packet_mover2.fsp_owner_next_hop(&remote_addr),
         Some(next_hop)

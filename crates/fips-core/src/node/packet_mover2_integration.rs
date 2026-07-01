@@ -30,7 +30,7 @@ struct PacketMover2FspOwnerSeed {
     wrap: Option<PacketMover2FspWrapRoute>,
 }
 
-pub(in crate::node) struct PacketMover2FspOwnerSessionSnapshot {
+struct PacketMover2FspOwnerSessionSnapshot {
     open: ring::aead::LessSafeKey,
     seal: ring::aead::LessSafeKey,
     counter_authority: crate::noise::SendCounterAuthority,
@@ -798,16 +798,7 @@ impl Node {
             return false;
         }
 
-        let snapshot = self
-            .sessions
-            .get(node_addr)
-            .and_then(Self::packet_mover2_fsp_owner_session_snapshot);
-        if let Some(snapshot) = snapshot {
-            self.sync_packet_mover2_fsp_owner_from_session_snapshot(node_addr, snapshot, 0)
-        } else {
-            self.remove_packet_mover2_fsp_owner(node_addr);
-            false
-        }
+        self.sync_packet_mover2_fsp_owner_from_current_session(node_addr, 0)
     }
 
     pub(in crate::node) fn packet_mover2_fsp_owner_epoch(
@@ -824,13 +815,16 @@ impl Node {
         self.packet_mover2.has_owner(OwnerId::fsp_node(*node_addr))
     }
 
-    pub(in crate::node) fn sync_packet_mover2_fsp_owner_from_session_entry(
+    pub(in crate::node) fn sync_packet_mover2_fsp_owner_from_current_session(
         &mut self,
         node_addr: &NodeAddr,
-        session: &SessionEntry,
         coords_warmup_remaining: u8,
     ) -> bool {
-        let Some(snapshot) = Self::packet_mover2_fsp_owner_session_snapshot(session) else {
+        let Some(snapshot) = self
+            .sessions
+            .get(node_addr)
+            .and_then(Self::packet_mover2_fsp_owner_session_snapshot)
+        else {
             self.remove_packet_mover2_fsp_owner(node_addr);
             return false;
         };
@@ -841,7 +835,7 @@ impl Node {
         )
     }
 
-    pub(in crate::node) fn sync_packet_mover2_fsp_owner_from_session_snapshot(
+    fn sync_packet_mover2_fsp_owner_from_session_snapshot(
         &mut self,
         node_addr: &NodeAddr,
         snapshot: PacketMover2FspOwnerSessionSnapshot,
@@ -871,12 +865,14 @@ impl Node {
             .is_none_or(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
         let synced = self
             .packet_mover2
-            .install_owner_fsp_session(seed.owner, seed.config, seed.keys)
+            .install_owner_fsp_session_routes(
+                seed.owner,
+                seed.config,
+                seed.keys,
+                seed.routes,
+                seed.wrap,
+            )
             .is_ok()
-            && self
-                .packet_mover2
-                .replace_owner_fsp_routes(seed.owner, seed.routes, seed.wrap)
-                .is_ok()
             && next_hop_ready;
         if synced {
             crate::perf_profile::record_event(
@@ -946,7 +942,7 @@ impl Node {
         })
     }
 
-    pub(in crate::node) fn packet_mover2_fsp_owner_session_snapshot(
+    fn packet_mover2_fsp_owner_session_snapshot(
         session: &SessionEntry,
     ) -> Option<PacketMover2FspOwnerSessionSnapshot> {
         let (open, seal) = session.fsp_crypto_keys()?;
@@ -993,9 +989,6 @@ impl Node {
         config = config.with_fsp_mmp(self.config.node.session_mmp.clone(), snapshot.is_initiator);
         if coords_warmup_remaining > 0 {
             config = config.with_fsp_coords_warmup(coords_warmup_remaining, coords_prefix);
-        }
-        if let Some(wrap) = route_update.wrap {
-            config = config.with_fsp_wrap_route(wrap);
         }
         Some(PacketMover2FspOwnerSeed {
             owner: OwnerId::fsp_node(*node_addr),

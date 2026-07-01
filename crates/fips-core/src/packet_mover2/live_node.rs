@@ -265,19 +265,28 @@ impl PacketMover2LiveNode {
         Ok(())
     }
 
-    pub(crate) fn install_owner_fsp_session(
+    pub(crate) fn install_owner_fsp_session_routes(
         &mut self,
         owner: OwnerId,
         config: OwnerConfig,
         keys: OwnerCryptoKeys,
-    ) -> Result<(), PacketMover2LiveOwnerError> {
+        routes: PacketMover2LiveOwnerRoutes,
+        wrap: Option<PacketMover2FspWrapRoute>,
+    ) -> Result<PacketMover2LiveOwnerRouteSummary, PacketMover2LiveOwnerError> {
+        if routes.has_owner_mismatch(owner) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
         let Some(owner_state) = self.driver.owner_mut(owner) else {
             return Err(PacketMover2LiveOwnerError::UnknownOwner);
         };
         if !owner_state.install_fsp_session(config, keys) {
             return Err(PacketMover2LiveOwnerError::OwnerMismatch);
         }
-        Ok(())
+        if !owner_state.set_fsp_wrap_route(wrap) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+
+        Ok(self.replace_registered_owner_routes(owner, routes))
     }
 
     pub(crate) fn apply_owner_live_config(
@@ -611,6 +620,22 @@ impl PacketMover2LiveNode {
         }
     }
 
+    fn replace_registered_owner_routes(
+        &mut self,
+        owner: OwnerId,
+        routes: PacketMover2LiveOwnerRoutes,
+    ) -> PacketMover2LiveOwnerRouteSummary {
+        let routes_added = routes.len();
+        let routes_removed = self.routes.unregister_owner(owner);
+        routes.apply_to(&mut self.routes);
+
+        PacketMover2LiveOwnerRouteSummary {
+            owner_removed: false,
+            routes_removed,
+            routes_added,
+        }
+    }
+
     pub(crate) fn replace_owner_routes(
         &mut self,
         owner: OwnerId,
@@ -623,15 +648,7 @@ impl PacketMover2LiveNode {
             return Err(PacketMover2LiveOwnerError::OwnerMismatch);
         }
 
-        let routes_added = routes.len();
-        let routes_removed = self.routes.unregister_owner(owner);
-        routes.apply_to(&mut self.routes);
-
-        Ok(PacketMover2LiveOwnerRouteSummary {
-            owner_removed: false,
-            routes_removed,
-            routes_added,
-        })
+        Ok(self.replace_registered_owner_routes(owner, routes))
     }
 
     pub(crate) fn replace_owner_fsp_routes(
@@ -650,15 +667,7 @@ impl PacketMover2LiveNode {
             return Err(PacketMover2LiveOwnerError::OwnerMismatch);
         }
 
-        let routes_added = routes.len();
-        let routes_removed = self.routes.unregister_owner(owner);
-        routes.apply_to(&mut self.routes);
-
-        Ok(PacketMover2LiveOwnerRouteSummary {
-            owner_removed: false,
-            routes_removed,
-            routes_added,
-        })
+        Ok(self.replace_registered_owner_routes(owner, routes))
     }
 
     pub(crate) fn take_deferred_endpoint_data_batches(
