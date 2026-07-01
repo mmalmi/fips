@@ -530,6 +530,26 @@ pub(crate) trait PacketMover2EndpointOutput {
         output: &PacketOutput,
         payload: PacketBuffer,
     ) -> Result<(), PacketMover2OutputError>;
+
+    fn send_endpoint_batch(
+        &mut self,
+        outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> usize {
+        let mut sent = 0usize;
+        for (output, payload) in outputs.drain(..) {
+            let mut drop =
+                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+            match self.send_endpoint(&output, payload) {
+                Ok(()) => sent = sent.saturating_add(1),
+                Err(reason) => {
+                    drop.reason = reason;
+                    drops.push(drop);
+                }
+            }
+        }
+        sent
+    }
 }
 
 impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut T {
@@ -578,6 +598,58 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
             })
             .map_err(|_| PacketMover2OutputError::Unavailable)
     }
+
+    fn send_endpoint_batch(
+        &mut self,
+        outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> usize {
+        let mut messages = Vec::with_capacity(outputs.len());
+        let mut unavailable_drops = Vec::with_capacity(outputs.len());
+        let enqueued_at_ms = crate::time::now_ms();
+        for (output, payload) in outputs.drain(..) {
+            let source_addr = output.owner().node_addr();
+            let Some(source_peer) = output.source_peer() else {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    &output,
+                    PacketMover2OutputError::NoRoute,
+                ));
+                continue;
+            };
+            if source_peer.node_addr() != &source_addr {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    &output,
+                    PacketMover2OutputError::NoRoute,
+                ));
+                continue;
+            }
+
+            unavailable_drops.push(PacketMover2OutputDrop::from_output(
+                &output,
+                PacketMover2OutputError::Unavailable,
+            ));
+            messages.push(EndpointDataDelivery {
+                source_peer,
+                payload,
+                enqueued_at_ms,
+            });
+        }
+        if messages.is_empty() {
+            return 0;
+        }
+
+        let sent = messages.len();
+        match self.tx.send(NodeEndpointEvent {
+            messages,
+            queued_at: crate::perf_profile::stamp(),
+        }) {
+            Ok(()) => sent,
+            Err(_) => {
+                drops.append(&mut unavailable_drops);
+                0
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -608,6 +680,47 @@ where
     Tun: PacketMover2TunOutput,
     Endpoint: PacketMover2EndpointOutput,
 {
+    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
+    where
+        I: IntoIterator<Item = PacketOutput>,
+    {
+        let mut sent = 0usize;
+        let mut endpoint_batch = Vec::new();
+        for output in outputs {
+            if output.target() == OutputTarget::Endpoint {
+                match self.prepare_endpoint_output(output, drops) {
+                    Some(endpoint) => endpoint_batch.push(endpoint),
+                    None => {
+                        sent = sent.saturating_add(
+                            self.endpoint.send_endpoint_batch(&mut endpoint_batch, drops),
+                        );
+                    }
+                }
+                continue;
+            }
+
+            sent = sent.saturating_add(flush_endpoint_outputs(
+                &mut self.endpoint,
+                &mut endpoint_batch,
+                drops,
+            ));
+            let mut drop =
+                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+            match self.send(output) {
+                Ok(()) => sent = sent.saturating_add(1),
+                Err(reason) => {
+                    drop.reason = reason;
+                    drops.push(drop);
+                }
+            }
+        }
+        sent.saturating_add(flush_endpoint_outputs(
+            &mut self.endpoint,
+            &mut endpoint_batch,
+            drops,
+        ))
+    }
+
     fn send(&mut self, mut output: PacketOutput) -> Result<(), PacketMover2OutputError> {
         if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
             record_stale_bulk_output_drop(output.target());
@@ -646,6 +759,48 @@ where
             }
         }
     }
+}
+
+impl<Tun, Endpoint> PacketMover2LiveOutputSink<'_, Tun, Endpoint>
+where
+    Tun: PacketMover2TunOutput,
+    Endpoint: PacketMover2EndpointOutput,
+{
+    fn prepare_endpoint_output(
+        &mut self,
+        mut output: PacketOutput,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> Option<(PacketOutput, PacketBuffer)> {
+        if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
+            record_stale_bulk_output_drop(output.target());
+            drops.push(PacketMover2OutputDrop::from_output(
+                &output,
+                PacketMover2OutputError::StaleQueuedBulk,
+            ));
+            return None;
+        }
+        match output.take_opened_payload() {
+            Some(payload) => Some((output, payload)),
+            None => {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    &output,
+                    PacketMover2OutputError::Unavailable,
+                ));
+                None
+            }
+        }
+    }
+}
+
+fn flush_endpoint_outputs<Endpoint>(
+    endpoint: &mut Endpoint,
+    batch: &mut Vec<(PacketOutput, PacketBuffer)>,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+) -> usize
+where
+    Endpoint: PacketMover2EndpointOutput,
+{
+    endpoint.send_endpoint_batch(batch, drops)
 }
 
 fn stale_bulk_output(output: &PacketOutput, max_age_ms: u64) -> bool {
