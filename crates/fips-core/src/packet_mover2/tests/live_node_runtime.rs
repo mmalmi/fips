@@ -173,6 +173,28 @@
     }
 
     #[tokio::test]
+    async fn live_completion_turn_without_completion_is_empty() {
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+
+        let turn = live_node
+            .pump_completion_output_turn_with_transport_worker(
+                &tun_tx,
+                &endpoint_io.event_tx,
+                &transports,
+                8,
+                &mut transport_worker,
+            )
+            .await;
+
+        assert!(!turn.has_activity());
+    }
+
+    #[tokio::test]
     async fn live_completion_turn_sends_ready_output_and_dispatches_next_work() {
         let send_transport_id = TransportId::new(176);
         let recv_transport_id = TransportId::new(177);
@@ -231,15 +253,16 @@
                 b"ready-first".to_vec(),
             ))
             .unwrap();
-        let first_feed = live_node
-            .pump_completion_output_turn_with_transport_worker(
-                &tun_tx,
-                &endpoint_io.event_tx,
-                &transports,
-                8,
-                &mut transport_worker,
-            )
-            .await;
+        let first_feed = pump_live_node_outbound_firsts(
+            &mut live_node,
+            PacketMover2LiveOutboundFirsts::default(),
+            &tun_tx,
+            &endpoint_io.event_tx,
+            &transports,
+            8,
+            &mut transport_worker,
+        )
+        .await;
         assert_eq!(first_feed.summary().completions(), 0);
         assert_eq!(first_feed.summary().dispatched(), 1);
         assert_eq!(first_feed.summary().outputs_sent(), 0);

@@ -738,6 +738,9 @@ impl PacketMover2LiveNode {
         let summary = self
             .driver
             .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
+        if !summary.has_activity() {
+            return PacketMover2LiveNodeTurn::default();
+        }
         self.driver
             .finish_aead_live_node_output_turn_with_executor(
                 summary,
