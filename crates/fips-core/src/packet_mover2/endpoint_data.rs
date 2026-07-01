@@ -14,12 +14,6 @@ impl PacketMover2EndpointDataBatchRoute {
         }
     }
 
-    fn set_deferred_payloads(&mut self, payloads: Vec<Vec<u8>>) {
-        if !payloads.is_empty() {
-            self.deferred_payloads = Some(payloads);
-        }
-    }
-
     fn finish_batch<F>(
         self,
         remote: PeerIdentity,

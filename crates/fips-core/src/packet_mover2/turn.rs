@@ -545,25 +545,10 @@ impl PacketMover2LiveNodeTurn {
     fn from_runtime_turn(turn: &PacketMover2RuntimeTurn<'_>) -> Self {
         Self {
             summary: turn.summary(),
-            fmp_control_ingress: Vec::new(),
-            fmp_ingress_receipts: Vec::new(),
-            fmp_link_ingress: Vec::new(),
-            fsp_coord_warmups: Vec::new(),
-            fsp_local_session_ingress: Vec::new(),
-            fsp_session_ingress: Vec::new(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
-            tun_outbound_drops: Vec::new(),
-            endpoint_data_drops: Vec::new(),
-            tun_source_drained: 0,
-            endpoint_source_drained: 0,
-            deferred_endpoint_data_batches_count: 0,
-            tun_deferred_packets: 0,
             output_drops: turn.output_drops().to_vec(),
             drops: turn.drops().to_vec(),
-            transport_planned: 0,
-            transport_sent: 0,
-            transport_dropped: 0,
-            transport_sent_receipts: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -579,20 +564,12 @@ impl PacketMover2LiveNodeTurn {
         &self.fmp_control_ingress
     }
 
-    fn set_fmp_control_ingress(&mut self, ingress: Vec<PacketMover2FmpControlIngress>) {
-        self.fmp_control_ingress = ingress;
-    }
-
     pub(crate) fn take_fmp_control_ingress(&mut self) -> Vec<PacketMover2FmpControlIngress> {
         std::mem::take(&mut self.fmp_control_ingress)
     }
 
     pub(crate) fn fmp_ingress_receipts(&self) -> &[PacketMover2FmpIngressReceipt] {
         &self.fmp_ingress_receipts
-    }
-
-    fn set_fmp_ingress_receipts(&mut self, receipts: Vec<PacketMover2FmpIngressReceipt>) {
-        self.fmp_ingress_receipts = receipts;
     }
 
     pub(crate) fn take_fmp_ingress_receipts(&mut self) -> Vec<PacketMover2FmpIngressReceipt> {
@@ -603,10 +580,6 @@ impl PacketMover2LiveNodeTurn {
         &self.fmp_link_ingress
     }
 
-    fn set_fmp_link_ingress(&mut self, ingress: Vec<PacketMover2FmpLinkIngress>) {
-        self.fmp_link_ingress = ingress;
-    }
-
     pub(crate) fn take_fmp_link_ingress(&mut self) -> Vec<PacketMover2FmpLinkIngress> {
         std::mem::take(&mut self.fmp_link_ingress)
     }
@@ -615,20 +588,12 @@ impl PacketMover2LiveNodeTurn {
         &self.fsp_coord_warmups
     }
 
-    fn set_fsp_coord_warmups(&mut self, warmups: Vec<PacketMover2FspCoordWarmup>) {
-        self.fsp_coord_warmups = warmups;
-    }
-
     pub(crate) fn take_fsp_coord_warmups(&mut self) -> Vec<PacketMover2FspCoordWarmup> {
         std::mem::take(&mut self.fsp_coord_warmups)
     }
 
     pub(crate) fn fsp_local_session_ingress(&self) -> &[PacketMover2FspLocalSessionIngress] {
         &self.fsp_local_session_ingress
-    }
-
-    fn set_fsp_local_session_ingress(&mut self, ingress: Vec<PacketMover2FspLocalSessionIngress>) {
-        self.fsp_local_session_ingress = ingress;
     }
 
     pub(crate) fn take_fsp_local_session_ingress(
@@ -641,10 +606,6 @@ impl PacketMover2LiveNodeTurn {
         &self.fsp_session_ingress
     }
 
-    fn set_fsp_session_ingress(&mut self, ingress: Vec<PacketMover2FspSessionIngress>) {
-        self.fsp_session_ingress = ingress;
-    }
-
     pub(crate) fn take_fsp_session_ingress(&mut self) -> Vec<PacketMover2FspSessionIngress> {
         std::mem::take(&mut self.fsp_session_ingress)
     }
@@ -653,48 +614,24 @@ impl PacketMover2LiveNodeTurn {
         &self.tun_outbound_drops
     }
 
-    fn set_tun_outbound_drops(&mut self, drops: Vec<PacketMover2TunOutboundDrop>) {
-        self.tun_outbound_drops = drops;
-    }
-
     pub(crate) fn endpoint_data_drops(&self) -> &[PacketMover2EndpointDataDrop] {
         &self.endpoint_data_drops
-    }
-
-    fn set_endpoint_data_drops(&mut self, drops: Vec<PacketMover2EndpointDataDrop>) {
-        self.endpoint_data_drops = drops;
     }
 
     pub(crate) fn tun_source_drained(&self) -> usize {
         self.tun_source_drained
     }
 
-    fn set_tun_source_drained(&mut self, count: usize) {
-        self.tun_source_drained = count;
-    }
-
     pub(crate) fn endpoint_source_drained(&self) -> usize {
         self.endpoint_source_drained
-    }
-
-    fn set_endpoint_source_drained(&mut self, count: usize) {
-        self.endpoint_source_drained = count;
     }
 
     pub(crate) fn deferred_endpoint_data_batches_count(&self) -> usize {
         self.deferred_endpoint_data_batches_count
     }
 
-    fn set_deferred_endpoint_data_batches_count(&mut self, count: usize) {
-        self.deferred_endpoint_data_batches_count = count;
-    }
-
     pub(crate) fn tun_deferred_packets(&self) -> usize {
         self.tun_deferred_packets
-    }
-
-    fn set_tun_deferred_packets(&mut self, count: usize) {
-        self.tun_deferred_packets = count;
     }
 
     pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {

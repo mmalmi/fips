@@ -298,38 +298,31 @@ impl PacketMover2TurnDriver {
             let turn = self.send_collected_outputs(summary, &mut sink);
             PacketMover2LiveNodeTurn::from_runtime_turn(&turn)
         };
-        report.set_fmp_ingress_receipts(std::mem::take(&mut self.fmp_ingress_receipts));
-        report.set_fmp_link_ingress(std::mem::take(&mut self.fmp_link_ingress));
-        report.set_fsp_coord_warmups(std::mem::take(&mut self.fsp_coord_warmups));
-        report.set_fsp_local_session_ingress(std::mem::take(&mut self.fsp_local_session_ingress));
-        report.set_fsp_session_ingress(std::mem::take(&mut self.fsp_session_ingress));
+        report.fmp_ingress_receipts = std::mem::take(&mut self.fmp_ingress_receipts);
+        report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
+        report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
+        report.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
+        report.fsp_session_ingress = std::mem::take(&mut self.fsp_session_ingress);
         report.transport_planned = transport_output.planned_packets();
         let dropped_before = report.output_drops.len();
+        let mut transport_sent_receipts = if collect_transport_sent_receipts {
+            Some(&mut report.transport_sent_receipts)
+        } else {
+            None
+        };
         report.transport_sent = {
             let _transport_send_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::PacketMover2TransportSend,
             );
-            if collect_transport_sent_receipts {
-                let groups = transport_output.take_groups_preserving_capacity();
-                send_packet_mover2_transport_groups_with_worker(
-                    transports,
-                    groups,
-                    &mut report.output_drops,
-                    transport_send_worker,
-                    Some(&mut report.transport_sent_receipts),
-                )
-                .await
-            } else {
-                let groups = transport_output.take_groups_preserving_capacity();
-                send_packet_mover2_transport_groups_with_worker(
-                    transports,
-                    groups,
-                    &mut report.output_drops,
-                    transport_send_worker,
-                    None,
-                )
-                .await
-            }
+            let groups = transport_output.take_groups_preserving_capacity();
+            send_packet_mover2_transport_groups_with_worker(
+                transports,
+                groups,
+                &mut report.output_drops,
+                transport_send_worker,
+                transport_sent_receipts.take(),
+            )
+            .await
         };
         report.transport_dropped = report.output_drops.len().saturating_sub(dropped_before);
         debug_assert_eq!(
@@ -612,12 +605,12 @@ impl PacketMover2TurnDriver {
         deferred_endpoint_data_batches.append(&mut outbound_buffers.deferred_endpoint_data_batches);
         let tun_deferred_count = outbound_buffers.tun_deferred_packets.len();
         deferred_tun_packets.append(&mut outbound_buffers.tun_deferred_packets);
-        report.set_endpoint_data_drops(outbound_buffers.endpoint_drops);
-        report.set_endpoint_source_drained(endpoint_drained);
-        report.set_deferred_endpoint_data_batches_count(endpoint_deferred_count);
-        report.set_tun_outbound_drops(outbound_buffers.tun_drops);
-        report.set_tun_deferred_packets(tun_deferred_count);
-        report.set_tun_source_drained(tun_drained);
+        report.endpoint_data_drops = outbound_buffers.endpoint_drops;
+        report.endpoint_source_drained = endpoint_drained;
+        report.deferred_endpoint_data_batches_count = endpoint_deferred_count;
+        report.tun_outbound_drops = outbound_buffers.tun_drops;
+        report.tun_deferred_packets = tun_deferred_count;
+        report.tun_source_drained = tun_drained;
         report
     }
 

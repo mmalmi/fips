@@ -842,7 +842,7 @@ impl PacketMover2LiveNode {
                     transport_send_worker,
                 )
                 .await;
-            turn.set_fmp_control_ingress(raw_ingress.take_control_ingress());
+            turn.fmp_control_ingress = raw_ingress.take_control_ingress();
             self.empty_raw_ingress = prefetched;
             return turn;
         }
@@ -862,7 +862,7 @@ impl PacketMover2LiveNode {
                 transport_send_worker,
             )
             .await;
-        turn.set_fmp_control_ingress(raw_ingress.take_control_ingress());
+        turn.fmp_control_ingress = raw_ingress.take_control_ingress();
         turn
     }
 }

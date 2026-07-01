@@ -274,7 +274,7 @@ impl PacketMover2EndpointDataRouter for PacketMover2LiveRouteTable {
         let Some(route) = self.endpoint.get(remote.node_addr()) else {
             let mut result = PacketMover2EndpointDataBatchRoute::default();
             if !payloads.is_empty() {
-                result.set_deferred_payloads(payloads);
+                result.deferred_payloads = Some(payloads);
             }
             return result;
         };
