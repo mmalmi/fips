@@ -8,21 +8,6 @@
         packet
     }
 
-    fn tun_icmpv6_packet(dest_addr: NodeAddr, len: usize) -> Vec<u8> {
-        let mut packet = tun_ipv6_packet(dest_addr, len);
-        packet[6] = 58;
-        packet
-    }
-
-    fn tun_tcp_ack_packet(dest_addr: NodeAddr) -> Vec<u8> {
-        let mut packet = tun_ipv6_packet(dest_addr, 60);
-        packet[4..6].copy_from_slice(&20u16.to_be_bytes());
-        packet[6] = 6;
-        packet[52] = 5 << 4;
-        packet[53] = 0x10;
-        packet
-    }
-
     fn tun_tcp_data_packet(dest_addr: NodeAddr) -> Vec<u8> {
         let tcp_payload_len = 512usize;
         let tcp_len = 20 + tcp_payload_len;

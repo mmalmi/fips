@@ -413,6 +413,25 @@
         finish_aead_output_turn_with_inline(driver, summary, sink, limit)
     }
 
+    fn admit_test_raw_ingress_packet<R>(
+        driver: &mut PacketMover2TurnDriver,
+        packet: PacketMover2RawIngress,
+        router: &mut R,
+        summary: &mut PacketMover2RuntimeSummary,
+    ) where
+        R: PacketMover2IngressRouter,
+    {
+        let Some(socket_packet) = PacketMover2TurnDriver::raw_ingress_socket_packet(
+            packet,
+            router,
+            summary,
+            &mut driver.raw_ingress_drops,
+        ) else {
+            return;
+        };
+        driver.admit_socket_packet(socket_packet, summary);
+    }
+
     fn run_aead_raw_ingress_turn<'a, I, O, R>(
         driver: &'a mut PacketMover2TurnDriver,
         inbound: I,
@@ -429,7 +448,7 @@
 
         let mut summary = PacketMover2RuntimeSummary::default();
         for packet in inbound {
-            driver.admit_raw_ingress_packet(packet, router, &mut summary);
+            admit_test_raw_ingress_packet(driver, packet, router, &mut summary);
         }
         for packet in outbound {
             driver.admit_outbound_packet(packet, &mut summary);
@@ -455,7 +474,7 @@
 
         let mut summary = PacketMover2RuntimeSummary::default();
         for packet in inbound {
-            driver.admit_raw_ingress_packet(packet, router, &mut summary);
+            admit_test_raw_ingress_packet(driver, packet, router, &mut summary);
         }
         for packet in outbound {
             driver.admit_outbound_packet(packet, &mut summary);
@@ -682,7 +701,7 @@
         summary = driver.collect_retired_outputs(summary);
 
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
-            driver.admit_raw_ingress_packet(packet, router, &mut summary);
+            admit_test_raw_ingress_packet(driver, packet, router, &mut summary);
         });
         drain_test_outbound_packets(outbound, outbound_limit, |packet| {
             driver.admit_outbound_packet(packet, &mut summary);
@@ -738,6 +757,44 @@
             output,
             vec![counter as u8],
         )
+    }
+
+    fn fmp_socket_packet(
+        owner: OwnerId,
+        generation: u64,
+        output: OutputTarget,
+        data: impl Into<PacketBuffer>,
+    ) -> Result<SocketPacket, WirePreflightError> {
+        let payload: PacketBuffer = data.into();
+        let header = FmpWireHeader::parse(&payload)?;
+        Ok(SocketPacket::new(
+            owner,
+            generation,
+            header.counter(),
+            PacketClass::Bulk,
+            output,
+            payload,
+        )
+        .with_wire_flags(header.flags()))
+    }
+
+    fn fsp_socket_packet(
+        owner: OwnerId,
+        generation: u64,
+        output: OutputTarget,
+        data: impl Into<PacketBuffer>,
+    ) -> Result<SocketPacket, WirePreflightError> {
+        let payload: PacketBuffer = data.into();
+        let header = FspWireHeader::parse(&payload)?;
+        Ok(SocketPacket::new(
+            owner,
+            generation,
+            header.counter(),
+            PacketClass::Bulk,
+            output,
+            payload,
+        )
+        .with_wire_flags(header.flags()))
     }
 
     fn fmp_wire(receiver_idx: u32, counter: u64, flags: u8) -> Vec<u8> {

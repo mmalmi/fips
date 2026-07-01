@@ -69,10 +69,6 @@ impl PacketMover2EndpointDataRoute {
         self.owner
     }
 
-    fn refresh_generation(&mut self, generation: u64) {
-        self.generation = generation;
-    }
-
     fn route_batch<I>(
         &self,
         remote: PeerIdentity,

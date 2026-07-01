@@ -632,22 +632,6 @@ impl PacketMover2TurnDriver {
         self.fsp_session_ingress.clear();
     }
 
-    fn admit_raw_ingress_packet<R>(
-        &mut self,
-        packet: PacketMover2RawIngress,
-        router: &mut R,
-        summary: &mut PacketMover2RuntimeSummary,
-    ) where
-        R: PacketMover2IngressRouter,
-    {
-        let Some(socket_packet) =
-            Self::raw_ingress_socket_packet(packet, router, summary, &mut self.raw_ingress_drops)
-        else {
-            return;
-        };
-        self.admit_socket_packet(socket_packet, summary);
-    }
-
     fn raw_ingress_socket_packet<R>(
         packet: PacketMover2RawIngress,
         router: &mut R,
