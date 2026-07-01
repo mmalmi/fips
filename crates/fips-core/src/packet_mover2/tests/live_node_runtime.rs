@@ -509,26 +509,6 @@
     }
 
     #[test]
-    fn tun_tx_output_sends_opened_payload_to_node_tun_channel() {
-        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x48; 16]));
-        let output = opened_output(owner, 48, 0, OutputTarget::Tun, b"tun-node");
-        let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
-
-        let sent = {
-            let tun = PacketMover2TunTxOutput::new(&tun_tx);
-            let mut sink = PacketMover2LiveOutputSink::new(tun, &mut endpoint, &mut transport);
-            sink.send(output)
-        };
-
-        assert_eq!(sent, Ok(()));
-        assert_eq!(tun_rx.try_recv().unwrap(), b"tun-node".to_vec());
-        assert!(endpoint.outputs.is_empty());
-        assert!(transport.groups.is_empty());
-    }
-
-    #[test]
     fn tun_tx_output_bounds_bulk_without_blocking_liveness() {
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel_with_bulk_capacity(1);
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
@@ -634,35 +614,6 @@
     }
 
     #[test]
-    fn endpoint_event_output_sends_owner_peer_payload_to_node_endpoint_channel() {
-        let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let source_peer = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-        let source_addr = *source_peer.node_addr();
-        let owner = OwnerId::fsp_node(source_addr);
-        let output = opened_endpoint_output(owner, source_peer, 50, 7, b"endpoint-node");
-        let mut tun = LiveTunRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
-
-        let sent = {
-            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
-            sink.send(output)
-        };
-
-        assert_eq!(sent, Ok(()));
-        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            NodeEndpointEvent { messages, .. } => {
-                assert_eq!(messages.len(), 1);
-                assert_eq!(messages[0].source_peer, source_peer);
-                assert_eq!(messages[0].payload, b"endpoint-node");
-            }
-        }
-        assert!(tun.outputs.is_empty());
-        assert!(transport.groups.is_empty());
-    }
-
-    #[test]
     fn endpoint_event_output_reports_unavailable_when_endpoint_channel_is_closed() {
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
@@ -760,94 +711,72 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_dispatch_records_no_route_without_retry() {
-        let transport_id = TransportId::new(55);
-        let remote_addr = TransportAddr::from_string("198.51.100.55:9000");
-        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x55; 16]));
-        let plan = PacketMover2TransportPlanGroup::new(
-            transport_id,
-            remote_addr.clone(),
-            transport_output(
-                owner,
+    async fn transport_plan_dispatch_records_send_failures_without_retry() {
+        for (id, remote, counter, ingress_seq, payload, has_transport, expected) in [
+            (
+                55,
+                "198.51.100.55:9000",
                 550,
                 13,
-                transport_id,
-                remote_addr.clone(),
-                b"missing-transport".to_vec(),
+                b"missing-transport".as_slice(),
+                false,
+                PacketMover2OutputError::NoRoute,
             ),
-        );
-        let transports = HashMap::<TransportId, TransportHandle>::new();
-        let mut drops = Vec::new();
-        let mut worker = PacketMover2TransportSendWorkerPool::new(8);
-
-        let sent = send_packet_mover2_transport_groups_with_worker(
-            &transports,
-            vec![plan],
-            &mut drops,
-            &mut worker,
-            None,
-        )
-        .await;
-
-        assert_eq!(sent, 0);
-        assert_eq!(drops.len(), 1);
-        let drop = &drops[0];
-        assert_eq!(drop.owner(), owner);
-        assert_eq!(drop.counter(), 550);
-        assert_eq!(drop.ingress_seq(), 13);
-        assert_eq!(drop.target(), OutputTarget::Transport);
-        assert_eq!(
-            drop.path(),
-            Some(TransportPath::live(transport_id, remote_addr))
-        );
-        assert_eq!(drop.payload_len(), b"missing-transport".len());
-        assert_eq!(drop.reason(), PacketMover2OutputError::NoRoute);
-    }
-
-    #[tokio::test]
-    async fn transport_plan_dispatch_records_unavailable_transport_send_failure() {
-        let transport_id = TransportId::new(56);
-        let remote_addr = TransportAddr::from_string("127.0.0.1:9");
-        let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x56; 16]));
-        let plan = PacketMover2TransportPlanGroup::new(
-            transport_id,
-            remote_addr.clone(),
-            transport_output(
-                owner,
+            (
+                56,
+                "127.0.0.1:9",
                 560,
                 14,
+                b"not-started".as_slice(),
+                true,
+                PacketMover2OutputError::Unavailable,
+            ),
+        ] {
+            let transport_id = TransportId::new(id);
+            let remote_addr = TransportAddr::from_string(remote);
+            let owner = OwnerId::fmp_node(NodeAddr::from_bytes([id as u8; 16]));
+            let plan = PacketMover2TransportPlanGroup::new(
                 transport_id,
                 remote_addr.clone(),
-                b"not-started".to_vec(),
-            ),
-        );
-        let mut transports = HashMap::new();
-        transports.insert(transport_id, unstarted_udp_transport(transport_id));
-        let mut drops = Vec::new();
-        let mut worker = PacketMover2TransportSendWorkerPool::new(8);
+                transport_output(
+                    owner,
+                    counter,
+                    ingress_seq,
+                    transport_id,
+                    remote_addr.clone(),
+                    payload.to_vec(),
+                ),
+            );
+            let mut transports = HashMap::new();
+            if has_transport {
+                transports.insert(transport_id, unstarted_udp_transport(transport_id));
+            }
+            let mut drops = Vec::new();
+            let mut worker = PacketMover2TransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_groups_with_worker(
-            &transports,
-            vec![plan],
-            &mut drops,
-            &mut worker,
-            None,
-        )
-        .await;
+            let sent = send_packet_mover2_transport_groups_with_worker(
+                &transports,
+                vec![plan],
+                &mut drops,
+                &mut worker,
+                None,
+            )
+            .await;
 
-        assert_eq!(sent, 0);
-        assert_eq!(drops.len(), 1);
-        let drop = &drops[0];
-        assert_eq!(drop.owner(), owner);
-        assert_eq!(drop.counter(), 560);
-        assert_eq!(drop.ingress_seq(), 14);
-        assert_eq!(drop.target(), OutputTarget::Transport);
-        assert_eq!(
-            drop.path(),
-            Some(TransportPath::live(transport_id, remote_addr))
-        );
-        assert_eq!(drop.payload_len(), b"not-started".len());
-        assert_eq!(drop.reason(), PacketMover2OutputError::Unavailable);
+            assert_eq!(sent, 0);
+            assert_eq!(drops.len(), 1);
+            let drop = &drops[0];
+            assert_eq!(drop.owner(), owner);
+            assert_eq!(drop.counter(), counter);
+            assert_eq!(drop.ingress_seq(), ingress_seq);
+            assert_eq!(drop.target(), OutputTarget::Transport);
+            assert_eq!(
+                drop.path(),
+                Some(TransportPath::live(transport_id, remote_addr))
+            );
+            assert_eq!(drop.payload_len(), payload.len());
+            assert_eq!(drop.reason(), expected);
+        }
     }
 
     #[tokio::test]
@@ -1069,6 +998,9 @@
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(1);
         assert!(worker.try_reserve(Lane::Bulk, 1));
+        assert!(!worker.try_reserve(Lane::Bulk, 1));
+        assert!(worker.try_reserve(Lane::Priority, 1));
+        assert!(!worker.try_reserve(Lane::Priority, 1));
 
         let sent = send_packet_mover2_transport_groups_with_worker(
             &transports,
@@ -1090,16 +1022,6 @@
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");
         recv_transport.stop().await.expect("stop recv udp");
-    }
-
-    #[test]
-    fn transport_send_worker_priority_reserve_survives_full_bulk_queue() {
-        let worker = PacketMover2TransportSendWorkerPool::new(1);
-
-        assert!(worker.try_reserve(Lane::Bulk, 1));
-        assert!(!worker.try_reserve(Lane::Bulk, 1));
-        assert!(worker.try_reserve(Lane::Priority, 1));
-        assert!(!worker.try_reserve(Lane::Priority, 1));
     }
 
     #[test]

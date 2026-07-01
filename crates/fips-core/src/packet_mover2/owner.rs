@@ -1900,7 +1900,7 @@ mod replay_window_tests {
     use super::*;
 
     #[test]
-    fn replay_window_accepts_out_of_order_once_within_window() {
+    fn replay_window_tracks_duplicates_window_edges_and_wrapped_blocks() {
         let mut window = ReplayWindow::default();
 
         assert!(window.accept(10));
@@ -1908,10 +1908,7 @@ mod replay_window_tests {
         assert!(window.accept(9));
         assert!(!window.accept(10));
         assert!(!window.accept(8));
-    }
 
-    #[test]
-    fn replay_window_rejects_packets_after_window_moves_past_them() {
         let mut window = ReplayWindow::default();
 
         assert!(window.accept(1));
@@ -1921,10 +1918,7 @@ mod replay_window_tests {
         assert!(window.accept(2 + REPLAY_WINDOW_SIZE));
         assert!(!window.accept(1));
         assert!(window.accept(2));
-    }
 
-    #[test]
-    fn replay_window_clears_wrapped_ring_blocks_on_large_advance() {
         let mut window = ReplayWindow::default();
 
         assert!(window.accept(0));
