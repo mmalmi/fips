@@ -241,7 +241,7 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
         payloads: Vec<Vec<u8>>,
-        enqueued_at_ms: u64,
+        _pending_enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
         if payloads.is_empty() {
             return Ok(());
@@ -261,13 +261,12 @@ impl Node {
         };
 
         let payload_count = payloads.len();
-        let batch = NodeEndpointDataBatch::batch_with_enqueued_at_ms(
-            remote,
-            payloads,
-            None,
-            enqueued_at_ms,
-        )
-        .expect("checked pending endpoint payload batch");
+        // Pending session traffic waited outside PM2 while first-contact or
+        // route recovery completed. Start the PM2 endpoint queue age when the
+        // batch enters PM2 so session establishment latency does not trip the
+        // live endpoint stale-bulk guard.
+        let batch = NodeEndpointDataBatch::batch(remote, payloads, None)
+            .expect("checked pending endpoint payload batch");
         let firsts =
             PacketMover2LiveOutboundFirsts::default().with_endpoint_data_batch(Some(batch));
         let turn = self
