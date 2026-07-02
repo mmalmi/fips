@@ -1768,12 +1768,17 @@
         );
         assert_eq!(driver.endpoint_data_bulk[0].commit_runs().len(), 1);
         assert_eq!(driver.endpoint_data_bulk[0].commit_runs()[0].len(), 3);
-        let mut runs = Vec::new();
-        for bulk in std::mem::take(&mut driver.endpoint_data_bulk) {
-            bulk.append_direct_packet_runs_to(&mut runs);
-        }
+        let mut batches = std::mem::take(&mut driver.endpoint_data_bulk)
+            .into_iter()
+            .map(PacketMover2EndpointDataBulk::into_direct_packet_batch)
+            .collect::<Vec<_>>();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 3);
+        let runs = batches[0].packet_runs();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].source_peer(), &source_peer);
+        assert_eq!(runs[0].previous_hop_node_addr(), &previous_hop);
+        assert!(!runs[0].is_direct_path());
         assert_eq!(runs[0].len(), 3);
         assert_eq!(
             runs[0].packet_bytes(),
@@ -1795,15 +1800,16 @@
                 b"compact-three".to_vec()
             ]
         );
-        runs[0].packet_slice_mut(1).unwrap()[0] = b'C';
-        assert_eq!(runs[0].packet_slice(1), Some(b"Compact-two".as_slice()));
-        runs[0].retain_packets(|index, _packet| index != 1);
-        assert_eq!(runs[0].len(), 2);
+        let runs_mut = batches[0].packet_runs_mut();
+        runs_mut[0].packet_slice_mut(1).unwrap()[0] = b'C';
+        assert_eq!(runs_mut[0].packet_slice(1), Some(b"Compact-two".as_slice()));
+        runs_mut[0].retain_packets(|index, _packet| index != 1);
+        assert_eq!(runs_mut[0].len(), 2);
         assert_eq!(
-            runs[0].packet_bytes(),
+            runs_mut[0].packet_bytes(),
             b"compact-one".len() + b"compact-three".len()
         );
-        let retained = runs[0]
+        let retained = runs_mut[0]
             .packet_slices()
             .map(<[u8]>::to_vec)
             .collect::<Vec<_>>();

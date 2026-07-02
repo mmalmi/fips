@@ -631,10 +631,15 @@ impl PacketMover2FspEndpointDataIngress {
         payload.drain(..FSP_INNER_HEADER_SIZE);
         payload.truncate(body_len);
         let packet_run = FipsEndpointDirectPacketRun::from_segmented_payload(
-            source_peer,
+            FipsEndpointDirectPacketRunMeta::new(
+                source_peer,
+                previous_hop_addr,
+                receive_sync.received_k_bit,
+                previous_hop_addr == source_addr,
+                crate::time::now_ms(),
+            ),
             payload,
             ranges,
-            crate::time::now_ms(),
         );
 
         Ok(Self {
@@ -720,12 +725,8 @@ impl PacketMover2EndpointDataBulk {
         &self.commit_runs
     }
 
-    pub(crate) fn append_direct_packet_runs_to(
-        self,
-        runs: &mut Vec<FipsEndpointDirectPacketRun>,
-    ) {
-        runs.reserve(self.packet_runs.len());
-        runs.extend(self.packet_runs);
+    pub(crate) fn into_direct_packet_batch(self) -> FipsEndpointDirectPacketBatch {
+        FipsEndpointDirectPacketBatch::from_packet_runs(self.packet_runs)
     }
 }
 

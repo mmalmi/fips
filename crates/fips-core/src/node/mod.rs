@@ -56,8 +56,8 @@ pub(crate) use endpoint_event::{
     UpdatePeersOutcome,
 };
 pub use endpoint_event::{
-    FipsEndpointDirectBatch, FipsEndpointDirectDeliveryError, FipsEndpointDirectMessage,
-    FipsEndpointDirectPacketRun, FipsEndpointDirectSink, FipsEndpointDirectSourceRun,
+    FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
+    FipsEndpointDirectPacketRunMeta, FipsEndpointDirectSink, FipsEndpointDirectSourceRun,
 };
 pub(crate) use endpoint_traffic::{PendingEndpointData, PendingSessionTrafficQueues};
 pub(in crate::node) use identity_cache::IdentityCache;

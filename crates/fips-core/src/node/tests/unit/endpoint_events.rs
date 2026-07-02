@@ -127,97 +127,42 @@ fn endpoint_event_message_count_treats_batch_items_as_public_messages() {
 }
 
 #[test]
-fn direct_endpoint_batch_splits_consecutive_source_runs() {
-    let source_a = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-    let source_b = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+fn direct_endpoint_sink_receives_packet_batch_with_run_metadata() {
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let previous_hop = NodeAddr::from_bytes([0x44; 16]);
     let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
     let captured_batch = std::sync::Arc::clone(&captured);
     let sink = EndpointDirectSink::new(move |batch| {
         *captured_batch.lock().expect("direct batch lock") = Some(batch);
         Ok::<(), FipsEndpointDirectDeliveryError>(())
     });
+    let run = FipsEndpointDirectPacketRun::from_segmented_payload(
+        FipsEndpointDirectPacketRunMeta::new(source, previous_hop, true, false, 123),
+        b"a1a2".to_vec().into(),
+        vec![0..2, 2..4],
+    );
+    let batch = FipsEndpointDirectPacketBatch::from_packet_runs(vec![run]);
 
-    sink.deliver_endpoint_data_batch(vec![
-        EndpointDataDelivery::new(source_a, b"a1".to_vec()),
-        EndpointDataDelivery::new(source_a, b"a2".to_vec()),
-        EndpointDataDelivery::new(source_b, b"b1".to_vec()),
-        EndpointDataDelivery::new(source_b, b"b2".to_vec()),
-        EndpointDataDelivery::new(source_a, b"a3".to_vec()),
-    ])
-    .expect("direct delivery");
+    sink.deliver_direct_packet_batch(batch)
+        .expect("direct packet batch delivery");
 
     let batch = captured
         .lock()
         .expect("direct batch lock")
         .take()
-        .expect("captured direct batch");
-    assert!(!batch.is_single_source());
-    let runs = batch.into_source_runs();
-
-    assert_eq!(runs.len(), 3);
-    assert_eq!(runs[0].source_peer(), &source_a);
-    assert_eq!(runs[0].packets().len(), 2);
-    assert_eq!(runs[0].packets()[0].as_slice(), b"a1");
-    assert_eq!(runs[0].packets()[1].as_slice(), b"a2");
-    assert_eq!(runs[1].source_peer(), &source_b);
-    assert_eq!(runs[1].packets().len(), 2);
-    assert_eq!(runs[1].packets()[0].as_slice(), b"b1");
-    assert_eq!(runs[1].packets()[1].as_slice(), b"b2");
-    assert_eq!(runs[2].source_peer(), &source_a);
-    assert_eq!(runs[2].packets().len(), 1);
-    assert_eq!(runs[2].packets()[0].as_slice(), b"a3");
-}
-
-#[test]
-fn direct_endpoint_sink_can_receive_source_runs_without_message_batch() {
-    struct SourceRunSink {
-        runs: std::sync::Arc<std::sync::Mutex<Option<Vec<FipsEndpointDirectSourceRun>>>>,
-    }
-
-    impl FipsEndpointDirectSink for SourceRunSink {
-        fn deliver_endpoint_batch(
-            &self,
-            _batch: FipsEndpointDirectBatch,
-        ) -> Result<(), FipsEndpointDirectDeliveryError> {
-            panic!("source-run sink should not receive legacy direct message batches");
-        }
-
-        fn deliver_endpoint_source_runs(
-            &self,
-            runs: Vec<FipsEndpointDirectSourceRun>,
-        ) -> Result<(), FipsEndpointDirectDeliveryError> {
-            *self.runs.lock().expect("source-run lock") = Some(runs);
-            Ok(())
-        }
-    }
-
-    let source_a = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-    let source_b = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-    let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let sink = EndpointDirectSink::new(SourceRunSink {
-        runs: std::sync::Arc::clone(&captured),
-    });
-
-    sink.deliver_endpoint_data_batch(vec![
-        EndpointDataDelivery::new(source_a, b"a1".to_vec()),
-        EndpointDataDelivery::new(source_a, b"a2".to_vec()),
-        EndpointDataDelivery::new(source_b, b"b1".to_vec()),
-    ])
-    .expect("direct source-run delivery");
-
-    let runs = captured
-        .lock()
-        .expect("source-run lock")
-        .take()
-        .expect("captured source runs");
-    assert_eq!(runs.len(), 2);
-    assert_eq!(runs[0].source_peer(), &source_a);
-    assert_eq!(runs[0].packets().len(), 2);
-    assert_eq!(runs[0].packets()[0].as_slice(), b"a1");
-    assert_eq!(runs[0].packets()[1].as_slice(), b"a2");
-    assert_eq!(runs[1].source_peer(), &source_b);
-    assert_eq!(runs[1].packets().len(), 1);
-    assert_eq!(runs[1].packets()[0].as_slice(), b"b1");
+        .expect("captured direct packet batch");
+    assert!(batch.is_single_source());
+    assert_eq!(batch.len(), 2);
+    assert_eq!(batch.packet_bytes(), 4);
+    assert_eq!(batch.run_count(), 1);
+    let runs = batch.packet_runs();
+    assert_eq!(runs[0].source_peer(), &source);
+    assert_eq!(runs[0].previous_hop_node_addr(), &previous_hop);
+    assert!(runs[0].received_k_bit());
+    assert!(!runs[0].is_direct_path());
+    assert_eq!(runs[0].enqueued_at_ms(), 123);
+    assert_eq!(runs[0].packet_slice(0), Some(b"a1".as_slice()));
+    assert_eq!(runs[0].packet_slice(1), Some(b"a2".as_slice()));
 }
 
 #[test]

@@ -5,8 +5,8 @@ pub use fips_core::config::{
     PeerConfig, RoutingMode, TransportInstances, TransportsConfig, UdpConfig,
 };
 pub use fips_core::endpoint::{
-    FipsEndpoint, FipsEndpointBuilder, FipsEndpointData, FipsEndpointDirectBatch,
-    FipsEndpointDirectDeliveryError, FipsEndpointDirectMessage, FipsEndpointDirectPacketRun,
+    FipsEndpoint, FipsEndpointBuilder, FipsEndpointData, FipsEndpointDirectDeliveryError,
+    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectPacketRunMeta,
     FipsEndpointDirectSink, FipsEndpointDirectSourceRun, FipsEndpointError, FipsEndpointMessage,
     FipsEndpointPeer, FipsEndpointRelayStatus, UpdatePeersOutcome,
 };

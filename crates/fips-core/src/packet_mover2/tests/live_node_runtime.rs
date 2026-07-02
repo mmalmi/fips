@@ -718,18 +718,19 @@
     }
 
     #[test]
-    fn endpoint_event_output_delivers_endpoint_batches_to_direct_sink() {
+    fn endpoint_event_output_keeps_generic_batches_on_event_queue_with_direct_sink() {
         let direct_batches = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured_batches = Arc::clone(&direct_batches);
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let direct_sink =
-            crate::node::EndpointDirectSink::new(move |batch: crate::FipsEndpointDirectBatch| {
+        let direct_sink = crate::node::EndpointDirectSink::new(
+            move |batch: crate::FipsEndpointDirectPacketBatch| {
                 captured_batches
                     .lock()
                     .expect("direct batches lock")
-                    .push(batch.into_messages());
+                    .push(batch.len());
                 Ok::<(), crate::FipsEndpointDirectDeliveryError>(())
-            });
+            },
+        );
         let mut endpoint_io = node
             .attach_endpoint_data_io_with_direct_sink(8, direct_sink)
             .expect("endpoint io");
@@ -750,28 +751,34 @@
 
         assert_eq!(sent, 2);
         assert!(drops.is_empty());
-        assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
-        assert!(endpoint_io.event_rx.try_recv().is_err());
+        assert_eq!(endpoint_io.event_tx.queued_messages(), 2);
         assert!(tun.outputs.is_empty());
         assert!(transport.groups.is_empty());
 
         let direct_batches = direct_batches.lock().expect("direct batches lock");
-        assert_eq!(direct_batches.len(), 1);
-        let messages = &direct_batches[0];
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].source_peer, source_peer);
-        assert_eq!(messages[0].data.as_slice(), b"direct-one");
-        assert_eq!(messages[1].source_peer, source_peer);
-        assert_eq!(messages[1].data.as_slice(), b"direct-two");
+        assert!(
+            direct_batches.is_empty(),
+            "generic endpoint output must not use direct packet-batch sink"
+        );
+        drop(direct_batches);
+        let event = endpoint_io.event_rx.try_recv().expect("endpoint event");
+        endpoint_io.event_rx.release_messages(event.messages.len());
+        assert_eq!(event.messages.len(), 2);
+        assert_eq!(event.messages[0].source_peer, source_peer);
+        assert_eq!(event.messages[0].payload.as_slice(), b"direct-one");
+        assert_eq!(event.messages[1].source_peer, source_peer);
+        assert_eq!(event.messages[1].payload.as_slice(), b"direct-two");
+        assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
     }
 
     #[test]
-    fn endpoint_event_output_does_not_fallback_to_events_when_direct_sink_fails() {
+    fn endpoint_event_output_ignores_direct_sink_failures_for_generic_events() {
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
-        let direct_sink =
-            crate::node::EndpointDirectSink::new(|_batch: crate::FipsEndpointDirectBatch| {
+        let direct_sink = crate::node::EndpointDirectSink::new(
+            |_batch: crate::FipsEndpointDirectPacketBatch| {
                 Err(crate::FipsEndpointDirectDeliveryError::Unavailable)
-            });
+            },
+        );
         let mut endpoint_io = node
             .attach_endpoint_data_io_with_direct_sink(8, direct_sink)
             .expect("endpoint io");
@@ -788,9 +795,13 @@
             send_one_output(&mut sink, output)
         };
 
-        assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
-        assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
-        assert!(endpoint_io.event_rx.try_recv().is_err());
+        assert_eq!(sent, Ok(()));
+        assert_eq!(endpoint_io.event_tx.queued_messages(), 1);
+        let event = endpoint_io.event_rx.try_recv().expect("endpoint event");
+        endpoint_io.event_rx.release_messages(event.messages.len());
+        assert_eq!(event.messages.len(), 1);
+        assert_eq!(event.messages[0].source_peer, source_peer);
+        assert_eq!(event.messages[0].payload.as_slice(), b"direct-fail");
         assert!(tun.outputs.is_empty());
         assert!(transport.groups.is_empty());
     }

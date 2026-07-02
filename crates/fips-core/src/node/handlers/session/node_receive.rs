@@ -129,7 +129,7 @@ impl Node {
         };
 
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
-        let mut direct_packet_runs = Vec::with_capacity(endpoint_bulks.len());
+        let mut direct_packet_batches = Vec::with_capacity(endpoint_bulks.len());
         for bulk in endpoint_bulks {
             for run in bulk.commit_runs() {
                 let commit = run.commit();
@@ -153,23 +153,24 @@ impl Node {
                     direct_path: commit.direct_path(),
                 });
             }
-            bulk.append_direct_packet_runs_to(&mut direct_packet_runs);
+            direct_packet_batches.push(bulk.into_direct_packet_batch());
         }
 
         let pending_flush_destinations = endpoint_commit.finish(self);
-        let count = direct_packet_runs
+        let count = direct_packet_batches
             .iter()
-            .map(crate::node::FipsEndpointDirectPacketRun::len)
+            .map(crate::node::FipsEndpointDirectPacketBatch::len)
             .sum::<usize>();
-        if count > 0
-            && direct_sink
-                .deliver_direct_packet_runs(direct_packet_runs)
-                .is_err()
-        {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::EndpointEventBulkDropped,
-                count as u64,
-            );
+        if count > 0 {
+            for batch in direct_packet_batches {
+                if direct_sink.deliver_direct_packet_batch(batch).is_err() {
+                    crate::perf_profile::record_event_count(
+                        crate::perf_profile::Event::EndpointEventBulkDropped,
+                        count as u64,
+                    );
+                    break;
+                }
+            }
         }
         for dest_addr in pending_flush_destinations {
             self.flush_pending_packets(&dest_addr).await;
