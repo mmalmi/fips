@@ -44,9 +44,14 @@ impl PacketMover2TransportSendWorkerPool {
 
     fn max_job_records_for_lane(&self, lane: Lane) -> usize {
         match lane {
-            Lane::Priority => self.max_priority_queued_packets,
-            Lane::Bulk => self.max_queued_packets,
+            Lane::Priority => self
+                .max_priority_queued_packets
+                .min(TRANSPORT_SEND_WORKER_COALESCE_PACKETS),
+            Lane::Bulk => self
+                .max_queued_packets
+                .min(TRANSPORT_SEND_WORKER_COALESCE_PACKETS),
         }
+        .max(1)
     }
 
     async fn enqueue(

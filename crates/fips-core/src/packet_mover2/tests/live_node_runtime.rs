@@ -1256,6 +1256,24 @@
     }
 
     #[test]
+    fn transport_send_worker_live_bulk_jobs_use_coalesce_cadence() {
+        let worker = PacketMover2TransportSendWorkerPool::default_live();
+
+        assert_eq!(
+            worker.max_job_records_for_lane(Lane::Bulk),
+            TRANSPORT_SEND_WORKER_COALESCE_PACKETS
+        );
+        assert_eq!(
+            worker.max_job_records_for_lane(Lane::Priority),
+            TRANSPORT_SEND_WORKER_PRIORITY_RESERVE_PACKETS
+        );
+
+        let small_worker = PacketMover2TransportSendWorkerPool::new(8);
+        assert_eq!(small_worker.max_job_records_for_lane(Lane::Bulk), 8);
+        assert_eq!(small_worker.max_job_records_for_lane(Lane::Priority), 8);
+    }
+
+    #[test]
     fn live_output_sink_drops_transport_without_live_path() {
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let key = 47;
