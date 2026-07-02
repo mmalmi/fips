@@ -269,32 +269,6 @@ impl PacketMover2TurnDriver {
         .unwrap_or(false)
     }
 
-    fn record_fsp_endpoint_data_ingress_activity(
-        &mut self,
-        ingress: &PacketMover2FspEndpointDataIngress,
-    ) -> bool {
-        let commit = ingress.commit();
-        self.record_authenticated_fsp_session(
-            OwnerId::fsp_node(commit.source_addr()),
-            commit.previous_hop_addr(),
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            ingress.body_len,
-            ingress.receive_sync,
-            ingress.activity_tick,
-            std::time::Instant::now(),
-        )
-        .unwrap_or(false)
-    }
-
-    fn push_fsp_endpoint_data_ingress(&mut self, ingress: PacketMover2FspEndpointDataIngress) {
-        match self.fsp_endpoint_data_ingress.last_mut() {
-            Some(batch) => batch.push(ingress),
-            None => self
-                .fsp_endpoint_data_ingress
-                .push(PacketMover2FspEndpointDataIngressBatch::from_ingress(ingress)),
-        }
-    }
-
     pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
         self.mover.record_fsp_decrypt_failure(owner)
     }
@@ -998,7 +972,6 @@ impl PacketMover2TurnDriver {
         &mut self,
         router: &mut R,
         summary: &mut PacketMover2RuntimeSummary,
-        compact_endpoint_data: bool,
     ) -> usize
     where
         R: PacketMover2IngressRouter,
@@ -1055,18 +1028,6 @@ impl PacketMover2TurnDriver {
                     }
                 }
                 OutputTarget::SessionPayload { .. } => {
-                    let output = if compact_endpoint_data {
-                        match PacketMover2FspEndpointDataIngress::from_output(output) {
-                            Ok(ingress) => {
-                                self.record_fsp_endpoint_data_ingress_activity(&ingress);
-                                self.push_fsp_endpoint_data_ingress(ingress);
-                                continue;
-                            }
-                            Err(output) => output,
-                        }
-                    } else {
-                        output
-                    };
                     match PacketMover2FspSessionIngress::from_output(output) {
                         Ok(ingress) => {
                             self.record_fsp_session_ingress_activity(&ingress);
@@ -1124,7 +1085,7 @@ impl PacketMover2TurnDriver {
         E: PacketMover2CryptoExecutor,
     {
         let mut remaining = crypto_limit;
-        self.process_live_internal_outputs(router, &mut summary, compact_endpoint_data);
+        self.process_live_internal_outputs(router, &mut summary);
         loop {
             let dispatched_before = summary.dispatched;
             summary = self.collect_aead_outputs_with_executor(
@@ -1139,11 +1100,11 @@ impl PacketMover2TurnDriver {
                 break;
             }
 
-            if self.process_live_internal_outputs(router, &mut summary, compact_endpoint_data) == 0 {
+            if self.process_live_internal_outputs(router, &mut summary) == 0 {
                 break;
             }
         }
-        self.process_live_internal_outputs(router, &mut summary, compact_endpoint_data);
+        self.process_live_internal_outputs(router, &mut summary);
         summary
     }
 

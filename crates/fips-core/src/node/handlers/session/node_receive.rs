@@ -128,7 +128,7 @@ impl Node {
         };
 
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
-        let mut endpoint_deliveries = Vec::with_capacity(message_count);
+        let mut direct_messages = Vec::<FipsEndpointDirectMessage>::with_capacity(message_count);
         for batch in ingress_batches {
             batch.visit_commit_runs(|commit, run_len| {
                 let source_addr = commit.source_addr();
@@ -151,14 +151,14 @@ impl Node {
                     direct_path: commit.direct_path(),
                 });
             });
-            batch.append_deliveries_to(&mut endpoint_deliveries);
+            batch.append_direct_messages_to(&mut direct_messages);
         }
 
         let pending_flush_destinations = endpoint_commit.finish(self);
-        let count = endpoint_deliveries.len();
+        let count = direct_messages.len();
         if count > 0
             && direct_sink
-                .deliver_endpoint_data_batch(endpoint_deliveries)
+                .deliver_direct_batch(FipsEndpointDirectBatch::from_messages(direct_messages))
                 .is_err()
         {
             crate::perf_profile::record_event_count(

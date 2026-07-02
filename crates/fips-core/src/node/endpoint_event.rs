@@ -31,6 +31,10 @@ pub struct FipsEndpointDirectBatch {
 }
 
 impl FipsEndpointDirectBatch {
+    pub(crate) fn from_messages(messages: Vec<FipsEndpointDirectMessage>) -> Self {
+        Self { messages }
+    }
+
     /// Messages in this direct delivery batch.
     pub fn messages(&self) -> &[FipsEndpointDirectMessage] {
         &self.messages
@@ -157,8 +161,14 @@ impl EndpointDirectSink {
             .into_iter()
             .map(FipsEndpointDirectMessage::from)
             .collect();
-        self.sink
-            .deliver_endpoint_batch(FipsEndpointDirectBatch { messages })
+        self.deliver_direct_batch(FipsEndpointDirectBatch::from_messages(messages))
+    }
+
+    pub(crate) fn deliver_direct_batch(
+        &self,
+        batch: FipsEndpointDirectBatch,
+    ) -> Result<(), FipsEndpointDirectDeliveryError> {
+        self.sink.deliver_endpoint_batch(batch)
     }
 }
 

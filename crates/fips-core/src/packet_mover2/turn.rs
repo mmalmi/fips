@@ -549,7 +549,7 @@ pub(crate) struct PacketMover2FspEndpointDataIngress {
     body_len: usize,
     receive_sync: FspReceiveSync,
     activity_tick: Option<ActivityTick>,
-    delivery: EndpointDataDelivery,
+    direct_message: FipsEndpointDirectMessage,
 }
 
 impl PacketMover2FspEndpointDataIngress {
@@ -607,7 +607,11 @@ impl PacketMover2FspEndpointDataIngress {
             body_len,
             receive_sync,
             activity_tick,
-            delivery: EndpointDataDelivery::new(source_peer, payload),
+            direct_message: FipsEndpointDirectMessage {
+                source_peer,
+                data: payload,
+                enqueued_at_ms: crate::time::now_ms(),
+            },
         })
     }
 
@@ -615,8 +619,8 @@ impl PacketMover2FspEndpointDataIngress {
         self.commit
     }
 
-    pub(crate) fn into_delivery(self) -> EndpointDataDelivery {
-        self.delivery
+    pub(crate) fn into_direct_message(self) -> FipsEndpointDirectMessage {
+        self.direct_message
     }
 }
 
@@ -661,10 +665,13 @@ impl PacketMover2FspEndpointDataIngressBatch {
         visit(current, count);
     }
 
-    pub(crate) fn append_deliveries_to(self, deliveries: &mut Vec<EndpointDataDelivery>) {
-        deliveries.reserve(self.ingresses.len());
+    pub(crate) fn append_direct_messages_to(
+        self,
+        messages: &mut Vec<FipsEndpointDirectMessage>,
+    ) {
+        messages.reserve(self.ingresses.len());
         for ingress in self.ingresses {
-            deliveries.push(ingress.into_delivery());
+            messages.push(ingress.into_direct_message());
         }
     }
 }

@@ -1641,6 +1641,13 @@
                 .sum::<usize>(),
             1
         );
+        let mut messages = Vec::new();
+        for batch in std::mem::take(&mut driver.fsp_endpoint_data_ingress) {
+            batch.append_direct_messages_to(&mut messages);
+        }
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].source_peer, source_peer);
+        assert_eq!(messages[0].data.as_slice(), endpoint_payload);
         assert!(driver.outputs.is_empty());
     }
 
