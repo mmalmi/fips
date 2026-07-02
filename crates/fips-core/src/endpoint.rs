@@ -364,11 +364,11 @@ impl FipsEndpoint {
         if payloads.is_empty() {
             return Ok(());
         }
-        self.send_endpoint_data_batch(remote, payloads).await?;
+        self.send_endpoint_data_batch(remote, payloads)?;
         Ok(())
     }
 
-    async fn send_endpoint_data_batch(
+    fn send_endpoint_data_batch(
         &self,
         remote: PeerIdentity,
         mut payloads: Vec<Vec<u8>>,
@@ -527,6 +527,29 @@ impl FipsEndpoint {
             .send_or_drop(batch)
             .map_err(|_| FipsEndpointError::Closed)?;
         Ok(())
+    }
+
+    /// Synchronous blocking batch send to one resolved remote identity.
+    ///
+    /// This is the blocking-thread counterpart to [`Self::send_batch_to_peer`].
+    /// The caller keeps routing authority: FIPS only receives already-owned
+    /// endpoint payloads for the resolved peer.
+    pub fn blocking_send_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        if *remote.node_addr() == self.node_addr {
+            for payload in payloads {
+                self.send_loopback(payload)?;
+            }
+            return Ok(());
+        }
+
+        if payloads.is_empty() {
+            return Ok(());
+        }
+        self.send_endpoint_data_batch(remote, payloads)
     }
 
     /// Synchronous blocking receive — parks the calling **OS thread**
