@@ -71,6 +71,38 @@
         }
     }
 
+    struct SplitPacketMover2Service<'a, C, E> {
+        completions: &'a mut C,
+        executor: &'a mut E,
+    }
+
+    impl<C, E> PacketMover2CryptoExecutor for SplitPacketMover2Service<'_, C, E>
+    where
+        E: PacketMover2CryptoExecutor,
+    {
+        fn execute_prepared_chunk(
+            &mut self,
+            prepared: &mut Vec<PreparedCryptoWork>,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
+            self.executor.execute_prepared_chunk(prepared, completions)
+        }
+    }
+
+    impl<C, E> PacketMover2CompletionSource for SplitPacketMover2Service<'_, C, E>
+    where
+        C: PacketMover2CompletionSource,
+    {
+        fn drain_completions_into(
+            &mut self,
+            limit: usize,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
+            self.completions
+                .drain_completions_into(limit, completions)
+        }
+    }
+
     #[derive(Debug, Default)]
     struct CapturingPreparedCryptoExecutor {
         prepared: Vec<PreparedCryptoWork>,
@@ -526,10 +558,14 @@
             completion_limit,
             endpoint_tx.direct_sink().is_some(),
         );
+        let mut service = SplitPacketMover2Service {
+            completions,
+            executor: &mut executor,
+        };
         driver
-            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+            .pump_aead_live_node_route_table_turn_after_completion_with_firsts(
                 summary,
-                &mut executor,
+                &mut service,
                 None,
                 raw_ingress,
                 routes,

@@ -36,6 +36,55 @@
         }
     }
 
+    #[derive(Default)]
+    struct QueuedCompletionService {
+        completions: VecDeque<CryptoCompletionBatch>,
+    }
+
+    impl PacketMover2CryptoExecutor for QueuedCompletionService {
+        fn execute_prepared_chunk(
+            &mut self,
+            prepared: &mut Vec<PreparedCryptoWork>,
+            _completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
+            let count = prepared.len();
+            let mut batches = Vec::new();
+            for work in prepared.drain(..) {
+                CryptoCompletionBatch::push_grouped(work.execute(), &mut batches);
+            }
+            self.completions.extend(batches);
+            count
+        }
+    }
+
+    impl PacketMover2CompletionSource for QueuedCompletionService {
+        fn drain_completions_into(
+            &mut self,
+            limit: usize,
+            completions: &mut Vec<CryptoCompletion>,
+        ) -> usize {
+            let mut drained = 0usize;
+            while drained < limit {
+                let Some(mut batch) = self.completions.pop_front() else {
+                    break;
+                };
+                let batch_limit = limit.saturating_sub(drained);
+                let pending = if batch.len() > batch_limit {
+                    Some(batch.split_off(batch_limit))
+                } else {
+                    None
+                };
+                drained = drained.saturating_add(batch.len());
+                completions.extend(batch.into_completions());
+                if let Some(pending) = pending {
+                    self.completions.push_front(pending);
+                    break;
+                }
+            }
+            drained
+        }
+    }
+
     fn run_with_executor<E>(
         mover: &mut PacketMover2,
         executor: &mut E,
@@ -275,6 +324,53 @@
         assert_eq!(dispatched, 0);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
+    }
+
+    #[test]
+    fn service_loop_redrains_stateless_worker_completions_after_dispatch() {
+        let owner = fmp_owner(711);
+        let key = 25;
+        let mut driver =
+            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        register_owner_with_test_keys(&mut driver.mover, owner, key, key);
+        driver
+            .mover
+            .submit_socket_packet(
+                fmp_socket_packet(
+                    owner,
+                    1,
+                    OutputTarget::Tun,
+                    fmp_encrypted_wire(711, 100, 0, b"queued-worker", key),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let mut service = QueuedCompletionService::default();
+        let mut router = SimpleIngressRouter {
+            owner,
+            generation: 1,
+            class: PacketClass::Bulk,
+            output: OutputTarget::Tun,
+        };
+        let summary = driver.collect_live_session_outputs(
+            PacketMover2RuntimeSummary::default(),
+            &mut router,
+            1,
+            &mut service,
+            false,
+        );
+
+        assert_eq!(summary.dispatched(), 1);
+        assert_eq!(summary.completions(), 1);
+        assert_eq!(summary.outputs(), 1);
+        assert!(driver.drops.is_empty());
+        assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
+        assert_eq!(driver.outputs[0].counter(), 100);
+        assert_eq!(
+            &driver.outputs[0].payload()[FMP_ESTABLISHED_HEADER_SIZE..],
+            b"queued-worker"
+        );
     }
 
     #[test]

@@ -665,7 +665,7 @@ impl PacketMover2LiveNode {
                 compact_endpoint_data,
             );
         let turn = self.driver
-            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+            .pump_aead_live_node_route_table_turn_after_completion_with_firsts(
                 summary,
                 &mut self.crypto_worker,
                 fast_ingress,
@@ -716,7 +716,7 @@ impl PacketMover2LiveNode {
             return PacketMover2LiveNodeTurn::default();
         }
         let turn = self.driver
-            .finish_aead_live_node_output_turn_with_executor(
+            .finish_aead_live_node_output_turn(
                 summary,
                 &mut self.routes,
                 tun_tx,
