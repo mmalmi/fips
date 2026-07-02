@@ -120,9 +120,33 @@ impl AuthenticatedSessionMessage {
     pub(in crate::node) fn is_application_data(&self) -> bool {
         self.msg_type == SessionMessageType::DataPacket.to_byte()
             || self.msg_type == SessionMessageType::EndpointData.to_byte()
+            || self.msg_type == SessionMessageType::EndpointDataBulk.to_byte()
     }
 
-    pub(in crate::node) fn into_endpoint_data_delivery(mut self) -> EndpointDataDelivery {
+    pub(in crate::node) fn into_endpoint_data_deliveries(mut self) -> Vec<EndpointDataDelivery> {
+        if self.msg_type == SessionMessageType::EndpointDataBulk.to_byte() {
+            let Some(lengths) =
+                crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(self.body())
+            else {
+                return Vec::new();
+            };
+            let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
+            let body_len = self.body_len();
+            if body_offset > 0 {
+                self.buffer.drain(..body_offset);
+            }
+            self.buffer.truncate(body_len);
+            let source_peer = self.source_peer;
+            let buffer = self.buffer;
+            return crate::node::session_wire::split_fsp_endpoint_data_bulk_payload(
+                buffer,
+                &lengths,
+            )
+            .into_iter()
+            .map(|payload| EndpointDataDelivery::new(source_peer, payload))
+            .collect();
+        }
+
         debug_assert_eq!(self.msg_type, SessionMessageType::EndpointData.to_byte());
         // Keep the receive hot path allocation-free after AEAD open. Plaintext
         // may start at offset 0 or inside a retained packet buffer; in both
@@ -134,7 +158,8 @@ impl AuthenticatedSessionMessage {
             self.buffer.drain(..body_offset);
         }
         self.buffer.truncate(body_len);
-        EndpointDataDelivery::new(self.source_peer, self.buffer)
+        let source_peer = self.source_peer;
+        vec![EndpointDataDelivery::new(source_peer, self.buffer)]
     }
 }
 
@@ -278,6 +303,7 @@ impl AuthenticatedSessionDispatch {
 
     fn is_endpoint_data(&self) -> bool {
         self.msg_type() == SessionMessageType::EndpointData.to_byte()
+            || self.msg_type() == SessionMessageType::EndpointDataBulk.to_byte()
     }
 
     fn body(&self) -> &[u8] {
@@ -301,8 +327,8 @@ impl AuthenticatedSessionDispatch {
         }
     }
 
-    fn into_endpoint_data_delivery(self) -> EndpointDataDelivery {
-        self.message.into_endpoint_data_delivery()
+    fn into_endpoint_data_deliveries(self) -> Vec<EndpointDataDelivery> {
+        self.message.into_endpoint_data_deliveries()
     }
 
     async fn dispatch(self, node: &mut Node) {
@@ -379,7 +405,10 @@ impl AuthenticatedSessionDispatch {
                 }
             }
             Some(SessionMessageType::EndpointData) => {
-                node.deliver_endpoint_data_batch(vec![self.into_endpoint_data_delivery()]);
+                node.deliver_endpoint_data_batch(self.into_endpoint_data_deliveries());
+            }
+            Some(SessionMessageType::EndpointDataBulk) => {
+                node.deliver_endpoint_data_batch(self.into_endpoint_data_deliveries());
             }
             Some(SessionMessageType::TraversalOffer) => {
                 let rest = self.body();
@@ -423,12 +452,12 @@ impl AuthenticatedSessionDispatch {
         self,
         node: &mut Node,
         commit: &mut SessionReceiveBatchCommit,
-    ) -> EndpointDataDelivery {
+    ) -> Vec<EndpointDataDelivery> {
         debug_assert!(self.is_endpoint_data());
 
         node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
         commit.push_dispatch(&self);
-        self.into_endpoint_data_delivery()
+        self.into_endpoint_data_deliveries()
     }
 }
 

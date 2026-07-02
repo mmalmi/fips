@@ -1858,7 +1858,7 @@ impl OwnerState {
         }
         let _ = self.record_authenticated_fsp_session(
             commit.previous_hop_addr(),
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            ingress.msg_type,
             ingress.body_len,
             ingress.receive_sync,
             ingress.activity_tick,

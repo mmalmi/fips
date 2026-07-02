@@ -546,10 +546,11 @@ impl PacketMover2FspEndpointDataCommit {
 #[derive(Clone, Debug)]
 pub(crate) struct PacketMover2FspEndpointDataIngress {
     commit: PacketMover2FspEndpointDataCommit,
+    msg_type: u8,
     body_len: usize,
     receive_sync: FspReceiveSync,
     activity_tick: Option<ActivityTick>,
-    direct_message: FipsEndpointDirectMessage,
+    direct_messages: Vec<FipsEndpointDirectMessage>,
 }
 
 impl PacketMover2FspEndpointDataIngress {
@@ -570,7 +571,7 @@ impl PacketMover2FspEndpointDataIngress {
         };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
-        let (timestamp_ms, inner_flags, plaintext_len, body_len) = {
+        let (timestamp_ms, inner_flags, plaintext_len, body_len, lengths) = {
             let Some(plaintext) = output.opened_payload() else {
                 return Err(output);
             };
@@ -579,10 +580,15 @@ impl PacketMover2FspEndpointDataIngress {
             else {
                 return Err(output);
             };
-            if msg_type != crate::protocol::SessionMessageType::EndpointData.to_byte() {
+            if msg_type != crate::protocol::SessionMessageType::EndpointDataBulk.to_byte()
+            {
                 return Err(output);
             }
-            (timestamp_ms, inner_flags, plaintext.len(), body.len())
+            let Some(lengths) = crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(body)
+            else {
+                return Err(output);
+            };
+            (timestamp_ms, inner_flags, plaintext.len(), body.len(), lengths)
         };
         let receive_sync = FspReceiveSync {
             counter: output.counter(),
@@ -596,6 +602,15 @@ impl PacketMover2FspEndpointDataIngress {
         let mut payload = output.into_opened_payload()?;
         payload.drain(..FSP_INNER_HEADER_SIZE);
         payload.truncate(body_len);
+        let direct_messages =
+            crate::node::session_wire::split_fsp_endpoint_data_bulk_payload(payload, &lengths)
+                .into_iter()
+                .map(|data| FipsEndpointDirectMessage {
+                    source_peer,
+                    data,
+                    enqueued_at_ms: crate::time::now_ms(),
+                })
+                .collect();
 
         Ok(Self {
             commit: PacketMover2FspEndpointDataCommit {
@@ -604,14 +619,11 @@ impl PacketMover2FspEndpointDataIngress {
                 received_k_bit: receive_sync.received_k_bit,
                 direct_path: previous_hop_addr == source_addr,
             },
+            msg_type: crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
             body_len,
             receive_sync,
             activity_tick,
-            direct_message: FipsEndpointDirectMessage {
-                source_peer,
-                data: payload,
-                enqueued_at_ms: crate::time::now_ms(),
-            },
+            direct_messages,
         })
     }
 
@@ -619,8 +631,12 @@ impl PacketMover2FspEndpointDataIngress {
         self.commit
     }
 
-    pub(crate) fn into_direct_message(self) -> FipsEndpointDirectMessage {
-        self.direct_message
+    fn len(&self) -> usize {
+        self.direct_messages.len()
+    }
+
+    pub(crate) fn into_direct_messages(self) -> Vec<FipsEndpointDirectMessage> {
+        self.direct_messages
     }
 }
 
@@ -637,7 +653,10 @@ impl PacketMover2FspEndpointDataIngressBatch {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.ingresses.len()
+        self.ingresses
+            .iter()
+            .map(PacketMover2FspEndpointDataIngress::len)
+            .sum()
     }
 
     pub(crate) fn push(&mut self, ingress: PacketMover2FspEndpointDataIngress) {
@@ -660,7 +679,7 @@ impl PacketMover2FspEndpointDataIngressBatch {
                 current = commit;
                 count = 0;
             }
-            count = count.saturating_add(1);
+            count = count.saturating_add(ingress.len());
         }
         visit(current, count);
     }
@@ -669,9 +688,9 @@ impl PacketMover2FspEndpointDataIngressBatch {
         self,
         messages: &mut Vec<FipsEndpointDirectMessage>,
     ) {
-        messages.reserve(self.ingresses.len());
+        messages.reserve(self.len());
         for ingress in self.ingresses {
-            messages.push(ingress.into_direct_message());
+            messages.extend(ingress.into_direct_messages());
         }
     }
 }

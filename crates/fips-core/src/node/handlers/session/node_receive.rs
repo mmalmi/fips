@@ -88,9 +88,10 @@ impl Node {
             };
 
             if dispatch.is_endpoint_data() {
-                let delivery = dispatch.dispatch_endpoint_data_batched(self, &mut endpoint_commit);
-                endpoint_deliveries.push(delivery);
-                processed = processed.saturating_add(1);
+                let deliveries =
+                    dispatch.dispatch_endpoint_data_batched(self, &mut endpoint_commit);
+                processed = processed.saturating_add(deliveries.len());
+                endpoint_deliveries.extend(deliveries);
                 continue;
             }
 
@@ -205,7 +206,8 @@ impl Node {
             msg_kind = ?SessionMessageType::from_byte(msg_type),
             plaintext_len = plaintext.len(),
             body_len,
-            endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte(),
+            endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte()
+                || msg_type == SessionMessageType::EndpointDataBulk.to_byte(),
             "Dispatching packet mover2 authenticated session"
         );
 

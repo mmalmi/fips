@@ -71,23 +71,83 @@ impl PacketMover2EndpointDataRoute {
     fn route_batch(&self, payloads: Vec<Vec<u8>>) -> PacketMover2EndpointDataBatchRoute {
         let mut result = PacketMover2EndpointDataBatchRoute::with_capacity(payloads.len());
         let routed_at_ms = crate::time::now_ms();
-        let max_fsp_payload = u16::MAX as usize - crate::node::session_wire::FSP_INNER_HEADER_SIZE;
+        let max_fsp_payload = crate::node::session_wire::fsp_endpoint_data_max_body_len();
+        let mut bulk_payloads = Vec::new();
+        let mut bulk_wire_len = crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len();
         for payload in payloads {
-            if payload.len() > max_fsp_payload {
+            let Some(packet_wire_len) =
+                crate::node::session_wire::fsp_endpoint_data_bulk_packet_wire_len(payload.len())
+            else {
+                result
+                    .dropped
+                    .push((payload.len(), PacketMover2EndpointDataDropReason::InvalidPayload));
+                continue;
+            };
+            if crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len()
+                .saturating_add(packet_wire_len)
+                > max_fsp_payload
+            {
                 result
                     .dropped
                     .push((payload.len(), PacketMover2EndpointDataDropReason::InvalidPayload));
                 continue;
             }
-            result.routed.push(
-                self.build_bulk_packet(payload)
-                    .with_activity_tick(ActivityTick::new(routed_at_ms)),
-            );
+            if !bulk_payloads.is_empty()
+                && (bulk_payloads.len()
+                    >= crate::node::session_wire::FSP_ENDPOINT_DATA_BULK_MAX_PACKETS
+                    || bulk_wire_len.saturating_add(packet_wire_len) > max_fsp_payload)
+            {
+                self.push_endpoint_data_bulk(
+                    &mut result,
+                    &mut bulk_payloads,
+                    &mut bulk_wire_len,
+                    routed_at_ms,
+                );
+            }
+            bulk_wire_len = bulk_wire_len.saturating_add(packet_wire_len);
+            bulk_payloads.push(payload);
         }
+        self.push_endpoint_data_bulk(
+            &mut result,
+            &mut bulk_payloads,
+            &mut bulk_wire_len,
+            routed_at_ms,
+        );
         result
     }
 
-    fn build_bulk_packet(&self, payload: Vec<u8>) -> OutboundPacket {
+    fn push_endpoint_data_bulk(
+        &self,
+        result: &mut PacketMover2EndpointDataBatchRoute,
+        bulk_payloads: &mut Vec<Vec<u8>>,
+        bulk_wire_len: &mut usize,
+        routed_at_ms: u64,
+    ) {
+        if bulk_payloads.is_empty() {
+            return;
+        }
+        let payloads = std::mem::take(bulk_payloads);
+        *bulk_wire_len = crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len();
+        let packet_count = payloads.len();
+        match crate::node::session_wire::encode_fsp_endpoint_data_bulk_payload(payloads) {
+            Some(payload) => result.routed.push(
+                self.build_bulk_packet(
+                    crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
+                    payload,
+                )
+                .with_activity_tick(ActivityTick::new(routed_at_ms)),
+            ),
+            None => {
+                for _ in 0..packet_count {
+                    result
+                        .dropped
+                        .push((0, PacketMover2EndpointDataDropReason::InvalidPayload));
+                }
+            }
+        }
+    }
+
+    fn build_bulk_packet(&self, msg_type: u8, payload: Vec<u8>) -> OutboundPacket {
         OutboundPacket::fsp(
             self.owner,
             self.generation,
@@ -95,10 +155,7 @@ impl PacketMover2EndpointDataRoute {
             self.flags,
             payload,
         )
-        .with_fsp_inner_header(
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            self.inner_flags,
-        )
+        .with_fsp_inner_header(msg_type, self.inner_flags)
         .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone())
     }
 }

@@ -1585,6 +1585,40 @@
     }
 
     #[test]
+    fn endpoint_data_route_packs_payloads_into_bulk_records() {
+        let owner = fsp_owner(914);
+        let route = PacketMover2EndpointDataRoute::fsp(owner, 1, 0, 0);
+        let route_result = route.route_batch(vec![
+            b"first".to_vec(),
+            b"second".to_vec(),
+            b"third".to_vec(),
+        ]);
+
+        assert!(route_result.dropped.is_empty());
+        assert_eq!(route_result.routed.len(), 1);
+        let packet = &route_result.routed[0];
+        assert!(matches!(
+            packet.payload_transform,
+            OutboundPayloadTransform::FspInnerHeader {
+                msg_type,
+                ..
+            } if msg_type == crate::protocol::SessionMessageType::EndpointDataBulk.to_byte()
+        ));
+        let lengths =
+            crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(packet.payload.as_slice())
+                .unwrap();
+        assert_eq!(lengths, vec![5, 6, 5]);
+
+        let route_result = route.route_batch(
+            (0..=crate::node::session_wire::FSP_ENDPOINT_DATA_BULK_MAX_PACKETS)
+                .map(|idx| vec![idx as u8])
+                .collect(),
+        );
+        assert_eq!(route_result.routed.len(), 2);
+        assert!(route_result.dropped.is_empty());
+    }
+
+    #[test]
     fn compact_endpoint_data_completion_can_join_admission_finish() {
         let source_peer =
             PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
@@ -1603,12 +1637,19 @@
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
 
-        let endpoint_payload = b"compact-endpoint";
+        let endpoint_payloads = vec![
+            b"compact-one".to_vec(),
+            b"compact-two".to_vec(),
+            b"compact-three".to_vec(),
+        ];
+        let endpoint_bulk =
+            crate::node::session_wire::encode_fsp_endpoint_data_bulk_payload(endpoint_payloads)
+                .unwrap();
         let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
             915_001,
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
             0,
-            endpoint_payload,
+            &endpoint_bulk,
         );
         driver
             .mover
@@ -1639,15 +1680,19 @@
                 .iter()
                 .map(PacketMover2FspEndpointDataIngressBatch::len)
                 .sum::<usize>(),
-            1
+            3
         );
         let mut messages = Vec::new();
         for batch in std::mem::take(&mut driver.fsp_endpoint_data_ingress) {
             batch.append_direct_messages_to(&mut messages);
         }
-        assert_eq!(messages.len(), 1);
+        assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].source_peer, source_peer);
-        assert_eq!(messages[0].data.as_slice(), endpoint_payload);
+        assert_eq!(messages[0].data.as_slice(), b"compact-one");
+        assert_eq!(messages[1].source_peer, source_peer);
+        assert_eq!(messages[1].data.as_slice(), b"compact-two");
+        assert_eq!(messages[2].source_peer, source_peer);
+        assert_eq!(messages[2].data.as_slice(), b"compact-three");
         assert!(driver.outputs.is_empty());
     }
 
