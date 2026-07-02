@@ -673,7 +673,7 @@ impl PacketMover2FspEndpointDataIngress {
 #[derive(Clone, Debug)]
 pub(crate) struct PacketMover2EndpointDataBulk {
     commit_runs: Vec<PacketMover2FspEndpointDataCommitRun>,
-    packet_runs: Vec<PacketMover2EndpointDataPacketRun>,
+    packet_runs: Vec<FipsEndpointDirectPacketRun>,
     len: usize,
 }
 
@@ -683,9 +683,7 @@ impl PacketMover2EndpointDataBulk {
         let commit = ingress.commit();
         Self {
             commit_runs: vec![PacketMover2FspEndpointDataCommitRun::new(commit, len)],
-            packet_runs: vec![PacketMover2EndpointDataPacketRun::from_direct_run(
-                ingress.into_direct_packet_run(),
-            )],
+            packet_runs: vec![ingress.into_direct_packet_run()],
             len,
         }
     }
@@ -721,7 +719,7 @@ impl PacketMover2EndpointDataBulk {
         }
         self.len = self.len.saturating_add(other.len);
         for run in other.packet_runs {
-            self.push_direct_packet_run(run.into_direct_run());
+            self.push_direct_packet_run(run);
         }
     }
 
@@ -734,146 +732,19 @@ impl PacketMover2EndpointDataBulk {
     }
 
     pub(crate) fn into_direct_packet_batch(self) -> FipsEndpointDirectPacketBatch {
-        FipsEndpointDirectPacketBatch::from_packet_runs(
-            self.packet_runs
-                .into_iter()
-                .map(PacketMover2EndpointDataPacketRun::into_direct_run)
-                .collect(),
-        )
+        FipsEndpointDirectPacketBatch::from_packet_runs(self.packet_runs)
     }
 
     fn push_direct_packet_run(&mut self, run: FipsEndpointDirectPacketRun) {
         if let Some(last) = self.packet_runs.last_mut() {
-            match last.try_push_direct_run(run) {
+            match last.try_append_run(run) {
                 Ok(()) => return,
-                Err(run) => self
-                    .packet_runs
-                    .push(PacketMover2EndpointDataPacketRun::from_direct_run(run)),
+                Err(run) => self.packet_runs.push(run),
             }
         } else {
-            self.packet_runs
-                .push(PacketMover2EndpointDataPacketRun::from_direct_run(run));
+            self.packet_runs.push(run);
         }
     }
-}
-
-#[derive(Clone, Debug)]
-enum PacketMover2EndpointDataPacketRun {
-    Direct(FipsEndpointDirectPacketRun),
-    Coalesced(PacketMover2CoalescedEndpointDataPacketRun),
-}
-
-impl PacketMover2EndpointDataPacketRun {
-    fn from_direct_run(run: FipsEndpointDirectPacketRun) -> Self {
-        Self::Direct(run)
-    }
-
-    fn try_push_direct_run(
-        &mut self,
-        run: FipsEndpointDirectPacketRun,
-    ) -> Result<(), FipsEndpointDirectPacketRun> {
-        if !self.matches_direct_run(&run) {
-            return Err(run);
-        }
-        match self {
-            Self::Direct(_) => {
-                let existing = match std::mem::replace(
-                    self,
-                    Self::Coalesced(PacketMover2CoalescedEndpointDataPacketRun::empty_from_run(
-                        &run,
-                    )),
-                ) {
-                    Self::Direct(existing) => existing,
-                    Self::Coalesced(_) => unreachable!(),
-                };
-                let mut coalesced =
-                    PacketMover2CoalescedEndpointDataPacketRun::from_direct_run(existing);
-                coalesced.push_direct_run(&run);
-                *self = Self::Coalesced(coalesced);
-            }
-            Self::Coalesced(coalesced) => coalesced.push_direct_run(&run),
-        }
-        Ok(())
-    }
-
-    fn matches_direct_run(&self, run: &FipsEndpointDirectPacketRun) -> bool {
-        match self {
-            Self::Direct(existing) => packet_mover2_direct_packet_runs_match(existing, run),
-            Self::Coalesced(coalesced) => coalesced.matches_direct_run(run),
-        }
-    }
-
-    fn into_direct_run(self) -> FipsEndpointDirectPacketRun {
-        match self {
-            Self::Direct(run) => run,
-            Self::Coalesced(coalesced) => coalesced.into_direct_run(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct PacketMover2CoalescedEndpointDataPacketRun {
-    meta: FipsEndpointDirectPacketRunMeta,
-    payload: Vec<u8>,
-    ranges: Vec<std::ops::Range<usize>>,
-}
-
-impl PacketMover2CoalescedEndpointDataPacketRun {
-    fn empty_from_run(run: &FipsEndpointDirectPacketRun) -> Self {
-        Self {
-            meta: run.meta().clone(),
-            payload: Vec::new(),
-            ranges: Vec::new(),
-        }
-    }
-
-    fn from_direct_run(run: FipsEndpointDirectPacketRun) -> Self {
-        let mut coalesced = Self::empty_from_run(&run);
-        coalesced.payload.reserve(run.packet_bytes());
-        coalesced.ranges.reserve(run.len());
-        coalesced.push_direct_run(&run);
-        coalesced
-    }
-
-    fn matches_direct_run(&self, run: &FipsEndpointDirectPacketRun) -> bool {
-        packet_mover2_direct_packet_run_matches_meta(run, &self.meta)
-    }
-
-    fn push_direct_run(&mut self, run: &FipsEndpointDirectPacketRun) {
-        debug_assert!(self.matches_direct_run(run));
-        self.payload.reserve(run.packet_bytes());
-        self.ranges.reserve(run.len());
-        for packet in run.packet_slices() {
-            let start = self.payload.len();
-            self.payload.extend_from_slice(packet);
-            self.ranges.push(start..self.payload.len());
-        }
-    }
-
-    fn into_direct_run(self) -> FipsEndpointDirectPacketRun {
-        FipsEndpointDirectPacketRun::from_segmented_payload(
-            self.meta,
-            PacketBuffer::new(self.payload),
-            self.ranges,
-        )
-    }
-}
-
-fn packet_mover2_direct_packet_runs_match(
-    left: &FipsEndpointDirectPacketRun,
-    right: &FipsEndpointDirectPacketRun,
-) -> bool {
-    packet_mover2_direct_packet_run_matches_meta(left, right.meta())
-}
-
-fn packet_mover2_direct_packet_run_matches_meta(
-    run: &FipsEndpointDirectPacketRun,
-    meta: &FipsEndpointDirectPacketRunMeta,
-) -> bool {
-    run.source_peer() == meta.source_peer()
-        && run.previous_hop_node_addr() == meta.previous_hop_node_addr()
-        && run.received_k_bit() == meta.received_k_bit()
-        && run.is_direct_path() == meta.is_direct_path()
 }
 
 #[derive(Clone, Debug, Default)]

@@ -134,12 +134,50 @@ impl FipsEndpointDirectSourceRun {
 
 /// Consecutive direct endpoint packets from one authenticated FIPS source.
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct FipsEndpointDirectPacketSegment {
+    buffer: PacketBuffer,
+    ranges: Vec<Range<usize>>,
+    packet_bytes: usize,
+}
+
+impl FipsEndpointDirectPacketSegment {
+    fn new(buffer: PacketBuffer, ranges: Vec<Range<usize>>) -> Self {
+        debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
+        let packet_bytes = ranges.iter().map(|range| range.len()).sum();
+        Self {
+            buffer,
+            ranges,
+            packet_bytes,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.ranges.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+}
+
+/// Consecutive direct endpoint packets from one authenticated FIPS source.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum FipsEndpointDirectPacketStorage {
-    Segmented {
-        buffer: PacketBuffer,
-        ranges: Vec<Range<usize>>,
+    Segmented(FipsEndpointDirectPacketSegment),
+    Chained {
+        segments: Vec<FipsEndpointDirectPacketSegment>,
+        packet_count: usize,
         packet_bytes: usize,
     },
+}
+
+impl FipsEndpointDirectPacketStorage {
+    fn empty_segmented() -> Self {
+        Self::Segmented(FipsEndpointDirectPacketSegment::new(
+            PacketBuffer::new(Vec::new()),
+            Vec::new(),
+        ))
+    }
 }
 
 /// Consecutive direct endpoint packets from one authenticated FIPS source.
@@ -167,15 +205,11 @@ impl FipsEndpointDirectPacketRun {
         buffer: PacketBuffer,
         ranges: Vec<Range<usize>>,
     ) -> Self {
-        debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
-        let packet_bytes = ranges.iter().map(|range| range.len()).sum();
         Self {
             meta,
-            storage: FipsEndpointDirectPacketStorage::Segmented {
-                buffer,
-                ranges,
-                packet_bytes,
-            },
+            storage: FipsEndpointDirectPacketStorage::Segmented(
+                FipsEndpointDirectPacketSegment::new(buffer, ranges),
+            ),
         }
     }
 
@@ -222,7 +256,8 @@ impl FipsEndpointDirectPacketRun {
     /// Number of endpoint packets in the run.
     pub fn len(&self) -> usize {
         match &self.storage {
-            FipsEndpointDirectPacketStorage::Segmented { ranges, .. } => ranges.len(),
+            FipsEndpointDirectPacketStorage::Segmented(segment) => segment.len(),
+            FipsEndpointDirectPacketStorage::Chained { packet_count, .. } => *packet_count,
         }
     }
 
@@ -234,27 +269,101 @@ impl FipsEndpointDirectPacketRun {
     /// Sum of endpoint packet bytes, excluding bulk length metadata.
     pub fn packet_bytes(&self) -> usize {
         match &self.storage {
-            FipsEndpointDirectPacketStorage::Segmented { packet_bytes, .. } => *packet_bytes,
+            FipsEndpointDirectPacketStorage::Segmented(segment) => segment.packet_bytes,
+            FipsEndpointDirectPacketStorage::Chained { packet_bytes, .. } => *packet_bytes,
         }
     }
 
     /// Borrow one packet by index.
     pub fn packet_slice(&self, index: usize) -> Option<&[u8]> {
         match &self.storage {
-            FipsEndpointDirectPacketStorage::Segmented { buffer, ranges, .. } => ranges
+            FipsEndpointDirectPacketStorage::Segmented(segment) => segment
+                .ranges
                 .get(index)
-                .map(|range| &buffer.as_slice()[range.clone()]),
+                .map(|range| &segment.buffer.as_slice()[range.clone()]),
+            FipsEndpointDirectPacketStorage::Chained { segments, .. } => {
+                let mut offset = index;
+                for segment in segments {
+                    if offset < segment.len() {
+                        return segment
+                            .ranges
+                            .get(offset)
+                            .map(|range| &segment.buffer.as_slice()[range.clone()]);
+                    }
+                    offset = offset.saturating_sub(segment.len());
+                }
+                None
+            }
         }
     }
 
     /// Mutably borrow one packet by index.
     pub fn packet_slice_mut(&mut self, index: usize) -> Option<&mut [u8]> {
         match &mut self.storage {
-            FipsEndpointDirectPacketStorage::Segmented { buffer, ranges, .. } => {
-                let range = ranges.get(index)?.clone();
-                Some(&mut buffer.as_mut_slice()[range])
+            FipsEndpointDirectPacketStorage::Segmented(segment) => {
+                let range = segment.ranges.get(index)?.clone();
+                Some(&mut segment.buffer.as_mut_slice()[range])
+            }
+            FipsEndpointDirectPacketStorage::Chained { segments, .. } => {
+                let mut offset = index;
+                for segment in segments {
+                    if offset < segment.len() {
+                        let range = segment.ranges.get(offset)?.clone();
+                        return Some(&mut segment.buffer.as_mut_slice()[range]);
+                    }
+                    offset = offset.saturating_sub(segment.len());
+                }
+                None
             }
         }
+    }
+
+    pub(crate) fn try_append_run(
+        &mut self,
+        other: FipsEndpointDirectPacketRun,
+    ) -> Result<(), FipsEndpointDirectPacketRun> {
+        if !self.matches_append_meta(&other) {
+            return Err(other);
+        }
+
+        let current = std::mem::replace(
+            &mut self.storage,
+            FipsEndpointDirectPacketStorage::empty_segmented(),
+        );
+        let mut segments = match current {
+            FipsEndpointDirectPacketStorage::Segmented(segment) => vec![segment],
+            FipsEndpointDirectPacketStorage::Chained { segments, .. } => segments,
+        };
+        match other.storage {
+            FipsEndpointDirectPacketStorage::Segmented(segment) => segments.push(segment),
+            FipsEndpointDirectPacketStorage::Chained {
+                segments: mut other_segments,
+                ..
+            } => segments.append(&mut other_segments),
+        }
+        let mut packet_count = 0usize;
+        let mut packet_bytes = 0usize;
+        segments.retain(|segment| {
+            if segment.is_empty() {
+                return false;
+            }
+            packet_count = packet_count.saturating_add(segment.len());
+            packet_bytes = packet_bytes.saturating_add(segment.packet_bytes);
+            true
+        });
+        self.storage = FipsEndpointDirectPacketStorage::Chained {
+            segments,
+            packet_count,
+            packet_bytes,
+        };
+        Ok(())
+    }
+
+    fn matches_append_meta(&self, other: &Self) -> bool {
+        self.source_peer() == other.source_peer()
+            && self.previous_hop_node_addr() == other.previous_hop_node_addr()
+            && self.received_k_bit() == other.received_k_bit()
+            && self.is_direct_path() == other.is_direct_path()
     }
 
     /// Borrow packet bytes without materializing per-packet buffers.
@@ -275,15 +384,11 @@ impl FipsEndpointDirectPacketRun {
         F: FnMut(usize, &[u8]) -> bool,
     {
         match &mut self.storage {
-            FipsEndpointDirectPacketStorage::Segmented {
-                buffer,
-                ranges,
-                packet_bytes,
-            } => {
-                let bytes = buffer.as_slice();
+            FipsEndpointDirectPacketStorage::Segmented(segment) => {
+                let bytes = segment.buffer.as_slice();
                 let mut index = 0usize;
                 let mut retained_bytes = 0usize;
-                ranges.retain(|range| {
+                segment.ranges.retain(|range| {
                     let current_index = index;
                     index = index.saturating_add(1);
                     if keep(current_index, &bytes[range.clone()]) {
@@ -293,6 +398,36 @@ impl FipsEndpointDirectPacketRun {
                         false
                     }
                 });
+                segment.packet_bytes = retained_bytes;
+            }
+            FipsEndpointDirectPacketStorage::Chained {
+                segments,
+                packet_count,
+                packet_bytes,
+            } => {
+                let mut index = 0usize;
+                let mut retained_count = 0usize;
+                let mut retained_bytes = 0usize;
+                for segment in segments.iter_mut() {
+                    let bytes = segment.buffer.as_slice();
+                    let mut segment_retained_bytes = 0usize;
+                    segment.ranges.retain(|range| {
+                        let current_index = index;
+                        index = index.saturating_add(1);
+                        if keep(current_index, &bytes[range.clone()]) {
+                            retained_count = retained_count.saturating_add(1);
+                            retained_bytes = retained_bytes.saturating_add(range.len());
+                            segment_retained_bytes =
+                                segment_retained_bytes.saturating_add(range.len());
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    segment.packet_bytes = segment_retained_bytes;
+                }
+                segments.retain(|segment| !segment.is_empty());
+                *packet_count = retained_count;
                 *packet_bytes = retained_bytes;
             }
         }
@@ -304,10 +439,18 @@ impl FipsEndpointDirectPacketRun {
         F: FnMut(&mut [u8]),
     {
         match &mut self.storage {
-            FipsEndpointDirectPacketStorage::Segmented { buffer, ranges, .. } => {
-                let bytes = buffer.as_mut_slice();
-                for range in ranges {
+            FipsEndpointDirectPacketStorage::Segmented(segment) => {
+                let bytes = segment.buffer.as_mut_slice();
+                for range in &segment.ranges {
                     visit(&mut bytes[range.clone()]);
+                }
+            }
+            FipsEndpointDirectPacketStorage::Chained { segments, .. } => {
+                for segment in segments {
+                    let bytes = segment.buffer.as_mut_slice();
+                    for range in &segment.ranges {
+                        visit(&mut bytes[range.clone()]);
+                    }
                 }
             }
         }
@@ -316,12 +459,30 @@ impl FipsEndpointDirectPacketRun {
     /// Materialize this run into the older owned-packet source-run contract.
     pub fn into_source_run(self) -> FipsEndpointDirectSourceRun {
         match self.storage {
-            FipsEndpointDirectPacketStorage::Segmented { buffer, ranges, .. } => {
-                let body = buffer.as_slice();
-                let packets = ranges
+            FipsEndpointDirectPacketStorage::Segmented(segment) => {
+                let body = segment.buffer.as_slice();
+                let packets = segment
+                    .ranges
                     .into_iter()
                     .map(|range| body[range].to_vec().into())
                     .collect();
+                FipsEndpointDirectSourceRun::from_source_packets(
+                    self.meta.source_peer,
+                    packets,
+                    self.meta.enqueued_at_ms,
+                )
+            }
+            FipsEndpointDirectPacketStorage::Chained { segments, .. } => {
+                let mut packets = Vec::new();
+                for segment in segments {
+                    let body = segment.buffer.as_slice();
+                    packets.extend(
+                        segment
+                            .ranges
+                            .into_iter()
+                            .map(|range| body[range].to_vec().into()),
+                    );
+                }
                 FipsEndpointDirectSourceRun::from_source_packets(
                     self.meta.source_peer,
                     packets,
@@ -342,9 +503,25 @@ impl<'a> Iterator for FipsEndpointDirectPacketSlices<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let packet = match self.storage {
-            FipsEndpointDirectPacketStorage::Segmented { buffer, ranges, .. } => ranges
+            FipsEndpointDirectPacketStorage::Segmented(segment) => segment
+                .ranges
                 .get(self.index)
-                .map(|range| &buffer.as_slice()[range.clone()]),
+                .map(|range| &segment.buffer.as_slice()[range.clone()]),
+            FipsEndpointDirectPacketStorage::Chained { segments, .. } => {
+                let mut offset = self.index;
+                let mut packet = None;
+                for segment in segments {
+                    if offset < segment.len() {
+                        packet = segment
+                            .ranges
+                            .get(offset)
+                            .map(|range| &segment.buffer.as_slice()[range.clone()]);
+                        break;
+                    }
+                    offset = offset.saturating_sub(segment.len());
+                }
+                packet
+            }
         };
         self.index += usize::from(packet.is_some());
         packet
@@ -352,7 +529,8 @@ impl<'a> Iterator for FipsEndpointDirectPacketSlices<'a> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = match self.storage {
-            FipsEndpointDirectPacketStorage::Segmented { ranges, .. } => ranges.len(),
+            FipsEndpointDirectPacketStorage::Segmented(segment) => segment.len(),
+            FipsEndpointDirectPacketStorage::Chained { packet_count, .. } => *packet_count,
         }
         .saturating_sub(self.index);
         (remaining, Some(remaining))

@@ -1917,6 +1917,24 @@
         let runs_mut = batches[0].packet_runs_mut();
         runs_mut[0].packet_slice_mut(3).unwrap()[0] = b'R';
         assert_eq!(runs_mut[0].packet_slice(3), Some(b"Run-two-b".as_slice()));
+        runs_mut[0].retain_packets(|index, _packet| index >= 2);
+        assert_eq!(runs_mut[0].len(), 3);
+        assert_eq!(
+            runs_mut[0].packet_bytes(),
+            b"run-two-a".len() + b"Run-two-b".len() + b"run-two-c".len()
+        );
+        let retained = runs_mut[0]
+            .packet_slices()
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained,
+            vec![
+                b"run-two-a".to_vec(),
+                b"Run-two-b".to_vec(),
+                b"run-two-c".to_vec()
+            ]
+        );
     }
 
     #[test]
