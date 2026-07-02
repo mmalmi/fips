@@ -202,16 +202,6 @@ impl Node {
         &mut self,
         ingress: crate::packet_mover2::PacketMover2FspSessionIngress,
     ) -> Option<AuthenticatedSessionDispatch> {
-        let _ = self.packet_mover2.record_authenticated_fsp_session(
-            ingress.source_addr(),
-            ingress.previous_hop_addr(),
-            ingress.msg_type(),
-            ingress.body_len(),
-            ingress.receive_sync(),
-            ingress.activity_tick(),
-            Instant::now(),
-        );
-
         let received_k_bit = ingress.received_k_bit();
         let (
             source_addr,
