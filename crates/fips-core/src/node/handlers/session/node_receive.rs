@@ -1,36 +1,4 @@
 impl Node {
-    async fn flush_pending_destinations(&mut self, dests: &mut Vec<NodeAddr>) {
-        for dest_addr in std::mem::take(dests) {
-            self.flush_pending_packets(&dest_addr).await;
-        }
-    }
-
-    fn note_pending_flush_dest(dests: &mut Vec<NodeAddr>, finish: SessionDispatchFinish) {
-        if let Some(dest_addr) = finish.pending_flush_dest() {
-            if !dests.contains(&dest_addr) {
-                dests.push(dest_addr);
-            }
-        }
-    }
-
-    fn apply_worker_fsp_receive_sync(
-        &mut self,
-        source_addr: NodeAddr,
-        sync: crate::node::session::FspReceiveSync,
-        now: Instant,
-    ) -> bool {
-        let apply = {
-            let Some(entry) = self.sessions.get_mut(&source_addr) else {
-                return false;
-            };
-            entry.apply_fsp_receive_sync_result(sync, Self::now_ms(), now)
-        };
-        if apply.refresh_worker_session() {
-            self.register_decrypt_worker_fsp_session(&source_addr);
-        }
-        apply.is_applied()
-    }
-
     /// Handle a locally-delivered session datagram payload.
     ///
     /// Called from `handle_session_datagram()` when `dest_addr == self.node_addr()`.
@@ -40,7 +8,7 @@ impl Node {
     /// - Phase 0x2 → SessionAck (handshake msg2)
     /// - Phase 0x3 → SessionMsg3 (XK handshake msg3)
     /// - Phase 0x0 + U flag → plaintext error signal (CoordsRequired/PathBroken)
-    /// - Phase 0x0 + !U → encrypted session message (data, reports, etc.)
+    /// - Phase 0x0 + !U → packet_mover2 authenticated receive only
     pub(in crate::node) async fn handle_session_payload(
         &mut self,
         delivery: LocalSessionPayload<'_>,
@@ -94,8 +62,11 @@ impl Node {
                 }
             }
             FSP_PHASE_ESTABLISHED => {
-                self.handle_encrypted_session_msg(delivery.into_encrypted())
-                    .await;
+                debug!(
+                    src = %self.peer_display_name(&src_addr),
+                    "Dropping established FSP payload outside packet_mover2 receive path"
+                );
+                return;
             }
             _ => {
                 debug!(phase = prefix.phase, "Unknown FSP phase");
@@ -103,143 +74,231 @@ impl Node {
         }
     }
 
-    /// Handle an encrypted session message (phase 0x0, U flag clear).
-    ///
-    /// Full FSP receive pipeline:
-    /// 1. Parse FspEncryptedHeader (12 bytes) → counter, flags, header_bytes
-    /// 2. If CP flag: parse cleartext coords, cache them
-    /// 3. Session lookup (must be Established)
-    /// 4. AEAD decrypt with AAD = header_bytes
-    /// 5. Strip FSP inner header → timestamp, msg_type, inner_flags
-    /// 6. Dispatch by msg_type
-    async fn handle_encrypted_session_msg(&mut self, delivery: EncryptedSessionPayload<'_>) {
-        let _t_fsp_handle =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspHandle);
-        let src_addr = delivery.source_addr();
-        let payload = delivery.payload();
-        let mut wire = match EstablishedFspWire::parse(payload, *src_addr, *self.node_addr()) {
-            Ok(wire) => wire,
-            Err(EstablishedFspWireError::BadHeader) => {
-                debug!(
-                    len = payload.len(),
-                    "Encrypted session message too short for FSP header"
-                );
-                return;
-            }
-            Err(EstablishedFspWireError::BadCoords(e)) => {
-                debug!(error = %e, "Failed to parse coords from encrypted session message");
-                return;
-            }
-        };
+    pub(in crate::node) async fn process_packet_mover2_authenticated_sessions(
+        &mut self,
+        ingress_batch: Vec<crate::packet_mover2::PacketMover2FspSessionIngress>,
+    ) -> usize {
+        let mut processed = 0usize;
+        let mut endpoint_deliveries = Vec::new();
+        let mut endpoint_commit = SessionReceiveBatchCommit::default();
 
-        if wire.has_coord_warmup() {
-            wire.apply_coord_warmup(&mut self.coord_cache, Self::now_ms());
+        for ingress in ingress_batch {
+            let Some(dispatch) = self.packet_mover2_authenticated_session_dispatch(ingress) else {
+                continue;
+            };
+
+            if dispatch.is_endpoint_data() {
+                let deliveries =
+                    dispatch.dispatch_endpoint_data_batched(self, &mut endpoint_commit);
+                processed = processed.saturating_add(deliveries.len());
+                endpoint_deliveries.extend(deliveries);
+                continue;
+            }
+
+            self.flush_packet_mover2_endpoint_session_batch(
+                &mut endpoint_deliveries,
+                &mut endpoint_commit,
+            )
+            .await;
+            dispatch.dispatch(self).await;
+            processed = processed.saturating_add(1);
         }
 
-        // The session registry owns the mutable lookup plus FSP open/replay,
-        // K-bit handling, failure accounting, MMP receive bookkeeping, and
-        // dispatch metadata. The rx loop supplies the parsed wire facts but no
-        // longer peeks into the session map directly on this hot edge.
-        let outcome = self.sessions.open_established_fsp_frame(
-            src_addr,
-            wire.receive(delivery.path_mtu(), delivery.ce_flag(), Self::now_ms()),
-        );
-
-        // The &mut entry borrow on self.sessions has dropped. Handle
-        // slow-path outcomes and dispatch by msg_type (which calls
-        // other &mut self handlers).
-        let session_message = match outcome {
-            FspFrameOutcome::Authentic(session_message) => session_message,
-            FspFrameOutcome::UnknownSession => {
-                debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
-                return;
-            }
-            FspFrameOutcome::NotEstablished => {
-                debug!(
-                    src = %self.peer_display_name(src_addr),
-                    "Encrypted message but session not established (awaiting handshake completion)"
-                );
-                self.resend_handshake_after_early_encrypted_data(src_addr)
-                    .await;
-                return;
-            }
-            FspFrameOutcome::BadInnerHeader => {
-                debug!(src = %self.peer_display_name(src_addr), "Decrypted payload too short for FSP inner header");
-                return;
-            }
-            FspFrameOutcome::MissingRemoteIdentity => {
-                debug!(
-                    src = %self.peer_display_name(src_addr),
-                    "Established session missing authenticated remote identity"
-                );
-                return;
-            }
-            FspFrameOutcome::DecryptFailed {
-                error,
-                counter,
-                consecutive,
-                recover_session,
-            } => {
-                debug!(
-                    error = %error, src = %self.peer_display_name(src_addr),
-                    counter, consecutive_failures = consecutive,
-                    "Session AEAD decryption failed"
-                );
-                if recover_session {
-                    warn!(
-                        peer = %self.peer_display_name(src_addr),
-                        consecutive_failures = consecutive,
-                        "Session AEAD failures exceeded threshold; starting recovery rekey"
-                    );
-                    if !self.initiate_session_rekey(src_addr).await {
-                        debug!(
-                            peer = %self.peer_display_name(src_addr),
-                            "Failed to start recovery rekey after decrypt-failure threshold"
-                        );
-                    }
-                }
-                return;
-            }
-            FspFrameOutcome::StaleEpochDrainFailure { counter } => {
-                trace!(
-                    src = %self.peer_display_name(src_addr),
-                    counter,
-                    "Ignoring stale FSP packet from previous key epoch during drain"
-                );
-                return;
-            }
-        };
-        self.register_decrypt_worker_fsp_session(src_addr);
-        let dispatch = AuthenticatedSessionDispatch::new(
-            *src_addr,
-            *delivery.previous_hop_addr(),
-            delivery.ce_flag(),
-            session_message,
-        );
-        if dispatch.is_endpoint_data() {
-            let finish = dispatch.dispatch_endpoint_data_fast(self);
-            if let Some(dest_addr) = finish.pending_flush_dest() {
-                self.flush_pending_packets(&dest_addr).await;
-            }
-            return;
-        }
-        dispatch.dispatch(self).await;
+        self.flush_packet_mover2_endpoint_session_batch(&mut endpoint_deliveries, &mut endpoint_commit)
+            .await;
+        processed
     }
 
-    fn record_worker_authenticated_fmp_receive(
+    pub(in crate::node) async fn process_packet_mover2_compact_endpoint_data(
         &mut self,
-        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
+        endpoint_bulks: Vec<crate::packet_mover2::PacketMover2EndpointDataBulk>,
+    ) -> usize {
+        if endpoint_bulks.is_empty() {
+            return 0;
+        }
+        let message_count = endpoint_bulks
+            .iter()
+            .map(crate::packet_mover2::PacketMover2EndpointDataBulk::len)
+            .sum::<usize>();
+        let direct_packet_runs = endpoint_bulks
+            .iter()
+            .map(crate::packet_mover2::PacketMover2EndpointDataBulk::direct_packet_run_count)
+            .sum::<usize>();
+        let direct_sink = if direct_packet_runs > 0 {
+            match self.packet_mover2_endpoint_direct_sink() {
+                Some(sink) => Some(sink),
+                None => {
+                    debug!(
+                        messages = message_count,
+                        "Dropping PM2 endpoint-data bulk without direct sink"
+                    );
+                    return 0;
+                }
+            }
+        } else {
+            None
+        };
+
+        let mut endpoint_commit = SessionReceiveBatchCommit::default();
+        let mut direct_packet_batches = Vec::with_capacity(endpoint_bulks.len());
+        for bulk in endpoint_bulks {
+            for run in bulk.commit_runs() {
+                let commit = run.commit();
+                let source_addr = commit.source_addr();
+                let previous_hop_addr = commit.previous_hop_addr();
+                if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
+                    &source_addr,
+                    commit.received_k_bit(),
+                ) {
+                    debug!(
+                        src = %self.peer_display_name(&source_addr),
+                        received_k_bit = commit.received_k_bit(),
+                        run_len = run.len(),
+                        "FSP rekey cutover complete after PM2 compact endpoint-data receive commit"
+                    );
+                }
+                self.learn_reverse_route(source_addr, previous_hop_addr);
+                endpoint_commit.push_receive_completion(SessionReceiveCompletion {
+                    source_addr,
+                    previous_hop_addr,
+                    direct_path: commit.direct_path(),
+                });
+            }
+            if bulk.direct_packet_run_count() > 0 {
+                direct_packet_batches.push(bulk.into_direct_packet_batch());
+            }
+        }
+
+        let pending_flush_destinations = endpoint_commit.finish(self);
+        let count = direct_packet_batches
+            .iter()
+            .map(crate::node::FipsEndpointDirectPacketBatch::len)
+            .sum::<usize>();
+        if count > 0 {
+            let direct_sink = direct_sink.expect("direct sink is required when packet runs remain");
+            for batch in direct_packet_batches {
+                if direct_sink.deliver_direct_packet_batch(batch).is_err() {
+                    crate::perf_profile::record_event_count(
+                        crate::perf_profile::Event::EndpointEventBulkDropped,
+                        count as u64,
+                    );
+                    break;
+                }
+            }
+        }
+        for dest_addr in pending_flush_destinations {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+        message_count
+    }
+
+    fn packet_mover2_endpoint_direct_sink(&self) -> Option<crate::node::EndpointDirectSink> {
+        self.endpoint_events
+            .sender()
+            .and_then(|sender| sender.direct_sink().cloned())
+    }
+
+    fn packet_mover2_authenticated_session_dispatch(
+        &mut self,
+        ingress: crate::packet_mover2::PacketMover2FspSessionIngress,
+    ) -> Option<AuthenticatedSessionDispatch> {
+        let received_k_bit = ingress.received_k_bit();
+        let (
+            source_addr,
+            source_peer,
+            previous_hop_addr,
+            ce_flag,
+            _activity_tick,
+            timestamp_ms,
+            msg_type,
+            inner_flags,
+            plaintext,
+        ) = ingress.into_parts();
+        let body_len = plaintext
+            .len()
+            .saturating_sub(crate::node::session_wire::FSP_INNER_HEADER_SIZE);
+
+        debug!(
+            src = %self.peer_display_name(&source_addr),
+            previous_hop = %self.peer_display_name(&previous_hop_addr),
+            msg_type,
+            msg_kind = ?SessionMessageType::from_byte(msg_type),
+            plaintext_len = plaintext.len(),
+            body_len,
+            endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte()
+                || msg_type == SessionMessageType::EndpointDataBulk.to_byte(),
+            "Dispatching packet mover2 authenticated session"
+        );
+
+        if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
+            &source_addr,
+            received_k_bit,
+        ) {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                received_k_bit,
+                "FSP rekey cutover complete after PM2 authenticated pending epoch"
+            );
+        }
+
+        let message =
+            AuthenticatedSessionMessage::new(source_peer, plaintext, msg_type, inner_flags, timestamp_ms);
+        Some(AuthenticatedSessionDispatch::new(
+            source_addr,
+            previous_hop_addr,
+            ce_flag,
+            message,
+        ))
+    }
+
+    async fn flush_packet_mover2_endpoint_session_batch(
+        &mut self,
+        endpoint_deliveries: &mut Vec<EndpointDataDelivery>,
+        endpoint_commit: &mut SessionReceiveBatchCommit,
+    ) {
+        if endpoint_deliveries.is_empty()
+            && endpoint_commit.previous_hops.is_empty()
+            && endpoint_commit.direct_sources.is_empty()
+            && endpoint_commit.retry_peers.is_empty()
+            && endpoint_commit.pending_flush_sources.is_empty()
+        {
+            return;
+        }
+
+        let pending_flush_destinations = std::mem::take(endpoint_commit).finish(self);
+        if !endpoint_deliveries.is_empty() {
+            self.deliver_endpoint_data_batch(std::mem::take(endpoint_deliveries));
+        }
+        for dest_addr in pending_flush_destinations {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+    }
+
+    pub(in crate::node) fn record_authenticated_fmp_receive_facts(
+        &mut self,
+        fmp: crate::node::AuthenticatedFmpReceiveFacts<'_>,
         previous_hop: Option<&NodeAddr>,
     ) {
         let now = Instant::now();
-        let source_addr = fmp.source_peer.node_addr();
+        let source_addr = fmp.source_node_addr();
         let arrived_from_source = previous_hop.is_none_or(|hop| hop == source_addr);
         let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
             source_addr,
             fmp.transport_id,
-            &fmp.remote_addr,
+            fmp.remote_addr,
             fmp.packet_timestamp_ms,
         ) && arrived_from_source;
+        if path_bookkeeping_allowed {
+            let _ = self.packet_mover2.record_authenticated_fmp_mmp_receive(
+                source_addr,
+                fmp.fmp_counter,
+                fmp.inner_timestamp_ms,
+                fmp.packet_len,
+                fmp.fmp_flags & FLAG_CE != 0,
+                fmp.fmp_flags & FLAG_SP != 0,
+                now,
+            );
+        }
         let bookkeeping = self.peers.record_authenticated_fmp_receive(
             source_addr,
             fmp.transport_id,
@@ -253,309 +312,82 @@ impl Node {
             now,
             path_bookkeeping_allowed,
         );
-        if bookkeeping.is_some_and(|update| update.path_bookkeeping_recorded) {
-            self.clear_retry_unless_direct_refresh_needed(source_addr);
-        }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if bookkeeping.is_some_and(|update| update.address_changed) {
-            self.clear_connected_udp_for_peer(source_addr);
-        }
-    }
-
-    pub(in crate::node) fn process_authenticated_fmp_receive_from_worker(
-        &mut self,
-        receive: DecryptAuthenticatedFmpReceive,
-    ) {
-        self.record_worker_authenticated_fmp_receive(
-            &receive.fmp,
-            receive
-                .previous_hop_peer
-                .as_ref()
-                .map(|peer| peer.node_addr()),
-        );
-    }
-
-    pub(in crate::node) async fn process_authenticated_session_from_worker(
-        &mut self,
-        authenticated: DecryptAuthenticatedSession,
-    ) {
-        let now = Instant::now();
-        self.record_worker_authenticated_fmp_receive(
-            &authenticated.fmp,
-            Some(authenticated.previous_hop_peer.node_addr()),
-        );
-
-        let source_addr = authenticated.source_addr;
-        let receive_applied =
-            self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
-        if !receive_applied {
-            debug!(
-                src = %self.peer_display_name(&source_addr),
-                "Dropping worker-authenticated session message for missing or stale session"
-            );
-            return;
-        }
-
-        let dispatch = AuthenticatedSessionDispatch::new(
-            source_addr,
-            *authenticated.previous_hop_peer.node_addr(),
-            authenticated.ce_flag,
-            authenticated.message,
-        );
-        if dispatch.is_endpoint_data() {
-            let finish = dispatch.dispatch_endpoint_data_fast(self);
-            if let Some(dest_addr) = finish.pending_flush_dest() {
-                self.flush_pending_packets(&dest_addr).await;
+        if let Some(update) = bookkeeping {
+            if update.path_bookkeeping_recorded {
+                self.clear_retry_unless_direct_refresh_needed(source_addr);
             }
-            return;
-        }
-        dispatch.dispatch(self).await;
-    }
-
-    pub(in crate::node) async fn process_authenticated_session_batch_from_worker(
-        &mut self,
-        sessions: Vec<DecryptAuthenticatedSession>,
-    ) {
-        let mut pending_flush_dests = Vec::new();
-        for authenticated in sessions {
-            let now = Instant::now();
-            self.record_worker_authenticated_fmp_receive(
-                &authenticated.fmp,
-                Some(authenticated.previous_hop_peer.node_addr()),
-            );
-
-            let source_addr = authenticated.source_addr;
-            let receive_applied =
-                self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
-            if !receive_applied {
-                debug!(
-                    src = %self.peer_display_name(&source_addr),
-                    "Dropping worker-authenticated session message for missing or stale session"
-                );
-                continue;
+            if update.address_changed {
+                self.sync_packet_mover2_fmp_owner(source_addr);
             }
-
-            let dispatch = AuthenticatedSessionDispatch::new(
-                source_addr,
-                *authenticated.previous_hop_peer.node_addr(),
-                authenticated.ce_flag,
-                authenticated.message,
-            );
-            if dispatch.is_endpoint_data() {
-                Self::note_pending_flush_dest(
-                    &mut pending_flush_dests,
-                    dispatch.dispatch_endpoint_data_fast(self),
-                );
-                continue;
-            }
-
-            self.flush_pending_destinations(&mut pending_flush_dests)
-                .await;
-            dispatch.dispatch(self).await;
-        }
-        self.flush_pending_destinations(&mut pending_flush_dests)
-            .await;
-    }
-
-    pub(in crate::node) async fn process_direct_session_data_from_worker(
-        &mut self,
-        direct: DecryptDirectSessionData,
-    ) {
-        let Some(finish) = self.commit_direct_session_data_from_worker(
-            &direct.fmp,
-            direct.source_addr,
-            direct.previous_hop_peer,
-            direct.receive_sync,
-            direct.body_len,
-        ) else {
-            return;
-        };
-
-        self.deliver_direct_session_delivery_from_worker(
-            direct.source_addr,
-            direct.ce_flag,
-            direct.delivery,
-        );
-
-        if let Some(dest_addr) = finish.pending_flush_dest() {
-            self.flush_pending_packets(&dest_addr).await;
         }
     }
 
-    fn deliver_direct_session_delivery_from_worker(
+    pub(in crate::node) async fn handle_packet_mover2_fsp_decrypt_failure(
         &mut self,
         source_addr: NodeAddr,
-        ce_flag: bool,
-        delivery: DecryptDirectSessionDelivery,
-    ) {
-        match delivery {
-            DecryptDirectSessionDelivery::Ipv6Packet(mut packet) => {
-                if ce_flag {
-                    mark_ipv6_ecn_ce(&mut packet);
-                    self.stats_mut().congestion.record_ce_received();
-                }
-                if self.external_packet_tx.is_some() {
-                    self.deliver_external_ipv6_packet(&source_addr, packet);
-                } else if let Some(tun_tx) = &self.tun_tx {
-                    let _t =
-                        crate::perf_profile::Timer::start(crate::perf_profile::Stage::TunWrite);
-                    if let Err(error) = tun_tx.send(packet) {
-                        debug!(error = %error, "Failed to deliver worker-decoded IPv6 packet to TUN");
-                    }
-                } else {
-                    trace!(
-                        src = %self.peer_display_name(&source_addr),
-                        "Worker-decoded IPv6 packet ready (no TUN interface)"
-                    );
-                }
-            }
-            DecryptDirectSessionDelivery::EndpointData(delivery) => {
-                self.deliver_endpoint_data(delivery);
-            }
-        }
-    }
-
-    pub(in crate::node) async fn process_direct_session_data_batch_from_worker(
-        &mut self,
-        directs: Vec<DecryptDirectSessionData>,
-    ) {
-        let mut pending_flush_dests = Vec::new();
-        for direct in directs {
-            let Some(finish) = self.commit_direct_session_data_from_worker(
-                &direct.fmp,
-                direct.source_addr,
-                direct.previous_hop_peer,
-                direct.receive_sync,
-                direct.body_len,
-            ) else {
-                continue;
-            };
-
-            self.deliver_direct_session_delivery_from_worker(
-                direct.source_addr,
-                direct.ce_flag,
-                direct.delivery,
-            );
-            Self::note_pending_flush_dest(&mut pending_flush_dests, finish);
-        }
-        self.flush_pending_destinations(&mut pending_flush_dests)
-            .await;
-    }
-
-    pub(in crate::node) async fn process_direct_session_commit_from_worker(
-        &mut self,
-        commit: DecryptDirectSessionCommit,
-    ) {
-        let Some(finish) = self.commit_direct_session_data_from_worker(
-            &commit.fmp,
-            commit.source_addr,
-            commit.previous_hop_peer,
-            commit.receive_sync,
-            commit.body_len,
-        ) else {
-            return;
-        };
-
-        if commit.ce_flag && commit.delivered_ipv6 {
-            self.stats_mut().congestion.record_ce_received();
-        }
-
-        if let Some(dest_addr) = finish.pending_flush_dest() {
-            self.flush_pending_packets(&dest_addr).await;
-        }
-    }
-
-    pub(in crate::node) async fn process_direct_session_commit_batch_from_worker(
-        &mut self,
-        commits: Vec<DecryptDirectSessionCommit>,
-    ) {
-        let mut pending_flush_dests = Vec::new();
-        for commit in commits {
-            let Some(finish) = self.commit_direct_session_data_from_worker(
-                &commit.fmp,
-                commit.source_addr,
-                commit.previous_hop_peer,
-                commit.receive_sync,
-                commit.body_len,
-            ) else {
-                continue;
-            };
-
-            if commit.ce_flag && commit.delivered_ipv6 {
-                self.stats_mut().congestion.record_ce_received();
-            }
-
-            Self::note_pending_flush_dest(&mut pending_flush_dests, finish);
-        }
-        self.flush_pending_destinations(&mut pending_flush_dests)
-            .await;
-    }
-
-    fn commit_direct_session_data_from_worker(
-        &mut self,
-        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
-        source_addr: NodeAddr,
-        previous_hop_peer: PeerIdentity,
-        receive_sync: crate::node::session::FspReceiveSync,
-        body_len: usize,
-    ) -> Option<SessionDispatchFinish> {
-        let now = Instant::now();
-        self.record_worker_authenticated_fmp_receive(fmp, Some(previous_hop_peer.node_addr()));
-
-        let receive_applied = self.apply_worker_fsp_receive_sync(source_addr, receive_sync, now);
-        if !receive_applied {
-            debug!(
-                src = %self.peer_display_name(&source_addr),
-                "Dropping worker-decoded direct session data for missing or stale session"
-            );
-            return None;
-        }
-
-        self.learn_reverse_route(source_addr, *previous_hop_peer.node_addr());
-        let direct_path = previous_hop_peer.node_addr() == &source_addr;
-        let finish = SessionDispatchCommit {
+        counter: u64,
+        received_k_bit: bool,
+    ) -> bool {
+        self.handle_reported_fsp_decrypt_failure(
             source_addr,
-            receive_completion: Some(SessionReceiveCompletion {
-                source_addr,
-                previous_hop_addr: *previous_hop_peer.node_addr(),
-                body_len,
-                direct_path,
-            }),
-        }
-        .finish_receive(self);
-
-        Some(finish)
+            counter,
+            received_k_bit,
+            "packet_mover2",
+        )
+        .await
     }
 
-    pub(in crate::node) async fn process_fsp_decrypt_failure_from_worker(
+    async fn handle_reported_fsp_decrypt_failure(
         &mut self,
-        report: DecryptFspFailureReport,
-    ) {
-        self.record_worker_authenticated_fmp_receive(&report.fmp, None);
-        let src_addr = report.source_addr;
-        let Some(entry) = self.sessions.get_mut(&src_addr) else {
-            debug!(
-                src = %self.peer_display_name(&src_addr),
-                counter = report.counter,
-                "Worker FSP AEAD failure for unknown session"
-            );
-            return;
-        };
-        if should_ignore_stale_epoch_drain_failure(entry, report.received_k_bit) {
+        src_addr: NodeAddr,
+        counter: u64,
+        received_k_bit: bool,
+        source: &'static str,
+    ) -> bool {
+        let now_ms = Self::now_ms();
+        let owner_activity = self.packet_mover2.fsp_owner_activity(&src_addr);
+        let authenticated_inbound_age_ms =
+            owner_activity.and_then(|activity| activity.last_rx_age_ms(now_ms));
+        if owner_activity.is_some_and(|activity| {
+            activity.should_ignore_stale_epoch_decrypt_failure(received_k_bit)
+        }) {
             trace!(
                 src = %self.peer_display_name(&src_addr),
-                counter = report.counter,
-                "Ignoring worker FSP AEAD failure from stale previous key epoch during drain"
+                counter,
+                source,
+                "Ignoring FSP AEAD failure from stale previous key epoch during PM2-owned drain"
             );
-            return;
+            return true;
         }
-        let consecutive = entry.record_decrypt_failure();
-        let recover_session = should_start_decrypt_failure_rekey(entry, consecutive, Self::now_ms());
+        let Some(entry) = self.sessions.get(&src_addr) else {
+            debug!(
+                src = %self.peer_display_name(&src_addr),
+                counter,
+                source,
+                "FSP AEAD failure for unknown session"
+            );
+            return false;
+        };
+        let entry_can_recover = entry.is_established()
+            && !entry.has_rekey_in_progress()
+            && entry.pending_new_session().is_none();
+        let Some(consecutive) = self.packet_mover2.record_fsp_decrypt_failure(src_addr) else {
+            debug!(
+                src = %self.peer_display_name(&src_addr),
+                counter,
+                source,
+                "FSP AEAD failure for missing packet_mover2 owner"
+            );
+            return false;
+        };
+        let recover_session =
+            should_start_decrypt_failure_rekey(entry_can_recover, consecutive, authenticated_inbound_age_ms);
         debug!(
             src = %self.peer_display_name(&src_addr),
-            counter = report.counter,
+            counter,
             consecutive_failures = consecutive,
-            "Worker FSP AEAD decryption failed"
+            source,
+            "FSP AEAD decryption failed"
         );
         if recover_session {
             warn!(
@@ -566,10 +398,12 @@ impl Node {
             if !self.initiate_session_rekey(&src_addr).await {
                 debug!(
                     peer = %self.peer_display_name(&src_addr),
-                    "Failed to start recovery rekey after worker FSP decrypt-failure threshold"
+                    source,
+                    "Failed to start recovery rekey after FSP decrypt-failure threshold"
                 );
             }
         }
+        true
     }
 
     async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {

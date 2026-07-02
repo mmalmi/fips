@@ -11,7 +11,6 @@ use crate::node::tests::spanning_tree::{
 use crate::protocol::{SessionAck, SessionDatagram, SessionReceiverReport, SessionSetup};
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 
-mod coords_identity;
 mod direct_endpoint;
 mod discovery_tun;
 mod entry_basics;
@@ -79,6 +78,108 @@ async fn drain_to_quiescence(nodes: &mut [TestNode]) {
     }
 }
 
+async fn wait_for_session_established(
+    nodes: &mut [TestNode],
+    index: usize,
+    peer: &NodeAddr,
+    timeout: Duration,
+    context: &str,
+) {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if nodes[index]
+                .node
+                .get_session(peer)
+                .is_some_and(|entry| entry.is_established())
+            {
+                return;
+            }
+
+            process_available_packets(nodes).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{context}: session did not establish"));
+}
+
+fn run_large_stack_async_test<F, Fut>(name: &'static str, test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("large-stack test runtime")
+                .block_on(test());
+        })
+        .expect("spawn large-stack test");
+
+    if let Err(panic) = handle.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+fn ensure_packet_mover2_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
+    node.packet_mover2.register_owner_if_missing(
+        crate::packet_mover2::OwnerId::fsp_node(dest_addr),
+        crate::packet_mover2::OwnerConfig::new(1, 8)
+            .with_fsp_session_start_ms(1_000)
+            .with_fsp_mmp(node.config.node.session_mmp.clone(), true),
+    );
+}
+
+fn seed_packet_mover2_fsp_data_sent_for_test(
+    node: &mut Node,
+    dest_addr: NodeAddr,
+    next_hop: NodeAddr,
+    now_ms: u64,
+) {
+    ensure_packet_mover2_fsp_owner_for_test(node, dest_addr);
+    assert!(node.packet_mover2.record_fsp_data_sent(
+        dest_addr,
+        next_hop,
+        512,
+        crate::packet_mover2::ActivityTick::new(now_ms),
+    ));
+}
+
+fn seed_packet_mover2_fsp_data_rx_for_test(
+    node: &mut Node,
+    source_addr: NodeAddr,
+    previous_hop: NodeAddr,
+    now_ms: u64,
+) {
+    ensure_packet_mover2_fsp_owner_for_test(node, source_addr);
+    let body_len = 512;
+    assert!(
+        node.packet_mover2
+            .record_authenticated_fsp_session(
+                source_addr,
+                previous_hop,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                body_len,
+                crate::packet_mover2::FspReceiveSync {
+                    counter: 1,
+                    received_k_bit: false,
+                    timestamp: 0,
+                    plaintext_len: crate::node::session_wire::FSP_INNER_HEADER_SIZE + body_len,
+                    ce_flag: false,
+                    path_mtu: u16::MAX,
+                    spin_bit: false,
+                },
+                Some(crate::packet_mover2::ActivityTick::new(now_ms)),
+                std::time::Instant::now(),
+            )
+            .is_some()
+    );
+}
+
 async fn recv_endpoint_event_while_draining(
     nodes: &mut [TestNode],
     rx: &mut EndpointEventReceiver,
@@ -101,30 +202,78 @@ async fn recv_endpoint_event_while_draining(
     .unwrap_or_else(|_| panic!("{context}: endpoint data should not time out"))
 }
 
-async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
-    use crate::node::wire::{
-        COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
-    };
-
-    let mut count = 0;
-    while let Ok(packet) = node.packet_rx.try_recv() {
-        if packet.data.len() < COMMON_PREFIX_SIZE {
-            continue;
+fn expect_single_endpoint_data_event(
+    event: NodeEndpointEvent,
+) -> crate::node::EndpointDataDelivery {
+    match event {
+        NodeEndpointEvent { mut messages, .. } if messages.len() == 1 => {
+            messages.pop().expect("one endpoint data message")
         }
-        if let Some(prefix) = CommonPrefix::parse(&packet.data) {
-            if prefix.version != FMP_VERSION {
-                continue;
-            }
-            match prefix.phase {
-                PHASE_MSG1 => node.node.handle_msg1(packet).await,
-                PHASE_MSG2 => node.node.handle_msg2(packet).await,
-                PHASE_ESTABLISHED => node.node.handle_encrypted_frame(packet).await,
-                _ => {}
-            }
-            count += 1;
+        NodeEndpointEvent { messages, .. } => {
+            panic!("expected one endpoint data message, got {}", messages.len())
         }
     }
-    count
+}
+
+async fn send_endpoint_data_via_pm2(
+    node: &mut Node,
+    remote: PeerIdentity,
+    payload: Vec<u8>,
+) -> Result<(), NodeError> {
+    let dest_addr = *remote.node_addr();
+    node.handle_endpoint_data_batch_no_established_flush(
+        crate::node::NodeEndpointDataBatch::batch(remote, vec![payload], None)
+            .expect("one-packet endpoint data batch"),
+    )
+    .await;
+    if node
+        .get_session(&dest_addr)
+        .is_some_and(|entry| entry.is_established())
+        && node.find_next_hop(&dest_addr).is_some()
+    {
+        node.flush_pending_packets(&dest_addr).await;
+    }
+    Ok(())
+}
+
+fn enqueue_tun_packet_via_pm2(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
+    nodes[index]
+        .tun_outbound_tx
+        .try_send(packet)
+        .expect("enqueue TUN outbound packet");
+}
+
+async fn send_tun_packet_via_pm2(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
+    enqueue_tun_packet_via_pm2(nodes, index, packet);
+    process_available_packets(nodes).await;
+}
+
+async fn recv_tun_packet_while_draining(
+    nodes: &mut [TestNode],
+    rx: &crate::upper::tun::TunRx,
+    timeout: Duration,
+    context: &str,
+) -> Vec<u8> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            match rx.try_recv() {
+                Ok(packet) => return packet,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("{context}: TUN receiver disconnected");
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+
+            process_available_packets(nodes).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{context}: TUN packet should not time out"))
+}
+
+async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
+    process_available_packets(std::slice::from_mut(node)).await
 }
 
 async fn wait_process_packets_for_node(nodes: &mut [TestNode], index: usize) -> usize {
@@ -304,8 +453,7 @@ fn build_path_mtu_notification_body(mtu: u16) -> Vec<u8> {
     mtu.to_le_bytes().to_vec()
 }
 
-/// Insert an Established session with MMP initialized so the proactive
-/// PathMtuNotification handler can apply notifications.
+/// Insert an Established session and matching PM2 FSP owner.
 fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
     let session = make_noise_session(node.identity(), remote);
     let remote_addr = *remote.node_addr();
@@ -316,15 +464,12 @@ fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
         1000,
         true,
     );
-    entry.init_mmp(&node.config.node.session_mmp);
+    entry.mark_established(1000);
     node.sessions.insert(remote_addr, entry);
+    ensure_packet_mover2_fsp_owner_for_test(node, remote_addr);
 }
 
-fn session_timestamp_echo_for(node: &Node, remote_addr: &NodeAddr, rtt_ms: u32) -> u32 {
+fn session_timestamp_echo_for(rtt_ms: u32) -> u32 {
     let now_ms = Node::now_ms();
-    node.sessions
-        .get(remote_addr)
-        .expect("session")
-        .session_timestamp(now_ms)
-        .saturating_sub(rtt_ms)
+    (now_ms.wrapping_sub(1_000) as u32).saturating_sub(rtt_ms)
 }

@@ -1,0 +1,2103 @@
+#[derive(Clone, Debug)]
+pub(crate) struct OwnerConfig {
+    generation: u64,
+    in_flight_limit: usize,
+    next_send_counter: u64,
+    send_counter_authority: Option<crate::noise::SendCounterAuthority>,
+    fmp_session_start_ms: Option<u64>,
+    fmp_send_headers: Option<PacketMover2FmpSendHeaders>,
+    fmp_mmp: Option<PacketMover2FmpMmpConfig>,
+    fsp_session_start_ms: Option<u64>,
+    fsp_send_headers: Option<PacketMover2FspSendHeaders>,
+    fsp_current_k_bit: Option<bool>,
+    fsp_previous_draining_k_bit: Option<bool>,
+    fsp_coords_warmup: Option<(u8, Vec<u8>)>,
+    fsp_mmp: Option<PacketMover2FspMmpConfig>,
+    source_peer: Option<crate::PeerIdentity>,
+}
+
+#[derive(Clone, Debug)]
+struct PacketMover2FmpMmpConfig {
+    config: crate::mmp::MmpConfig,
+    is_initiator: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FmpSendHeaders {
+    receiver_idx: u32,
+    flags: u8,
+}
+
+impl PacketMover2FmpSendHeaders {
+    pub(crate) fn new(receiver_idx: u32, flags: u8) -> Self {
+        Self {
+            receiver_idx,
+            flags,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FmpSendContext {
+    generation: u64,
+    receiver_idx: u32,
+    flags: u8,
+}
+
+impl PacketMover2FmpSendContext {
+    fn new(generation: u64, headers: PacketMover2FmpSendHeaders) -> Self {
+        Self {
+            generation,
+            receiver_idx: headers.receiver_idx,
+            flags: headers.flags,
+        }
+    }
+
+    pub(crate) fn generation(self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn receiver_idx(self) -> u32 {
+        self.receiver_idx
+    }
+
+    pub(crate) fn flags(self) -> u8 {
+        self.flags
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PacketMover2FmpReceiverReportResult {
+    pub(crate) first_rtt: bool,
+    pub(crate) srtt_ms: Option<f64>,
+    pub(crate) loss_rate: f64,
+    pub(crate) etx: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PacketMover2FmpLinkMetrics {
+    pub(crate) node_addr: NodeAddr,
+    pub(crate) mode: crate::mmp::MmpMode,
+    pub(crate) spin_bit_initiator: bool,
+    pub(crate) srtt_ms: Option<f64>,
+    pub(crate) srtt_age_ms: Option<u64>,
+    pub(crate) loss_rate: f64,
+    pub(crate) loss_rate_for_log: Option<f64>,
+    pub(crate) smoothed_loss: Option<f64>,
+    pub(crate) etx: f64,
+    pub(crate) smoothed_etx: Option<f64>,
+    pub(crate) jitter_ms: f64,
+    pub(crate) goodput_bps: f64,
+    pub(crate) rtt_trend: Option<(f64, f64)>,
+    pub(crate) loss_trend: Option<(f64, f64)>,
+    pub(crate) goodput_trend: Option<(f64, f64)>,
+    pub(crate) jitter_trend: Option<(f64, f64)>,
+    pub(crate) delivery_ratio_forward: f64,
+    pub(crate) delivery_ratio_reverse: f64,
+    pub(crate) last_forward_loss_sample: Option<(u64, f64)>,
+    pub(crate) tx_packets: u64,
+    pub(crate) tx_bytes: u64,
+    pub(crate) rx_packets: u64,
+    pub(crate) rx_bytes: u64,
+    pub(crate) ecn_ce_count: u32,
+    pub(crate) last_recv_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PacketMover2FmpMmpReportKind {
+    Sender,
+    Receiver,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PacketMover2FmpMmpReport {
+    pub(crate) node_addr: NodeAddr,
+    pub(crate) encoded: Vec<u8>,
+    pub(crate) kind: PacketMover2FmpMmpReportKind,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct PacketMover2FmpMmpReportBatch {
+    pub(crate) reports: Vec<PacketMover2FmpMmpReport>,
+    pub(crate) metric_logs: Vec<PacketMover2FmpLinkMetrics>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PacketMover2FmpMmpSkip {
+    UnknownOwner,
+    MmpDisabled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspSendHeaders {
+    fsp_flags: u8,
+    inner_flags: u8,
+}
+
+impl PacketMover2FspSendHeaders {
+    pub(crate) fn new(fsp_flags: u8, inner_flags: u8) -> Self {
+        Self {
+            fsp_flags,
+            inner_flags,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PacketMover2FspMmpConfig {
+    config: crate::config::SessionMmpConfig,
+    is_initiator: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspSendContext {
+    generation: u64,
+    fsp_flags: u8,
+    inner_flags: u8,
+}
+
+impl PacketMover2FspSendContext {
+    fn new(generation: u64, headers: PacketMover2FspSendHeaders) -> Self {
+        Self {
+            generation,
+            fsp_flags: headers.fsp_flags,
+            inner_flags: headers.inner_flags,
+        }
+    }
+
+    pub(crate) fn generation(self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn fsp_flags(self) -> u8 {
+        self.fsp_flags
+    }
+
+    pub(crate) fn inner_flags(self) -> u8 {
+        self.inner_flags
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PacketMover2FspMmpReport {
+    pub(crate) dest_addr: NodeAddr,
+    pub(crate) msg_type: u8,
+    pub(crate) encoded: Vec<u8>,
+    pub(crate) prior_failures: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PacketMover2FspMmpSnapshot {
+    pub(crate) dest_addr: NodeAddr,
+    pub(crate) fallback_session_name: String,
+    pub(crate) mode: crate::mmp::MmpMode,
+    pub(crate) rtt_ms: Option<f64>,
+    pub(crate) loss_rate: f64,
+    pub(crate) smoothed_loss: Option<f64>,
+    pub(crate) last_forward_loss_sample: Option<(u64, f64)>,
+    pub(crate) etx: f64,
+    pub(crate) smoothed_etx: Option<f64>,
+    pub(crate) goodput_bps: f64,
+    pub(crate) delivery_ratio_forward: f64,
+    pub(crate) delivery_ratio_reverse: f64,
+    pub(crate) spin_bit_initiator: bool,
+    pub(crate) send_mtu: u16,
+    pub(crate) observed_mtu: u16,
+    pub(crate) jitter_ms: f64,
+    pub(crate) tx_packets: u64,
+    pub(crate) tx_bytes: u64,
+    pub(crate) rx_packets: u64,
+    pub(crate) rx_bytes: u64,
+    pub(crate) ecn_ce_count: u32,
+}
+
+impl PacketMover2FspMmpSnapshot {
+    fn from_mmp(
+        dest_addr: NodeAddr,
+        fallback_session_name: String,
+        mmp: &crate::mmp::MmpSessionState,
+    ) -> Self {
+        let metrics = &mmp.metrics;
+        Self {
+            dest_addr,
+            fallback_session_name,
+            mode: mmp.mode(),
+            rtt_ms: metrics.srtt_ms(),
+            loss_rate: metrics.loss_rate(),
+            smoothed_loss: metrics.smoothed_loss(),
+            last_forward_loss_sample: metrics.last_forward_loss_sample(),
+            etx: metrics.etx,
+            smoothed_etx: metrics.smoothed_etx(),
+            goodput_bps: metrics.goodput_bps(),
+            delivery_ratio_forward: metrics.delivery_ratio_forward,
+            delivery_ratio_reverse: metrics.delivery_ratio_reverse,
+            spin_bit_initiator: mmp.spin_bit.is_initiator(),
+            send_mtu: mmp.path_mtu.current_mtu(),
+            observed_mtu: mmp.path_mtu.last_observed_mtu(),
+            jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
+            tx_packets: mmp.sender.cumulative_packets_sent(),
+            tx_bytes: mmp.sender.cumulative_bytes_sent(),
+            rx_packets: mmp.receiver.cumulative_packets_recv(),
+            rx_bytes: mmp.receiver.cumulative_bytes_recv(),
+            ecn_ce_count: metrics.last_ecn_ce_count(),
+        }
+    }
+
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct PacketMover2FspMmpReportBatch {
+    pub(crate) reports: Vec<PacketMover2FspMmpReport>,
+    pub(crate) metric_logs: Vec<PacketMover2FspMmpSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PacketMover2FspReceiverReportResult {
+    pub(crate) sample: Option<(u64, f64)>,
+    pub(crate) used_direct_next_hop: bool,
+    pub(crate) srtt_ms: Option<f64>,
+    pub(crate) mode: crate::mmp::MmpMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PacketMover2FspMmpSkip {
+    UnknownOwner,
+    MmpDisabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PacketMover2FspPathMtuChange {
+    pub(crate) old_mtu: u16,
+    pub(crate) new_mtu: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PacketMover2FspPathMtuApplyResult {
+    Changed(PacketMover2FspPathMtuChange),
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PacketMover2FspMmpReportingResumed {
+    pub(crate) dest_addr: NodeAddr,
+    pub(crate) consecutive_failures: u32,
+}
+
+impl OwnerConfig {
+    pub(crate) fn new(generation: u64, in_flight_limit: usize) -> Self {
+        Self {
+            generation,
+            in_flight_limit,
+            next_send_counter: 0,
+            send_counter_authority: None,
+            fmp_session_start_ms: None,
+            fmp_send_headers: None,
+            fmp_mmp: None,
+            fsp_session_start_ms: None,
+            fsp_send_headers: None,
+            fsp_current_k_bit: None,
+            fsp_previous_draining_k_bit: None,
+            fsp_coords_warmup: None,
+            fsp_mmp: None,
+            source_peer: None,
+        }
+    }
+
+    pub(crate) fn with_next_send_counter(mut self, next_send_counter: u64) -> Self {
+        self.next_send_counter = next_send_counter;
+        self
+    }
+
+    pub(crate) fn with_send_counter_authority(
+        mut self,
+        authority: crate::noise::SendCounterAuthority,
+    ) -> Self {
+        self.next_send_counter = authority.current();
+        self.send_counter_authority = Some(authority);
+        self
+    }
+
+    pub(crate) fn with_fmp_session_start_ms(mut self, session_start_ms: u64) -> Self {
+        self.fmp_session_start_ms = Some(session_start_ms);
+        self
+    }
+
+    pub(crate) fn with_fmp_send_headers(mut self, receiver_idx: u32, flags: u8) -> Self {
+        self.fmp_send_headers = Some(PacketMover2FmpSendHeaders::new(receiver_idx, flags));
+        self
+    }
+
+    pub(crate) fn with_fmp_mmp(mut self, config: crate::mmp::MmpConfig, is_initiator: bool) -> Self {
+        self.fmp_mmp = Some(PacketMover2FmpMmpConfig {
+            config,
+            is_initiator,
+        });
+        self
+    }
+
+    pub(crate) fn with_fsp_session_start_ms(mut self, session_start_ms: u64) -> Self {
+        self.fsp_session_start_ms = Some(session_start_ms);
+        self
+    }
+
+    pub(crate) fn with_fsp_send_headers(
+        mut self,
+        fsp_flags: u8,
+        inner_flags: u8,
+    ) -> Self {
+        self.fsp_send_headers = Some(PacketMover2FspSendHeaders::new(fsp_flags, inner_flags));
+        self
+    }
+
+    pub(crate) fn with_fsp_epoch(
+        mut self,
+        current_k_bit: bool,
+        previous_draining_k_bit: Option<bool>,
+    ) -> Self {
+        self.fsp_current_k_bit = Some(current_k_bit);
+        self.fsp_previous_draining_k_bit = previous_draining_k_bit;
+        self
+    }
+
+    pub(crate) fn with_fsp_coords_warmup(mut self, remaining: u8, prefix: Vec<u8>) -> Self {
+        if remaining == 0 || prefix.is_empty() {
+            self.fsp_coords_warmup = None;
+        } else {
+            self.fsp_coords_warmup = Some((remaining, prefix));
+        }
+        self
+    }
+
+    pub(crate) fn with_fsp_mmp(
+        mut self,
+        config: crate::config::SessionMmpConfig,
+        is_initiator: bool,
+    ) -> Self {
+        self.fsp_mmp = Some(PacketMover2FspMmpConfig {
+            config,
+            is_initiator,
+        });
+        self
+    }
+
+    pub(crate) fn with_source_peer(mut self, peer: crate::PeerIdentity) -> Self {
+        self.source_peer = Some(peer);
+        self
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OwnerCryptoKeys {
+    open: AeadKey,
+    seal: AeadKey,
+}
+
+impl OwnerCryptoKeys {
+    pub(crate) fn new(open: AeadKey, seal: AeadKey) -> Self {
+        Self { open, seal }
+    }
+}
+
+impl std::fmt::Debug for OwnerCryptoKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnerCryptoKeys").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct OrderToken(u64);
+
+impl OrderToken {
+    fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OwnerReservation {
+    owner: OwnerId,
+    owner_shard: usize,
+    generation: u64,
+    order: OrderToken,
+    ingress_seq: u64,
+    counter: u64,
+    class: PacketClass,
+    lane: Lane,
+    source_path: Option<TransportPath>,
+    previous_hop: Option<NodeAddr>,
+    ce_flag: bool,
+    path_mtu: u16,
+    wire_flags: u8,
+    source_peer: Option<crate::PeerIdentity>,
+    output_path: Option<TransportPath>,
+    activity_tick: Option<ActivityTick>,
+    fmp_timestamp_ms: Option<u32>,
+    fsp_timestamp_ms: Option<u32>,
+}
+
+impl OwnerReservation {
+    fn with_owner_shard(mut self, owner_shard: usize) -> Self {
+        self.owner_shard = owner_shard;
+        self
+    }
+
+    fn owner_shard(&self) -> usize {
+        self.owner_shard
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnerReserveError {
+    Replay,
+    InFlightFull,
+    StaleGeneration,
+    CounterExhausted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OwnerReserveBlockReason {
+    TotalInFlight,
+    BulkLane,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspOwnerActivity {
+    owner: NodeAddr,
+    fsp_session_start_ms: Option<u64>,
+    last_rx_activity: Option<ActivityTick>,
+    last_rx_data_activity: Option<ActivityTick>,
+    last_tx_data_activity: Option<ActivityTick>,
+    last_outbound_next_hop: Option<NodeAddr>,
+    current_k_bit: bool,
+    previous_draining_k_bit: Option<bool>,
+    current_epoch_confirmed: bool,
+    send_counter: u64,
+    current_path_mtu: Option<u16>,
+    data_packets_sent: u64,
+    data_packets_recv: u64,
+    data_bytes_sent: u64,
+    data_bytes_recv: u64,
+}
+
+impl PacketMover2FspOwnerActivity {
+    pub(crate) fn last_outbound_next_hop(self) -> Option<NodeAddr> {
+        self.last_outbound_next_hop
+    }
+
+    pub(crate) fn last_rx_age_ms(self, now_ms: u64) -> Option<u64> {
+        self.last_rx_activity.map(|tick| tick.age_ms(now_ms))
+    }
+
+    pub(crate) fn last_rx_data_age_ms(self, now_ms: u64) -> Option<u64> {
+        self.last_rx_data_activity.map(|tick| tick.age_ms(now_ms))
+    }
+
+    pub(crate) fn fsp_session_start_ms(self) -> Option<u64> {
+        self.fsp_session_start_ms
+    }
+
+    pub(crate) fn current_k_bit(self) -> bool {
+        self.current_k_bit
+    }
+
+    pub(crate) fn is_draining(self) -> bool {
+        self.previous_draining_k_bit.is_some()
+    }
+
+    pub(crate) fn current_epoch_confirmed(self) -> bool {
+        self.current_epoch_confirmed
+    }
+
+    pub(crate) fn should_ignore_stale_epoch_decrypt_failure(self, received_k_bit: bool) -> bool {
+        self.previous_draining_k_bit == Some(received_k_bit)
+            && received_k_bit != self.current_k_bit
+    }
+
+    pub(crate) fn send_counter(self) -> u64 {
+        self.send_counter
+    }
+
+    pub(crate) fn current_path_mtu(self) -> Option<u16> {
+        self.current_path_mtu
+    }
+
+    pub(crate) fn has_recent_outbound_activity(self, now_ms: u64, timeout_ms: u64) -> bool {
+        self.last_tx_data_activity
+            .is_some_and(|tick| tick.age_ms(now_ms) <= timeout_ms)
+    }
+
+    pub(crate) fn has_recent_session_activity(self, now_ms: u64, timeout_ms: u64) -> bool {
+        self.fsp_session_start_ms
+            .is_some_and(|start_ms| now_ms.saturating_sub(start_ms) <= timeout_ms)
+            || self
+                .last_rx_data_activity
+                .is_some_and(|tick| tick.age_ms(now_ms) <= timeout_ms)
+            || self
+                .last_tx_data_activity
+                .is_some_and(|tick| tick.age_ms(now_ms) <= timeout_ms)
+    }
+
+    pub(crate) fn session_idle_activity_ms(self) -> Option<u64> {
+        [
+            self.fsp_session_start_ms,
+            self.last_rx_data_activity.map(ActivityTick::get),
+            self.last_tx_data_activity.map(ActivityTick::get),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+    }
+
+    pub(crate) fn has_stale_outbound_only_activity(self, now_ms: u64, timeout_ms: u64) -> bool {
+        let last_inbound_ms = self
+            .last_rx_activity
+            .map(ActivityTick::get)
+            .or(self.fsp_session_start_ms);
+        self.data_packets_sent > 0
+            && last_inbound_ms.is_some_and(|last_ms| now_ms.saturating_sub(last_ms) > timeout_ms)
+    }
+
+    pub(crate) fn has_recent_outbound_without_inbound(
+        self,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        let inbound_data_stale = self
+            .last_rx_data_age_ms(now_ms)
+            .is_none_or(|age_ms| age_ms > timeout_ms);
+        self.data_packets_sent > 0
+            && self.has_recent_outbound_activity(now_ms, timeout_ms)
+            && inbound_data_stale
+    }
+
+    fn tracks_next_hop(self, next_hop: &NodeAddr) -> bool {
+        self.last_outbound_next_hop == Some(*next_hop)
+            || (self.owner == *next_hop && self.last_outbound_next_hop.is_none())
+    }
+
+    pub(crate) fn traffic_counters(self) -> (u64, u64, u64, u64) {
+        (
+            self.data_packets_sent,
+            self.data_packets_recv,
+            self.data_bytes_sent,
+            self.data_bytes_recv,
+        )
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct OwnerState {
+    owner: OwnerId,
+    generation: u64,
+    in_flight_limit: usize,
+    in_flight: usize,
+    bulk_in_flight: usize,
+    next_order: u64,
+    next_retire: u64,
+    next_send_counter: u64,
+    send_counter_authority: Option<crate::noise::SendCounterAuthority>,
+    crypto_keys: Option<OwnerCryptoKeys>,
+    previous_fsp_open: Option<AeadKey>,
+    pending_fsp_open: Option<AeadKey>,
+    pending_fsp_k_bit: Option<bool>,
+    pending_fsp_replay_window: Option<ReplayWindow>,
+    active_path: Option<TransportPath>,
+    fmp_session_start_ms: Option<u64>,
+    fmp_send_headers: Option<PacketMover2FmpSendHeaders>,
+    fmp_mmp: Option<crate::mmp::MmpPeerState>,
+    fsp_session_start_ms: Option<u64>,
+    fsp_send_headers: Option<PacketMover2FspSendHeaders>,
+    fsp_current_k_bit: bool,
+    fsp_previous_draining_k_bit: Option<bool>,
+    fsp_coords_warmup_remaining: u8,
+    fsp_coords_prefix: Vec<u8>,
+    fsp_wrap_route: Option<PacketMover2FspWrapRoute>,
+    fsp_mmp: Option<crate::mmp::MmpSessionState>,
+    fsp_lifecycle_confirmed: bool,
+    source_peer: Option<crate::PeerIdentity>,
+    last_rx_activity: Option<ActivityTick>,
+    last_rx_data_activity: Option<ActivityTick>,
+    last_tx_activity: Option<ActivityTick>,
+    last_tx_data_activity: Option<ActivityTick>,
+    last_outbound_next_hop: Option<NodeAddr>,
+    data_packets_sent: u64,
+    data_packets_recv: u64,
+    data_bytes_sent: u64,
+    data_bytes_recv: u64,
+    consecutive_decrypt_failures: u32,
+    authenticated_counter_highest: u64,
+    replay_window: ReplayWindow,
+    previous_fsp_replay_window: Option<ReplayWindow>,
+    pending: BTreeMap<OrderToken, CryptoCompletionBatch>,
+}
+
+impl OwnerState {
+    pub(crate) fn new(owner: OwnerId, config: OwnerConfig) -> Self {
+        Self {
+            owner,
+            generation: config.generation,
+            in_flight_limit: config.in_flight_limit,
+            in_flight: 0,
+            bulk_in_flight: 0,
+            next_order: 0,
+            next_retire: 0,
+            next_send_counter: config.next_send_counter,
+            send_counter_authority: config.send_counter_authority,
+            crypto_keys: None,
+            previous_fsp_open: None,
+            pending_fsp_open: None,
+            pending_fsp_k_bit: None,
+            pending_fsp_replay_window: None,
+            active_path: None,
+            fmp_session_start_ms: config.fmp_session_start_ms,
+            fmp_send_headers: config.fmp_send_headers,
+            fmp_mmp: config
+                .fmp_mmp
+                .map(|mmp| crate::mmp::MmpPeerState::new(&mmp.config, mmp.is_initiator)),
+            fsp_session_start_ms: config.fsp_session_start_ms,
+            fsp_send_headers: config.fsp_send_headers,
+            fsp_current_k_bit: config.fsp_current_k_bit.unwrap_or(false),
+            fsp_previous_draining_k_bit: config.fsp_previous_draining_k_bit,
+            fsp_coords_warmup_remaining: config
+                .fsp_coords_warmup
+                .as_ref()
+                .map_or(0, |(remaining, _)| *remaining),
+            fsp_coords_prefix: config
+                .fsp_coords_warmup
+                .map_or_else(Vec::new, |(_, prefix)| prefix),
+            fsp_wrap_route: None,
+            fsp_mmp: config
+                .fsp_mmp
+                .map(|mmp| crate::mmp::MmpSessionState::new(&mmp.config, mmp.is_initiator)),
+            fsp_lifecycle_confirmed: false,
+            source_peer: config.source_peer,
+            last_rx_activity: None,
+            last_rx_data_activity: None,
+            last_tx_activity: None,
+            last_tx_data_activity: None,
+            last_outbound_next_hop: None,
+            data_packets_sent: 0,
+            data_packets_recv: 0,
+            data_bytes_sent: 0,
+            data_bytes_recv: 0,
+            consecutive_decrypt_failures: 0,
+            authenticated_counter_highest: 0,
+            replay_window: ReplayWindow::default(),
+            previous_fsp_replay_window: None,
+            pending: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn rekey(&mut self, generation: u64) {
+        self.generation = generation;
+        self.replay_window.clear();
+        self.next_send_counter = 0;
+        self.send_counter_authority = None;
+        self.crypto_keys = None;
+        self.previous_fsp_open = None;
+        self.pending_fsp_open = None;
+        self.pending_fsp_k_bit = None;
+        self.pending_fsp_replay_window = None;
+        self.fmp_session_start_ms = None;
+        self.fmp_send_headers = None;
+        if let Some(mmp) = &mut self.fmp_mmp {
+            mmp.reset_for_rekey(std::time::Instant::now());
+        }
+        self.fsp_session_start_ms = None;
+        self.fsp_send_headers = None;
+        self.fsp_current_k_bit = false;
+        self.fsp_previous_draining_k_bit = None;
+        self.fsp_coords_warmup_remaining = 0;
+        self.fsp_coords_prefix.clear();
+        self.fsp_wrap_route = None;
+        if let Some(mmp) = &mut self.fsp_mmp {
+            mmp.reset_for_rekey(std::time::Instant::now());
+        }
+        self.fsp_lifecycle_confirmed = false;
+        self.source_peer = None;
+        self.last_rx_data_activity = None;
+        self.last_tx_data_activity = None;
+        self.last_outbound_next_hop = None;
+        self.data_packets_sent = 0;
+        self.data_packets_recv = 0;
+        self.data_bytes_sent = 0;
+        self.data_bytes_recv = 0;
+        self.consecutive_decrypt_failures = 0;
+        self.authenticated_counter_highest = 0;
+        self.previous_fsp_replay_window = None;
+    }
+
+    pub(crate) fn set_crypto_keys(&mut self, keys: OwnerCryptoKeys) {
+        self.crypto_keys = Some(keys);
+    }
+
+    pub(crate) fn install_fsp_session(
+        &mut self,
+        config: OwnerConfig,
+        keys: OwnerCryptoKeys,
+    ) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+
+        let generation_changed = config.generation != self.generation;
+        let previous_epoch = generation_changed && config.fsp_previous_draining_k_bit.is_some();
+        let promoted_pending_replay =
+            (generation_changed && self.pending_fsp_k_bit == config.fsp_current_k_bit)
+                .then(|| self.pending_fsp_replay_window.take())
+                .flatten();
+        let previous_open = previous_epoch
+            .then(|| self.crypto_keys.as_ref().map(|old_keys| old_keys.open.clone()))
+            .flatten();
+        let previous_replay = previous_open
+            .is_some()
+            .then(|| std::mem::take(&mut self.replay_window));
+
+        self.apply_live_config(config);
+        self.crypto_keys = Some(keys);
+        if let Some(replay) = promoted_pending_replay {
+            self.replay_window = replay;
+            self.pending_fsp_open = None;
+            self.pending_fsp_k_bit = None;
+            self.pending_fsp_replay_window = None;
+        }
+        if let (Some(open), Some(replay)) = (previous_open, previous_replay) {
+            self.previous_fsp_open = Some(open);
+            self.previous_fsp_replay_window = Some(replay);
+        } else if self.fsp_previous_draining_k_bit.is_none() {
+            self.previous_fsp_open = None;
+            self.previous_fsp_replay_window = None;
+        }
+        true
+    }
+
+    pub(crate) fn install_fsp_pending_receive_epoch(
+        &mut self,
+        pending_k_bit: bool,
+        open: AeadKey,
+    ) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp || pending_k_bit == self.fsp_current_k_bit
+        {
+            return false;
+        }
+        self.pending_fsp_open = Some(open);
+        self.pending_fsp_k_bit = Some(pending_k_bit);
+        self.pending_fsp_replay_window = Some(ReplayWindow::default());
+        true
+    }
+
+    pub(crate) fn has_fsp_pending_receive_epoch(&self, received_k_bit: bool) -> bool {
+        self.owner.protocol() == PacketProtocol::Fsp
+            && self.pending_fsp_k_bit == Some(received_k_bit)
+            && self.pending_fsp_open.is_some()
+            && self.pending_fsp_replay_window.is_some()
+    }
+
+    pub(crate) fn set_fsp_epoch(
+        &mut self,
+        current_k_bit: bool,
+        previous_draining_k_bit: Option<bool>,
+    ) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        self.fsp_current_k_bit = current_k_bit;
+        self.fsp_previous_draining_k_bit = previous_draining_k_bit;
+        if previous_draining_k_bit.is_none() {
+            self.previous_fsp_open = None;
+            self.previous_fsp_replay_window = None;
+        }
+        if self.pending_fsp_k_bit == Some(current_k_bit) {
+            self.pending_fsp_open = None;
+            self.pending_fsp_k_bit = None;
+            self.pending_fsp_replay_window = None;
+        }
+        true
+    }
+
+    pub(crate) fn set_fsp_wrap_route(&mut self, route: Option<PacketMover2FspWrapRoute>) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        self.fsp_wrap_route = route;
+        true
+    }
+
+    pub(crate) fn set_fsp_coords_warmup(&mut self, remaining: u8, prefix: Vec<u8>) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        if remaining == 0 || prefix.is_empty() {
+            self.fsp_coords_warmup_remaining = 0;
+            self.fsp_coords_prefix.clear();
+        } else {
+            self.fsp_coords_warmup_remaining = remaining;
+            self.fsp_coords_prefix = prefix;
+        }
+        true
+    }
+
+    pub(crate) fn apply_live_config(&mut self, config: OwnerConfig) {
+        if config.generation != self.generation {
+            self.rekey(config.generation);
+        }
+        if let Some(authority) = config.send_counter_authority {
+            self.set_send_counter_authority(authority);
+        }
+        if let Some(session_start_ms) = config.fmp_session_start_ms {
+            self.fmp_session_start_ms = Some(session_start_ms);
+        }
+        if let Some(headers) = config.fmp_send_headers {
+            self.fmp_send_headers = Some(headers);
+        }
+        if self.fmp_mmp.is_none()
+            && let Some(mmp) = config.fmp_mmp
+        {
+            self.fmp_mmp = Some(crate::mmp::MmpPeerState::new(
+                &mmp.config,
+                mmp.is_initiator,
+            ));
+        }
+        if let Some(session_start_ms) = config.fsp_session_start_ms {
+            self.fsp_session_start_ms = Some(session_start_ms);
+        }
+        if let Some(headers) = config.fsp_send_headers {
+            self.fsp_send_headers = Some(headers);
+        }
+        if let Some(current_k_bit) = config.fsp_current_k_bit {
+            self.set_fsp_epoch(current_k_bit, config.fsp_previous_draining_k_bit);
+        }
+        if let Some(peer) = config.source_peer {
+            self.source_peer = Some(peer);
+        }
+        if self.fsp_mmp.is_none()
+            && let Some(mmp) = config.fsp_mmp
+        {
+            self.fsp_mmp = Some(crate::mmp::MmpSessionState::new(
+                &mmp.config,
+                mmp.is_initiator,
+            ));
+        }
+        // Coords warmup is transferred into the owner once; ordinary live
+        // refreshes must not reload or erase the owner-local budget.
+        if let Some((remaining, prefix)) = config.fsp_coords_warmup {
+            self.fsp_coords_warmup_remaining = remaining;
+            self.fsp_coords_prefix = prefix;
+        }
+    }
+
+    pub(crate) fn set_send_counter_authority(
+        &mut self,
+        authority: crate::noise::SendCounterAuthority,
+    ) {
+        self.next_send_counter = authority.current();
+        self.send_counter_authority = Some(authority);
+    }
+
+    fn seal_key(&self) -> Option<AeadKey> {
+        self.crypto_keys.as_ref().map(|keys| keys.seal.clone())
+    }
+
+    fn uses_previous_fsp_receive_epoch(&self, packet: &SocketPacket) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        let received_k_bit = packet.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0;
+        self.fsp_previous_draining_k_bit == Some(received_k_bit)
+            && received_k_bit != self.fsp_current_k_bit
+            && self.previous_fsp_open.is_some()
+            && self.previous_fsp_replay_window.is_some()
+    }
+
+    fn uses_pending_fsp_receive_epoch(&self, packet: &SocketPacket) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        let received_k_bit = packet.wire_flags & crate::node::session_wire::FSP_FLAG_K != 0;
+        self.pending_fsp_k_bit == Some(received_k_bit)
+            && received_k_bit != self.fsp_current_k_bit
+            && self.pending_fsp_open.is_some()
+            && self.pending_fsp_replay_window.is_some()
+    }
+
+    pub(crate) fn set_active_path(&mut self, path: TransportPath) {
+        self.active_path = Some(path);
+    }
+
+    pub(crate) fn clear_active_path(&mut self) {
+        self.active_path = None;
+    }
+
+    pub(crate) fn active_path(&self) -> Option<TransportPath> {
+        self.active_path.clone()
+    }
+
+    pub(crate) fn fsp_wrap_next_hop(&self) -> Option<NodeAddr> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        self.fsp_wrap_route.map(PacketMover2FspWrapRoute::next_hop_addr)
+    }
+
+    pub(crate) fn fmp_send_context(&self) -> Option<PacketMover2FmpSendContext> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return None;
+        }
+        let mut headers = self.fmp_send_headers?;
+        if let Some(mmp) = &self.fmp_mmp
+            && mmp.spin_bit.tx_bit()
+        {
+            headers.flags |= crate::node::wire::FLAG_SP;
+        }
+        Some(PacketMover2FmpSendContext::new(self.generation, headers))
+    }
+
+    pub(crate) fn fsp_send_context(&self) -> Option<PacketMover2FspSendContext> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        let mut headers = self.fsp_send_headers?;
+        if let Some(mmp) = &self.fsp_mmp {
+            headers.inner_flags = crate::protocol::FspInnerFlags {
+                spin_bit: mmp.spin_bit.tx_bit(),
+            }
+            .to_byte();
+        }
+        Some(PacketMover2FspSendContext::new(self.generation, headers))
+    }
+
+    pub(crate) fn can_reserve_class(&self, class: PacketClass) -> bool {
+        self.reserve_block_reason(class).is_none()
+    }
+
+    pub(crate) fn reserve_block_reason(
+        &self,
+        class: PacketClass,
+    ) -> Option<OwnerReserveBlockReason> {
+        if self.in_flight >= self.in_flight_limit {
+            return Some(OwnerReserveBlockReason::TotalInFlight);
+        }
+        if class.lane() == Lane::Bulk && self.bulk_in_flight >= self.bulk_lane_in_flight_limit() {
+            return Some(OwnerReserveBlockReason::BulkLane);
+        }
+        None
+    }
+
+    fn bulk_lane_in_flight_limit(&self) -> usize {
+        let priority_reserve = usize::from(self.in_flight_limit > 1);
+        self.in_flight_limit
+            .saturating_sub(priority_reserve)
+            .max(1)
+    }
+
+    pub(crate) fn last_rx_activity(&self) -> Option<ActivityTick> {
+        self.last_rx_activity
+    }
+
+    pub(crate) fn last_tx_activity(&self) -> Option<ActivityTick> {
+        self.last_tx_activity
+    }
+
+    pub(crate) fn fsp_activity(&self) -> Option<PacketMover2FspOwnerActivity> {
+        (self.owner.protocol() == PacketProtocol::Fsp).then_some(PacketMover2FspOwnerActivity {
+            owner: self.owner.node_addr(),
+            fsp_session_start_ms: self.fsp_session_start_ms,
+            last_rx_activity: self.last_rx_activity,
+            last_rx_data_activity: self.last_rx_data_activity,
+            last_tx_data_activity: self.last_tx_data_activity,
+            last_outbound_next_hop: self.last_outbound_next_hop,
+            current_k_bit: self.fsp_current_k_bit,
+            previous_draining_k_bit: self.fsp_previous_draining_k_bit,
+            current_epoch_confirmed: self.fsp_lifecycle_confirmed,
+            send_counter: self.next_send_counter,
+            current_path_mtu: self
+                .fsp_mmp
+                .as_ref()
+                .map(|mmp| mmp.path_mtu.current_mtu()),
+            data_packets_sent: self.data_packets_sent,
+            data_packets_recv: self.data_packets_recv,
+            data_bytes_sent: self.data_bytes_sent,
+            data_bytes_recv: self.data_bytes_recv,
+        })
+    }
+
+    pub(crate) fn fsp_mmp_snapshot(&self) -> Option<PacketMover2FspMmpSnapshot> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        let mmp = self.fsp_mmp.as_ref()?;
+        let dest_addr = self.owner.node_addr();
+        let fallback_session_name = self
+            .source_peer
+            .map(|peer| peer.short_npub())
+            .unwrap_or_else(|| dest_addr.to_string());
+        Some(PacketMover2FspMmpSnapshot::from_mmp(
+            dest_addr,
+            fallback_session_name,
+            mmp,
+        ))
+    }
+
+    pub(crate) fn fmp_link_metrics(
+        &self,
+        now: std::time::Instant,
+    ) -> Option<PacketMover2FmpLinkMetrics> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return None;
+        }
+        let mmp = self.fmp_mmp.as_ref()?;
+        let metrics = &mmp.metrics;
+        Some(PacketMover2FmpLinkMetrics {
+            node_addr: self.owner.node_addr(),
+            mode: mmp.mode(),
+            spin_bit_initiator: mmp.spin_bit.is_initiator(),
+            srtt_ms: metrics.srtt_ms(),
+            srtt_age_ms: metrics.srtt_age_ms(now),
+            loss_rate: metrics.loss_rate(),
+            loss_rate_for_log: metrics
+                .loss_trend
+                .initialized()
+                .then(|| metrics.loss_trend.long()),
+            smoothed_loss: metrics.smoothed_loss(),
+            etx: metrics.etx,
+            smoothed_etx: metrics.smoothed_etx(),
+            jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
+            goodput_bps: metrics.goodput_bps(),
+            rtt_trend: metrics
+                .rtt_trend
+                .initialized()
+                .then(|| (metrics.rtt_trend.short(), metrics.rtt_trend.long())),
+            loss_trend: metrics
+                .loss_trend
+                .initialized()
+                .then(|| (metrics.loss_trend.short(), metrics.loss_trend.long())),
+            goodput_trend: metrics
+                .goodput_trend
+                .initialized()
+                .then(|| (metrics.goodput_trend.short(), metrics.goodput_trend.long())),
+            jitter_trend: metrics
+                .jitter_trend
+                .initialized()
+                .then(|| (metrics.jitter_trend.short(), metrics.jitter_trend.long())),
+            delivery_ratio_forward: metrics.delivery_ratio_forward,
+            delivery_ratio_reverse: metrics.delivery_ratio_reverse,
+            last_forward_loss_sample: metrics.last_forward_loss_sample(),
+            tx_packets: mmp.sender.cumulative_packets_sent(),
+            tx_bytes: mmp.sender.cumulative_bytes_sent(),
+            rx_packets: mmp.receiver.cumulative_packets_recv(),
+            rx_bytes: mmp.receiver.cumulative_bytes_recv(),
+            ecn_ce_count: mmp.receiver.ecn_ce_count(),
+            last_recv_age_ms: mmp
+                .receiver
+                .last_recv_time()
+                .map(|last_recv| now.duration_since(last_recv).as_millis() as u64),
+        })
+    }
+
+    pub(crate) fn fmp_link_cost(&self) -> Option<f64> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return None;
+        }
+        let mmp = self.fmp_mmp.as_ref()?;
+        let etx = mmp.metrics.etx;
+        Some(match mmp.metrics.srtt_ms() {
+            Some(srtt_ms) => etx * (1.0 + srtt_ms / 100.0),
+            None => 1.0,
+        })
+    }
+
+    pub(crate) fn fmp_has_srtt(&self) -> bool {
+        self.owner.protocol() == PacketProtocol::Fmp
+            && self
+                .fmp_mmp
+                .as_ref()
+                .is_some_and(|mmp| mmp.metrics.srtt_ms().is_some())
+    }
+
+    pub(crate) fn record_fsp_decrypt_failure(&mut self) -> Option<u32> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        self.consecutive_decrypt_failures = self.consecutive_decrypt_failures.saturating_add(1);
+        Some(self.consecutive_decrypt_failures)
+    }
+
+    pub(crate) fn reserve(
+        &mut self,
+        packet: &SocketPacket,
+        ingress_seq: u64,
+    ) -> Result<(OwnerReservation, Option<AeadKey>), OwnerReserveError> {
+        if packet.generation != self.generation {
+            return Err(OwnerReserveError::StaleGeneration);
+        }
+        let use_previous_epoch = self.uses_previous_fsp_receive_epoch(packet);
+        let use_pending_epoch = self.uses_pending_fsp_receive_epoch(packet);
+        let lane = packet.lane();
+        if !self.can_reserve_class(packet.class) {
+            return Err(OwnerReserveError::InFlightFull);
+        }
+        let replay_window = if use_previous_epoch {
+            self.previous_fsp_replay_window
+                .as_mut()
+                .expect("previous FSP epoch checked before reservation")
+        } else if use_pending_epoch {
+            self.pending_fsp_replay_window
+                .as_mut()
+                .expect("pending FSP epoch checked before reservation")
+        } else {
+            &mut self.replay_window
+        };
+
+        if !replay_window.accept(packet.counter) {
+            return Err(OwnerReserveError::Replay);
+        }
+        let open_key = if use_previous_epoch {
+            self.previous_fsp_open.clone()
+        } else if use_pending_epoch {
+            self.pending_fsp_open.clone()
+        } else {
+            self.crypto_keys.as_ref().map(|keys| keys.open.clone())
+        };
+        if let Some(path) = packet.source_path.clone() {
+            self.active_path = Some(path);
+        }
+        if let Some(tick) = packet.activity_tick {
+            note_activity(&mut self.last_rx_activity, tick);
+        }
+        self.reserve_class(packet.class);
+        let order = OrderToken(self.next_order);
+        self.next_order = self.next_order.wrapping_add(1);
+        Ok((
+            OwnerReservation {
+                owner: self.owner,
+                owner_shard: 0,
+                generation: self.generation,
+                order,
+                ingress_seq,
+                counter: packet.counter,
+                class: packet.class,
+                lane,
+                source_path: packet.source_path.clone(),
+                previous_hop: packet.previous_hop,
+                ce_flag: packet.ce_flag,
+                path_mtu: packet.path_mtu,
+                wire_flags: packet.wire_flags,
+                source_peer: self.source_peer,
+                output_path: None,
+                activity_tick: packet.activity_tick,
+                fmp_timestamp_ms: None,
+                fsp_timestamp_ms: None,
+            },
+            open_key,
+        ))
+    }
+
+    pub(crate) fn reserve_outbound(
+        &mut self,
+        mut packet: OutboundPacket,
+        ingress_seq: u64,
+    ) -> Result<(OwnerReservation, OutboundPacket), OwnerReserveError> {
+        if packet.generation != self.generation {
+            return Err(OwnerReserveError::StaleGeneration);
+        }
+        let lane = packet.lane();
+        if !self.can_reserve_class(packet.class) {
+            return Err(OwnerReserveError::InFlightFull);
+        }
+
+        let counter = self.reserve_send_counter()?;
+        let output_path = self.active_path.clone();
+        let path_mtu = if self.owner.protocol() == PacketProtocol::Fsp
+            && self.fsp_wrap_route.is_none()
+            && output_path.is_some()
+        {
+            self.fsp_mmp
+                .as_ref()
+                .map(|mmp| mmp.path_mtu.current_mtu())
+                .unwrap_or(u16::MAX)
+        } else {
+            u16::MAX
+        };
+        let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
+        let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
+        self.refresh_fsp_outbound_headers(&mut packet);
+        self.apply_fsp_wrap_route(&mut packet);
+        self.apply_fsp_direct_transport_flag(&mut packet);
+        self.reserve_fsp_coords_warmup(&mut packet);
+        let fsp_next_hop = packet.fsp_next_hop();
+        let fsp_application_data_len = packet.fsp_application_data_len();
+        if let Some(tick) = packet.activity_tick {
+            note_activity(&mut self.last_tx_activity, tick);
+            if fsp_application_data_len.is_some() {
+                note_activity(&mut self.last_tx_data_activity, tick);
+            }
+        }
+        if self.owner.protocol() == PacketProtocol::Fsp {
+            if let Some(next_hop) = fsp_next_hop {
+                self.last_outbound_next_hop = Some(next_hop);
+            }
+            if let Some(bytes) = fsp_application_data_len {
+                self.data_packets_sent = self.data_packets_sent.saturating_add(1);
+                self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
+            }
+            if let (Some(mmp), Some(timestamp_ms)) = (&mut self.fsp_mmp, fsp_timestamp_ms) {
+                let frame_bytes = FSP_INNER_HEADER_SIZE
+                    .saturating_add(packet.payload.len())
+                    .saturating_add(AEAD_TAG_SIZE);
+                mmp.sender.record_sent(counter, timestamp_ms, frame_bytes);
+            }
+        }
+        self.reserve_class(packet.class);
+        let order = OrderToken(self.next_order);
+        self.next_order = self.next_order.wrapping_add(1);
+        let reservation = OwnerReservation {
+            owner: self.owner,
+            owner_shard: 0,
+            generation: self.generation,
+            order,
+            ingress_seq,
+            counter,
+            class: packet.class,
+            lane,
+            source_path: None,
+            previous_hop: None,
+            ce_flag: false,
+            path_mtu,
+            wire_flags: 0,
+            source_peer: self.source_peer,
+            output_path,
+            activity_tick: packet.activity_tick,
+            fmp_timestamp_ms,
+            fsp_timestamp_ms,
+        };
+        Ok((reservation, packet))
+    }
+
+    pub(crate) fn record_authenticated_fsp_session(
+        &mut self,
+        previous_hop: NodeAddr,
+        msg_type: u8,
+        body_len: usize,
+        sync: FspReceiveSync,
+        activity_tick: Option<ActivityTick>,
+        now: std::time::Instant,
+    ) -> Option<bool> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        self.consecutive_decrypt_failures = 0;
+        if let Some(mmp) = &mut self.fsp_mmp {
+            mmp.receiver.record_recv(
+                sync.counter,
+                sync.timestamp,
+                sync.plaintext_len,
+                sync.ce_flag,
+                now,
+            );
+            let _spin_rtt = mmp.spin_bit.rx_observe(sync.spin_bit, sync.counter, now);
+            mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
+        }
+        if let Some(tick) = activity_tick {
+            note_activity(&mut self.last_rx_activity, tick);
+        }
+        if packet_mover2_fsp_message_is_application_data(msg_type)
+            && (previous_hop == self.owner.node_addr()
+                || self.last_outbound_next_hop == Some(previous_hop))
+        {
+            if let Some(tick) = activity_tick {
+                note_activity(&mut self.last_rx_data_activity, tick);
+            }
+            self.data_packets_recv = self.data_packets_recv.saturating_add(1);
+            self.data_bytes_recv = self.data_bytes_recv.saturating_add(body_len as u64);
+        }
+        let current_epoch_confirmed = sync.received_k_bit == self.fsp_current_k_bit;
+        let newly_confirmed_current_epoch =
+            current_epoch_confirmed && !self.fsp_lifecycle_confirmed;
+        if current_epoch_confirmed {
+            self.fsp_lifecycle_confirmed = true;
+        }
+        Some(newly_confirmed_current_epoch)
+    }
+
+    pub(crate) fn record_authenticated_fmp_receive(
+        &mut self,
+        counter: u64,
+        timestamp_ms: u32,
+        packet_len: usize,
+        ce_flag: bool,
+        spin_bit: bool,
+        now: std::time::Instant,
+    ) -> Result<Option<std::time::Duration>, PacketMover2FmpMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        }
+        let Some(mmp) = &mut self.fmp_mmp else {
+            return Err(PacketMover2FmpMmpSkip::MmpDisabled);
+        };
+        mmp.receiver
+            .record_recv(counter, timestamp_ms, packet_len, ce_flag, now);
+        Ok(mmp.spin_bit.rx_observe(spin_bit, counter, now))
+    }
+
+    pub(crate) fn record_fmp_send_result(
+        &mut self,
+        counter: u64,
+        timestamp_ms: u32,
+        bytes_sent: usize,
+    ) -> Result<(), PacketMover2FmpMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        }
+        let Some(mmp) = &mut self.fmp_mmp else {
+            return Err(PacketMover2FmpMmpSkip::MmpDisabled);
+        };
+        mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);
+        Ok(())
+    }
+
+    pub(crate) fn process_fmp_mmp_receiver_report(
+        &mut self,
+        rr: &crate::mmp::report::ReceiverReport,
+        now_ms: u64,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FmpReceiverReportResult, PacketMover2FmpMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        }
+        let session_start_ms = self
+            .fmp_session_start_ms
+            .ok_or(PacketMover2FmpMmpSkip::MmpDisabled)?;
+        let Some(mmp) = &mut self.fmp_mmp else {
+            return Err(PacketMover2FmpMmpSkip::MmpDisabled);
+        };
+        let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
+        let first_rtt = mmp.metrics.process_receiver_report(rr, our_timestamp_ms, now);
+        if let Some(srtt_ms) = mmp.metrics.srtt_ms() {
+            let srtt_us = (srtt_ms * 1000.0) as i64;
+            mmp.sender.update_report_interval_from_srtt(srtt_us);
+            mmp.receiver.update_report_interval_from_srtt(srtt_us);
+        }
+        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
+        let peer_highest = mmp.receiver.highest_counter();
+        mmp.metrics
+            .update_reverse_delivery(our_recv_packets, peer_highest);
+        Ok(PacketMover2FmpReceiverReportResult {
+            first_rtt,
+            srtt_ms: mmp.metrics.srtt_ms(),
+            loss_rate: mmp.metrics.loss_rate(),
+            etx: mmp.metrics.etx,
+        })
+    }
+
+    pub(crate) fn record_fsp_data_sent(
+        &mut self,
+        next_hop: NodeAddr,
+        bytes: usize,
+        tick: ActivityTick,
+    ) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return false;
+        }
+        self.last_outbound_next_hop = Some(next_hop);
+        note_activity(&mut self.last_tx_activity, tick);
+        note_activity(&mut self.last_tx_data_activity, tick);
+        self.data_packets_sent = self.data_packets_sent.saturating_add(1);
+        self.data_bytes_sent = self.data_bytes_sent.saturating_add(bytes as u64);
+        true
+    }
+
+    fn collect_fsp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+        batch: &mut PacketMover2FspMmpReportBatch,
+    ) {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return;
+        }
+        let Some(mmp) = &mut self.fsp_mmp else {
+            return;
+        };
+
+        let dest_addr = self.owner.node_addr();
+        let fallback_session_name = self
+            .source_peer
+            .map(|peer| peer.short_npub())
+            .unwrap_or_else(|| dest_addr.to_string());
+        let mode = mmp.mode();
+        let prior_failures = mmp.sender.consecutive_send_failures();
+
+        if mode == crate::mmp::MmpMode::Full
+            && mmp.sender.should_send_report(now)
+            && let Some(sr) = mmp.sender.build_report(now)
+        {
+            let session_sr: crate::protocol::SessionSenderReport =
+                crate::protocol::SessionSenderReport::from(&sr);
+            batch.reports.push(PacketMover2FspMmpReport {
+                dest_addr,
+                msg_type: crate::protocol::SessionMessageType::SenderReport.to_byte(),
+                encoded: session_sr.encode(),
+                prior_failures,
+            });
+        }
+
+        if mode != crate::mmp::MmpMode::Minimal
+            && mmp.receiver.should_send_report(now)
+            && let Some(rr) = mmp.receiver.build_report(now)
+        {
+            let session_rr: crate::protocol::SessionReceiverReport =
+                crate::protocol::SessionReceiverReport::from(&rr);
+            batch.reports.push(PacketMover2FspMmpReport {
+                dest_addr,
+                msg_type: crate::protocol::SessionMessageType::ReceiverReport.to_byte(),
+                encoded: session_rr.encode(),
+                prior_failures,
+            });
+        }
+
+        if mmp.path_mtu.should_send_notification(now)
+            && let Some(mtu_value) = mmp.path_mtu.build_notification(now)
+        {
+            let notif = crate::protocol::PathMtuNotification::new(mtu_value);
+            batch.reports.push(PacketMover2FspMmpReport {
+                dest_addr,
+                msg_type: crate::protocol::SessionMessageType::PathMtuNotification.to_byte(),
+                encoded: notif.encode(),
+                prior_failures,
+            });
+        }
+
+        if mmp.should_log(now) {
+            let snapshot = PacketMover2FspMmpSnapshot::from_mmp(dest_addr, fallback_session_name, mmp);
+            batch.metric_logs.push(snapshot);
+            mmp.mark_logged(now);
+        }
+    }
+
+    fn collect_fmp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+        batch: &mut PacketMover2FmpMmpReportBatch,
+    ) {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return;
+        }
+        let Some(mmp) = &mut self.fmp_mmp else {
+            return;
+        };
+
+        let mode = mmp.mode();
+        let node_addr = self.owner.node_addr();
+
+        if mode == crate::mmp::MmpMode::Full
+            && mmp.sender.should_send_report(now)
+            && let Some(sr) = mmp.sender.build_report(now)
+        {
+            batch.reports.push(PacketMover2FmpMmpReport {
+                node_addr,
+                encoded: sr.encode(),
+                kind: PacketMover2FmpMmpReportKind::Sender,
+            });
+        }
+
+        if mode != crate::mmp::MmpMode::Minimal
+            && mmp.receiver.should_send_report(now)
+            && let Some(rr) = mmp.receiver.build_report(now)
+        {
+            batch.reports.push(PacketMover2FmpMmpReport {
+                node_addr,
+                encoded: rr.encode(),
+                kind: PacketMover2FmpMmpReportKind::Receiver,
+            });
+        }
+
+        if mmp.should_log(now) {
+            let metrics = &mmp.metrics;
+            batch.metric_logs.push(PacketMover2FmpLinkMetrics {
+                node_addr,
+                mode: mmp.mode(),
+                spin_bit_initiator: mmp.spin_bit.is_initiator(),
+                srtt_ms: metrics
+                    .rtt_trend
+                    .initialized()
+                    .then(|| metrics.rtt_trend.long() / 1000.0),
+                srtt_age_ms: metrics.srtt_age_ms(now),
+                loss_rate: metrics.loss_rate(),
+                loss_rate_for_log: metrics
+                    .loss_trend
+                    .initialized()
+                    .then(|| metrics.loss_trend.long()),
+                smoothed_loss: metrics.smoothed_loss(),
+                etx: metrics.etx,
+                smoothed_etx: metrics.smoothed_etx(),
+                jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
+                goodput_bps: metrics.goodput_bps(),
+                rtt_trend: metrics
+                    .rtt_trend
+                    .initialized()
+                    .then(|| (metrics.rtt_trend.short(), metrics.rtt_trend.long())),
+                loss_trend: metrics
+                    .loss_trend
+                    .initialized()
+                    .then(|| (metrics.loss_trend.short(), metrics.loss_trend.long())),
+                goodput_trend: metrics
+                    .goodput_trend
+                    .initialized()
+                    .then(|| (metrics.goodput_trend.short(), metrics.goodput_trend.long())),
+                jitter_trend: metrics
+                    .jitter_trend
+                    .initialized()
+                    .then(|| (metrics.jitter_trend.short(), metrics.jitter_trend.long())),
+                delivery_ratio_forward: metrics.delivery_ratio_forward,
+                delivery_ratio_reverse: metrics.delivery_ratio_reverse,
+                last_forward_loss_sample: metrics.last_forward_loss_sample(),
+                tx_packets: mmp.sender.cumulative_packets_sent(),
+                tx_bytes: mmp.sender.cumulative_bytes_sent(),
+                rx_packets: mmp.receiver.cumulative_packets_recv(),
+                rx_bytes: mmp.receiver.cumulative_bytes_recv(),
+                ecn_ce_count: mmp.receiver.ecn_ce_count(),
+                last_recv_age_ms: mmp
+                    .receiver
+                    .last_recv_time()
+                    .map(|last_recv| now.duration_since(last_recv).as_millis() as u64),
+            });
+            mmp.mark_logged(now);
+        }
+    }
+
+    fn record_fsp_mmp_send_result(
+        &mut self,
+        success: bool,
+    ) -> Option<PacketMover2FspMmpReportingResumed> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        let mmp = self.fsp_mmp.as_mut()?;
+        if success {
+            let prev = mmp.sender.record_send_success();
+            (prev > 3).then_some(PacketMover2FspMmpReportingResumed {
+                dest_addr: self.owner.node_addr(),
+                consecutive_failures: prev,
+            })
+        } else {
+            mmp.sender.record_send_failure();
+            None
+        }
+    }
+
+    fn seed_fsp_path_mtu(&mut self, path_mtu: u16) -> Result<(), PacketMover2FspMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+        }
+        let Some(mmp) = &mut self.fsp_mmp else {
+            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+        };
+        mmp.path_mtu.seed_source_mtu(path_mtu);
+        Ok(())
+    }
+
+    fn process_fsp_mmp_receiver_report(
+        &mut self,
+        rr: &crate::mmp::report::ReceiverReport,
+        last_outbound_next_hop: Option<NodeAddr>,
+        now_ms: u64,
+        now: std::time::Instant,
+        min_loss_sample: u64,
+    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+        }
+        let Some(session_start_ms) = self.fsp_session_start_ms else {
+            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+        };
+        let Some(mmp) = &mut self.fsp_mmp else {
+            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+        };
+
+        let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
+        mmp.metrics
+            .process_receiver_report(rr, our_timestamp_ms, now);
+        let sample = mmp.metrics.take_forward_loss_evidence(min_loss_sample);
+
+        let srtt_ms = mmp.metrics.srtt_ms();
+        if let Some(srtt_ms) = srtt_ms {
+            let srtt_us = (srtt_ms * 1000.0) as i64;
+            mmp.sender.update_report_interval_with_bounds(
+                srtt_us,
+                crate::mmp::MIN_SESSION_REPORT_INTERVAL_MS,
+                crate::mmp::MAX_SESSION_REPORT_INTERVAL_MS,
+            );
+            mmp.receiver.update_report_interval_with_bounds(
+                srtt_us,
+                crate::mmp::MIN_SESSION_REPORT_INTERVAL_MS,
+                crate::mmp::MAX_SESSION_REPORT_INTERVAL_MS,
+            );
+            mmp.path_mtu.update_interval_from_srtt(srtt_ms);
+        }
+
+        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
+        let peer_highest = mmp.receiver.highest_counter();
+        mmp.metrics
+            .update_reverse_delivery(our_recv_packets, peer_highest);
+
+        Ok(PacketMover2FspReceiverReportResult {
+            sample,
+            used_direct_next_hop: last_outbound_next_hop
+                .map_or(true, |next_hop| next_hop == self.owner.node_addr()),
+            srtt_ms,
+            mode: mmp.mode(),
+        })
+    }
+
+    fn apply_fsp_path_mtu_signal(
+        &mut self,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+        }
+        let Some(mmp) = &mut self.fsp_mmp else {
+            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+        };
+        let old_mtu = mmp.path_mtu.current_mtu();
+        if mmp.path_mtu.apply_notification(path_mtu, now) {
+            Ok(PacketMover2FspPathMtuApplyResult::Changed(
+                PacketMover2FspPathMtuChange {
+                    old_mtu,
+                    new_mtu: mmp.path_mtu.current_mtu(),
+                },
+            ))
+        } else {
+            Ok(PacketMover2FspPathMtuApplyResult::Unchanged)
+        }
+    }
+
+    fn reserve_fsp_coords_warmup(&mut self, packet: &mut OutboundPacket) {
+        if self.owner.protocol() != PacketProtocol::Fsp
+            || self.fsp_coords_warmup_remaining == 0
+            || self.fsp_coords_prefix.is_empty()
+            || !packet.fsp_auto_coords_warmup
+            || !packet.fsp_cleartext_prefix.is_empty()
+        {
+            return;
+        }
+
+        let OutboundWire::Fsp { flags } = &mut packet.wire else {
+            return;
+        };
+        *flags |= crate::node::session_wire::FSP_FLAG_CP;
+        packet.fsp_cleartext_prefix = self.fsp_coords_prefix.clone();
+        self.fsp_coords_warmup_remaining = self.fsp_coords_warmup_remaining.saturating_sub(1);
+    }
+
+    fn refresh_fsp_outbound_headers(&self, packet: &mut OutboundPacket) {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return;
+        }
+        let Some(mmp) = &self.fsp_mmp else {
+            return;
+        };
+        packet.refresh_fsp_inner_flags(
+            crate::protocol::FspInnerFlags {
+                spin_bit: mmp.spin_bit.tx_bit(),
+            }
+            .to_byte(),
+        );
+    }
+
+    fn apply_fsp_wrap_route(&self, packet: &mut OutboundPacket) {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return;
+        }
+        let Some(route) = self.fsp_wrap_route else {
+            return;
+        };
+        packet.apply_fsp_owner_wrap_route(route);
+    }
+
+    fn apply_fsp_direct_transport_flag(&self, packet: &mut OutboundPacket) {
+        if self.owner.protocol() != PacketProtocol::Fsp
+            || self.fsp_wrap_route.is_some()
+            || self.active_path.is_none()
+        {
+            return;
+        }
+        let OutboundWire::Fsp { flags } = &mut packet.wire else {
+            return;
+        };
+        *flags |= crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT;
+    }
+
+    fn reserve_send_counter(&mut self) -> Result<u64, OwnerReserveError> {
+        if let Some(authority) = &self.send_counter_authority {
+            let counter = authority
+                .reserve()
+                .map_err(|_| OwnerReserveError::CounterExhausted)?;
+            self.next_send_counter = authority.current();
+            return Ok(counter);
+        }
+
+        let counter = self.next_send_counter;
+        self.next_send_counter = self.next_send_counter.wrapping_add(1);
+        Ok(counter)
+    }
+
+    fn reserve_fmp_timestamp(&self, activity_tick: Option<ActivityTick>) -> Option<u32> {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return None;
+        }
+        let session_start_ms = self.fmp_session_start_ms?;
+        let activity_ms = activity_tick?.get();
+        Some(activity_ms.wrapping_sub(session_start_ms) as u32)
+    }
+
+    fn reserve_fsp_timestamp(&self, activity_tick: Option<ActivityTick>) -> Option<u32> {
+        if self.owner.protocol() != PacketProtocol::Fsp {
+            return None;
+        }
+        let session_start_ms = self.fsp_session_start_ms?;
+        let activity_ms = activity_tick?.get();
+        Some(activity_ms.wrapping_sub(session_start_ms) as u32)
+    }
+
+    pub(crate) fn retire_batch_outputs_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut Vec<RetiredOutputs>,
+        compact_endpoint_data: bool,
+    ) {
+        let mut retired_batch = RetiredOutputs::with_capacity(batch.len());
+        self.retire_completion_batch_into(batch, &mut retired_batch, compact_endpoint_data);
+        self.drain_ready_retirements_into(&mut retired_batch, compact_endpoint_data);
+        if !retired_batch.is_empty() {
+            retired.push(retired_batch);
+        }
+    }
+
+    fn retire_completion_batch_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        if batch.first_order() == Some(OrderToken(self.next_retire)) {
+            self.retire_ready_completion_run_into(batch, retired, compact_endpoint_data);
+        } else {
+            self.stage_retire_completion_run(batch);
+        }
+    }
+
+    fn stage_retire_completion_run(&mut self, batch: CryptoCompletionBatch) {
+        let Some(first_order) = batch.first_order() else {
+            return;
+        };
+        self.pending.insert(first_order, batch);
+    }
+
+    fn drain_ready_retirements_into(
+        &mut self,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        while let Some(batch) = self.pending.remove(&OrderToken(self.next_retire)) {
+            self.retire_ready_completion_run_into(batch, retired, compact_endpoint_data);
+        }
+    }
+
+    fn retire_ready_completion_run_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        let batch = if compact_endpoint_data {
+            match self.retire_ready_open_fsp_endpoint_data_run_into(batch, retired) {
+                Ok(()) => return,
+                Err(batch) => batch,
+            }
+        } else {
+            batch
+        };
+
+        for completion in batch.into_completions() {
+            debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
+            self.retire_ready_completion_into(completion, retired, compact_endpoint_data);
+        }
+    }
+
+    fn retire_ready_open_fsp_endpoint_data_run_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut RetiredOutputs,
+    ) -> Result<(), CryptoCompletionBatch> {
+        if !batch.is_open_fsp_session_payload_run() {
+            return Err(batch);
+        }
+
+        let mut endpoint_data_bulk = None;
+        let mut endpoint_packets = 0usize;
+        for completion in batch.into_completions() {
+            debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
+            self.next_retire = self.next_retire.wrapping_add(1);
+            self.in_flight = self.in_flight.saturating_sub(1);
+            if completion.reservation.lane == Lane::Bulk {
+                self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
+            }
+
+            if completion.reservation.generation != self.generation {
+                flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+                retired.push_drop(PacketDrop::from_completion(
+                    &completion,
+                    PacketDropReason::StaleCompletionGeneration,
+                    None,
+                ));
+                continue;
+            }
+
+            let CryptoResult::Opened(output) = completion.result else {
+                unreachable!("open FSP session payload run contains only opened outputs");
+            };
+            self.authenticated_counter_highest = self
+                .authenticated_counter_highest
+                .max(completion.reservation.counter);
+            match PacketMover2FspEndpointDataIngress::from_output(output) {
+                Ok(ingress) => {
+                    self.record_retired_endpoint_data_ingress(&ingress);
+                    endpoint_packets = endpoint_packets.saturating_add(ingress.len());
+                    match &mut endpoint_data_bulk {
+                        Some(bulk) => bulk.push(ingress),
+                        None => {
+                            endpoint_data_bulk =
+                                Some(PacketMover2EndpointDataBulk::from_ingress(ingress));
+                        }
+                    }
+                }
+                Err(output) => {
+                    flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+                    retired.push_output(output);
+                }
+            }
+        }
+        flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+        crate::perf_profile::record_packet_mover2_established_fsp_data_retire_run(
+            endpoint_packets,
+        );
+        Ok(())
+    }
+
+    fn retire_ready_completion_into(
+        &mut self,
+        completion: CryptoCompletion,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        self.next_retire = self.next_retire.wrapping_add(1);
+        self.in_flight = self.in_flight.saturating_sub(1);
+        if completion.reservation.lane == Lane::Bulk {
+            self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
+        }
+
+        if completion.reservation.generation != self.generation {
+            retired.push_drop(PacketDrop::from_completion(
+                &completion,
+                PacketDropReason::StaleCompletionGeneration,
+                None,
+            ));
+            return;
+        }
+
+        match completion.result {
+            CryptoResult::Opened(output) => {
+                self.authenticated_counter_highest = self
+                    .authenticated_counter_highest
+                    .max(completion.reservation.counter);
+                self.retire_opened_output_into(output, retired, compact_endpoint_data);
+            }
+            CryptoResult::Sealed(output) => retired.push_output(output),
+            CryptoResult::Outbound(packet) => retired.push_outbound(packet),
+            CryptoResult::Failed(failure) => {
+                retired.push_drop(PacketDrop::from_completion_with_authenticated_highest(
+                    &completion,
+                    PacketDropReason::CryptoFailed,
+                    failure,
+                    self.authenticated_counter_highest,
+                ));
+            }
+        }
+    }
+
+    fn retire_opened_output_into(
+        &mut self,
+        output: PacketOutput,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
+            match PacketMover2FspEndpointDataIngress::from_output(output) {
+                Ok(ingress) => {
+                    self.record_retired_endpoint_data_ingress(&ingress);
+                    retired.push_endpoint_data_bulk(ingress);
+                }
+                Err(output) => retired.push_output(output),
+            }
+            return;
+        }
+
+        retired.push_output(output);
+    }
+
+    fn record_retired_endpoint_data_ingress(
+        &mut self,
+        ingress: &PacketMover2FspEndpointDataIngress,
+    ) {
+        let commit = ingress.commit();
+        if self.owner != OwnerId::fsp_node(commit.source_addr()) {
+            return;
+        }
+        let _ = self.record_authenticated_fsp_session(
+            commit.previous_hop_addr(),
+            ingress.msg_type,
+            ingress.body_len,
+            ingress.receive_sync,
+            ingress.activity_tick,
+            std::time::Instant::now(),
+        );
+    }
+
+    fn reserve_class(&mut self, class: PacketClass) {
+        self.in_flight = self.in_flight.saturating_add(1);
+        if class.lane() == Lane::Bulk {
+            self.bulk_in_flight = self.bulk_in_flight.saturating_add(1);
+        }
+    }
+}
+
+fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) {
+    match slot {
+        Some(current) if *current >= tick => {}
+        _ => *slot = Some(tick),
+    }
+}
+
+fn flush_retired_endpoint_data_bulk(
+    retired: &mut RetiredOutputs,
+    endpoint_data_bulk: &mut Option<PacketMover2EndpointDataBulk>,
+) {
+    if let Some(bulk) = endpoint_data_bulk.take() {
+        retired.push_endpoint_data_bulk_batch(bulk);
+    }
+}
+
+const REPLAY_BLOCK_BITS_LOG: u64 = 6;
+const REPLAY_BLOCK_BITS: u64 = 1 << REPLAY_BLOCK_BITS_LOG;
+const REPLAY_RING_BLOCKS: usize = 1 << 7;
+const REPLAY_RING_BLOCKS_U64: u64 = REPLAY_RING_BLOCKS as u64;
+const REPLAY_WINDOW_SIZE: u64 = (REPLAY_RING_BLOCKS_U64 - 1) * REPLAY_BLOCK_BITS;
+const REPLAY_BLOCK_MASK: u64 = REPLAY_RING_BLOCKS_U64 - 1;
+const REPLAY_BIT_MASK: u64 = REPLAY_BLOCK_BITS - 1;
+
+#[derive(Debug)]
+struct ReplayWindow {
+    highest: Option<u64>,
+    ring: [u64; REPLAY_RING_BLOCKS],
+}
+
+impl Default for ReplayWindow {
+    fn default() -> Self {
+        Self {
+            highest: None,
+            ring: [0; REPLAY_RING_BLOCKS],
+        }
+    }
+}
+
+impl ReplayWindow {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn accept(&mut self, counter: u64) -> bool {
+        let Some(highest) = self.highest else {
+            self.highest = Some(counter);
+            return self.set_counter_bit(counter);
+        };
+
+        if counter > highest {
+            self.advance(highest, counter);
+            self.highest = Some(counter);
+            return self.set_counter_bit(counter);
+        }
+
+        let behind = highest - counter;
+        if behind > REPLAY_WINDOW_SIZE {
+            return false;
+        }
+
+        self.set_counter_bit(counter)
+    }
+
+    fn advance(&mut self, highest: u64, counter: u64) {
+        let current = counter_block(highest);
+        let target = counter_block(counter);
+        let mut diff = target - current;
+        if diff > REPLAY_RING_BLOCKS_U64 {
+            diff = REPLAY_RING_BLOCKS_U64;
+        }
+        for offset in 1..=diff {
+            self.ring[((current + offset) & REPLAY_BLOCK_MASK) as usize] = 0;
+        }
+    }
+
+    fn set_counter_bit(&mut self, counter: u64) -> bool {
+        let index = ring_index(counter);
+        let mask = counter_bit(counter);
+        let old = self.ring[index];
+        self.ring[index] = old | mask;
+        old != self.ring[index]
+    }
+}
+
+fn counter_block(counter: u64) -> u64 {
+    counter >> REPLAY_BLOCK_BITS_LOG
+}
+
+fn ring_index(counter: u64) -> usize {
+    (counter_block(counter) & REPLAY_BLOCK_MASK) as usize
+}
+
+fn counter_bit(counter: u64) -> u64 {
+    1u64 << (counter & REPLAY_BIT_MASK)
+}
+
+#[cfg(test)]
+mod replay_window_tests {
+    use super::*;
+
+    #[test]
+    fn replay_window_tracks_duplicates_window_edges_and_wrapped_blocks() {
+        let mut window = ReplayWindow::default();
+
+        assert!(window.accept(10));
+        assert!(window.accept(8));
+        assert!(window.accept(9));
+        assert!(!window.accept(10));
+        assert!(!window.accept(8));
+
+        let mut window = ReplayWindow::default();
+
+        assert!(window.accept(1));
+        assert!(window.accept(1 + REPLAY_WINDOW_SIZE));
+        assert!(!window.accept(1));
+
+        assert!(window.accept(2 + REPLAY_WINDOW_SIZE));
+        assert!(!window.accept(1));
+        assert!(window.accept(2));
+
+        let mut window = ReplayWindow::default();
+
+        assert!(window.accept(0));
+        assert!(window.accept(REPLAY_BLOCK_BITS * REPLAY_RING_BLOCKS_U64));
+        assert!(!window.accept(0));
+        assert!(window.accept(REPLAY_BLOCK_BITS * REPLAY_RING_BLOCKS_U64 + 1));
+    }
+}

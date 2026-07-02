@@ -32,10 +32,41 @@ fn test_identity_cache_populated_on_promote() {
     assert_eq!(cached_pk, peer_identity.pubkey_full());
 }
 
+#[test]
+fn identity_cache_validates_claims_touches_lru_and_keeps_lookup_views() {
+    let id1 = Identity::generate();
+    let id2 = Identity::generate();
+    let id3 = Identity::generate();
+    let wrong = Identity::generate();
+    let mut cache = crate::node::IdentityCache::default();
+
+    assert!(cache.register(*id1.node_addr(), id1.pubkey_full(), 1_000, 2));
+    assert!(cache.register(*id2.node_addr(), id2.pubkey_full(), 2_000, 2));
+    assert_eq!(cache.len(), 2);
+
+    assert!(!cache.register(*id1.node_addr(), wrong.pubkey_full(), 3_000, 2));
+    assert_eq!(
+        cache.pubkey_for_node_addr(id1.node_addr()),
+        Some(id1.pubkey_full())
+    );
+
+    let id1_prefix = crate::node::IdentityCache::prefix_for(id1.node_addr());
+    assert_eq!(
+        cache.lookup_by_prefix(&id1_prefix, 4_000),
+        Some((*id1.node_addr(), id1.pubkey_full()))
+    );
+
+    assert!(cache.register(*id3.node_addr(), id3.pubkey_full(), 5_000, 2));
+    assert_eq!(cache.len(), 2);
+    assert!(cache.has_prefix_for(id1.node_addr()));
+    assert!(!cache.has_prefix_for(id2.node_addr()));
+    assert_eq!(cache.npub_for_node_addr(id3.node_addr()), Some(id3.npub()));
+}
+
 #[tokio::test]
 async fn test_tun_outbound_established_session() {
     // Two directly connected nodes, session established.
-    // Inject IPv6 packet via handle_tun_outbound on Node 0,
+    // Inject IPv6 packet via PM2's TUN outbound queue on Node 0,
     // verify plaintext arrives at Node 1's tun_tx.
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
@@ -55,41 +86,35 @@ async fn test_tun_outbound_established_session() {
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Setup → Node 1
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Ack → Node 0, Node 0 sends Msg3
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await; // Msg3 → Node 1
-
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&node1_addr)
-            .unwrap()
-            .state()
-            .is_established()
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "direct TUN fixture",
+    )
+    .await;
 
     // Install TUN receiver on Node 1
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[1].node.tun_tx = Some(tun_tx);
 
     // Build and inject an IPv6 packet
     let test_payload = b"data-plane-test-12345";
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, test_payload);
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
-
-    // Process packets: encrypted data → Node 1
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    process_available_packets(&mut nodes).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
 
     // Verify plaintext arrived at Node 1's TUN
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
-    assert_eq!(delivered.len(), 1, "Exactly one packet should be delivered");
+    let delivered = recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(10),
+        "direct established TUN packet",
+    )
+    .await;
     assert_eq!(
-        delivered[0], ipv6_packet,
+        delivered, ipv6_packet,
         "Delivered packet should match original"
     );
 
@@ -116,14 +141,14 @@ async fn test_tun_outbound_triggers_session_initiation() {
     assert_eq!(nodes[0].node.session_count(), 0);
 
     // Install TUN receiver on Node 1
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[1].node.tun_tx = Some(tun_tx);
 
     // Build and inject an IPv6 packet (identity cache populated at peer promotion)
     let test_payload = b"trigger-session-test";
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, test_payload);
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
 
     // Session should now be initiating
     assert_eq!(nodes[0].node.session_count(), 1);
@@ -132,31 +157,27 @@ async fn test_tun_outbound_triggers_session_initiation() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_initiating()
     );
 
-    // Drain packets until session established and queued packet delivered
-    drain_to_quiescence(&mut nodes).await;
-
-    // Session should be established on Node 0
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&node1_addr)
-            .unwrap()
-            .state()
-            .is_established()
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "TUN-triggered session",
+    )
+    .await;
 
     // Verify the queued packet was delivered to Node 1
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
-    assert_eq!(
-        delivered.len(),
-        1,
-        "Queued packet should be delivered after handshake"
-    );
-    assert_eq!(delivered[0], ipv6_packet);
+    let delivered = recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(10),
+        "queued TUN packet",
+    )
+    .await;
+    assert_eq!(delivered, ipv6_packet);
 
     cleanup_nodes(&mut nodes).await;
 }
@@ -176,7 +197,7 @@ async fn test_endpoint_data_for_pending_session_triggers_reply_learned_discovery
     let baseline = node.stats().discovery.req_initiated;
     let remote = crate::PeerIdentity::from_pubkey_full(dest.pubkey_full());
 
-    node.send_endpoint_data(remote, b"status-probe".to_vec())
+    send_endpoint_data_via_pm2(&mut node, remote, b"status-probe".to_vec())
         .await
         .unwrap();
 
@@ -212,7 +233,7 @@ async fn test_endpoint_data_for_established_session_with_no_route_queues_and_dis
     let baseline = node.stats().discovery.req_initiated;
     let remote = crate::PeerIdentity::from_pubkey_full(dest.pubkey_full());
 
-    node.send_endpoint_data(remote, b"status-probe".to_vec())
+    send_endpoint_data_via_pm2(&mut node, remote, b"status-probe".to_vec())
         .await
         .unwrap();
 
@@ -262,15 +283,14 @@ async fn test_update_peers_warms_auto_connect_session_over_existing_graph() {
         "configured peer should start an FIPS graph session without waiting for data"
     );
 
-    drain_to_quiescence(&mut nodes).await;
-
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&dest_addr)
-            .is_some_and(|entry| entry.is_established()),
-        "proactive graph session should complete over the existing FIPS path"
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest_addr,
+        Duration::from_secs(10),
+        "proactive graph session",
+    )
+    .await;
 
     cleanup_nodes(&mut nodes).await;
 }

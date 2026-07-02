@@ -3,6 +3,59 @@ use crate::transport::{TransportAddr, TransportId};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use tokio::sync::mpsc::error::TryRecvError;
 
+const BULK_PACKET_LEN: usize = FMP_MSG1_WIRE_SIZE + 1;
+
+fn priority_msg1(marker: u8) -> Vec<u8> {
+    let mut packet = vec![0u8; FMP_MSG1_WIRE_SIZE];
+    packet[0] = FMP_PHASE_MSG1;
+    *packet.last_mut().expect("priority msg1 has a marker byte") = marker;
+    packet
+}
+
+fn priority_msg2(marker: u8) -> Vec<u8> {
+    let mut packet = vec![0u8; FMP_MSG2_WIRE_SIZE];
+    packet[0] = FMP_PHASE_MSG2;
+    *packet.last_mut().expect("priority msg2 has a marker byte") = marker;
+    packet
+}
+
+fn bulk_packet(marker: u8) -> Vec<u8> {
+    vec![marker; BULK_PACKET_LEN]
+}
+
+fn bulk_packet_len(marker: u8, len: usize) -> Vec<u8> {
+    vec![marker; len]
+}
+
+fn small_app_packet(marker: u8) -> Vec<u8> {
+    vec![marker; 32]
+}
+
+fn packet_marker(packet: &ReceivedPacket) -> u8 {
+    *packet.data.last().expect("test packet carries a marker")
+}
+
+#[test]
+fn transport_priority_is_visible_fmp_handshake_only() {
+    let addr = TransportAddr::from_string("test");
+    let priority_msg1 = ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0x11));
+    let priority_msg2 = ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg2(0x22));
+    let small_app = ReceivedPacket::new(TransportId::new(1), addr.clone(), small_app_packet(0x33));
+    let malformed_msg1 =
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet_len(0x01, 32));
+    let wrong_version = ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        bulk_packet_len(0x11, FMP_MSG1_WIRE_SIZE),
+    );
+
+    assert!(priority_msg1.is_transport_priority());
+    assert!(priority_msg2.is_transport_priority());
+    assert!(!small_app.is_transport_priority());
+    assert!(!malformed_msg1.is_transport_priority());
+    assert!(!wrong_version.is_transport_priority());
+}
+
 #[test]
 fn test_received_packet() {
     let packet = ReceivedPacket::new(
@@ -68,32 +121,32 @@ async fn packet_channel_reserves_priority_progress_ahead_of_bulk_backlog() {
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        bulk_packet(0xaa),
     ))
     .unwrap();
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0x11; 32],
+        priority_msg1(0x11),
     ))
     .unwrap();
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0x22; 48],
+        priority_msg2(0x22),
     ))
     .unwrap();
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr,
-        vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        bulk_packet(0xbb),
     ))
     .unwrap();
 
-    assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0x22);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x11);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x22);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbb);
 }
 
 #[test]
@@ -104,18 +157,18 @@ fn packet_channel_try_recv_uses_same_priority_policy() {
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        bulk_packet(0xaa),
     ))
     .unwrap();
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr,
-        vec![0x11; 32],
+        priority_msg1(0x11),
     ))
     .unwrap();
 
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0xaa);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xaa);
 }
 
 #[tokio::test]
@@ -124,21 +177,9 @@ async fn packet_channel_batch_send_amortizes_bulk_channel_items() {
     let addr = TransportAddr::from_string("test");
 
     tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr,
-            vec![0xcc; PRIORITY_PACKET_MAX_LEN + 3],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
+        ReceivedPacket::new(TransportId::new(1), addr, bulk_packet(0xcc)),
     ])
     .expect("bulk batch send should succeed");
 
@@ -147,9 +188,9 @@ async fn packet_channel_batch_send_amortizes_bulk_channel_items() {
         1,
         "bulk kernel receive batch should occupy one channel item"
     );
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xcc);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbb);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xcc);
 }
 
 #[tokio::test]
@@ -160,20 +201,20 @@ async fn packet_channel_reuses_pooled_batch_container_after_rx_drain() {
     batch.push(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        bulk_packet(0xaa),
     ));
     batch.push(ReceivedPacket::new(
         TransportId::new(1),
         addr,
-        vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        bulk_packet(0xbb),
     ));
     let batch_ptr = batch.packets.as_ptr();
     let batch_capacity = batch.packets.capacity();
 
     tx.send_packet_batch(batch)
         .expect("pooled bulk batch send should succeed");
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbb);
 
     let reused = tx.packet_batch(2);
     assert_eq!(reused.packets.len(), 0);
@@ -189,7 +230,7 @@ fn packet_channel_does_not_retain_oversized_batch_container() {
         batch.push(ReceivedPacket::new(
             TransportId::new(1),
             TransportAddr::from_string("test"),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            bulk_packet(0xaa),
         ));
     }
 
@@ -208,13 +249,13 @@ fn packet_channel_recycles_pooled_packet_buffer_when_bulk_batch_is_dropped() {
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        bulk_packet(0xaa),
     ))
     .expect("first bulk packet should fill bounded bulk lane");
 
     let mut buffer = tx.recv_buffer(1600);
     buffer.clear();
-    buffer.resize(PRIORITY_PACKET_MAX_LEN + 2, 0xbb);
+    buffer.resize(BULK_PACKET_LEN, 0xbb);
     let original_ptr = buffer.as_ptr();
     let mut batch = tx.packet_batch(1);
     batch.push(ReceivedPacket::new(
@@ -245,21 +286,13 @@ fn packet_channel_keeps_single_lane_batches_grouped() {
     let addr = TransportAddr::from_string("test");
 
     tx.send_batch(vec![
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0x11)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg2(0x22)),
     ])
     .expect("priority batch send should succeed");
     tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr,
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr, bulk_packet(0xbb)),
     ])
     .expect("bulk batch send should succeed");
 
@@ -276,16 +309,16 @@ fn packet_channel_keeps_single_lane_batches_grouped() {
     match rx.priority.try_recv().expect("priority channel item") {
         PacketQueueItem::Batch(packets) => {
             assert_eq!(packets.len(), 2);
-            assert_eq!(packets[0].data[0], 0x11);
-            assert_eq!(packets[1].data[0], 0x22);
+            assert_eq!(packet_marker(&packets[0]), 0x11);
+            assert_eq!(packet_marker(&packets[1]), 0x22);
         }
         item => panic!("expected grouped priority batch, got {item:?}"),
     }
     match rx.bulk.try_recv().expect("bulk channel item") {
         PacketQueueItem::Batch(packets) => {
             assert_eq!(packets.len(), 2);
-            assert_eq!(packets[0].data[0], 0xaa);
-            assert_eq!(packets[1].data[0], 0xbb);
+            assert_eq!(packet_marker(&packets[0]), 0xaa);
+            assert_eq!(packet_marker(&packets[1]), 0xbb);
         }
         item => panic!("expected grouped bulk batch, got {item:?}"),
     }
@@ -298,7 +331,7 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
     let item = PacketQueueItem::One(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0x11; 32],
+        priority_msg1(0x11),
     ));
     assert_eq!(
         item.dequeue_counts(PacketLane::Priority),
@@ -310,8 +343,8 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
     );
 
     let item = PacketQueueItem::Batch(PacketBatch::from(vec![
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0x11)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg2(0x22)),
     ]));
     assert_eq!(
         item.dequeue_counts(PacketLane::Priority),
@@ -323,16 +356,8 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
     );
 
     let item = PacketQueueItem::Batch(PacketBatch::from(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr,
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr, bulk_packet(0xbb)),
     ]));
     assert_eq!(
         item.dequeue_counts(PacketLane::Bulk),
@@ -349,8 +374,8 @@ fn pending_packets_apply_rx_loop_owned_stamp_as_packets_are_taken() {
     let addr = TransportAddr::from_string("test");
     let rx_loop_owned_at = Some(crate::perf_profile::test_stamp());
     let packets = PacketBatch::from(vec![
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0xaa; 32]),
-        ReceivedPacket::new(TransportId::new(1), addr, vec![0xbb; 48]),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr, priority_msg2(0xbb)),
     ]);
     let mut pending = Some(PendingPackets::new(packets, rx_loop_owned_at));
 
@@ -397,33 +422,25 @@ fn packet_channel_priority_hint_counts_channel_owned_packets() {
     let addr = TransportAddr::from_string("test");
 
     tx.send_batch(vec![
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0x11)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg2(0x22)),
     ])
     .expect("priority batch send should succeed");
     assert_eq!(tx.priority_queued_packets(), 2);
     assert_eq!(tx.bulk_queued_packets(), 0);
 
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
     assert_eq!(
         tx.priority_queued_packets(),
         0,
         "once a priority batch is dequeued, its tail is rx-loop-owned"
     );
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x22);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x22);
     assert_eq!(tx.priority_queued_packets(), 0);
 
     tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr,
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr, bulk_packet(0xbb)),
     ])
     .expect("bulk batch send should succeed");
     assert_eq!(
@@ -439,14 +456,14 @@ fn packet_rx_priority_ready_includes_pending_batch_tail() {
     let addr = TransportAddr::from_string("test");
 
     tx.send_batch(vec![
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
-        ReceivedPacket::new(TransportId::new(1), addr, vec![0x33; 64]),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0x11)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg2(0x22)),
+        ReceivedPacket::new(TransportId::new(1), addr, priority_msg1(0x33)),
     ])
     .expect("priority batch send should succeed");
 
     assert_eq!(rx.priority_ready_packets(), 3);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
     assert_eq!(
         tx.priority_queued_packets(),
         0,
@@ -457,10 +474,106 @@ fn packet_rx_priority_ready_includes_pending_batch_tail() {
         2,
         "rx-loop scheduling must still see the priority batch tail"
     );
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x22);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x22);
     assert_eq!(rx.priority_ready_packets(), 1);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x33);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x33);
     assert_eq!(rx.priority_ready_packets(), 0);
+}
+
+#[test]
+fn packet_rx_drain_ready_drains_bulk_batch_tail_in_one_call() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send_batch(vec![
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
+        ReceivedPacket::new(TransportId::new(1), addr, bulk_packet(0xcc)),
+    ])
+    .expect("bulk batch send should succeed");
+
+    let mut drained = Vec::new();
+    assert_eq!(
+        rx.drain_ready(2, |packet| {
+            drained.push(packet_marker(&packet));
+            true
+        }),
+        2
+    );
+    assert_eq!(drained, vec![0xaa, 0xbb]);
+    assert_eq!(
+        tx.queued_packets(),
+        0,
+        "dequeued batch tail should be rx-loop-owned, not channel-owned"
+    );
+    assert_eq!(tx.bulk_queued_packets(), 0);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xcc);
+}
+
+#[test]
+fn packet_rx_drain_ready_leaves_tail_when_consumer_stops() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send_batch(vec![
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
+        ReceivedPacket::new(TransportId::new(1), addr, bulk_packet(0xcc)),
+    ])
+    .expect("bulk batch send should succeed");
+
+    let mut drained = Vec::new();
+    assert_eq!(
+        rx.drain_ready(8, |packet| {
+            let byte = packet_marker(&packet);
+            drained.push(byte);
+            byte != 0xbb
+        }),
+        2
+    );
+    assert_eq!(drained, vec![0xaa, 0xbb]);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xcc);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[test]
+fn packet_rx_drain_ready_preserves_priority_overtaking_bulk_tail() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send_batch(vec![
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
+    ])
+    .expect("bulk batch send should succeed");
+
+    let mut first = Vec::new();
+    assert_eq!(
+        rx.drain_ready(1, |packet| {
+            first.push(packet_marker(&packet));
+            true
+        }),
+        1
+    );
+    assert_eq!(first, vec![0xaa]);
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        priority_msg1(0x11),
+    ))
+    .expect("priority packet send should succeed");
+
+    let mut drained = Vec::new();
+    assert_eq!(
+        rx.drain_ready(8, |packet| {
+            drained.push(packet_marker(&packet));
+            true
+        }),
+        2
+    );
+    assert_eq!(drained, vec![0x11, 0xbb]);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 }
 
 #[tokio::test]
@@ -469,29 +582,21 @@ async fn packet_channel_priority_overtakes_pending_bulk_batch_tail() {
     let addr = TransportAddr::from_string("test");
 
     tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
     ])
     .expect("bulk batch send should succeed");
 
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr,
-        vec![0x11; 32],
+        priority_msg1(0x11),
     ))
     .expect("priority packet send should succeed");
 
-    assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x11);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbb);
 }
 
 #[tokio::test]
@@ -502,7 +607,7 @@ async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        bulk_packet(0xaa),
     ))
     .expect("first bulk packet should fill bounded bulk lane");
     assert_eq!(tx.queued_packets(), 1);
@@ -511,7 +616,7 @@ async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        bulk_packet(0xbb),
     ))
     .expect("full bulk lane should drop overload without closing sender");
     assert_eq!(
@@ -525,7 +630,7 @@ async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr,
-        vec![0x11; 32],
+        priority_msg1(0x11),
     ))
     .expect("priority packet should still enter reserve lane");
     assert_eq!(tx.queued_packets(), 2);
@@ -535,10 +640,10 @@ async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
         "priority packets must not consume bulk packet capacity"
     );
 
-    assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x11);
     assert_eq!(tx.queued_packets(), 1);
     assert_eq!(tx.bulk_queued_packets(), 1);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
     assert_eq!(tx.queued_packets(), 0);
     assert_eq!(tx.bulk_queued_packets(), 0);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
@@ -550,16 +655,8 @@ async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
     let addr = TransportAddr::from_string("test");
 
     tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xab; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xab)),
     ])
     .expect("first bulk batch should fill bounded bulk lane");
     assert_eq!(tx.queued_packets(), 2);
@@ -571,16 +668,8 @@ async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
     );
 
     tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 3],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr,
-            vec![0xbc; PRIORITY_PACKET_MAX_LEN + 4],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
+        ReceivedPacket::new(TransportId::new(1), addr, bulk_packet(0xbc)),
     ])
     .expect("full bulk packet budget should drop batch overload without closing sender");
     assert_eq!(
@@ -595,10 +684,10 @@ async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
     );
     assert_eq!(rx.bulk.len(), 1);
 
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
     assert_eq!(tx.queued_packets(), 0);
     assert_eq!(tx.bulk_queued_packets(), 0);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xab);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xab);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 }
 
@@ -610,28 +699,16 @@ async fn packet_channel_bounded_bulk_batch_admits_prefix_before_dropping_tail() 
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        bulk_packet(0xaa),
     ))
     .expect("first bulk packet should consume one bulk packet credit");
     assert_eq!(tx.queued_packets(), 1);
     assert_eq!(tx.bulk_queued_packets(), 1);
 
     tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xbc; PRIORITY_PACKET_MAX_LEN + 3],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xbd; PRIORITY_PACKET_MAX_LEN + 4],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbc)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbd)),
     ])
     .expect("partial bulk admission should shed only overflow tail");
     assert_eq!(
@@ -653,24 +730,24 @@ async fn packet_channel_bounded_bulk_batch_admits_prefix_before_dropping_tail() 
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr,
-        vec![0x11; 32],
+        priority_msg1(0x11),
     ))
     .expect("priority packets should still enter their reserve lane");
     assert_eq!(tx.priority_queued_packets(), 1);
     assert_eq!(tx.bulk_queued_packets(), 3);
 
-    assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x11);
     assert_eq!(tx.priority_queued_packets(), 0);
     assert_eq!(tx.bulk_queued_packets(), 3);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
     assert_eq!(tx.bulk_queued_packets(), 2);
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbb);
     assert_eq!(
         tx.bulk_queued_packets(),
         0,
         "dequeued bulk batch should release all admitted prefix credits"
     );
-    assert_eq!(rx.recv().await.unwrap().data[0], 0xbc);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbc);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
 }
 
@@ -682,16 +759,16 @@ fn packet_channel_partial_bulk_drop_recycles_overflow_packet_buffers() {
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr.clone(),
-        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        bulk_packet(0xaa),
     ))
     .expect("first bulk packet should leave one credit free");
 
     let mut admitted = tx.recv_buffer(1600);
     admitted.clear();
-    admitted.resize(PRIORITY_PACKET_MAX_LEN + 2, 0xbb);
+    admitted.resize(BULK_PACKET_LEN, 0xbb);
     let mut dropped = tx.recv_buffer(1600);
     dropped.clear();
-    dropped.resize(PRIORITY_PACKET_MAX_LEN + 3, 0xbc);
+    dropped.resize(BULK_PACKET_LEN, 0xbc);
     let dropped_ptr = dropped.as_ptr();
 
     let mut batch = tx.packet_batch(2);
@@ -728,27 +805,15 @@ fn packet_channel_counts_channel_owned_packet_backlog() {
 
     assert_eq!(tx.queued_packets(), 0);
     tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xcc; PRIORITY_PACKET_MAX_LEN + 3],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xbb)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xcc)),
     ])
     .expect("bulk batch send should succeed");
     assert_eq!(tx.queued_packets(), 3);
     assert_eq!(tx.bulk_queued_packets(), 3);
 
-    assert_eq!(rx.try_recv().unwrap().data[0], 0xaa);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xaa);
     assert_eq!(
         tx.queued_packets(),
         0,
@@ -763,17 +828,17 @@ fn packet_channel_counts_channel_owned_packet_backlog() {
     tx.send(ReceivedPacket::new(
         TransportId::new(1),
         addr,
-        vec![0x11; 32],
+        priority_msg1(0x11),
     ))
     .expect("priority packet send should succeed");
     assert_eq!(tx.queued_packets(), 1);
     assert_eq!(tx.bulk_queued_packets(), 0);
 
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0x11);
     assert_eq!(tx.queued_packets(), 0);
     assert_eq!(tx.bulk_queued_packets(), 0);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0xbb);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0xcc);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xbb);
+    assert_eq!(packet_marker(&rx.try_recv().unwrap()), 0xcc);
     assert_eq!(tx.queued_packets(), 0);
     assert_eq!(tx.bulk_queued_packets(), 0);
 }
@@ -784,30 +849,22 @@ fn packet_channel_send_failure_rolls_back_backlog() {
     let addr = TransportAddr::from_string("test");
     drop(rx);
 
-    let packet = ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]);
+    let packet = ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0x11));
     assert!(tx.send(packet).is_err());
     assert_eq!(tx.queued_packets(), 0);
     assert_eq!(tx.priority_queued_packets(), 0);
 
     let packets = vec![
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
-        ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x33; 64]),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg2(0x22)),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0x33)),
     ];
     assert!(tx.send_batch(packets).is_err());
     assert_eq!(tx.queued_packets(), 0);
     assert_eq!(tx.priority_queued_packets(), 0);
 
     let packets = vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr,
-            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
+        ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet(0xaa)),
+        ReceivedPacket::new(TransportId::new(1), addr, bulk_packet(0xbb)),
     ];
     assert!(tx.send_batch(packets).is_err());
     assert_eq!(tx.queued_packets(), 0);

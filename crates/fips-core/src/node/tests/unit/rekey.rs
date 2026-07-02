@@ -55,134 +55,6 @@ async fn fmp_rekey_responder_pending_session_does_not_time_cutover() {
     );
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[tokio::test]
-async fn fmp_rekey_initiator_cutover_refreshes_connected_udp_fast_path() {
-    let mut node = make_node();
-    let peer_full = Identity::generate();
-    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
-    let peer_node_addr = *peer_identity.node_addr();
-    let transport_id = TransportId::new(1);
-    let link_id = LinkId::new(1);
-    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
-    let old_our_index = SessionIndex::new(10);
-    let old_their_index = SessionIndex::new(20);
-    let pending_our_index = SessionIndex::new(11);
-    let pending_their_index = SessionIndex::new(21);
-
-    let current_session = make_test_fmp_session(&node.identity, &peer_full, [0x01; 8], [0x02; 8]);
-    let pending_session = make_test_fmp_session(&node.identity, &peer_full, [0x03; 8], [0x04; 8]);
-    let mut active_peer = ActivePeer::with_session(
-        peer_identity,
-        link_id,
-        1_000,
-        current_session,
-        old_our_index,
-        old_their_index,
-        transport_id,
-        remote_addr,
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x02; 8]),
-    );
-    let k_before = active_peer.current_k_bit();
-    active_peer.set_pending_session(
-        pending_session,
-        pending_our_index,
-        pending_their_index,
-        true,
-    );
-    let (socket, drain) = make_test_connected_udp_pair(transport_id);
-    active_peer.set_connected_udp(socket, drain);
-
-    node.peers.insert(peer_node_addr, active_peer);
-    node.peers
-        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
-    node.peers
-        .insert_session_index((transport_id, pending_our_index.as_u32()), peer_node_addr);
-
-    tokio::time::sleep(std::time::Duration::from_millis(260)).await;
-    node.check_rekey().await;
-
-    let active_peer = node.get_peer(&peer_node_addr).unwrap();
-    assert_eq!(active_peer.our_index(), Some(pending_our_index));
-    assert_eq!(active_peer.their_index(), Some(pending_their_index));
-    assert_eq!(active_peer.current_k_bit(), !k_before);
-    assert!(
-        active_peer.connected_udp().is_none(),
-        "connected UDP must refresh after cutover because its fast path snapshots the old session key and K-bit"
-    );
-}
-
-#[tokio::test]
-async fn fmp_kbit_flip_requires_pending_authentication_before_promotion() {
-    let mut node = make_node();
-    let peer_full = Identity::generate();
-    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
-    let peer_node_addr = *peer_identity.node_addr();
-    let transport_id = TransportId::new(1);
-    let link_id = LinkId::new(1);
-    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
-    let old_our_index = SessionIndex::new(10);
-    let old_their_index = SessionIndex::new(20);
-    let pending_our_index = SessionIndex::new(11);
-    let pending_their_index = SessionIndex::new(21);
-
-    let (current_receiver, _current_sender) =
-        make_test_fmp_session_pair(&node.identity, &peer_full, [0x01; 8], [0x02; 8]);
-    let (pending_receiver, _pending_sender) =
-        make_test_fmp_session_pair(&node.identity, &peer_full, [0x03; 8], [0x04; 8]);
-    let (_stale_receiver, mut stale_sender) =
-        make_test_fmp_session_pair(&node.identity, &peer_full, [0x05; 8], [0x06; 8]);
-
-    let mut active_peer = ActivePeer::with_session(
-        peer_identity,
-        link_id,
-        1_000,
-        current_receiver,
-        old_our_index,
-        old_their_index,
-        transport_id,
-        remote_addr.clone(),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x02; 8]),
-    );
-    let k_before = active_peer.current_k_bit();
-    active_peer.set_pending_session(
-        pending_receiver,
-        pending_our_index,
-        pending_their_index,
-        false,
-    );
-
-    node.peers.insert(peer_node_addr, active_peer);
-    node.peers
-        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
-    node.peers
-        .insert_session_index((transport_id, pending_our_index.as_u32()), peer_node_addr);
-
-    let packet_data = seal_test_fmp_packet(
-        &mut stale_sender,
-        pending_our_index,
-        &[0, 0, 0, 0, 0xAA],
-        !k_before,
-    );
-    let packet =
-        ReceivedPacket::with_timestamp(transport_id, remote_addr.clone(), packet_data, 2_000);
-
-    node.handle_encrypted_frame(packet).await;
-
-    let active_peer = node.get_peer(&peer_node_addr).unwrap();
-    assert_eq!(active_peer.our_index(), Some(old_our_index));
-    assert_eq!(active_peer.their_index(), Some(old_their_index));
-    assert_eq!(active_peer.current_k_bit(), k_before);
-    assert!(active_peer.pending_new_session().is_some());
-    assert!(active_peer.previous_session().is_none());
-}
-
 #[tokio::test]
 async fn fmp_rekey_msg1_resend_budget_zero_abandons_immediately() {
     let mut node = make_node();
@@ -320,17 +192,11 @@ async fn link_dead_heartbeat_suppressed_while_fmp_rekey_has_budget() {
     );
 }
 
-/// `deregister_session_index` is used both for "peer is going away"
-/// (where the connected UDP socket must be torn down) and for
-/// "rekey drain completion — old session index retires while the
-/// peer's NEW index keeps the connect()-ed 5-tuple". Pre-fix this
-/// helper unconditionally cleared connected UDP, which would close
-/// the per-peer kernel socket on every rekey on Linux. Validate
-/// that when the peer still has another session-index entry in the active peer registry,
-/// the connected UDP socket is preserved.
-#[cfg(target_os = "linux")]
+/// `deregister_session_index` is used both when a peer is going away
+/// and during rekey drain. Retiring an old receiver index must not
+/// remove the active peer or its newer receiver index.
 #[test]
-fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
+fn test_deregister_session_index_preserves_peer_on_rekey_drain() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
 
@@ -355,13 +221,9 @@ fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
     node.peers
         .insert_session_index((transport_id, index_new), node_addr);
 
-    // Deregister the OLD index. This is the rekey-drain pattern.
-    // The peer is still present, the NEW index is still in
-    // active peer registry session-index dispatch, so the per-peer connected UDP socket
-    // (if any was installed) must NOT be torn down. The test
-    // doesn't install a real ConnectedPeerSocket; instead it
-    // checks the peer is still in `node.peers` and has a peer-
-    // alive observable state.
+    // Deregister the OLD index. This is the rekey-drain pattern:
+    // the peer is still present and the NEW index is still in active
+    // peer registry session-index dispatch.
     node.deregister_session_index((transport_id, index_old));
 
     assert!(
@@ -378,14 +240,5 @@ fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
     assert!(
         node.get_peer(&node_addr).is_some(),
         "peer must still be present after rekey-drain deregistration"
-    );
-    assert!(
-        !node
-            .sessions
-            .is_worker_registered(&crate::node::decrypt_worker::DecryptSessionKey::new(
-                transport_id,
-                index_old
-            )),
-        "old session must be evicted from the session registry worker-registration mirror"
     );
 }

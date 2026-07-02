@@ -1,28 +1,32 @@
 impl Node {
     const PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS: u64 = 2_000;
+    const PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX: usize = 16;
 
-    fn deliver_endpoint_data(&mut self, delivery: EndpointDataDelivery) {
-        let src_addr = *delivery.source_peer.node_addr();
+    fn deliver_endpoint_data_batch(&mut self, deliveries: Vec<EndpointDataDelivery>) {
+        if deliveries.is_empty() {
+            return;
+        }
         if !self.endpoint_events.is_attached() {
             trace!(
-                src = %self.peer_display_name(&src_addr),
-                "Endpoint data received without an attached endpoint"
+                messages = deliveries.len(),
+                "Endpoint data batch received without an attached endpoint"
             );
             return;
         }
 
-        if let Err(error) = self.deliver_endpoint_event_message(delivery) {
+        let count = deliveries.len();
+        if let Err(error) = self.endpoint_events.deliver_endpoint_data_batch(deliveries) {
             debug!(
-                src = %self.peer_display_name(&src_addr),
+                messages = count,
                 error = %error,
-                "Failed to deliver endpoint data event"
+                "Failed to deliver endpoint data event batch"
             );
         }
     }
 
     /// Send a non-data session message (reports, notifications) over an established session.
     ///
-    /// Similar to `send_session_data()` but:
+    /// Similar to endpoint/TUN PM2 data sends, but:
     /// - Takes an explicit `msg_type` byte (0x11, 0x12, 0x13, etc.)
     /// - Never includes COORDS_PRESENT (reports are lightweight)
     /// - Reads spin bit from MMP state for the inner header
@@ -33,29 +37,8 @@ impl Node {
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), NodeError> {
-        let now_ms = Self::now_ms();
-        let send_context = self
-            .sessions
-            .session_fsp_send_context(dest_addr, now_ms)
-            .map_err(|error| error.into_node_error(*dest_addr))?;
-        let timestamp = send_context.timestamp;
-
-        // Build inner flags with spin bit
-        let inner_flags = send_context.inner_flags_byte();
-        let k_flags = send_context.fsp_flags(false);
-
-        // FSP inner header + plaintext
-        let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload);
-
-        self.send_session_fsp_plan(SessionFspSendPlan::new(
-            *dest_addr,
-            timestamp,
-            k_flags,
-            &inner_plaintext,
-            None,
-            SessionFspSendBookkeeping::Control,
-        ))
-        .await
+        self.send_packet_mover2_fsp_session_msg(dest_addr, msg_type, payload)
+            .await
     }
 
     /// Send a standalone CoordsWarmup message to warm transit node caches.
@@ -69,30 +52,7 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
-        let now_ms = Self::now_ms();
-
-        let my_coords = self.tree_state.my_coords().clone();
-        let dest_coords = self.get_dest_coords(dest_addr);
-        let send_context = self
-            .sessions
-            .session_fsp_send_context(dest_addr, now_ms)
-            .map_err(|error| error.into_node_error(*dest_addr))?;
-        let timestamp = send_context.timestamp;
-
-        // FSP inner header only, no body payload
-        let msg_type = SessionMessageType::CoordsWarmup.to_byte();
-        let inner_flags = send_context.inner_flags_byte();
-        let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &[]);
-
-        self.send_session_fsp_plan(SessionFspSendPlan::new(
-            *dest_addr,
-            timestamp,
-            0,
-            &inner_plaintext,
-            Some((&my_coords, &dest_coords)),
-            SessionFspSendBookkeeping::Control,
-        ))
-        .await?;
+        self.send_packet_mover2_fsp_coords_warmup(dest_addr).await?;
 
         debug!(dest = %self.peer_display_name(dest_addr), "Sent standalone CoordsWarmup");
         Ok(())
@@ -100,8 +60,8 @@ impl Node {
 
     /// Route and send a SessionDatagram through the mesh.
     ///
-    /// Finds the next hop for the destination, seeds path_mtu from the
-    /// first-hop transport MTU, and sends as an encrypted link message.
+    /// Finds the next hop for the destination, seeds PM2 owner path_mtu from
+    /// the first-hop transport MTU, and sends as an encrypted link message.
     pub(in crate::node) async fn send_session_datagram(
         &mut self,
         datagram: &mut SessionDatagram,
@@ -110,16 +70,16 @@ impl Node {
 
         let encoded = datagram.encode();
         if let Err(err) = self
-            .send_encrypted_link_message(&runtime_route.next_hop_addr(), &encoded)
+            .send_packet_mover2_fmp_link_plaintext(&runtime_route.next_hop_addr, &encoded, false)
             .await
         {
-            let dest_addr = runtime_route.dest_addr();
-            let next_hop_addr = runtime_route.next_hop_addr();
-            runtime_route.record_failure(self);
+            let dest_addr = runtime_route.dest_addr;
+            let next_hop_addr = runtime_route.next_hop_addr;
+            self.record_route_failure(dest_addr, next_hop_addr);
             self.recover_direct_payload_send_failure(dest_addr, next_hop_addr, &err);
             return Err(err);
         }
-        runtime_route.record_success(self, encoded.len());
+        self.stats_mut().forwarding.record_originated(encoded.len());
         Ok(())
     }
 
@@ -165,16 +125,13 @@ impl Node {
         }
         datagram.path_mtu = path_mtu;
 
-        let source_mmp_seeded = self
-            .sessions
-            .seed_session_datagram_path_mtu(&dest_addr, path_mtu);
+        let _ = self.packet_mover2.seed_fsp_path_mtu(dest_addr, path_mtu);
 
-        Ok(SessionDatagramRuntimeRoute::new(
+        Ok(SessionDatagramRuntimeRoute {
             dest_addr,
             next_hop_addr,
             path_mtu,
-            source_mmp_seeded,
-        ))
+        })
     }
 
     /// Look up destination coordinates from available caches.
@@ -199,36 +156,22 @@ impl Node {
         crate::time::now_ms()
     }
 
-    // === TUN Outbound (Data Plane) ===
-
-    /// Handle an outbound IPv6 packet from the TUN reader.
-    ///
-    /// Extracts the destination FipsAddress, looks up the NodeAddr and PublicKey
-    /// from the identity cache, and either sends through an established session
-    /// or initiates a new one (queuing the packet until established).
-    ///
-    /// Also performs MTU checking: if the packet (plus FIPS overhead) exceeds
-    /// the transport MTU, an ICMP Packet Too Big message is sent back to the
-    /// source and the packet is dropped.
-    pub(in crate::node) async fn handle_tun_outbound(&mut self, ipv6_packet: Vec<u8>) {
-        // Validate IPv6 header
+    pub(in crate::node) async fn handle_packet_mover2_deferred_tun_packet(
+        &mut self,
+        ipv6_packet: Vec<u8>,
+    ) {
         if ipv6_packet.len() < 40 || ipv6_packet[0] >> 4 != 6 {
             return;
         }
 
-        // Check if packet will fit after FIPS encapsulation
         let effective_mtu = self.effective_ipv6_mtu() as usize;
         if ipv6_packet.len() > effective_mtu {
             self.send_icmpv6_packet_too_big(&ipv6_packet, effective_mtu as u32);
             return;
         }
 
-        // Extract destination FipsAddress prefix (IPv6 dest bytes 1-15)
-        // IPv6 header: bytes 24-39 are dest addr, so prefix = bytes 25-39
         let mut prefix = [0u8; 15];
         prefix.copy_from_slice(&ipv6_packet[25..40]);
-
-        // Look up in identity cache
         let (dest_addr, dest_pubkey) = match self.lookup_by_fips_prefix(&prefix) {
             Some((addr, pk)) => (addr, pk),
             None => {
@@ -237,54 +180,63 @@ impl Node {
             }
         };
 
-        match self.sessions.tun_outbound_session_decision(
-            &dest_addr,
-            effective_mtu,
-            ipv6_packet.len(),
-        ) {
-            TunOutboundSessionDecision::Established => {
-                if let Err(e) = self.send_ipv6_packet(&dest_addr, &ipv6_packet).await {
-                    if Self::session_send_needs_path_recovery(&e, &dest_addr) {
-                        debug!(
-                            dest = %self.peer_display_name(&dest_addr),
-                            error = %e,
-                            "Established TUN session lost route; queueing packet and probing fallback"
-                        );
-                        self.queue_pending_packet(dest_addr, ipv6_packet);
-                        self.maybe_initiate_lookup(&dest_addr).await;
-                    } else {
-                        debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Failed to send TUN packet via session");
+        self.queue_packet_mover2_unrouted_tun_packet(dest_addr, dest_pubkey, ipv6_packet)
+            .await;
+    }
+
+    async fn queue_packet_mover2_unrouted_tun_packet(
+        &mut self,
+        dest_addr: NodeAddr,
+        dest_pubkey: secp256k1::PublicKey,
+        ipv6_packet: Vec<u8>,
+    ) {
+        match self.packet_mover2_outbound_session_state(&dest_addr) {
+            OutboundSessionState::Established => {
+                if self.find_next_hop(&dest_addr).is_some()
+                {
+                    match self
+                        .send_packet_mover2_cached_tun_packet(&dest_addr, ipv6_packet.clone())
+                        .await
+                    {
+                        Ok(()) | Err(NodeError::MtuExceeded { .. }) => return,
+                        Err(_) => {}
                     }
                 }
-                return;
+                self.queue_pending_tun_packet(dest_addr, ipv6_packet);
+                self.maybe_initiate_path_recovery_lookup(&dest_addr).await;
             }
-            TunOutboundSessionDecision::EstablishedPathMtuExceeded { path_ipv6_mtu } => {
-                self.send_icmpv6_packet_too_big(&ipv6_packet, path_ipv6_mtu);
-                return;
-            }
-            TunOutboundSessionDecision::Pending => {
-                self.queue_pending_packet(dest_addr, ipv6_packet);
+            OutboundSessionState::Pending => {
+                self.queue_pending_tun_packet(dest_addr, ipv6_packet);
                 let should_discover = self.config.node.routing.mode
                     == crate::config::RoutingMode::ReplyLearned
                     || self.find_next_hop(&dest_addr).is_none();
                 if should_discover {
                     self.maybe_initiate_lookup(&dest_addr).await;
                 }
-                return;
             }
-            TunOutboundSessionDecision::Missing => {}
+            OutboundSessionState::Missing => {
+                if self.find_next_hop(&dest_addr).is_none() {
+                    self.queue_pending_tun_packet(dest_addr, ipv6_packet);
+                    self.maybe_initiate_lookup(&dest_addr).await;
+                    return;
+                }
+                match self.initiate_session(dest_addr, dest_pubkey).await {
+                    Ok(()) => {}
+                    Err(NodeError::SendFailed { node_addr, reason })
+                        if node_addr == dest_addr && reason == "no route to destination" =>
+                    {
+                        self.queue_pending_tun_packet(dest_addr, ipv6_packet);
+                        self.maybe_initiate_lookup(&dest_addr).await;
+                        return;
+                    }
+                    Err(error) => {
+                        debug!(dest = %self.peer_display_name(&dest_addr), error = %error, "Failed to initiate deferred TUN session");
+                        return;
+                    }
+                }
+                self.queue_pending_tun_packet(dest_addr, ipv6_packet);
+            }
         }
-
-        // No session: initiate one and queue the packet.
-        // If session initiation fails (no route), trigger discovery and
-        // queue the packet for retry when discovery completes.
-        if let Err(e) = self.initiate_session(dest_addr, dest_pubkey).await {
-            debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Failed to initiate session, trying discovery");
-            self.maybe_initiate_lookup(&dest_addr).await;
-            self.queue_pending_packet(dest_addr, ipv6_packet);
-            return;
-        }
-        self.queue_pending_packet(dest_addr, ipv6_packet);
     }
 
     /// Send ICMPv6 Destination Unreachable back through TUN.
@@ -350,7 +302,7 @@ impl Node {
     }
 
     /// Queue a packet while waiting for session establishment.
-    fn queue_pending_packet(&mut self, dest_addr: NodeAddr, packet: Vec<u8>) {
+    fn queue_pending_tun_packet(&mut self, dest_addr: NodeAddr, packet: Vec<u8>) {
         let admission = self.pending_session_traffic.push_tun_packet(
             dest_addr,
             packet,
@@ -368,18 +320,21 @@ impl Node {
         }
     }
 
-    /// Queue endpoint data while waiting for session establishment.
-    fn queue_pending_endpoint_data(
+    fn queue_pending_endpoint_data_batch_with_enqueued_at_ms(
         &mut self,
         dest_addr: NodeAddr,
-        payload: impl Into<EndpointDataPayload>,
+        payloads: Vec<Vec<u8>>,
+        enqueued_at_ms: u64,
     ) {
-        let admission = self.pending_session_traffic.push_endpoint_data(
-            dest_addr,
-            payload,
-            self.config.node.session.pending_max_destinations,
-            self.config.node.session.pending_packets_per_dest,
-        );
+        let admission = self
+            .pending_session_traffic
+            .push_endpoint_data_batch_with_enqueued_at_ms(
+                dest_addr,
+                payloads,
+                self.config.node.session.pending_max_destinations,
+                self.config.node.session.pending_packets_per_dest,
+                enqueued_at_ms,
+            );
         if admission.destination_dropped() {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PendingEndpointDestinationDropped,
@@ -398,9 +353,16 @@ impl Node {
         if !self.pending_session_traffic.has_traffic_for(dest_addr) {
             return;
         }
+        if !self.packet_mover2_has_fsp_owner(dest_addr) {
+            debug!(
+                dest = %self.peer_display_name(dest_addr),
+                "Skipping pending packet flush because packet_mover2 FSP owner is not registered"
+            );
+            return;
+        }
 
         if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
-            let (packets, stale_count) = packets.into_fresh_packets(
+            let (mut packets, stale_count) = packets.into_fresh_packets(
                 Self::now_ms(),
                 Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
             );
@@ -415,19 +377,61 @@ impl Node {
                     "Dropped stale queued TUN packets before session flush"
                 );
             }
-            for packet in packets {
-                if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
+            while let Some(packet) = packets.pop_front() {
+                if let Err(e) = self
+                    .send_packet_mover2_cached_tun_packet(dest_addr, packet.into_packet())
+                    .await
+                {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+                    self.pending_session_traffic
+                        .restore_tun_packets(*dest_addr, packets);
                     break;
                 }
             }
         }
 
         if let Some(payloads) = self.pending_session_traffic.take_endpoint_data(dest_addr) {
-            for payload in payloads.into_payloads() {
-                if let Err(e) = self.send_session_endpoint_data(dest_addr, &payload).await {
-                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
-                    break;
+            let mut payloads = payloads.into_pending_payloads();
+            while let Some(pending) = payloads.pop_front() {
+                let enqueued_at_ms = pending.enqueued_at_ms();
+                let mut pending_payloads = pending.into_payloads().into_iter();
+                while let Some(first_payload) = pending_payloads.next() {
+                    let mut batch = vec![first_payload];
+                    while batch.len() < Self::PENDING_ENDPOINT_DATA_FLUSH_BATCH_MAX {
+                        let Some(payload) = pending_payloads.next() else {
+                            break;
+                        };
+                        batch.push(payload);
+                    }
+
+                    if let Err(e) = self
+                        .send_packet_mover2_cached_endpoint_payloads(
+                            dest_addr,
+                            batch.clone(),
+                            enqueued_at_ms,
+                        )
+                        .await
+                    {
+                        debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
+                        let mut restore = std::collections::VecDeque::new();
+                        if let Some(pending) = crate::node::PendingEndpointData::new_batch(
+                            batch,
+                            enqueued_at_ms,
+                        ) {
+                            restore.push_back(pending);
+                        }
+                        let remaining = pending_payloads.collect::<Vec<_>>();
+                        if let Some(pending) = crate::node::PendingEndpointData::new_batch(
+                            remaining,
+                            enqueued_at_ms,
+                        ) {
+                            restore.push_back(pending);
+                        }
+                        restore.append(&mut payloads);
+                        self.pending_session_traffic
+                            .restore_endpoint_data(*dest_addr, restore);
+                        return;
+                    }
                 }
             }
         }

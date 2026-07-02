@@ -26,7 +26,8 @@ mod packet_channel;
 mod tests;
 
 pub use handle::TransportHandle;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use packet_channel::PacketFastIngressSink;
+#[cfg(target_os = "linux")]
 pub(crate) use packet_channel::received_timestamp_ms;
 pub use packet_channel::{PacketBuffer, PacketRx, PacketTx, ReceivedPacket, packet_channel};
 
@@ -404,28 +405,37 @@ impl TransportAddr {
         Self(Arc::from(s.as_bytes()))
     }
 
-    /// Create a transport address from a `SocketAddr` without going
-    /// through `to_string()`.
-    ///
-    /// The standard path is `from_string(&addr.to_string())`, which
-    /// allocates a `String` for the formatted address and then copies
-    /// its bytes into a fresh `Vec<u8>` — two heap allocations per
-    /// inbound packet on the UDP receive hot path. At line rate that's
-    /// a few percent of one core in malloc/free. This variant writes
-    /// the `SocketAddr::Display` representation directly into a
-    /// `Vec<u8>` via `std::io::Write`, halving the alloc count and
-    /// skipping the intermediate `String` materialisation entirely.
+    /// Create a transport address from a `SocketAddr` without libc
+    /// address formatting. UDP receive caches this per peer, but cache
+    /// misses still sit on the hot task, so keep the common IPv4 path
+    /// as plain decimal byte writes.
     pub fn from_socket_addr(addr: std::net::SocketAddr) -> Self {
-        use std::io::Write;
-        // Pre-size to fit `[ipv6_lit]:65535` (47 + brackets + colon +
-        // port digits ≈ 56 bytes worst case) so we don't re-grow the
-        // buffer mid-format on common addresses.
-        let mut buf = Vec::with_capacity(56);
-        // The `write!` macro on `&mut Vec<u8>` cannot fail (Vec's
-        // `Write` impl is infallible for in-memory buffers), so the
-        // expect is for shape only.
-        write!(&mut buf, "{addr}").expect("Vec<u8>::write_fmt is infallible");
-        Self(buf.into())
+        match addr {
+            std::net::SocketAddr::V4(addr) => {
+                let octets = addr.ip().octets();
+                let mut buf = Vec::with_capacity(21);
+                push_decimal_u8(&mut buf, octets[0]);
+                buf.push(b'.');
+                push_decimal_u8(&mut buf, octets[1]);
+                buf.push(b'.');
+                push_decimal_u8(&mut buf, octets[2]);
+                buf.push(b'.');
+                push_decimal_u8(&mut buf, octets[3]);
+                buf.push(b':');
+                push_decimal_u16(&mut buf, addr.port());
+                Self(buf.into())
+            }
+            std::net::SocketAddr::V6(addr) => {
+                use std::io::Write;
+                let mut buf = Vec::with_capacity(56);
+                buf.push(b'[');
+                write!(&mut buf, "{}", addr.ip()).expect("Vec<u8>::write_fmt is infallible");
+                buf.push(b']');
+                buf.push(b':');
+                push_decimal_u16(&mut buf, addr.port());
+                Self(buf.into())
+            }
+        }
     }
 
     /// Get the raw bytes.
@@ -447,6 +457,41 @@ impl TransportAddr {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+}
+
+fn push_decimal_u8(buf: &mut Vec<u8>, value: u8) {
+    push_decimal_u16(buf, value as u16);
+}
+
+fn push_decimal_u16(buf: &mut Vec<u8>, value: u16) {
+    if value >= 10_000 {
+        buf.push(b'0' + (value / 10_000) as u8);
+        push_fixed_4_digits(buf, value % 10_000);
+    } else if value >= 1_000 {
+        push_fixed_4_digits(buf, value);
+    } else if value >= 100 {
+        buf.push(b'0' + (value / 100) as u8);
+        push_fixed_2_digits(buf, value % 100);
+    } else if value >= 10 {
+        push_fixed_2_digits(buf, value);
+    } else {
+        buf.push(b'0' + value as u8);
+    }
+}
+
+fn push_fixed_4_digits(buf: &mut Vec<u8>, value: u16) {
+    buf.push(b'0' + (value / 1_000) as u8);
+    push_fixed_3_digits(buf, value % 1_000);
+}
+
+fn push_fixed_3_digits(buf: &mut Vec<u8>, value: u16) {
+    buf.push(b'0' + (value / 100) as u8);
+    push_fixed_2_digits(buf, value % 100);
+}
+
+fn push_fixed_2_digits(buf: &mut Vec<u8>, value: u16) {
+    buf.push(b'0' + (value / 10) as u8);
+    buf.push(b'0' + (value % 10) as u8);
 }
 
 impl fmt::Debug for TransportAddr {

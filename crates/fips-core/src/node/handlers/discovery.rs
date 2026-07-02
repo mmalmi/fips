@@ -164,7 +164,10 @@ impl Node {
                 );
 
                 let encoded = response.encode();
-                if let Err(e) = self.send_encrypted_link_message(&from_peer, &encoded).await {
+                if let Err(e) = self
+                    .send_packet_mover2_fmp_link_plaintext(&from_peer, &encoded, false)
+                    .await
+                {
                     debug!(
                         next_hop = %self.peer_display_name(&from_peer),
                         error = %e,
@@ -274,10 +277,10 @@ impl Node {
                     .get(&target)
                     .is_some_and(|entry| entry.is_established());
 
-                // If an established session exists, reset the warmup counter.
-                if session_established && let Some(entry) = self.sessions.get_mut(&target) {
+                // If an established session exists, reset the PM2 owner warmup budget.
+                if session_established {
                     let n = self.config.node.session.coords_warmup_packets;
-                    entry.set_coords_warmup_remaining(n);
+                    self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&target, n);
                     debug!(
                         dest = %self.peer_display_name(&target),
                         warmup_packets = n,
@@ -307,13 +310,13 @@ impl Node {
                     && self.should_warm_auto_connect_session(&target)
                     && self.graph_session_warmup_budget() > 0;
                 if has_queued_traffic || should_warm_session {
-                    let tun_packets = self
-                        .pending_session_traffic
-                        .tun_packets_for(&target)
-                        .map_or(0, |p| p.len());
                     let endpoint_payloads = self
                         .pending_session_traffic
                         .endpoint_data_for(&target)
+                        .map_or(0, |p| p.len());
+                    let tun_packets = self
+                        .pending_session_traffic
+                        .tun_packets_for(&target)
                         .map_or(0, |p| p.len());
                     debug!(
                         dest = %self.peer_display_name(&target),
@@ -377,7 +380,7 @@ impl Node {
 
         let encoded = response.encode();
         if let Err(e) = self
-            .send_encrypted_link_message(&next_hop_addr, &encoded)
+            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(
@@ -418,7 +421,7 @@ impl Node {
         {
             let encoded = request.encode();
             match self
-                .send_encrypted_link_message(&request.target, &encoded)
+                .send_packet_mover2_fmp_link_plaintext(&request.target, &encoded, false)
                 .await
             {
                 Ok(()) => {
@@ -533,7 +536,10 @@ impl Node {
         let encoded = request.encode();
 
         for peer_addr in forward_to {
-            if let Err(e) = self.send_encrypted_link_message(&peer_addr, &encoded).await {
+            if let Err(e) = self
+                .send_packet_mover2_fmp_link_plaintext(&peer_addr, &encoded, false)
+                .await
+            {
                 debug!(
                     peer = %self.peer_display_name(&peer_addr),
                     error = %e,
@@ -609,7 +615,10 @@ impl Node {
         let encoded = request.encode();
 
         for peer_addr in peer_addrs {
-            if let Err(e) = self.send_encrypted_link_message(&peer_addr, &encoded).await {
+            if let Err(e) = self
+                .send_packet_mover2_fmp_link_plaintext(&peer_addr, &encoded, false)
+                .await
+            {
                 debug!(
                     peer = %self.peer_display_name(&peer_addr),
                     error = %e,
@@ -744,6 +753,36 @@ impl Node {
         }
     }
 
+    /// Initiate discovery after an established payload path becomes suspect.
+    ///
+    /// This is narrower than first-contact discovery: if there is no alternate
+    /// mesh neighbor that could carry a fallback route, asking the direct peer
+    /// about itself only churns control traffic and cannot improve routing.
+    pub(in crate::node) async fn maybe_initiate_path_recovery_lookup(&mut self, dest: &NodeAddr) {
+        if !self.has_sendable_fallback_lookup_peer(dest) {
+            debug!(
+                target_node = %self.peer_display_name(dest),
+                "Skipping path-recovery lookup, no sendable fallback peer"
+            );
+            return;
+        }
+
+        if self.retry_pending.contains_key(dest) {
+            self.maybe_initiate_direct_path_fallback_lookup(dest).await;
+        } else {
+            self.maybe_initiate_lookup(dest).await;
+        }
+    }
+
+    pub(in crate::node) fn has_sendable_fallback_lookup_peer(&self, dest: &NodeAddr) -> bool {
+        self.peers.iter().any(|(addr, peer)| {
+            *addr != *dest
+                && peer.is_healthy()
+                && (self.config.node.routing.mode != RoutingMode::ReplyLearned
+                    || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
+        })
+    }
+
     /// Ask existing mesh neighbors for a route after a direct path becomes suspect.
     ///
     /// MMP link-dead is evidence about the selected path, not proof that the
@@ -758,18 +797,7 @@ impl Node {
             return;
         }
 
-        let fallback_peers = self
-            .peers
-            .iter()
-            .filter(|(addr, peer)| {
-                *addr != dest
-                    && peer.is_healthy()
-                    && (self.config.node.routing.mode != RoutingMode::ReplyLearned
-                        || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
-            })
-            .map(|(addr, _)| *addr)
-            .collect::<Vec<_>>();
-        if fallback_peers.is_empty() {
+        if !self.has_sendable_fallback_lookup_peer(dest) {
             debug!(
                 target_node = %self.peer_display_name(dest),
                 "Skipping direct-path fallback lookup, no sendable fallback peer"

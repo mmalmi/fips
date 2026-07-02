@@ -119,7 +119,7 @@ impl Node {
                 }
 
                 if remote_epoch_changed {
-                    self.unregister_decrypt_worker_fsp_session(&peer_node_addr);
+                    self.remove_packet_mover2_fsp_owner(&peer_node_addr);
                     if self.sessions.remove(&peer_node_addr).is_some() {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
@@ -162,6 +162,7 @@ impl Node {
                     &inserted,
                     "cross_connection_won",
                 );
+                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
                 self.clear_session_direct_path_degraded_after_promotion(
                     &peer_node_addr,
                     current_time_ms,
@@ -173,14 +174,10 @@ impl Node {
                 );
                 self.register_identity(peer_node_addr, verified_identity.pubkey_full());
 
-                // Hand the new FMP recv state to the decrypt-worker
-                // shard. The sibling "no existing peer" branch below
-                // already does this on initial promotion; the
-                // existing-peer replace branch was missing it, so a
-                // cross-connection winner ended up never registered
-                // with the worker and silently fell back to the
-                // in-line decrypt path for the lifetime of the peer.
-                self.register_decrypt_worker_session(&peer_node_addr);
+                // Refresh the packet_mover2 FMP owner after cross-connection
+                // replacement. The sibling "no existing peer" branch below
+                // already does this on initial promotion.
+                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
 
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),
@@ -279,6 +276,7 @@ impl Node {
                 .peers
                 .insert_with_current_session_index(peer_node_addr, new_peer);
             self.log_active_peer_insert_result(&peer_node_addr, &inserted, "promoted");
+            self.sync_packet_mover2_fmp_owner(&peer_node_addr);
             self.clear_session_direct_path_degraded_after_promotion(
                 &peer_node_addr,
                 current_time_ms,
@@ -290,11 +288,10 @@ impl Node {
             );
             self.register_identity(peer_node_addr, verified_identity.pubkey_full());
 
-            // Eagerly hand the FMP recv state to the decrypt-worker
-            // shard. From this point on the shard is the
-            // authoritative FMP-replay-window writer for this peer;
-            // rx_loop's in-line decrypt path is no longer used.
-            self.register_decrypt_worker_session(&peer_node_addr);
+            // Eagerly hand the FMP recv state to the packet_mover2 owner.
+            // From this point on the owner is the authoritative
+            // FMP-replay-window writer for this peer.
+            self.sync_packet_mover2_fmp_owner(&peer_node_addr);
 
             info!(
                 peer = %self.peer_display_name(&peer_node_addr),

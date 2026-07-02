@@ -162,9 +162,9 @@ fn test_load_from_paths_deep_merges_partial_node_sections() {
 node:
   limits:
     max_peers: 4096
-  connected_udp:
-    max_peers: 256
-    fd_reserve: 2048
+  routing:
+    learned_ttl_secs: 120
+    max_learned_routes_per_dest: 2
 "#,
     )
     .unwrap();
@@ -175,8 +175,8 @@ node:
 node:
   identity:
     nsec: "high_priority_nsec"
-  connected_udp:
-    enabled: false
+  routing:
+    learned_fallback_explore_interval: 8
 "#,
     )
     .unwrap();
@@ -186,9 +186,9 @@ node:
 
     assert_eq!(loaded, vec![low_priority, high_priority]);
     assert_eq!(config.node.limits.max_peers, 4096);
-    assert!(!config.node.connected_udp.enabled);
-    assert_eq!(config.node.connected_udp.max_peers, 256);
-    assert_eq!(config.node.connected_udp.fd_reserve, 2048);
+    assert_eq!(config.node.routing.learned_ttl_secs, 120);
+    assert_eq!(config.node.routing.max_learned_routes_per_dest, 2);
+    assert_eq!(config.node.routing.learned_fallback_explore_interval, 8);
     assert_eq!(
         config.node.identity.nsec,
         Some("high_priority_nsec".to_string())

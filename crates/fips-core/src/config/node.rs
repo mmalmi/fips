@@ -56,71 +56,6 @@ impl LimitsConfig {
     }
 }
 
-/// Connected UDP fast-path configuration (`node.connected_udp.*`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectedUdpConfig {
-    /// Enable per-peer connected UDP sockets (`node.connected_udp.enabled`).
-    ///
-    /// `FIPS_CONNECTED_UDP` remains honored for operational A/B tests.
-    /// Connected UDP stays default-on for Linux and default-off for macOS,
-    /// where live mobile/NAT testing has shown the `SO_REUSEPORT` listener
-    /// group can destabilize the wildcard receive path. The old macOS-specific
-    /// `FIPS_MACOS_CONNECTED_UDP=1` is still accepted as an enable-only legacy
-    /// override.
-    #[serde(default = "ConnectedUdpConfig::default_enabled")]
-    pub enabled: bool,
-
-    /// Maximum peers that may have connected UDP sockets installed
-    /// (`node.connected_udp.max_peers`).
-    ///
-    /// This is an explicit escape hatch for large meshes while connected UDP
-    /// still uses one receive-drain thread per installed peer. Set to `0` to
-    /// disable the explicit cap and rely only on the fd budget and
-    /// `node.limits.max_peers`.
-    #[serde(default = "ConnectedUdpConfig::default_max_peers")]
-    pub max_peers: usize,
-
-    /// Number of process file descriptors to leave for non-connected-UDP use
-    /// (`node.connected_udp.fd_reserve`).
-    ///
-    /// This is headroom, not a peer cap. Connected UDP uses three FDs per
-    /// installed peer, so the effective fast-path peer budget is roughly
-    /// `(RLIMIT_NOFILE - fd_reserve) / 3`, also bounded by `max_peers` when
-    /// non-zero and by `node.limits.max_peers`.
-    #[serde(default = "ConnectedUdpConfig::default_fd_reserve")]
-    pub fd_reserve: usize,
-}
-
-impl Default for ConnectedUdpConfig {
-    fn default() -> Self {
-        Self {
-            enabled: Self::default_enabled(),
-            max_peers: Self::default_max_peers(),
-            fd_reserve: Self::default_fd_reserve(),
-        }
-    }
-}
-
-impl ConnectedUdpConfig {
-    fn default_enabled() -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            return false;
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        true
-    }
-
-    fn default_max_peers() -> usize {
-        0
-    }
-
-    fn default_fd_reserve() -> usize {
-        128
-    }
-}
-
 /// Rate limiting (`node.rate_limit.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
@@ -769,10 +704,6 @@ pub struct NodeConfig {
     #[serde(default)]
     pub limits: LimitsConfig,
 
-    /// Connected UDP fast path (`node.connected_udp.*`).
-    #[serde(default)]
-    pub connected_udp: ConnectedUdpConfig,
-
     /// Rate limiting (`node.rate_limit.*`).
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
@@ -834,13 +765,6 @@ pub struct NodeConfig {
     #[serde(default = "NodeConfig::default_system_files_enabled")]
     pub system_files_enabled: bool,
 
-    /// Enable off-task Unix encrypt/decrypt worker pools (`node.worker_pools_enabled`).
-    /// Embedded/mobile endpoints can disable this to keep crypto/send work inline
-    /// with the rx loop when platform extension sandboxes make OS-thread pools
-    /// unsuitable.
-    #[serde(default = "NodeConfig::default_worker_pools_enabled")]
-    pub worker_pools_enabled: bool,
-
     /// Log level (`node.log_level`). Case-insensitive.
     /// Valid values: trace, debug, info, warn, error. Default: info.
     #[serde(default)]
@@ -858,7 +782,6 @@ impl Default for NodeConfig {
             link_dead_timeout_secs: 30,
             fast_link_dead_timeout_secs: 5,
             limits: LimitsConfig::default(),
-            connected_udp: ConnectedUdpConfig::default(),
             rate_limit: RateLimitConfig::default(),
             retry: RetryConfig::default(),
             cache: CacheConfig::default(),
@@ -874,7 +797,6 @@ impl Default for NodeConfig {
             ecn: EcnConfig::default(),
             rekey: RekeyConfig::default(),
             system_files_enabled: true,
-            worker_pools_enabled: true,
             log_level: None,
         }
     }
@@ -913,9 +835,6 @@ impl NodeConfig {
         5
     }
     fn default_system_files_enabled() -> bool {
-        true
-    }
-    fn default_worker_pools_enabled() -> bool {
         true
     }
 }

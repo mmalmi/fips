@@ -719,7 +719,7 @@ fn peer_lifecycle_registry_owns_pending_rekey_session_and_index_registration() {
 }
 
 #[test]
-fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
+fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
     let node = make_node();
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
@@ -768,14 +768,9 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
 
     assert!(
         update.address_changed,
-        "path update should report that connected UDP must be cleared"
+        "path update should report address drift for owner bookkeeping"
     );
     assert!(update.path_bookkeeping_recorded);
-    assert!(update.mmp_recorded);
-    assert!(
-        update.spin_rtt.is_none(),
-        "first initiator spin edge flips the bit but has no prior edge for RTT"
-    );
 
     let peer = registry
         .get(&peer_addr)
@@ -787,16 +782,6 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
     assert_eq!(peer.link_stats().packets_recv, 1);
     assert_eq!(peer.link_stats().bytes_recv, 128);
     assert_eq!(peer.link_stats().last_recv_ms, 2_000);
-    let mmp = peer.mmp().expect("active FMP peer should have MMP state");
-    assert_eq!(mmp.receiver.cumulative_packets_recv(), 1);
-    assert_eq!(mmp.receiver.cumulative_bytes_recv(), 128);
-    assert_eq!(mmp.receiver.highest_counter(), 7);
-    assert_eq!(mmp.receiver.ecn_ce_count(), 1);
-    assert!(
-        mmp.spin_bit.tx_bit(),
-        "authenticated receive bookkeeping should own spin-bit observation"
-    );
-
     registry
         .get_mut(&peer_addr)
         .expect("peer should still exist")
@@ -819,10 +804,6 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
 
     assert!(!skipped.address_changed);
     assert!(!skipped.path_bookkeeping_recorded);
-    assert!(
-        !skipped.mmp_recorded,
-        "routed packets must not refresh direct-link MMP liveness"
-    );
     let peer = registry
         .get(&peer_addr)
         .expect("skipped receive must keep active peer storage");
@@ -832,8 +813,49 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
     assert_eq!(peer.link_stats().packets_recv, 1);
     assert_eq!(peer.link_stats().bytes_recv, 128);
     assert_eq!(peer.link_stats().last_recv_ms, 2_000);
-    let mmp = peer.mmp().expect("active FMP peer should keep MMP state");
-    assert_eq!(mmp.receiver.cumulative_packets_recv(), 1);
-    assert_eq!(mmp.receiver.cumulative_bytes_recv(), 128);
-    assert_eq!(mmp.receiver.highest_counter(), 7);
+}
+
+#[test]
+fn peer_lifecycle_registry_owns_fmp_send_link_stats_bookkeeping() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(17);
+    let link_id = LinkId::new(18);
+    let remote_addr = TransportAddr::from_string("peer-runtime-batch-bookkeeping");
+    let sender = make_test_fmp_session(&node.identity, &peer_full, [0x05; 8], [0x06; 8]);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        sender,
+        SessionIndex::new(19),
+        SessionIndex::new(20),
+        transport_id,
+        remote_addr,
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x06; 8]),
+    );
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    assert!(
+        registry.record_fmp_send_bookkeeping(&peer_addr, 7, 2_000, 64),
+        "FMP send bookkeeping should find active peer"
+    );
+
+    let peer = registry
+        .get(&peer_addr)
+        .expect("FMP bookkeeping must keep peer storage");
+    assert_eq!(peer.link_stats().packets_sent, 1);
+    assert_eq!(peer.link_stats().bytes_sent, 64);
+
+    assert!(
+        !registry.record_fmp_send_bookkeeping(&make_node_addr(99), 9, 2_200, 256),
+        "missing peers should not record FMP send bookkeeping"
+    );
 }

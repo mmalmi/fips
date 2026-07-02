@@ -16,12 +16,6 @@ impl Node {
         self.sessions.get(remote)
     }
 
-    /// Get a mutable session by remote NodeAddr.
-    #[cfg(test)]
-    pub(crate) fn get_session_mut(&mut self, remote: &NodeAddr) -> Option<&mut SessionEntry> {
-        self.sessions.get_mut(remote)
-    }
-
     /// Remove a session.
     #[cfg(test)]
     pub(crate) fn remove_session(&mut self, remote: &NodeAddr) -> Option<SessionEntry> {
@@ -53,6 +47,34 @@ impl Node {
     /// Iterate over all session entries (for control queries).
     pub(crate) fn session_entries(&self) -> impl Iterator<Item = (&NodeAddr, &SessionEntry)> {
         self.sessions.iter()
+    }
+
+    pub(crate) fn session_dataplane_counters(&self, addr: &NodeAddr) -> (u64, u64, u64, u64) {
+        self.packet_mover2
+            .fsp_owner_activity(addr)
+            .map_or((0, 0, 0, 0), |activity| activity.traffic_counters())
+    }
+
+    pub(crate) fn session_dataplane_activity_ms(&self, addr: &NodeAddr) -> Option<u64> {
+        self.packet_mover2
+            .fsp_owner_activity(addr)
+            .and_then(|activity| activity.session_idle_activity_ms())
+    }
+
+    pub(crate) fn session_dataplane_epoch(&self, addr: &NodeAddr) -> Option<(u64, bool, bool)> {
+        let activity = self.packet_mover2.fsp_owner_activity(addr)?;
+        Some((
+            activity.fsp_session_start_ms()?,
+            activity.current_k_bit(),
+            activity.is_draining(),
+        ))
+    }
+
+    pub(crate) fn session_mmp_snapshot(
+        &self,
+        addr: &NodeAddr,
+    ) -> Option<crate::packet_mover2::PacketMover2FspMmpSnapshot> {
+        self.packet_mover2.fsp_mmp_snapshot(addr)
     }
 
     // === Identity Cache ===

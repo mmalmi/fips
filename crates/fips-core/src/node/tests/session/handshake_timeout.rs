@@ -117,14 +117,14 @@ async fn test_session_handshake_timeout() {
     );
     node.sessions.insert(dest_addr, entry);
 
-    assert!(node.sessions.contains_key(&dest_addr));
+    assert!(node.sessions.get(&dest_addr).is_some());
 
     // Before timeout: session should remain
     let timeout_secs = node.config.node.rate_limit.handshake_timeout_secs;
     let before_timeout = 1000 + timeout_secs * 1000 - 1;
     node.resend_pending_session_handshakes(before_timeout).await;
     assert!(
-        node.sessions.contains_key(&dest_addr),
+        node.sessions.get(&dest_addr).is_some(),
         "Session should survive before timeout"
     );
 
@@ -132,7 +132,7 @@ async fn test_session_handshake_timeout() {
     let after_timeout = 1000 + timeout_secs * 1000 + 1;
     node.resend_pending_session_handshakes(after_timeout).await;
     assert!(
-        !node.sessions.contains_key(&dest_addr),
+        node.sessions.get(&dest_addr).is_none(),
         "Timed-out session should be removed"
     );
 }
@@ -161,14 +161,14 @@ async fn test_session_awaiting_msg3_timeout() {
     );
     node.sessions.insert(src_addr, entry);
 
-    assert!(node.sessions.contains_key(&src_addr));
+    assert!(node.sessions.get(&src_addr).is_some());
 
     // After timeout: session should be removed
     let timeout_secs = node.config.node.rate_limit.handshake_timeout_secs;
     let after_timeout = 1000 + timeout_secs * 1000 + 1;
     node.resend_pending_session_handshakes(after_timeout).await;
     assert!(
-        !node.sessions.contains_key(&src_addr),
+        node.sessions.get(&src_addr).is_none(),
         "Timed-out AwaitingMsg3 session should be removed"
     );
 }
@@ -177,7 +177,7 @@ async fn test_session_awaiting_msg3_timeout() {
 async fn test_tun_outbound_path_mtu_generates_ptb() {
     // When a session's PathMtuState reports a lower MTU than the local
     // transport (simulating a bottleneck learned via MtuExceeded signals),
-    // handle_tun_outbound should generate ICMPv6 Packet Too Big for
+    // PM2 TUN outbound should generate ICMPv6 Packet Too Big for
     // oversized packets instead of forwarding them.
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
@@ -209,7 +209,6 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 
@@ -217,16 +216,25 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     // lower than the local transport MTU.
     let local_transport_mtu = nodes[0].node.transport_mtu();
     let reduced_mtu = local_transport_mtu - 200;
-    {
-        let entry = nodes[0].node.get_session_mut(&node1_addr).unwrap();
-        let mmp = entry.mmp_mut().unwrap();
-        mmp.path_mtu
-            .apply_notification(reduced_mtu, std::time::Instant::now());
-        assert_eq!(mmp.path_mtu.current_mtu(), reduced_mtu);
-    }
+    nodes[0]
+        .node
+        .apply_packet_mover2_fsp_path_mtu_signal(
+            &node1_addr,
+            reduced_mtu,
+            std::time::Instant::now(),
+        )
+        .expect("PM2 FSP owner should accept path MTU signal");
+    assert_eq!(
+        nodes[0]
+            .node
+            .session_mmp_snapshot(&node1_addr)
+            .expect("session should have PM2 MMP state")
+            .send_mtu,
+        reduced_mtu
+    );
 
     // Install TUN receiver on source node to capture ICMPv6 PTB
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[0].node.tun_tx = Some(tun_tx);
 
     // Build an IPv6 packet that fits local MTU but exceeds path MTU
@@ -243,7 +251,7 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
         "packet must fit local MTU"
     );
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet).await;
 
     // Verify ICMPv6 Packet Too Big was generated
     let ptb_messages: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
@@ -283,13 +291,13 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     );
 
     // Verify a packet that fits within path MTU passes through (no PTB)
-    let (tun_tx2, tun_rx2) = std::sync::mpsc::channel();
+    let (tun_tx2, tun_rx2) = crate::upper::tun::write_channel();
     nodes[0].node.tun_tx = Some(tun_tx2);
     let fitting_payload = vec![0u8; reduced_ipv6_mtu - 41]; // fits within path MTU
     let fitting_packet = build_ipv6_packet(&src_fips, &dst_fips, &fitting_payload);
     assert!(fitting_packet.len() <= reduced_ipv6_mtu);
 
-    nodes[0].node.handle_tun_outbound(fitting_packet).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, fitting_packet).await;
 
     // No PTB should be generated for a fitting packet
     let ptb_messages2: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx2.try_recv().ok()).collect();

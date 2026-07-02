@@ -1,7 +1,8 @@
 //! UDP socket wrapper with platform-specific receive implementations.
 //!
-//! On Linux, provides `SO_RXQ_OVFL` kernel drop counter support via
-//! `recvmsg()` ancillary data parsing. The async wrapper uses
+//! On Linux, provides `SO_RXQ_OVFL` kernel drop counter support and
+//! `UDP_GRO` receive segment-size metadata via `recvmsg()` ancillary
+//! data parsing. The async wrapper uses
 //! `tokio::io::unix::AsyncFd` for integration with the tokio runtime.
 //!
 //! On macOS, uses the same `recvmsg()` path but without `SO_RXQ_OVFL`
@@ -18,23 +19,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 #[cfg(unix)]
 use tracing::warn;
-
-#[cfg(target_os = "macos")]
-pub(crate) fn macos_connected_udp_enabled(config_enabled: bool) -> bool {
-    macos_env_flag("FIPS_CONNECTED_UDP")
-        .or_else(|| macos_env_flag("FIPS_MACOS_CONNECTED_UDP").filter(|enabled| *enabled))
-        .unwrap_or(config_enabled)
-}
-
-#[cfg(target_os = "macos")]
-fn macos_env_flag(name: &str) -> Option<bool> {
-    let value = std::env::var(name).ok()?;
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
-}
 
 /// Maximum number of datagrams a single `recvmmsg` syscall pulls from the
 /// kernel queue. Shared with the higher-level UDP receive loops so all Linux
@@ -66,18 +50,96 @@ mod platform {
     /// per-call kernel fixed cost / N.
     #[cfg(target_os = "linux")]
     const SEND_BATCH_SIZE: usize = 256;
-
-    /// Back-compat alias used by call sites that don't distinguish.
-    /// `recv_batch` uses `RECV_BATCH_SIZE`; `send_batch` uses
-    /// `SEND_BATCH_SIZE`.
     #[cfg(target_os = "linux")]
-    const BATCH_SIZE: usize = RECV_BATCH_SIZE;
+    const UDP_GSO_MAX_SEGMENTS: usize = 64;
+    #[cfg(target_os = "linux")]
+    const UDP_GSO_MAX_PAYLOAD: usize = u16::MAX as usize - 8;
+    #[cfg(target_os = "linux")]
+    static UDP_GSO_DISABLED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
 
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
     pub struct UdpRawSocket {
         inner: Socket,
         local_addr: SocketAddr,
+        #[cfg(target_os = "linux")]
+        udp_gro_enabled: bool,
+    }
+
+    #[cfg(target_os = "linux")]
+    const RECV_CMSG_BUF_SIZE: usize = unsafe { libc::CMSG_SPACE(std::mem::size_of::<u32>() as u32) }
+        as usize
+        + unsafe { libc::CMSG_SPACE(std::mem::size_of::<u16>() as u32) } as usize;
+
+    #[cfg(target_os = "linux")]
+    #[derive(Default)]
+    struct LinuxRecvCmsgs {
+        drops: Option<u32>,
+        gro_segment_size: usize,
+    }
+
+    #[cfg(target_os = "linux")]
+    fn configure_linux_recv_sockopts(fd: RawFd) -> bool {
+        let enable: libc::c_int = 1;
+
+        let rxq_ret = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RXQ_OVFL,
+                &enable as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if rxq_ret < 0 {
+            warn!(
+                "setsockopt(SO_RXQ_OVFL) failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        let gro_ret = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_UDP,
+                libc::UDP_GRO,
+                &enable as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if gro_ret < 0 {
+            tracing::debug!(
+                error = %std::io::Error::last_os_error(),
+                "setsockopt(UDP_GRO) failed; receiving UDP datagrams without GRO metadata"
+            );
+            false
+        } else {
+            tracing::debug!("UDP_GRO receive offload enabled");
+            true
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn parse_linux_recv_cmsgs(msg: &libc::msghdr) -> LinuxRecvCmsgs {
+        let mut parsed = LinuxRecvCmsgs::default();
+        let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(msg) };
+        while !cmsg.is_null() {
+            let level = unsafe { (*cmsg).cmsg_level };
+            let cmsg_type = unsafe { (*cmsg).cmsg_type };
+            if level == libc::SOL_SOCKET && cmsg_type == libc::SO_RXQ_OVFL {
+                let data = unsafe { libc::CMSG_DATA(cmsg) };
+                parsed.drops = Some(unsafe { std::ptr::read_unaligned(data as *const u32) });
+            } else if level == libc::IPPROTO_UDP && cmsg_type == libc::UDP_GRO {
+                let data = unsafe { libc::CMSG_DATA(cmsg) };
+                let segment_size = unsafe { std::ptr::read_unaligned(data as *const u16) };
+                if segment_size > 0 {
+                    parsed.gro_segment_size = segment_size as usize;
+                }
+            }
+            cmsg = unsafe { libc::CMSG_NXTHDR(msg, cmsg) };
+        }
+        parsed
     }
 
     impl UdpRawSocket {
@@ -91,35 +153,13 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::open_inner(
-                bind_addr,
-                recv_buf_size,
-                send_buf_size,
-                #[cfg(target_os = "macos")]
-                super::macos_connected_udp_enabled(false),
-            )
-        }
-
-        #[cfg(target_os = "macos")]
-        pub(crate) fn open_with_connected_udp_listener(
-            bind_addr: SocketAddr,
-            recv_buf_size: usize,
-            send_buf_size: usize,
-            connected_udp_listener_enabled: bool,
-        ) -> Result<Self, TransportError> {
-            Self::open_inner(
-                bind_addr,
-                recv_buf_size,
-                send_buf_size,
-                connected_udp_listener_enabled,
-            )
+            Self::open_inner(bind_addr, recv_buf_size, send_buf_size)
         }
 
         fn open_inner(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
-            #[cfg(target_os = "macos")] connected_udp_listener_enabled: bool,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -133,22 +173,15 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
-            // SO_REUSEPORT lets per-peer `ConnectedPeerSocket`s bind to
-            // the same wildcard port the listen socket holds. Linux keeps
-            // connected UDP enabled by default, so the listener always opts
-            // into shared-port demux there. Darwin also uses shared-port
-            // demux when connected UDP is enabled, but keeps the plain
-            // wildcard socket out of a reuse group when that path is disabled
-            // for A/B testing. Measured Wi-Fi sender runs showed the reuse
-            // group costs a little throughput unless it buys us the connected
-            // `send(2)` path.
+            // SO_REUSEPORT/SO_REUSEADDR keeps restart/adopt behavior friendly
+            // on platforms that support it.
             #[cfg(not(target_os = "macos"))]
             {
                 let _ = sock.set_reuse_port(true);
                 let _ = sock.set_reuse_address(true);
             }
             #[cfg(target_os = "macos")]
-            if connected_udp_listener_enabled {
+            {
                 let _ = sock.set_reuse_port(true);
                 let _ = sock.set_reuse_address(true);
             }
@@ -241,27 +274,8 @@ mod platform {
                 );
             }
 
-            // Enable SO_RXQ_OVFL for kernel drop counter in recvmsg ancillary data.
-            // Non-fatal: older kernels or non-Linux platforms may not support it.
             #[cfg(target_os = "linux")]
-            {
-                let enable: libc::c_int = 1;
-                let ret = unsafe {
-                    libc::setsockopt(
-                        sock.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_RXQ_OVFL,
-                        &enable as *const _ as *const libc::c_void,
-                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                    )
-                };
-                if ret < 0 {
-                    warn!(
-                        "setsockopt(SO_RXQ_OVFL) failed: {}",
-                        std::io::Error::last_os_error()
-                    );
-                }
-            }
+            let udp_gro_enabled = configure_linux_recv_sockopts(sock.as_raw_fd());
 
             let local_addr = sock
                 .local_addr()
@@ -274,6 +288,8 @@ mod platform {
             Ok(Self {
                 inner: sock,
                 local_addr,
+                #[cfg(target_os = "linux")]
+                udp_gro_enabled,
             })
         }
 
@@ -286,35 +302,13 @@ mod platform {
             recv_buf_size: usize,
             send_buf_size: usize,
         ) -> Result<Self, TransportError> {
-            Self::adopt_inner(
-                socket,
-                recv_buf_size,
-                send_buf_size,
-                #[cfg(target_os = "macos")]
-                super::macos_connected_udp_enabled(false),
-            )
-        }
-
-        #[cfg(target_os = "macos")]
-        pub(crate) fn adopt_with_connected_udp_listener(
-            socket: std::net::UdpSocket,
-            recv_buf_size: usize,
-            send_buf_size: usize,
-            connected_udp_listener_enabled: bool,
-        ) -> Result<Self, TransportError> {
-            Self::adopt_inner(
-                socket,
-                recv_buf_size,
-                send_buf_size,
-                connected_udp_listener_enabled,
-            )
+            Self::adopt_inner(socket, recv_buf_size, send_buf_size)
         }
 
         fn adopt_inner(
             socket: std::net::UdpSocket,
             recv_buf_size: usize,
             send_buf_size: usize,
-            #[cfg(target_os = "macos")] connected_udp_listener_enabled: bool,
         ) -> Result<Self, TransportError> {
             let sock = Socket::from(socket);
 
@@ -323,16 +317,14 @@ mod platform {
             })?;
 
             // Adopted NAT-traversal sockets become normal FIPS UDP transports.
-            // Keep their reuse flags aligned with `open()`: Linux needs shared
-            // port by default for connected UDP; Darwin only needs it while
-            // connected UDP is enabled.
+            // Keep their reuse flags aligned with `open()`.
             #[cfg(not(target_os = "macos"))]
             {
                 let _ = sock.set_reuse_port(true);
                 let _ = sock.set_reuse_address(true);
             }
             #[cfg(target_os = "macos")]
-            if connected_udp_listener_enabled {
+            {
                 let _ = sock.set_reuse_port(true);
                 let _ = sock.set_reuse_address(true);
             }
@@ -417,24 +409,7 @@ mod platform {
             }
 
             #[cfg(target_os = "linux")]
-            {
-                let enable: libc::c_int = 1;
-                let ret = unsafe {
-                    libc::setsockopt(
-                        sock.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_RXQ_OVFL,
-                        &enable as *const _ as *const libc::c_void,
-                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                    )
-                };
-                if ret < 0 {
-                    warn!(
-                        "setsockopt(SO_RXQ_OVFL) failed: {}",
-                        std::io::Error::last_os_error()
-                    );
-                }
-            }
+            let udp_gro_enabled = configure_linux_recv_sockopts(sock.as_raw_fd());
 
             let local_addr = sock
                 .local_addr()
@@ -447,6 +422,8 @@ mod platform {
             Ok(Self {
                 inner: sock,
                 local_addr,
+                #[cfg(target_os = "linux")]
+                udp_gro_enabled,
             })
         }
 
@@ -484,15 +461,20 @@ mod platform {
 
         /// Synchronous receive with `SO_RXQ_OVFL` ancillary data parsing.
         ///
-        /// Returns `(bytes_read, source_addr, kernel_drops)`. The `kernel_drops`
-        /// value is a cumulative counter since socket creation; it is 0 if
-        /// `SO_RXQ_OVFL` is not supported.
+        /// Returns `(bytes_read, source_addr, kernel_drops, gro_segment_size)`.
+        /// The `kernel_drops` value is a cumulative counter since socket
+        /// creation; it is 0 if `SO_RXQ_OVFL` is not supported.
+        /// `gro_segment_size` is 0 unless Linux `UDP_GRO` reported the
+        /// original UDP payload size for a coalesced receive.
         ///
         /// On Linux the production receive path uses `recv_batch` (recvmmsg);
         /// this single-packet variant remains for non-Linux unix targets and
         /// for the local `tests` module.
         #[cfg_attr(target_os = "linux", allow(dead_code))]
-        pub fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr, u32)> {
+        pub fn recv_from(
+            &self,
+            buf: &mut [u8],
+        ) -> std::io::Result<(usize, SocketAddr, u32, usize)> {
             let fd = self.inner.as_raw_fd();
 
             let mut iov = libc::iovec {
@@ -500,10 +482,8 @@ mod platform {
                 iov_len: buf.len(),
             };
 
-            // Control message buffer sized for SO_RXQ_OVFL (u32).
-            // CMSG_SPACE computes the aligned size including header.
             #[cfg(target_os = "linux")]
-            const CMSG_BUF_SIZE: usize = unsafe { libc::CMSG_SPACE(4) } as usize;
+            const CMSG_BUF_SIZE: usize = RECV_CMSG_BUF_SIZE;
             #[cfg(not(target_os = "linux"))]
             const CMSG_BUF_SIZE: usize = 64;
             let mut cmsg_buf = [0u8; CMSG_BUF_SIZE];
@@ -525,35 +505,25 @@ mod platform {
             // Parse source address from sockaddr_storage
             let addr = sockaddr_to_socket_addr(&src_addr)?;
 
-            // Walk cmsg chain for SO_RXQ_OVFL drop counter
             #[cfg(target_os = "linux")]
-            let mut drops: u32 = 0;
+            let cmsgs = unsafe { parse_linux_recv_cmsgs(&msg) };
+            #[cfg(target_os = "linux")]
+            let (drops, gro_segment_size) = (cmsgs.drops.unwrap_or(0), cmsgs.gro_segment_size);
             #[cfg(not(target_os = "linux"))]
-            let drops: u32 = 0;
-            #[cfg(target_os = "linux")]
-            unsafe {
-                let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
-                while !cmsg.is_null() {
-                    if (*cmsg).cmsg_level == libc::SOL_SOCKET
-                        && (*cmsg).cmsg_type == libc::SO_RXQ_OVFL
-                    {
-                        let data = libc::CMSG_DATA(cmsg);
-                        drops = std::ptr::read_unaligned(data as *const u32);
-                    }
-                    cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
-                }
-            }
+            let (drops, gro_segment_size) = (0, 0);
 
-            Ok((n as usize, addr, drops))
+            Ok((n as usize, addr, drops, gro_segment_size))
         }
 
-        /// Receive up to `BATCH_SIZE` datagrams in a single recvmmsg syscall
+        /// Receive up to `RECV_BATCH_SIZE` datagrams in a single recvmmsg syscall
         /// (Linux only — macOS falls through to per-packet recvmsg).
         ///
         /// Returns `(count, kernel_drops)`. Caller provides receive buffers
-        /// with enough spare capacity for one datagram and the matching
-        /// `addrs` slice; on return, `bufs[0..count]` have their lengths set
-        /// to the initialized bytes received from the kernel.
+        /// with enough spare capacity for one datagram, plus matching
+        /// `addrs` and `gro_segment_sizes` slices; on return,
+        /// `bufs[0..count]` have their lengths set to the initialized bytes
+        /// received from the kernel. `gro_segment_sizes[i]` is 0 unless Linux
+        /// `UDP_GRO` reported the original UDP payload size for that slot.
         ///
         /// `kernel_drops` is the `SO_RXQ_OVFL` cumulative counter sampled
         /// from the cmsg chain of the FIRST datagram in the batch. The
@@ -566,27 +536,33 @@ mod platform {
             &self,
             bufs: &mut [Vec<u8>],
             addrs: &mut [Option<SocketAddr>],
+            gro_segment_sizes: &mut [usize],
         ) -> std::io::Result<(usize, u32)> {
-            let n = bufs.len().min(addrs.len()).min(BATCH_SIZE);
+            let n = bufs
+                .len()
+                .min(addrs.len())
+                .min(gro_segment_sizes.len())
+                .min(RECV_BATCH_SIZE);
             if n == 0 {
                 return Ok((0, 0));
             }
             let fd = self.inner.as_raw_fd();
 
-            // CMSG buffers for every batch slot. SO_RXQ_OVFL is attached to
-            // individual datagrams, not guaranteed to the first datagram in a
-            // recvmmsg batch, so parse all returned messages and keep the
-            // newest monotonic counter sample.
-            const CMSG_BUF_SIZE: usize = unsafe { libc::CMSG_SPACE(4) } as usize;
-            let mut cmsg_bufs = [[0u8; CMSG_BUF_SIZE]; BATCH_SIZE];
+            // CMSG buffers for every batch slot. SO_RXQ_OVFL and UDP_GRO are
+            // attached to individual datagrams, not guaranteed to the first
+            // datagram in a recvmmsg batch.
+            const CMSG_BUF_SIZE: usize = RECV_CMSG_BUF_SIZE;
+            let mut cmsg_bufs = [[0u8; CMSG_BUF_SIZE]; RECV_BATCH_SIZE];
 
             // Stack-allocated parallel arrays; lifetime tied to this call.
-            let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut iovs: [libc::iovec; RECV_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; RECV_BATCH_SIZE] =
+                unsafe { std::mem::zeroed() };
+            let mut msgs: [libc::mmsghdr; RECV_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
                 bufs[i].clear();
+                gro_segment_sizes[i] = 0;
                 let spare = bufs[i].spare_capacity_mut();
                 if spare.is_empty() {
                     return Err(std::io::Error::new(
@@ -636,65 +612,82 @@ mod platform {
                 addrs[i] = sockaddr_to_socket_addr(&storages[i]).ok();
             }
 
-            // Walk every cmsg chain for SO_RXQ_OVFL. Skip when no datagram
-            // landed (cmsg buffers are undefined in that case).
+            // Walk every cmsg chain. Skip when no datagram landed (cmsg
+            // buffers are undefined in that case).
             let mut drops: u32 = 0;
             if count > 0 {
-                for msg in msgs.iter().take(count) {
-                    unsafe {
-                        let mut cmsg = libc::CMSG_FIRSTHDR(&msg.msg_hdr);
-                        while !cmsg.is_null() {
-                            if (*cmsg).cmsg_level == libc::SOL_SOCKET
-                                && (*cmsg).cmsg_type == libc::SO_RXQ_OVFL
-                            {
-                                let data = libc::CMSG_DATA(cmsg);
-                                drops = std::ptr::read_unaligned(data as *const u32);
-                            }
-                            cmsg = libc::CMSG_NXTHDR(&msg.msg_hdr, cmsg);
-                        }
+                for (i, msg) in msgs.iter().take(count).enumerate() {
+                    let cmsgs = unsafe { parse_linux_recv_cmsgs(&msg.msg_hdr) };
+                    if let Some(sample) = cmsgs.drops {
+                        drops = sample;
                     }
+                    gro_segment_sizes[i] = cmsgs.gro_segment_size;
                 }
             }
 
             Ok((count, drops))
         }
 
-        /// Send up to `SEND_BATCH_SIZE` datagrams in a single sendmmsg
-        /// syscall (Linux only). Returns the count actually sent. Caller
-        /// is responsible for retrying remaining packets if
-        /// `n < packets.len()`.
+        /// Send same-destination payloads without first materializing
+        /// `(payload, addr)` tuples for every packet.
         #[cfg(target_os = "linux")]
-        pub fn send_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<usize> {
-            let n = packets.len().min(SEND_BATCH_SIZE);
+        pub fn send_batch_to<B>(
+            &self,
+            payloads: &B,
+            offset: usize,
+            dest: SocketAddr,
+        ) -> std::io::Result<usize>
+        where
+            B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+        {
+            let n = payloads.len().saturating_sub(offset).min(SEND_BATCH_SIZE);
             if n == 0 {
                 return Ok(0);
             }
+
+            if !UDP_GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
+                let gso_n = udp_gso_prefix_len(payloads, offset, n);
+                if gso_n > 1 {
+                    match self.send_gso_batch_to(payloads, offset, dest, gso_n) {
+                        Ok(()) => {
+                            crate::perf_profile::record_udp_send_gso_batch(gso_n);
+                            return Ok(gso_n);
+                        }
+                        Err(error) if is_udp_gso_capability_error(&error) => {
+                            UDP_GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                            tracing::warn!(
+                                error = %error,
+                                "UDP_GSO refused by kernel; falling back to sendmmsg"
+                            );
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+
             let fd = self.inner.as_raw_fd();
+            let sa: socket2::SockAddr = dest.into();
+            let sa_len = sa.len();
+            debug_assert!(sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>());
+
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    sa.as_ptr() as *const u8,
+                    &mut storage as *mut _ as *mut u8,
+                    sa_len as usize,
+                );
+            }
 
             let mut iovs: [libc::iovec; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storages: [libc::sockaddr_storage; SEND_BATCH_SIZE] =
-                unsafe { std::mem::zeroed() };
-            let mut storage_lens: [libc::socklen_t; SEND_BATCH_SIZE] = [0; SEND_BATCH_SIZE];
             let mut msgs: [libc::mmsghdr; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
-                let (data, dest) = packets[i];
-                let sa: socket2::SockAddr = (dest).into();
-                let sa_len = sa.len();
-                debug_assert!(sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>());
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        sa.as_ptr() as *const u8,
-                        &mut storages[i] as *mut _ as *mut u8,
-                        sa_len as usize,
-                    );
-                }
-                storage_lens[i] = sa_len;
-
+                let data = payloads.payload(offset + i);
                 iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
                 iovs[i].iov_len = data.len();
-                msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
-                msgs[i].msg_hdr.msg_namelen = storage_lens[i];
+                msgs[i].msg_hdr.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+                msgs[i].msg_hdr.msg_namelen = sa_len;
                 msgs[i].msg_hdr.msg_iov = &mut iovs[i];
                 msgs[i].msg_hdr.msg_iovlen = 1;
             }
@@ -703,7 +696,78 @@ mod platform {
             if r < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            Ok(r as usize)
+            let sent = r as usize;
+            crate::perf_profile::record_udp_send_sendmmsg_batch(sent);
+            Ok(sent)
+        }
+
+        #[cfg(target_os = "linux")]
+        fn send_gso_batch_to<B>(
+            &self,
+            payloads: &B,
+            offset: usize,
+            dest: SocketAddr,
+            count: usize,
+        ) -> std::io::Result<()>
+        where
+            B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+        {
+            debug_assert!(count > 1);
+            let n = count.min(UDP_GSO_MAX_SEGMENTS);
+            let segment_size = payloads.payload(offset).len();
+            debug_assert!(segment_size > 0);
+            debug_assert!(segment_size <= u16::MAX as usize);
+
+            let fd = self.inner.as_raw_fd();
+            let sa: socket2::SockAddr = dest.into();
+            let sa_len = sa.len();
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    sa.as_ptr() as *const u8,
+                    &mut storage as *mut _ as *mut u8,
+                    sa_len as usize,
+                );
+            }
+
+            let mut iovs: [libc::iovec; UDP_GSO_MAX_SEGMENTS] = unsafe { std::mem::zeroed() };
+            for i in 0..n {
+                let data = payloads.payload(offset + i);
+                iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = data.len();
+            }
+
+            let cmsg_space =
+                unsafe { libc::CMSG_SPACE(std::mem::size_of::<u16>() as u32) as usize };
+            let mut cmsg_buf = [0u8; 64];
+            debug_assert!(cmsg_space <= cmsg_buf.len());
+
+            let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+            msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+            msg.msg_namelen = sa_len;
+            msg.msg_iov = iovs.as_mut_ptr();
+            msg.msg_iovlen = n as _;
+            msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+            msg.msg_controllen = cmsg_space as _;
+
+            unsafe {
+                let cmsg = libc::CMSG_FIRSTHDR(&msg);
+                if cmsg.is_null() {
+                    return Err(std::io::Error::other("CMSG_FIRSTHDR returned null"));
+                }
+                (*cmsg).cmsg_level = libc::IPPROTO_UDP as _;
+                (*cmsg).cmsg_type = libc::UDP_SEGMENT as _;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<u16>() as u32) as _;
+                let data = libc::CMSG_DATA(cmsg) as *mut u16;
+                *data = segment_size as u16;
+            }
+
+            let result = unsafe { libc::sendmsg(fd, &msg, 0) };
+            if result < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
         }
 
         /// Wrap this socket in a tokio `AsyncFd` for async I/O.
@@ -714,6 +778,53 @@ mod platform {
                 inner: Arc::new(async_fd),
             })
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn udp_gso_prefix_len<B>(payloads: &B, offset: usize, candidate: usize) -> usize
+    where
+        B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+    {
+        let max = payloads
+            .len()
+            .saturating_sub(offset)
+            .min(candidate)
+            .min(SEND_BATCH_SIZE)
+            .min(UDP_GSO_MAX_SEGMENTS);
+        if max < 2 {
+            return 0;
+        }
+
+        let segment_size = payloads.payload(offset).len();
+        if segment_size == 0 || segment_size > u16::MAX as usize {
+            return 0;
+        }
+        let mut total_payload = 0usize;
+        let mut count = 0usize;
+
+        for i in 0..max {
+            let len = payloads.payload(offset + i).len();
+            if len == 0 || len > segment_size {
+                break;
+            }
+            if count > 0 && total_payload.saturating_add(len) > UDP_GSO_MAX_PAYLOAD {
+                break;
+            }
+            total_payload = total_payload.saturating_add(len);
+            count += 1;
+            if len < segment_size {
+                break;
+            }
+        }
+
+        if count > 1 { count } else { 0 }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_udp_gso_capability_error(error: &std::io::Error) -> bool {
+        error.kind() == std::io::ErrorKind::InvalidInput
+            || matches!(error.raw_os_error(), Some(code)
+                if code == libc::EOPNOTSUPP || code == libc::ENOPROTOOPT || code == libc::EIO)
     }
 
     impl AsRawFd for UdpRawSocket {
@@ -738,13 +849,17 @@ mod platform {
     }
 
     impl AsyncUdpSocket {
+        /// Whether Linux UDP_GRO receive offload was accepted by the kernel.
+        #[cfg(target_os = "linux")]
+        pub(crate) fn udp_gro_enabled(&self) -> bool {
+            self.inner.get_ref().udp_gro_enabled
+        }
+
         /// Send a payload to a destination address.
         ///
         /// Used by `UdpTransport::send_async` for the low-rate control
         /// plane (handshakes, MMP reports, rekeys). The high-throughput
-        /// data path goes through `encrypt_worker::flush_batch_sync`,
-        /// which calls `sendmmsg(2)` / `sendmsg(2)+UDP_GSO` directly
-        /// on the raw fd.
+        /// packet_mover2 data path goes through `send_batch`.
         pub async fn send_to(
             &self,
             data: &[u8],
@@ -765,17 +880,18 @@ mod platform {
             }
         }
 
-        /// Receive a payload, source address, and kernel drop counter.
+        /// Receive a payload, source address, kernel drop counter, and
+        /// Linux UDP_GRO segment size.
         ///
-        /// Returns `(bytes_read, source_addr, kernel_drops)`. On Linux the
-        /// production receive path uses `recv_batch`; this single-packet
-        /// variant remains for non-Linux unix targets and for the local
-        /// `tests` module.
+        /// Returns `(bytes_read, source_addr, kernel_drops, gro_segment_size)`.
+        /// On Linux the production receive path uses `recv_batch`; this
+        /// single-packet variant remains for non-Linux unix targets and for
+        /// the local `tests` module.
         #[cfg_attr(target_os = "linux", allow(dead_code))]
         pub async fn recv_from(
             &self,
             buf: &mut [u8],
-        ) -> Result<(usize, SocketAddr, u32), TransportError> {
+        ) -> Result<(usize, SocketAddr, u32, usize), TransportError> {
             loop {
                 let mut guard = self
                     .inner
@@ -791,14 +907,16 @@ mod platform {
             }
         }
 
-        /// Drain up to `BATCH_SIZE` datagrams from the kernel via
+        /// Drain up to `RECV_BATCH_SIZE` datagrams from the kernel via
         /// `recvmmsg` (Linux). Returns `(count, kernel_drops)`; same
-        /// buffer / addr contract as `UdpRawSocket::recv_batch`.
+        /// buffer / addr / GRO segment-size contract as
+        /// `UdpRawSocket::recv_batch`.
         #[cfg(target_os = "linux")]
         pub async fn recv_batch(
             &self,
             bufs: &mut [Vec<u8>],
             addrs: &mut [Option<SocketAddr>],
+            gro_segment_sizes: &mut [usize],
         ) -> Result<(usize, u32), TransportError> {
             loop {
                 let mut guard = self
@@ -807,7 +925,9 @@ mod platform {
                     .await
                     .map_err(|e| TransportError::RecvFailed(format!("readable wait: {}", e)))?;
 
-                match guard.try_io(|inner| inner.get_ref().recv_batch(bufs, addrs)) {
+                match guard
+                    .try_io(|inner| inner.get_ref().recv_batch(bufs, addrs, gro_segment_sizes))
+                {
                     Ok(Ok((0, _))) => {
                         // Spurious wakeup or no datagrams ready — yield
                         // back to the reactor instead of busy-looping.
@@ -821,14 +941,18 @@ mod platform {
             }
         }
 
-        /// Push up to `BATCH_SIZE` datagrams to the kernel via `sendmmsg`
-        /// (Linux). Returns the count actually sent. Caller is responsible
-        /// for retrying remaining packets if `n < packets.len()`.
+        /// Push same-destination datagrams to the kernel via sendmmsg/GSO
+        /// without building a per-packet address tuple batch first.
         #[cfg(target_os = "linux")]
-        pub async fn send_batch(
+        pub async fn send_batch_to<B>(
             &self,
-            packets: &[(&[u8], SocketAddr)],
-        ) -> Result<usize, TransportError> {
+            payloads: &B,
+            offset: usize,
+            dest: SocketAddr,
+        ) -> Result<usize, TransportError>
+        where
+            B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+        {
             loop {
                 let mut guard = self
                     .inner
@@ -836,7 +960,7 @@ mod platform {
                     .await
                     .map_err(|e| TransportError::SendFailed(format!("writable wait: {}", e)))?;
 
-                match guard.try_io(|inner| inner.get_ref().send_batch(packets)) {
+                match guard.try_io(|inner| inner.get_ref().send_batch_to(payloads, offset, dest)) {
                     Ok(Ok(n)) => return Ok(n),
                     Ok(Err(e)) => return Err(TransportError::SendFailed(format!("{}", e))),
                     Err(_would_block) => continue,
@@ -911,10 +1035,7 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
-            // Windows: `socket2::Socket::set_reuse_port` doesn't exist
-            // (Windows UDP doesn't have a direct SO_REUSEPORT analogue;
-            // the per-peer ConnectedPeerSocket path is Linux-only
-            // anyway, so the listen socket here doesn't need it).
+            // Windows: `socket2::Socket::set_reuse_port` doesn't exist.
             // SO_REUSEADDR is available and harmless to set.
             let _ = sock.set_reuse_address(true);
 
@@ -1025,20 +1146,22 @@ mod platform {
                 .map_err(|e| TransportError::SendFailed(format!("{}", e)))
         }
 
-        /// Receive a payload, source address, and kernel drop counter.
+        /// Receive a payload, source address, kernel drop counter, and
+        /// Linux UDP_GRO segment size.
         ///
-        /// Returns `(bytes_read, source_addr, 0)`. The drops field is always 0
-        /// on Windows since kernel drop counting is not available.
+        /// Returns `(bytes_read, source_addr, 0, 0)`. The drops and GRO fields
+        /// are always 0 on Windows since kernel receive ancillary metadata is
+        /// not available here.
         pub async fn recv_from(
             &self,
             buf: &mut [u8],
-        ) -> Result<(usize, SocketAddr, u32), TransportError> {
+        ) -> Result<(usize, SocketAddr, u32, usize), TransportError> {
             let (n, addr) = self
                 .inner
                 .recv_from(buf)
                 .await
                 .map_err(|e| TransportError::RecvFailed(format!("{}", e)))?;
-            Ok((n, addr, 0))
+            Ok((n, addr, 0, 0))
         }
     }
 }

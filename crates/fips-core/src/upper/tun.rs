@@ -27,7 +27,7 @@ use std::io::Write;
 use std::net::Ipv6Addr;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::io::{AsRawFd, FromRawFd};
-use std::sync::{Arc, RwLock, mpsc};
+use std::sync::{Arc, RwLock};
 use thiserror::Error;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tracing::error;
@@ -36,6 +36,13 @@ use tracing::{debug, trace};
 use tracing::{error, warn};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::Layer;
+
+pub(crate) use super::tun_outbound::{TunOutboundAdmission, tun_outbound_channel};
+pub use super::tun_outbound::{TunOutboundRx, TunOutboundTx};
+pub use super::tun_write::TunTx;
+#[cfg(test)]
+pub(crate) use super::tun_write::write_channel_with_bulk_capacity;
+pub(crate) use super::tun_write::{TunRx, TunWriteErrorKind, TunWriteLane, write_channel};
 
 /// Read-only handle to the per-destination path MTU map. Populated by
 /// the discovery handler on `LookupResponse`; read by the TUN reader
@@ -136,14 +143,6 @@ pub(crate) fn per_flow_max_mss(
     );
     result
 }
-
-/// Channel sender for packets to be written to TUN.
-pub type TunTx = mpsc::Sender<Vec<u8>>;
-
-/// Channel sender for outbound packets from TUN reader to Node.
-pub type TunOutboundTx = tokio::sync::mpsc::Sender<Vec<u8>>;
-/// Channel receiver for outbound packets (consumed by Node's RX loop).
-pub type TunOutboundRx = tokio::sync::mpsc::Receiver<Vec<u8>>;
 
 /// Errors that can occur with TUN operations.
 #[derive(Debug, Error)]
@@ -353,7 +352,7 @@ impl TunDevice {
         }
 
         let write_file = unsafe { File::from_raw_fd(write_fd) };
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = write_channel();
 
         Ok((
             TunWriter {
@@ -412,7 +411,7 @@ fn parse_utun_af_prefix(buf: &[u8]) -> Option<u32> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub struct TunWriter {
     file: File,
-    rx: mpsc::Receiver<Vec<u8>>,
+    rx: TunRx,
     name: String,
     max_mss: u16,
     path_mtu_lookup: PathMtuLookup,
@@ -435,12 +434,16 @@ impl TunWriter {
             // identifies the flow's remote end. If discovery has learned a
             // smaller path MTU for that peer, tighten the ceiling.
             let effective_max_mss = if packet.len() >= 24 {
-                per_flow_max_mss(&self.path_mtu_lookup, &packet[8..24], self.max_mss)
+                per_flow_max_mss(
+                    &self.path_mtu_lookup,
+                    &packet.as_slice()[8..24],
+                    self.max_mss,
+                )
             } else {
                 self.max_mss
             };
             // Clamp TCP MSS on inbound SYN-ACK packets
-            if clamp_tcp_mss(&mut packet, effective_max_mss) {
+            if clamp_tcp_mss(packet.as_mut_slice(), effective_max_mss) {
                 trace!(
                     name = %self.name,
                     max_mss = effective_max_mss,
@@ -462,7 +465,7 @@ impl TunWriter {
                         iov_len: 4,
                     },
                     libc::iovec {
-                        iov_base: packet.as_ptr() as *mut libc::c_void,
+                        iov_base: packet.as_slice().as_ptr() as *mut libc::c_void,
                         iov_len: packet.len(),
                     },
                 ];
@@ -482,7 +485,7 @@ impl TunWriter {
                 }
             };
             #[cfg(not(target_os = "macos"))]
-            let write_result = self.file.write_all(&packet);
+            let write_result = self.file.write_all(packet.as_slice());
 
             if let Err(e) = write_result {
                 // "Bad address" is expected during shutdown when interface is deleted
@@ -718,8 +721,9 @@ fn handle_tun_packet(
         if clamp_tcp_mss(packet, effective_max_mss) {
             trace!(name = %name, max_mss = effective_max_mss, "Clamped TCP MSS in SYN packet");
         }
-        if outbound_tx.blocking_send(packet.to_vec()).is_err() {
-            return false; // Channel closed, shutdown
+        match outbound_tx.admit_from_tun_reader(packet.to_vec()) {
+            Ok(TunOutboundAdmission::Enqueued | TunOutboundAdmission::BulkDropped) => {}
+            Err(_) => return false, // Channel closed, shutdown
         }
     } else {
         // Non-FIPS destination: send ICMPv6 Destination Unreachable

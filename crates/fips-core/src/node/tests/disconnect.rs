@@ -35,7 +35,7 @@ async fn test_disconnect_chain_peer_removal() {
     let plaintext = disconnect.encode();
     nodes[1]
         .node
-        .send_encrypted_link_message(&node0_addr, &plaintext)
+        .send_packet_mover2_fmp_link_plaintext(&node0_addr, &plaintext, false)
         .await
         .expect("Failed to send disconnect");
 
@@ -90,7 +90,7 @@ async fn test_disconnect_star_hub_departs() {
         let spoke_addr = *nodes[spoke_idx].node.node_addr();
         nodes[0]
             .node
-            .send_encrypted_link_message(&spoke_addr, &plaintext)
+            .send_packet_mover2_fmp_link_plaintext(&spoke_addr, &plaintext, false)
             .await
             .expect("Failed to send disconnect");
     }
@@ -151,12 +151,12 @@ async fn test_disconnect_chain_partition() {
     let plaintext = disconnect.encode();
     nodes[2]
         .node
-        .send_encrypted_link_message(&node1_addr, &plaintext)
+        .send_packet_mover2_fmp_link_plaintext(&node1_addr, &plaintext, false)
         .await
         .expect("Failed to send disconnect to node 1");
     nodes[2]
         .node
-        .send_encrypted_link_message(&node3_addr, &plaintext)
+        .send_packet_mover2_fmp_link_plaintext(&node3_addr, &plaintext, false)
         .await
         .expect("Failed to send disconnect to node 3");
 
@@ -298,7 +298,7 @@ async fn test_disconnect_clears_session() {
     let disconnect = crate::protocol::Disconnect::new(DisconnectReason::Shutdown);
     nodes[0]
         .node
-        .send_encrypted_link_message(&node1_addr, &disconnect.encode())
+        .send_packet_mover2_fmp_link_plaintext(&node1_addr, &disconnect.encode(), false)
         .await
         .expect("Failed to send disconnect");
 
@@ -393,7 +393,7 @@ async fn test_disconnect_all_reason_codes() {
         let plaintext = disconnect.encode();
         nodes[0]
             .node
-            .send_encrypted_link_message(&node1_addr, &plaintext)
+            .send_packet_mover2_fmp_link_plaintext(&node1_addr, &plaintext, false)
             .await
             .expect("Failed to send disconnect");
 

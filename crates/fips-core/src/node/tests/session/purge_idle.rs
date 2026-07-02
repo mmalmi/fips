@@ -33,7 +33,7 @@ fn test_purge_idle_sessions_keeps_active() {
     let remote_addr = *remote.node_addr();
 
     let session = make_noise_session(node.identity(), &remote);
-    let mut entry = crate::node::session::SessionEntry::new(
+    let entry = crate::node::session::SessionEntry::new(
         remote_addr,
         remote.pubkey_full(),
         EndToEndState::Established(session),
@@ -41,12 +41,10 @@ fn test_purge_idle_sessions_keeps_active() {
         true,
     );
 
-    // Touch at t=80s — recent activity
-    entry.touch(81_000);
-
     node.sessions.insert(remote_addr, entry);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, 81_000);
 
-    // Purge at t=92s — only 11s since last activity, well within 90s timeout
+    // Purge at t=92s — only 11s since PM2 owner receive activity.
     let now_ms = 92_000;
     node.purge_idle_sessions(now_ms);
 
@@ -175,9 +173,8 @@ fn test_purge_idle_sessions_mmp_activity_does_not_prevent_purge() {
         true,
     );
 
-    // Do NOT call entry.touch() — simulates a session where only MMP
-    // reports have flowed (MMP no longer calls touch). last_activity
-    // remains at creation time (1000ms).
+    // Do not seed PM2 application receive/send activity. SessionRegistry MMP
+    // state alone must not keep an established dataplane session alive.
     node.sessions.insert(remote_addr, entry);
 
     // Purge at t=92s — 91s since creation, exceeds 90s idle timeout.
@@ -200,7 +197,7 @@ fn test_purge_idle_sessions_removes_outbound_only_stale_session() {
     let remote_addr = *remote.node_addr();
 
     let session = make_noise_session(node.identity(), &remote);
-    let mut entry = crate::node::session::SessionEntry::new(
+    let entry = crate::node::session::SessionEntry::new(
         remote_addr,
         remote.pubkey_full(),
         EndToEndState::Established(session),
@@ -208,12 +205,8 @@ fn test_purge_idle_sessions_removes_outbound_only_stale_session() {
         true,
     );
 
-    // Simulate periodic outbound endpoint/application data keeping the old
-    // idle timer fresh while no authenticated FSP frame comes back.
-    entry.record_sent(128);
-    entry.touch(91_000);
-
     node.sessions.insert(remote_addr, entry);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);
 
     let now_ms = 92_000;
     node.purge_idle_sessions(now_ms);
@@ -232,7 +225,7 @@ fn test_purge_idle_sessions_keeps_outbound_session_with_recent_inbound_frame() {
     let remote_addr = *remote.node_addr();
 
     let session = make_noise_session(node.identity(), &remote);
-    let mut entry = crate::node::session::SessionEntry::new(
+    let entry = crate::node::session::SessionEntry::new(
         remote_addr,
         remote.pubkey_full(),
         EndToEndState::Established(session),
@@ -240,11 +233,9 @@ fn test_purge_idle_sessions_keeps_outbound_session_with_recent_inbound_frame() {
         true,
     );
 
-    entry.record_sent(128);
-    entry.touch(91_000);
-    entry.touch_inbound_frame(91_500);
-
     node.sessions.insert(remote_addr, entry);
+    seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);
+    seed_packet_mover2_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, 91_500);
 
     let now_ms = 92_000;
     node.purge_idle_sessions(now_ms);

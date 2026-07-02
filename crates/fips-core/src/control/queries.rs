@@ -38,6 +38,33 @@ fn trend_label(short: f64, long: f64) -> &'static str {
     }
 }
 
+fn session_mmp_json(mmp: &crate::packet_mover2::PacketMover2FspMmpSnapshot) -> Value {
+    let mut mmp_json = json!({
+        "mode": format!("{}", mmp.mode),
+        "loss_rate": mmp.loss_rate,
+        "etx": mmp.etx,
+        "goodput_bps": mmp.goodput_bps,
+        "delivery_ratio_forward": mmp.delivery_ratio_forward,
+        "delivery_ratio_reverse": mmp.delivery_ratio_reverse,
+        "path_mtu": mmp.send_mtu,
+    });
+    if let Some(srtt) = mmp.rtt_ms {
+        mmp_json["srtt_ms"] = json!(srtt);
+    }
+    if let Some(smoothed_loss) = mmp.smoothed_loss {
+        mmp_json["smoothed_loss"] = json!(smoothed_loss);
+    }
+    if let Some(smoothed_etx) = mmp.smoothed_etx {
+        mmp_json["smoothed_etx"] = json!(smoothed_etx);
+    }
+    if let Some(srtt) = mmp.rtt_ms
+        && let Some(setx) = mmp.smoothed_etx
+    {
+        mmp_json["sqi"] = json!(setx * (1.0 + srtt / 100.0));
+    }
+    mmp_json
+}
+
 /// `show_status` — Node overview.
 pub fn show_status(node: &Node) -> Value {
     let pid = std::process::id();
@@ -241,27 +268,29 @@ pub fn show_peers(node: &Node) -> Value {
             }
             peer_json["current_k_bit"] = json!(peer.current_k_bit());
 
-            // Add MMP metrics if available
-            if let Some(mmp) = peer.mmp() {
+            // Add PM2-owned link MMP metrics if available.
+            if let Some(mmp) =
+                node.packet_mover2_fmp_link_metrics(peer.node_addr(), std::time::Instant::now())
+            {
                 let mut mmp_json = json!({
-                    "mode": format!("{}", mmp.mode()),
+                    "mode": format!("{}", mmp.mode),
                 });
-                if let Some(srtt) = mmp.metrics.srtt_ms() {
+                if let Some(srtt) = mmp.srtt_ms {
                     mmp_json["srtt_ms"] = json!(srtt);
                 }
-                mmp_json["loss_rate"] = json!(mmp.metrics.loss_rate());
-                mmp_json["etx"] = json!(mmp.metrics.etx);
-                mmp_json["goodput_bps"] = json!(mmp.metrics.goodput_bps);
-                mmp_json["delivery_ratio_forward"] = json!(mmp.metrics.delivery_ratio_forward);
-                mmp_json["delivery_ratio_reverse"] = json!(mmp.metrics.delivery_ratio_reverse);
-                if let Some(smoothed_loss) = mmp.metrics.smoothed_loss() {
+                mmp_json["loss_rate"] = json!(mmp.loss_rate);
+                mmp_json["etx"] = json!(mmp.etx);
+                mmp_json["goodput_bps"] = json!(mmp.goodput_bps);
+                mmp_json["delivery_ratio_forward"] = json!(mmp.delivery_ratio_forward);
+                mmp_json["delivery_ratio_reverse"] = json!(mmp.delivery_ratio_reverse);
+                if let Some(smoothed_loss) = mmp.smoothed_loss {
                     mmp_json["smoothed_loss"] = json!(smoothed_loss);
                 }
-                if let Some(smoothed_etx) = mmp.metrics.smoothed_etx() {
+                if let Some(smoothed_etx) = mmp.smoothed_etx {
                     mmp_json["smoothed_etx"] = json!(smoothed_etx);
                 }
-                if let Some(srtt) = mmp.metrics.srtt_ms()
-                    && let Some(setx) = mmp.metrics.smoothed_etx()
+                if let Some(srtt) = mmp.srtt_ms
+                    && let Some(setx) = mmp.smoothed_etx
                 {
                     mmp_json["lqi"] = json!(setx * (1.0 + srtt / 100.0));
                 }
@@ -376,12 +405,18 @@ pub fn show_sessions(node: &Node) -> Value {
                 "unknown"
             };
 
+            let dataplane_activity_ms = if entry.is_established() {
+                node.session_dataplane_activity_ms(addr)
+            } else {
+                Some(entry.created_at())
+            };
+
             let mut session_json = json!({
                 "remote_addr": hex::encode(addr.as_bytes()),
                 "display_name": node.peer_display_name(addr),
                 "state": state_str,
                 "is_initiator": entry.is_initiator(),
-                "last_activity_ms": entry.last_activity(),
+                "last_activity_ms": dataplane_activity_ms,
             });
 
             // Derive npub from session's remote public key
@@ -389,7 +424,7 @@ pub fn show_sessions(node: &Node) -> Value {
             session_json["npub"] = json!(encode_npub(&xonly));
 
             // Traffic counters
-            let (pkts_tx, pkts_rx, bytes_tx, bytes_rx) = entry.traffic_counters();
+            let (pkts_tx, pkts_rx, bytes_tx, bytes_rx) = node.session_dataplane_counters(addr);
             session_json["stats"] = json!({
                 "packets_sent": pkts_tx,
                 "packets_recv": pkts_rx,
@@ -403,39 +438,17 @@ pub fn show_sessions(node: &Node) -> Value {
             }
 
             // Rekey and session health (visible when established)
-            if entry.is_established() {
-                session_json["session_start_ms"] = json!(entry.session_start_ms());
-                session_json["current_k_bit"] = json!(entry.current_k_bit());
-                session_json["coords_warmup_remaining"] = json!(entry.coords_warmup_remaining());
-                session_json["is_draining"] = json!(entry.is_draining());
+            if entry.is_established()
+                && let Some((session_start_ms, current_k_bit, is_draining)) =
+                    node.session_dataplane_epoch(addr)
+            {
+                session_json["session_start_ms"] = json!(session_start_ms);
+                session_json["current_k_bit"] = json!(current_k_bit);
+                session_json["is_draining"] = json!(is_draining);
             }
 
-            // Add session MMP if available
-            if let Some(mmp) = entry.mmp() {
-                let mut mmp_json = json!({
-                    "mode": format!("{}", mmp.mode()),
-                    "loss_rate": mmp.metrics.loss_rate(),
-                    "etx": mmp.metrics.etx,
-                    "goodput_bps": mmp.metrics.goodput_bps,
-                    "delivery_ratio_forward": mmp.metrics.delivery_ratio_forward,
-                    "delivery_ratio_reverse": mmp.metrics.delivery_ratio_reverse,
-                    "path_mtu": mmp.path_mtu.current_mtu(),
-                });
-                if let Some(srtt) = mmp.metrics.srtt_ms() {
-                    mmp_json["srtt_ms"] = json!(srtt);
-                }
-                if let Some(smoothed_loss) = mmp.metrics.smoothed_loss() {
-                    mmp_json["smoothed_loss"] = json!(smoothed_loss);
-                }
-                if let Some(smoothed_etx) = mmp.metrics.smoothed_etx() {
-                    mmp_json["smoothed_etx"] = json!(smoothed_etx);
-                }
-                if let Some(srtt) = mmp.metrics.srtt_ms()
-                    && let Some(setx) = mmp.metrics.smoothed_etx()
-                {
-                    mmp_json["sqi"] = json!(setx * (1.0 + srtt / 100.0));
-                }
-                session_json["mmp"] = mmp_json;
+            if let Some(mmp) = node.session_mmp_snapshot(addr) {
+                session_json["mmp"] = session_mmp_json(&mmp);
             }
 
             session_json
@@ -492,87 +505,75 @@ pub fn show_bloom(node: &Node) -> Value {
 /// `show_mmp` — MMP metrics summary.
 pub fn show_mmp(node: &Node) -> Value {
     // Link-layer MMP per peer
-    let peers: Vec<Value> = node.peers().filter_map(|peer| {
-        let mmp = peer.mmp()?;
-        let addr = *peer.node_addr();
-        let metrics = &mmp.metrics;
+    let peers: Vec<Value> = node
+        .peers()
+        .filter_map(|peer| {
+            let addr = *peer.node_addr();
+            let metrics = node.packet_mover2_fmp_link_metrics(&addr, std::time::Instant::now())?;
 
-        let mut link_layer = json!({
-            "loss_rate": metrics.loss_rate(),
-            "etx": metrics.etx,
-            "goodput_bps": metrics.goodput_bps,
-            "spin_bit_role": if mmp.spin_bit.is_initiator() { "initiator" } else { "responder" },
-        });
+            let mut link_layer = json!({
+                "loss_rate": metrics.loss_rate,
+                "etx": metrics.etx,
+                "goodput_bps": metrics.goodput_bps,
+                "spin_bit_role": if metrics.spin_bit_initiator { "initiator" } else { "responder" },
+            });
 
-        if let Some(smoothed_loss) = metrics.smoothed_loss() {
-            link_layer["smoothed_loss"] = json!(smoothed_loss);
-        }
-        if let Some(smoothed_etx) = metrics.smoothed_etx() {
-            link_layer["smoothed_etx"] = json!(smoothed_etx);
-        }
-        if let Some(srtt) = metrics.srtt_ms() {
-            link_layer["srtt_ms"] = json!(srtt);
-            if let Some(setx) = metrics.smoothed_etx() {
-                link_layer["lqi"] = json!(setx * (1.0 + srtt / 100.0));
+            if let Some(smoothed_loss) = metrics.smoothed_loss {
+                link_layer["smoothed_loss"] = json!(smoothed_loss);
             }
-        }
+            if let Some(smoothed_etx) = metrics.smoothed_etx {
+                link_layer["smoothed_etx"] = json!(smoothed_etx);
+            }
+            if let Some(srtt) = metrics.srtt_ms {
+                link_layer["srtt_ms"] = json!(srtt);
+                if let Some(setx) = metrics.smoothed_etx {
+                    link_layer["lqi"] = json!(setx * (1.0 + srtt / 100.0));
+                }
+            }
 
-        // Trend indicators
-        if metrics.rtt_trend.initialized() {
-            link_layer["rtt_trend"] = json!(trend_label(metrics.rtt_trend.short(), metrics.rtt_trend.long()));
-        }
-        if metrics.loss_trend.initialized() {
-            link_layer["loss_trend"] = json!(trend_label(metrics.loss_trend.short(), metrics.loss_trend.long()));
-        }
-        if metrics.goodput_trend.initialized() {
-            link_layer["goodput_trend"] = json!(trend_label(metrics.goodput_trend.short(), metrics.goodput_trend.long()));
-        }
-        if metrics.jitter_trend.initialized() {
-            link_layer["jitter_trend"] = json!(trend_label(metrics.jitter_trend.short(), metrics.jitter_trend.long()));
-        }
+            // Trend indicators
+            if let Some((short, long)) = metrics.rtt_trend {
+                link_layer["rtt_trend"] = json!(trend_label(short, long));
+            }
+            if let Some((short, long)) = metrics.loss_trend {
+                link_layer["loss_trend"] = json!(trend_label(short, long));
+            }
+            if let Some((short, long)) = metrics.goodput_trend {
+                link_layer["goodput_trend"] = json!(trend_label(short, long));
+            }
+            if let Some((short, long)) = metrics.jitter_trend {
+                link_layer["jitter_trend"] = json!(trend_label(short, long));
+            }
 
-        link_layer["delivery_ratio_forward"] = json!(metrics.delivery_ratio_forward);
-        link_layer["delivery_ratio_reverse"] = json!(metrics.delivery_ratio_reverse);
-        link_layer["ecn_ce_count"] = json!(metrics.last_ecn_ce_count());
+            link_layer["delivery_ratio_forward"] = json!(metrics.delivery_ratio_forward);
+            link_layer["delivery_ratio_reverse"] = json!(metrics.delivery_ratio_reverse);
+            link_layer["ecn_ce_count"] = json!(metrics.ecn_ce_count);
 
-        Some(json!({
-            "peer": hex::encode(addr.as_bytes()),
-            "display_name": node.peer_display_name(&addr),
-            "mode": format!("{}", mmp.mode()),
-            "link_layer": link_layer,
-        }))
-    }).collect();
+            Some(json!({
+                "peer": hex::encode(addr.as_bytes()),
+                "display_name": node.peer_display_name(&addr),
+                "mode": format!("{}", metrics.mode),
+                "link_layer": link_layer,
+            }))
+        })
+        .collect();
 
     // Session-layer MMP
     let sessions: Vec<Value> = node
         .session_entries()
-        .filter_map(|(addr, entry)| {
-            let mmp = entry.mmp()?;
-            let metrics = &mmp.metrics;
-
-            let mut session_layer = json!({
-                "loss_rate": metrics.loss_rate(),
-                "etx": metrics.etx,
-                "path_mtu": mmp.path_mtu.current_mtu(),
+        .filter_map(|(addr, _entry)| {
+            let mmp = node.session_mmp_snapshot(addr)?;
+            let mut session_layer = session_mmp_json(&mmp);
+            session_layer["spin_bit_role"] = json!(if mmp.spin_bit_initiator {
+                "initiator"
+            } else {
+                "responder"
             });
-
-            if let Some(smoothed_loss) = metrics.smoothed_loss() {
-                session_layer["smoothed_loss"] = json!(smoothed_loss);
-            }
-            if let Some(smoothed_etx) = metrics.smoothed_etx() {
-                session_layer["smoothed_etx"] = json!(smoothed_etx);
-            }
-            if let Some(srtt) = metrics.srtt_ms() {
-                session_layer["srtt_ms"] = json!(srtt);
-                if let Some(setx) = metrics.smoothed_etx() {
-                    session_layer["sqi"] = json!(setx * (1.0 + srtt / 100.0));
-                }
-            }
-
+            session_layer["ecn_ce_count"] = json!(mmp.ecn_ce_count);
             Some(json!({
                 "remote": hex::encode(addr.as_bytes()),
                 "display_name": node.peer_display_name(addr),
-                "mode": format!("{}", mmp.mode()),
+                "mode": format!("{}", mmp.mode),
                 "session_layer": session_layer,
             }))
         })

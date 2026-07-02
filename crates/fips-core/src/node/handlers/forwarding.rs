@@ -73,11 +73,9 @@ impl Node {
         // no copy — `handle_session_payload` takes `payload` by borrow.
         if datagram_ref.dest_addr == *self.node_addr() {
             self.stats_mut().forwarding.record_delivered(payload.len());
-            self.handle_session_payload(datagram.local_session_payload(
-                datagram_ref.src_addr,
-                datagram_ref.payload,
-                datagram_ref.path_mtu,
-            ))
+            self.handle_session_payload(
+                datagram.local_session_payload(datagram_ref.src_addr, datagram_ref.payload),
+            )
             .await;
             return;
         }
@@ -139,7 +137,7 @@ impl Node {
         // rare error paths only.
         let encoded = encode_forwarded_session_datagram(&datagram_ref, new_ttl, path_mtu);
         if let Err(e) = self
-            .send_encrypted_link_message_with_ce(&next_hop_addr, &encoded, outgoing_ce)
+            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, outgoing_ce)
             .await
         {
             self.record_route_failure(datagram_ref.dest_addr, next_hop_addr);
@@ -310,7 +308,7 @@ impl Node {
 
         let encoded = error_dg.encode();
         if let Err(e) = self
-            .send_encrypted_link_message(&next_hop_addr, &encoded)
+            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(
@@ -329,7 +327,7 @@ impl Node {
 
     /// Generate and send an MtuExceeded error signal back to the datagram's source.
     ///
-    /// Called when `send_encrypted_link_message()` fails with
+    /// Called when PM2 FMP-link output fails with
     /// `NodeError::MtuExceeded` during forwarding. The signal tells the
     /// source the bottleneck MTU so it can immediately reduce its path MTU.
     async fn send_mtu_exceeded_error(&mut self, original: &SessionDatagram, bottleneck_mtu: u16) {
@@ -362,7 +360,7 @@ impl Node {
 
         let encoded = error_dg.encode();
         if let Err(e) = self
-            .send_encrypted_link_message(&next_hop_addr, &encoded)
+            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(
@@ -392,15 +390,13 @@ impl Node {
             return false;
         }
         // Outgoing link MMP metrics
-        if let Some(peer) = self.peers.get(next_hop)
-            && let Some(mmp) = peer.mmp()
+        if let Some(metrics) = self
+            .packet_mover2
+            .fmp_link_metrics(next_hop, std::time::Instant::now())
+            && (metrics.loss_rate >= self.config.node.ecn.loss_threshold
+                || metrics.etx >= self.config.node.ecn.etx_threshold)
         {
-            let metrics = &mmp.metrics;
-            if metrics.loss_rate() >= self.config.node.ecn.loss_threshold
-                || metrics.etx >= self.config.node.ecn.etx_threshold
-            {
-                return true;
-            }
+            return true;
         }
         // Local transport congestion (kernel drops)
         self.transport_drops.any_dropping()

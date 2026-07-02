@@ -44,18 +44,32 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let peer_name = self.peer_display_name(src_addr);
-        let processed = match self.sessions.process_session_receiver_report(
-            src_addr,
+        let last_outbound_next_hop = self
+            .packet_mover2
+            .fsp_owner_activity(src_addr)
+            .and_then(|activity| activity.last_outbound_next_hop());
+        let processed = match self.packet_mover2.process_fsp_mmp_receiver_report(
+            *src_addr,
             &rr,
+            last_outbound_next_hop,
             now_ms,
             std::time::Instant::now(),
+            SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
         ) {
-            Ok(processed) => processed,
-            Err(SessionReceiverReportSkip::UnknownSession) => {
+            Ok(processed) => ProcessedSessionReceiverReport {
+                sample: processed.sample,
+                used_direct_next_hop: processed.used_direct_next_hop,
+                srtt_ms: processed.srtt_ms,
+                route_quality_sample: session_receiver_report_can_drive_route_quality(
+                    processed.mode,
+                    processed.srtt_ms,
+                ),
+            },
+            Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner) => {
                 debug!(src = %peer_name, "SessionReceiverReport for unknown session");
                 return;
             }
-            Err(SessionReceiverReportSkip::MmpDisabled) => return,
+            Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => return,
         };
 
         if let Some((span, loss)) = processed.sample
@@ -120,18 +134,18 @@ impl Node {
         };
 
         let peer_name = self.peer_display_name(src_addr);
-        let change = match self.sessions.apply_session_path_mtu_signal(
+        let change = match self.apply_packet_mover2_fsp_path_mtu_signal(
             src_addr,
             notif.path_mtu,
             std::time::Instant::now(),
         ) {
-            Ok(SessionPathMtuApplyResult::Changed(change)) => change,
-            Ok(SessionPathMtuApplyResult::Unchanged) => return,
-            Err(SessionPathMtuApplySkip::UnknownSession) => {
+            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Changed(change)) => change,
+            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Unchanged) => return,
+            Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner) => {
                 debug!(src = %peer_name, "PathMtuNotification for unknown session");
                 return;
             }
-            Err(SessionPathMtuApplySkip::MmpDisabled) => return,
+            Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => return,
         };
 
         debug!(
@@ -211,9 +225,7 @@ impl Node {
             .coords_response_rate_limiter
             .should_send(&msg.dest_addr)
         {
-            if self
-                .sessions
-                .route_error_can_send_coords_warmup(&msg.dest_addr)
+            if self.packet_mover2_has_fsp_owner(&msg.dest_addr)
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
             {
                 debug!(dest = %msg.dest_addr, error = %e,
@@ -236,10 +248,7 @@ impl Node {
         // Reset coords warmup counter so the next N packets also include
         // COORDS_PRESENT, re-warming transit caches along the path.
         let n = self.config.node.session.coords_warmup_packets;
-        if self
-            .sessions
-            .reset_route_error_coords_warmup(&msg.dest_addr, n)
-        {
+        if self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&msg.dest_addr, n) {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -275,9 +284,7 @@ impl Node {
             .coords_response_rate_limiter
             .should_send(&msg.dest_addr)
         {
-            if self
-                .sessions
-                .route_error_can_send_coords_warmup(&msg.dest_addr)
+            if self.packet_mover2_has_fsp_owner(&msg.dest_addr)
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
             {
                 debug!(dest = %msg.dest_addr, error = %e,
@@ -305,10 +312,7 @@ impl Node {
         // Reset coords warmup counter so the next N packets include
         // COORDS_PRESENT, re-warming transit caches along the new path.
         let n = self.config.node.session.coords_warmup_packets;
-        if self
-            .sessions
-            .reset_route_error_coords_warmup(&msg.dest_addr, n)
-        {
+        if self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&msg.dest_addr, n) {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -342,12 +346,12 @@ impl Node {
         );
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
-        match self.sessions.apply_session_path_mtu_signal(
+        match self.apply_packet_mover2_fsp_path_mtu_signal(
             &msg.dest_addr,
             msg.mtu,
             std::time::Instant::now(),
         ) {
-            Ok(SessionPathMtuApplyResult::Changed(change)) => {
+            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Changed(change)) => {
                 info!(
                     dest = %peer_name,
                     old_mtu = change.old_mtu,
@@ -356,10 +360,10 @@ impl Node {
                     "Path MTU decreased via reactive MtuExceeded signal"
                 );
             }
-            Ok(SessionPathMtuApplyResult::Unchanged)
-            | Err(SessionPathMtuApplySkip::UnknownSession)
-            | Err(SessionPathMtuApplySkip::MmpDisabled) => {}
-        }
+            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Unchanged)
+            | Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner)
+            | Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => {}
+        };
 
         // Mirror the bottleneck into the FipsAddress-keyed lookup used by
         // the TUN reader/writer at TCP MSS clamp time. Discovery's reverse-

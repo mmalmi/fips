@@ -58,7 +58,7 @@ async fn test_routing_stops_after_peer_removal() {
     let plaintext = disconnect.encode();
     nodes[2]
         .node
-        .send_encrypted_link_message(&node1_addr, &plaintext)
+        .send_packet_mover2_fmp_link_plaintext(&node1_addr, &plaintext, false)
         .await
         .expect("Failed to send disconnect");
 

@@ -134,14 +134,14 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
         "link-dead direct peer should not hide graph fallback"
     );
 
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[2].node.tun_tx = Some(tun_tx);
 
     let src_fips = crate::FipsAddress::from_node_addr(&src_addr);
     let dest_fips = crate::FipsAddress::from_node_addr(&dest_addr);
     let ipv6_packet = build_ipv6_packet(&src_fips, &dest_fips, b"link-dead-fallback-data");
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
     drain_to_quiescence(&mut nodes).await;
 
     let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
@@ -154,8 +154,14 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
+#[test]
+fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
+    run_large_stack_async_test("fips-graph-fallback-endpoint-data", || async {
+        direct_established_endpoint_data_falls_back_after_link_dead().await;
+    });
+}
+
+async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     // A, B, C are all linked. A<->B should establish directly first. When
     // that direct path goes stale, endpoint data must keep using the
     // existing end-to-end session over C instead of sticking to the stale
@@ -166,7 +172,6 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
     populate_all_coord_caches(&mut nodes);
     for node in &mut nodes {
         node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
-        node.node.encrypt_workers = Some(crate::node::encrypt_worker::EncryptWorkerPool::spawn(1));
     }
 
     let mut alice_endpoint = nodes[0]
@@ -183,9 +188,7 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
     let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
     let bob_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
 
-    nodes[0]
-        .node
-        .send_endpoint_data(bob_identity, b"direct-first".to_vec())
+    send_endpoint_data_via_pm2(&mut nodes[0].node, bob_identity, b"direct-first".to_vec())
         .await
         .expect("initial endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
@@ -197,17 +200,9 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
         "initial direct endpoint data",
     )
     .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), alice_addr);
-            assert_eq!(payload, b"direct-first");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), alice_addr);
+    assert_eq!(message.payload, b"direct-first");
 
     assert!(
         nodes[0]
@@ -244,14 +239,10 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
     assert_ne!(alice_next_hop, bob_addr);
     assert_ne!(bob_next_hop, alice_addr);
 
-    nodes[0]
-        .node
-        .send_endpoint_data(bob_identity, b"alice-fallback".to_vec())
+    send_endpoint_data_via_pm2(&mut nodes[0].node, bob_identity, b"alice-fallback".to_vec())
         .await
         .expect("alice fallback endpoint data should send");
-    nodes[1]
-        .node
-        .send_endpoint_data(alice_identity, b"bob-fallback".to_vec())
+    send_endpoint_data_via_pm2(&mut nodes[1].node, alice_identity, b"bob-fallback".to_vec())
         .await
         .expect("bob fallback endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
@@ -263,17 +254,9 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
         "alice fallback endpoint data",
     )
     .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), alice_addr);
-            assert_eq!(payload, b"alice-fallback");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), alice_addr);
+    assert_eq!(message.payload, b"alice-fallback");
 
     let event = recv_endpoint_event_while_draining(
         &mut nodes,
@@ -282,17 +265,9 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
         "bob fallback endpoint data",
     )
     .await;
-    match event {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(*source_peer.node_addr(), bob_addr);
-            assert_eq!(payload, b"bob-fallback");
-        }
-        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
-    }
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), bob_addr);
+    assert_eq!(message.payload, b"bob-fallback");
 
     cleanup_nodes(&mut nodes).await;
 }

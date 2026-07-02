@@ -147,18 +147,4 @@ impl IdentityCache {
             self.entries.remove(&oldest_key);
         }
     }
-
-    #[cfg(test)]
-    pub(in crate::node) fn insert_for_test(
-        &mut self,
-        node_addr: NodeAddr,
-        pubkey: secp256k1::PublicKey,
-        npub: String,
-        last_seen_ms: u64,
-    ) {
-        self.entries.insert(
-            Self::prefix_for(&node_addr),
-            IdentityCacheEntry::new(node_addr, pubkey, npub, last_seen_ms),
-        );
-    }
 }

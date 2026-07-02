@@ -30,7 +30,7 @@ impl Node {
         }
 
         let capacity = capacity.max(1);
-        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(capacity);
+        let (outbound_tx, outbound_rx) = crate::upper::tun::tun_outbound_channel(capacity);
         let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(capacity);
         self.tun_outbound_rx = Some(outbound_rx);
         self.external_packet_tx = Some(inbound_tx);
@@ -49,67 +49,46 @@ impl Node {
         &mut self,
         capacity: usize,
     ) -> Result<EndpointDataIo, NodeError> {
+        self.attach_endpoint_data_io_inner(capacity, None)
+    }
+
+    pub(crate) fn attach_endpoint_data_io_with_direct_sink(
+        &mut self,
+        capacity: usize,
+        direct_sink: EndpointDirectSink,
+    ) -> Result<EndpointDataIo, NodeError> {
+        self.attach_endpoint_data_io_inner(capacity, Some(direct_sink))
+    }
+
+    fn attach_endpoint_data_io_inner(
+        &mut self,
+        capacity: usize,
+        direct_sink: Option<EndpointDirectSink>,
+    ) -> Result<EndpointDataIo, NodeError> {
         if self.state != NodeState::Created {
             return Err(NodeError::Config(ConfigError::Validation(
                 "endpoint data I/O must be attached before node start".to_string(),
             )));
         }
 
-        let command_capacity = endpoint_data_command_capacity(capacity);
-        let (priority_command_tx, priority_command_rx) =
-            tokio::sync::mpsc::channel(command_capacity);
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(command_capacity);
-        // Endpoint events keep priority delivery wait-free and bound bulk
-        // backlog by the caller's packet-channel capacity.
-        let (event_tx, event_rx) = EndpointEventSender::channel(capacity);
-        #[cfg(unix)]
-        let (bulk_send_runtime, bulk_feedback_rx) = EndpointBulkSendRuntime::channel(capacity);
-        #[cfg(not(unix))]
-        let (_bulk_feedback_tx, bulk_feedback_rx) =
-            tokio::sync::mpsc::channel(endpoint_data_command_capacity(capacity).max(1));
-        self.endpoint_priority_command_rx = Some(priority_command_rx);
-        self.endpoint_command_rx = Some(command_rx);
+        let command_capacity = capacity.max(1);
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel(command_capacity);
+        let (data_batch_tx, data_rx) = endpoint_data_batch_channel(command_capacity);
+        // Endpoint events use one bounded app-data channel. Protocol/control
+        // progress is reserved before endpoint payload delivery reaches this
+        // queue.
+        let (event_tx, event_rx) =
+            EndpointEventSender::channel_with_direct_sink(capacity, direct_sink);
+        self.endpoint_control_rx = Some(control_rx);
+        self.endpoint_data_rx = Some(data_rx);
         self.endpoint_events.attach(event_tx.clone());
-        self.endpoint_bulk_feedback_rx = Some(bulk_feedback_rx);
-        #[cfg(unix)]
-        {
-            self.endpoint_bulk_send_runtime = Some(bulk_send_runtime.clone());
-        }
 
         Ok(EndpointDataIo {
-            priority_command_tx,
-            command_tx,
+            control_tx,
+            data_batch_tx,
             event_rx,
             event_tx,
-            #[cfg(unix)]
-            bulk_send_runtime,
         })
-    }
-
-    pub(in crate::node) fn begin_endpoint_event_batch(&mut self) {
-        self.endpoint_events.begin_batch();
-    }
-
-    pub(in crate::node) fn finish_endpoint_event_batch(&mut self) {
-        self.endpoint_events.finish_batch();
-    }
-
-    #[allow(clippy::result_large_err)]
-    pub(in crate::node) fn deliver_endpoint_event_message(
-        &mut self,
-        message: EndpointDataDelivery,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        self.endpoint_events.deliver_endpoint_data(message)
-    }
-
-    pub(in crate::node) fn decrypt_direct_session_delivery_sink(
-        &self,
-    ) -> decrypt_worker::DecryptDirectSessionDeliverySink {
-        decrypt_worker::DecryptDirectSessionDeliverySink::new(
-            self.tun_tx.clone(),
-            self.external_packet_tx.clone(),
-            self.endpoint_events.sender(),
-        )
     }
 
     pub(crate) fn pubkey_for_node_addr(&self, addr: &NodeAddr) -> Option<secp256k1::PublicKey> {

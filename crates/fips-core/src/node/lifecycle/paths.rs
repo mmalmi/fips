@@ -1,5 +1,4 @@
 use super::*;
-use crate::node::SessionEntry;
 
 impl Node {
     pub(in crate::node) async fn try_peer_addresses(
@@ -309,13 +308,9 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
-        self.sessions.iter().any(|(dest_addr, entry)| {
-            entry.is_established()
-                && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
-                && entry
-                    .last_authenticated_inbound_data_age_ms(now_ms)
-                    .is_some_and(|age_ms| age_ms <= fresh_after_ms)
-        })
+        self.packet_mover2
+            .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
+            .is_some_and(|age_ms| age_ms <= fresh_after_ms)
     }
 
     pub(in crate::node) fn active_peer_has_fresh_link_liveness(
@@ -333,20 +328,19 @@ impl Node {
         let now = std::time::Instant::now();
         let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
         peer.idle_time(now_ms) <= fresh_after_ms
-            || peer
-                .mmp()
-                .and_then(|mmp| mmp.metrics.srtt_age_ms(now))
+            || self
+                .packet_mover2
+                .fmp_link_metrics(peer_node_addr, now)
+                .and_then(|metrics| metrics.srtt_age_ms)
                 .is_some_and(|age_ms| age_ms <= fresh_after_ms)
-            || self.sessions.iter().any(|(dest_addr, entry)| {
-                entry.is_established()
-                    && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
-                    && (entry
-                        .last_authenticated_inbound_age_ms(now_ms)
-                        .is_some_and(|age_ms| age_ms <= fresh_after_ms)
-                        || entry
-                            .last_authenticated_inbound_data_age_ms(now_ms)
-                            .is_some_and(|age_ms| age_ms <= fresh_after_ms))
-            })
+            || self
+                .packet_mover2
+                .min_fsp_rx_age_for_next_hop(peer_node_addr, now_ms)
+                .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+            || self
+                .packet_mover2
+                .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
+                .is_some_and(|age_ms| age_ms <= fresh_after_ms)
     }
 
     pub(in crate::node) fn active_peer_uses_bootstrap_transport(
@@ -359,15 +353,6 @@ impl Node {
             .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
     }
 
-    pub(in crate::node) fn session_tracks_direct_peer_path(
-        dest_addr: &NodeAddr,
-        entry: &SessionEntry,
-        peer_node_addr: &NodeAddr,
-    ) -> bool {
-        entry.last_outbound_next_hop() == Some(*peer_node_addr)
-            || (dest_addr == peer_node_addr && entry.last_outbound_next_hop().is_none())
-    }
-
     pub(in crate::node) fn active_peer_needs_same_path_refresh(
         &self,
         peer_node_addr: &NodeAddr,
@@ -376,14 +361,14 @@ impl Node {
             return false;
         };
         let now_ms = Self::now_ms();
-        if self.sessions.iter().any(|(dest_addr, entry)| {
-            entry.is_established()
-                && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
-                && entry.has_recent_outbound_without_inbound(
-                    now_ms,
-                    self.session_direct_path_exclusive_trust_timeout_ms(),
-                )
-        }) {
+        if self
+            .packet_mover2
+            .any_fsp_recent_outbound_without_inbound_for_next_hop(
+                peer_node_addr,
+                now_ms,
+                self.session_direct_path_exclusive_trust_timeout_ms(),
+            )
+        {
             return true;
         }
         let stale_after_ms = self
@@ -395,20 +380,14 @@ impl Node {
         let now = std::time::Instant::now();
         let mut inbound_quiet_ms = peer.idle_time(now_ms);
         inbound_quiet_ms = inbound_quiet_ms.min(
-            peer.mmp()
-                .and_then(|mmp| mmp.receiver.last_recv_time())
-                .map(|last_recv| now.duration_since(last_recv).as_millis() as u64)
+            self.packet_mover2
+                .fmp_link_metrics(peer_node_addr, now)
+                .and_then(|metrics| metrics.last_recv_age_ms)
                 .unwrap_or_else(|| now_ms.saturating_sub(peer.authenticated_at())),
         );
         if let Some(session_age_ms) = self
-            .sessions
-            .iter()
-            .filter(|(dest_addr, entry)| {
-                entry.is_established()
-                    && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
-            })
-            .filter_map(|(_, entry)| entry.last_authenticated_inbound_data_age_ms(now_ms))
-            .min()
+            .packet_mover2
+            .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
         {
             inbound_quiet_ms = inbound_quiet_ms.min(session_age_ms);
         }

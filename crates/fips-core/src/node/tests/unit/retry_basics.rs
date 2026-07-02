@@ -697,14 +697,16 @@ async fn process_packet_ignores_punch_and_non_fmp_noise_for_bootstrap_cooldown()
     let remote = crate::transport::TransportAddr::from_string("127.0.0.1:9");
     let mut punch = vec![0u8; 24];
     punch[..4].copy_from_slice(&crate::discovery::PUNCH_MAGIC.to_be_bytes());
-    node.process_packet(ReceivedPacket::new(transport_id, remote.clone(), punch))
-        .await;
+    process_packet_mover2_control_packet_for_test(
+        &mut node,
+        ReceivedPacket::new(transport_id, remote.clone(), punch),
+    )
+    .await;
 
-    node.process_packet(ReceivedPacket::new(
-        transport_id,
-        remote.clone(),
-        vec![0x45, 0x00, 0x00, 0x00],
-    ))
+    process_packet_mover2_control_packet_for_test(
+        &mut node,
+        ReceivedPacket::new(transport_id, remote.clone(), vec![0x45, 0x00, 0x00, 0x00]),
+    )
     .await;
 
     assert!(
@@ -712,11 +714,10 @@ async fn process_packet_ignores_punch_and_non_fmp_noise_for_bootstrap_cooldown()
         "stray punch/IPv4-looking datagrams must not poison bootstrap cooldown"
     );
 
-    node.process_packet(ReceivedPacket::new(
-        transport_id,
-        remote,
-        vec![0x11, 0x00, 0x00, 0x00],
-    ))
+    process_packet_mover2_control_packet_for_test(
+        &mut node,
+        ReceivedPacket::new(transport_id, remote, vec![0x11, 0x00, 0x00, 0x00]),
+    )
     .await;
 
     assert_eq!(
@@ -724,6 +725,31 @@ async fn process_packet_ignores_punch_and_non_fmp_noise_for_bootstrap_cooldown()
         1,
         "a plausible FMP packet with a different version should still be treated as structural"
     );
+}
+
+async fn process_packet_mover2_control_packet_for_test(node: &mut Node, packet: ReceivedPacket) {
+    let (packet_tx, mut packet_rx) = packet_channel(1);
+    packet_tx.send(packet).expect("packet should enqueue");
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
+    let (endpoint_tx, _endpoint_rx) = crate::node::EndpointEventSender::channel(1);
+
+    let mut turn = node
+        .drain_packet_mover2_turn_with_firsts(
+            &mut packet_rx,
+            crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
+            1,
+            &mut endpoint_rx,
+            0,
+            &mut tun_outbound_rx,
+            0,
+            &tun_tx,
+            &endpoint_tx,
+            1,
+        )
+        .await;
+    node.process_packet_mover2_control_ingress(&mut turn).await;
 }
 
 #[tokio::test]

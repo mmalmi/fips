@@ -12,7 +12,6 @@ pub struct FipsEndpointBuilder {
 }
 
 const DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 4096;
-const MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 65_536;
 
 impl Default for FipsEndpointBuilder {
     fn default() -> Self {
@@ -22,24 +21,9 @@ impl Default for FipsEndpointBuilder {
             discovery_scope: None,
             local_ethernet_interfaces: Vec::new(),
             disable_system_networking: true,
-            packet_channel_capacity: default_endpoint_packet_channel_capacity(),
+            packet_channel_capacity: DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
         }
     }
-}
-
-fn default_endpoint_packet_channel_capacity() -> usize {
-    parse_endpoint_packet_channel_capacity(
-        std::env::var("FIPS_ENDPOINT_PACKET_CHANNEL_CAP")
-            .ok()
-            .as_deref(),
-        DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
-    )
-}
-
-fn parse_endpoint_packet_channel_capacity(raw: Option<&str>, default: usize) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(default)
-        .clamp(1, MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY)
 }
 
 impl FipsEndpointBuilder {
@@ -120,6 +104,25 @@ impl FipsEndpointBuilder {
 
     /// Bind and start the embedded endpoint.
     pub async fn bind(self) -> Result<FipsEndpoint, FipsEndpointError> {
+        self.bind_inner(None).await
+    }
+
+    /// Bind and start the endpoint with a direct PM2 endpoint-data sink.
+    ///
+    /// Decrypted PM2 endpoint output is delivered to `sink` synchronously from
+    /// the PM2 output path. Generic endpoint events, including loopback sends
+    /// and non-PM2 delivery, continue to use the regular receive queue.
+    pub async fn bind_with_direct_sink<S>(self, sink: S) -> Result<FipsEndpoint, FipsEndpointError>
+    where
+        S: FipsEndpointDirectSink,
+    {
+        self.bind_inner(Some(EndpointDirectSink::new(sink))).await
+    }
+
+    async fn bind_inner(
+        self,
+        direct_sink: Option<EndpointDirectSink>,
+    ) -> Result<FipsEndpoint, FipsEndpointError> {
         endpoint_debug_log("FipsEndpointBuilder::bind begin");
         let config = self.prepared_config();
         endpoint_debug_log("FipsEndpointBuilder::bind config prepared");
@@ -132,7 +135,12 @@ impl FipsEndpointBuilder {
         let address = *identity.address();
         let packet_io = node.attach_external_packet_io(self.packet_channel_capacity)?;
         endpoint_debug_log("FipsEndpointBuilder::bind packet io attached");
-        let endpoint_data_io = node.attach_endpoint_data_io(self.packet_channel_capacity)?;
+        let endpoint_data_io = match direct_sink {
+            Some(sink) => {
+                node.attach_endpoint_data_io_with_direct_sink(self.packet_channel_capacity, sink)?
+            }
+            None => node.attach_endpoint_data_io(self.packet_channel_capacity)?,
+        };
         endpoint_debug_log("FipsEndpointBuilder::bind endpoint data io attached");
         endpoint_debug_log("FipsEndpointBuilder::bind node.start begin");
         node.start().await?;
@@ -141,10 +149,8 @@ impl FipsEndpointBuilder {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
         endpoint_debug_log("FipsEndpointBuilder::bind node task spawned");
-        let endpoint_priority_commands = endpoint_data_io.priority_command_tx;
-        let endpoint_commands = endpoint_data_io.command_tx;
-        #[cfg(unix)]
-        let endpoint_bulk_send_runtime = endpoint_data_io.bulk_send_runtime;
+        let endpoint_control_tx = endpoint_data_io.control_tx;
+        let endpoint_data_batches = endpoint_data_io.data_batch_tx;
 
         Ok(FipsEndpoint {
             identity,
@@ -154,10 +160,8 @@ impl FipsEndpointBuilder {
             discovery_scope: self.discovery_scope,
             outbound_packets: packet_io.outbound_tx,
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
-            endpoint_priority_commands,
-            endpoint_commands,
-            #[cfg(unix)]
-            endpoint_bulk_send_runtime,
+            endpoint_control_tx,
+            endpoint_data_batches,
             inbound_endpoint_tx: endpoint_data_io.event_tx,
             inbound_endpoint_rx: Arc::new(Mutex::new(EndpointReceiveState::new(
                 endpoint_data_io.event_rx,
@@ -166,53 +170,5 @@ impl FipsEndpointBuilder {
             shutdown_tx: std::sync::Mutex::new(Some(shutdown_tx)),
             task: std::sync::Mutex::new(Some(task)),
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn endpoint_packet_channel_capacity_env_keeps_safe_bounds() {
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(None, DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY),
-            DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some(""),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some("not-a-number"),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some("0"),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            1
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some("8192"),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            8192
-        );
-        assert_eq!(
-            parse_endpoint_packet_channel_capacity(
-                Some("999999"),
-                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
-            ),
-            MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY
-        );
     }
 }

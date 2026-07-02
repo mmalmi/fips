@@ -64,85 +64,61 @@
         let local = Identity::generate();
         let peer = Identity::generate();
         let mut entry = established_entry(&local, &peer);
+        let can_recover = |entry: &SessionEntry| {
+            entry.is_established()
+                && !entry.has_rekey_in_progress()
+                && entry.pending_new_session().is_none()
+        };
 
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            can_recover(&entry),
             DECRYPT_FAILURE_RECOVERY_THRESHOLD - 1,
-            20_000
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
         assert!(should_start_decrypt_failure_rekey(
-            &entry,
+            can_recover(&entry),
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            20_000
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
 
         let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
         entry.set_rekey_state(rekey, true);
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            false,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            20_000
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
         entry.abandon_rekey();
 
         entry.set_pending_session(make_xk_session(&local, &peer));
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            false,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            20_000
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS)
         ));
     }
 
     #[test]
     fn decrypt_failure_recovery_rekey_waits_for_quiet_session() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-        entry.touch_inbound_frame(10_000);
-
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            true,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            10_000 + DECRYPT_FAILURE_RECOVERY_QUIET_MS - 1,
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS - 1),
         ));
         assert!(should_start_decrypt_failure_rekey(
-            &entry,
+            true,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            10_000 + DECRYPT_FAILURE_RECOVERY_QUIET_MS,
+            Some(DECRYPT_FAILURE_RECOVERY_QUIET_MS),
         ));
         assert!(!should_start_decrypt_failure_rekey(
-            &entry,
+            true,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD,
-            9_000,
+            None,
         ));
     }
 
     #[test]
-    fn stale_previous_epoch_failure_is_ignored_only_during_drain() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let mut entry = established_entry(&local, &peer);
-
-        let old_k_bit = entry.current_k_bit();
-        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
-
-        entry.set_pending_session(make_xk_session(&local, &peer));
-        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
-
-        assert!(entry.cutover_to_new_session(2000));
-        assert_ne!(entry.current_k_bit(), old_k_bit);
-        assert!(should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
-        assert!(!should_ignore_stale_epoch_drain_failure(
-            &entry,
-            entry.current_k_bit()
-        ));
-
-        entry.complete_drain();
-        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
-    }
-
-    #[test]
-    fn recovery_rekey_keeps_old_session_usable_until_and_after_cutover() {
+    fn recovery_rekey_uses_old_session_until_cutover_and_new_session_after() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let aad = b"fsp-test-aad";
@@ -178,21 +154,13 @@
             b"old packet before cutover"
         );
 
-        // After cutover, stale old-session packets are accepted through the
-        // previous-session drain slot, while new-session packets decrypt on
-        // the promoted current session.
+        // After cutover, SessionEntry promotes only the new session. PM2 owns
+        // stale-epoch drain handling, so registry state no longer retains the
+        // old NoiseSession for decrypt fallback.
         assert!(entry.cutover_to_new_session(2000));
         let (old_counter, old_ciphertext) =
             encrypt_frame(&mut old_sender, b"old packet after cutover", aad);
         assert!(decrypt_current(&mut entry, &old_ciphertext, old_counter, aad).is_err());
-        assert_eq!(
-            entry
-                .previous_noise_session_mut()
-                .expect("old session should be retained for drain")
-                .decrypt_with_replay_check_and_aad(&old_ciphertext, old_counter, aad)
-                .unwrap(),
-            b"old packet after cutover"
-        );
 
         let (new_counter, new_ciphertext) =
             encrypt_frame(&mut new_sender, b"new packet after cutover", aad);

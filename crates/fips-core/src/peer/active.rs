@@ -4,7 +4,7 @@
 //! ActivePeer holds tree state, Bloom filter, and routing information.
 
 use crate::bloom::BloomFilter;
-use crate::mmp::{MmpConfig, MmpPeerState};
+use crate::mmp::MmpConfig;
 use crate::node::REKEY_JITTER_SECS;
 use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseError, NoiseSession};
 use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
@@ -127,6 +127,8 @@ pub struct ActivePeer {
     /// Session start time for computing session-relative timestamps.
     /// Used as the epoch for the 4-byte inner header timestamp field.
     session_start: Instant,
+    /// Local current-session generation for dataplane owner state.
+    session_generation: u64,
 
     // === Statistics ===
     /// Link statistics.
@@ -141,8 +143,8 @@ pub struct ActivePeer {
     remote_epoch: Option<[u8; 8]>,
 
     // === MMP ===
-    /// Per-peer MMP state (None for legacy peers without Noise sessions).
-    mmp: Option<MmpPeerState>,
+    /// Role used when seeding PM2's adjacent-link MMP owner state.
+    fmp_mmp_is_initiator: bool,
 
     // === Heartbeat ===
     /// When we last sent a heartbeat to this peer.
@@ -196,34 +198,6 @@ pub struct ActivePeer {
     rekey_msg1_next_resend: u64,
     /// In-progress rekey: number of msg1 retransmissions performed so far.
     rekey_msg1_resend_count: u32,
-
-    // === Connected Peer UDP Socket (Unix fast path) ===
-    /// Per-peer `connect()`-ed UDP socket, opened once we have a
-    /// stable kernel `SocketAddr` for the peer (i.e. session
-    /// established + transport address known). When `Some`, the
-    /// encrypt-worker send path can `sendmsg(2)` on this fd without
-    /// per-packet `msg_name` — the kernel-side route + neighbor cache
-    /// is pinned by the `connect()` call. On the receive side, Linux
-    /// and Darwin UDP demux preferentially route inbound packets from
-    /// this peer to this socket (most-specific 5-tuple match via
-    /// `SO_REUSEPORT`), so the paired drain thread must keep it empty.
-    ///
-    /// Closed automatically on Drop. Behind an `Arc` so the
-    /// encrypt-worker's send path can hold a refcount without owning
-    /// the only handle (rekey / address-change may rotate the socket
-    /// while older jobs are still in-flight on the worker channel).
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    connected_udp:
-        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
-
-    /// Per-peer receive-drain thread. Always paired with
-    /// `connected_udp`: while the connected socket is installed, the
-    /// kernel UDP demux preferentially routes inbound packets from
-    /// this peer to it (via SO_REUSEPORT + 5-tuple match), so the
-    /// socket *must* be drained or packets pile up in its kernel
-    /// recv buffer. Drop signals the thread to exit via self-pipe.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    peer_recv_drain: Option<crate::transport::udp::peer_drain::PeerRecvDrain>,
 }
 
 impl ActivePeer {
@@ -252,11 +226,12 @@ impl ActivePeer {
             filter_received_at: 0,
             pending_filter_update: true, // Send filter on new connection
             session_start: now,
+            session_generation: authenticated_at.max(1),
             link_stats: LinkStats::new(),
             authenticated_at,
             last_seen: authenticated_at,
             remote_epoch: None,
-            mmp: None,
+            fmp_mmp_is_initiator: false,
             last_heartbeat_sent: None,
             handshake_msg2: None,
             replay_suppressed_count: 0,
@@ -279,10 +254,6 @@ impl ActivePeer {
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
             rekey_msg1_resend_count: 0,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_udp: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            peer_recv_drain: None,
         }
     }
 
@@ -317,7 +288,7 @@ impl ActivePeer {
         current_addr: TransportAddr,
         link_stats: LinkStats,
         is_initiator: bool,
-        mmp_config: &MmpConfig,
+        _mmp_config: &MmpConfig,
         remote_epoch: Option<[u8; 8]>,
     ) -> Self {
         let now = Instant::now();
@@ -340,11 +311,12 @@ impl ActivePeer {
             filter_received_at: 0,
             pending_filter_update: true,
             session_start: now,
+            session_generation: authenticated_at.max(1),
             link_stats,
             authenticated_at,
             last_seen: authenticated_at,
             remote_epoch,
-            mmp: Some(MmpPeerState::new(mmp_config, is_initiator)),
+            fmp_mmp_is_initiator: is_initiator,
             last_heartbeat_sent: None,
             handshake_msg2: None,
             replay_suppressed_count: 0,
@@ -367,60 +339,7 @@ impl ActivePeer {
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
             rekey_msg1_resend_count: 0,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_udp: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            peer_recv_drain: None,
         }
-    }
-
-    /// Unix UDP fast path: clone the refcount on the per-peer
-    /// `connect()`-ed UDP socket if one has been installed. Encrypt-
-    /// worker send path uses this to bypass the wildcard listen
-    /// socket's per-packet sockaddr handling.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) fn connected_udp(
-        &self,
-    ) -> Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>> {
-        self.connected_udp.clone()
-    }
-
-    /// Install a per-peer `connect()`-ed UDP socket **with** its
-    /// paired recv drain thread. The two are owned together: the
-    /// drain thread is the only consumer of packets arriving on this
-    /// socket (Linux UDP demux preferentially routes them away from
-    /// the wildcard listen socket via SO_REUSEPORT 5-tuple match),
-    /// so installing one without the other would silently drop
-    /// inbound packets from this peer.
-    ///
-    /// Replacing an existing pair drops the old drain (its self-pipe
-    /// shutdown signal fires; thread exits within one poll
-    /// iteration) and drops the old socket Arc. Any encrypt-worker
-    /// jobs already in-flight holding the old socket Arc stay valid
-    /// until they complete, at which point the kernel fd closes.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) fn set_connected_udp(
-        &mut self,
-        socket: std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-        drain: crate::transport::udp::peer_drain::PeerRecvDrain,
-    ) {
-        // Drop order matters: drop the old drain BEFORE the old
-        // socket so the drain thread's last reference to the kernel
-        // fd is released cleanly.
-        self.peer_recv_drain = None;
-        self.connected_udp = None;
-        self.connected_udp = Some(socket);
-        self.peer_recv_drain = Some(drain);
-    }
-
-    /// Clear the per-peer connected UDP socket + drain thread (e.g.
-    /// on rekey or disconnect). The drain thread exits via self-pipe
-    /// signal; the kernel fd closes when the last `Arc` to the
-    /// socket drops.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) fn clear_connected_udp(&mut self) {
-        self.peer_recv_drain = None;
-        self.connected_udp = None;
     }
 
     // === Identity Accessors ===
@@ -556,14 +475,7 @@ impl ActivePeer {
     /// `&TransportAddr` and we only `.to_owned()` when storing.
     ///
     /// Returns `true` iff the stored `(transport_id, current_addr)` pair
-    /// actually changed. The caller uses this signal to invalidate
-    /// derived caches whose validity is bound to the peer's 5-tuple —
-    /// in particular the Linux per-peer `connect()`-ed UDP socket,
-    /// which is pinned to one kernel route + neighbour entry and goes
-    /// stale the moment the peer roams. (Clearing it here would force
-    /// `&mut self` users into the wrong shape: the policy of when to
-    /// rebuild the connected socket lives on `Node`, not on the peer
-    /// state. Returning a bool keeps that policy where it belongs.)
+    /// actually changed.
     pub fn set_current_addr(&mut self, transport_id: TransportId, addr: &TransportAddr) -> bool {
         if self.transport_id == Some(transport_id) && self.current_addr.as_ref() == Some(addr) {
             return false;
@@ -704,42 +616,9 @@ impl ActivePeer {
         &mut self.link_stats
     }
 
-    // === MMP Accessors ===
-
-    /// Get MMP state (None for legacy peers without sessions).
-    pub fn mmp(&self) -> Option<&MmpPeerState> {
-        self.mmp.as_ref()
-    }
-
-    /// Get mutable MMP state.
-    pub fn mmp_mut(&mut self) -> Option<&mut MmpPeerState> {
-        self.mmp.as_mut()
-    }
-
-    /// Link cost for routing decisions.
-    ///
-    /// Returns a scalar cost where lower is better (1.0 = ideal).
-    /// Computed as RTT-weighted ETX: `etx * (1.0 + srtt_ms / 100.0)`.
-    ///
-    /// Returns 1.0 (optimistic default) when MMP metrics are not yet
-    /// available, matching depth-only parent selection behavior.
-    pub fn link_cost(&self) -> f64 {
-        match self.mmp() {
-            Some(mmp) => {
-                let etx = mmp.metrics.etx;
-                match mmp.metrics.srtt_ms() {
-                    Some(srtt_ms) => etx * (1.0 + srtt_ms / 100.0),
-                    None => 1.0,
-                }
-            }
-            None => 1.0,
-        }
-    }
-
-    /// Whether this peer has at least one MMP RTT measurement.
-    pub fn has_srtt(&self) -> bool {
-        self.mmp()
-            .is_some_and(|mmp| mmp.metrics.srtt_ms().is_some())
+    /// Whether this node initiated the adjacent FMP session.
+    pub fn fmp_mmp_is_initiator(&self) -> bool {
+        self.fmp_mmp_is_initiator
     }
 
     /// When this peer was authenticated.
@@ -768,6 +647,11 @@ impl ActivePeer {
     /// Wraps at ~49.7 days which is acceptable for session-relative timing.
     pub fn session_elapsed_ms(&self) -> u32 {
         self.session_start.elapsed().as_millis() as u32
+    }
+
+    /// Local dataplane generation for the current Noise session.
+    pub fn session_generation(&self) -> u64 {
+        self.session_generation
     }
 
     /// When this peer's session started (for link-dead fallback timing).

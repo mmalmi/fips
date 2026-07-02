@@ -49,7 +49,6 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     use crate::node::handlers::discovery::PendingLookup;
     use crate::peer::ActivePeer;
     use crate::transport::LinkId;
-    use std::sync::mpsc;
 
     let mut node = make_node();
 
@@ -62,7 +61,7 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     );
 
     // Inject a TUN sender so `send_icmpv6_dest_unreachable` is observable.
-    let (tun_tx, tun_rx) = mpsc::channel::<Vec<u8>>();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     node.tun_tx = Some(tun_tx);
 
     // Build a target identity (the unreachable destination).
@@ -72,7 +71,7 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     // Build a tree-peer that:
     //   - has the target in its inbound bloom filter (so `may_reach` is true),
     //   - declares us as its parent (so `is_tree_peer` returns true).
-    // The peer has no Noise session, so `send_encrypted_link_message` will
+    // The peer has no Noise session, so PM2 FMP-link output will
     // fail at the wire-send step — but `initiate_lookup` already incremented
     // `req_initiated` and the failure is logged at `debug!`. The state-
     // machine bookkeeping we want to test runs to completion either way.

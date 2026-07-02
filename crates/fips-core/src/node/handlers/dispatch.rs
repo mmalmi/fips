@@ -137,7 +137,6 @@ impl Node {
             peer = %peer_name,
             link_id = %degraded.link_id,
             preserve_queued_packets,
-            connected_udp_cleared = degraded.connected_udp_cleared,
             "Peer direct path marked stale after link-dead timeout"
         );
     }
@@ -151,6 +150,10 @@ impl Node {
             }
         };
         let peer = removed_peer.peer;
+        let link_mmp = self
+            .packet_mover2
+            .fmp_link_metrics(node_addr, std::time::Instant::now());
+        self.remove_packet_mover2_fmp_owner(node_addr);
 
         // Log suppressed replay detection summary before teardown
         let suppressed = peer.replay_suppressed_count();
@@ -168,8 +171,8 @@ impl Node {
             .get(node_addr)
             .cloned()
             .unwrap_or_else(|| peer.identity().short_npub());
-        if let Some(mmp) = peer.mmp() {
-            Self::log_mmp_teardown(&peer_name, mmp);
+        if let Some(mmp) = link_mmp {
+            Self::log_mmp_teardown(&peer_name, &mmp);
         }
 
         // Remove any end-to-end session associated with this peer.
@@ -182,11 +185,12 @@ impl Node {
         //   2. initiate_session() finds is_established() == true on the stale
         //      entry and silently returns Ok(()), preventing a new session over
         //      fallback or a recovered direct link.
-        self.unregister_decrypt_worker_fsp_session(node_addr);
-        if let Some(session_entry) = self.sessions.remove(node_addr)
-            && let Some(mmp) = session_entry.mmp()
+        let session_mmp = self.session_mmp_snapshot(node_addr);
+        self.remove_packet_mover2_fsp_owner(node_addr);
+        if self.sessions.remove(node_addr).is_some()
+            && let Some(mmp) = session_mmp
         {
-            Self::log_session_mmp_teardown(&peer_name, mmp);
+            Self::log_session_mmp_teardown(&peer_name, &mmp);
         }
 
         if !preserve_queued_packets {

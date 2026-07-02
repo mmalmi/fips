@@ -1,57 +1,43 @@
 use super::*;
+use crate::node::endpoint_event::release_endpoint_event_messages;
 
-#[test]
-fn endpoint_event_batch_scope_emits_one_batch_and_keeps_immediate_delivery_outside_scope() {
-    let mut node = Node::new(Config::new()).expect("node");
-    let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+fn release_observed_endpoint_event(rx: &EndpointEventReceiver, event: &NodeEndpointEvent) {
+    rx.release_messages(event.message_count());
+}
 
-    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"single".to_vec()))
-        .expect("single endpoint event");
-    match endpoint_io.event_rx.try_recv().expect("single event") {
-        NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            ..
-        } => {
-            assert_eq!(source_peer, source);
-            assert_eq!(payload, b"single");
-        }
-        event => panic!("expected single endpoint event, got {event:?}"),
+fn one_message_endpoint_event(
+    source: PeerIdentity,
+    payload: impl Into<crate::transport::PacketBuffer>,
+) -> NodeEndpointEvent {
+    NodeEndpointEvent {
+        messages: vec![EndpointDataDelivery::new(source, payload)],
+        queued_at: crate::perf_profile::stamp(),
     }
+}
 
-    node.begin_endpoint_event_batch();
-    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"first".to_vec()))
-        .expect("first batched endpoint event");
-    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"second".to_vec()))
-        .expect("second batched endpoint event");
-    assert!(
-        endpoint_io.event_rx.try_recv().is_err(),
-        "batch scope should not flush before finish"
-    );
-
-    node.finish_endpoint_event_batch();
-    match endpoint_io.event_rx.try_recv().expect("batched event") {
-        NodeEndpointEvent::DataBatch { messages, .. } => {
-            assert_eq!(messages.len(), 2);
-            assert_eq!(messages[0].source_peer, source);
-            assert_eq!(messages[0].payload, b"first");
-            assert_eq!(messages[1].source_peer, source);
-            assert_eq!(messages[1].payload, b"second");
+fn expect_one_message(event: NodeEndpointEvent) -> EndpointDataDelivery {
+    match event {
+        NodeEndpointEvent { mut messages, .. } if messages.len() == 1 => {
+            messages.pop().expect("one endpoint message")
         }
-        event => panic!("expected endpoint event batch, got {event:?}"),
+        NodeEndpointEvent { messages, .. } => {
+            panic!("expected one endpoint message, got {}", messages.len())
+        }
     }
 }
 
 #[test]
-fn endpoint_event_runtime_owns_attach_batch_and_backlog() {
+fn endpoint_event_runtime_owns_attach_delivery_and_backlog() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
     let mut runtime = EndpointEventRuntime::default();
 
     assert!(!runtime.is_attached());
     runtime
-        .deliver_endpoint_data(EndpointDataDelivery::new(source, b"detached".to_vec()))
+        .deliver_endpoint_data_batch(vec![EndpointDataDelivery::new(
+            source,
+            b"detached".to_vec(),
+        )])
         .expect("detached endpoint runtime delivery should be a no-op");
     assert!(
         event_rx.try_recv().is_err(),
@@ -60,30 +46,33 @@ fn endpoint_event_runtime_owns_attach_batch_and_backlog() {
     assert_eq!(event_tx.queued_messages(), 0);
 
     runtime.attach(event_tx.clone());
-    runtime.begin_batch();
     runtime
-        .deliver_endpoint_data(EndpointDataDelivery::new(source, b"first".to_vec()))
-        .expect("first batched endpoint event");
-    runtime
-        .deliver_endpoint_data(EndpointDataDelivery::new(source, b"second".to_vec()))
-        .expect("second batched endpoint event");
-    assert!(
-        event_rx.try_recv().is_err(),
-        "runtime batch scope should not flush before finish"
-    );
+        .deliver_endpoint_data_batch(vec![EndpointDataDelivery::new(source, b"first".to_vec())])
+        .expect("endpoint event");
+    assert_eq!(event_tx.queued_messages(), 1);
+    let event = event_rx.try_recv().expect("batched event");
+    release_observed_endpoint_event(&event_rx, &event);
+    let NodeEndpointEvent { messages, .. } = event;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].source_peer, source);
+    assert_eq!(messages[0].payload, b"first");
+    assert_eq!(event_tx.queued_messages(), 0);
 
-    runtime.finish_batch();
+    runtime
+        .deliver_endpoint_data_batch(vec![
+            EndpointDataDelivery::new(source, b"second".to_vec()),
+            EndpointDataDelivery::new(source, b"third".to_vec()),
+        ])
+        .expect("endpoint event batch");
     assert_eq!(event_tx.queued_messages(), 2);
-    match event_rx.try_recv().expect("batched event") {
-        NodeEndpointEvent::DataBatch { messages, .. } => {
-            assert_eq!(messages.len(), 2);
-            assert_eq!(messages[0].source_peer, source);
-            assert_eq!(messages[0].payload, b"first");
-            assert_eq!(messages[1].source_peer, source);
-            assert_eq!(messages[1].payload, b"second");
-        }
-        event => panic!("expected endpoint event batch, got {event:?}"),
-    }
+    let event = event_rx.try_recv().expect("batched event");
+    release_observed_endpoint_event(&event_rx, &event);
+    let NodeEndpointEvent { messages, .. } = event;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].source_peer, source);
+    assert_eq!(messages[0].payload, b"second");
+    assert_eq!(messages[1].source_peer, source);
+    assert_eq!(messages[1].payload, b"third");
     assert_eq!(event_tx.queued_messages(), 0);
 }
 
@@ -94,77 +83,86 @@ fn endpoint_event_queue_owns_backlog_message_count() {
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
-    assert_eq!(endpoint_io.event_tx.bulk_queued_messages(), 0);
-    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"single".to_vec()))
+    node.endpoint_events
+        .deliver_endpoint_data_batch(vec![EndpointDataDelivery::new(source, b"single".to_vec())])
         .expect("single endpoint event");
     assert_eq!(endpoint_io.event_tx.queued_messages(), 1);
-    assert_eq!(
-        endpoint_io.event_tx.bulk_queued_messages(),
-        0,
-        "priority-sized events must not consume the bulk message budget"
-    );
 
-    node.begin_endpoint_event_batch();
-    node.deliver_endpoint_event_message(EndpointDataDelivery::new(
-        source,
-        vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1],
-    ))
-    .expect("first batched endpoint event");
-    node.deliver_endpoint_event_message(EndpointDataDelivery::new(
-        source,
-        vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2],
-    ))
-    .expect("second batched endpoint event");
-    node.finish_endpoint_event_batch();
+    node.endpoint_events
+        .deliver_endpoint_data_batch(vec![
+            EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+            EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
+        ])
+        .expect("batched endpoint event");
     assert_eq!(
         endpoint_io.event_tx.queued_messages(),
         3,
         "backlog count should account for batch payloads, not channel items"
     );
-    assert_eq!(endpoint_io.event_tx.bulk_queued_messages(), 2);
 
-    endpoint_io.event_rx.try_recv().expect("single event");
+    let event = endpoint_io.event_rx.try_recv().expect("single event");
+    release_observed_endpoint_event(&endpoint_io.event_rx, &event);
     assert_eq!(endpoint_io.event_tx.queued_messages(), 2);
-    assert_eq!(endpoint_io.event_tx.bulk_queued_messages(), 2);
-    endpoint_io.event_rx.try_recv().expect("batched event");
+    let event = endpoint_io.event_rx.try_recv().expect("batched event");
+    release_observed_endpoint_event(&endpoint_io.event_rx, &event);
     assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
-    assert_eq!(endpoint_io.event_tx.bulk_queued_messages(), 0);
 }
 
 #[test]
-fn endpoint_event_dequeue_counts_preserve_message_and_lane_counts() {
+fn endpoint_event_message_count_treats_batch_items_as_public_messages() {
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
-    let event = NodeEndpointEvent::Data {
-        source_peer: source,
-        payload: vec![0x11; ENDPOINT_EVENT_PRIORITY_MAX_LEN].into(),
-        queued_at: None,
-    };
-    assert_eq!(
-        event.dequeue_counts(),
-        EndpointEventDequeueCounts {
-            total: 1,
-            priority: 1,
-            bulk: 0,
-        }
-    );
+    let event = one_message_endpoint_event(source, vec![0x11; ENDPOINT_EVENT_TEST_PAYLOAD_LEN]);
+    assert_eq!(event.message_count(), 1);
 
-    let event = NodeEndpointEvent::DataBatch {
+    let event = NodeEndpointEvent {
         messages: vec![
-            EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+            EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
             EndpointDataDelivery::new(source, vec![0x11; 32]),
-            EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+            EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
         ],
         queued_at: None,
     };
-    assert_eq!(
-        event.dequeue_counts(),
-        EndpointEventDequeueCounts {
-            total: 3,
-            priority: 1,
-            bulk: 2,
-        }
+    assert_eq!(event.message_count(), 3);
+}
+
+#[test]
+fn direct_endpoint_sink_receives_packet_batch_with_run_metadata() {
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let previous_hop = NodeAddr::from_bytes([0x44; 16]);
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let captured_batch = std::sync::Arc::clone(&captured);
+    let sink = EndpointDirectSink::new(move |batch| {
+        *captured_batch.lock().expect("direct batch lock") = Some(batch);
+        Ok::<(), FipsEndpointDirectDeliveryError>(())
+    });
+    let run = FipsEndpointDirectPacketRun::from_segmented_payload(
+        FipsEndpointDirectPacketRunMeta::new(source, previous_hop, true, false, 123),
+        b"a1a2".to_vec().into(),
+        vec![0..2, 2..4],
     );
+    let batch = FipsEndpointDirectPacketBatch::from_packet_runs(vec![run]);
+
+    sink.deliver_direct_packet_batch(batch)
+        .expect("direct packet batch delivery");
+
+    let batch = captured
+        .lock()
+        .expect("direct batch lock")
+        .take()
+        .expect("captured direct packet batch");
+    assert!(batch.is_single_source());
+    assert_eq!(batch.len(), 2);
+    assert_eq!(batch.packet_bytes(), 4);
+    assert_eq!(batch.run_count(), 1);
+    let runs = batch.packet_runs();
+    assert_eq!(runs[0].source_peer(), &source);
+    assert_eq!(runs[0].previous_hop_node_addr(), &previous_hop);
+    assert!(runs[0].received_k_bit());
+    assert!(!runs[0].is_direct_path());
+    assert_eq!(runs[0].enqueued_at_ms(), 123);
+    assert_eq!(runs[0].packet_slice(0), Some(b"a1".as_slice()));
+    assert_eq!(runs[0].packet_slice(1), Some(b"a2".as_slice()));
 }
 
 #[test]
@@ -178,285 +176,74 @@ fn release_endpoint_event_messages_subtracts_exact_count() {
     assert_eq!(counter.load(Relaxed), 2);
 }
 
-#[cfg(unix)]
-fn endpoint_test_established_session(
-    local: &Identity,
-    peer: &Identity,
-) -> crate::node::session::SessionEntry {
-    let mut initiator =
-        crate::noise::HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
-    let mut responder = crate::noise::HandshakeState::new_xk_responder(peer.keypair());
-    initiator.set_local_epoch([1u8; 8]);
-    responder.set_local_epoch([2u8; 8]);
-
-    let msg1 = initiator.write_xk_message_1().unwrap();
-    responder.read_xk_message_1(&msg1).unwrap();
-    let msg2 = responder.write_xk_message_2().unwrap();
-    initiator.read_xk_message_2(&msg2).unwrap();
-    let msg3 = initiator.write_xk_message_3().unwrap();
-    responder.read_xk_message_3(&msg3).unwrap();
-
-    crate::node::session::SessionEntry::new(
-        *peer.node_addr(),
-        peer.pubkey_full(),
-        crate::node::session::EndToEndState::Established(initiator.into_session().unwrap()),
-        1_000,
-        true,
-    )
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn session_direct_path_trust_changes_invalidate_endpoint_bulk_lease() {
-    let local = Identity::generate();
-    let peer = Identity::generate();
-    let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-    let peer_addr = *peer_identity.node_addr();
-    let transport_id = crate::transport::TransportId::new(0x51);
-
-    let mut node = Node::with_identity(local, Config::new()).expect("node");
-    let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-    let runtime = endpoint_io.bulk_send_runtime.clone();
-
-    let mut session = endpoint_test_established_session(&node.identity, &peer);
-    session.mark_established(1_000);
-    session.init_mmp(&node.config.node.session_mmp);
-    assert!(node.sessions.insert(peer_addr, session).is_none());
-
-    let active_peer = ActivePeer::with_session(
-        peer_identity,
-        LinkId::new(9),
-        1_000,
-        make_test_fmp_session(&node.identity, &peer, [0x03; 8], [0x04; 8]),
-        SessionIndex::new(0x1010),
-        SessionIndex::new(0x2020),
-        transport_id,
-        TransportAddr::from_string("127.0.0.1:9"),
-        crate::transport::LinkStats::new(),
-        true,
-        &node.config.node.mmp,
-        Some([0x04; 8]),
-    );
-    node.peers
-        .insert_with_current_session_index(peer_addr, active_peer);
-
-    let (packet_tx, _packet_rx) = packet_channel(8);
-    let mut udp = UdpTransport::new(
-        transport_id,
-        None,
-        crate::config::UdpConfig {
-            bind_addr: Some("127.0.0.1:0".to_string()),
-            mtu: Some(1234),
-            ..Default::default()
-        },
-        packet_tx,
-    );
-    udp.start_async().await.expect("start UDP transport");
-    let send_target = crate::node::encrypt_worker::SelectedSendTarget::new(
-        udp.async_socket().expect("started UDP socket"),
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        None,
-        "127.0.0.1:9".parse().expect("socket addr"),
-    );
-    let workers = crate::node::encrypt_worker::EncryptWorkerPool::spawn(1);
-
-    let publish_lease = |node: &Node| {
-        let fsp = node
-            .sessions
-            .get(&peer_addr)
-            .and_then(|entry| entry.endpoint_bulk_fsp_lease())
-            .expect("established session should export FSP lease state");
-        let fmp = node
-            .peers
-            .endpoint_bulk_fmp_lease(&peer_addr)
-            .expect("active peer should export FMP lease state");
-        runtime.publish(crate::node::EndpointBulkSendLease::new(
-            *node.node_addr(),
-            peer_addr,
-            peer_addr,
-            1234,
-            9,
-            1,
-            false,
-            fsp,
-            fmp,
-            send_target.clone(),
-            workers.clone(),
-            std::time::Duration::from_secs(1),
-        ));
-    };
-
-    publish_lease(&node);
-    assert!(
-        runtime.lease(&peer_addr).is_some(),
-        "fixture should publish a reusable endpoint bulk lease"
-    );
-    assert!(node.mark_session_direct_path_degraded(peer_addr, Node::now_ms()));
-    assert!(
-        runtime.lease(&peer_addr).is_none(),
-        "degrading direct payload trust must force endpoint sends to re-resolve route"
-    );
-
-    publish_lease(&node);
-    assert!(
-        runtime.lease(&peer_addr).is_some(),
-        "fixture should be able to republish after degradation"
-    );
-    assert!(node.clear_session_direct_path_degraded(&peer_addr));
-    assert!(
-        runtime.lease(&peer_addr).is_none(),
-        "recovering direct payload trust must also refresh endpoint route leases"
-    );
-}
-
 #[test]
-fn endpoint_send_batch_coalesce_predicate_requires_same_peer_lane_and_cap() {
-    let peer_a = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-    let peer_b = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-    let bulk_payload = || EndpointDataPayload::new(vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]);
-    let priority_payload = || {
-        let mut packet = vec![0u8; 28];
-        let total_len = packet.len() as u16;
-        packet[0] = 0x45;
-        packet[2..4].copy_from_slice(&total_len.to_be_bytes());
-        packet[9] = 1;
-        EndpointDataPayload::new(packet)
-    };
-
-    let bulk_a =
-        EndpointSendBatchCommand::new(peer_a, vec![bulk_payload()], None).expect("bulk batch");
-    let bulk_a_more = EndpointSendBatchCommand::new(
-        peer_a,
-        vec![bulk_payload(), bulk_payload(), bulk_payload()],
-        None,
-    )
-    .expect("second bulk batch");
-    let bulk_b =
-        EndpointSendBatchCommand::new(peer_b, vec![bulk_payload()], None).expect("other peer bulk");
-    let priority_a = EndpointSendBatchCommand::new(peer_a, vec![priority_payload()], None)
-        .expect("priority batch");
-
-    assert!(bulk_a.can_coalesce_with(&bulk_a_more, 4));
-    assert!(!bulk_a.can_coalesce_with(&bulk_a_more, 3));
-    assert!(!bulk_a.can_coalesce_with(&bulk_b, 4));
-    assert!(!bulk_a.can_coalesce_with(&priority_a, 4));
-}
-
-#[test]
-fn endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
+fn endpoint_event_queue_preserves_fifo_for_mixed_payload_sizes() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
                 EndpointDataDelivery::new(source, vec![0x11; 32]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("mixed endpoint event batch should enqueue");
-
-    match event_rx.try_recv().expect("priority event") {
-        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload[0], 0x11),
-        event => panic!("expected priority data event, got {event:?}"),
-    }
-    match event_rx.try_recv().expect("bulk event") {
-        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload[0], 0xaa),
-        event => panic!("expected bulk data event, got {event:?}"),
-    }
-    assert_eq!(event_tx.queued_messages(), 0);
-}
-
-#[test]
-fn endpoint_event_queue_keeps_single_lane_batches_grouped() {
-    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
-    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
-
     event_tx
-        .send(NodeEndpointEvent::DataBatch {
-            messages: vec![
-                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
-                EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
-            ],
-            queued_at: crate::perf_profile::stamp(),
-        })
-        .expect("bulk endpoint event batch should enqueue");
-    event_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
                 EndpointDataDelivery::new(source, b"first".to_vec()),
                 EndpointDataDelivery::new(source, b"second".to_vec()),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("priority endpoint event batch should enqueue");
+        .expect("second endpoint event batch should enqueue");
 
-    match event_rx.try_recv().expect("priority batch") {
-        NodeEndpointEvent::DataBatch { messages, .. } => {
-            assert_eq!(messages.len(), 2);
-            assert_eq!(messages[0].payload, b"first");
-            assert_eq!(messages[1].payload, b"second");
-        }
-        event => panic!("expected priority endpoint event batch, got {event:?}"),
-    }
-    match event_rx.try_recv().expect("bulk batch") {
-        NodeEndpointEvent::DataBatch { messages, .. } => {
-            assert_eq!(messages.len(), 2);
-            assert_eq!(messages[0].payload[0], 0xaa);
-            assert_eq!(messages[1].payload[0], 0xbb);
-        }
-        event => panic!("expected bulk endpoint event batch, got {event:?}"),
-    }
+    let event = event_rx.try_recv().expect("first batch");
+    release_observed_endpoint_event(&event_rx, &event);
+    let NodeEndpointEvent { messages, .. } = event;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].payload[0], 0xaa);
+    assert_eq!(messages[1].payload[0], 0x11);
+    let event = event_rx.try_recv().expect("second batch");
+    release_observed_endpoint_event(&event_rx, &event);
+    let NodeEndpointEvent { messages, .. } = event;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].payload, b"first");
+    assert_eq!(messages[1].payload, b"second");
     assert_eq!(event_tx.queued_messages(), 0);
 }
 
 #[test]
-fn endpoint_event_queue_drops_bulk_when_full_without_blocking_priority() {
+fn endpoint_event_queue_drops_app_data_when_full() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(1);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: source,
-            payload: vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1].into(),
-            queued_at: crate::perf_profile::stamp(),
-        })
-        .expect("first bulk endpoint event should enqueue");
+        .send(one_message_endpoint_event(
+            source,
+            vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1],
+        ))
+        .expect("first endpoint event should enqueue");
     assert_eq!(event_tx.queued_messages(), 1);
 
     event_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: source,
-            payload: vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1].into(),
-            queued_at: crate::perf_profile::stamp(),
-        })
-        .expect("full bulk endpoint lane should drop rather than fail");
+        .send(one_message_endpoint_event(
+            source,
+            vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1],
+        ))
+        .expect("full endpoint lane should drop rather than fail");
     assert_eq!(
         event_tx.queued_messages(),
         1,
-        "dropped bulk event should roll back queued message accounting"
+        "dropped event should roll back queued message accounting"
     );
 
-    event_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: source,
-            payload: b"priority".to_vec().into(),
-            queued_at: crate::perf_profile::stamp(),
-        })
-        .expect("priority endpoint event should keep reserved progress");
-    assert_eq!(event_tx.queued_messages(), 2);
-
-    match event_rx.try_recv().expect("priority event") {
-        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, b"priority"),
-        event => panic!("expected priority data event, got {event:?}"),
-    }
-    assert_eq!(event_tx.queued_messages(), 1);
-
-    match event_rx.try_recv().expect("first bulk event") {
-        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload[0], 0xaa),
-        event => panic!("expected bulk data event, got {event:?}"),
-    }
+    let event = event_rx.try_recv().expect("first event");
+    release_observed_endpoint_event(&event_rx, &event);
+    let message = expect_one_message(event);
+    assert_eq!(message.payload[0], 0xaa);
     assert_eq!(event_tx.queued_messages(), 0);
     assert!(matches!(
         event_rx.try_recv(),
@@ -465,48 +252,43 @@ fn endpoint_event_queue_drops_bulk_when_full_without_blocking_priority() {
 }
 
 #[test]
-fn endpoint_event_queue_dropped_bulk_batch_counts_as_success() {
+fn endpoint_event_queue_dropped_batch_counts_as_success() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(2);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
-                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("first bulk endpoint batch should enqueue");
+        .expect("first endpoint batch should enqueue");
     assert_eq!(event_tx.queued_messages(), 2);
-    assert_eq!(event_tx.bulk_queued_messages(), 2);
 
     event_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(source, vec![0xba; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
-                EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+                EndpointDataDelivery::new(source, vec![0xba; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("full bulk endpoint lane should drop batch rather than fail");
+        .expect("full endpoint lane should drop batch rather than fail");
     assert_eq!(
         event_tx.queued_messages(),
         2,
-        "dropped bulk batch should roll back all message accounting"
+        "dropped batch should roll back all message accounting"
     );
-    assert_eq!(event_tx.bulk_queued_messages(), 2);
 
-    match event_rx.try_recv().expect("first bulk batch") {
-        NodeEndpointEvent::DataBatch { messages, .. } => {
-            assert_eq!(messages.len(), 2);
-            assert_eq!(messages[0].payload[0], 0xaa);
-            assert_eq!(messages[1].payload[0], 0xab);
-        }
-        event => panic!("expected bulk endpoint event batch, got {event:?}"),
-    }
+    let event = event_rx.try_recv().expect("first batch");
+    release_observed_endpoint_event(&event_rx, &event);
+    let NodeEndpointEvent { messages, .. } = event;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].payload[0], 0xaa);
+    assert_eq!(messages[1].payload[0], 0xab);
     assert_eq!(event_tx.queued_messages(), 0);
-    assert_eq!(event_tx.bulk_queued_messages(), 0);
     assert!(matches!(
         event_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
@@ -514,47 +296,43 @@ fn endpoint_event_queue_dropped_bulk_batch_counts_as_success() {
 }
 
 #[test]
-fn endpoint_event_queue_partially_admits_bulk_batch_at_message_boundary() {
+fn endpoint_event_queue_partially_admits_batch_at_message_boundary() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(3);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
-                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("first bulk endpoint batch should enqueue");
-    assert_eq!(event_tx.bulk_queued_messages(), 2);
+        .expect("first endpoint batch should enqueue");
+    assert_eq!(event_tx.queued_messages(), 2);
 
     event_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(source, vec![0xba; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
-                EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+                EndpointDataDelivery::new(source, vec![0xba; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("second bulk endpoint batch should partially admit");
+        .expect("second endpoint batch should partially admit");
     assert_eq!(event_tx.queued_messages(), 3);
-    assert_eq!(event_tx.bulk_queued_messages(), 3);
 
-    match event_rx.try_recv().expect("first bulk batch") {
-        NodeEndpointEvent::DataBatch { messages, .. } => {
-            assert_eq!(messages.len(), 2);
-            assert_eq!(messages[0].payload[0], 0xaa);
-            assert_eq!(messages[1].payload[0], 0xab);
-        }
-        event => panic!("expected first bulk endpoint batch, got {event:?}"),
-    }
-    match event_rx.try_recv().expect("partially admitted bulk event") {
-        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload[0], 0xba),
-        event => panic!("expected split bulk data event, got {event:?}"),
-    }
+    let event = event_rx.try_recv().expect("first batch");
+    release_observed_endpoint_event(&event_rx, &event);
+    let NodeEndpointEvent { messages, .. } = event;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].payload[0], 0xaa);
+    assert_eq!(messages[1].payload[0], 0xab);
+    let event = event_rx.try_recv().expect("partially admitted event");
+    release_observed_endpoint_event(&event_rx, &event);
+    let message = expect_one_message(event);
+    assert_eq!(message.payload[0], 0xba);
     assert_eq!(event_tx.queued_messages(), 0);
-    assert_eq!(event_tx.bulk_queued_messages(), 0);
     assert!(matches!(
         event_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
@@ -562,45 +340,38 @@ fn endpoint_event_queue_partially_admits_bulk_batch_at_message_boundary() {
 }
 
 #[test]
-fn endpoint_event_bulk_capacity_counts_messages_not_batches() {
+fn endpoint_event_capacity_counts_messages_not_batches() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(1);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
-        .send(NodeEndpointEvent::DataBatch {
+        .send(NodeEndpointEvent {
             messages: vec![
-                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
-                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_TEST_PAYLOAD_LEN + 2]),
             ],
             queued_at: crate::perf_profile::stamp(),
         })
-        .expect("oversized bulk endpoint batch should split rather than fail");
+        .expect("oversized endpoint batch should split rather than fail");
     assert_eq!(
         event_tx.queued_messages(),
         1,
-        "oversized bulk batch should admit the headroom-sized prefix"
+        "oversized batch should admit the headroom-sized prefix"
     );
-    assert_eq!(event_tx.bulk_queued_messages(), 1);
-    match event_rx.try_recv().expect("admitted split bulk event") {
-        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload[0], 0xaa),
-        event => panic!("expected split bulk data event, got {event:?}"),
-    }
+    let event = event_rx.try_recv().expect("admitted split event");
+    release_observed_endpoint_event(&event_rx, &event);
+    let message = expect_one_message(event);
+    assert_eq!(message.payload[0], 0xaa);
     assert_eq!(event_tx.queued_messages(), 0);
-    assert_eq!(event_tx.bulk_queued_messages(), 0);
 
     event_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: source,
-            payload: b"priority".to_vec().into(),
-            queued_at: crate::perf_profile::stamp(),
-        })
-        .expect("priority endpoint event should keep reserved progress");
+        .send(one_message_endpoint_event(source, b"small".to_vec()))
+        .expect("small endpoint event should enqueue after capacity frees");
     assert_eq!(event_tx.queued_messages(), 1);
-    assert_eq!(event_tx.bulk_queued_messages(), 0);
-    match event_rx.try_recv().expect("priority event") {
-        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, b"priority"),
-        event => panic!("expected priority data event, got {event:?}"),
-    }
+    let event = event_rx.try_recv().expect("small event");
+    release_observed_endpoint_event(&event_rx, &event);
+    let message = expect_one_message(event);
+    assert_eq!(message.payload, b"small");
 }
 
 #[test]
@@ -609,11 +380,7 @@ fn endpoint_event_queue_send_fails_after_receiver_drop() {
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: source,
-            payload: b"queued".to_vec().into(),
-            queued_at: crate::perf_profile::stamp(),
-        })
+        .send(one_message_endpoint_event(source, b"queued".to_vec()))
         .expect("endpoint event should enqueue while receiver is alive");
     assert_eq!(event_tx.queued_messages(), 1);
     assert!(event_rx.try_recv().is_ok());
@@ -626,16 +393,10 @@ fn endpoint_event_queue_send_fails_after_receiver_drop() {
     );
 
     let error = event_tx
-        .send(NodeEndpointEvent::Data {
-            source_peer: source,
-            payload: b"after-drop".to_vec().into(),
-            queued_at: crate::perf_profile::stamp(),
-        })
+        .send(one_message_endpoint_event(source, b"after-drop".to_vec()))
         .expect_err("send should fail once endpoint event receiver is dropped");
-    match error.0 {
-        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, b"after-drop"),
-        event => panic!("expected failed data event, got {event:?}"),
-    }
+    let message = expect_one_message(error.0);
+    assert_eq!(message.payload, b"after-drop");
     assert_eq!(event_tx.queued_messages(), 0);
 }
 

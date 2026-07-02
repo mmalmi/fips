@@ -13,6 +13,10 @@ use tokio::sync::mpsc::{
     error::{TryRecvError, TrySendError},
 };
 
+pub(crate) trait PacketFastIngressSink: std::fmt::Debug + Send + Sync {
+    fn try_ingest_batch(&self, packets: &mut Vec<ReceivedPacket>) -> usize;
+}
+
 /// A packet received from a transport.
 #[derive(Clone, Debug)]
 pub struct ReceivedPacket {
@@ -89,16 +93,15 @@ impl ReceivedPacket {
         }
     }
 
-    pub(crate) fn is_priority_sized(&self) -> bool {
-        self.data.len() <= PRIORITY_PACKET_MAX_LEN
+    pub(crate) fn is_transport_priority(&self) -> bool {
+        is_transport_priority_packet(&self.data)
     }
 }
 
 /// Byte storage for a received transport packet.
 ///
-/// The public endpoint API still receives a plain `Vec<u8>`, but internal
-/// receive/decrypt/drop paths carry this owner so pressure drops can recycle
-/// kernel receive buffers without adding protocol surface area.
+/// Receive/decrypt/drop paths carry this owner so pressure drops and endpoint
+/// delivery can recycle kernel receive buffers without an extra packet copy.
 #[derive(Debug, Default)]
 pub struct PacketBuffer {
     data: Vec<u8>,
@@ -113,9 +116,58 @@ impl PacketBuffer {
         }
     }
 
-    pub(crate) fn into_vec(mut self) -> Vec<u8> {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data, pool: None }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn into_vec(mut self) -> Vec<u8> {
         self.pool = None;
         mem::take(&mut self.data)
+    }
+
+    pub(crate) fn try_prepend_slices(&mut self, parts: &[&[u8]], reserve_tail: usize) -> bool {
+        let prefix_len = parts
+            .iter()
+            .fold(0usize, |total, part| total.saturating_add(part.len()));
+        if prefix_len == 0 {
+            return self.data.capacity().saturating_sub(self.data.len()) >= reserve_tail;
+        }
+
+        let len = self.data.len();
+        if self.data.capacity().saturating_sub(len) < prefix_len.saturating_add(reserve_tail) {
+            return false;
+        }
+
+        // Move the packet body right inside the existing allocation, then fill
+        // the newly opened header space. This is the Vec equivalent of the
+        // fixed headroom WireGuard-go keeps in its message buffers.
+        unsafe {
+            let ptr = self.data.as_mut_ptr();
+            std::ptr::copy(ptr, ptr.add(prefix_len), len);
+            let mut offset = 0usize;
+            for part in parts {
+                std::ptr::copy_nonoverlapping(part.as_ptr(), ptr.add(offset), part.len());
+                offset += part.len();
+            }
+            self.data.set_len(len + prefix_len);
+        }
+        true
     }
 }
 
@@ -138,7 +190,13 @@ impl Drop for PacketBuffer {
 
 impl From<Vec<u8>> for PacketBuffer {
     fn from(data: Vec<u8>) -> Self {
-        Self { data, pool: None }
+        Self::new(data)
+    }
+}
+
+impl From<PacketBuffer> for Vec<u8> {
+    fn from(buffer: PacketBuffer) -> Self {
+        buffer.into_vec()
     }
 }
 
@@ -213,10 +271,35 @@ pub(crate) fn received_timestamp_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Wire-size threshold for keeping transport receive work out of the bulk
-/// FIFO. Most heartbeat, MMP, rekey, ping, and handshake-shaped datagrams are
-/// comfortably below this; full-size endpoint payloads are not.
-const PRIORITY_PACKET_MAX_LEN: usize = 512;
+/// FMP packet shape that is visible before PM2 authenticates established data.
+///
+/// App payloads, TCP ACKs, pings, and established FSP/MMP frames are all opaque
+/// phase-0 data at this boundary. Only first-contact/link rekey handshakes get
+/// the unbounded reserve lane before PM2 can classify authenticated contents.
+const FMP_VERSION: u8 = 0;
+const FMP_PHASE_MSG1: u8 = 0x1;
+const FMP_PHASE_MSG2: u8 = 0x2;
+const FMP_COMMON_PREFIX_SIZE: usize = 4;
+const FMP_MSG1_WIRE_SIZE: usize = 114;
+const FMP_MSG2_WIRE_SIZE: usize = 69;
+
+fn is_transport_priority_packet(data: &[u8]) -> bool {
+    if data.len() < FMP_COMMON_PREFIX_SIZE {
+        return false;
+    }
+
+    let version = data[0] >> 4;
+    let phase = data[0] & 0x0F;
+    if version != FMP_VERSION {
+        return false;
+    }
+
+    matches!(
+        (phase, data.len()),
+        (FMP_PHASE_MSG1, FMP_MSG1_WIRE_SIZE) | (FMP_PHASE_MSG2, FMP_MSG2_WIRE_SIZE)
+    )
+}
+
 /// Number of receive-batch Vec containers retained for reuse.
 const PACKET_BATCH_POOL_LIMIT: usize = 256;
 /// Avoid pinning unusually large test/control batches in the hot-path pool.
@@ -245,6 +328,7 @@ const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
 pub struct PacketTx {
     priority: UnboundedSender<PacketQueueItem>,
     bulk: Sender<PacketQueueItem>,
+    fast_ingress: Option<Arc<dyn PacketFastIngressSink>>,
     batch_pool: PacketBatchPool,
     buffer_pool: PacketBufferPool,
     /// Packet-count ready hint for priority lane probes. Bulk batch tails check
@@ -290,7 +374,7 @@ pub(crate) struct PacketBatch {
 #[derive(Debug)]
 enum PacketQueueItem {
     One(ReceivedPacket),
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Batch(PacketBatch),
 }
 
@@ -619,7 +703,19 @@ impl PendingPackets {
 }
 
 impl PacketTx {
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    pub(crate) fn set_fast_ingress_sink(&mut self, sink: Arc<dyn PacketFastIngressSink>) {
+        self.fast_ingress = Some(sink);
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn try_fast_ingress_packet_batch(&self, batch: &mut PacketBatch) -> usize {
+        let Some(sink) = &self.fast_ingress else {
+            return 0;
+        };
+        sink.try_ingest_batch(&mut batch.packets)
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn packet_batch(&self, capacity: usize) -> PacketBatch {
         self.batch_pool.take(capacity)
     }
@@ -638,7 +734,7 @@ impl PacketTx {
         &self,
         packet: ReceivedPacket,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
-        let tx = if packet.data.len() <= PRIORITY_PACKET_MAX_LEN {
+        let tx = if packet.is_transport_priority() {
             PacketQueueTx::Priority
         } else {
             PacketQueueTx::Bulk
@@ -657,7 +753,7 @@ impl PacketTx {
         self.send_packet_batch(PacketBatch::from_vec(packets))
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn send_packet_batch(&self, mut batch: PacketBatch) -> Result<(), ()> {
         if batch.is_empty() {
             return Ok(());
@@ -666,7 +762,7 @@ impl PacketTx {
         let packet_count = batch.len();
         let priority_count = batch
             .iter()
-            .filter(|packet| packet.is_priority_sized())
+            .filter(|packet| packet.is_transport_priority())
             .count();
         if priority_count == 0 || priority_count == packet_count {
             let tx = if priority_count == 0 {
@@ -680,7 +776,7 @@ impl PacketTx {
         let mut priority_packets = self.packet_batch(priority_count);
         let mut bulk_packets = self.packet_batch(packet_count - priority_count);
         for packet in batch.drain() {
-            if packet.is_priority_sized() {
+            if packet.is_transport_priority() {
                 priority_packets.push(packet);
             } else {
                 bulk_packets.push(packet);
@@ -692,7 +788,7 @@ impl PacketTx {
         Ok(())
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn send_packet_items(&self, tx: PacketQueueTx, mut packets: PacketBatch) -> Result<(), ()> {
         if matches!(tx, PacketQueueTx::Bulk) {
             return self.send_bulk_packet_items(packets);
@@ -708,7 +804,7 @@ impl PacketTx {
         self.send_item(tx, item).map_err(|_| ())
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn send_bulk_packet_items(&self, mut packets: PacketBatch) -> Result<(), ()> {
         let packet_count = packets.len();
         if packet_count == 0 {
@@ -842,6 +938,7 @@ impl PacketTx {
             .is_ok()
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn try_reserve_bulk_packet_prefix(&self, requested: usize) -> usize {
         if requested == 0 {
             return 0;
@@ -977,6 +1074,66 @@ impl PacketRx {
         }
     }
 
+    pub(crate) fn drain_ready<F>(&mut self, limit: usize, mut consume: F) -> usize
+    where
+        F: FnMut(ReceivedPacket) -> bool,
+    {
+        let mut drained = 0usize;
+        while drained < limit {
+            if !self.drain_pending_priority(limit, &mut drained, &mut consume) {
+                break;
+            }
+            if drained >= limit {
+                break;
+            }
+
+            if self.should_probe_priority() {
+                match self.priority.try_recv() {
+                    Ok(item) => {
+                        if !self.drain_item(
+                            item,
+                            PacketLane::Priority,
+                            limit,
+                            &mut drained,
+                            &mut consume,
+                        ) {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => {
+                        self.priority_closed = true;
+                    }
+                }
+            }
+            if drained >= limit {
+                break;
+            }
+
+            if !self.drain_pending_bulk(limit, &mut drained, &mut consume) {
+                break;
+            }
+            if drained >= limit {
+                break;
+            }
+
+            match self.bulk.try_recv() {
+                Ok(item) => {
+                    if !self.drain_item(item, PacketLane::Bulk, limit, &mut drained, &mut consume) {
+                        break;
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.bulk_closed = true;
+                    break;
+                }
+            }
+        }
+        drained
+    }
+
     fn packet_from_item(
         &mut self,
         item: PacketQueueItem,
@@ -1011,6 +1168,70 @@ impl PacketRx {
                 Some(packet)
             }
         }
+    }
+
+    fn drain_item<F>(
+        &mut self,
+        item: PacketQueueItem,
+        lane: PacketLane,
+        limit: usize,
+        drained: &mut usize,
+        consume: &mut F,
+    ) -> bool
+    where
+        F: FnMut(ReceivedPacket) -> bool,
+    {
+        if let Some(packet) = self.packet_from_item(item, lane) {
+            *drained += 1;
+            if !consume(packet) {
+                return false;
+            }
+        }
+
+        match lane {
+            PacketLane::Priority => self.drain_pending_priority(limit, drained, consume),
+            PacketLane::Bulk => self.drain_pending_bulk(limit, drained, consume),
+        }
+    }
+
+    fn drain_pending_priority<F>(
+        &mut self,
+        limit: usize,
+        drained: &mut usize,
+        consume: &mut F,
+    ) -> bool
+    where
+        F: FnMut(ReceivedPacket) -> bool,
+    {
+        while *drained < limit {
+            let Some(packet) = Self::take_pending(&mut self.pending_priority) else {
+                return true;
+            };
+            *drained += 1;
+            if !consume(packet) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn drain_pending_bulk<F>(&mut self, limit: usize, drained: &mut usize, consume: &mut F) -> bool
+    where
+        F: FnMut(ReceivedPacket) -> bool,
+    {
+        while *drained < limit {
+            if self.should_probe_priority() {
+                return true;
+            }
+            let Some(packet) = Self::take_pending(&mut self.pending_bulk) else {
+                return true;
+            };
+            *drained += 1;
+            if !consume(packet) {
+                return false;
+            }
+        }
+        true
     }
 
     fn should_probe_priority(&self) -> bool {
@@ -1073,6 +1294,7 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
         PacketTx {
             priority: priority_tx,
             bulk: bulk_tx,
+            fast_ingress: None,
             batch_pool: PacketBatchPool::new(),
             buffer_pool: PacketBufferPool::new(),
             priority_queued_packets: Arc::clone(&priority_queued_packets),

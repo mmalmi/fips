@@ -17,7 +17,11 @@ impl Node {
 
         // Create packet channel for transport -> Node communication
         let packet_buffer_size = self.config.node.buffers.packet_channel;
-        let (packet_tx, packet_rx) = packet_channel(packet_buffer_size);
+        let (mut packet_tx, packet_rx) = packet_channel(packet_buffer_size);
+        self.packet_mover2_fast_ingress_rx = Some(
+            self.packet_mover2
+                .attach_established_fast_ingress(&mut packet_tx),
+        );
         self.packet_tx = Some(packet_tx.clone());
         self.packet_rx = Some(packet_rx);
         node_start_debug_log("Node::start packet channel created");
@@ -64,76 +68,6 @@ impl Node {
 
         if !self.transports.is_empty() {
             info!(count = self.transports.len(), "Transports initialized");
-        }
-
-        // Spawn the off-task FMP-encrypt + UDP-send + FMP-decrypt
-        // worker pools. **Unix only** — both pools issue direct
-        // sendmmsg(2) / sendmsg(2)+UDP_GSO / recvmmsg(2) calls on
-        // raw file descriptors via `AsRawFd`, which is a unix-only
-        // trait. On Windows the rx_loop's tokio-based send/recv
-        // remain the canonical path; the perf overhaul lands its
-        // gains on unix.
-        //
-        // Worker count defaults to the number of CPUs, overridable
-        // via `FIPS_ENCRYPT_WORKERS=N` / `FIPS_DECRYPT_WORKERS=N`
-        // for debug / benchmarking. Hash-by-destination means a
-        // single TCP flow pins to one worker (preserves wire
-        // ordering); additional workers light up under multi-flow
-        // / multi-peer load. See `node::encrypt_worker` /
-        // `node::decrypt_worker` for full rationale.
-        #[cfg(unix)]
-        {
-            if self.config.node.worker_pools_enabled {
-                node_start_debug_log("Node::start worker pools begin");
-                let cpu_default = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1)
-                    .max(1);
-                let encrypt_worker_count: usize = std::env::var("FIPS_ENCRYPT_WORKERS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(cpu_default)
-                    .max(1);
-                self.encrypt_workers = Some(crate::node::encrypt_worker::EncryptWorkerPool::spawn(
-                    encrypt_worker_count,
-                ));
-                info!(
-                    workers = encrypt_worker_count,
-                    "Spawned FMP-encrypt worker pool"
-                );
-
-                // `FIPS_DECRYPT_WORKERS=0` disables the pool entirely and
-                // falls through to the in-line rx_loop decrypt path (the
-                // "test-mode" branch in `handle_encrypted_frame`, which is
-                // in fact a fully functional synchronous decrypt). Useful
-                // as an A/B against the worker pipeline when chasing
-                // scheduling/queueing regressions on the native macOS
-                // path. Any non-zero value (env or default) spawns the
-                // pool as before.
-                let decrypt_worker_count: usize = std::env::var("FIPS_DECRYPT_WORKERS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(cpu_default);
-                if decrypt_worker_count == 0 {
-                    info!("FIPS_DECRYPT_WORKERS=0 → in-line decrypt in rx_loop (no worker pool)");
-                } else {
-                    let direct_delivery_sink = self.decrypt_direct_session_delivery_sink();
-                    self.decrypt_workers = Some(
-                        crate::node::decrypt_worker::DecryptWorkerPool::spawn_with_direct_delivery_sink(
-                            decrypt_worker_count,
-                            direct_delivery_sink,
-                        ),
-                    );
-                    info!(
-                        workers = decrypt_worker_count,
-                        "Spawned FMP+FSP-decrypt worker pool"
-                    );
-                }
-                node_start_debug_log("Node::start worker pools complete");
-            } else {
-                node_start_debug_log("Node::start worker pools disabled");
-                info!("FIPS worker pools disabled; using in-line crypto/send path");
-            }
         }
 
         if self.config.node.discovery.nostr.enabled {
@@ -258,7 +192,8 @@ impl Node {
 
                     // Create outbound channel for TUN reader → Node
                     let tun_channel_size = self.config.node.buffers.tun_channel;
-                    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(tun_channel_size);
+                    let (outbound_tx, outbound_rx) =
+                        crate::upper::tun::tun_outbound_channel(tun_channel_size);
 
                     // Spawn reader thread
                     let transport_mtu = self.transport_mtu();
@@ -612,7 +547,7 @@ impl Node {
     ) -> bool {
         let plaintext = Disconnect::new(reason).encode();
         match self
-            .send_encrypted_link_message(node_addr, &plaintext)
+            .send_packet_mover2_fmp_link_plaintext(node_addr, &plaintext, false)
             .await
         {
             Ok(()) => true,

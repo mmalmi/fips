@@ -30,6 +30,9 @@ async fn make_test_node_tcp() -> TestNode {
     };
 
     let (packet_tx, packet_rx) = packet_channel(256);
+    let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);
+    node.tun_outbound_rx = Some(tun_outbound_rx);
+
     let mut transport = TcpTransport::new(transport_id, None, config, packet_tx);
     transport.start_async().await.unwrap();
 
@@ -45,6 +48,7 @@ async fn make_test_node_tcp() -> TestNode {
         node,
         transport_id,
         packet_rx,
+        tun_outbound_tx,
         addr,
     }
 }

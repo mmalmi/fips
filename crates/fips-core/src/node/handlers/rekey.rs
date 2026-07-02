@@ -14,7 +14,9 @@ use secp256k1::PublicKey;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
 
-/// Keep previous session alive for this long after cutover.
+/// Keep the post-cutover stale-epoch drain window open for this long.
+/// FMP retains its previous link session during this window; FSP keeps only
+/// drain timing/epoch metadata while PM2 owns packet-path stale-epoch handling.
 const DRAIN_WINDOW_SECS: u64 = 10;
 
 /// Suppress local rekey initiation for this long after receiving
@@ -324,11 +326,10 @@ impl crate::node::SessionRegistry {
         };
         entry.set_rekey_state(handshake, true);
         entry.set_handshake_payload(setup_payload, next_resend_at_ms);
-        entry.reset_decrypt_failures();
         true
     }
 
-    fn plan_session_rekey_tick(
+    fn plan_session_rekey_tick<F>(
         &self,
         now_ms: u64,
         rekey_after_secs: u64,
@@ -336,7 +337,11 @@ impl crate::node::SessionRegistry {
         drain_ms: u64,
         dampening_ms: u64,
         cutover_delay_ms: u64,
-    ) -> SessionRekeyTickPlan {
+        mut send_counter_for: F,
+    ) -> SessionRekeyTickPlan
+    where
+        F: FnMut(&NodeAddr) -> u64,
+    {
         let mut plan = SessionRekeyTickPlan::default();
 
         for (node_addr, entry) in self.iter() {
@@ -368,7 +373,8 @@ impl crate::node::SessionRegistry {
             let elapsed_secs = now_ms.saturating_sub(entry.session_start_ms()) / 1000;
             let effective_after_secs =
                 rekey_after_secs.saturating_add_signed(entry.rekey_jitter_secs());
-            if elapsed_secs >= effective_after_secs || entry.send_counter() >= rekey_after_messages
+            if elapsed_secs >= effective_after_secs
+                || send_counter_for(node_addr) >= rekey_after_messages
             {
                 plan.initiate.push(*node_addr);
             }
@@ -526,12 +532,8 @@ impl Node {
 
         // Execute cutover for initiator side
         for node_addr in plan.cutover {
-            // Re-register the (now-current) FMP session with the
-            // decrypt worker shard. Without this, the worker's
-            // owned cipher + replay state stays pinned to the
-            // pre-rekey session and post-cutover packets miss the
-            // worker entirely. See the matching comment in
-            // `handle_encrypted_frame`'s K-bit-flip branch.
+            // Refresh the packet_mover2 FMP owner with the now-current
+            // session so owner crypto/replay state follows the cutover.
             if self
                 .peers
                 .cutover_due_fmp_rekey(&node_addr, Duration::from_millis(FMP_CUTOVER_DELAY_MS))
@@ -541,12 +543,7 @@ impl Node {
                     "Rekey cutover complete (initiator), K-bit flipped"
                 );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
-                self.register_decrypt_worker_session(&node_addr);
-                // The connected-UDP fast path snapshots session key + K-bit
-                // at activation. Refresh it after cutover so normal traffic
-                // returns to the direct worker path instead of permanent
-                // rx_loop misses.
-                self.clear_connected_udp_for_peer(&node_addr);
+                self.sync_packet_mover2_fmp_owner(&node_addr);
             }
         }
 
@@ -562,11 +559,8 @@ impl Node {
                     "Drain complete, previous session erased"
                 );
                 // Drop the old session index through `deregister_session_
-                // index` rather than registry removal directly so
-                // the decrypt worker also evicts the old session's owned
-                // cipher + replay state. Pre-fix the worker held onto
-                // the old entry forever, wasting a HashMap slot per
-                // rekey for the peer's lifetime.
+                // index` rather than registry removal directly so stale
+                // receive indexes are retired consistently after drain.
                 if let Some(transport_id) = drained.transport_id {
                     self.deregister_session_index((transport_id, drained.old_our_index.as_u32()));
                     let _ = self.index_allocator.free(drained.old_our_index);
@@ -789,7 +783,7 @@ impl Node {
     /// For each established session:
     /// - If the initiator has a pending session past the liveness timer,
     ///   perform K-bit cutover
-    /// - If the drain window has expired, clean up the previous session
+    /// - If the drain window has expired, clear stale-epoch metadata
     /// - If the rekey timer/counter fires, initiate a new XK handshake
     pub(in crate::node) async fn check_session_rekey(&mut self) {
         if !self.config.node.rekey.enabled {
@@ -802,6 +796,7 @@ impl Node {
         let drain_ms = DRAIN_WINDOW_SECS * 1000;
         let dampening_ms = REKEY_DAMPENING_SECS * 1000;
 
+        let packet_mover2 = &self.packet_mover2;
         let plan = self.sessions.plan_session_rekey_tick(
             now_ms,
             rekey_after_secs,
@@ -809,6 +804,11 @@ impl Node {
             drain_ms,
             dampening_ms,
             FSP_CUTOVER_DELAY_MS,
+            |addr| {
+                packet_mover2
+                    .fsp_owner_activity(addr)
+                    .map_or(0, |activity| activity.send_counter())
+            },
         );
 
         // Execute cutover for initiator side
@@ -821,7 +821,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP rekey cutover complete (initiator), K-bit flipped"
                 );
-                self.register_decrypt_worker_fsp_session(&node_addr);
+                self.sync_packet_mover2_fsp_owner_from_current_session(&node_addr, 0);
             }
         }
 
@@ -831,11 +831,21 @@ impl Node {
                 .sessions
                 .complete_due_session_rekey_drain(&node_addr, now_ms, drain_ms)
             {
+                let epoch = self
+                    .sessions
+                    .get(&node_addr)
+                    .map(Self::packet_mover2_fsp_owner_epoch);
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
-                    "FSP drain complete, previous session erased"
+                    "FSP drain complete, stale epoch retired"
                 );
-                self.register_decrypt_worker_fsp_session(&node_addr);
+                if let Some((current_k_bit, previous_draining_k_bit)) = epoch {
+                    self.set_packet_mover2_fsp_owner_epoch(
+                        &node_addr,
+                        current_k_bit,
+                        previous_draining_k_bit,
+                    );
+                }
             }
         }
 

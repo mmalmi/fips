@@ -21,6 +21,8 @@ impl Node {
             );
             return;
         }
+        self.coord_cache
+            .insert(*src_addr, setup.src_coords.clone(), Self::now_ms());
 
         // Check for existing session with this remote
         if let Some(existing) = self.sessions.get(src_addr) {
@@ -252,6 +254,8 @@ impl Node {
             );
             return;
         }
+        self.coord_cache
+            .insert(*src_addr, ack.src_coords.clone(), Self::now_ms());
 
         // Remove the entry to take ownership of the handshake state
         let mut entry = match self.sessions.remove(src_addr) {
@@ -319,6 +323,10 @@ impl Node {
 
             let now_ms = Self::now_ms();
             let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+            let pending_receive =
+                session
+                    .recv_cipher_clone()
+                    .map(|open| (!entry.current_k_bit(), open));
             self.sessions.install_rekey_initiator_pending_session(
                 *src_addr,
                 entry,
@@ -327,7 +335,10 @@ impl Node {
                 now_ms,
                 resend_interval,
             );
-            self.register_decrypt_worker_fsp_session(src_addr);
+            if let Some((pending_k_bit, open)) = pending_receive {
+                self.install_packet_mover2_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
+            }
+            self.refresh_packet_mover2_fsp_owner_routes(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -422,66 +433,18 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-        self.sessions.install_established_initiator_session(
-            *src_addr,
-            entry,
-            session,
-            msg3_resend_payload,
-            now_ms,
-            resend_interval,
+        entry.establish(session, now_ms);
+        entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
+        self.sessions.insert(*src_addr, entry);
+        self.sync_packet_mover2_fsp_owner_from_current_session(
+            src_addr,
             self.config.node.session.coords_warmup_packets,
-            &self.config.node.session_mmp,
         );
-        self.register_decrypt_worker_fsp_session(src_addr);
-        self.coord_cache.insert(*src_addr, ack.src_coords, now_ms);
 
         // Flush any queued outbound packets for this destination
         self.flush_pending_packets(src_addr).await;
 
         info!(src = %self.peer_display_name(src_addr), "Session established (initiator, XK)");
-    }
-
-    async fn resend_handshake_after_early_encrypted_data(&mut self, src_addr: &NodeAddr) {
-        let max_resends = self.config.node.rate_limit.handshake_max_resends;
-        let payload = match self
-            .sessions
-            .prepare_handshake_resend_after_early_encrypted_data(src_addr, max_resends)
-        {
-            EarlyEncryptedHandshakeResend::Resend { payload } => payload,
-            EarlyEncryptedHandshakeResend::BudgetExhausted => {
-                debug!(
-                    src = %self.peer_display_name(src_addr),
-                    "Early encrypted data arrived after handshake resend budget was exhausted"
-                );
-                return;
-            }
-            EarlyEncryptedHandshakeResend::NoPayload => return,
-        };
-
-        let my_addr = *self.node_addr();
-        let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
-            .with_ttl(self.config.node.session.default_ttl);
-        let sent = match self.send_session_datagram(&mut datagram).await {
-            Ok(()) => true,
-            Err(e) => {
-                debug!(
-                    src = %self.peer_display_name(src_addr),
-                    error = %e,
-                    "Failed to resend session handshake after early encrypted data"
-                );
-                false
-            }
-        };
-        if sent {
-            let now_ms = Self::now_ms();
-            let interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-            self.sessions
-                .record_handshake_resend(src_addr, now_ms + interval);
-            debug!(
-                src = %self.peer_display_name(src_addr),
-                "Resent session handshake after early encrypted data"
-            );
-        }
     }
 
     /// Handle an incoming SessionMsg3 (Noise XK msg3).
@@ -545,9 +508,16 @@ impl Node {
                 }
             };
 
+            let pending_receive =
+                session
+                    .recv_cipher_clone()
+                    .map(|open| (!entry.current_k_bit(), open));
             self.sessions
                 .install_rekey_responder_pending_session(*src_addr, entry, session);
-            self.register_decrypt_worker_fsp_session(src_addr);
+            if let Some((pending_k_bit, open)) = pending_receive {
+                self.install_packet_mover2_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
+            }
+            self.refresh_packet_mover2_fsp_owner_routes(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -596,15 +566,18 @@ impl Node {
 
         let now_ms = Self::now_ms();
         // Replace the placeholder pubkey with the real one
-        self.sessions.install_established_responder_session(
+        let entry = SessionEntry::new_established(
             *src_addr,
             remote_pubkey,
             session,
             now_ms,
-            self.config.node.session.coords_warmup_packets,
-            &self.config.node.session_mmp,
+            false,
         );
-        self.register_decrypt_worker_fsp_session(src_addr);
+        self.sessions.insert(*src_addr, entry);
+        self.sync_packet_mover2_fsp_owner_from_current_session(
+            src_addr,
+            self.config.node.session.coords_warmup_packets,
+        );
 
         // Flush any pending packets
         self.flush_pending_packets(src_addr).await;

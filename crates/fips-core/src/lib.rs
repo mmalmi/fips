@@ -18,6 +18,8 @@ pub mod identity {
 pub mod mmp;
 pub mod node;
 pub mod noise;
+#[allow(dead_code)]
+pub(crate) mod packet_mover2;
 pub mod peer;
 pub(crate) mod perf_profile;
 pub mod protocol;
@@ -80,9 +82,8 @@ pub use peer::{
 
 // Re-export node types
 pub use endpoint::{
-    FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsEndpointMessage, FipsEndpointPayload,
+    FipsEndpoint, FipsEndpointBuilder, FipsEndpointDirectDeliveryError,
+    FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun, FipsEndpointDirectPacketRunMeta,
+    FipsEndpointDirectSink, FipsEndpointDirectSourceRun, FipsEndpointError, FipsEndpointMessage,
 };
-pub use node::{
-    EndpointPayloadClass, EndpointPayloadLane, ExternalPacketIo, Node, NodeDeliveredPacket,
-    NodeError, NodeState, classify_endpoint_payload, endpoint_payload_is_latency_sensitive,
-};
+pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};

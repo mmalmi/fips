@@ -43,45 +43,13 @@ impl Node {
         addr.short_hex()
     }
 
-    /// Tear down a receiver-index entry **and** keep the shard-owned
-    /// decrypt-worker state coherent: removes the same `cache_key`
-    /// from the registered-sessions tracking set and tells the
-    /// assigned shard worker to drop its `OwnedSessionState` entry.
-    ///
-    /// Use this instead of a bare session-index removal at every
-    /// session-lifecycle teardown site (rekey cross-connection swap, peer
-    /// disconnect, dispatch session-rotation) so the peer index, connected UDP
-    /// state, and decrypt-worker state remain coherent. The
-    /// follow-up `RegisterSession` for the NEW key (if any) will then
-    /// install the fresh state on the same shard.
+    /// Tear down a receiver-index entry.
     pub(in crate::node) fn deregister_session_index(&mut self, cache_key: (TransportId, u32)) {
         // Remove the index and ask the peer registry for the remaining-owner
         // state in one step. Rekey drain depends on seeing the NEW index that
         // was already installed for the same peer.
         let removed_index = self.peers.remove_session_index_with_owner_state(&cache_key);
-        let session_key = DecryptSessionKey::from(cache_key);
-        if self
-            .sessions
-            .unregister_worker_session_if_registered(&session_key)
-            && let Some(workers) = self.decrypt_workers.as_ref()
-        {
-            workers.unregister_session(session_key);
-        }
-        // Tear down the per-peer connected UDP socket *only* if no
-        // other receiver-index entry still resolves to this peer.
-        // Rekey drain calls into this helper with the OLD session
-        // index while the NEW index is already installed and points
-        // at the same peer — there the connect()-ed 5-tuple is
-        // still valid for the new session and we must not close it.
-        // Peer-teardown sites (CrossConnection swap, stale-index
-        // fall-through in encrypted.rs, disconnect handler) call
-        // here when this is the peer's last index, so the connected
-        // socket goes away with the peer.
-        if let Some(removed_index) = removed_index
-            && !removed_index.owner_has_remaining_index
-        {
-            self.clear_connected_udp_for_peer(&removed_index.owner);
-        }
+        let _ = removed_index;
     }
 
     /// Ensure the current FMP receive index resolves to this peer.
@@ -445,10 +413,15 @@ impl Node {
     /// Called once per tick from the RX loop.
     pub(crate) fn record_stats_history(&mut self) {
         let fwd = &self.stats.forwarding;
+        let now = std::time::Instant::now();
         let peers_with_mmp: Vec<f64> = self
             .peers
-            .values()
-            .filter_map(|p| p.mmp().map(|m| m.metrics.loss_rate()))
+            .keys()
+            .filter_map(|addr| {
+                self.packet_mover2
+                    .fmp_link_metrics(addr, now)
+                    .map(|metrics| metrics.loss_rate)
+            })
             .collect();
         let loss_rate = if peers_with_mmp.is_empty() {
             0.0
@@ -469,20 +442,15 @@ impl Node {
             active_sessions: self.sessions.len() as u64,
         };
 
-        let now = std::time::Instant::now();
         let peer_snaps: Vec<stats_history::PeerSnapshot> = self
             .peers
             .values()
             .map(|p| {
                 let stats = p.link_stats();
-                let (srtt_ms, loss_rate, ecn_ce) = match p.mmp() {
-                    Some(m) => (
-                        m.metrics.srtt_ms(),
-                        Some(m.metrics.loss_rate()),
-                        m.receiver.ecn_ce_count() as u64,
-                    ),
-                    None => (None, None, 0),
-                };
+                let metrics = self.packet_mover2.fmp_link_metrics(p.node_addr(), now);
+                let srtt_ms = metrics.and_then(|metrics| metrics.srtt_ms);
+                let loss_rate = metrics.map(|metrics| metrics.loss_rate);
+                let ecn_ce = metrics.map_or(0, |metrics| metrics.ecn_ce_count as u64);
                 stats_history::PeerSnapshot {
                     node_addr: *p.node_addr(),
                     last_seen: now,

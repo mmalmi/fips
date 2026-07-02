@@ -1,0 +1,926 @@
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2LiveFmpIngressRoute {
+    transport_id: TransportId,
+    receiver_idx: u32,
+    route: PacketMover2IngressRoute,
+}
+
+impl PacketMover2LiveFmpIngressRoute {
+    pub(crate) fn new(
+        transport_id: TransportId,
+        receiver_idx: u32,
+        route: PacketMover2IngressRoute,
+    ) -> Self {
+        Self {
+            transport_id,
+            receiver_idx,
+            route,
+        }
+    }
+
+    fn owner(&self) -> OwnerId {
+        self.route.owner
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2LiveFspIngressRoute {
+    source_addr: NodeAddr,
+    route: PacketMover2IngressRoute,
+}
+
+impl PacketMover2LiveFspIngressRoute {
+    pub(crate) fn new(source_addr: NodeAddr, route: PacketMover2IngressRoute) -> Self {
+        Self { source_addr, route }
+    }
+
+    fn owner(&self) -> OwnerId {
+        self.route.owner
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2LiveTunRoute {
+    dest_addr: NodeAddr,
+    route: PacketMover2TunDestinationRoute,
+}
+
+impl PacketMover2LiveTunRoute {
+    pub(crate) fn new(dest_addr: NodeAddr, route: PacketMover2TunDestinationRoute) -> Self {
+        Self { dest_addr, route }
+    }
+
+    fn owner(&self) -> OwnerId {
+        self.route.owner()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2LiveEndpointRoute {
+    dest_addr: NodeAddr,
+    route: PacketMover2EndpointDataRoute,
+}
+
+impl PacketMover2LiveEndpointRoute {
+    pub(crate) fn new(dest_addr: NodeAddr, route: PacketMover2EndpointDataRoute) -> Self {
+        Self { dest_addr, route }
+    }
+
+    fn owner(&self) -> OwnerId {
+        self.route.owner()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PacketMover2LiveOwnerRoutes {
+    fmp_ingress: Vec<PacketMover2LiveFmpIngressRoute>,
+    fsp_ingress: Vec<PacketMover2LiveFspIngressRoute>,
+    tun_destinations: Vec<PacketMover2LiveTunRoute>,
+    endpoint_destinations: Vec<PacketMover2LiveEndpointRoute>,
+}
+
+impl PacketMover2LiveOwnerRoutes {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn push_fmp_ingress(&mut self, route: PacketMover2LiveFmpIngressRoute) {
+        self.fmp_ingress.push(route);
+    }
+
+    pub(crate) fn push_fsp_ingress(&mut self, route: PacketMover2LiveFspIngressRoute) {
+        self.fsp_ingress.push(route);
+    }
+
+    pub(crate) fn push_tun_destination(&mut self, route: PacketMover2LiveTunRoute) {
+        self.tun_destinations.push(route);
+    }
+
+    pub(crate) fn push_endpoint_destination(&mut self, route: PacketMover2LiveEndpointRoute) {
+        self.endpoint_destinations.push(route);
+    }
+
+    fn has_owner_mismatch(&self, owner: OwnerId) -> bool {
+        self.fmp_ingress.iter().any(|route| route.owner() != owner)
+            || self.fsp_ingress.iter().any(|route| route.owner() != owner)
+            || self
+                .tun_destinations
+                .iter()
+                .any(|route| route.owner() != owner)
+            || self
+                .endpoint_destinations
+                .iter()
+                .any(|route| route.owner() != owner)
+    }
+
+    fn apply_to(self, routes: &mut PacketMover2LiveRouteTable) {
+        for route in self.fmp_ingress {
+            routes.register_fmp(route.transport_id, route.receiver_idx, route.route);
+        }
+        for route in self.fsp_ingress {
+            routes.register_fsp(route.source_addr, route.route);
+        }
+        for route in self.tun_destinations {
+            routes.register_tun_destination(route.dest_addr, route.route);
+        }
+        for route in self.endpoint_destinations {
+            routes.register_endpoint_destination(route.dest_addr, route.route);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2LiveOwnerError {
+    UnknownOwner,
+    OwnerMismatch,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PacketMover2LiveTurnFirsts {
+    pub(crate) raw_packet: Option<ReceivedPacket>,
+    pub(crate) fast_ingress: Option<PacketMover2FastIngressBatch>,
+    pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
+    pub(crate) tun_packet: Option<Vec<u8>>,
+    pub(crate) raw_ingress_prefetch: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2LiveNode {
+    driver: PacketMover2TurnDriver,
+    crypto_worker: PacketMover2AeadWorkerPool,
+    routes: PacketMover2LiveRouteTable,
+    fast_ingress_capacity: usize,
+    deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
+    deferred_tun_packets: Vec<Vec<u8>>,
+    empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
+    direct_fsp_reassembler: PacketMover2DirectFspReassembler,
+}
+
+impl PacketMover2LiveNode {
+    pub(crate) fn new(config: AdmissionConfig) -> Self {
+        let worker_capacity = config.total_capacity().max(1);
+        Self {
+            driver: PacketMover2TurnDriver::new(config),
+            crypto_worker: PacketMover2AeadWorkerPool::new(
+                packet_mover2_aead_worker_count(),
+                worker_capacity,
+            ),
+            routes: PacketMover2LiveRouteTable::default(),
+            fast_ingress_capacity: worker_capacity,
+            deferred_endpoint_data_batches: Vec::new(),
+            deferred_tun_packets: Vec::new(),
+            empty_raw_ingress: VecDeque::new(),
+            direct_fsp_reassembler: PacketMover2DirectFspReassembler::default(),
+        }
+    }
+
+    pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
+        self.crypto_worker.completion_notify()
+    }
+
+    pub(crate) fn attach_established_fast_ingress(
+        &self,
+        packet_tx: &mut PacketTx,
+    ) -> PacketMover2FastIngressRx {
+        let (sink, rx) = PacketMover2EstablishedFastIngressSink::channel(
+            self.routes.established_fast_ingress_snapshot(),
+            self.fast_ingress_capacity,
+        );
+        packet_tx.set_fast_ingress_sink(Arc::new(sink));
+        rx
+    }
+
+    pub(crate) fn set_established_fast_ingress_direct_fsp_sources<DirectSources>(
+        &self,
+        sources: DirectSources,
+    ) where
+        DirectSources:
+            Into<Arc<HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>>>,
+    {
+        self.routes
+            .set_established_fast_ingress_direct_fsp_sources(sources);
+    }
+
+    pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
+        self.driver.register_owner(owner, config);
+    }
+
+    pub(crate) fn register_owner_if_missing(
+        &mut self,
+        owner: OwnerId,
+        config: OwnerConfig,
+    ) -> bool {
+        if self.driver.has_owner(owner) {
+            return false;
+        }
+        self.driver.register_owner(owner, config);
+        true
+    }
+
+    pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
+        self.driver.has_owner(owner)
+    }
+
+    pub(crate) fn fsp_owner_destinations(&self) -> Vec<NodeAddr> {
+        self.driver.fsp_owner_destinations()
+    }
+
+    pub(crate) fn set_owner_crypto_keys(
+        &mut self,
+        owner: OwnerId,
+        keys: OwnerCryptoKeys,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        owner_state.set_crypto_keys(keys);
+        Ok(())
+    }
+
+    pub(crate) fn install_owner_fsp_session_routes(
+        &mut self,
+        owner: OwnerId,
+        config: OwnerConfig,
+        keys: OwnerCryptoKeys,
+        routes: PacketMover2LiveOwnerRoutes,
+        wrap: Option<PacketMover2FspWrapRoute>,
+        path: Option<TransportPath>,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        if routes.has_owner_mismatch(owner) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.install_fsp_session(config, keys) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        if !owner_state.set_fsp_wrap_route(wrap) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        match path {
+            Some(path) => owner_state.set_active_path(path),
+            None => owner_state.clear_active_path(),
+        }
+
+        self.replace_registered_owner_routes(owner, routes);
+        Ok(())
+    }
+
+    pub(crate) fn apply_owner_live_config(
+        &mut self,
+        owner: OwnerId,
+        config: OwnerConfig,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        owner_state.apply_live_config(config);
+        Ok(())
+    }
+
+    pub(crate) fn set_owner_fsp_coords_warmup(
+        &mut self,
+        owner: OwnerId,
+        remaining: u8,
+        prefix: Vec<u8>,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.set_fsp_coords_warmup(remaining, prefix) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_owner_fsp_epoch(
+        &mut self,
+        owner: OwnerId,
+        current_k_bit: bool,
+        previous_draining_k_bit: Option<bool>,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.set_fsp_epoch(current_k_bit, previous_draining_k_bit) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn install_owner_fsp_pending_receive_epoch(
+        &mut self,
+        owner: OwnerId,
+        pending_k_bit: bool,
+        open: AeadKey,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.install_fsp_pending_receive_epoch(pending_k_bit, open) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_owner_active_path(
+        &mut self,
+        owner: OwnerId,
+        path: TransportPath,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        owner_state.set_active_path(path);
+        Ok(())
+    }
+
+    pub(crate) fn owner_active_path(
+        &self,
+        owner: OwnerId,
+    ) -> Result<Option<TransportPath>, PacketMover2LiveOwnerError> {
+        if !self.driver.has_owner(owner) {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        }
+        Ok(self.driver.owner_active_path(owner))
+    }
+
+    pub(crate) fn fsp_owner_activity(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<PacketMover2FspOwnerActivity> {
+        self.driver
+            .owner_fsp_activity(OwnerId::fsp_node(*node_addr))
+    }
+
+    pub(crate) fn fsp_owner_has_pending_receive_epoch(
+        &self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> bool {
+        self.driver.owner_has_fsp_pending_receive_epoch(
+            OwnerId::fsp_node(*node_addr),
+            received_k_bit,
+        )
+    }
+
+    pub(crate) fn fsp_mmp_snapshot(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<PacketMover2FspMmpSnapshot> {
+        self.driver
+            .owner_fsp_mmp_snapshot(OwnerId::fsp_node(*node_addr))
+    }
+
+    pub(crate) fn fsp_owner_send_context(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<PacketMover2FspSendContext> {
+        self.driver
+            .owner_fsp_send_context(OwnerId::fsp_node(*node_addr))
+    }
+
+    pub(crate) fn fsp_owner_next_hop(&self, node_addr: &NodeAddr) -> Option<NodeAddr> {
+        self.driver
+            .owner_fsp_next_hop(OwnerId::fsp_node(*node_addr))
+    }
+
+    pub(crate) fn fmp_owner_send_context(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<PacketMover2FmpSendContext> {
+        self.driver
+            .owner_fmp_send_context(OwnerId::fmp_node(*node_addr))
+    }
+
+    pub(crate) fn fmp_link_metrics(
+        &self,
+        node_addr: &NodeAddr,
+        now: std::time::Instant,
+    ) -> Option<PacketMover2FmpLinkMetrics> {
+        self.driver
+            .owner_fmp_link_metrics(OwnerId::fmp_node(*node_addr), now)
+    }
+
+    pub(crate) fn fmp_link_cost(&self, node_addr: &NodeAddr) -> Option<f64> {
+        self.driver
+            .owner_fmp_link_cost(OwnerId::fmp_node(*node_addr))
+    }
+
+    pub(crate) fn fmp_has_srtt(&self, node_addr: &NodeAddr) -> bool {
+        self.driver
+            .owner_fmp_has_srtt(OwnerId::fmp_node(*node_addr))
+    }
+
+    pub(crate) fn record_authenticated_fmp_mmp_receive(
+        &mut self,
+        node_addr: &NodeAddr,
+        counter: u64,
+        timestamp_ms: u32,
+        packet_len: usize,
+        ce_flag: bool,
+        spin_bit: bool,
+        now: std::time::Instant,
+    ) -> Result<Option<std::time::Duration>, PacketMover2FmpMmpSkip> {
+        let owner = OwnerId::fmp_node(*node_addr);
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        };
+        owner_state.record_authenticated_fmp_receive(
+            counter,
+            timestamp_ms,
+            packet_len,
+            ce_flag,
+            spin_bit,
+            now,
+        )
+    }
+
+    pub(crate) fn record_fmp_mmp_send_result(
+        &mut self,
+        node_addr: &NodeAddr,
+        counter: u64,
+        timestamp_ms: u32,
+        bytes_sent: usize,
+    ) -> Result<(), PacketMover2FmpMmpSkip> {
+        let owner = OwnerId::fmp_node(*node_addr);
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        };
+        owner_state.record_fmp_send_result(counter, timestamp_ms, bytes_sent)
+    }
+
+    pub(crate) fn process_fmp_mmp_receiver_report(
+        &mut self,
+        node_addr: &NodeAddr,
+        rr: &crate::mmp::report::ReceiverReport,
+        now_ms: u64,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FmpReceiverReportResult, PacketMover2FmpMmpSkip> {
+        let owner = OwnerId::fmp_node(*node_addr);
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+        };
+        owner_state.process_fmp_mmp_receiver_report(rr, now_ms, now)
+    }
+
+    pub(crate) fn collect_fmp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+    ) -> PacketMover2FmpMmpReportBatch {
+        self.driver.collect_fmp_mmp_reports(now)
+    }
+
+    pub(crate) fn collect_fsp_mmp_reports(
+        &mut self,
+        now: std::time::Instant,
+    ) -> PacketMover2FspMmpReportBatch {
+        self.driver.collect_fsp_mmp_reports(now)
+    }
+
+    pub(crate) fn record_fsp_mmp_send_result(
+        &mut self,
+        dest_addr: NodeAddr,
+        success: bool,
+    ) -> Option<PacketMover2FspMmpReportingResumed> {
+        self.driver
+            .record_fsp_mmp_send_result(OwnerId::fsp_node(dest_addr), success)
+    }
+
+    pub(crate) fn seed_fsp_path_mtu(
+        &mut self,
+        dest_addr: NodeAddr,
+        path_mtu: u16,
+    ) -> Result<(), PacketMover2FspMmpSkip> {
+        self.driver
+            .seed_fsp_path_mtu(OwnerId::fsp_node(dest_addr), path_mtu)
+    }
+
+    pub(crate) fn process_fsp_mmp_receiver_report(
+        &mut self,
+        source_addr: NodeAddr,
+        rr: &crate::mmp::report::ReceiverReport,
+        last_outbound_next_hop: Option<NodeAddr>,
+        now_ms: u64,
+        now: std::time::Instant,
+        min_loss_sample: u64,
+    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+        self.driver.process_fsp_mmp_receiver_report(
+            OwnerId::fsp_node(source_addr),
+            rr,
+            last_outbound_next_hop,
+            now_ms,
+            now,
+            min_loss_sample,
+        )
+    }
+
+    pub(crate) fn apply_fsp_path_mtu_signal(
+        &mut self,
+        dest_addr: NodeAddr,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+        self.driver
+            .apply_fsp_path_mtu_signal(OwnerId::fsp_node(dest_addr), path_mtu, now)
+    }
+
+    pub(crate) fn min_fsp_rx_age_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<u64> {
+        self.driver.min_fsp_rx_age_for_next_hop(next_hop, now_ms)
+    }
+
+    pub(crate) fn min_fsp_data_rx_age_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+    ) -> Option<u64> {
+        self.driver
+            .min_fsp_data_rx_age_for_next_hop(next_hop, now_ms)
+    }
+
+    pub(crate) fn any_fsp_recent_outbound_without_inbound_for_next_hop(
+        &self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        self.driver
+            .any_fsp_recent_outbound_without_inbound_for_next_hop(next_hop, now_ms, timeout_ms)
+    }
+
+    pub(crate) fn record_authenticated_fsp_session(
+        &mut self,
+        source_addr: NodeAddr,
+        previous_hop: NodeAddr,
+        msg_type: u8,
+        body_len: usize,
+        sync: FspReceiveSync,
+        activity_tick: Option<ActivityTick>,
+        now: std::time::Instant,
+    ) -> Option<bool> {
+        self.driver.record_authenticated_fsp_session(
+            OwnerId::fsp_node(source_addr),
+            previous_hop,
+            msg_type,
+            body_len,
+            sync,
+            activity_tick,
+            now,
+        )
+    }
+
+    pub(crate) fn record_fsp_decrypt_failure(&mut self, source_addr: NodeAddr) -> Option<u32> {
+        self.driver
+            .record_fsp_decrypt_failure(OwnerId::fsp_node(source_addr))
+    }
+
+    pub(crate) fn record_fsp_data_sent(
+        &mut self,
+        dest_addr: NodeAddr,
+        next_hop: NodeAddr,
+        bytes: usize,
+        tick: ActivityTick,
+    ) -> bool {
+        self.driver
+            .record_fsp_data_sent(OwnerId::fsp_node(dest_addr), next_hop, bytes, tick)
+    }
+
+    pub(crate) fn unregister_owner(&mut self, owner: OwnerId) {
+        self.driver.unregister_owner(owner);
+        self.routes.unregister_owner(owner);
+    }
+
+    fn replace_registered_owner_routes(
+        &mut self,
+        owner: OwnerId,
+        routes: PacketMover2LiveOwnerRoutes,
+    ) {
+        self.routes.unregister_owner(owner);
+        routes.apply_to(&mut self.routes);
+    }
+
+    pub(crate) fn replace_owner_routes(
+        &mut self,
+        owner: OwnerId,
+        routes: PacketMover2LiveOwnerRoutes,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        if !self.driver.has_owner(owner) {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        }
+        if routes.has_owner_mismatch(owner) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+
+        self.replace_registered_owner_routes(owner, routes);
+        Ok(())
+    }
+
+    pub(crate) fn replace_owner_fsp_routes(
+        &mut self,
+        owner: OwnerId,
+        routes: PacketMover2LiveOwnerRoutes,
+        wrap: Option<PacketMover2FspWrapRoute>,
+        path: Option<TransportPath>,
+    ) -> Result<(), PacketMover2LiveOwnerError> {
+        if routes.has_owner_mismatch(owner) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(PacketMover2LiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.set_fsp_wrap_route(wrap) {
+            return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        match path {
+            Some(path) => owner_state.set_active_path(path),
+            None => owner_state.clear_active_path(),
+        }
+
+        self.replace_registered_owner_routes(owner, routes);
+        Ok(())
+    }
+
+    pub(crate) fn take_deferred_endpoint_data_batches(
+        &mut self,
+    ) -> Vec<NodeEndpointDataBatch> {
+        std::mem::take(&mut self.deferred_endpoint_data_batches)
+    }
+
+    pub(crate) fn take_deferred_tun_packets(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.deferred_tun_packets)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn pump_turn_with_firsts_and_transport_worker<RI, Transports>(
+        &mut self,
+        fast_ingress: Option<PacketMover2FastIngressBatch>,
+        raw_ingress: &mut RI,
+        raw_ingress_limit: usize,
+        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        RI: PacketMover2RawIngressSource,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let _turn_timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
+        self.crypto_worker.record_perf_depths();
+        let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
+        let summary = self
+            .driver
+            .start_aead_completion_turn(
+                &mut self.crypto_worker,
+                crypto_limit,
+                compact_endpoint_data,
+            );
+        let turn = self.driver
+            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
+                summary,
+                &mut self.crypto_worker,
+                fast_ingress,
+                raw_ingress,
+                &mut self.routes,
+                raw_ingress_limit,
+                endpoint_data_rx,
+                endpoint_limit,
+                tun_outbound_rx,
+                tun_limit,
+                outbound_firsts,
+                &mut self.deferred_endpoint_data_batches,
+                &mut self.deferred_tun_packets,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                transport_send_worker,
+            )
+            .await;
+        record_packet_mover2_live_turn_perf(&turn);
+        turn
+    }
+
+    pub(crate) async fn pump_completion_output_turn_with_transport_worker<Transports>(
+        &mut self,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let _turn_timer =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
+        self.crypto_worker.record_perf_depths();
+        let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
+        let summary = self
+            .driver
+            .start_aead_completion_turn(
+                &mut self.crypto_worker,
+                crypto_limit,
+                compact_endpoint_data,
+            );
+        if !summary.has_activity() {
+            return PacketMover2LiveNodeTurn::default();
+        }
+        let turn = self.driver
+            .finish_aead_live_node_output_turn_with_executor(
+                summary,
+                &mut self.routes,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                false,
+                &mut self.crypto_worker,
+                transport_send_worker,
+            )
+            .await;
+        record_packet_mover2_live_turn_perf(&turn);
+        turn
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn pump_packet_rx_turn_with_firsts_and_transport_worker<Transports>(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        firsts: PacketMover2LiveTurnFirsts,
+        packet_limit: usize,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        self.pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker(
+            packet_rx,
+            firsts,
+            packet_limit,
+            PacketMover2NoDirectFspSources,
+            endpoint_data_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            tun_tx,
+            endpoint_tx,
+            transports,
+            crypto_limit,
+            transport_send_worker,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker<
+        C,
+        Transports,
+    >(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        firsts: PacketMover2LiveTurnFirsts,
+        packet_limit: usize,
+        direct_fsp_sources: C,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        C: PacketMover2FspSourceClassifier,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        let PacketMover2LiveTurnFirsts {
+            raw_packet,
+            fast_ingress,
+            endpoint_data_batch,
+            tun_packet,
+            raw_ingress_prefetch,
+        } = firsts;
+        let outbound_firsts = PacketMover2LiveOutboundFirsts {
+            endpoint_data_batch,
+            tun_packet,
+            ..Default::default()
+        };
+        let mut direct_fsp_reassembler = std::mem::take(&mut self.direct_fsp_reassembler);
+        let mut raw_ingress =
+            PacketMover2FmpPacketRxSource::with_first_direct_fsp_sources_and_reassembler(
+                packet_rx,
+                raw_packet,
+                direct_fsp_sources,
+                Some(&mut direct_fsp_reassembler),
+            );
+        if raw_ingress_prefetch && packet_limit > 0 {
+            let mut prefetched = std::mem::take(&mut self.empty_raw_ingress);
+            prefetched.clear();
+            raw_ingress.drain_raw_ingress(packet_limit, |packet| {
+                prefetched.push_back(packet);
+            });
+            let mut turn = self
+                .pump_turn_with_firsts_and_transport_worker(
+                    fast_ingress,
+                    &mut prefetched,
+                    packet_limit,
+                    outbound_firsts,
+                    endpoint_data_rx,
+                    endpoint_limit,
+                    tun_outbound_rx,
+                    tun_limit,
+                    tun_tx,
+                    endpoint_tx,
+                    transports,
+                    crypto_limit,
+                    transport_send_worker,
+                )
+                .await;
+            let control_ingress = raw_ingress.take_control_ingress();
+            drop(raw_ingress);
+            turn.fmp_control_ingress = control_ingress;
+            self.empty_raw_ingress = prefetched;
+            self.direct_fsp_reassembler = direct_fsp_reassembler;
+            return turn;
+        }
+        let mut turn = self
+            .pump_turn_with_firsts_and_transport_worker(
+                fast_ingress,
+                &mut raw_ingress,
+                packet_limit,
+                outbound_firsts,
+                endpoint_data_rx,
+                endpoint_limit,
+                tun_outbound_rx,
+                tun_limit,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                transport_send_worker,
+            )
+            .await;
+        let control_ingress = raw_ingress.take_control_ingress();
+        drop(raw_ingress);
+        turn.fmp_control_ingress = control_ingress;
+        self.direct_fsp_reassembler = direct_fsp_reassembler;
+        turn
+    }
+}
+
+fn packet_mover2_aead_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn record_packet_mover2_live_turn_perf(turn: &PacketMover2LiveNodeTurn) {
+    if !crate::perf_profile::enabled() {
+        return;
+    }
+    let summary = turn.summary();
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LivePreparedDispatched,
+        summary.dispatched() as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LiveCompletionsDrained,
+        summary.completions() as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LiveRetiredOutputs,
+        summary.outputs() as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LiveRetiredDrops,
+        summary.drops() as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::PacketMover2LiveOutputDrops,
+        summary.outputs_dropped() as u64,
+    );
+}

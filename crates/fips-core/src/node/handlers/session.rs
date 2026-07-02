@@ -6,8 +6,6 @@
 //! encrypted data, and error signals (CoordsRequired, PathBroken).
 
 include!("session/prelude_dispatch.rs");
-include!("session/send_plan_core.rs");
-include!("session/pipelined_send.rs");
 include!("session/receive_registry.rs");
 include!("session/node_receive.rs");
 include!("session/node_handshake.rs");
@@ -22,8 +20,5 @@ include!("session/post_node.rs");
 mod tests {
     include!("session/tests/registry.rs");
     include!("session/tests/receive_dispatch.rs");
-    include!("session/tests/pipelined_core.rs");
-    include!("session/tests/peer_runtime.rs");
-    include!("session/tests/runtime_send.rs");
     include!("session/tests/rekey_recovery.rs");
 }

@@ -5,6 +5,7 @@ pub(in crate::node::tests) struct TestNode {
     pub(in crate::node::tests) node: Node,
     pub(in crate::node::tests) transport_id: TransportId,
     pub(in crate::node::tests) packet_rx: PacketRx,
+    pub(in crate::node::tests) tun_outbound_tx: crate::upper::tun::TunOutboundTx,
     pub(in crate::node::tests) addr: TransportAddr,
 }
 
@@ -25,7 +26,6 @@ pub(in crate::node::tests) async fn make_test_node_with_mtu(mtu: u16) -> TestNod
     config.node.rate_limit.handshake_resend_backoff = 1.5;
     config.node.rate_limit.handshake_max_resends = 12;
     config.node.bloom.update_debounce_ms = 50;
-    config.node.connected_udp.enabled = false;
     let mut node = Node::new(config).unwrap();
     let transport_id = TransportId::new(1);
 
@@ -36,6 +36,9 @@ pub(in crate::node::tests) async fn make_test_node_with_mtu(mtu: u16) -> TestNod
     };
 
     let (packet_tx, packet_rx) = packet_channel(256);
+    let (tun_outbound_tx, tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(256);
+    node.tun_outbound_rx = Some(tun_outbound_rx);
+
     let mut transport = UdpTransport::new(transport_id, None, udp_config, packet_tx);
     transport.start_async().await.unwrap();
 
@@ -47,6 +50,7 @@ pub(in crate::node::tests) async fn make_test_node_with_mtu(mtu: u16) -> TestNod
         node,
         transport_id,
         packet_rx,
+        tun_outbound_tx,
         addr,
     }
 }

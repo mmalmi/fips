@@ -76,7 +76,8 @@ async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() 
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-probe");
     let baseline = node.stats().discovery.req_initiated;
 
-    node.handle_tun_outbound(ipv6_packet).await;
+    node.handle_packet_mover2_deferred_tun_packet(ipv6_packet)
+        .await;
 
     assert_eq!(
         node.pending_session_traffic
@@ -113,7 +114,8 @@ async fn test_tun_packet_for_established_session_with_no_route_queues_and_discov
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-probe");
     let baseline = node.stats().discovery.req_initiated;
 
-    node.handle_tun_outbound(ipv6_packet).await;
+    node.handle_packet_mover2_deferred_tun_packet(ipv6_packet)
+        .await;
 
     assert_eq!(
         node.pending_session_traffic
@@ -159,7 +161,8 @@ async fn test_tun_packet_for_established_session_with_stale_direct_queues_and_di
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-stale-direct-probe");
     let baseline = node.stats().discovery.req_initiated;
 
-    node.handle_tun_outbound(ipv6_packet).await;
+    node.handle_packet_mover2_deferred_tun_packet(ipv6_packet)
+        .await;
 
     assert_eq!(
         node.pending_session_traffic
@@ -201,12 +204,16 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
         .coord_cache_mut()
         .insert(dest_addr, stale_coords.clone(), now_ms);
     insert_initiating_session_for(&mut nodes[0].node, dest_addr, dest_pubkey);
-    nodes[0].node.pending_session_traffic.push_endpoint_data(
-        dest_addr,
-        crate::node::EndpointDataPayload::new(b"queued".to_vec()),
-        usize::MAX,
-        usize::MAX,
-    );
+    nodes[0]
+        .node
+        .pending_session_traffic
+        .push_endpoint_data_batch_with_enqueued_at_ms(
+            dest_addr,
+            vec![b"queued".to_vec()],
+            usize::MAX,
+            usize::MAX,
+            crate::time::now_ms(),
+        );
 
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
     nodes[0]
@@ -257,14 +264,14 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
         .initiate_session(dest_addr, dest_pubkey)
         .await
         .expect("session should initiate over graph route");
-    drain_to_quiescence(&mut nodes).await;
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&dest_addr)
-            .is_some_and(|entry| entry.is_established()),
-        "fixture should start with an established end-to-end session"
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest_addr,
+        Duration::from_secs(10),
+        "fallback warmup fixture",
+    )
+    .await;
     nodes[0].node.coord_cache_mut().remove(&dest_addr);
 
     let request_id = 5150;
@@ -303,16 +310,6 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
         nodes[0].node.stats().forwarding.originated_packets > originated_before,
         "fresh discovery for an established session should immediately send a small fallback warmup"
     );
-    assert_eq!(
-        nodes[0]
-            .node
-            .get_session(&dest_addr)
-            .expect("session")
-            .coords_warmup_remaining(),
-        nodes[0].node.config.node.session.coords_warmup_packets,
-        "standalone warmup must not consume the data-plane coordinate warmup budget"
-    );
-
     drain_to_quiescence(&mut nodes).await;
     cleanup_nodes(&mut nodes).await;
 }
@@ -337,14 +334,14 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
         .initiate_session(dest_addr, dest_pubkey)
         .await
         .expect("session should initiate over graph route");
-    drain_to_quiescence(&mut nodes).await;
-    assert!(
-        nodes[0]
-            .node
-            .get_session(&dest_addr)
-            .is_some_and(|entry| entry.is_established()),
-        "fixture should start with an established end-to-end session"
-    );
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &dest_addr,
+        Duration::from_secs(10),
+        "fallback TUN fixture",
+    )
+    .await;
     nodes[0].node.coord_cache_mut().remove(&dest_addr);
 
     let src_fips = crate::FipsAddress::from_node_addr(&src_addr);
@@ -365,13 +362,19 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
     let response = crate::protocol::LookupResponse::new(request_id, dest_addr, fresh_coords, proof);
     let response_payload = &response.encode()[1..];
 
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[2].node.tun_tx = Some(tun_tx);
     nodes[0]
         .node
         .handle_lookup_response(&fallback_next_hop, response_payload)
         .await;
-    drain_to_quiescence(&mut nodes).await;
+    let delivered = recv_tun_packet_while_draining(
+        &mut nodes,
+        &tun_rx,
+        Duration::from_secs(10),
+        "fallback queued TUN packet",
+    )
+    .await;
 
     assert!(
         nodes[0]
@@ -381,10 +384,8 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
             .is_none(),
         "discovery should flush queued TUN traffic through the established session"
     );
-    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
     assert_eq!(
-        delivered,
-        vec![ipv6_packet],
+        delivered, ipv6_packet,
         "fresh discovery route should carry queued session traffic over fallback"
     );
 

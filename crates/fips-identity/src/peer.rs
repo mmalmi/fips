@@ -26,10 +26,9 @@ impl PeerIdentity {
     /// will be derived assuming even parity for ECDH operations.
     ///
     /// Precomputes the even-parity full pubkey eagerly so `pubkey_full()`
-    /// is a constant-time field load. Without this, every send-side hot-path
-    /// caller (e.g. `send_endpoint_data` per packet) re-derived the full
-    /// key, which spends ~6% of CPU on a secp256k1 EC point parse for what
-    /// should be a memoized lookup.
+    /// is a constant-time field load. Without this, every send-side hot path
+    /// packet re-derived the full key, which spends ~6% of CPU on a secp256k1
+    /// EC point parse for what should be a memoized lookup.
     pub fn from_pubkey(pubkey: XOnlyPublicKey) -> Self {
         let node_addr = NodeAddr::from_pubkey(&pubkey);
         let address = FipsAddress::from_node_addr(&node_addr);

@@ -7,7 +7,6 @@
 //! eviction is reserved for cases where recovery cannot be started.
 
 use super::*;
-use crate::node::decrypt_worker::DecryptFailureReport;
 use std::time::{Duration, Instant};
 
 async fn make_started_udp_transport(id: u32) -> TransportHandle {
@@ -27,8 +26,8 @@ async fn make_started_udp_transport(id: u32) -> TransportHandle {
 }
 
 /// Drive a fully-promoted peer to the decrypt-failure threshold with no usable
-/// transport and verify the old force-removal fallback still cleans up both
-/// active peer storage and session-index dispatch.
+/// transport and verify forced removal still cleans up both active peer storage
+/// and session-index dispatch.
 ///
 /// Setup uses the `make_completed_connection` harness so the peer has a
 /// real `our_index`/`transport_id`, ensuring `remove_active_peer` exercises
@@ -170,7 +169,7 @@ async fn test_decrypt_failure_threshold_starts_recovery_rekey_when_transport_ava
 }
 
 #[tokio::test]
-async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
+async fn test_packet_mover2_decrypt_failures_suppressed_during_fresh_session_drain() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -186,13 +185,8 @@ async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
     node.promote_connection(link_id, identity, 2_000).unwrap();
 
     for counter in 1..=THRESHOLD + 5 {
-        node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_peer: identity,
-            fmp_counter: counter as u64,
-            fmp_replay_highest: 0,
-            trace_enqueued_at: None,
-        })
-        .await;
+        node.handle_packet_mover2_fmp_decrypt_failure(&node_addr, counter as u64, 0)
+            .await;
     }
 
     let peer = node
@@ -201,7 +195,7 @@ async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
     assert_eq!(
         peer.consecutive_decrypt_failures(),
         0,
-        "fresh worker failures before any authenticated counter should be ignored"
+        "fresh PM2 failures before any authenticated counter should be ignored"
     );
     assert!(
         !peer.rekey_in_progress(),
@@ -213,7 +207,7 @@ async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
 }
 
 #[tokio::test]
-async fn test_worker_decrypt_failures_suppressed_during_post_auth_fresh_session_drain() {
+async fn test_packet_mover2_decrypt_failures_suppressed_during_post_auth_fresh_session_drain() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -227,13 +221,8 @@ async fn test_worker_decrypt_failures_suppressed_during_post_auth_fresh_session_
     node.promote_connection(link_id, identity, 2_000).unwrap();
 
     for counter in 1..=THRESHOLD {
-        node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_peer: identity,
-            fmp_counter: counter as u64,
-            fmp_replay_highest: 1,
-            trace_enqueued_at: None,
-        })
-        .await;
+        node.handle_packet_mover2_fmp_decrypt_failure(&node_addr, counter as u64, 1)
+            .await;
     }
 
     let peer = node
@@ -242,12 +231,12 @@ async fn test_worker_decrypt_failures_suppressed_during_post_auth_fresh_session_
     assert_eq!(
         peer.consecutive_decrypt_failures(),
         0,
-        "fresh worker failures after an authenticated counter should still be ignored briefly"
+        "fresh PM2 failures after an authenticated counter should still be ignored briefly"
     );
 }
 
 #[tokio::test]
-async fn test_worker_decrypt_failures_count_after_post_auth_grace() {
+async fn test_packet_mover2_decrypt_failures_count_after_post_auth_grace() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -264,23 +253,18 @@ async fn test_worker_decrypt_failures_count_after_post_auth_grace() {
         .set_session_established_at_for_test(Instant::now() - Duration::from_secs(11));
 
     for counter in 1..=THRESHOLD {
-        node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_peer: identity,
-            fmp_counter: counter as u64,
-            fmp_replay_highest: 1,
-            trace_enqueued_at: None,
-        })
-        .await;
+        node.handle_packet_mover2_fmp_decrypt_failure(&node_addr, counter as u64, 1)
+            .await;
     }
 
     assert!(
         node.get_peer(&node_addr).is_none(),
-        "worker failures must trigger recovery/removal after the post-auth stale drain grace"
+        "PM2 failures must trigger recovery/removal after the post-auth stale drain grace"
     );
 }
 
 #[tokio::test]
-async fn test_worker_decrypt_failures_count_after_fresh_session_grace() {
+async fn test_packet_mover2_decrypt_failures_count_after_fresh_session_grace() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -297,13 +281,8 @@ async fn test_worker_decrypt_failures_count_after_fresh_session_grace() {
         .set_session_established_at_for_test(Instant::now() - Duration::from_secs(31));
 
     for counter in 1..=THRESHOLD {
-        node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_peer: identity,
-            fmp_counter: counter as u64,
-            fmp_replay_highest: 0,
-            trace_enqueued_at: None,
-        })
-        .await;
+        node.handle_packet_mover2_fmp_decrypt_failure(&node_addr, counter as u64, 0)
+            .await;
     }
 
     assert!(

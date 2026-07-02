@@ -1,16 +1,16 @@
 use super::*;
 
 impl Node {
+    fn new_packet_mover2_node() -> PacketMover2Node {
+        PacketMover2LiveNode::new(AdmissionConfig::new(1024, 4096))
+    }
+
     /// Create a new node from configuration.
     pub fn new(config: Config) -> Result<Self, NodeError> {
         config.validate()?;
         let identity = config.create_identity()?;
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();
-
-        let (decrypt_fallback_tx, decrypt_fallback_rx) =
-            decrypt_worker::decrypt_worker_fallback_channels();
-        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -83,6 +83,9 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
+            packet_mover2: Self::new_packet_mover2_node(),
+            packet_mover2_fast_ingress_rx: None,
+            packet_mover2_transport_send_worker: Default::default(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
@@ -100,16 +103,9 @@ impl Node {
             tun_tx: None,
             tun_outbound_rx: None,
             external_packet_tx: None,
-            endpoint_priority_command_rx: None,
-            endpoint_command_rx: None,
+            endpoint_control_rx: None,
+            endpoint_data_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
-            endpoint_bulk_feedback_rx: None,
-            #[cfg(unix)]
-            endpoint_bulk_send_runtime: None,
-            encrypt_workers: None,
-            decrypt_workers: None,
-            decrypt_fallback_tx,
-            decrypt_fallback_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -162,10 +158,6 @@ impl Node {
     pub fn with_identity(identity: Identity, config: Config) -> Result<Self, NodeError> {
         config.validate()?;
         let node_addr = *identity.node_addr();
-
-        let (decrypt_fallback_tx, decrypt_fallback_rx) =
-            decrypt_worker::decrypt_worker_fallback_channels();
-        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -231,6 +223,9 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
+            packet_mover2: Self::new_packet_mover2_node(),
+            packet_mover2_fast_ingress_rx: None,
+            packet_mover2_transport_send_worker: Default::default(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
@@ -248,16 +243,9 @@ impl Node {
             tun_tx: None,
             tun_outbound_rx: None,
             external_packet_tx: None,
-            endpoint_priority_command_rx: None,
-            endpoint_command_rx: None,
+            endpoint_control_rx: None,
+            endpoint_data_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
-            endpoint_bulk_feedback_rx: None,
-            #[cfg(unix)]
-            endpoint_bulk_send_runtime: None,
-            encrypt_workers: None,
-            decrypt_workers: None,
-            decrypt_fallback_tx,
-            decrypt_fallback_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -333,43 +321,6 @@ impl Node {
         (Arc::new(host_map), peer_acl)
     }
 
-    #[cfg(unix)]
-    pub(super) fn send_weight_for_peer(&self, peer_addr: &NodeAddr) -> u8 {
-        self.configured_peer_send_weights.weight_for(peer_addr)
-    }
-
-    #[cfg(unix)]
-    pub(in crate::node) fn resolve_peer_runtime_route_decision(
-        &mut self,
-        dest_addr: &NodeAddr,
-        now_ms: u64,
-    ) -> Result<PeerRuntimeRouteDecision, PeerRuntimeRouteDecisionError> {
-        let Some(next_hop_addr) = self.find_next_hop(dest_addr).map(|peer| *peer.node_addr())
-        else {
-            return Err(PeerRuntimeRouteDecisionError::NoRoute {
-                dest_addr: *dest_addr,
-            });
-        };
-
-        let peer_snapshot = self
-            .peers
-            .prepare_peer_runtime_route_snapshot(&next_hop_addr)
-            .map_err(|error| PeerRuntimeRouteDecisionError::FmpPreparation {
-                next_hop_addr,
-                error,
-            })?;
-        let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
-        let direct_path_blocks_direct_payload = next_hop_addr == *dest_addr
-            && self.session_direct_path_blocks_direct_payload(dest_addr, now_ms);
-
-        Ok(PeerRuntimeRouteDecision::new(
-            next_hop_addr,
-            peer_snapshot,
-            scheduling_weight,
-            direct_path_blocks_direct_payload,
-        ))
-    }
-
     /// Create transport instances from configuration.
     ///
     /// Returns a vector of TransportHandles for all configured transports.
@@ -388,17 +339,6 @@ impl Node {
         // Create UDP transport instances
         for (name, udp_config) in udp_instances {
             let transport_id = self.allocate_transport_id();
-            #[cfg(target_os = "macos")]
-            let udp = UdpTransport::new_with_connected_udp_listener(
-                transport_id,
-                name,
-                udp_config,
-                packet_tx.clone(),
-                crate::transport::udp::socket::macos_connected_udp_enabled(
-                    self.config.node.connected_udp.enabled,
-                ),
-            );
-            #[cfg(not(target_os = "macos"))]
             let udp = UdpTransport::new(transport_id, name, udp_config, packet_tx.clone());
             transports.push(TransportHandle::Udp(udp));
         }

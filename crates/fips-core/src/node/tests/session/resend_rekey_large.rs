@@ -1,7 +1,13 @@
 use super::*;
 
-#[tokio::test]
-async fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
+#[test]
+fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
+    run_large_stack_async_test("fips-established-msg3-resend", || async {
+        established_initiator_resends_final_msg3_until_responder_establishes().await;
+    });
+}
+
+async fn established_initiator_resends_final_msg3_until_responder_establishes() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
@@ -32,14 +38,13 @@ async fn test_established_initiator_resends_final_msg3_until_responder_establish
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_awaiting_msg3()
     );
 
     let count = wait_process_packets_for_node(&mut nodes, 0).await;
     assert!(count > 0, "SessionAck should reach initiator");
     let initiator_entry = nodes[0].node.get_session(&node1_addr).unwrap();
-    assert!(initiator_entry.state().is_established());
+    assert!(initiator_entry.is_established());
     assert!(
         initiator_entry.handshake_payload().is_some(),
         "initiator should retain final msg3 for loss recovery"
@@ -60,7 +65,6 @@ async fn test_established_initiator_resends_final_msg3_until_responder_establish
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_awaiting_msg3(),
         "responder should still be waiting after the dropped msg3"
     );
@@ -82,18 +86,32 @@ async fn test_established_initiator_resends_final_msg3_until_responder_establish
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_established(),
         "responder should establish from the resent SessionMsg3"
     );
 
-    nodes[1]
+    let mut node0_endpoint = nodes[0]
         .node
-        .send_session_data(&node0_addr, 0, 0, b"responder-proof")
-        .await
-        .expect("responder should send data after establishment");
-    let count = wait_process_packets_for_node(&mut nodes, 0).await;
-    assert!(count > 0, "initiator should receive responder proof data");
+        .attach_endpoint_data_io(8)
+        .expect("initiator endpoint data I/O should attach");
+    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    send_endpoint_data_via_pm2(
+        &mut nodes[1].node,
+        node0_identity,
+        b"responder-proof".to_vec(),
+    )
+    .await
+    .expect("responder should send endpoint data after establishment");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator responder-proof endpoint data",
+    )
+    .await;
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), node1_addr);
+    assert_eq!(message.payload, b"responder-proof");
     assert!(
         nodes[0]
             .node
@@ -107,8 +125,14 @@ async fn test_established_initiator_resends_final_msg3_until_responder_establish
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
+#[test]
+fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
+    run_large_stack_async_test("fips-rekey-msg3-resend", || async {
+        rekey_initiator_resends_final_msg3_until_responder_has_pending_session().await;
+    });
+}
+
+async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
@@ -131,14 +155,28 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .expect("initial session should start");
-    drain_to_quiescence(&mut nodes).await;
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey msg3 fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey msg3 fixture responder",
+    )
+    .await;
 
     assert!(
         nodes[0]
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_established()
     );
     assert!(
@@ -146,7 +184,6 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
             .node
             .get_session(&node0_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 
@@ -195,13 +232,28 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
         "responder should not have the new session before msg3 is resent"
     );
 
-    nodes[1]
+    let mut node0_endpoint = nodes[0]
         .node
-        .send_session_data(&node0_addr, 0, 0, b"old-session-proof")
-        .await
-        .expect("old session should remain usable while rekey msg3 is pending");
-    let count = wait_process_packets_for_node(&mut nodes, 0).await;
-    assert!(count > 0, "old-session proof should reach initiator");
+        .attach_endpoint_data_io(8)
+        .expect("initiator endpoint data I/O should attach");
+    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    send_endpoint_data_via_pm2(
+        &mut nodes[1].node,
+        node0_identity,
+        b"old-session-proof".to_vec(),
+    )
+    .await
+    .expect("old session should carry endpoint data while rekey msg3 is pending");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut node0_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initiator old-session-proof endpoint data",
+    )
+    .await;
+    let message = expect_single_endpoint_data_event(event);
+    assert_eq!(*message.source_peer.node_addr(), node1_addr);
+    assert_eq!(message.payload, b"old-session-proof");
     assert!(
         nodes[0]
             .node
@@ -248,8 +300,14 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
+#[test]
+fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
+    run_large_stack_async_test("fips-rekey-msg1-resend", || async {
+        rekey_initiator_resends_msg1_when_first_setup_lost().await;
+    });
+}
+
+async fn rekey_initiator_resends_msg1_when_first_setup_lost() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
@@ -272,7 +330,22 @@ async fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .expect("initial session should start");
-    drain_to_quiescence(&mut nodes).await;
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture responder",
+    )
+    .await;
 
     assert!(
         nodes[0].node.initiate_session_rekey(&node1_addr).await,
@@ -331,13 +404,20 @@ async fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
+#[test]
+fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
+    run_large_stack_async_test("fips-rekey-msg1-exhaustion", || async {
+        rekey_msg1_exhaustion_allows_peer_msg1_to_converge().await;
+    });
+}
+
+async fn rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
     verify_tree_convergence(&nodes);
     populate_all_coord_caches(&mut nodes);
 
+    let node0_addr = *nodes[0].node.node_addr();
     let node1_addr = *nodes[1].node.node_addr();
     let node1_pubkey = nodes[1].node.identity().pubkey_full();
 
@@ -346,7 +426,22 @@ async fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
         .initiate_session(node1_addr, node1_pubkey)
         .await
         .expect("initial session should start");
-    drain_to_quiescence(&mut nodes).await;
+    wait_for_session_established(
+        &mut nodes,
+        0,
+        &node1_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture initiator",
+    )
+    .await;
+    wait_for_session_established(
+        &mut nodes,
+        1,
+        &node0_addr,
+        Duration::from_secs(10),
+        "initial rekey exhaustion fixture responder",
+    )
+    .await;
 
     let smaller = if nodes[0].node.node_addr() < nodes[1].node.node_addr() {
         0
@@ -422,13 +517,18 @@ async fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
     cleanup_nodes(&mut nodes).await;
 }
 
-#[tokio::test]
-async fn test_session_100_nodes() {
+#[test]
+fn test_session_100_nodes() {
+    run_large_stack_async_test("fips-session-100-nodes", || async {
+        session_100_nodes().await;
+    });
+}
+
+async fn session_100_nodes() {
     let _guard = lock_large_network_test().await;
 
     use rand::rngs::StdRng;
     use rand::{RngExt, SeedableRng};
-    use std::sync::mpsc;
     use std::time::Instant;
 
     // Same random topology as other 100-node tests
@@ -450,6 +550,13 @@ async fn test_session_100_nodes() {
         .iter()
         .map(|tn| (*tn.node.node_addr(), tn.node.identity().pubkey_full()))
         .collect();
+    for node_idx in 0..NUM_NODES {
+        for &(addr, pubkey) in &all_info {
+            if addr != *nodes[node_idx].node.node_addr() {
+                nodes[node_idx].node.register_identity(addr, pubkey);
+            }
+        }
+    }
 
     // Each node picks one random target for its outbound session.
     // Use deterministic RNG so failures are reproducible.
@@ -489,7 +596,7 @@ async fn test_session_100_nodes() {
         let ok = nodes[src]
             .node
             .get_session(&dest_addr)
-            .map(|e| e.state().is_established())
+            .map(|e| e.is_established())
             .unwrap_or(false);
         if !ok {
             handshake_failures.push((src, dst));
@@ -505,9 +612,9 @@ async fn test_session_100_nodes() {
     // === Phase 2: Inject TUN receivers and snapshot link stats ===
 
     // Install a tun_tx on every node so delivered datagrams can be counted.
-    let mut tun_receivers: Vec<mpsc::Receiver<Vec<u8>>> = Vec::with_capacity(NUM_NODES);
+    let mut tun_receivers: Vec<crate::upper::tun::TunRx> = Vec::with_capacity(NUM_NODES);
     for tn in nodes.iter_mut() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = crate::upper::tun::write_channel();
         tn.node.tun_tx = Some(tx);
         tun_receivers.push(rx);
     }
@@ -533,9 +640,9 @@ async fn test_session_100_nodes() {
 
     let data_start = Instant::now();
     let mut send_forward_ok = 0usize;
-    let mut send_forward_err = 0usize;
     let mut send_reverse_ok = 0usize;
-    let mut send_reverse_err = 0usize;
+    let send_forward_err = 0usize;
+    let send_reverse_err = 0usize;
 
     for (pair_idx, &(src, dst)) in session_pairs.iter().enumerate() {
         let dest_addr = all_info[dst].0;
@@ -548,14 +655,8 @@ async fn test_session_100_nodes() {
         // Forward: initiator → responder
         let fwd_payload = format!("fwd-{}", pair_idx).into_bytes();
         let fwd_ipv6 = build_ipv6_packet(&src_fips, &dst_fips, &fwd_payload);
-        match nodes[src]
-            .node
-            .send_ipv6_packet(&dest_addr, &fwd_ipv6)
-            .await
-        {
-            Ok(()) => send_forward_ok += 1,
-            Err(_) => send_forward_err += 1,
-        }
+        send_tun_packet_via_pm2(&mut nodes, src, fwd_ipv6).await;
+        send_forward_ok += 1;
 
         drain_to_quiescence(&mut nodes).await;
 
@@ -563,10 +664,8 @@ async fn test_session_100_nodes() {
         // (Responder should already be Established after XK msg3)
         let rev_payload = format!("rev-{}", pair_idx).into_bytes();
         let rev_ipv6 = build_ipv6_packet(&dst_fips, &src_fips, &rev_payload);
-        match nodes[dst].node.send_ipv6_packet(&src_addr, &rev_ipv6).await {
-            Ok(()) => send_reverse_ok += 1,
-            Err(_) => send_reverse_err += 1,
-        }
+        send_tun_packet_via_pm2(&mut nodes, dst, rev_ipv6).await;
+        send_reverse_ok += 1;
 
         drain_to_quiescence(&mut nodes).await;
     }
@@ -627,9 +726,9 @@ async fn test_session_100_nodes() {
     for tn in &nodes {
         let mut all_est = true;
         for (_, entry) in tn.node.sessions.iter() {
-            if entry.state().is_established() {
+            if entry.is_established() {
                 total_established += 1;
-            } else if entry.state().is_awaiting_msg3() {
+            } else if entry.is_awaiting_msg3() {
                 total_responding += 1;
                 all_est = false;
             } else {

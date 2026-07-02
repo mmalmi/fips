@@ -34,10 +34,9 @@ pub use crate::discovery::local::LocalInstanceDiscoveryConfig;
 #[cfg(target_os = "linux")]
 pub use gateway::{ConntrackConfig, GatewayConfig, GatewayDnsConfig, PortForward, Proto};
 pub use node::{
-    BloomConfig, BuffersConfig, CacheConfig, ConnectedUdpConfig, ControlConfig, DiscoveryConfig,
-    LimitsConfig, NodeConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, RateLimitConfig,
-    RekeyConfig, RetryConfig, RoutingConfig, RoutingMode, SessionConfig, SessionMmpConfig,
-    TreeConfig,
+    BloomConfig, BuffersConfig, CacheConfig, ControlConfig, DiscoveryConfig, LimitsConfig,
+    NodeConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, RateLimitConfig, RekeyConfig,
+    RetryConfig, RoutingConfig, RoutingMode, SessionConfig, SessionMmpConfig, TreeConfig,
 };
 pub use peer::{ConnectPolicy, PeerAddress, PeerConfig};
 #[cfg(feature = "sim-transport")]

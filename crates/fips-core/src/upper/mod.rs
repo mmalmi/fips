@@ -13,3 +13,5 @@ pub mod icmp_rate_limit;
 pub mod ipv6_shim;
 pub mod tcp_mss;
 pub mod tun;
+mod tun_outbound;
+mod tun_write;

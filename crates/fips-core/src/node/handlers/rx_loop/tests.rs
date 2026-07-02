@@ -1,104 +1,48 @@
 use super::budget::{
-    CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
-    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget,
+    ENDPOINT_DRAIN_BUDGET, LATENCY_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, TUN_DRAIN_BUDGET,
+    endpoint_drain_budget, mixed_dataplane_crypto_budget, tun_drain_budget,
 };
 use super::drain::{
-    DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
-    RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, RxLoopSideQueues,
-    SingleLaneDrainCursor, rx_loop_side_queues_have_ready,
+    RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
 };
 use crate::control::protocol::Request;
-use crate::node::decrypt_worker::DecryptWorkerEvent;
-#[cfg(unix)]
-use crate::{
-    Identity,
-    node::session::{EndToEndState, SessionEntry},
-    noise::HandshakeState,
-};
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-fn make_xk_session(initiator: &Identity, responder: &Identity) -> crate::noise::NoiseSession {
-    let mut initiator_hs =
-        HandshakeState::new_xk_initiator(initiator.keypair(), responder.pubkey_full());
-    let mut responder_hs = HandshakeState::new_xk_responder(responder.keypair());
-    initiator_hs.set_local_epoch([1u8; 8]);
-    responder_hs.set_local_epoch([2u8; 8]);
-
-    let msg1 = initiator_hs.write_xk_message_1().unwrap();
-    responder_hs.read_xk_message_1(&msg1).unwrap();
-    let msg2 = responder_hs.write_xk_message_2().unwrap();
-    initiator_hs.read_xk_message_2(&msg2).unwrap();
-    let msg3 = initiator_hs.write_xk_message_3().unwrap();
-    responder_hs.read_xk_message_3(&msg3).unwrap();
-
-    initiator_hs.into_session().unwrap()
-}
-
-#[cfg(unix)]
-fn established_entry(local: &Identity, peer: &Identity) -> SessionEntry {
-    SessionEntry::new(
-        *peer.node_addr(),
-        peer.pubkey_full(),
-        EndToEndState::Established(make_xk_session(local, peer)),
-        1_000,
-        true,
-    )
-}
-
 #[test]
-fn non_packet_drain_budget_caps_large_packet_turns() {
-    assert_eq!(non_packet_drain_budget(0), 0);
-    assert_eq!(non_packet_drain_budget(8), 8);
+fn endpoint_drain_budget_caps_large_packet_turns() {
+    assert_eq!(endpoint_drain_budget(0), 0);
+    assert_eq!(endpoint_drain_budget(8), 8);
     assert_eq!(
-        non_packet_drain_budget(PACKET_DRAIN_BUDGET),
-        NON_PACKET_DRAIN_BUDGET
+        endpoint_drain_budget(PACKET_DRAIN_BUDGET),
+        ENDPOINT_DRAIN_BUDGET
     );
 }
 
 #[test]
-fn fallback_drain_plan_stays_bounded_under_return_pressure() {
-    let plan = fallback_drain_plan();
+fn tun_outbound_gets_dataplane_sized_packet_mover_turns() {
     assert_eq!(
-        plan,
-        FallbackDrainPlan {
-            interleave_every: FALLBACK_INTERLEAVE_EVERY,
-            interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
-            trailing_budget: NON_PACKET_DRAIN_BUDGET,
-        }
+        endpoint_drain_budget(PACKET_DRAIN_BUDGET),
+        ENDPOINT_DRAIN_BUDGET
     );
+    assert_eq!(tun_drain_budget(PACKET_DRAIN_BUDGET), TUN_DRAIN_BUDGET);
+    assert_eq!(TUN_DRAIN_BUDGET, LATENCY_PACKET_DRAIN_BUDGET);
     assert!(
-        plan.interleave_budget <= NON_PACKET_DRAIN_BUDGET,
-        "fallback returns should keep a bounded normal turn even when bulk is backlogged"
-    );
-    assert!(
-        plan.trailing_budget <= NON_PACKET_DRAIN_BUDGET,
-        "trailing fallback returns should not grow into a pressure side path"
-    );
-    assert!(
-        NON_PACKET_DRAIN_BUDGET <= 16
-            && plan.interleave_budget <= 16
-            && super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET <= 16,
-        "non-packet turns must stay short so fresh transport priority is not held behind bulk work"
+        TUN_DRAIN_BUDGET > ENDPOINT_DRAIN_BUDGET,
+        "canonical TUN packet ingress must not inherit the endpoint/control slice"
     );
 }
 
 #[test]
-fn authenticated_bulk_yields_to_ready_transport_priority() {
-    assert!(authenticated_bulk_preempts_packet_rx(0));
-    assert!(
-        !authenticated_bulk_preempts_packet_rx(1),
-        "bulk endpoint delivery should not preempt a ready control-sized transport packet"
+fn mixed_packet_and_tun_turn_crypto_budget_covers_admitted_sources() {
+    let crypto_budget = mixed_dataplane_crypto_budget(
+        LATENCY_PACKET_DRAIN_BUDGET,
+        ENDPOINT_DRAIN_BUDGET,
+        TUN_DRAIN_BUDGET,
     );
-}
 
-#[test]
-fn endpoint_priority_pre_packet_turn_stays_bounded() {
-    assert!(
-        NON_PACKET_DRAIN_BUDGET <= 16,
-        "endpoint-priority commands run before raw packet receive, so the turn must stay short"
+    assert_eq!(
+        crypto_budget,
+        LATENCY_PACKET_DRAIN_BUDGET + ENDPOINT_DRAIN_BUDGET + TUN_DRAIN_BUDGET
     );
 }
 
@@ -112,7 +56,7 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     assert!(!empty.data_pressure(false));
     assert!(empty.data_pressure(true));
 
-    let drained = RxLoopDataDrainStats::new(2, 3, 5);
+    let drained = RxLoopDataDrainStats::new(2, 3, 5, 0);
     assert_eq!(drained.data_total(), 10);
     assert_eq!(drained.total(), 10);
     assert!(drained.has_drained());
@@ -120,7 +64,7 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     assert!(drained.data_pressure(false));
     assert!(drained.data_pressure(true));
 
-    let control_only = RxLoopDataDrainStats::with_control(0, 0, 0, 0, 2);
+    let control_only = RxLoopDataDrainStats::new(0, 0, 0, 2);
     assert_eq!(control_only.data_total(), 0);
     assert_eq!(control_only.total(), 2);
     assert!(control_only.has_drained());
@@ -128,53 +72,6 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     assert!(
         !control_only.data_pressure(false),
         "read-only control progress must not look like dataplane pressure"
-    );
-
-    let decrypt_only = RxLoopDataDrainStats::with_decrypt(0, 1, 0, 0);
-    assert_eq!(decrypt_only.data_total(), 1);
-    assert!(decrypt_only.has_data_drained());
-    assert!(
-        decrypt_only.data_pressure(false),
-        "decrypt-worker receive bookkeeping must count as dataplane progress"
-    );
-}
-
-#[tokio::test]
-async fn rx_loop_side_queue_readiness_includes_control_queries() {
-    assert!(
-        CONTROL_QUERY_INTERLEAVE_BUDGET < super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET,
-        "control query reserve should stay a small slice of the side-queue budget"
-    );
-
-    let (control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
-    let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
-    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-
-    control_tx
-        .send((
-            Request {
-                command: "show_status".to_string(),
-                params: None,
-            },
-            response_tx,
-        ))
-        .await
-        .unwrap();
-
-    let side_queues = RxLoopSideQueues {
-        control_query_rx: &mut control_rx,
-        endpoint_bulk_feedback_rx: &mut feedback_rx,
-        tun_outbound_rx: &mut tun_rx,
-        endpoint_priority_command_rx: &mut endpoint_priority_rx,
-        endpoint_command_rx: &mut endpoint_rx,
-    };
-
-    assert!(
-        rx_loop_side_queues_have_ready(&side_queues),
-        "hot packet drains should notice queued read-only control queries"
     );
 }
 
@@ -206,103 +103,104 @@ async fn drain_control_queries_answers_show_requests() {
 }
 
 #[tokio::test]
-async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
+async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (fallback_tx, mut fallback_rx) =
-        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
-    let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+    let mut endpoint_io = node
+        .attach_endpoint_data_io(1)
+        .expect("endpoint io should attach before start");
 
-    assert!(fallback_tx.send_for_test(DecryptWorkerEvent::AuthenticatedSessionBatch(Vec::new())));
-    assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
-    assert!(!fallback_rx.authenticated_bulk.is_empty());
-
-    let drained = node
-        .drain_rx_loop_data_queues(
+    let turn = node
+        .drain_packet_mover2_turn_with_firsts(
             &mut packet_rx,
-            &mut fallback_rx,
-            &mut feedback_rx,
-            &mut tun_rx,
-            &mut endpoint_priority_rx,
+            crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
+            4,
             &mut endpoint_rx,
-            NON_PACKET_DRAIN_BUDGET,
+            4,
+            &mut tun_outbound_rx,
+            4,
+            &tun_tx,
+            &endpoint_io.event_tx,
+            4,
         )
         .await;
 
-    assert_eq!(drained.packets, 0);
-    assert_eq!(drained.decrypt, 1);
-    assert!(fallback_rx.authenticated_bulk.is_empty());
-    assert!(
-        drained.has_data_drained(),
-        "queued authenticated receive bookkeeping must be applied before link-dead maintenance"
+    assert_eq!(
+        turn.summary(),
+        crate::packet_mover2::PacketMover2RuntimeSummary::default()
     );
+    assert!(!turn.has_activity());
+    assert!(!turn.has_failures());
+    assert!(turn.raw_ingress_drops().is_empty());
+    assert!(turn.output_drops().is_empty());
+    assert!(turn.drops().is_empty());
+    assert!(turn.endpoint_data_drops().is_empty());
+    assert!(turn.tun_outbound_drops().is_empty());
+    assert!(tun_rx.try_recv().is_err());
+    assert!(endpoint_io.event_rx.try_recv().is_err());
 }
 
-#[cfg(unix)]
 #[tokio::test]
-async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_liveness() {
-    let local = Identity::generate();
-    let dest = Identity::generate();
-    let next_hop = Identity::generate();
-    let dest_addr = *dest.node_addr();
-    let next_hop_addr = *next_hop.node_addr();
-
+async fn packet_mover2_turn_reports_raw_ingress_failures() {
     let mut node =
-        crate::node::Node::with_identity(local, crate::config::Config::new()).expect("node");
-    let mut session = established_entry(&node.identity, &dest);
-    session.mark_established(1_000);
-    session.init_mmp(&node.config.node.session_mmp);
-    assert!(node.sessions.insert(dest_addr, session).is_none());
+        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
+    let (packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+    let mut endpoint_io = node
+        .attach_endpoint_data_io(1)
+        .expect("endpoint io should attach before start");
 
-    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
-    let (_fallback_tx, mut fallback_rx) =
-        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
-    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
-    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
-    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    packet_tx
+        .send(crate::transport::ReceivedPacket::with_timestamp(
+            crate::transport::TransportId::new(7),
+            crate::transport::TransportAddr::from_string("198.51.100.7:9000"),
+            vec![0],
+            123_456,
+        ))
+        .expect("malformed packet queued");
 
-    feedback_tx
-        .send(crate::node::EndpointBulkSendFeedback {
-            records: vec![crate::node::EndpointBulkSendFeedbackRecord {
-                dest_addr,
-                next_hop_addr,
-                fmp_counter: 3,
-                fmp_timestamp_ms: 4,
-                fmp_wire_capacity: 128,
-                originated_bytes: 96,
-                session_bookkeeping: crate::node::EndpointBulkSendSessionBookkeeping::Fsp {
-                    path_mtu: 1234,
-                    bookkeeping: crate::node::FspSendBookkeepingInput::data(80, 5, 6, 96, 2_000)
-                        .with_next_hop(next_hop_addr),
-                },
-            }],
-        })
-        .await
-        .expect("feedback queued");
-
-    let drained = node
-        .drain_rx_loop_data_queues(
+    let turn = node
+        .drain_packet_mover2_turn_with_firsts(
             &mut packet_rx,
-            &mut fallback_rx,
-            &mut feedback_rx,
-            &mut tun_rx,
-            &mut endpoint_priority_rx,
+            crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
+            4,
             &mut endpoint_rx,
-            NON_PACKET_DRAIN_BUDGET,
+            4,
+            &mut tun_outbound_rx,
+            4,
+            &tun_tx,
+            &endpoint_io.event_tx,
+            4,
         )
         .await;
 
-    assert_eq!(drained.endpoint_feedback, 1);
-    assert!(drained.has_data_drained());
-    assert!(feedback_rx.is_empty());
-    let session = node.sessions.get(&dest_addr).expect("session remains");
-    assert_eq!(session.last_outbound_next_hop(), Some(next_hop_addr));
-    assert_eq!(session.traffic_counters().0, 1);
+    assert!(turn.has_activity());
+    assert!(turn.has_failures());
+    assert_eq!(turn.summary().raw_ingress_dropped(), 1);
+    assert_eq!(turn.raw_ingress_drops().len(), 1);
+    assert_eq!(
+        turn.raw_ingress_drops()[0].reason(),
+        crate::packet_mover2::PacketMover2RawIngressDropReason::Wire(
+            crate::packet_mover2::WirePreflightError::TooShort
+        )
+    );
+    assert_eq!(
+        turn.raw_ingress_drops()[0].transport_id(),
+        crate::transport::TransportId::new(7)
+    );
+    assert!(turn.output_drops().is_empty());
+    assert!(turn.drops().is_empty());
+    assert!(turn.endpoint_data_drops().is_empty());
+    assert!(turn.tun_outbound_drops().is_empty());
+    assert!(packet_rx.try_recv().is_err());
+    assert!(tun_rx.try_recv().is_err());
+    assert!(endpoint_io.event_rx.try_recv().is_err());
 }
 
 #[test]
@@ -310,7 +208,7 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
     let start = Instant::now();
     let window = Duration::from_secs(2);
     let empty = RxLoopDataDrainStats::default();
-    let drained = RxLoopDataDrainStats::new(1, 0, 0);
+    let drained = RxLoopDataDrainStats::new(1, 0, 0, 0);
     let mut state = RxLoopMaintenanceState::default();
 
     assert!(!state.data_pressure(empty, start, window));
@@ -346,7 +244,7 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
     let idle_timeout = Duration::from_millis(100);
     let busy_timeout = Duration::from_millis(10);
     let empty = RxLoopDataDrainStats::default();
-    let drained = RxLoopDataDrainStats::new(1, 0, 0);
+    let drained = RxLoopDataDrainStats::new(1, 0, 0, 0);
     let mut state = RxLoopMaintenanceState::default();
 
     let idle = state.plan_maintenance(empty, start, window, idle_timeout, busy_timeout);
@@ -420,381 +318,19 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
 }
 
 #[tokio::test]
-async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+async fn single_lane_drain_leaves_other_lanes_for_later_turns() {
+    let (selected_tx, mut selected_rx) = tokio::sync::mpsc::channel(4);
+    let (other_tx, mut other_rx) = tokio::sync::mpsc::channel(4);
 
-    priority_tx.send("priority").await.unwrap();
-    bulk_tx.send("bulk-queued").await.unwrap();
-    let mut drain = PriorityBulkDrainCursor::new(None, Some("bulk-selected"), 4);
+    selected_tx.send("queued-selected").await.unwrap();
+    other_tx.send("queued-other").await.unwrap();
+    let mut drain = SingleLaneDrainCursor::new(Some("selected-first"), 4);
 
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), Some("priority"));
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("bulk-selected")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("bulk-queued")
-    );
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn fallback_drain_prefers_ready_priority_over_selected_bulk() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (_authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("priority-fallback").await.unwrap();
-    bulk_tx.send("queued-bulk-fallback").await.unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, None, Some("selected-bulk-fallback"), 4);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("priority-fallback")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("selected-bulk-fallback")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-bulk-fallback")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        None
-    );
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn decrypt_return_drain_prefers_authenticated_bulk_over_selected_fallback_bulk() {
-    let (_priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    authenticated_bulk_tx
-        .send("queued-authenticated-bulk")
-        .await
-        .unwrap();
-    bulk_tx.send("queued-fallback-bulk").await.unwrap();
-    let mut drain = DecryptReturnDrainCursor::new(None, None, Some("selected-fallback-bulk"), 4);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-authenticated-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("selected-fallback-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-fallback-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        None
-    );
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn decrypt_return_drain_prefers_priority_over_selected_authenticated_bulk() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
-    let (_bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("queued-priority").await.unwrap();
-    authenticated_bulk_tx
-        .send("queued-authenticated-bulk")
-        .await
-        .unwrap();
-    let mut drain =
-        DecryptReturnDrainCursor::new(None, Some("selected-authenticated-bulk"), None, 4);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-priority")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("selected-authenticated-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        Some("queued-authenticated-bulk")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
-        None
-    );
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn priority_fallback_drain_leaves_bulk_for_lower_priority_turn() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("queued-priority").await.unwrap();
-    bulk_tx.send("queued-bulk").await.unwrap();
-    let mut drain = SingleLaneDrainCursor::new(Some("selected-priority"), 4);
-
-    assert_eq!(drain.next(&mut priority_rx), Some("selected-priority"));
-    assert_eq!(drain.next(&mut priority_rx), Some("queued-priority"));
-    assert_eq!(drain.next(&mut priority_rx), None);
-    assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
+    assert_eq!(drain.next(&mut selected_rx), Some("selected-first"));
+    assert_eq!(drain.next(&mut selected_rx), Some("queued-selected"));
+    assert_eq!(drain.next(&mut selected_rx), None);
+    assert_eq!(other_rx.try_recv().ok(), Some("queued-other"));
     assert_eq!(drain.drained(), 2);
-}
-
-#[tokio::test]
-async fn priority_bulk_drain_cursor_owns_selected_head_and_budget() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("queued-priority").await.unwrap();
-    bulk_tx.send("queued-bulk").await.unwrap();
-    let mut drain =
-        PriorityBulkDrainCursor::new(Some("selected-priority"), Some("selected-bulk"), 3);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("selected-priority")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("queued-priority")
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("selected-bulk")
-    );
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
-    assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn priority_bulk_drain_cursor_charges_batch_extra_against_budget() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("queued-priority").await.unwrap();
-    bulk_tx.send("queued-bulk").await.unwrap();
-    let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk"), 4);
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("queued-priority")
-    );
-    drain.charge_extra(3);
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
-    assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
-    assert_eq!(drain.drained(), 4);
-}
-
-#[tokio::test]
-async fn priority_bulk_drain_cursor_bulk_only_stops_for_priority() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-    priority_tx.send("priority").await.unwrap();
-    bulk_tx.send("bulk").await.unwrap();
-    let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk"), 4);
-
-    assert_eq!(
-        drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
-        None,
-        "bulk coalescing must stop when priority work is ready"
-    );
-    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), Some("priority"));
-    assert_eq!(
-        drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
-        Some("selected-bulk")
-    );
-    assert_eq!(
-        drain.next_bulk_if_no_priority(&mut priority_rx, &mut bulk_rx),
-        Some("bulk")
-    );
-}
-
-#[tokio::test]
-async fn priority_bulk_drain_cursor_deferred_bulk_yields_to_later_priority() {
-    let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-    let (_bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-    let mut drain = PriorityBulkDrainCursor::new(None, None, 4);
-
-    drain.defer_bulk("deferred-bulk");
-    priority_tx.send("priority").await.unwrap();
-
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("priority"),
-        "a non-coalesced bulk command should be put back behind new priority work"
-    );
-    assert_eq!(
-        drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("deferred-bulk")
-    );
-}
-
-#[test]
-fn endpoint_command_coalesce_cap_is_small_bounded_packet_groups() {
-    assert_eq!(ENDPOINT_COMMAND_COALESCE_MAX_PACKETS, 256);
-    assert!(
-        ENDPOINT_COMMAND_COALESCE_MAX_PACKETS <= PACKET_DRAIN_BUDGET,
-        "endpoint coalescing should remain below one raw packet drain turn"
-    );
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_owns_first_packet_budget_and_interleave() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    let mut drain = PacketDrainCursor::new(Some("selected"), 3, 2, 0);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("selected"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(packet_rx.try_recv().ok(), Some("queued-2"));
-    assert_eq!(drain.drained(), 2);
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_charges_interleaves_against_budget() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    let mut drain = PacketDrainCursor::new(Some("selected"), 4, 2, 0);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("selected"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-2"))
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_refunds_empty_interleave_turns() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    packet_tx.send("queued-3").unwrap();
-    let mut drain = PacketDrainCursor::new(None, 3, 1, 0);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    drain.refund_empty_interleave_turn();
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-2"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    drain.refund_empty_interleave_turn();
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-3"))
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_interleaves_side_queues_after_fallback() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    packet_tx.send("queued-3").unwrap();
-    let mut drain = PacketDrainCursor::new(None, 5, 2, 2);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-2"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::InterleaveSideQueues)
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-3"))
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(drain.drained(), 3);
-}
-
-#[tokio::test]
-async fn packet_drain_cursor_can_disable_side_queue_interleaves() {
-    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    packet_tx.send("queued-1").unwrap();
-    packet_tx.send("queued-2").unwrap();
-    packet_tx.send("queued-3").unwrap();
-    let mut drain = PacketDrainCursor::new(None, 3, 0, 0);
-
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-1"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-2"))
-    );
-    assert_eq!(
-        drain.next(&mut packet_rx),
-        Some(PacketDrainAction::Packet("queued-3"))
-    );
-    assert_eq!(drain.next(&mut packet_rx), None);
-    assert_eq!(drain.drained(), 3);
 }
 
 #[tokio::test]

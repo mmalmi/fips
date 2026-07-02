@@ -59,159 +59,29 @@ impl Node {
         Ok(())
     }
 
-    /// Send application data over an established session.
-    ///
-    /// Uses the FSP pipeline: builds a 12-byte cleartext header (used as AAD),
-    /// prepends the 6-byte inner header to the plaintext, encrypts with AAD,
-    /// optionally inserts cleartext coords, and wraps in a SessionDatagram.
-    ///
-    /// The `src_port` and `dst_port` identify the service. A 4-byte port header
-    /// `[src_port:2 LE][dst_port:2 LE]` is prepended to `payload` inside the
-    /// AEAD envelope. The receiver dispatches by `dst_port`.
-    pub(in crate::node) async fn send_session_data(
+    pub(in crate::node) async fn handle_endpoint_data_batch_no_established_flush(
         &mut self,
-        dest_addr: &NodeAddr,
-        src_port: u16,
-        dst_port: u16,
-        payload: &[u8],
-    ) -> Result<(), NodeError> {
-        let now_ms = Self::now_ms();
-        let send_context = self
-            .sessions
-            .session_fsp_send_context(dest_addr, now_ms)
-            .map_err(|error| error.into_node_error(*dest_addr))?;
-        let wants_coords = send_context.wants_coords();
-        let timestamp = send_context.timestamp;
-
-        // Build port-prefixed plaintext: [src_port:2 LE][dst_port:2 LE][payload...]
-        let mut port_payload = Vec::with_capacity(FSP_PORT_HEADER_SIZE + payload.len());
-        port_payload.extend_from_slice(&src_port.to_le_bytes());
-        port_payload.extend_from_slice(&dst_port.to_le_bytes());
-        port_payload.extend_from_slice(payload);
-
-        // Build inner plaintext (doesn't depend on counter)
-        let msg_type = SessionMessageType::DataPacket.to_byte(); // 0x10
-        let inner_flags = send_context.inner_flags_byte();
-        let inner_plaintext =
-            fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &port_payload);
-
-        // Determine whether coords fit within transport MTU.
-        // If not, send standalone CoordsWarmup before the data packet.
-        let (include_coords, my_coords, dest_coords) = if wants_coords {
-            let src = self.tree_state.my_coords().clone();
-            let dst = self.get_dest_coords(dest_addr);
-            let coords_size = coords_wire_size(&src) + coords_wire_size(&dst);
-            let total_wire =
-                FIPS_OVERHEAD as usize + FSP_PORT_HEADER_SIZE + coords_size + payload.len();
-            if total_wire <= self.transport_mtu() as usize {
-                (true, Some(src), Some(dst))
-            } else {
-                // Coords don't fit piggybacked — send standalone CoordsWarmup first
-                if let Err(e) = self.send_coords_warmup(dest_addr).await {
-                    debug!(dest = %self.peer_display_name(dest_addr), error = %e,
-                        "Failed to send standalone CoordsWarmup before data packet");
-                }
-                (false, None, None)
-            }
-        } else {
-            (false, None, None)
-        };
-
-        // Consume one warmup opportunity for either piggybacked coords or the
-        // standalone warmup attempt, preserving the previous retry behavior.
-        if wants_coords {
-            self.sessions.consume_coords_warmup_packet(dest_addr);
-        }
-
-        // Build FSP flags (CP flag if coords, K-bit for key epoch)
-        let flags = send_context.fsp_flags(include_coords);
-
-        let coords = my_coords.as_ref().zip(dest_coords.as_ref());
-        self.send_session_fsp_plan(SessionFspSendPlan::new(
-            *dest_addr,
-            timestamp,
-            flags,
-            &inner_plaintext,
-            coords,
-            SessionFspSendBookkeeping::Data {
-                payload_len: payload.len(),
-                now_ms,
-            },
-        ))
-        .await
+        batch: NodeEndpointDataBatch,
+    ) {
+        let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
+        self.queue_packet_mover2_unrouted_endpoint_batch(remote, payloads, enqueued_at_ms)
+            .await;
     }
 
-    async fn send_session_fsp_plan(
+    pub(in crate::node) async fn handle_endpoint_control(
         &mut self,
-        plan: SessionFspSendPlan<'_>,
-    ) -> Result<(), NodeError> {
-        let dest_addr = plan.dest_addr();
-        let sealed = self.sessions.seal_session_fsp_send(plan)?;
-        let (mut datagram, bookkeeping) =
-            sealed.into_datagram(*self.node_addr(), self.config.node.session.default_ttl);
-        self.send_session_datagram(&mut datagram).await?;
-
-        let _ = self
-            .sessions
-            .record_fsp_send_bookkeeping(&dest_addr, bookkeeping);
-        Ok(())
-    }
-
-    /// Send an IPv6 packet through the IPv6 shim (port 256) with header compression.
-    ///
-    /// Compresses the IPv6 header (format 0x00), then sends via `send_session_data`
-    /// with `src_port=256, dst_port=256`.
-    pub(in crate::node) async fn send_ipv6_packet(
-        &mut self,
-        dest_addr: &NodeAddr,
-        ipv6_packet: &[u8],
-    ) -> Result<(), NodeError> {
-        let compressed = crate::upper::ipv6_shim::compress_ipv6(ipv6_packet).ok_or_else(|| {
-            NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "IPv6 header compression failed".into(),
-            }
-        })?;
-        self.send_session_data(
-            dest_addr,
-            FSP_PORT_IPV6_SHIM,
-            FSP_PORT_IPV6_SHIM,
-            &compressed,
-        )
-        .await
-    }
-
-    /// Handle an embedded endpoint data command.
-    pub(in crate::node) async fn handle_endpoint_data_command(
-        &mut self,
-        command: NodeEndpointCommand,
+        command: NodeEndpointControlCommand,
     ) {
         match command {
-            NodeEndpointCommand::Send {
-                command,
-                response_tx,
-            } => {
-                let result = self.handle_endpoint_send_command(command).await;
-                let _ = response_tx.send(result);
-            }
-            NodeEndpointCommand::SendOneway { command } => {
-                // Result deliberately discarded — caller wanted
-                // fire-and-forget. Errors still get logged inside
-                // `send_endpoint_data` so they're not silent.
-                let _ = self.handle_endpoint_send_command(command).await;
-            }
-            NodeEndpointCommand::SendBatchOneway { command, .. } => {
-                self.handle_endpoint_send_batch_commands(vec![command]).await;
-            }
-            NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
+            NodeEndpointControlCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
                 let _ = response_tx.send(result);
             }
-            NodeEndpointCommand::RefreshPeerPaths { npubs, response_tx } => {
+            NodeEndpointControlCommand::RefreshPeerPaths { npubs, response_tx } => {
                 let result = self.refresh_peer_paths(npubs).await;
                 let _ = response_tx.send(result);
             }
-            NodeEndpointCommand::PeerSnapshot { response_tx } => {
+            NodeEndpointControlCommand::PeerSnapshot { response_tx } => {
                 let snapshot_now = Instant::now();
                 let nostr_failure_state: std::collections::HashMap<String, _> = self
                     .nostr_discovery_handle()
@@ -241,8 +111,11 @@ impl Node {
                         let last_outbound_route = self
                             .sessions
                             .iter()
-                            .find(|(_, session)| {
-                                session.last_outbound_next_hop() == Some(*peer.node_addr())
+                            .find(|(dest_addr, _)| {
+                                self.packet_mover2
+                                    .fsp_owner_activity(dest_addr)
+                                    .and_then(|activity| activity.last_outbound_next_hop())
+                                    == Some(*peer.node_addr())
                             })
                             .map(|(dest_addr, _)| {
                                 if dest_addr == peer.node_addr() {
@@ -251,11 +124,14 @@ impl Node {
                                     "fallback".to_string()
                                 }
                             });
-                        let srtt = peer.mmp().and_then(|mmp| {
-                            mmp.metrics.srtt_ms().map(|value| {
-                                (value.round() as u64, mmp.metrics.srtt_age_ms(snapshot_now))
-                            })
-                        });
+                        let srtt = self
+                            .packet_mover2
+                            .fmp_link_metrics(peer.node_addr(), snapshot_now)
+                            .and_then(|metrics| {
+                                metrics
+                                    .srtt_ms
+                                    .map(|value| (value.round() as u64, metrics.srtt_age_ms))
+                            });
                         let connected = peer.can_send()
                             && stats.time_since_recv(Self::now_ms())
                                 <= self.session_direct_path_exclusive_trust_timeout_ms();
@@ -343,7 +219,7 @@ impl Node {
 
                 let _ = response_tx.send(peers);
             }
-            NodeEndpointCommand::LocalAdvertSnapshot { response_tx } => {
+            NodeEndpointControlCommand::LocalAdvertSnapshot { response_tx } => {
                 let endpoints = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery.local_advert_endpoints().await
                 } else {
@@ -351,7 +227,7 @@ impl Node {
                 };
                 let _ = response_tx.send(endpoints);
             }
-            NodeEndpointCommand::RelaySnapshot { response_tx } => {
+            NodeEndpointControlCommand::RelaySnapshot { response_tx } => {
                 let relays = if let Some(discovery) = self.nostr_discovery_handle() {
                     discovery
                         .relay_statuses()
@@ -367,7 +243,7 @@ impl Node {
                 };
                 let _ = response_tx.send(relays);
             }
-            NodeEndpointCommand::UpdateRelays {
+            NodeEndpointControlCommand::UpdateRelays {
                 advert_relays,
                 dm_relays,
                 response_tx,
@@ -385,67 +261,6 @@ impl Node {
                 let _ = response_tx.send(result);
             }
         }
-    }
-
-    async fn handle_endpoint_send_command(
-        &mut self,
-        command: EndpointSendCommand,
-    ) -> Result<(), NodeError> {
-        let lane = command.lane();
-        let (send, queued_at) = command.into_parts();
-        record_endpoint_command_wait(queued_at, lane, 1);
-        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
-        self.send_endpoint_data_send(send).await
-    }
-
-    pub(in crate::node) async fn handle_endpoint_send_batch_commands(
-        &mut self,
-        commands: Vec<EndpointSendBatchCommand>,
-    ) {
-        let Some(first) = commands.first() else {
-            return;
-        };
-        let lane = first.lane();
-        let remote = first.remote();
-        let mut payload_count = 0usize;
-        let mut payloads = Vec::new();
-
-        for command in commands {
-            debug_assert_eq!(command.lane(), lane);
-            debug_assert_eq!(command.remote(), remote);
-            let count = command.len();
-            let (command_remote, command_payloads, queued_at) = command.into_parts();
-            debug_assert_eq!(command_remote, remote);
-            // The command queue wait ends when rx_loop starts handling the
-            // batch. Preserve per-command queue residence before coalescing
-            // same-peer batches for shared route/session preparation.
-            record_endpoint_command_wait(queued_at, lane, count as u64);
-            payload_count = payload_count.saturating_add(count);
-            payloads.extend(command_payloads);
-        }
-
-        if payload_count == 0 {
-            return;
-        }
-
-        let dest_addr = *remote.node_addr();
-        let dest_pubkey = remote.pubkey_full();
-        self.register_identity(dest_addr, dest_pubkey);
-
-        #[cfg(unix)]
-        if self.encrypt_workers.is_some()
-            && self
-                .sessions
-                .get(&dest_addr)
-                .is_some_and(|entry| entry.is_established())
-        {
-            self.handle_established_endpoint_send_batch(dest_addr, dest_pubkey, payloads)
-                .await;
-            return;
-        }
-
-        self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
-            .await;
     }
 
 }

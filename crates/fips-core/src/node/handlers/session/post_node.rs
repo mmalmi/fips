@@ -27,67 +27,133 @@ mod pending_queue_tests {
         node.config.node.session.pending_packets_per_dest = 2;
 
         let tun_dest = make_node_addr(0x41);
-        node.queue_pending_packet(tun_dest, vec![1]);
-        node.queue_pending_packet(tun_dest, vec![2]);
-        node.queue_pending_packet(tun_dest, vec![3]);
+        node.queue_pending_tun_packet(tun_dest, vec![1]);
+        node.queue_pending_tun_packet(tun_dest, vec![2]);
+        node.queue_pending_tun_packet(tun_dest, vec![3]);
         let tun_packets: Vec<Vec<u8>> = node
             .pending_session_traffic
-            .tun_packets_for(&tun_dest)
+            .take_tun_packets(&tun_dest)
             .expect("tun queue")
-            .iter()
-            .cloned()
+            .into_packets()
+            .into_iter()
             .collect();
         assert_eq!(tun_packets, vec![vec![2], vec![3]]);
 
         let endpoint_dest = make_node_addr(0x42);
-        node.queue_pending_endpoint_data(endpoint_dest, vec![4]);
-        node.queue_pending_endpoint_data(endpoint_dest, vec![5]);
-        node.queue_pending_endpoint_data(endpoint_dest, vec![6]);
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            endpoint_dest,
+            vec![vec![4]],
+            1_000,
+        );
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            endpoint_dest,
+            vec![vec![5]],
+            1_001,
+        );
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            endpoint_dest,
+            vec![vec![6]],
+            1_002,
+        );
         let endpoint_payloads: Vec<Vec<u8>> = node
             .pending_session_traffic
-            .endpoint_data_for(&endpoint_dest)
+            .take_endpoint_data(&endpoint_dest)
             .expect("endpoint queue")
-            .iter()
-            .map(|payload| payload.as_slice().to_vec())
+            .into_pending_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.into_payloads())
             .collect();
         assert_eq!(endpoint_payloads, vec![vec![5], vec![6]]);
     }
 
     #[test]
     fn pending_endpoint_data_queue_owns_drop_oldest_policy() {
-        let mut queue = crate::node::PendingEndpointDataQueue::default();
-        assert!(!queue.push_bounded(vec![1].into(), 2).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2].into(), 2).dropped_oldest());
-        assert!(queue.push_bounded(vec![3].into(), 2).dropped_oldest());
+        let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
+        assert!(!queue.push_batch_bounded(vec![vec![1]], 1_000, 2));
+        assert!(!queue.push_batch_bounded(vec![vec![2]], 1_001, 2));
+        assert!(queue.push_batch_bounded(vec![vec![3]], 1_002, 2));
 
         let payloads: Vec<Vec<u8>> = queue
-            .iter()
-            .map(|payload| payload.as_slice().to_vec())
+            .into_pending_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.into_payloads())
             .collect();
         assert_eq!(payloads, vec![vec![2], vec![3]]);
     }
 
     #[test]
-    fn pending_tun_packet_queue_owns_drop_oldest_policy() {
-        let mut queue = crate::node::PendingTunPacketQueue::default();
-        assert!(!queue.push_bounded(vec![1], 1_000, 2).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2], 1_001, 2).dropped_oldest());
-        assert!(queue.push_bounded(vec![3], 1_002, 2).dropped_oldest());
+    fn pending_endpoint_data_queue_preserves_batch_shape() {
+        let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
+        assert!(!queue.push_batch_bounded(vec![vec![1], vec![2]], 1_000, 4));
 
-        let packets: Vec<Vec<u8>> = queue.iter().cloned().collect();
+        let mut batches = queue.into_pending_payloads();
+        let batch = batches.pop_front().expect("queued endpoint batch");
+        assert_eq!(batch.enqueued_at_ms(), 1_000);
+        assert_eq!(batch.into_payloads(), vec![vec![1], vec![2]]);
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn pending_endpoint_data_queue_bounds_batches_by_packet_count() {
+        let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
+        assert!(!queue.push_batch_bounded(vec![vec![1], vec![2]], 1_000, 3));
+        assert!(queue.push_batch_bounded(vec![vec![3], vec![4]], 1_001, 3));
+
+        let payloads: Vec<Vec<u8>> = queue
+            .into_pending_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.into_payloads())
+            .collect();
+        assert_eq!(payloads, vec![vec![2], vec![3], vec![4]]);
+    }
+
+    #[test]
+    fn pending_endpoint_data_queue_preserves_enqueue_times() {
+        let mut queue = crate::node::endpoint_traffic::PendingEndpointDataQueue::default();
+        assert!(!queue.push_batch_bounded(vec![vec![1]], 1_000, 4));
+        assert!(!queue.push_batch_bounded(vec![vec![2]], 1_500, 4));
+
+        let payloads = queue.into_pending_payloads();
+        let observed: Vec<(Vec<Vec<u8>>, u64)> = payloads
+            .into_iter()
+            .map(|payload| {
+                let enqueued_at_ms = payload.enqueued_at_ms();
+                (payload.into_payloads(), enqueued_at_ms)
+            })
+            .collect();
+        assert_eq!(
+            observed,
+            vec![(vec![vec![1]], 1_000), (vec![vec![2]], 1_500)]
+        );
+    }
+
+    #[test]
+    fn pending_tun_packet_queue_owns_drop_oldest_policy() {
+        let mut queue = crate::node::endpoint_traffic::PendingTunPacketQueue::default();
+        assert!(!queue.push_bounded(vec![1], 1_000, 2));
+        assert!(!queue.push_bounded(vec![2], 1_001, 2));
+        assert!(queue.push_bounded(vec![3], 1_002, 2));
+
+        let packets: Vec<Vec<u8>> = queue.into_packets().into_iter().collect();
         assert_eq!(packets, vec![vec![2], vec![3]]);
     }
 
     #[test]
     fn pending_tun_packet_queue_drops_stale_packets_on_fresh_drain() {
-        let mut queue = crate::node::PendingTunPacketQueue::default();
-        assert!(!queue.push_bounded(vec![1], 1_000, 8).dropped_oldest());
-        assert!(!queue.push_bounded(vec![2], 3_500, 8).dropped_oldest());
+        let mut queue = crate::node::endpoint_traffic::PendingTunPacketQueue::default();
+        assert!(!queue.push_bounded(vec![1], 1_000, 8));
+        assert!(!queue.push_bounded(vec![2], 3_500, 8));
 
         let (packets, stale) = queue.into_fresh_packets(4_000, 2_000);
 
         assert_eq!(stale, 1);
-        assert_eq!(packets.into_iter().collect::<Vec<_>>(), vec![vec![2]]);
+        assert_eq!(
+            packets
+                .into_iter()
+                .map(|packet| packet.into_packet())
+                .collect::<Vec<_>>(),
+            vec![vec![2]]
+        );
     }
 
     #[test]
@@ -113,13 +179,25 @@ mod pending_queue_tests {
 
         assert!(
             !queues
-                .push_endpoint_data(endpoint_dest, vec![3], 1, 2)
+                .push_endpoint_data_batch_with_enqueued_at_ms(
+                    endpoint_dest,
+                    vec![vec![3]],
+                    1,
+                    2,
+                    1_000,
+                )
                 .destination_dropped()
         );
         assert!(queues.has_traffic_for(&endpoint_dest));
         assert!(
             queues
-                .push_endpoint_data(rejected_endpoint_dest, vec![4], 1, 2)
+                .push_endpoint_data_batch_with_enqueued_at_ms(
+                    rejected_endpoint_dest,
+                    vec![vec![4]],
+                    1,
+                    2,
+                    1_001,
+                )
                 .destination_dropped()
         );
         assert!(!queues.has_traffic_for(&rejected_endpoint_dest));
@@ -135,16 +213,14 @@ mod pending_queue_tests {
                 .dropped_oldest()
         );
 
-        let packets: Vec<Vec<u8>> = queues
-            .tun_packets_for(&tun_dest)
-            .expect("accepted TUN queue")
-            .iter()
-            .cloned()
-            .collect();
-        assert_eq!(packets, vec![vec![5], vec![6]]);
-
         let removed = queues.remove_destination(&tun_dest);
-        assert_eq!(removed.tun_packets().map(|queue| queue.len()), Some(2));
+        let removed_tun: Vec<Vec<u8>> = removed
+            .into_tun_packets()
+            .expect("accepted TUN queue")
+            .into_packets()
+            .into_iter()
+            .collect();
+        assert_eq!(removed_tun, vec![vec![5], vec![6]]);
         assert!(queues.tun_packets_for(&tun_dest).is_none());
         assert!(!queues.has_traffic_for(&tun_dest));
         assert!(queues.endpoint_data_for(&endpoint_dest).is_some());
@@ -163,7 +239,7 @@ mod pending_queue_tests {
         );
         assert!(
             !queues
-                .push_endpoint_data(dest, vec![2], 8, 2)
+                .push_endpoint_data_batch_with_enqueued_at_ms(dest, vec![vec![2]], 8, 2, 1_000)
                 .destination_dropped()
         );
         assert!(queues.has_traffic_for(&dest));
@@ -181,14 +257,75 @@ mod pending_queue_tests {
     }
 
     #[test]
+    fn pending_session_traffic_restore_keeps_unsent_tail() {
+        let mut queues = crate::node::PendingSessionTrafficQueues::default();
+        let dest = NodeAddr::from_bytes([0x0a; 16]);
+
+        assert!(
+            !queues
+                .push_tun_packet(dest, vec![1], 8, 4)
+                .destination_dropped()
+        );
+        assert!(
+            !queues
+                .push_tun_packet(dest, vec![2], 8, 4)
+                .destination_dropped()
+        );
+        let (mut packets, stale) = queues
+            .take_tun_packets(&dest)
+            .expect("tun packets")
+            .into_fresh_packets(2_000, 2_000);
+        assert_eq!(stale, 0);
+        assert_eq!(packets.pop_front().map(|packet| packet.into_packet()), Some(vec![1]));
+        queues.restore_tun_packets(dest, packets);
+        let restored_tun: Vec<Vec<u8>> = queues
+            .take_tun_packets(&dest)
+            .expect("restored TUN queue")
+            .into_packets()
+            .into_iter()
+            .collect();
+        assert_eq!(restored_tun, vec![vec![2]]);
+
+        assert!(
+            !queues
+                .push_endpoint_data_batch_with_enqueued_at_ms(dest, vec![vec![3]], 8, 4, 1_000)
+                .destination_dropped()
+        );
+        assert!(
+            !queues
+                .push_endpoint_data_batch_with_enqueued_at_ms(dest, vec![vec![4]], 8, 4, 1_001)
+                .destination_dropped()
+        );
+        let mut payloads = queues
+            .take_endpoint_data(&dest)
+            .expect("endpoint data")
+            .into_pending_payloads();
+        assert_eq!(
+            payloads
+                .pop_front()
+                .map(|payload| payload.into_payloads()),
+            Some(vec![vec![3]])
+        );
+        queues.restore_endpoint_data(dest, payloads);
+        let restored_endpoint: Vec<Vec<u8>> = queues
+            .take_endpoint_data(&dest)
+            .expect("restored endpoint queue")
+            .into_pending_payloads()
+            .into_iter()
+            .flat_map(|payload| payload.into_payloads())
+            .collect();
+        assert_eq!(restored_endpoint, vec![vec![4]]);
+    }
+
+    #[test]
     fn pending_session_queues_reject_new_destinations_at_cap() {
         let mut node = make_node();
         node.config.node.session.pending_max_destinations = 1;
 
         let accepted_tun_dest = make_node_addr(0x51);
         let rejected_tun_dest = make_node_addr(0x52);
-        node.queue_pending_packet(accepted_tun_dest, vec![1]);
-        node.queue_pending_packet(rejected_tun_dest, vec![2]);
+        node.queue_pending_tun_packet(accepted_tun_dest, vec![1]);
+        node.queue_pending_tun_packet(rejected_tun_dest, vec![2]);
         assert!(
             node.pending_session_traffic
                 .tun_packets_for(&accepted_tun_dest)
@@ -202,8 +339,16 @@ mod pending_queue_tests {
 
         let accepted_endpoint_dest = make_node_addr(0x61);
         let rejected_endpoint_dest = make_node_addr(0x62);
-        node.queue_pending_endpoint_data(accepted_endpoint_dest, vec![3]);
-        node.queue_pending_endpoint_data(rejected_endpoint_dest, vec![4]);
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            accepted_endpoint_dest,
+            vec![vec![3]],
+            1_000,
+        );
+        node.queue_pending_endpoint_data_batch_with_enqueued_at_ms(
+            rejected_endpoint_dest,
+            vec![vec![4]],
+            1_001,
+        );
         assert!(
             node.pending_session_traffic
                 .endpoint_data_for(&accepted_endpoint_dest)

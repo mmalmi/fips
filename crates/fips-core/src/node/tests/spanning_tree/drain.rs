@@ -4,31 +4,121 @@ use super::*;
 ///
 /// Returns the number of packets processed.
 pub(in crate::node::tests) async fn process_available_packets(nodes: &mut [TestNode]) -> usize {
-    use crate::node::wire::{
-        COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
-    };
-
     let mut count = 0;
     for node in nodes.iter_mut() {
         while let Ok(packet) = node.packet_rx.try_recv() {
-            if packet.data.len() < COMMON_PREFIX_SIZE {
-                continue;
-            }
-            if let Some(prefix) = CommonPrefix::parse(&packet.data) {
-                if prefix.version != FMP_VERSION {
-                    continue;
-                }
-                match prefix.phase {
-                    PHASE_MSG1 => node.node.handle_msg1(packet).await,
-                    PHASE_MSG2 => node.node.handle_msg2(packet).await,
-                    PHASE_ESTABLISHED => node.node.handle_encrypted_frame(packet).await,
-                    _ => {}
-                }
-                count += 1;
-            }
+            count += process_packet_mover2_packet(node, packet).await;
         }
+        count += process_packet_mover2_side_queues(node).await;
     }
     count
+}
+
+async fn process_packet_mover2_packet(node: &mut TestNode, packet: ReceivedPacket) -> usize {
+    process_packet_mover2_turn(node, Some(packet), 64).await
+}
+
+async fn process_packet_mover2_side_queues(node: &mut TestNode) -> usize {
+    process_packet_mover2_turn(node, None, 0).await
+}
+
+async fn process_packet_mover2_turn(
+    node: &mut TestNode,
+    first_packet: Option<ReceivedPacket>,
+    packet_limit: usize,
+) -> usize {
+    let (_packet_tx, mut empty_packet_rx) = crate::transport::packet_channel(1);
+    let (_endpoint_tx, mut dummy_endpoint_rx) = crate::node::endpoint_data_batch_channel(1);
+    let (_tun_outbound_tx, mut dummy_tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+    let (dummy_tun_tx, _dummy_tun_rx) = crate::upper::tun::write_channel();
+    let (dummy_endpoint_tx, _dummy_endpoint_rx) = crate::node::EndpointEventSender::channel(1);
+
+    let mut endpoint_rx_slot = node.node.endpoint_data_rx.take();
+    let mut tun_outbound_rx_slot = node.node.tun_outbound_rx.take();
+
+    let endpoint_rx = match endpoint_rx_slot.as_mut() {
+        Some(rx) => rx,
+        None => &mut dummy_endpoint_rx,
+    };
+    let tun_outbound_rx = match tun_outbound_rx_slot.as_mut() {
+        Some(rx) => rx,
+        None => &mut dummy_tun_outbound_rx,
+    };
+    let tun_tx = node.node.tun_tx.clone().unwrap_or(dummy_tun_tx);
+    let endpoint_tx = node
+        .node
+        .endpoint_events
+        .sender()
+        .unwrap_or(dummy_endpoint_tx);
+
+    let mut turn = node
+        .node
+        .drain_packet_mover2_turn_with_firsts(
+            &mut empty_packet_rx,
+            crate::packet_mover2::PacketMover2LiveTurnFirsts {
+                raw_packet: first_packet,
+                ..Default::default()
+            },
+            packet_limit,
+            endpoint_rx,
+            64,
+            tun_outbound_rx,
+            64,
+            &tun_tx,
+            &endpoint_tx,
+            64,
+        )
+        .await;
+    let mut active_turns = 0usize;
+    let had_activity = turn.has_activity();
+    let mut dispatched = turn.summary().dispatched();
+    let processed = node
+        .node
+        .process_packet_mover2_control_ingress(&mut turn)
+        .await;
+    if had_activity || processed > 0 {
+        active_turns = active_turns.saturating_add(1);
+    }
+
+    for _ in 0..4 {
+        if dispatched == 0 {
+            break;
+        }
+        let notify = node.node.packet_mover2.completion_notify();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified()).await;
+
+        let mut completion_turn = node
+            .node
+            .drain_packet_mover2_turn_with_firsts(
+                &mut empty_packet_rx,
+                crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
+                0,
+                endpoint_rx,
+                64,
+                tun_outbound_rx,
+                64,
+                &tun_tx,
+                &endpoint_tx,
+                64,
+            )
+            .await;
+        let completion_had_activity = completion_turn.has_activity();
+        dispatched = completion_turn.summary().dispatched();
+        let completion_processed = node
+            .node
+            .process_packet_mover2_control_ingress(&mut completion_turn)
+            .await;
+        if completion_had_activity || completion_processed > 0 {
+            active_turns = active_turns.saturating_add(1);
+        } else {
+            break;
+        }
+    }
+
+    node.node.endpoint_data_rx = endpoint_rx_slot.take();
+    node.node.tun_outbound_rx = tun_outbound_rx_slot.take();
+
+    active_turns
 }
 
 /// Drain all packet channels across all nodes until quiescence.

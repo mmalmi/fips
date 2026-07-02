@@ -76,24 +76,6 @@ impl ActivePeer {
         self.pending_new_session.as_ref()
     }
 
-    /// Trial-decrypt a peer K-bit flip frame against the pending FMP session.
-    ///
-    /// The peer's K-bit is only a hint that it may have cut over. The
-    /// authenticated decrypt against `pending_new_session` is the real cutover
-    /// signal; failed trials leave the pending replay window untouched.
-    pub(crate) fn trial_decrypt_pending_new_session(
-        &mut self,
-        ciphertext: &[u8],
-        counter: u64,
-        aad: &[u8],
-    ) -> Option<Vec<u8>> {
-        self.pending_new_session.as_mut().and_then(|session| {
-            session
-                .decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
-                .ok()
-        })
-    }
-
     /// Whether this node should drive the K-bit cutover for the pending FMP rekey.
     pub fn pending_rekey_initiator(&self) -> bool {
         self.pending_rekey_initiator
@@ -160,17 +142,12 @@ impl ActivePeer {
         self.current_k_bit = !self.current_k_bit;
         self.session_established_at = Instant::now();
         self.session_start = Instant::now();
+        self.session_generation = self.session_generation.wrapping_add(1).max(1);
         self.rekey_in_progress = false;
         self.rekey_msg1_resend_count = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
         self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
-
-        // Reset MMP counters to avoid metric discontinuity
-        let now = Instant::now();
-        if let Some(mmp) = &mut self.mmp {
-            mmp.reset_for_rekey(now);
-        }
 
         self.previous_our_index
     }
@@ -200,17 +177,12 @@ impl ActivePeer {
         self.current_k_bit = !self.current_k_bit;
         self.session_established_at = Instant::now();
         self.session_start = Instant::now();
+        self.session_generation = self.session_generation.wrapping_add(1).max(1);
         self.rekey_in_progress = false;
         self.rekey_msg1_resend_count = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
         self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
-
-        // Reset MMP counters to avoid metric discontinuity
-        let now = Instant::now();
-        if let Some(mmp) = &mut self.mmp {
-            mmp.reset_for_rekey(now);
-        }
 
         self.previous_our_index
     }

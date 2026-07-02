@@ -585,9 +585,7 @@ fn session_registry_owns_session_rekey_initiation_eligibility() {
 fn session_registry_owns_session_rekey_initiation_state_install() {
     let local = Identity::generate();
     let peer = Identity::generate();
-    let mut entry = established_entry(&local, &peer, 1_000);
-    assert_eq!(entry.record_decrypt_failure(), 1);
-    assert_eq!(entry.record_decrypt_failure(), 2);
+    let entry = established_entry(&local, &peer, 1_000);
 
     let mut sessions = crate::node::SessionRegistry::default();
     sessions.insert(*peer.node_addr(), entry);
@@ -608,7 +606,6 @@ fn session_registry_owns_session_rekey_initiation_state_install() {
     assert_eq!(entry.handshake_payload(), Some(&[0xA0, 0xA1][..]));
     assert_eq!(entry.next_resend_at_ms(), 2_500);
     assert_eq!(entry.resend_count(), 0);
-    assert_eq!(entry.consecutive_decrypt_failures(), 0);
 
     let missing_handshake =
         NoiseHandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
@@ -687,6 +684,7 @@ fn session_registry_owns_rekey_tick_selection() {
         drain_ms,
         dampening_ms,
         FSP_CUTOVER_DELAY_MS,
+        |_| 0,
     );
     plan.cutover.sort();
     plan.drain.sort();

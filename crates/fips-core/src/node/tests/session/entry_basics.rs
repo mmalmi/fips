@@ -17,13 +17,10 @@ fn test_session_entry_new_initiating() {
         true,
     );
 
-    assert!(entry.state().is_initiating());
-    assert!(!entry.state().is_established());
-    assert!(!entry.state().is_awaiting_msg3());
+    assert!(entry.is_initiating());
+    assert!(!entry.is_established());
+    assert!(!entry.is_awaiting_msg3());
     assert_eq!(entry.created_at(), 1000);
-    assert_eq!(entry.last_activity(), 1000);
-    assert_eq!(entry.last_inbound_frame_ms(), 1000);
-    assert_eq!(entry.last_inbound_data_frame_ms(), 1000);
 }
 
 #[test]
@@ -87,102 +84,6 @@ fn test_session_entry_rekey_jitter_mean_near_zero() {
         mean,
         n
     );
-}
-
-#[test]
-fn test_session_entry_touch() {
-    use crate::noise::HandshakeState;
-
-    let identity_a = Identity::generate();
-    let identity_b = Identity::generate();
-
-    let handshake = HandshakeState::new_initiator(identity_a.keypair(), identity_b.pubkey_full());
-
-    let mut entry = crate::node::session::SessionEntry::new(
-        *identity_b.node_addr(),
-        identity_b.pubkey_full(),
-        EndToEndState::Initiating(handshake),
-        1000,
-        true,
-    );
-
-    entry.touch(2000);
-    assert_eq!(entry.last_activity(), 2000);
-    assert_eq!(entry.created_at(), 1000);
-}
-
-#[test]
-fn test_control_frame_does_not_refresh_data_return_trust() {
-    use crate::noise::HandshakeState;
-
-    let identity_a = Identity::generate();
-    let identity_b = Identity::generate();
-    let handshake = HandshakeState::new_initiator(identity_a.keypair(), identity_b.pubkey_full());
-    let mut entry = crate::node::session::SessionEntry::new(
-        *identity_b.node_addr(),
-        identity_b.pubkey_full(),
-        EndToEndState::Initiating(handshake),
-        1_000,
-        true,
-    );
-
-    entry.record_sent(128);
-    entry.touch_outbound_frame(20_000);
-    entry.touch_inbound_frame(20_000);
-
-    assert_eq!(entry.last_inbound_frame_ms(), 20_000);
-    assert_eq!(
-        entry.last_inbound_data_frame_ms(),
-        1_000,
-        "control/MMP frames must not prove endpoint data is returning"
-    );
-    assert!(
-        entry.has_recent_outbound_without_inbound(20_000, 10_000),
-        "recent outbound endpoint data without recent inbound data should expire direct trust"
-    );
-
-    entry.record_recv(128);
-    entry.touch_inbound_data_frame(20_000);
-    assert!(
-        !entry.has_recent_outbound_without_inbound(20_000, 10_000),
-        "inbound endpoint data should restore direct trust"
-    );
-}
-
-#[test]
-fn test_session_entry_decrypt_failure_counter() {
-    use crate::noise::HandshakeState;
-
-    let identity_a = Identity::generate();
-    let identity_b = Identity::generate();
-
-    let handshake = HandshakeState::new_initiator(identity_a.keypair(), identity_b.pubkey_full());
-
-    let mut entry = crate::node::session::SessionEntry::new(
-        *identity_b.node_addr(),
-        identity_b.pubkey_full(),
-        EndToEndState::Initiating(handshake),
-        1000,
-        true,
-    );
-
-    assert_eq!(entry.consecutive_decrypt_failures(), 0);
-
-    for expected in 1..=5 {
-        let count = entry.record_decrypt_failure();
-        assert_eq!(count, expected);
-        assert_eq!(entry.consecutive_decrypt_failures(), expected);
-    }
-
-    entry.reset_decrypt_failures();
-    assert_eq!(entry.consecutive_decrypt_failures(), 0);
-
-    // Idempotent reset on already-zero counter.
-    entry.reset_decrypt_failures();
-    assert_eq!(entry.consecutive_decrypt_failures(), 0);
-
-    let count = entry.record_decrypt_failure();
-    assert_eq!(count, 1);
 }
 
 #[test]

@@ -774,32 +774,3 @@ fn bootstrap_transports_own_membership_peer_npub_and_cleanup() {
         "removing bootstrap membership must also drop the peer npub"
     );
 }
-
-/// After `promote_connection`'s initial-promote branch the peer's
-/// (transport_id, our_index) pair must be in
-/// the session registry's worker-registration mirror. Unit tests construct `Node`
-/// directly so `decrypt_workers` defaults to `None`; spawn a
-/// 1-thread pool here so the registration code path actually runs.
-#[test]
-fn test_promote_registers_decrypt_worker() {
-    let mut node = make_node();
-    let transport_id = TransportId::new(1);
-    node.decrypt_workers = Some(crate::node::decrypt_worker::DecryptWorkerPool::spawn(1));
-
-    let link_id = LinkId::new(1);
-    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
-    let node_addr = *identity.node_addr();
-    node.add_connection(conn).unwrap();
-    node.promote_connection(link_id, identity, 2000).unwrap();
-
-    let peer = node.get_peer(&node_addr).unwrap();
-    let our_index = peer.our_index().unwrap();
-    assert!(
-        node.sessions
-            .is_worker_registered(&crate::node::decrypt_worker::DecryptSessionKey::new(
-                transport_id,
-                our_index.as_u32()
-            )),
-        "session registry must contain the new worker registration after promote"
-    );
-}

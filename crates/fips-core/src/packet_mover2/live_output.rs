@@ -1,0 +1,848 @@
+
+#[derive(Debug, Default)]
+pub(crate) struct PacketMover2LiveOutboundFirsts {
+    pub(crate) initial_outbound: Option<OutboundPacket>,
+    pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
+    pub(crate) tun_packet: Option<Vec<u8>>,
+    pub(crate) collect_transport_sent_receipts: bool,
+}
+
+pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
+    first_endpoint_data_batch: Option<NodeEndpointDataBatch>,
+    first_tun_packet: Option<Vec<u8>>,
+    endpoint_data_rx: &'a mut EndpointDataBatchRx,
+    endpoint_limit: usize,
+    tun_outbound_rx: &'a mut TunOutboundRx,
+    tun_limit: usize,
+    routes: &'a mut Routes,
+    buffers: &'a mut PacketMover2RouteTableOutboundBuffers,
+    endpoint_stale_data_drop_ms: u64,
+}
+
+#[derive(Default)]
+struct PacketMover2RouteTableOutboundBuffers {
+    endpoint_drops: Vec<PacketMover2EndpointDataDrop>,
+    deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
+    tun_drops: Vec<PacketMover2TunOutboundDrop>,
+    tun_deferred_packets: Vec<Vec<u8>>,
+}
+
+impl PacketMover2RouteTableOutboundBuffers {
+    fn has_activity(&self) -> bool {
+        !self.endpoint_drops.is_empty()
+            || !self.deferred_endpoint_data_batches.is_empty()
+            || !self.tun_drops.is_empty()
+            || !self.tun_deferred_packets.is_empty()
+    }
+}
+
+pub(crate) enum PacketMover2RoutedOutbound {
+    Packet(OutboundPacket),
+    Batch(Vec<OutboundPacket>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PacketMover2OutboundSource {
+    Endpoint,
+    Tun,
+}
+
+impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
+    fn new(
+        endpoint_data_rx: &'a mut EndpointDataBatchRx,
+        endpoint_limit: usize,
+        tun_outbound_rx: &'a mut TunOutboundRx,
+        tun_limit: usize,
+        routes: &'a mut Routes,
+        buffers: &'a mut PacketMover2RouteTableOutboundBuffers,
+    ) -> Self {
+        Self {
+            first_endpoint_data_batch: None,
+            first_tun_packet: None,
+            endpoint_data_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            routes,
+            buffers,
+            endpoint_stale_data_drop_ms: crate::node::ENDPOINT_STALE_DATA_DROP_MS,
+        }
+    }
+
+    fn with_firsts(mut self, firsts: PacketMover2LiveOutboundFirsts) -> Self {
+        self.first_endpoint_data_batch = firsts.endpoint_data_batch;
+        self.first_tun_packet = firsts.tun_packet;
+        self
+    }
+
+    fn take_firsts(&mut self) -> PacketMover2LiveOutboundFirsts {
+        PacketMover2LiveOutboundFirsts {
+            endpoint_data_batch: self.first_endpoint_data_batch.take(),
+            tun_packet: self.first_tun_packet.take(),
+            ..Default::default()
+        }
+    }
+}
+
+impl<Routes> PacketMover2RouteTableOutboundSource<'_, Routes>
+where
+    Routes: PacketMover2EndpointDataRouter + PacketMover2TunOutboundRouter,
+{
+    fn cache_first_tun_packet(&mut self) {
+        if self.first_tun_packet.is_none() && let Ok(packet) = self.tun_outbound_rx.try_recv() {
+            self.first_tun_packet = Some(packet);
+        }
+    }
+
+    fn drain_endpoint_batched<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
+    {
+        let mut drained_cost = 0usize;
+        if drained_cost < limit {
+            if let Some(batch) = self.first_endpoint_data_batch.take() {
+                drained_cost = drained_cost.saturating_add(batch.drain_cost());
+                self.route_or_drop_endpoint_data_batch(batch, &mut push);
+            }
+        }
+        while drained_cost < limit {
+            let Ok(batch) = self.endpoint_data_rx.try_recv() else {
+                break;
+            };
+            drained_cost = drained_cost.saturating_add(batch.drain_cost());
+            self.route_or_drop_endpoint_data_batch(batch, &mut push);
+        }
+        drained_cost
+    }
+
+    fn route_or_drop_endpoint_data_batch<F>(
+        &mut self,
+        batch: NodeEndpointDataBatch,
+        mut push: F,
+    ) where
+        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
+    {
+        let drop_count = stale_endpoint_data_drop_count(
+            &batch,
+            crate::time::now_ms(),
+            self.endpoint_stale_data_drop_ms,
+        );
+        if drop_count > 0 {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::EndpointDataBulkDropped,
+                drop_count as u64,
+            );
+            drop_stale_endpoint_data_batch(batch, &mut self.buffers.endpoint_drops);
+            return;
+        }
+
+        route_endpoint_data_batch_with_router(
+            batch,
+            self.routes,
+            &mut self.buffers.endpoint_drops,
+            &mut self.buffers.deferred_endpoint_data_batches,
+            |packets| push(PacketMover2OutboundSource::Endpoint, PacketMover2RoutedOutbound::Batch(packets)),
+        );
+    }
+
+    fn drain_tun_batched<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
+    {
+        let mut drained = 0usize;
+        let mut first_routed = None;
+        let mut routed_batch = Vec::new();
+        let activity_tick = ActivityTick::new(crate::time::now_ms());
+        self.cache_first_tun_packet();
+        if drained < limit {
+            if let Some(packet) = self.first_tun_packet.take() {
+                route_tun_outbound_packet_with_router(
+                    packet,
+                    self.routes,
+                    activity_tick,
+                    &mut self.buffers.tun_drops,
+                    &mut self.buffers.tun_deferred_packets,
+                    |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
+                );
+                drained += 1;
+            }
+        }
+        while drained < limit {
+            let Ok(packet) = self.tun_outbound_rx.try_recv() else {
+                break;
+            };
+            route_tun_outbound_packet_with_router(
+                packet,
+                self.routes,
+                activity_tick,
+                &mut self.buffers.tun_drops,
+                &mut self.buffers.tun_deferred_packets,
+                |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
+            );
+            drained += 1;
+        }
+        flush_tun_routed_packets(first_routed, routed_batch, &mut |routed| {
+            push(PacketMover2OutboundSource::Tun, routed);
+        });
+        drained
+    }
+
+    fn drain_outbound_batched<F>(&mut self, limit: usize, mut push: F) -> (usize, usize, usize)
+    where
+        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
+    {
+        let endpoint_limit = self.endpoint_limit.min(limit);
+        let endpoint_drained = self.drain_endpoint_batched(endpoint_limit, &mut push);
+        let reserved_drained = endpoint_drained.min(endpoint_limit);
+        let remaining = limit.saturating_sub(reserved_drained);
+        let tun_limit = self.tun_limit.min(remaining);
+        let tun_drained = self.drain_tun_batched(tun_limit, push);
+        (
+            endpoint_drained.saturating_add(tun_drained),
+            endpoint_drained,
+            tun_drained,
+        )
+    }
+}
+
+fn collect_tun_routed_packet(
+    packet: OutboundPacket,
+    first: &mut Option<OutboundPacket>,
+    batch: &mut Vec<OutboundPacket>,
+) {
+    if batch.is_empty() {
+        if first.is_none() {
+            *first = Some(packet);
+            return;
+        }
+        if let Some(first) = first.take() {
+            batch.push(first);
+        }
+    }
+    batch.push(packet);
+}
+
+fn flush_tun_routed_packets<F>(
+    first: Option<OutboundPacket>,
+    batch: Vec<OutboundPacket>,
+    push: &mut F,
+) where
+    F: FnMut(PacketMover2RoutedOutbound),
+{
+    if batch.is_empty() {
+        if let Some(packet) = first {
+            push(PacketMover2RoutedOutbound::Packet(packet));
+        }
+    } else {
+        push(PacketMover2RoutedOutbound::Batch(batch));
+    }
+}
+
+impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
+    fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
+    where
+        F: FnMut(PacketMover2RawIngress),
+    {
+        let mut drained = 0;
+        while drained < limit {
+            let Some(packet) = self.pop_front() else {
+                break;
+            };
+            push(packet);
+            drained += 1;
+        }
+        drained
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2RawIngressDropReason {
+    Wire(WirePreflightError),
+    Unrouted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2RawIngressDrop {
+    protocol: PacketProtocol,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    path: TransportPath,
+    payload_len: usize,
+    reason: PacketMover2RawIngressDropReason,
+}
+
+impl PacketMover2RawIngressDrop {
+    fn from_packet(
+        packet: PacketMover2RawIngress,
+        reason: PacketMover2RawIngressDropReason,
+    ) -> Self {
+        Self {
+            protocol: packet.protocol,
+            transport_id: packet.transport_id,
+            remote_addr: packet.remote_addr,
+            path: packet.path,
+            payload_len: packet.payload.len(),
+            reason,
+        }
+    }
+
+    pub(crate) fn protocol(&self) -> PacketProtocol {
+        self.protocol
+    }
+
+    pub(crate) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    pub(crate) fn remote_addr(&self) -> &TransportAddr {
+        &self.remote_addr
+    }
+
+    pub(crate) fn path(&self) -> TransportPath {
+        self.path.clone()
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn reason(&self) -> PacketMover2RawIngressDropReason {
+        self.reason
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketMover2OutputError {
+    Unavailable,
+    Backpressure,
+    StaleQueuedBulk,
+    NoRoute,
+    InvalidPacket,
+    MtuExceeded,
+    TransportFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2OutputDrop {
+    owner: OwnerId,
+    counter: u64,
+    ingress_seq: u64,
+    target: OutputTarget,
+    path: Option<TransportPath>,
+    payload_len: usize,
+    reason: PacketMover2OutputError,
+}
+
+impl PacketMover2OutputDrop {
+    pub(crate) fn from_output(output: &PacketOutput, reason: PacketMover2OutputError) -> Self {
+        Self {
+            owner: output.owner,
+            counter: output.counter,
+            ingress_seq: output.ingress_seq,
+            target: output.target,
+            path: output.path.clone(),
+            payload_len: output.payload.len(),
+            reason,
+        }
+    }
+
+    pub(crate) fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    pub(crate) fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    pub(crate) fn ingress_seq(&self) -> u64 {
+        self.ingress_seq
+    }
+
+    pub(crate) fn target(&self) -> OutputTarget {
+        self.target
+    }
+
+    pub(crate) fn path(&self) -> Option<TransportPath> {
+        self.path.clone()
+    }
+
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn reason(&self) -> PacketMover2OutputError {
+        self.reason
+    }
+}
+
+impl PacketOutput {
+    pub(crate) fn opened_payload(&self) -> Option<&[u8]> {
+        match self.owner.protocol {
+            PacketProtocol::Fmp => self.payload.get(FMP_ESTABLISHED_HEADER_SIZE..),
+            PacketProtocol::Fsp => {
+                let header = FspWireHeader::parse(&self.payload).ok()?;
+                self.payload.get(header.ciphertext_offset()..)
+            }
+        }
+    }
+
+    pub(crate) fn into_opened_payload(mut self) -> Result<PacketBuffer, Self> {
+        match self.take_opened_payload() {
+            Some(payload) => Ok(payload),
+            None => Err(self),
+        }
+    }
+
+    fn take_opened_payload(&mut self) -> Option<PacketBuffer> {
+        let header_len = match self.owner.protocol {
+            PacketProtocol::Fmp => FMP_ESTABLISHED_HEADER_SIZE,
+            PacketProtocol::Fsp => match FspWireHeader::parse(&self.payload) {
+                Ok(header) => header.ciphertext_offset(),
+                Err(_) => return None,
+            },
+        };
+        if self.payload.len() < header_len {
+            return None;
+        }
+        self.payload.drain(..header_len);
+        Some(std::mem::take(&mut self.payload))
+    }
+}
+
+pub(crate) trait PacketMover2OutputSink {
+    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
+    where
+        I: IntoIterator<Item = PacketOutput>;
+}
+
+pub(crate) trait PacketMover2TunOutput {
+    fn send_tun(
+        &mut self,
+        output: &PacketOutput,
+        payload: PacketBuffer,
+    ) -> Result<(), PacketMover2OutputError>;
+
+    fn send_tun_batch(
+        &mut self,
+        outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> usize {
+        let mut sent = 0usize;
+        for (output, payload) in outputs.drain(..) {
+            let mut drop =
+                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+            match self.send_tun(&output, payload) {
+                Ok(()) => sent = sent.saturating_add(1),
+                Err(reason) => {
+                    drop.reason = reason;
+                    drops.push(drop);
+                }
+            }
+        }
+        sent
+    }
+}
+
+impl<T: PacketMover2TunOutput + ?Sized> PacketMover2TunOutput for &mut T {
+    fn send_tun(
+        &mut self,
+        output: &PacketOutput,
+        payload: PacketBuffer,
+    ) -> Result<(), PacketMover2OutputError> {
+        (**self).send_tun(output, payload)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2TunTxOutput<'a> {
+    tx: &'a crate::upper::tun::TunTx,
+}
+
+impl<'a> PacketMover2TunTxOutput<'a> {
+    pub(crate) fn new(tx: &'a crate::upper::tun::TunTx) -> Self {
+        Self { tx }
+    }
+}
+
+impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
+    fn send_tun(
+        &mut self,
+        output: &PacketOutput,
+        payload: PacketBuffer,
+    ) -> Result<(), PacketMover2OutputError> {
+        let lane = match output.lane() {
+            Lane::Priority => crate::upper::tun::TunWriteLane::Priority,
+            Lane::Bulk => crate::upper::tun::TunWriteLane::Bulk,
+        };
+        self.tx
+            .send_with_lane(payload, lane)
+            .map_err(|error| packet_mover2_output_error_for_tun_write(error.kind()))
+    }
+
+    fn send_tun_batch(
+        &mut self,
+        outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> usize {
+        if outputs.is_empty() {
+            return 0;
+        }
+
+        let mut output_meta = Vec::with_capacity(outputs.len());
+        let mut packets = Vec::with_capacity(outputs.len());
+        for (output, payload) in outputs.drain(..) {
+            let lane = tun_write_lane_for_output(&output);
+            output_meta.push(output);
+            packets.push((payload, lane));
+        }
+
+        let failures = self.tx.send_batch_with_lanes(packets);
+        let failure_count = failures.len();
+        for failure in failures {
+            if let Some(output) = output_meta.get(failure.index) {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    output,
+                    packet_mover2_output_error_for_tun_write(failure.kind),
+                ));
+            }
+        }
+        output_meta.len().saturating_sub(failure_count)
+    }
+}
+
+fn tun_write_lane_for_output(output: &PacketOutput) -> crate::upper::tun::TunWriteLane {
+    match output.lane() {
+        Lane::Priority => crate::upper::tun::TunWriteLane::Priority,
+        Lane::Bulk => crate::upper::tun::TunWriteLane::Bulk,
+    }
+}
+
+fn packet_mover2_output_error_for_tun_write(
+    kind: crate::upper::tun::TunWriteErrorKind,
+) -> PacketMover2OutputError {
+    match kind {
+        crate::upper::tun::TunWriteErrorKind::Closed => PacketMover2OutputError::Unavailable,
+        crate::upper::tun::TunWriteErrorKind::BulkFull => PacketMover2OutputError::Backpressure,
+    }
+}
+
+pub(crate) trait PacketMover2EndpointOutput {
+    fn send_endpoint(
+        &mut self,
+        output: &PacketOutput,
+        payload: PacketBuffer,
+    ) -> Result<(), PacketMover2OutputError>;
+
+    fn send_endpoint_batch(
+        &mut self,
+        outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> usize {
+        let mut sent = 0usize;
+        for (output, payload) in outputs.drain(..) {
+            let mut drop =
+                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+            match self.send_endpoint(&output, payload) {
+                Ok(()) => sent = sent.saturating_add(1),
+                Err(reason) => {
+                    drop.reason = reason;
+                    drops.push(drop);
+                }
+            }
+        }
+        sent
+    }
+}
+
+impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut T {
+    fn send_endpoint(
+        &mut self,
+        output: &PacketOutput,
+        payload: PacketBuffer,
+    ) -> Result<(), PacketMover2OutputError> {
+        (**self).send_endpoint(output, payload)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2EndpointEventOutput<'a> {
+    tx: &'a EndpointEventSender,
+}
+
+impl<'a> PacketMover2EndpointEventOutput<'a> {
+    pub(crate) fn new(tx: &'a EndpointEventSender) -> Self {
+        Self { tx }
+    }
+}
+
+impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
+    fn send_endpoint(
+        &mut self,
+        output: &PacketOutput,
+        payload: PacketBuffer,
+    ) -> Result<(), PacketMover2OutputError> {
+        let source_addr = output.owner().node_addr();
+        let Some(source_peer) = output.source_peer() else {
+            return Err(PacketMover2OutputError::NoRoute);
+        };
+        if source_peer.node_addr() != &source_addr {
+            return Err(PacketMover2OutputError::NoRoute);
+        }
+
+        self.tx
+            .send(NodeEndpointEvent {
+                messages: vec![EndpointDataDelivery {
+                    source_peer,
+                    payload,
+                    enqueued_at_ms: crate::time::now_ms(),
+                }],
+                queued_at: crate::perf_profile::stamp(),
+            })
+            .map_err(|_| PacketMover2OutputError::Unavailable)
+    }
+
+    fn send_endpoint_batch(
+        &mut self,
+        outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> usize {
+        let mut messages = Vec::with_capacity(outputs.len());
+        let mut unavailable_drops = Vec::with_capacity(outputs.len());
+        let enqueued_at_ms = crate::time::now_ms();
+        for (output, payload) in outputs.drain(..) {
+            let source_addr = output.owner().node_addr();
+            let Some(source_peer) = output.source_peer() else {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    &output,
+                    PacketMover2OutputError::NoRoute,
+                ));
+                continue;
+            };
+            if source_peer.node_addr() != &source_addr {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    &output,
+                    PacketMover2OutputError::NoRoute,
+                ));
+                continue;
+            }
+
+            unavailable_drops.push(PacketMover2OutputDrop::from_output(
+                &output,
+                PacketMover2OutputError::Unavailable,
+            ));
+            messages.push(EndpointDataDelivery {
+                source_peer,
+                payload,
+                enqueued_at_ms,
+            });
+        }
+        if messages.is_empty() {
+            return 0;
+        }
+
+        let sent = messages.len();
+        match self.tx.send(NodeEndpointEvent {
+            messages,
+            queued_at: crate::perf_profile::stamp(),
+        }) {
+            Ok(()) => sent,
+            Err(_) => {
+                drops.append(&mut unavailable_drops);
+                0
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
+    tun: Tun,
+    endpoint: Endpoint,
+    transport: &'a mut PacketMover2TransportSendGroups,
+    stale_bulk_output_drop_ms: u64,
+}
+
+impl<'a, Tun, Endpoint> PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
+    fn new(
+        tun: Tun,
+        endpoint: Endpoint,
+        transport: &'a mut PacketMover2TransportSendGroups,
+    ) -> Self {
+        Self {
+            tun,
+            endpoint,
+            transport,
+            stale_bulk_output_drop_ms: crate::node::ENDPOINT_STALE_DATA_DROP_MS,
+        }
+    }
+}
+
+impl<Tun, Endpoint> PacketMover2OutputSink for PacketMover2LiveOutputSink<'_, Tun, Endpoint>
+where
+    Tun: PacketMover2TunOutput,
+    Endpoint: PacketMover2EndpointOutput,
+{
+    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
+    where
+        I: IntoIterator<Item = PacketOutput>,
+    {
+        let mut sent = 0usize;
+        let mut endpoint_batch = Vec::new();
+        let mut tun_batch = Vec::new();
+        for output in outputs {
+            match output.target() {
+                OutputTarget::Endpoint => {
+                    if !tun_batch.is_empty() {
+                        sent =
+                            sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
+                    }
+                    match self.prepare_opened_output(output, drops) {
+                        Some(endpoint) => endpoint_batch.push(endpoint),
+                        None => {
+                            if !endpoint_batch.is_empty() {
+                                sent = sent.saturating_add(
+                                    self.endpoint
+                                        .send_endpoint_batch(&mut endpoint_batch, drops),
+                                );
+                            }
+                        }
+                    }
+                    continue;
+                }
+                OutputTarget::Tun => {
+                    if !endpoint_batch.is_empty() {
+                        sent = sent.saturating_add(
+                            self.endpoint
+                                .send_endpoint_batch(&mut endpoint_batch, drops),
+                        );
+                    }
+                    if let Some(tun) = self.prepare_opened_output(output, drops) {
+                        tun_batch.push(tun);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+
+            if !endpoint_batch.is_empty() {
+                sent = sent.saturating_add(
+                    self.endpoint
+                        .send_endpoint_batch(&mut endpoint_batch, drops),
+                );
+            }
+            if !tun_batch.is_empty() {
+                sent = sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
+            }
+            let mut drop =
+                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+            match self.send_unbatched_output(output) {
+                Ok(()) => sent = sent.saturating_add(1),
+                Err(reason) => {
+                    drop.reason = reason;
+                    drops.push(drop);
+                }
+            }
+        }
+        if !endpoint_batch.is_empty() {
+            sent = sent.saturating_add(
+                self.endpoint
+                    .send_endpoint_batch(&mut endpoint_batch, drops),
+            );
+        }
+        if !tun_batch.is_empty() {
+            sent = sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
+        }
+        sent
+    }
+}
+
+impl<Tun, Endpoint> PacketMover2LiveOutputSink<'_, Tun, Endpoint>
+where
+    Tun: PacketMover2TunOutput,
+    Endpoint: PacketMover2EndpointOutput,
+{
+    fn prepare_opened_output(
+        &mut self,
+        mut output: PacketOutput,
+        drops: &mut Vec<PacketMover2OutputDrop>,
+    ) -> Option<(PacketOutput, PacketBuffer)> {
+        if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
+            record_stale_bulk_output_drop(output.target());
+            drops.push(PacketMover2OutputDrop::from_output(
+                &output,
+                PacketMover2OutputError::StaleQueuedBulk,
+            ));
+            return None;
+        }
+        match output.take_opened_payload() {
+            Some(payload) => Some((output, payload)),
+            None => {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    &output,
+                    PacketMover2OutputError::Unavailable,
+                ));
+                None
+            }
+        }
+    }
+
+    fn send_unbatched_output(
+        &mut self,
+        output: PacketOutput,
+    ) -> Result<(), PacketMover2OutputError> {
+        if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
+            record_stale_bulk_output_drop(output.target());
+            return Err(PacketMover2OutputError::StaleQueuedBulk);
+        }
+
+        match output.target {
+            OutputTarget::Transport => {
+                let Some((transport_id, remote_addr)) =
+                    output.path.as_ref().and_then(|path| match path {
+                        TransportPath::Live {
+                            transport_id,
+                            remote_addr,
+                        } => Some((*transport_id, remote_addr.clone())),
+                    })
+                else {
+                    return Err(PacketMover2OutputError::NoRoute);
+                };
+                self.transport
+                    .send_transport(transport_id, remote_addr, output)
+            }
+            OutputTarget::SessionIngress { .. }
+            | OutputTarget::SessionPayload { .. }
+            | OutputTarget::Tun
+            | OutputTarget::Endpoint => Err(PacketMover2OutputError::NoRoute),
+        }
+    }
+}
+
+fn stale_bulk_output(output: &PacketOutput, max_age_ms: u64) -> bool {
+    output.lane() == Lane::Bulk
+        && max_age_ms > 0
+        && matches!(output.target(), OutputTarget::Tun | OutputTarget::Endpoint)
+        && output
+            .activity_tick
+            .is_some_and(|tick| crate::time::now_ms().saturating_sub(tick.get()) > max_age_ms)
+}
+
+fn record_stale_bulk_output_drop(target: OutputTarget) {
+    let event = match target {
+        OutputTarget::Tun => crate::perf_profile::Event::TunWriteBulkDropped,
+        OutputTarget::Endpoint => crate::perf_profile::Event::EndpointEventBulkDropped,
+        OutputTarget::Transport
+        | OutputTarget::SessionIngress { .. }
+        | OutputTarget::SessionPayload { .. } => return,
+    };
+    crate::perf_profile::record_event(event);
+}
+
+fn packet_mover2_output_error_from_session_handoff(
+    error: PacketMover2SessionHandoffError,
+) -> PacketMover2OutputError {
+    match error {
+        PacketMover2SessionHandoffError::InvalidPacket => PacketMover2OutputError::InvalidPacket,
+        PacketMover2SessionHandoffError::NoRoute => PacketMover2OutputError::NoRoute,
+    }
+}

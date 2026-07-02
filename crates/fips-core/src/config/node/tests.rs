@@ -26,26 +26,6 @@ fn test_rekey_config_partial_yaml_uses_defaults() {
 }
 
 #[test]
-fn test_connected_udp_config_defaults() {
-    let c = ConnectedUdpConfig::default();
-    #[cfg(target_os = "macos")]
-    assert!(!c.enabled);
-    #[cfg(not(target_os = "macos"))]
-    assert!(c.enabled);
-    assert_eq!(c.max_peers, 0);
-    assert_eq!(c.fd_reserve, 128);
-}
-
-#[test]
-fn test_connected_udp_config_yaml() {
-    let yaml = "enabled: false\nmax_peers: 32\nfd_reserve: 4096\n";
-    let c: ConnectedUdpConfig = serde_yaml::from_str(yaml).unwrap();
-    assert!(!c.enabled);
-    assert_eq!(c.max_peers, 32);
-    assert_eq!(c.fd_reserve, 4096);
-}
-
-#[test]
 fn test_routing_config_defaults() {
     let c = RoutingConfig::default();
     assert_eq!(c.mode, RoutingMode::Tree);

@@ -8,9 +8,8 @@ mod accessors_impl;
 mod acl;
 mod bloom;
 mod core_impl;
-mod decrypt_worker;
 mod discovery_rate_limit;
-mod encrypt_worker;
+mod endpoint_channels;
 mod endpoint_event;
 mod endpoint_traffic;
 mod error;
@@ -19,6 +18,7 @@ mod identity_cache;
 mod io_impl;
 mod lifecycle;
 mod link_registry;
+mod packet_mover2_integration;
 mod peer_lifecycle;
 mod peer_runtime;
 mod rate_limit;
@@ -27,7 +27,6 @@ mod retry;
 mod route_impl;
 mod routing;
 mod routing_error_rate_limit;
-mod send_impl;
 pub(crate) mod session;
 mod session_access_impl;
 mod session_registry;
@@ -42,82 +41,49 @@ mod tree;
 pub(crate) mod wire;
 
 pub use endpoint_event::ExternalPacketIo;
-pub use endpoint_traffic::{
-    EndpointPayloadClass, EndpointPayloadLane, classify_endpoint_payload,
-    endpoint_payload_is_latency_sensitive,
-};
 pub use error::NodeError;
 pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
-pub(crate) use endpoint_event::EndpointBulkSendFeedback;
-#[cfg(test)]
-pub(in crate::node) use endpoint_event::EndpointEventDequeueCounts;
+pub(crate) use endpoint_channels::{
+    ENDPOINT_STALE_DATA_DROP_MS, EndpointDataBatchRx, EndpointDataBatchTx,
+    NodeEndpointControlCommand, NodeEndpointDataBatch, endpoint_data_batch_channel,
+};
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
-#[cfg(test)]
-pub(in crate::node) use endpoint_event::release_endpoint_event_messages;
-#[cfg(unix)]
-pub(in crate::node) use endpoint_event::{
-    EndpointBulkSendFeedbackRecord, EndpointBulkSendSessionBookkeeping,
-};
-#[cfg(unix)]
 pub(crate) use endpoint_event::{
-    EndpointBulkSendFmpLease, EndpointBulkSendFspLease, EndpointBulkSendLease,
-    EndpointBulkSendRuntime,
+    EndpointDataDelivery, EndpointDataIo, EndpointDirectSink, EndpointEventReceiver,
+    EndpointEventSender, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
+    UpdatePeersOutcome,
 };
-pub(crate) use endpoint_event::{
-    EndpointDataDelivery, EndpointDataIo, EndpointEventReceiver, EndpointEventSender,
-    EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
-    NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome, endpoint_data_command_capacity,
+pub use endpoint_event::{
+    FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
+    FipsEndpointDirectPacketRunMeta, FipsEndpointDirectSink, FipsEndpointDirectSourceRun,
 };
-#[cfg(unix)]
-pub(in crate::node) use endpoint_traffic::reserve_fmp_worker_send;
-pub(crate) use endpoint_traffic::{
-    EndpointCommandLane, EndpointDataPayload, EndpointDataSend, PendingSessionTrafficQueues,
-};
-#[cfg(test)]
-pub(crate) use endpoint_traffic::{PendingEndpointDataQueue, PendingTunPacketQueue};
-#[cfg(unix)]
-pub(in crate::node) use endpoint_traffic::{
-    classify_fmp_plaintext_traffic, endpoint_flow_dispatch_key,
-};
-#[cfg(test)]
-pub(in crate::node) use endpoint_traffic::{
-    endpoint_command_lane_for_payload, endpoint_payload_is_tcp,
-    fmp_plaintext_is_bulk_session_datagram,
-};
+pub(crate) use endpoint_traffic::{PendingEndpointData, PendingSessionTrafficQueues};
 pub(in crate::node) use identity_cache::IdentityCache;
-#[cfg(test)]
-pub(in crate::node) use link_registry::LinkAddressIndex;
 pub(in crate::node) use link_registry::{LinkRegistry, PendingConnect, TransportDropTracker};
 pub(in crate::node) use peer_lifecycle::*;
 pub(in crate::node) use peer_runtime::*;
-#[cfg(test)]
-pub(crate) use recent_requests::RecentRequest;
 pub(crate) use recent_requests::{RecentDiscoveryRequests, RecentResponseForward};
 pub(in crate::node) use session_registry::*;
 pub(in crate::node) use support_state::{
     BootstrapTransports, DiscoveryFallbackTransit, LocalSendFailures, SessionDirectDegradation,
 };
 
-use self::decrypt_worker::DecryptSessionKey;
 use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
-#[cfg(unix)]
-use self::wire::ESTABLISHED_HEADER_SIZE;
-use self::wire::{
-    FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
-    prepend_inner_header,
-};
+use self::wire::{FLAG_CE, FLAG_KEY_EPOCH};
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
-#[cfg(unix)]
-use crate::node::session::FspSendReservation;
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
+use crate::packet_mover2::{
+    AdmissionConfig, PacketMover2FastIngressRx, PacketMover2LiveNode,
+    PacketMover2TransportSendWorkerPool,
+};
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
@@ -127,8 +93,7 @@ use crate::transport::udp::UdpTransport;
 #[cfg(feature = "webrtc-transport")]
 use crate::transport::webrtc::WebRtcTransport;
 use crate::transport::{
-    ConnectionState, Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError,
-    TransportHandle, TransportId,
+    Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError, TransportHandle, TransportId,
 };
 use crate::tree::TreeState;
 use crate::upper::hosts::HostMap;
@@ -148,8 +113,11 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+type PacketMover2Node = PacketMover2LiveNode;
+
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
-pub(crate) const ENDPOINT_EVENT_PRIORITY_MAX_LEN: usize = 512;
+#[cfg(test)]
+pub(crate) const ENDPOINT_EVENT_TEST_PAYLOAD_LEN: usize = 512;
 const SESSION_DIRECT_DEGRADED_HOLD_MS: u64 = 20_000;
 const SESSION_DIRECT_DEGRADED_MIN_SAMPLE: u64 = 16;
 const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.08;
@@ -249,6 +217,15 @@ pub struct Node {
     /// Packet receiver (for event loop).
     packet_rx: Option<PacketRx>,
 
+    // === Packet Mover2 ===
+    /// Canonical packet_mover2 dataplane state owned by the node.
+    #[allow(dead_code)]
+    packet_mover2: PacketMover2Node,
+    /// Pre-routed established FMP packets accepted directly from UDP receive.
+    packet_mover2_fast_ingress_rx: Option<PacketMover2FastIngressRx>,
+    /// Bounded PM2 bulk UDP send executor used by the live daemon path.
+    packet_mover2_transport_send_worker: PacketMover2TransportSendWorkerPool,
+
     // === Peer Lifecycle ===
     /// Pending handshake connections plus authenticated peers.
     peers: PeerLifecycleRegistry,
@@ -302,36 +279,12 @@ pub struct Node {
     tun_outbound_rx: Option<TunOutboundRx>,
     /// App-owned packet sink used by embedded/no-TUN integrations.
     external_packet_tx: Option<tokio::sync::mpsc::Sender<NodeDeliveredPacket>>,
-    /// Endpoint data command receiver used by embedded/no-daemon integrations.
-    endpoint_priority_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
-    /// Bulk endpoint data command receiver used by embedded/no-daemon integrations.
-    endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
+    /// Endpoint control receiver used by embedded/no-daemon integrations.
+    endpoint_control_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointControlCommand>>,
+    /// Endpoint data batch receiver used by embedded/no-daemon integrations.
+    endpoint_data_rx: Option<EndpointDataBatchRx>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
     endpoint_events: EndpointEventRuntime,
-    /// Priority feedback from endpoint-side bulk-send leases. The endpoint
-    /// mover must report FMP/FSP send bookkeeping before it dispatches worker
-    /// jobs; rx_loop applies this lane ahead of bulk endpoint commands so
-    /// MMP/liveness/accounting do not starve behind bulk traffic.
-    endpoint_bulk_feedback_rx: Option<tokio::sync::mpsc::Receiver<EndpointBulkSendFeedback>>,
-    /// Shared lease publisher for endpoint-side bulk sends.
-    #[cfg(unix)]
-    endpoint_bulk_send_runtime: Option<EndpointBulkSendRuntime>,
-    /// Off-task FMP-encrypt + UDP-send worker pool. `None` if not yet
-    /// spawned (set up in `start()` once transports are running).
-    /// `Some(pool)` once available; the pool internally holds
-    /// per-worker mpsc senders and round-robins jobs across them.
-    /// See `node::encrypt_worker` for the rationale and layout.
-    encrypt_workers: Option<encrypt_worker::EncryptWorkerPool>,
-    /// Off-task FMP + FSP decrypt + delivery worker pool. Mirror of
-    /// `encrypt_workers` for the receive side.
-    decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
-    /// Decrypt-worker return channel. Compact authenticated receive metadata,
-    /// direct local FSP completions, and fallback plaintext all return here so
-    /// rx_loop can apply node-owned bookkeeping and any remaining legacy link
-    /// dispatch. Drained with a bounded priority lane ahead of bounded
-    /// authenticated and fallback bulk lanes.
-    decrypt_fallback_rx: Option<decrypt_worker::DecryptWorkerFallbackReceivers>,
-    decrypt_fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.

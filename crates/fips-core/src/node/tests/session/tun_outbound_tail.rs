@@ -8,7 +8,7 @@ async fn test_tun_outbound_unknown_destination() {
     verify_tree_convergence(&nodes);
 
     // Install TUN receiver on Node 0 (for ICMPv6 response)
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[0].node.tun_tx = Some(tun_tx);
 
     let src_fips = crate::FipsAddress::from_node_addr(nodes[0].node.node_addr());
@@ -18,7 +18,7 @@ async fn test_tun_outbound_unknown_destination() {
     let unknown_fips = crate::FipsAddress::from_node_addr(&unknown_addr);
     let ipv6_packet = build_ipv6_packet(&src_fips, &unknown_fips, b"unknown");
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet).await;
 
     // Should receive ICMPv6 Destination Unreachable back on TUN
     let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
@@ -60,14 +60,14 @@ async fn test_tun_outbound_3node_forwarded() {
     nodes[0].node.register_identity(node2_addr, node2_pubkey);
 
     // Install TUN receiver on Node 2
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[2].node.tun_tx = Some(tun_tx);
 
     // Build and inject an IPv6 packet (triggers session initiation to Node 2)
     let test_payload = b"forwarded-data-plane";
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, test_payload);
 
-    nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
+    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
 
     // Drain packets: handshake + queued data delivery
     drain_to_quiescence(&mut nodes).await;
@@ -78,7 +78,6 @@ async fn test_tun_outbound_3node_forwarded() {
             .node
             .get_session(&node2_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 
@@ -105,7 +104,7 @@ async fn test_tun_outbound_pending_queue_flush() {
     let dst_fips = crate::FipsAddress::from_node_addr(&node1_addr);
 
     // Install TUN receiver on Node 1
-    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
     nodes[1].node.tun_tx = Some(tun_tx);
 
     // Send 5 packets before any session exists
@@ -114,8 +113,9 @@ async fn test_tun_outbound_pending_queue_flush() {
         let payload = format!("queued-pkt-{}", i).into_bytes();
         let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, &payload);
         packets.push(ipv6_packet.clone());
-        nodes[0].node.handle_tun_outbound(ipv6_packet).await;
+        enqueue_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet);
     }
+    process_available_packets(&mut nodes).await;
 
     // First packet triggers session initiation, rest are queued
     assert_eq!(nodes[0].node.session_count(), 1);
@@ -124,7 +124,6 @@ async fn test_tun_outbound_pending_queue_flush() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_initiating()
     );
 
@@ -136,7 +135,6 @@ async fn test_tun_outbound_pending_queue_flush() {
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .state()
             .is_established()
     );
 
