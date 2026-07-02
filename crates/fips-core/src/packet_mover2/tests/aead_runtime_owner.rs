@@ -85,6 +85,22 @@
         completions
     }
 
+    fn drain_worker_pool_completion_batches(
+        pool: &mut PacketMover2AeadWorkerPool,
+        expected: usize,
+    ) -> Vec<CryptoCompletionBatch> {
+        let mut batches = Vec::new();
+        for _ in 0..100 {
+            let drained = batches.iter().map(CryptoCompletionBatch::len).sum::<usize>();
+            pool.drain_completion_batches_into(expected.saturating_sub(drained), &mut batches);
+            if batches.iter().map(CryptoCompletionBatch::len).sum::<usize>() >= expected {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        batches
+    }
+
     #[test]
     fn aead_worker_pool_returns_completions_through_completion_source() {
         let owner = fmp_owner(706);
@@ -161,6 +177,58 @@
         assert!(drops.is_empty());
         assert_eq!(pool.available_open_capacity(), 0);
         assert_eq!(pool.available_seal_capacity(), 0);
+    }
+
+    #[test]
+    fn aead_worker_pool_splits_large_open_owner_run_into_completion_batches() {
+        let owner = fmp_owner(714);
+        let open_key = 25;
+        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 32));
+        mover.register_owner(owner, OwnerConfig::new(1, 32));
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+        submit_fmp_inbound_range(&mut mover, owner, 714, open_key, 100..116, b"fanout");
+
+        let mut pool = PacketMover2AeadWorkerPool::new(4, 32);
+        let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut pool, 16);
+
+        assert_eq!(dispatched, 16);
+        assert!(retired.is_empty());
+        assert!(drops.is_empty());
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 16);
+
+        let mut batches = drain_worker_pool_completion_batches(&mut pool, 16);
+        assert_eq!(
+            batches.iter().map(CryptoCompletionBatch::len).sum::<usize>(),
+            16
+        );
+        let mut batch_runs = batches
+            .iter()
+            .map(|batch| (batch.first_order(), batch.len()))
+            .collect::<Vec<_>>();
+        batch_runs.sort_by_key(|(order, _)| *order);
+        assert_eq!(
+            batch_runs,
+            vec![(Some(OrderToken(0)), 8), (Some(OrderToken(8)), 8)]
+        );
+
+        let mut retired = Vec::new();
+        mover.queue_completion_batches(&mut batches);
+        assert_eq!(
+            mover.retire_queued_completions_into(16, &mut retired, false),
+            16
+        );
+        let outputs = outputs(flatten_retired_outputs(retired));
+        assert_eq!(
+            outputs
+                .iter()
+                .map(PacketOutput::counter)
+                .collect::<Vec<_>>(),
+            (100..116).collect::<Vec<_>>()
+        );
+        assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
     }
 
     #[test]

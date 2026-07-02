@@ -640,10 +640,21 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             return 0;
         }
 
-        let open_job_packets =
-            packet_mover2_aead_worker_job_packets(count, self.direction_worker_count(PacketMover2AeadDirection::Open));
-        let seal_job_packets =
-            packet_mover2_aead_worker_job_packets(count, self.direction_worker_count(PacketMover2AeadDirection::Seal));
+        let (open_count, seal_count) = prepared
+            .iter()
+            .fold((0usize, 0usize), |(open, seal), work| match work {
+                PreparedCryptoWork::Open { .. } => (open.saturating_add(1), seal),
+                PreparedCryptoWork::Seal { .. } => (open, seal.saturating_add(1)),
+                PreparedCryptoWork::Completed(_) => (open, seal),
+            });
+        let open_job_packets = packet_mover2_aead_open_worker_job_packets(
+            open_count,
+            self.direction_worker_count(PacketMover2AeadDirection::Open),
+        );
+        let seal_job_packets = packet_mover2_aead_worker_job_packets(
+            seal_count,
+            self.direction_worker_count(PacketMover2AeadDirection::Seal),
+        );
         let mut open_jobs = PreparedOpenRunJobBuilder::new(open_job_packets);
         let mut seal_jobs = PreparedCryptoJobBuilder::new(seal_job_packets);
         for work in prepared.drain(..) {
@@ -898,6 +909,16 @@ fn packet_mover2_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
 fn packet_mover2_aead_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
     let _ = worker_count;
     work_count.max(1).min(PACKET_MOVER2_AEAD_WORKER_BATCH_PACKETS)
+}
+
+fn packet_mover2_aead_open_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
+    let work_count = work_count.max(1);
+    work_count.min(
+        work_count
+            .div_ceil(worker_count.max(1))
+            .max(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
+            .min(PACKET_MOVER2_AEAD_WORKER_BATCH_PACKETS),
+    )
 }
 
 impl Drop for PacketMover2AeadWorkerPool {
