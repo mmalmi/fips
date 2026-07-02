@@ -29,6 +29,7 @@ impl FipsEndpointDirectMessage {
 pub struct FipsEndpointDirectSourceRun {
     source_peer: PeerIdentity,
     packets: Vec<PacketBuffer>,
+    enqueued_at_ms: u64,
 }
 
 impl FipsEndpointDirectSourceRun {
@@ -43,12 +44,51 @@ impl FipsEndpointDirectSourceRun {
         Self {
             source_peer,
             packets,
+            enqueued_at_ms: message.enqueued_at_ms,
         }
     }
 
     fn push_message(&mut self, message: FipsEndpointDirectMessage) {
         debug_assert_eq!(self.source_node_addr(), message.source_node_addr());
         self.packets.push(message.data);
+    }
+
+    pub(crate) fn from_delivery_with_capacity(
+        delivery: EndpointDataDelivery,
+        capacity: usize,
+    ) -> Self {
+        let mut packets = Vec::with_capacity(capacity.max(1));
+        packets.push(delivery.payload);
+        Self {
+            source_peer: delivery.source_peer,
+            packets,
+            enqueued_at_ms: delivery.enqueued_at_ms,
+        }
+    }
+
+    pub(crate) fn from_source_packets(
+        source_peer: PeerIdentity,
+        packets: Vec<PacketBuffer>,
+        enqueued_at_ms: u64,
+    ) -> Self {
+        Self {
+            source_peer,
+            packets,
+            enqueued_at_ms,
+        }
+    }
+
+    fn push_delivery(&mut self, delivery: EndpointDataDelivery) {
+        debug_assert_eq!(self.source_node_addr(), delivery.source_peer.node_addr());
+        self.packets.push(delivery.payload);
+    }
+
+    pub(crate) fn try_extend(&mut self, other: Self) -> Result<(), Self> {
+        if self.source_node_addr() != other.source_node_addr() {
+            return Err(other);
+        }
+        self.packets.extend(other.packets);
+        Ok(())
     }
 
     /// Authenticated FIPS peer that originated every packet in this run.
@@ -64,6 +104,11 @@ impl FipsEndpointDirectSourceRun {
     /// Source Nostr public key as human-facing bech32 text.
     pub fn source_npub(&self) -> String {
         self.source_peer.npub()
+    }
+
+    /// Unix-millisecond time when FIPS handed this run to the direct sink.
+    pub fn enqueued_at_ms(&self) -> u64 {
+        self.enqueued_at_ms
     }
 
     /// Packets delivered for this source run.
@@ -99,7 +144,20 @@ pub struct FipsEndpointDirectBatch {
 }
 
 impl FipsEndpointDirectBatch {
-    pub(crate) fn from_messages(messages: Vec<FipsEndpointDirectMessage>) -> Self {
+    pub(crate) fn from_source_runs(runs: Vec<FipsEndpointDirectSourceRun>) -> Self {
+        let message_count = runs.iter().map(FipsEndpointDirectSourceRun::len).sum();
+        let mut messages = Vec::with_capacity(message_count);
+        for run in runs {
+            let enqueued_at_ms = run.enqueued_at_ms;
+            let (source_peer, packets) = run.into_parts();
+            for data in packets {
+                messages.push(FipsEndpointDirectMessage {
+                    source_peer,
+                    data,
+                    enqueued_at_ms,
+                });
+            }
+        }
         Self { messages }
     }
 
@@ -188,6 +246,14 @@ pub trait FipsEndpointDirectSink: Send + Sync + 'static {
         &self,
         batch: FipsEndpointDirectBatch,
     ) -> Result<(), FipsEndpointDirectDeliveryError>;
+
+    /// Deliver decrypted endpoint data as authenticated consecutive source runs.
+    fn deliver_endpoint_source_runs(
+        &self,
+        runs: Vec<FipsEndpointDirectSourceRun>,
+    ) -> Result<(), FipsEndpointDirectDeliveryError> {
+        self.deliver_endpoint_batch(FipsEndpointDirectBatch::from_source_runs(runs))
+    }
 }
 
 impl<F> FipsEndpointDirectSink for F
@@ -230,19 +296,53 @@ impl EndpointDirectSink {
         &self,
         messages: Vec<EndpointDataDelivery>,
     ) -> Result<(), FipsEndpointDirectDeliveryError> {
-        let messages = messages
-            .into_iter()
-            .map(FipsEndpointDirectMessage::from)
-            .collect();
-        self.deliver_direct_batch(FipsEndpointDirectBatch::from_messages(messages))
+        self.deliver_direct_source_runs(endpoint_deliveries_into_source_runs(messages))
     }
 
-    pub(crate) fn deliver_direct_batch(
+    pub(crate) fn deliver_direct_source_runs(
         &self,
-        batch: FipsEndpointDirectBatch,
+        runs: Vec<FipsEndpointDirectSourceRun>,
     ) -> Result<(), FipsEndpointDirectDeliveryError> {
-        self.sink.deliver_endpoint_batch(batch)
+        self.sink.deliver_endpoint_source_runs(runs)
     }
+}
+
+fn endpoint_deliveries_into_source_runs(
+    deliveries: Vec<EndpointDataDelivery>,
+) -> Vec<FipsEndpointDirectSourceRun> {
+    if deliveries.is_empty() {
+        return Vec::new();
+    }
+    let message_count = deliveries.len();
+    let single_source = deliveries
+        .windows(2)
+        .all(|pair| pair[0].source_peer.node_addr() == pair[1].source_peer.node_addr());
+    let current_capacity = if single_source { message_count } else { 1 };
+    let mut deliveries = deliveries.into_iter();
+    let first = deliveries
+        .next()
+        .expect("non-empty endpoint delivery batch");
+    let mut current =
+        FipsEndpointDirectSourceRun::from_delivery_with_capacity(first, current_capacity);
+    if single_source {
+        for delivery in deliveries {
+            current.push_delivery(delivery);
+        }
+        return vec![current];
+    }
+
+    let mut runs = Vec::new();
+    for delivery in deliveries {
+        if current.source_node_addr() != delivery.source_peer.node_addr() {
+            runs.push(current);
+            current = FipsEndpointDirectSourceRun::from_delivery_with_capacity(delivery, 1);
+        } else {
+            current.push_delivery(delivery);
+        }
+    }
+
+    runs.push(current);
+    runs
 }
 
 /// App-owned packet channels for embedding FIPS without a system TUN.

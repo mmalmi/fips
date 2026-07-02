@@ -169,6 +169,58 @@ fn direct_endpoint_batch_splits_consecutive_source_runs() {
 }
 
 #[test]
+fn direct_endpoint_sink_can_receive_source_runs_without_message_batch() {
+    struct SourceRunSink {
+        runs: std::sync::Arc<std::sync::Mutex<Option<Vec<FipsEndpointDirectSourceRun>>>>,
+    }
+
+    impl FipsEndpointDirectSink for SourceRunSink {
+        fn deliver_endpoint_batch(
+            &self,
+            _batch: FipsEndpointDirectBatch,
+        ) -> Result<(), FipsEndpointDirectDeliveryError> {
+            panic!("source-run sink should not receive legacy direct message batches");
+        }
+
+        fn deliver_endpoint_source_runs(
+            &self,
+            runs: Vec<FipsEndpointDirectSourceRun>,
+        ) -> Result<(), FipsEndpointDirectDeliveryError> {
+            *self.runs.lock().expect("source-run lock") = Some(runs);
+            Ok(())
+        }
+    }
+
+    let source_a = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let source_b = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let sink = EndpointDirectSink::new(SourceRunSink {
+        runs: std::sync::Arc::clone(&captured),
+    });
+
+    sink.deliver_endpoint_data_batch(vec![
+        EndpointDataDelivery::new(source_a, b"a1".to_vec()),
+        EndpointDataDelivery::new(source_a, b"a2".to_vec()),
+        EndpointDataDelivery::new(source_b, b"b1".to_vec()),
+    ])
+    .expect("direct source-run delivery");
+
+    let runs = captured
+        .lock()
+        .expect("source-run lock")
+        .take()
+        .expect("captured source runs");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].source_peer(), &source_a);
+    assert_eq!(runs[0].packets().len(), 2);
+    assert_eq!(runs[0].packets()[0].as_slice(), b"a1");
+    assert_eq!(runs[0].packets()[1].as_slice(), b"a2");
+    assert_eq!(runs[1].source_peer(), &source_b);
+    assert_eq!(runs[1].packets().len(), 1);
+    assert_eq!(runs[1].packets()[0].as_slice(), b"b1");
+}
+
+#[test]
 fn release_endpoint_event_messages_subtracts_exact_count() {
     let counter = AtomicUsize::new(5);
 

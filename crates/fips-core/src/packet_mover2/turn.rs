@@ -550,7 +550,7 @@ pub(crate) struct PacketMover2FspEndpointDataIngress {
     body_len: usize,
     receive_sync: FspReceiveSync,
     activity_tick: Option<ActivityTick>,
-    direct_messages: Vec<FipsEndpointDirectMessage>,
+    source_run: FipsEndpointDirectSourceRun,
 }
 
 impl PacketMover2FspEndpointDataIngress {
@@ -602,15 +602,13 @@ impl PacketMover2FspEndpointDataIngress {
         let mut payload = output.into_opened_payload()?;
         payload.drain(..FSP_INNER_HEADER_SIZE);
         payload.truncate(body_len);
-        let direct_messages =
-            crate::node::session_wire::split_fsp_endpoint_data_bulk_payload(payload, &lengths)
-                .into_iter()
-                .map(|data| FipsEndpointDirectMessage {
-                    source_peer,
-                    data,
-                    enqueued_at_ms: crate::time::now_ms(),
-                })
-                .collect();
+        let packets =
+            crate::node::session_wire::split_fsp_endpoint_data_bulk_payload(payload, &lengths);
+        let source_run = FipsEndpointDirectSourceRun::from_source_packets(
+            source_peer,
+            packets,
+            crate::time::now_ms(),
+        );
 
         Ok(Self {
             commit: PacketMover2FspEndpointDataCommit {
@@ -623,7 +621,7 @@ impl PacketMover2FspEndpointDataIngress {
             body_len,
             receive_sync,
             activity_tick,
-            direct_messages,
+            source_run,
         })
     }
 
@@ -632,11 +630,11 @@ impl PacketMover2FspEndpointDataIngress {
     }
 
     fn len(&self) -> usize {
-        self.direct_messages.len()
+        self.source_run.len()
     }
 
-    pub(crate) fn into_direct_messages(self) -> Vec<FipsEndpointDirectMessage> {
-        self.direct_messages
+    pub(crate) fn into_direct_source_run(self) -> FipsEndpointDirectSourceRun {
+        self.source_run
     }
 }
 
@@ -684,13 +682,21 @@ impl PacketMover2FspEndpointDataIngressBatch {
         visit(current, count);
     }
 
-    pub(crate) fn append_direct_messages_to(
+    pub(crate) fn append_direct_source_runs_to(
         self,
-        messages: &mut Vec<FipsEndpointDirectMessage>,
+        runs: &mut Vec<FipsEndpointDirectSourceRun>,
     ) {
-        messages.reserve(self.len());
+        runs.reserve(self.ingresses.len());
         for ingress in self.ingresses {
-            messages.extend(ingress.into_direct_messages());
+            let run = ingress.into_direct_source_run();
+            if let Some(last) = runs.last_mut() {
+                match last.try_extend(run) {
+                    Ok(()) => continue,
+                    Err(run) => runs.push(run),
+                }
+            } else {
+                runs.push(run);
+            }
         }
     }
 }
