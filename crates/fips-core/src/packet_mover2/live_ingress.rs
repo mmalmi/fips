@@ -169,7 +169,7 @@ impl FmpIngressRouteKey {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PacketMover2EstablishedFastIngressSnapshot {
-    fmp: Arc<RwLock<HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>>>,
+    fmp: Arc<RwLock<Arc<HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>>>>,
 }
 
 impl PacketMover2EstablishedFastIngressSnapshot {
@@ -179,78 +179,213 @@ impl PacketMover2EstablishedFastIngressSnapshot {
         receiver_idx: u32,
         route: PacketMover2IngressRoute,
     ) {
-        self.fmp
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route);
+        self.update_fmp(|routes| {
+            routes.insert(FmpIngressRouteKey::new(transport_id, receiver_idx), route);
+        });
     }
 
     fn unregister_owner(&self, owner: OwnerId) {
-        self.fmp
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .retain(|_, route| route.owner != owner);
+        self.update_fmp(|routes| {
+            routes.retain(|_, route| route.owner != owner);
+        });
     }
 
-    fn lookup_fmp(
-        &self,
-        transport_id: TransportId,
-        receiver_idx: u32,
-    ) -> Option<PacketMover2IngressRoute> {
+    fn fmp_routes(&self) -> Arc<HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>> {
         self.fmp
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn lookup_fmp_in(
+        routes: &HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
+        transport_id: TransportId,
+        receiver_idx: u32,
+    ) -> Option<PacketMover2IngressRoute> {
+        routes
             .get(&FmpIngressRouteKey::new(transport_id, receiver_idx))
             .copied()
+    }
+
+    fn update_fmp<F>(&self, update: F)
+    where
+        F: FnOnce(&mut HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>),
+    {
+        let mut guard = self
+            .fmp
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut routes = (**guard).clone();
+        update(&mut routes);
+        *guard = Arc::new(routes);
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct PacketMover2FastIngressBatch {
     packets: Vec<SocketPacket>,
+    reservation: Option<PacketMover2FastIngressReservation>,
 }
 
 impl PacketMover2FastIngressBatch {
-    fn new(packets: Vec<SocketPacket>) -> Self {
-        Self { packets }
+    fn new(
+        packets: Vec<SocketPacket>,
+        reservation: PacketMover2FastIngressReservation,
+    ) -> Self {
+        Self {
+            packets,
+            reservation: Some(reservation),
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
         self.packets.len()
     }
 
-    fn into_packets(self) -> Vec<SocketPacket> {
-        self.packets
+    pub(crate) fn absorb(&mut self, other: Self) {
+        self.packets.extend(other.into_packets());
+    }
+
+    fn into_packets(mut self) -> Vec<SocketPacket> {
+        if let Some(reservation) = self.reservation.take() {
+            reservation.release();
+        }
+        std::mem::take(&mut self.packets)
     }
 }
 
 pub(crate) type PacketMover2FastIngressRx =
-    tokio::sync::mpsc::UnboundedReceiver<PacketMover2FastIngressBatch>;
+    tokio::sync::mpsc::Receiver<PacketMover2FastIngressBatch>;
+
+#[derive(Clone, Debug)]
+struct PacketMover2FastIngressQueue {
+    queued_packets: Arc<std::sync::atomic::AtomicUsize>,
+    packet_capacity: usize,
+}
+
+impl PacketMover2FastIngressQueue {
+    fn new(packet_capacity: usize) -> Self {
+        Self {
+            queued_packets: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            packet_capacity: packet_capacity.max(1),
+        }
+    }
+
+    fn reserve_prefix(&self, requested: usize) -> Option<PacketMover2FastIngressReservation> {
+        if requested == 0 {
+            return None;
+        }
+
+        let mut current = self.queued_packets.load(std::sync::atomic::Ordering::Relaxed);
+        loop {
+            let available = self.packet_capacity.saturating_sub(current);
+            let granted = requested.min(available);
+            if granted == 0 {
+                return None;
+            }
+            match self.queued_packets.compare_exchange_weak(
+                current,
+                current + granted,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(PacketMover2FastIngressReservation {
+                        queue: self.clone(),
+                        count: granted,
+                    });
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn release(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let previous = self
+            .queued_packets
+            .fetch_sub(count, std::sync::atomic::Ordering::Relaxed);
+        debug_assert!(
+            previous >= count,
+            "packet_mover2 fast ingress queued packet accounting underflow"
+        );
+    }
+}
+
+#[derive(Debug)]
+struct PacketMover2FastIngressReservation {
+    queue: PacketMover2FastIngressQueue,
+    count: usize,
+}
+
+impl PacketMover2FastIngressReservation {
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    fn truncate(&mut self, retained: usize) {
+        if retained >= self.count {
+            return;
+        }
+        let released = self.count - retained;
+        self.count = retained;
+        self.queue.release(released);
+    }
+
+    fn release(mut self) {
+        self.release_now();
+    }
+
+    fn release_now(&mut self) {
+        let count = std::mem::take(&mut self.count);
+        self.queue.release(count);
+    }
+}
+
+impl Drop for PacketMover2FastIngressReservation {
+    fn drop(&mut self) {
+        self.release_now();
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct PacketMover2EstablishedFastIngressSink {
     routes: PacketMover2EstablishedFastIngressSnapshot,
-    tx: tokio::sync::mpsc::UnboundedSender<PacketMover2FastIngressBatch>,
+    queue: PacketMover2FastIngressQueue,
+    tx: tokio::sync::mpsc::Sender<PacketMover2FastIngressBatch>,
 }
 
 impl PacketMover2EstablishedFastIngressSink {
     fn channel(
         routes: PacketMover2EstablishedFastIngressSnapshot,
+        packet_capacity: usize,
     ) -> (Self, PacketMover2FastIngressRx) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (Self { routes, tx }, rx)
+        let packet_capacity = packet_capacity.max(1);
+        let (tx, rx) = tokio::sync::mpsc::channel(packet_capacity);
+        (
+            Self {
+                routes,
+                queue: PacketMover2FastIngressQueue::new(packet_capacity),
+                tx,
+            },
+            rx,
+        )
     }
 
     fn socket_packet_from_received(
-        &self,
+        routes: &HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
         packet: ReceivedPacket,
     ) -> Result<SocketPacket, ReceivedPacket> {
         let Ok(header) = FmpWireHeader::parse(&packet.data) else {
             return Err(packet);
         };
-        let Some(route) = self
-            .routes
-            .lookup_fmp(packet.transport_id, header.receiver_idx())
+        let Some(route) = PacketMover2EstablishedFastIngressSnapshot::lookup_fmp_in(
+            routes,
+            packet.transport_id,
+            header.receiver_idx(),
+        )
         else {
             return Err(packet);
         };
@@ -275,13 +410,30 @@ impl PacketMover2EstablishedFastIngressSink {
 
 impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
     fn try_ingest_packet(&self, packet: ReceivedPacket) -> Result<(), ReceivedPacket> {
-        if self.tx.is_closed() {
-            return Err(packet);
-        }
-        let socket_packet = self.socket_packet_from_received(packet)?;
-        let _ = self
-            .tx
-            .send(PacketMover2FastIngressBatch::new(vec![socket_packet]));
+        let mut reservation = match self.queue.reserve_prefix(1) {
+            Some(reservation) => reservation,
+            None => return Err(packet),
+        };
+        let permit = match self.tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                reservation.release();
+                return Err(packet);
+            }
+        };
+        let routes = self.routes.fmp_routes();
+        let socket_packet = match Self::socket_packet_from_received(&routes, packet) {
+            Ok(packet) => packet,
+            Err(packet) => {
+                reservation.release();
+                return Err(packet);
+            }
+        };
+        reservation.truncate(1);
+        permit.send(PacketMover2FastIngressBatch::new(
+            vec![socket_packet],
+            reservation,
+        ));
         Ok(())
     }
 
@@ -290,10 +442,27 @@ impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
             return 0;
         }
 
+        let mut reservation = match self.queue.reserve_prefix(packets.len()) {
+            Some(reservation) => reservation,
+            None => return 0,
+        };
+        let permit = match self.tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                reservation.release();
+                return 0;
+            }
+        };
+        let routes = self.routes.fmp_routes();
         let mut misses = Vec::with_capacity(packets.len());
-        let mut fast_packets = Vec::with_capacity(packets.len());
+        let mut fast_packets = Vec::with_capacity(reservation.len().min(packets.len()));
+        let fast_limit = reservation.len();
         for packet in std::mem::take(packets) {
-            match self.socket_packet_from_received(packet) {
+            if fast_packets.len() >= fast_limit {
+                misses.push(packet);
+                continue;
+            }
+            match Self::socket_packet_from_received(&routes, packet) {
                 Ok(packet) => fast_packets.push(packet),
                 Err(packet) => misses.push(packet),
             }
@@ -301,9 +470,15 @@ impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
         *packets = misses;
 
         let accepted = fast_packets.len();
-        if accepted > 0 {
-            let _ = self.tx.send(PacketMover2FastIngressBatch::new(fast_packets));
+        reservation.truncate(accepted);
+        if accepted == 0 {
+            reservation.release();
+            return 0;
         }
+        permit.send(PacketMover2FastIngressBatch::new(
+            fast_packets,
+            reservation,
+        ));
         accepted
     }
 }

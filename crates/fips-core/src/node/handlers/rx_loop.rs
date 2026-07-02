@@ -86,7 +86,7 @@ impl Node {
             match self.packet_mover2_fast_ingress_rx.take() {
                 Some(rx) => (rx, None),
                 None => {
-                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (tx, rx) = tokio::sync::mpsc::channel(1);
                     (rx, Some(tx))
                 }
             };
@@ -153,6 +153,7 @@ impl Node {
                 _ = tick.tick() => {
                     let drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
+                        &mut packet_mover2_fast_ingress_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_data_rx,
                         &packet_mover2_tun_tx,
@@ -187,6 +188,7 @@ impl Node {
 
                     let post_drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
+                        &mut packet_mover2_fast_ingress_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_data_rx,
                         &packet_mover2_tun_tx,
@@ -218,32 +220,6 @@ impl Node {
                 Some(command) = endpoint_control_rx.recv() => {
                     self.handle_endpoint_control(command).await;
                 }
-                Some(fast_ingress) = packet_mover2_fast_ingress_rx.recv() => {
-                    let packet_budget = packet_drain_budget(false).max(fast_ingress.len());
-                    let endpoint_budget = endpoint_drain_budget(packet_budget);
-                    let tun_budget = tun_drain_budget(packet_budget);
-                    let crypto_budget = mixed_dataplane_crypto_budget(
-                        packet_budget,
-                        endpoint_budget,
-                        tun_budget,
-                    );
-                    let mut turn = self.drain_packet_mover2_fast_ingress_turn(
-                        fast_ingress,
-                        &mut endpoint_data_rx,
-                        endpoint_budget,
-                        &mut tun_outbound_rx,
-                        tun_budget,
-                        &packet_mover2_tun_tx,
-                        &packet_mover2_endpoint_tx,
-                        crypto_budget,
-                    ).await;
-                    self.finish_packet_mover2_turn(
-                        &mut turn,
-                        &mut maintenance_state,
-                        &mut control_query_rx,
-                        CONTROL_QUERY_INTERLEAVE_BUDGET,
-                    ).await;
-                }
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => {
@@ -259,8 +235,17 @@ impl Node {
                                 || packet_rx.priority_ready_packets() > 0;
                             if !latency_work_ready {
                                 firsts.raw_ingress_prefetch = true;
+                                firsts.fast_ingress = Self::take_packet_mover2_fast_ingress_batch(
+                                    &mut packet_mover2_fast_ingress_rx,
+                                    packet_drain_budget(false),
+                                );
                             }
-                            let packet_budget = packet_drain_budget(latency_work_ready);
+                            let packet_budget = packet_drain_budget(latency_work_ready).max(
+                                firsts
+                                    .fast_ingress
+                                    .as_ref()
+                                    .map_or(0, |fast_ingress| fast_ingress.len()),
+                            );
                             let endpoint_budget = endpoint_drain_budget(packet_budget);
                             let tun_budget = tun_drain_budget(packet_budget);
                             let crypto_budget = mixed_dataplane_crypto_budget(
@@ -289,6 +274,43 @@ impl Node {
                         }
                         None => break, // channel closed
                     }
+                }
+                Some(fast_ingress) = packet_mover2_fast_ingress_rx.recv() => {
+                    let mut packet_budget = packet_drain_budget(false).max(fast_ingress.len());
+                    let fast_ingress = Self::coalesce_packet_mover2_fast_ingress(
+                        fast_ingress,
+                        &mut packet_mover2_fast_ingress_rx,
+                        packet_budget,
+                    );
+                    packet_budget = packet_budget.max(fast_ingress.len());
+                    let endpoint_budget = endpoint_drain_budget(packet_budget);
+                    let tun_budget = tun_drain_budget(packet_budget);
+                    let crypto_budget = mixed_dataplane_crypto_budget(
+                        packet_budget,
+                        endpoint_budget,
+                        tun_budget,
+                    );
+                    let mut turn = self.drain_packet_mover2_turn_with_firsts(
+                        &mut packet_rx,
+                        crate::packet_mover2::PacketMover2LiveTurnFirsts {
+                            fast_ingress: Some(fast_ingress),
+                            ..Default::default()
+                        },
+                        0,
+                        &mut endpoint_data_rx,
+                        endpoint_budget,
+                        &mut tun_outbound_rx,
+                        tun_budget,
+                        &packet_mover2_tun_tx,
+                        &packet_mover2_endpoint_tx,
+                        crypto_budget,
+                    ).await;
+                    self.finish_packet_mover2_turn(
+                        &mut turn,
+                        &mut maintenance_state,
+                        &mut control_query_rx,
+                        CONTROL_QUERY_INTERLEAVE_BUDGET,
+                    ).await;
                 }
                 _ = packet_mover2_completion_notify.notified() => {
                     let mut turn = self.drain_packet_mover2_completion_turn(
@@ -375,20 +397,32 @@ impl Node {
     async fn drain_rx_loop_data_queues(
         &mut self,
         packet_rx: &mut PacketRx,
+        packet_mover2_fast_ingress_rx: &mut crate::packet_mover2::PacketMover2FastIngressRx,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_data_rx: &mut EndpointDataBatchRx,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         budget: usize,
     ) -> RxLoopDataDrainStats {
-        let endpoint_budget = endpoint_drain_budget(budget);
-        let tun_budget = tun_drain_budget(budget);
-        let crypto_budget = mixed_dataplane_crypto_budget(budget, endpoint_budget, tun_budget);
+        let fast_ingress =
+            Self::take_packet_mover2_fast_ingress_batch(packet_mover2_fast_ingress_rx, budget);
+        let packet_budget = budget.max(
+            fast_ingress
+                .as_ref()
+                .map_or(0, |fast_ingress| fast_ingress.len()),
+        );
+        let endpoint_budget = endpoint_drain_budget(packet_budget);
+        let tun_budget = tun_drain_budget(packet_budget);
+        let crypto_budget =
+            mixed_dataplane_crypto_budget(packet_budget, endpoint_budget, tun_budget);
         let mut turn = self
             .drain_packet_mover2_turn_with_firsts(
                 packet_rx,
-                crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
-                budget,
+                crate::packet_mover2::PacketMover2LiveTurnFirsts {
+                    fast_ingress,
+                    ..Default::default()
+                },
+                packet_budget,
                 endpoint_data_rx,
                 endpoint_budget,
                 tun_outbound_rx,
@@ -406,6 +440,32 @@ impl Node {
             turn.endpoint_source_drained(),
             control_drained,
         )
+    }
+
+    fn take_packet_mover2_fast_ingress_batch(
+        packet_mover2_fast_ingress_rx: &mut crate::packet_mover2::PacketMover2FastIngressRx,
+        limit: usize,
+    ) -> Option<crate::packet_mover2::PacketMover2FastIngressBatch> {
+        let fast_ingress = packet_mover2_fast_ingress_rx.try_recv().ok()?;
+        Some(Self::coalesce_packet_mover2_fast_ingress(
+            fast_ingress,
+            packet_mover2_fast_ingress_rx,
+            limit,
+        ))
+    }
+
+    fn coalesce_packet_mover2_fast_ingress(
+        mut fast_ingress: crate::packet_mover2::PacketMover2FastIngressBatch,
+        packet_mover2_fast_ingress_rx: &mut crate::packet_mover2::PacketMover2FastIngressRx,
+        limit: usize,
+    ) -> crate::packet_mover2::PacketMover2FastIngressBatch {
+        while fast_ingress.len() < limit {
+            let Ok(next) = packet_mover2_fast_ingress_rx.try_recv() else {
+                break;
+            };
+            fast_ingress.absorb(next);
+        }
+        fast_ingress
     }
 
     async fn finish_packet_mover2_turn(

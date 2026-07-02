@@ -66,37 +66,6 @@ impl Node {
         turn
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(in crate::node) async fn drain_packet_mover2_fast_ingress_turn(
-        &mut self,
-        fast_ingress: crate::packet_mover2::PacketMover2FastIngressBatch,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        crypto_limit: usize,
-    ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        let turn = self
-            .packet_mover2
-            .pump_fast_ingress_turn_with_transport_worker(
-                fast_ingress,
-                endpoint_data_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                tun_tx,
-                endpoint_tx,
-                &self.transports,
-                crypto_limit,
-                &mut self.packet_mover2_transport_send_worker,
-            )
-            .await;
-        Self::observe_packet_mover2_turn(&turn);
-        turn
-    }
-
     pub(in crate::node) async fn process_packet_mover2_control_ingress(
         &mut self,
         turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,

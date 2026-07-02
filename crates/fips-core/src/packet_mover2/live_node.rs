@@ -138,6 +138,7 @@ pub(crate) enum PacketMover2LiveOwnerError {
 #[derive(Debug, Default)]
 pub(crate) struct PacketMover2LiveTurnFirsts {
     pub(crate) raw_packet: Option<ReceivedPacket>,
+    pub(crate) fast_ingress: Option<PacketMover2FastIngressBatch>,
     pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
     pub(crate) tun_packet: Option<Vec<u8>>,
     pub(crate) raw_ingress_prefetch: bool,
@@ -148,6 +149,7 @@ pub(crate) struct PacketMover2LiveNode {
     driver: PacketMover2TurnDriver,
     crypto_worker: PacketMover2AeadWorkerPool,
     routes: PacketMover2LiveRouteTable,
+    fast_ingress_capacity: usize,
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: Vec<Vec<u8>>,
     empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
@@ -163,6 +165,7 @@ impl PacketMover2LiveNode {
                 worker_capacity,
             ),
             routes: PacketMover2LiveRouteTable::default(),
+            fast_ingress_capacity: worker_capacity,
             deferred_endpoint_data_batches: Vec::new(),
             deferred_tun_packets: Vec::new(),
             empty_raw_ingress: VecDeque::new(),
@@ -179,6 +182,7 @@ impl PacketMover2LiveNode {
     ) -> PacketMover2FastIngressRx {
         let (sink, rx) = PacketMover2EstablishedFastIngressSink::channel(
             self.routes.established_fast_ingress_snapshot(),
+            self.fast_ingress_capacity,
         );
         packet_tx.set_fast_ingress_sink(Arc::new(sink));
         rx
@@ -631,6 +635,7 @@ impl PacketMover2LiveNode {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn pump_turn_with_firsts_and_transport_worker<RI, Transports>(
         &mut self,
+        fast_ingress: Option<PacketMover2FastIngressBatch>,
         raw_ingress: &mut RI,
         raw_ingress_limit: usize,
         outbound_firsts: PacketMover2LiveOutboundFirsts,
@@ -658,7 +663,7 @@ impl PacketMover2LiveNode {
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,
                 &mut self.crypto_worker,
-                None,
+                fast_ingress,
                 raw_ingress,
                 &mut self.routes,
                 raw_ingress_limit,
@@ -718,58 +723,6 @@ impl PacketMover2LiveNode {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn pump_fast_ingress_turn_with_transport_worker<Transports>(
-        &mut self,
-        fast_ingress: PacketMover2FastIngressBatch,
-        endpoint_data_rx: &mut EndpointDataBatchRx,
-        endpoint_limit: usize,
-        tun_outbound_rx: &mut TunOutboundRx,
-        tun_limit: usize,
-        tun_tx: &crate::upper::tun::TunTx,
-        endpoint_tx: &EndpointEventSender,
-        transports: &Transports,
-        crypto_limit: usize,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
-    where
-        Transports: PacketMover2TransportResolver + ?Sized,
-    {
-        let _turn_timer =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
-        self.crypto_worker.record_perf_depths();
-        let summary = self
-            .driver
-            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
-        let mut empty_raw_ingress = std::mem::take(&mut self.empty_raw_ingress);
-        empty_raw_ingress.clear();
-        let turn = self.driver
-            .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
-                summary,
-                &mut self.crypto_worker,
-                Some(fast_ingress),
-                &mut empty_raw_ingress,
-                &mut self.routes,
-                0,
-                endpoint_data_rx,
-                endpoint_limit,
-                tun_outbound_rx,
-                tun_limit,
-                PacketMover2LiveOutboundFirsts::default(),
-                &mut self.deferred_endpoint_data_batches,
-                &mut self.deferred_tun_packets,
-                tun_tx,
-                endpoint_tx,
-                transports,
-                crypto_limit,
-                transport_send_worker,
-            )
-            .await;
-        self.empty_raw_ingress = empty_raw_ingress;
-        record_packet_mover2_live_turn_perf(&turn);
-        turn
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn pump_packet_rx_turn_with_firsts_and_transport_worker<Transports>(
         &mut self,
         packet_rx: &mut PacketRx,
@@ -790,6 +743,7 @@ impl PacketMover2LiveNode {
     {
         let PacketMover2LiveTurnFirsts {
             raw_packet,
+            fast_ingress,
             endpoint_data_batch,
             tun_packet,
             raw_ingress_prefetch,
@@ -808,6 +762,7 @@ impl PacketMover2LiveNode {
             });
             let mut turn = self
                 .pump_turn_with_firsts_and_transport_worker(
+                    fast_ingress,
                     &mut prefetched,
                     packet_limit,
                     outbound_firsts,
@@ -828,6 +783,7 @@ impl PacketMover2LiveNode {
         }
         let mut turn = self
             .pump_turn_with_firsts_and_transport_worker(
+                fast_ingress,
                 &mut raw_ingress,
                 packet_limit,
                 outbound_firsts,
