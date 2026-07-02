@@ -127,7 +127,6 @@ impl Node {
             return 0;
         };
 
-        let mut processed = 0usize;
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
         let mut endpoint_deliveries = Vec::with_capacity(message_count);
         for batch in ingress_batches {
@@ -151,7 +150,6 @@ impl Node {
                     previous_hop_addr,
                     direct_path: commit.direct_path(),
                 });
-                processed = processed.saturating_add(run_len);
             });
             batch.append_deliveries_to(&mut endpoint_deliveries);
         }
@@ -171,7 +169,7 @@ impl Node {
         for dest_addr in pending_flush_destinations {
             self.flush_pending_packets(&dest_addr).await;
         }
-        processed
+        message_count
     }
 
     fn packet_mover2_endpoint_direct_sink(&self) -> Option<crate::node::EndpointDirectSink> {

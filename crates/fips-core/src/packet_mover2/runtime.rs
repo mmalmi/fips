@@ -1182,9 +1182,7 @@ impl PacketMover2TurnDriver {
                     }
                     RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
                     RetiredOutput::FspEndpointDataIngressBatch(batch) => {
-                        if !batch.is_empty() {
-                            self.fsp_endpoint_data_ingress.push(batch);
-                        }
+                        self.fsp_endpoint_data_ingress.push(batch);
                     }
                 }
             }

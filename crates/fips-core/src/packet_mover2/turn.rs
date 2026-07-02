@@ -626,20 +626,10 @@ pub(crate) struct PacketMover2FspEndpointDataIngressBatch {
 }
 
 impl PacketMover2FspEndpointDataIngressBatch {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            ingresses: Vec::with_capacity(capacity),
-        }
-    }
-
     pub(crate) fn from_ingress(ingress: PacketMover2FspEndpointDataIngress) -> Self {
-        let mut batch = Self::with_capacity(1);
-        batch.push(ingress);
-        batch
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.ingresses.is_empty()
+        Self {
+            ingresses: vec![ingress],
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
