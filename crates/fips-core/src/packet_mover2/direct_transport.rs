@@ -3,6 +3,7 @@ const DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN: usize = 20;
 const DIRECT_FSP_TRANSPORT_REASSEMBLY_TTL_MS: u64 = 2_000;
 const DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS: usize = 64;
 const DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN: usize = 72 * 1024;
+const DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS: usize = 128;
 
 #[derive(Debug)]
 enum PacketMover2DirectFspTransportOutput {
@@ -47,6 +48,11 @@ impl PacketMover2DirectFspReassembly {
         };
         if slot.is_some() {
             return true;
+        }
+        if payload.is_empty()
+            || self.received_bytes.saturating_add(payload.len()) > self.total_len
+        {
+            return false;
         }
         self.received_bytes = self.received_bytes.saturating_add(payload.len());
         self.received_count = self.received_count.saturating_add(1);
@@ -109,9 +115,8 @@ impl PacketMover2DirectFspReassembler {
             remote_addr: packet.remote_addr.clone(),
             record_id: header.record_id,
         };
-        let fragment_payload: PacketBuffer = packet.data[DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN..]
-            .to_vec()
-            .into();
+        let mut fragment_payload = std::mem::take(&mut packet.data);
+        fragment_payload.drain(..DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
         let entry = self.entries.entry(key.clone()).or_insert_with(|| {
             PacketMover2DirectFspReassembly::new(
                 header.total_len,
@@ -195,6 +200,8 @@ fn valid_direct_fsp_transport_fragment_header(
     header.total_len > 0
         && header.total_len <= DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN
         && header.fragment_count > 1
+        && header.fragment_count <= DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS
+        && header.fragment_count <= header.total_len
         && header.fragment_index < header.fragment_count
 }
 
