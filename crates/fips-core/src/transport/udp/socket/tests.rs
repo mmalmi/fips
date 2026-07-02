@@ -41,10 +41,11 @@ async fn test_async_udp_socket_send_recv() {
 
     // Receive on socket 2
     let mut buf = [0u8; 1024];
-    let (n, src, _drops) = async2.recv_from(&mut buf).await.expect("recv_from");
+    let (n, src, _drops, gro_segment_size) = async2.recv_from(&mut buf).await.expect("recv_from");
     assert_eq!(n, payload.len());
     assert_eq!(&buf[..n], payload);
     assert_eq!(src, addr1);
+    assert_eq!(gro_segment_size, 0);
 }
 
 #[cfg(target_os = "linux")]
@@ -64,23 +65,26 @@ async fn recv_batch_writes_into_vec_spare_capacity() {
         .map(|_| Vec::with_capacity(64))
         .collect();
     let mut addrs: [Option<SocketAddr>; RECV_BATCH_SIZE] = std::array::from_fn(|_| None);
+    let mut gro_segment_sizes = [usize::MAX; RECV_BATCH_SIZE];
 
     async1
         .send_to(b"first-packet", &addr2)
         .await
         .expect("send first");
     let (count, _drops) = async2
-        .recv_batch(&mut bufs, &mut addrs)
+        .recv_batch(&mut bufs, &mut addrs, &mut gro_segment_sizes)
         .await
         .expect("recv first batch");
     assert_eq!(count, 1);
     assert_eq!(bufs[0], b"first-packet");
     assert_eq!(addrs[0], Some(addr1));
+    assert_eq!(gro_segment_sizes[0], 0);
     assert_eq!(bufs[1].len(), 0);
+    assert_eq!(gro_segment_sizes[1], 0);
 
     async1.send_to(b"2", &addr2).await.expect("send second");
     let (count, _drops) = async2
-        .recv_batch(&mut bufs, &mut addrs)
+        .recv_batch(&mut bufs, &mut addrs, &mut gro_segment_sizes)
         .await
         .expect("recv second batch");
     assert_eq!(count, 1);
@@ -89,4 +93,5 @@ async fn recv_batch_writes_into_vec_spare_capacity() {
         "recv_batch should clear and refill the Vec rather than append"
     );
     assert_eq!(addrs[0], Some(addr1));
+    assert_eq!(gro_segment_sizes[0], 0);
 }
