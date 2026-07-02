@@ -19,6 +19,10 @@ pub(super) const LATENCY_PACKET_DRAIN_BUDGET: usize = 256;
 /// TUN outbound is canonical packet ingress, not a side-control queue. Give it
 /// a dataplane-sized slice whenever it is co-drained with hot UDP receive.
 pub(super) const TUN_DRAIN_BUDGET: usize = LATENCY_PACKET_DRAIN_BUDGET;
+/// Bulk service is multiple canonical PM2 turns, capped so control/timer work
+/// gets a regular select boundary even under a continuously ready receive lane.
+pub(super) const RX_LOOP_BULK_SERVICE_MAX_TURNS: usize = 8;
+pub(super) const RX_LOOP_BULK_SERVICE_MAX_ELAPSED: Duration = Duration::from_millis(2);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 pub(super) const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
