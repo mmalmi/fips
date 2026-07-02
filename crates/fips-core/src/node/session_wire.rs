@@ -76,7 +76,11 @@ pub const FSP_PORT_HEADER_SIZE: usize = 4;
 pub const FSP_PORT_IPV6_SHIM: u16 = 256;
 
 /// Maximum endpoint payloads carried by one authenticated endpoint-data bulk record.
-pub const FSP_ENDPOINT_DATA_BULK_MAX_PACKETS: usize = 32;
+///
+/// The u16 FSP body length can hold about 48 nvpn MTU-sized packets. Keeping
+/// that whole Linux vnet/GRO-sized run in one direct-FSP record avoids
+/// splitting a natural TUN batch into multiple AEAD records on the hot path.
+pub const FSP_ENDPOINT_DATA_BULK_MAX_PACKETS: usize = 48;
 
 const FSP_ENDPOINT_DATA_BULK_COUNT_SIZE: usize = 2;
 const FSP_ENDPOINT_DATA_BULK_LEN_SIZE: usize = 2;
@@ -534,6 +538,18 @@ mod tests {
 
         let too_many = vec![Vec::new(); FSP_ENDPOINT_DATA_BULK_MAX_PACKETS + 1];
         assert!(encode_fsp_endpoint_data_bulk_payload(too_many).is_none());
+    }
+
+    #[test]
+    fn endpoint_data_bulk_payload_preserves_vnet_sized_run() {
+        let mtu_sized_packets = vec![vec![0x42; 1342]; FSP_ENDPOINT_DATA_BULK_MAX_PACKETS];
+        let encoded =
+            encode_fsp_endpoint_data_bulk_payload(mtu_sized_packets).expect("48 MTU packets fit");
+        let lengths = decode_fsp_endpoint_data_bulk_lengths(&encoded).unwrap();
+        assert_eq!(lengths, vec![1342; FSP_ENDPOINT_DATA_BULK_MAX_PACKETS]);
+
+        let one_too_many = vec![vec![0x42; 1342]; FSP_ENDPOINT_DATA_BULK_MAX_PACKETS + 1];
+        assert!(encode_fsp_endpoint_data_bulk_payload(one_too_many).is_none());
     }
 
     // ===== Flag Constants Tests =====
