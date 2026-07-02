@@ -15,60 +15,64 @@ fn endpoint_data_batch_drain_cost(packet_count: usize) -> usize {
 #[derive(Clone, Debug)]
 pub(crate) struct EndpointDataBatchTx {
     tx: tokio::sync::mpsc::UnboundedSender<NodeEndpointDataBatch>,
-    queued_packets: Arc<AtomicUsize>,
-    packet_capacity: usize,
+    queued_drain_cost: Arc<AtomicUsize>,
+    drain_cost_capacity: usize,
 }
 
 #[derive(Debug)]
 pub(crate) struct EndpointDataBatchRx {
     rx: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointDataBatch>,
-    queued_packets: Arc<AtomicUsize>,
+    queued_drain_cost: Arc<AtomicUsize>,
 }
 
 pub(crate) fn endpoint_data_batch_channel(
     capacity: usize,
 ) -> (EndpointDataBatchTx, EndpointDataBatchRx) {
-    let queued_packets = Arc::new(AtomicUsize::new(0));
+    let queued_drain_cost = Arc::new(AtomicUsize::new(0));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     (
         EndpointDataBatchTx {
             tx,
-            queued_packets: Arc::clone(&queued_packets),
-            packet_capacity: capacity.max(1),
+            queued_drain_cost: Arc::clone(&queued_drain_cost),
+            drain_cost_capacity: capacity.max(1),
         },
-        EndpointDataBatchRx { rx, queued_packets },
+        EndpointDataBatchRx {
+            rx,
+            queued_drain_cost,
+        },
     )
 }
 
-fn try_reserve_endpoint_data_batch_packets(
+fn try_reserve_endpoint_data_batch_drain_cost(
     counter: &AtomicUsize,
     capacity: usize,
-    count: usize,
+    cost: usize,
 ) -> bool {
-    if count == 0 {
+    if cost == 0 {
         return true;
     }
 
     counter
         .fetch_update(Relaxed, Relaxed, |current| {
-            current.checked_add(count).filter(|next| *next <= capacity)
+            current.checked_add(cost).filter(|next| *next <= capacity)
         })
         .is_ok()
 }
 
-fn release_endpoint_data_batch_packets(counter: &AtomicUsize, count: usize) {
-    if count > 0 {
-        counter.fetch_sub(count, Relaxed);
+fn release_endpoint_data_batch_drain_cost(counter: &AtomicUsize, cost: usize) {
+    if cost > 0 {
+        counter.fetch_sub(cost, Relaxed);
     }
 }
 
 impl EndpointDataBatchTx {
     pub(crate) fn send_or_drop(&self, batch: NodeEndpointDataBatch) -> Result<(), ()> {
         let packet_count = batch.packet_count();
-        if !try_reserve_endpoint_data_batch_packets(
-            &self.queued_packets,
-            self.packet_capacity,
-            packet_count,
+        let drain_cost = batch.drain_cost();
+        if !try_reserve_endpoint_data_batch_drain_cost(
+            &self.queued_drain_cost,
+            self.drain_cost_capacity,
+            drain_cost,
         ) {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::EndpointDataBulkDropped,
@@ -80,7 +84,7 @@ impl EndpointDataBatchTx {
         match self.tx.send(batch) {
             Ok(()) => Ok(()),
             Err(error) => {
-                release_endpoint_data_batch_packets(&self.queued_packets, packet_count);
+                release_endpoint_data_batch_drain_cost(&self.queued_drain_cost, drain_cost);
                 drop(error);
                 Err(())
             }
@@ -91,13 +95,13 @@ impl EndpointDataBatchTx {
 impl EndpointDataBatchRx {
     pub(crate) async fn recv(&mut self) -> Option<NodeEndpointDataBatch> {
         let batch = self.rx.recv().await?;
-        release_endpoint_data_batch_packets(&self.queued_packets, batch.packet_count());
+        release_endpoint_data_batch_drain_cost(&self.queued_drain_cost, batch.drain_cost());
         Some(batch)
     }
 
     pub(crate) fn try_recv(&mut self) -> Result<NodeEndpointDataBatch, TryRecvError> {
         let batch = self.rx.try_recv()?;
-        release_endpoint_data_batch_packets(&self.queued_packets, batch.packet_count());
+        release_endpoint_data_batch_drain_cost(&self.queued_drain_cost, batch.drain_cost());
         Ok(batch)
     }
 }

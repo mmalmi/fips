@@ -126,16 +126,19 @@ async fn endpoint_data_batch_enqueue_drops_when_full() {
 }
 
 #[tokio::test]
-async fn endpoint_data_batch_lane_charges_batches_by_packet_count() {
+async fn endpoint_data_batch_lane_charges_batches_by_drain_cost() {
     let (batch_tx, mut batch_rx) = crate::node::endpoint_data_batch_channel(2);
     let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
-    let payloads = vec![vec![0, 1, 2, 3], vec![4, 5, 6, 7]];
+    let payloads = (0..9)
+        .map(|_| ipv6_tcp_packet(0x18, 512))
+        .collect::<Vec<_>>();
     let batch = NodeEndpointDataBatch::batch(remote, payloads, None).expect("non-empty batch");
+    assert_eq!(batch.drain_cost(), 2);
 
     batch_tx
         .send_or_drop(batch)
         .map_err(|_| FipsEndpointError::Closed)
-        .expect("two-packet batch should fill the two-packet lane");
+        .expect("nine-packet batch should fill the two-quanta lane");
     batch_tx
         .send_or_drop(
             NodeEndpointDataBatch::batch(remote, vec![vec![8, 9, 10, 11]], None)
@@ -146,8 +149,8 @@ async fn endpoint_data_batch_lane_charges_batches_by_packet_count() {
 
     let first = batch_rx
         .try_recv()
-        .expect("the two-packet batch should remain queued");
-    assert_eq!(first.packet_count(), 2);
+        .expect("the two-quanta batch should remain queued");
+    assert_eq!(first.packet_count(), 9);
     assert!(matches!(
         batch_rx.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
