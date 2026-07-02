@@ -1889,6 +1889,96 @@
     }
 
     #[test]
+    fn direct_endpoint_packet_batches_leave_commit_only_turn_bulk() {
+        let source_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let previous_hop = test_node_addr(916);
+        let local_addr = test_node_addr(917);
+        let key = 0x92;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
+        );
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let endpoint_bulk = crate::node::session_wire::encode_fsp_endpoint_data_bulk_payload(vec![
+            b"batch-one".to_vec(),
+            b"batch-two".to_vec(),
+        ])
+        .unwrap();
+        let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            916_001,
+            crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
+            0,
+            &endpoint_bulk,
+        );
+        driver
+            .mover
+            .submit_socket_packet(
+                SocketPacket::new(
+                    owner,
+                    1,
+                    916,
+                    PacketClass::Bulk,
+                    OutputTarget::SessionPayload { local_addr },
+                    fsp_encrypted_wire(916, 0, &fsp_inner, key),
+                )
+                .with_previous_hop(previous_hop)
+                .with_activity_tick(ActivityTick::new(916_010)),
+            )
+            .unwrap();
+
+        let mut prepared = capture_prepared_work(&mut driver.mover, 8);
+        assert_eq!(prepared.len(), 1);
+        let mut completions = VecDeque::from([prepared.pop().unwrap().execute()]);
+        let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
+
+        assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
+        assert_eq!(driver.endpoint_data_bulk.len(), 1);
+        assert_eq!(driver.endpoint_data_bulk[0].len(), 2);
+        assert_eq!(driver.endpoint_data_bulk[0].direct_packet_run_count(), 1);
+
+        let delivered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = std::sync::Arc::clone(&delivered);
+        let direct_sink = EndpointDirectSink::new(move |batch: crate::FipsEndpointDirectPacketBatch| {
+            let packets = batch
+                .packet_runs()
+                .iter()
+                .flat_map(|run| run.packet_slices().map(<[u8]>::to_vec))
+                .collect::<Vec<_>>();
+            captured.lock().expect("direct batches lock").push(packets);
+            Ok::<(), crate::FipsEndpointDirectDeliveryError>(())
+        });
+
+        driver.deliver_direct_endpoint_packet_batches(Some(&direct_sink));
+
+        assert_eq!(
+            delivered.lock().expect("direct batches lock").as_slice(),
+            &[vec![b"batch-one".to_vec(), b"batch-two".to_vec()]]
+        );
+        assert_eq!(driver.endpoint_data_bulk.len(), 1);
+        assert_eq!(driver.endpoint_data_bulk[0].len(), 2);
+        assert_eq!(driver.endpoint_data_bulk[0].commit_runs().len(), 1);
+        assert_eq!(driver.endpoint_data_bulk[0].commit_runs()[0].len(), 2);
+        assert_eq!(driver.endpoint_data_bulk[0].direct_packet_run_count(), 0);
+        assert_eq!(
+            driver
+                .endpoint_data_bulk
+                .pop()
+                .expect("commit bulk")
+                .into_direct_packet_batch()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
     fn compact_endpoint_data_completion_coalesces_adjacent_direct_runs() {
         let source_peer =
             PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());

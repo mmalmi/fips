@@ -321,7 +321,6 @@ impl PacketMover2TurnDriver {
         report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
         report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
         report.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
-        report.endpoint_data_bulk = std::mem::take(&mut self.endpoint_data_bulk);
         report.fsp_session_ingress = std::mem::take(&mut self.fsp_session_ingress);
         report.transport_planned = transport_output.planned_packets();
         let dropped_before = report.output_drops.len();
@@ -357,6 +356,8 @@ impl PacketMover2TurnDriver {
             .summary
             .outputs_dropped
             .saturating_add(report.transport_dropped);
+        self.deliver_direct_endpoint_packet_batches(endpoint_tx.direct_sink());
+        report.endpoint_data_bulk = std::mem::take(&mut self.endpoint_data_bulk);
         self.transport_output = transport_output;
         report
     }
@@ -1205,6 +1206,37 @@ impl PacketMover2TurnDriver {
             last.extend(bulk);
         } else {
             self.endpoint_data_bulk.push(bulk);
+        }
+    }
+
+    fn deliver_direct_endpoint_packet_batches(&mut self, direct_sink: Option<&EndpointDirectSink>) {
+        let Some(direct_sink) = direct_sink else {
+            return;
+        };
+
+        let mut dropped = 0usize;
+        let mut sink_failed = false;
+        for bulk in &mut self.endpoint_data_bulk {
+            let packet_batch = bulk.take_direct_packet_batch();
+            let count = packet_batch.len();
+            if count == 0 {
+                continue;
+            }
+            if sink_failed {
+                dropped = dropped.saturating_add(count);
+                continue;
+            }
+            if direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
+                dropped = dropped.saturating_add(count);
+                sink_failed = true;
+            }
+        }
+
+        if dropped > 0 {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::EndpointEventBulkDropped,
+                dropped as u64,
+            );
         }
     }
 }

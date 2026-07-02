@@ -735,6 +735,10 @@ impl PacketMover2EndpointDataBulk {
         FipsEndpointDirectPacketBatch::from_packet_runs(self.packet_runs)
     }
 
+    pub(crate) fn take_direct_packet_batch(&mut self) -> FipsEndpointDirectPacketBatch {
+        FipsEndpointDirectPacketBatch::from_packet_runs(std::mem::take(&mut self.packet_runs))
+    }
+
     fn push_direct_packet_run(&mut self, run: FipsEndpointDirectPacketRun) {
         if let Some(last) = self.packet_runs.last_mut() {
             match last.try_append_run(run) {

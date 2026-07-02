@@ -120,12 +120,23 @@ impl Node {
             .iter()
             .map(crate::packet_mover2::PacketMover2EndpointDataBulk::len)
             .sum::<usize>();
-        let Some(direct_sink) = self.packet_mover2_endpoint_direct_sink() else {
-            debug!(
-                messages = message_count,
-                "Dropping PM2 endpoint-data bulk without direct sink"
-            );
-            return 0;
+        let direct_packet_runs = endpoint_bulks
+            .iter()
+            .map(crate::packet_mover2::PacketMover2EndpointDataBulk::direct_packet_run_count)
+            .sum::<usize>();
+        let direct_sink = if direct_packet_runs > 0 {
+            match self.packet_mover2_endpoint_direct_sink() {
+                Some(sink) => Some(sink),
+                None => {
+                    debug!(
+                        messages = message_count,
+                        "Dropping PM2 endpoint-data bulk without direct sink"
+                    );
+                    return 0;
+                }
+            }
+        } else {
+            None
         };
 
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
@@ -153,7 +164,9 @@ impl Node {
                     direct_path: commit.direct_path(),
                 });
             }
-            direct_packet_batches.push(bulk.into_direct_packet_batch());
+            if bulk.direct_packet_run_count() > 0 {
+                direct_packet_batches.push(bulk.into_direct_packet_batch());
+            }
         }
 
         let pending_flush_destinations = endpoint_commit.finish(self);
@@ -162,6 +175,7 @@ impl Node {
             .map(crate::node::FipsEndpointDirectPacketBatch::len)
             .sum::<usize>();
         if count > 0 {
+            let direct_sink = direct_sink.expect("direct sink is required when packet runs remain");
             for batch in direct_packet_batches {
                 if direct_sink.deliver_direct_packet_batch(batch).is_err() {
                     crate::perf_profile::record_event_count(
