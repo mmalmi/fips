@@ -57,6 +57,7 @@ include!("admission.rs");
 include!("owner.rs");
 include!("owner_shard.rs");
 include!("work.rs");
+include!("direct_transport.rs");
 include!("live_ingress.rs");
 include!("tun_outbound.rs");
 include!("endpoint_data.rs");

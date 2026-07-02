@@ -46,7 +46,6 @@ pub(crate) struct PacketMover2EndpointDataRoute {
     flags: u8,
     inner_flags: u8,
     fsp_cleartext_prefix: Vec<u8>,
-    max_wire_len: Option<usize>,
     fsp_auto_coords_warmup: bool,
 }
 
@@ -58,7 +57,6 @@ impl PacketMover2EndpointDataRoute {
             flags,
             inner_flags,
             fsp_cleartext_prefix: Vec::new(),
-            max_wire_len: None,
             fsp_auto_coords_warmup: true,
         }
     }
@@ -68,8 +66,7 @@ impl PacketMover2EndpointDataRoute {
         self
     }
 
-    pub(crate) fn with_direct_transport_mtu(mut self, path_mtu: u16) -> Self {
-        self.max_wire_len = Some(path_mtu as usize);
+    pub(crate) fn with_direct_transport(mut self) -> Self {
         self.fsp_auto_coords_warmup = false;
         self
     }
@@ -127,15 +124,7 @@ impl PacketMover2EndpointDataRoute {
     }
 
     fn max_fsp_bulk_body_len(&self) -> usize {
-        let protocol_max = crate::node::session_wire::fsp_endpoint_data_max_body_len();
-        let Some(max_wire_len) = self.max_wire_len else {
-            return protocol_max;
-        };
-        let overhead = FSP_HEADER_SIZE
-            .saturating_add(self.fsp_cleartext_prefix.len())
-            .saturating_add(FSP_INNER_HEADER_SIZE)
-            .saturating_add(AEAD_TAG_SIZE);
-        protocol_max.min(max_wire_len.saturating_sub(overhead))
+        crate::node::session_wire::fsp_endpoint_data_max_body_len()
     }
 
     fn push_endpoint_data_bulk(

@@ -30,6 +30,7 @@ struct PacketMover2FspOwnerSeed {
     routes: PacketMover2LiveOwnerRoutes,
     wrap: Option<PacketMover2FspWrapRoute>,
     path: Option<TransportPath>,
+    direct_path_mtu: Option<u16>,
 }
 
 struct PacketMover2FspOwnerSessionSnapshot {
@@ -47,6 +48,7 @@ struct PacketMover2FspOwnerRouteUpdate {
     routes: PacketMover2LiveOwnerRoutes,
     wrap: Option<PacketMover2FspWrapRoute>,
     path: Option<TransportPath>,
+    direct_path_mtu: Option<u16>,
     next_hop: Option<NodeAddr>,
 }
 
@@ -704,11 +706,17 @@ impl Node {
             || update
                 .next_hop()
                 .is_some_and(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
-        self.packet_mover2
+        let direct_path_mtu = update.direct_path_mtu;
+        let refreshed = self
+            .packet_mover2
             .replace_owner_fsp_routes(owner, update.routes, update.wrap, update.path)
             .is_ok()
             && route_ready
-            && next_hop_ready
+            && next_hop_ready;
+        if refreshed && let Some(path_mtu) = direct_path_mtu {
+            let _ = self.packet_mover2.seed_fsp_path_mtu(*node_addr, path_mtu);
+        }
+        refreshed
     }
 
     pub(in crate::node) fn refresh_packet_mover2_fsp_owner_routes_after_fmp_owner_update(
@@ -934,6 +942,11 @@ impl Node {
             )
             .is_ok()
             && next_hop_ready;
+        if synced && let Some(path_mtu) = seed.direct_path_mtu {
+            let _ = self
+                .packet_mover2
+                .seed_fsp_path_mtu(seed.owner.node_addr(), path_mtu);
+        }
         if synced {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PacketMover2FspOwnerSyncApplied,
@@ -1057,6 +1070,7 @@ impl Node {
             routes: route_update.routes,
             wrap: route_update.wrap,
             path: route_update.path,
+            direct_path_mtu: route_update.direct_path_mtu,
         })
     }
 
@@ -1095,6 +1109,7 @@ impl Node {
                 routes: PacketMover2LiveOwnerRoutes::new(),
                 wrap: None,
                 path: None,
+                direct_path_mtu: None,
                 next_hop: None,
             };
         };
@@ -1121,6 +1136,7 @@ impl Node {
                 routes: PacketMover2LiveOwnerRoutes::new(),
                 wrap: None,
                 path: None,
+                direct_path_mtu: None,
                 next_hop: Some(next_hop),
             };
         };
@@ -1151,8 +1167,8 @@ impl Node {
 
         let mut endpoint =
             PacketMover2EndpointDataRoute::fsp(owner, generation, fsp_flags, inner_flags);
-        if let Some(path_mtu) = direct_path_mtu {
-            endpoint = endpoint.with_direct_transport_mtu(path_mtu);
+        if direct_path_mtu.is_some() {
+            endpoint = endpoint.with_direct_transport();
         }
         routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(*node_addr, endpoint));
 
@@ -1160,6 +1176,7 @@ impl Node {
             routes,
             wrap,
             path,
+            direct_path_mtu,
             next_hop: Some(next_hop),
         }
     }

@@ -1207,6 +1207,17 @@ impl OwnerState {
 
         let counter = self.reserve_send_counter()?;
         let output_path = self.active_path.clone();
+        let path_mtu = if self.owner.protocol() == PacketProtocol::Fsp
+            && self.fsp_wrap_route.is_none()
+            && output_path.is_some()
+        {
+            self.fsp_mmp
+                .as_ref()
+                .map(|mmp| mmp.path_mtu.current_mtu())
+                .unwrap_or(u16::MAX)
+        } else {
+            u16::MAX
+        };
         let fmp_timestamp_ms = self.reserve_fmp_timestamp(packet.activity_tick);
         let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
         self.refresh_fsp_outbound_headers(&mut packet);
@@ -1251,7 +1262,7 @@ impl OwnerState {
             source_path: None,
             previous_hop: None,
             ce_flag: false,
-            path_mtu: u16::MAX,
+            path_mtu,
             wire_flags: 0,
             source_peer: self.source_peer,
             output_path,

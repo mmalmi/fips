@@ -517,32 +517,47 @@ async fn send_udp_transport_plan_group(
     let max_job_packets = worker.max_job_packets_for_lane(group.lane);
     let total_outputs = group.outputs.len();
     let mut packets = Vec::with_capacity(total_outputs.min(max_job_packets));
-    for (index, output) in group.outputs.into_iter().enumerate() {
-        if let Err(error) = snapshot.validate_packet(output.payload_len(), socket_addr) {
-            drops.push(PacketMover2OutputDrop::from_output(
-                &output,
-                packet_mover2_output_error_for_transport(&error),
-            ));
-            continue;
-        }
-        packets.push(output);
-        if packets.len() >= max_job_packets {
-            let next_capacity = total_outputs
-                .saturating_sub(index.saturating_add(1))
-                .min(max_job_packets);
-            flush_packet_mover2_udp_send_job(
-                PacketMover2TransportSendJob {
+    for output in group.outputs {
+        match packet_mover2_direct_fsp_transport_output(output) {
+            Ok(PacketMover2DirectFspTransportOutput::Whole(output)) => {
+                push_packet_mover2_udp_output(
+                    &snapshot,
+                    socket_addr,
                     lane,
-                    snapshot: snapshot.clone(),
                     transport_id,
-                    remote_addr: socket_addr,
-                    packets: std::mem::replace(&mut packets, Vec::with_capacity(next_capacity)),
-                },
-                drops,
-                worker,
-                sent_receipts,
-                sent,
-            );
+                    output,
+                    &mut packets,
+                    max_job_packets,
+                    drops,
+                    worker,
+                    sent_receipts,
+                    sent,
+                );
+            }
+            Ok(PacketMover2DirectFspTransportOutput::Segments(segments)) => {
+                for output in segments {
+                    push_packet_mover2_udp_output(
+                        &snapshot,
+                        socket_addr,
+                        lane,
+                        transport_id,
+                        output,
+                        &mut packets,
+                        max_job_packets,
+                        drops,
+                        worker,
+                        sent_receipts,
+                        sent,
+                    );
+                }
+            }
+            Err(output) => {
+                drops.push(PacketMover2OutputDrop::from_output(
+                    &output,
+                    PacketMover2OutputError::MtuExceeded,
+                ));
+                continue;
+            }
         }
     }
     flush_packet_mover2_udp_send_job(
@@ -558,6 +573,45 @@ async fn send_udp_transport_plan_group(
         sent_receipts,
         sent,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_packet_mover2_udp_output(
+    snapshot: &crate::transport::udp::UdpSendSnapshot,
+    socket_addr: std::net::SocketAddr,
+    lane: Lane,
+    transport_id: TransportId,
+    output: PacketOutput,
+    packets: &mut Vec<PacketOutput>,
+    max_job_packets: usize,
+    drops: &mut Vec<PacketMover2OutputDrop>,
+    worker: &mut PacketMover2TransportSendWorkerPool,
+    sent_receipts: &mut Option<&mut Vec<PacketMover2TransportSentReceipt>>,
+    sent: &mut usize,
+) {
+    if let Err(error) = snapshot.validate_packet(output.payload_len(), socket_addr) {
+        drops.push(PacketMover2OutputDrop::from_output(
+            &output,
+            packet_mover2_output_error_for_transport(&error),
+        ));
+        return;
+    }
+    packets.push(output);
+    if packets.len() >= max_job_packets {
+        flush_packet_mover2_udp_send_job(
+            PacketMover2TransportSendJob {
+                lane,
+                snapshot: snapshot.clone(),
+                transport_id,
+                remote_addr: socket_addr,
+                packets: std::mem::replace(packets, Vec::with_capacity(max_job_packets)),
+            },
+            drops,
+            worker,
+            sent_receipts,
+            sent,
+        );
+    }
 }
 
 fn flush_packet_mover2_udp_send_job(

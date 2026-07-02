@@ -1682,40 +1682,24 @@
     }
 
     #[test]
-    fn direct_endpoint_data_route_respects_transport_mtu() {
+    fn direct_endpoint_data_route_keeps_large_bulk_record() {
         let owner = fsp_owner(913);
         let first = vec![0x11; 100];
         let small = vec![0x22; 10];
         let third = vec![0x33; 100];
-        let mtu = FSP_HEADER_SIZE
-            + FSP_INNER_HEADER_SIZE
-            + AEAD_TAG_SIZE
-            + crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len()
-            + crate::node::session_wire::fsp_endpoint_data_bulk_packet_wire_len(first.len())
-                .unwrap()
-            + crate::node::session_wire::fsp_endpoint_data_bulk_packet_wire_len(small.len())
-                .unwrap();
-        let route = PacketMover2EndpointDataRoute::fsp(owner, 1, 0, 0)
-            .with_direct_transport_mtu(mtu as u16);
+        let route = PacketMover2EndpointDataRoute::fsp(owner, 1, 0, 0).with_direct_transport();
 
         let route_result = route.route_batch(vec![first, small, third]);
 
         assert!(route_result.dropped.is_empty());
-        assert_eq!(route_result.routed.len(), 2);
-        let first_record =
+        assert_eq!(route_result.routed.len(), 1);
+        let record =
             crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(
                 route_result.routed[0].payload.as_slice(),
             )
             .unwrap();
-        let second_record =
-            crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(
-                route_result.routed[1].payload.as_slice(),
-            )
-            .unwrap();
-        assert_eq!(first_record, vec![100, 10]);
-        assert_eq!(second_record, vec![100]);
+        assert_eq!(record, vec![100, 10, 100]);
         assert!(!route_result.routed[0].fsp_auto_coords_warmup);
-        assert!(!route_result.routed[1].fsp_auto_coords_warmup);
     }
 
     #[test]

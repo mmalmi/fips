@@ -141,6 +141,72 @@
     }
 
     #[test]
+    fn direct_fsp_transport_segments_reassemble_before_classification() {
+        let source = NodeAddr::from_bytes([0x45; 16]);
+        let owner = OwnerId::fsp_node(source);
+        let transport_id = TransportId::new(45);
+        let remote_addr = TransportAddr::from_string("198.51.100.45:9000");
+        let mut direct_sources = std::collections::HashMap::new();
+        direct_sources.insert(
+            (transport_id, remote_addr.clone()),
+            PacketMover2DirectFspSource {
+                source_addr: source,
+                path_mtu: 220,
+            },
+        );
+
+        let mut wire = fsp_wire(
+            4242,
+            crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+        );
+        wire.extend((0..700).map(|idx| (idx % 251) as u8));
+        let mut output =
+            transport_output(owner, 4242, 9, transport_id, remote_addr.clone(), wire.clone());
+        output.path_mtu = 220;
+
+        let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
+            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+        };
+        assert!(segments.len() > 1);
+        assert!(segments.iter().all(|segment| segment.payload_len() <= 220));
+        assert!(segments.iter().all(|segment| {
+            packet_mover2_direct_fsp_transport_fragment_is_fragment(segment.payload())
+        }));
+
+        let (_tx, mut rx) = crate::transport::packet_channel(1);
+        let mut reassembler = PacketMover2DirectFspReassembler::default();
+        let mut packets = Vec::new();
+        for (idx, segment) in segments.into_iter().rev().enumerate() {
+            let received = ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                segment.payload,
+                45_000 + idx as u64,
+            );
+            let mut source_rx =
+                PacketMover2FmpPacketRxSource::with_first_direct_fsp_sources_and_reassembler(
+                    &mut rx,
+                    Some(received),
+                    direct_sources.clone(),
+                    Some(&mut reassembler),
+                );
+            assert_eq!(
+                source_rx.drain_raw_ingress(1, |packet| packets.push(packet)),
+                1
+            );
+            assert!(source_rx.take_control_ingress().is_empty());
+        }
+
+        assert_eq!(packets.len(), 1);
+        let packet = &packets[0];
+        assert_eq!(packet.protocol(), PacketProtocol::Fsp);
+        assert_eq!(packet.fsp_source(), Some(source));
+        assert_eq!(packet.path_mtu(), 220);
+        assert_eq!(packet.payload.as_slice(), wire.as_slice());
+    }
+
+    #[test]
     fn live_ingress_keeps_encrypted_fsp_bulk_before_decrypt() {
         let source = NodeAddr::from_bytes([0x43; 16]);
         let local = NodeAddr::from_bytes([0x44; 16]);

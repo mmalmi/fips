@@ -644,6 +644,7 @@ pub(crate) struct PacketMover2FmpPacketRxSource<'a, C = PacketMover2NoDirectFspS
     rx: &'a mut PacketRx,
     first: Option<ReceivedPacket>,
     direct_fsp_sources: C,
+    direct_fsp_reassembler: Option<&'a mut PacketMover2DirectFspReassembler>,
     control_ingress: Vec<PacketMover2FmpControlIngress>,
 }
 
@@ -662,10 +663,20 @@ where
         first: Option<ReceivedPacket>,
         direct_fsp_sources: C,
     ) -> Self {
+        Self::with_first_direct_fsp_sources_and_reassembler(rx, first, direct_fsp_sources, None)
+    }
+
+    pub(crate) fn with_first_direct_fsp_sources_and_reassembler(
+        rx: &'a mut PacketRx,
+        first: Option<ReceivedPacket>,
+        direct_fsp_sources: C,
+        direct_fsp_reassembler: Option<&'a mut PacketMover2DirectFspReassembler>,
+    ) -> Self {
         Self {
             rx,
             first,
             direct_fsp_sources,
+            direct_fsp_reassembler,
             control_ingress: Vec::new(),
         }
     }
@@ -676,6 +687,7 @@ where
 
     fn push_packet<F>(
         direct_fsp_sources: &mut C,
+        direct_fsp_reassembler: Option<&mut PacketMover2DirectFspReassembler>,
         control_ingress: &mut Vec<PacketMover2FmpControlIngress>,
         packet: ReceivedPacket,
         push: &mut F,
@@ -687,8 +699,39 @@ where
             crate::perf_profile::Stage::TransportRxLoopOwnedWait,
             packet.trace_rx_loop_owned_at,
         );
+        let mut from_direct_fragment = false;
+        let packet = match direct_fsp_reassembler {
+            Some(reassembler)
+                if packet_mover2_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) =>
+            {
+                let Some(source) =
+                    direct_fsp_sources.direct_fsp_source(packet.transport_id, &packet.remote_addr)
+                else {
+                    return true;
+                };
+                if packet.data.len() > source.path_mtu as usize {
+                    return true;
+                }
+                match reassembler.ingest(packet) {
+                    PacketMover2DirectFspReassemblyResult::NotFragment(packet) => packet,
+                    PacketMover2DirectFspReassemblyResult::Pending => return true,
+                    PacketMover2DirectFspReassemblyResult::Complete(packet) => {
+                        from_direct_fragment = true;
+                        packet
+                    }
+                    PacketMover2DirectFspReassemblyResult::Dropped => return true,
+                }
+            }
+            _ if packet_mover2_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) => {
+                return true;
+            }
+            _ => packet,
+        };
         if let Some(raw) = classify_direct_fsp_packet(direct_fsp_sources, &packet) {
             push(raw);
+            return true;
+        }
+        if from_direct_fragment {
             return true;
         }
         match classify_live_fmp_packet(&packet) {
@@ -727,21 +770,37 @@ where
             rx,
             first,
             direct_fsp_sources,
+            direct_fsp_reassembler,
             control_ingress,
         } = self;
 
         if drained < limit
             && let Some(packet) = first.take()
         {
-            let keep_draining =
-                Self::push_packet(direct_fsp_sources, control_ingress, packet, &mut push);
+            let keep_draining = Self::push_packet(
+                direct_fsp_sources,
+                direct_fsp_reassembler
+                    .as_mut()
+                    .map(|reassembler| &mut **reassembler),
+                control_ingress,
+                packet,
+                &mut push,
+            );
             drained += 1;
             if !keep_draining {
                 return drained;
             }
         }
         drained += rx.drain_ready(limit.saturating_sub(drained), |packet| {
-            Self::push_packet(direct_fsp_sources, control_ingress, packet, &mut push)
+            Self::push_packet(
+                direct_fsp_sources,
+                direct_fsp_reassembler
+                    .as_mut()
+                    .map(|reassembler| &mut **reassembler),
+                control_ingress,
+                packet,
+                &mut push,
+            )
         });
         drained
     }

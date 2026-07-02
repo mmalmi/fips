@@ -153,6 +153,7 @@ pub(crate) struct PacketMover2LiveNode {
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: Vec<Vec<u8>>,
     empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
+    direct_fsp_reassembler: PacketMover2DirectFspReassembler,
 }
 
 impl PacketMover2LiveNode {
@@ -169,6 +170,7 @@ impl PacketMover2LiveNode {
             deferred_endpoint_data_batches: Vec::new(),
             deferred_tun_packets: Vec::new(),
             empty_raw_ingress: VecDeque::new(),
+            direct_fsp_reassembler: PacketMover2DirectFspReassembler::default(),
         }
     }
 
@@ -815,11 +817,14 @@ impl PacketMover2LiveNode {
             tun_packet,
             ..Default::default()
         };
-        let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first_and_direct_fsp_sources(
-            packet_rx,
-            raw_packet,
-            direct_fsp_sources,
-        );
+        let mut direct_fsp_reassembler = std::mem::take(&mut self.direct_fsp_reassembler);
+        let mut raw_ingress =
+            PacketMover2FmpPacketRxSource::with_first_direct_fsp_sources_and_reassembler(
+                packet_rx,
+                raw_packet,
+                direct_fsp_sources,
+                Some(&mut direct_fsp_reassembler),
+            );
         if raw_ingress_prefetch && packet_limit > 0 {
             let mut prefetched = std::mem::take(&mut self.empty_raw_ingress);
             prefetched.clear();
@@ -843,8 +848,11 @@ impl PacketMover2LiveNode {
                     transport_send_worker,
                 )
                 .await;
-            turn.fmp_control_ingress = raw_ingress.take_control_ingress();
+            let control_ingress = raw_ingress.take_control_ingress();
+            drop(raw_ingress);
+            turn.fmp_control_ingress = control_ingress;
             self.empty_raw_ingress = prefetched;
+            self.direct_fsp_reassembler = direct_fsp_reassembler;
             return turn;
         }
         let mut turn = self
@@ -864,7 +872,10 @@ impl PacketMover2LiveNode {
                 transport_send_worker,
             )
             .await;
-        turn.fmp_control_ingress = raw_ingress.take_control_ingress();
+        let control_ingress = raw_ingress.take_control_ingress();
+        drop(raw_ingress);
+        turn.fmp_control_ingress = control_ingress;
+        self.direct_fsp_reassembler = direct_fsp_reassembler;
         turn
     }
 }
