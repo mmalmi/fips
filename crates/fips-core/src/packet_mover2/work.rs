@@ -98,6 +98,10 @@ impl CryptoCompletionBatch {
         self.completions.is_empty()
     }
 
+    pub(crate) fn first_order(&self) -> Option<OrderToken> {
+        self.completions.first().map(CryptoCompletion::order)
+    }
+
     pub(crate) fn owner_shard(&self) -> usize {
         self.owner_shard
     }
@@ -135,6 +139,10 @@ impl CryptoCompletionBatch {
             && self.generation == completion.reservation.generation
             && self.lane == completion.reservation.lane
             && self.source == completion.source()
+            && self
+                .completions
+                .last()
+                .map_or(true, |last| last.order().next() == completion.order())
     }
 }
 

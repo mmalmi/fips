@@ -1833,6 +1833,82 @@
     }
 
     #[test]
+    fn owner_retire_stages_later_contiguous_batch_as_one_pending_run() {
+        let owner = fmp_owner(813);
+        let open_key = 83;
+        let mut mover = mover();
+        register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
+        submit_fmp_inbound_range(&mut mover, owner, 813, open_key, 100..106, b"pending-run");
+
+        let completions = dispatch_available(&mut mover, 8)
+            .drain(..)
+            .map(|work| PreparedCryptoWork::open(work, test_key(open_key)).execute())
+            .collect::<Vec<_>>();
+        assert_eq!(completions.len(), 6);
+
+        let mut later = completions[2..].to_vec();
+        let mut later_batches = Vec::new();
+        assert_eq!(
+            CryptoCompletionBatch::drain_completion_vec_into_batches(
+                &mut later,
+                &mut later_batches,
+            ),
+            4
+        );
+        assert_eq!(later_batches.len(), 1);
+        assert_eq!(later_batches[0].first_order(), Some(OrderToken(2)));
+
+        let mut retired = Vec::new();
+        mover.queue_completion_batches(&mut later_batches);
+        assert_eq!(
+            mover.retire_queued_completions_into(6, &mut retired, false),
+            4
+        );
+        assert!(flatten_retired_outputs(retired).is_empty());
+        {
+            let owner_state = mover.owner_mut(owner).unwrap();
+            assert_eq!(owner_state.pending.len(), 1);
+            assert_eq!(
+                owner_state
+                    .pending
+                    .get(&OrderToken(2))
+                    .map(CryptoCompletionBatch::len),
+                Some(4)
+            );
+            assert_eq!(owner_state.next_retire, 0);
+            assert_eq!(owner_state.in_flight, 6);
+        }
+
+        let mut earlier = completions[..2].to_vec();
+        let mut earlier_batches = Vec::new();
+        assert_eq!(
+            CryptoCompletionBatch::drain_completion_vec_into_batches(
+                &mut earlier,
+                &mut earlier_batches,
+            ),
+            2
+        );
+        assert_eq!(earlier_batches.len(), 1);
+        assert_eq!(earlier_batches[0].first_order(), Some(OrderToken(0)));
+
+        let mut retired = Vec::new();
+        mover.queue_completion_batches(&mut earlier_batches);
+        assert_eq!(
+            mover.retire_queued_completions_into(6, &mut retired, false),
+            2
+        );
+        let outputs = outputs(flatten_retired_outputs(retired));
+        assert_eq!(
+            outputs.iter().map(PacketOutput::counter).collect::<Vec<_>>(),
+            vec![100, 101, 102, 103, 104, 105]
+        );
+        let owner_state = mover.owner_mut(owner).unwrap();
+        assert!(owner_state.pending.is_empty());
+        assert_eq!(owner_state.next_retire, 6);
+        assert_eq!(owner_state.in_flight, 0);
+    }
+
+    #[test]
     fn completion_only_turn_drops_stale_generation_and_unblocks_newer_completion() {
         let owner = fmp_owner(82);
         let open_key = 82;

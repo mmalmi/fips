@@ -407,6 +407,12 @@ impl std::fmt::Debug for OwnerCryptoKeys {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct OrderToken(u64);
 
+impl OrderToken {
+    fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OwnerReservation {
     owner: OwnerId,
@@ -622,7 +628,7 @@ pub(crate) struct OwnerState {
     authenticated_counter_highest: u64,
     replay_window: ReplayWindow,
     previous_fsp_replay_window: Option<ReplayWindow>,
-    pending: BTreeMap<OrderToken, CryptoCompletion>,
+    pending: BTreeMap<OrderToken, CryptoCompletionBatch>,
 }
 
 impl OwnerState {
@@ -1745,23 +1751,18 @@ impl OwnerState {
         retired: &mut RetiredOutputs,
         compact_endpoint_data: bool,
     ) {
-        let mut completions = batch.into_completions().into_iter();
-        while let Some(completion) = completions.next() {
-            if completion.order() == OrderToken(self.next_retire) {
-                self.retire_ready_completion_into(completion, retired, compact_endpoint_data);
-                continue;
-            }
-
-            self.stage_retire_completion(completion);
-            for completion in completions {
-                self.stage_retire_completion(completion);
-            }
-            break;
+        if batch.first_order() == Some(OrderToken(self.next_retire)) {
+            self.retire_ready_completion_run_into(batch, retired, compact_endpoint_data);
+        } else {
+            self.stage_retire_completion_run(batch);
         }
     }
 
-    fn stage_retire_completion(&mut self, completion: CryptoCompletion) {
-        self.pending.insert(completion.reservation.order, completion);
+    fn stage_retire_completion_run(&mut self, batch: CryptoCompletionBatch) {
+        let Some(first_order) = batch.first_order() else {
+            return;
+        };
+        self.pending.insert(first_order, batch);
     }
 
     fn drain_ready_retirements_into(
@@ -1769,7 +1770,19 @@ impl OwnerState {
         retired: &mut RetiredOutputs,
         compact_endpoint_data: bool,
     ) {
-        while let Some(completion) = self.pending.remove(&OrderToken(self.next_retire)) {
+        while let Some(batch) = self.pending.remove(&OrderToken(self.next_retire)) {
+            self.retire_ready_completion_run_into(batch, retired, compact_endpoint_data);
+        }
+    }
+
+    fn retire_ready_completion_run_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        for completion in batch.into_completions() {
+            debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
             self.retire_ready_completion_into(completion, retired, compact_endpoint_data);
         }
     }
