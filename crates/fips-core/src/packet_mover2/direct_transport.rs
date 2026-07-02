@@ -11,6 +11,12 @@ enum PacketMover2DirectFspTransportOutput {
     Segments(Vec<PacketOutput>),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PacketMover2DirectFspTransportSegmentation {
+    max_fragment_payload: usize,
+    fragment_count: usize,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct PacketMover2DirectFspFragmentKey {
     transport_id: TransportId,
@@ -208,28 +214,21 @@ fn valid_direct_fsp_transport_fragment_header(
 fn packet_mover2_direct_fsp_transport_output(
     output: PacketOutput,
 ) -> Result<PacketMover2DirectFspTransportOutput, PacketOutput> {
-    let Some(header) = packet_mover2_direct_fsp_transport_header(&output) else {
-        return Ok(PacketMover2DirectFspTransportOutput::Whole(output));
+    let segmentation = match packet_mover2_direct_fsp_transport_segmentation(&output) {
+        Ok(Some(segmentation)) => segmentation,
+        Ok(None) => return Ok(PacketMover2DirectFspTransportOutput::Whole(output)),
+        Err(()) => return Err(output),
     };
-    let path_mtu = output.path_mtu() as usize;
-    if output.payload_len() <= path_mtu {
-        return Ok(PacketMover2DirectFspTransportOutput::Whole(output));
-    }
-    let max_fragment_payload =
-        path_mtu.saturating_sub(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
-    if max_fragment_payload == 0 {
-        return Err(output);
-    }
-    let fragment_count = output.payload_len().div_ceil(max_fragment_payload);
-    if fragment_count <= 1 || fragment_count > u16::MAX as usize {
-        return Err(output);
-    }
+    let header = match packet_mover2_direct_fsp_transport_header(&output) {
+        Some(header) => header,
+        None => return Ok(PacketMover2DirectFspTransportOutput::Whole(output)),
+    };
 
-    let mut segments = Vec::with_capacity(fragment_count);
-    for fragment_index in 0..fragment_count {
-        let start = fragment_index * max_fragment_payload;
+    let mut segments = Vec::with_capacity(segmentation.fragment_count);
+    for fragment_index in 0..segmentation.fragment_count {
+        let start = fragment_index * segmentation.max_fragment_payload;
         let end = start
-            .saturating_add(max_fragment_payload)
+            .saturating_add(segmentation.max_fragment_payload)
             .min(output.payload_len());
         let mut segment =
             Vec::with_capacity(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + end - start);
@@ -237,11 +236,52 @@ fn packet_mover2_direct_fsp_transport_output(
         segment.extend_from_slice(&header.counter().to_le_bytes());
         segment.extend_from_slice(&(output.payload_len() as u32).to_le_bytes());
         segment.extend_from_slice(&(fragment_index as u16).to_le_bytes());
-        segment.extend_from_slice(&(fragment_count as u16).to_le_bytes());
+        segment.extend_from_slice(&(segmentation.fragment_count as u16).to_le_bytes());
         segment.extend_from_slice(&output.payload()[start..end]);
         segments.push(packet_output_with_payload(&output, segment.into()));
     }
     Ok(PacketMover2DirectFspTransportOutput::Segments(segments))
+}
+
+fn packet_mover2_direct_fsp_transport_max_datagram_len(
+    output: &PacketOutput,
+) -> Result<Option<usize>, ()> {
+    let Some(segmentation) = packet_mover2_direct_fsp_transport_segmentation(output)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + segmentation.max_fragment_payload,
+    ))
+}
+
+fn packet_mover2_direct_fsp_transport_segmentation(
+    output: &PacketOutput,
+) -> Result<Option<PacketMover2DirectFspTransportSegmentation>, ()> {
+    if packet_mover2_direct_fsp_transport_header(output).is_none() {
+        return Ok(None);
+    }
+    let path_mtu = output.path_mtu() as usize;
+    if output.payload_len() <= path_mtu {
+        return Ok(None);
+    }
+    if output.payload_len() > DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN {
+        return Err(());
+    }
+    let max_fragment_payload = path_mtu
+        .checked_sub(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN)
+        .filter(|len| *len > 0)
+        .ok_or(())?;
+    let fragment_count = output.payload_len().div_ceil(max_fragment_payload);
+    if fragment_count <= 1
+        || fragment_count > u16::MAX as usize
+        || fragment_count > DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS
+    {
+        return Err(());
+    }
+    Ok(Some(PacketMover2DirectFspTransportSegmentation {
+        max_fragment_payload,
+        fragment_count,
+    }))
 }
 
 fn packet_mover2_direct_fsp_transport_header(output: &PacketOutput) -> Option<FspWireHeader> {

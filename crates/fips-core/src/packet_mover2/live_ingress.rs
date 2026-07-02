@@ -355,6 +355,7 @@ pub(crate) struct PacketMover2EstablishedFastIngressSink {
     routes: PacketMover2EstablishedFastIngressSnapshot,
     queue: PacketMover2FastIngressQueue,
     tx: tokio::sync::mpsc::Sender<PacketMover2FastIngressBatch>,
+    direct_fsp_reassembler: std::sync::Mutex<PacketMover2DirectFspReassembler>,
 }
 
 impl PacketMover2EstablishedFastIngressSink {
@@ -369,9 +370,44 @@ impl PacketMover2EstablishedFastIngressSink {
                 routes,
                 queue: PacketMover2FastIngressQueue::new(packet_capacity),
                 tx,
+                direct_fsp_reassembler: std::sync::Mutex::new(
+                    PacketMover2DirectFspReassembler::default(),
+                ),
             },
             rx,
         )
+    }
+
+    fn coalesce_direct_fsp_fragments(
+        &self,
+        packets: Vec<ReceivedPacket>,
+    ) -> Vec<ReceivedPacket> {
+        if !packets.iter().any(|packet| {
+            packet_mover2_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice())
+        }) {
+            return packets;
+        }
+
+        let mut reassembler = self
+            .direct_fsp_reassembler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut coalesced = Vec::with_capacity(packets.len());
+        for packet in packets {
+            if !packet_mover2_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) {
+                coalesced.push(packet);
+                continue;
+            }
+            match reassembler.ingest(packet) {
+                PacketMover2DirectFspReassemblyResult::NotFragment(packet)
+                | PacketMover2DirectFspReassemblyResult::Complete(packet) => {
+                    coalesced.push(packet);
+                }
+                PacketMover2DirectFspReassemblyResult::Pending
+                | PacketMover2DirectFspReassemblyResult::Dropped => {}
+            }
+        }
+        coalesced
     }
 
     fn socket_packet_from_received(
@@ -410,26 +446,36 @@ impl PacketMover2EstablishedFastIngressSink {
 
 impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
     fn try_ingest_batch(&self, packets: &mut Vec<ReceivedPacket>) -> usize {
-        if packets.is_empty() || self.tx.is_closed() {
+        if packets.is_empty() {
             return 0;
         }
 
-        let mut reservation = match self.queue.reserve_prefix(packets.len()) {
+        let remaining = self.coalesce_direct_fsp_fragments(std::mem::take(packets));
+        if remaining.is_empty() || self.tx.is_closed() {
+            *packets = remaining;
+            return 0;
+        }
+
+        let mut reservation = match self.queue.reserve_prefix(remaining.len()) {
             Some(reservation) => reservation,
-            None => return 0,
+            None => {
+                *packets = remaining;
+                return 0;
+            }
         };
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
             Err(_) => {
                 reservation.release();
+                *packets = remaining;
                 return 0;
             }
         };
         let routes = self.routes.fmp_routes();
-        let mut misses = Vec::with_capacity(packets.len());
-        let mut fast_packets = Vec::with_capacity(reservation.len().min(packets.len()));
+        let mut misses = Vec::with_capacity(remaining.len());
+        let mut fast_packets = Vec::with_capacity(reservation.len().min(remaining.len()));
         let fast_limit = reservation.len();
-        for packet in std::mem::take(packets) {
+        for packet in remaining {
             if fast_packets.len() >= fast_limit {
                 misses.push(packet);
                 continue;

@@ -1071,10 +1071,96 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_worker_drops_bulk_without_inline_fallback() {
+    async fn transport_plan_worker_segments_direct_fsp_record_after_enqueue() {
+        let send_transport_id = TransportId::new(66);
+        let recv_transport_id = TransportId::new(67);
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(16);
+        let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
+            recv_transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            recv_packet_tx,
+        ));
+        recv_transport.start().await.expect("start recv udp");
+        let remote_addr = TransportAddr::from_string(
+            &recv_transport
+                .local_addr()
+                .expect("recv udp local addr")
+                .to_string(),
+        );
+        let mut send_transport = unstarted_udp_transport(send_transport_id);
+        send_transport.start().await.expect("start send udp");
+        let owner = fsp_owner(66);
+        let mut wire = fsp_wire(
+            660,
+            crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+        );
+        wire.extend((0..700).map(|idx| (idx % 251) as u8));
+        let path_mtu = 220usize;
+        let mut output =
+            transport_output(owner, 660, 60, send_transport_id, remote_addr.clone(), wire.clone());
+        output.path_mtu = path_mtu as u16;
+        let expected_fragments =
+            wire.len().div_ceil(path_mtu - DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
+        assert!(expected_fragments > 1);
+        let groups = vec![PacketMover2TransportPlanGroup::new(
+            send_transport_id,
+            remote_addr,
+            output,
+        )];
+        let mut transports = HashMap::from([(send_transport_id, send_transport)]);
+        let mut drops = Vec::new();
+        let mut worker = PacketMover2TransportSendWorkerPool::new(1);
+        let mut sent_receipts = Vec::new();
+
+        let sent = send_packet_mover2_transport_groups_with_worker(
+            &transports,
+            groups,
+            &mut drops,
+            &mut worker,
+            Some(&mut sent_receipts),
+        )
+        .await;
+
+        assert_eq!(sent, 1);
+        assert!(drops.is_empty());
+        assert_eq!(sent_receipts.len(), 1);
+        assert_eq!(sent_receipts[0].owner, owner);
+        assert_eq!(sent_receipts[0].counter, 660);
+        assert_eq!(sent_receipts[0].payload_len, wire.len());
+
+        let mut reassembled = Vec::with_capacity(wire.len());
+        for expected_index in 0..expected_fragments {
+            let received =
+                tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                    .await
+                    .expect("receive direct-FSP transport fragment")
+                    .expect("packet channel open");
+            assert_eq!(received.transport_id, recv_transport_id);
+            assert!(received.data.len() <= path_mtu);
+            let header = parse_direct_fsp_transport_fragment_header(received.data.as_slice())
+                .expect("DFP1 fragment header");
+            assert_eq!(header.total_len, wire.len());
+            assert_eq!(header.fragment_index, expected_index);
+            assert_eq!(header.fragment_count, expected_fragments);
+            reassembled
+                .extend_from_slice(&received.data[DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN..]);
+        }
+        assert_eq!(reassembled, wire);
+
+        send_transport = transports.remove(&send_transport_id).unwrap();
+        send_transport.stop().await.expect("stop send udp");
+        recv_transport.stop().await.expect("stop recv udp");
+    }
+
+    #[tokio::test]
+    async fn transport_plan_worker_spools_ordered_bulk_past_soft_capacity() {
         let send_transport_id = TransportId::new(64);
         let recv_transport_id = TransportId::new(65);
-        let (recv_packet_tx, _recv_packet_rx) = crate::transport::packet_channel(8);
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(8);
         let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
             recv_transport_id,
             None,
@@ -1123,27 +1209,35 @@
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(1);
-        assert!(worker.try_reserve(Lane::Bulk, 1));
-        assert!(!worker.try_reserve(Lane::Bulk, 1));
-        assert!(worker.try_reserve(Lane::Priority, 1));
-        assert!(!worker.try_reserve(Lane::Priority, 1));
 
-        let sent = send_packet_mover2_transport_groups_with_worker(
-            &transports,
-                    groups,
-            &mut drops,
-            &mut worker,
-            None,
+        let sent = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            send_packet_mover2_transport_groups_with_worker(
+                &transports,
+                groups,
+                &mut drops,
+                &mut worker,
+                None,
+            ),
         )
-        .await;
+        .await
+        .expect("ordered worker spool should not block on soft capacity");
 
-        assert_eq!(sent, 0);
-        assert_eq!(drops.len(), 2);
-        for drop in &drops {
-            assert_eq!(drop.owner(), owner);
-            assert_eq!(drop.target(), OutputTarget::Transport);
-            assert_eq!(drop.reason(), PacketMover2OutputError::Unavailable);
+        assert_eq!(sent, 2);
+        assert!(drops.is_empty());
+        let mut payloads = Vec::new();
+        for _ in 0..2 {
+            let received =
+                tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                    .await
+                    .expect("receive ordered worker packet")
+                    .expect("packet channel open");
+            payloads.push(received.data.as_slice().to_vec());
         }
+        assert_eq!(
+            payloads,
+            [b"bulk-full-a".to_vec(), b"bulk-full-b".to_vec()]
+        );
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");

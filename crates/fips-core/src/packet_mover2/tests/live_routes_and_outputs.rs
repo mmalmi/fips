@@ -207,6 +207,64 @@
     }
 
     #[test]
+    fn fast_ingress_coalesces_direct_fsp_fragments_before_packet_channel() {
+        let source = NodeAddr::from_bytes([0x46; 16]);
+        let owner = OwnerId::fsp_node(source);
+        let transport_id = TransportId::new(46);
+        let remote_addr = TransportAddr::from_string("198.51.100.46:9000");
+        let mut wire = fsp_wire(
+            4646,
+            crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+        );
+        wire.extend((0..900).map(|idx| (idx % 251) as u8));
+        let mut output =
+            transport_output(owner, 4646, 10, transport_id, remote_addr.clone(), wire.clone());
+        output.path_mtu = 240;
+
+        let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
+            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+        };
+        assert!(segments.len() > 1);
+
+        let (sink, _fast_rx) =
+            PacketMover2EstablishedFastIngressSink::channel(Default::default(), 64);
+        let mut first_half: Vec<_> = segments[..segments.len() / 2]
+            .iter()
+            .enumerate()
+            .map(|(idx, segment)| {
+                ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr.clone(),
+                    segment.payload.clone(),
+                    46_000 + idx as u64,
+                )
+            })
+            .collect();
+        assert_eq!(sink.try_ingest_batch(&mut first_half), 0);
+        assert!(first_half.is_empty());
+
+        let mut second_half: Vec<_> = segments[segments.len() / 2..]
+            .iter()
+            .enumerate()
+            .map(|(idx, segment)| {
+                ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr.clone(),
+                    segment.payload.clone(),
+                    46_100 + idx as u64,
+                )
+            })
+            .collect();
+        assert_eq!(sink.try_ingest_batch(&mut second_half), 0);
+        assert_eq!(second_half.len(), 1);
+        assert!(!packet_mover2_direct_fsp_transport_fragment_is_fragment(
+            second_half[0].data.as_slice()
+        ));
+        assert_eq!(second_half[0].data.as_slice(), wire.as_slice());
+    }
+
+    #[test]
     fn live_ingress_keeps_encrypted_fsp_bulk_before_decrypt() {
         let source = NodeAddr::from_bytes([0x43; 16]);
         let local = NodeAddr::from_bytes([0x44; 16]);
