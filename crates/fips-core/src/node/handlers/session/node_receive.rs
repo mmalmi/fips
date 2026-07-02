@@ -110,14 +110,18 @@ impl Node {
 
     pub(in crate::node) async fn process_packet_mover2_compact_endpoint_data(
         &mut self,
-        ingress_batch: Vec<crate::packet_mover2::PacketMover2FspEndpointDataIngress>,
+        ingress_batches: Vec<crate::packet_mover2::PacketMover2FspEndpointDataIngressBatch>,
     ) -> usize {
-        if ingress_batch.is_empty() {
+        if ingress_batches.is_empty() {
             return 0;
         }
+        let message_count = ingress_batches
+            .iter()
+            .map(crate::packet_mover2::PacketMover2FspEndpointDataIngressBatch::len)
+            .sum::<usize>();
         let Some(direct_sink) = self.packet_mover2_endpoint_direct_sink() else {
             debug!(
-                messages = ingress_batch.len(),
+                messages = message_count,
                 "Dropping compact PM2 endpoint-data ingress without direct sink"
             );
             return 0;
@@ -125,29 +129,31 @@ impl Node {
 
         let mut processed = 0usize;
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
-        let mut endpoint_deliveries = Vec::with_capacity(ingress_batch.len());
-        for ingress in ingress_batch {
-            let commit = ingress.commit();
-            let source_addr = commit.source_addr();
-            let previous_hop_addr = commit.previous_hop_addr();
-            if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
-                &source_addr,
-                commit.received_k_bit(),
-            ) {
-                debug!(
-                    src = %self.peer_display_name(&source_addr),
-                    received_k_bit = commit.received_k_bit(),
-                    "FSP rekey cutover complete after PM2 compact endpoint-data receive commit"
-                );
-            }
-            self.learn_reverse_route(source_addr, previous_hop_addr);
-            endpoint_commit.push_receive_completion(SessionReceiveCompletion {
-                source_addr,
-                previous_hop_addr,
-                direct_path: commit.direct_path(),
+        let mut endpoint_deliveries = Vec::with_capacity(message_count);
+        for batch in ingress_batches {
+            batch.visit_commit_runs(|commit, run_len| {
+                let source_addr = commit.source_addr();
+                let previous_hop_addr = commit.previous_hop_addr();
+                if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
+                    &source_addr,
+                    commit.received_k_bit(),
+                ) {
+                    debug!(
+                        src = %self.peer_display_name(&source_addr),
+                        received_k_bit = commit.received_k_bit(),
+                        run_len,
+                        "FSP rekey cutover complete after PM2 compact endpoint-data receive commit"
+                    );
+                }
+                self.learn_reverse_route(source_addr, previous_hop_addr);
+                endpoint_commit.push_receive_completion(SessionReceiveCompletion {
+                    source_addr,
+                    previous_hop_addr,
+                    direct_path: commit.direct_path(),
+                });
+                processed = processed.saturating_add(run_len);
             });
-            endpoint_deliveries.push(ingress.into_delivery());
-            processed = processed.saturating_add(1);
+            batch.append_deliveries_to(&mut endpoint_deliveries);
         }
 
         let pending_flush_destinations = endpoint_commit.finish(self);

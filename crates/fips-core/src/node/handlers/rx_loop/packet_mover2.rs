@@ -377,7 +377,7 @@ impl Node {
             .saturating_add(turn.fmp_link_ingress().len())
             .saturating_add(turn.fsp_coord_warmups().len())
             .saturating_add(turn.fsp_local_session_ingress().len())
-            .saturating_add(turn.fsp_endpoint_data_ingress().len())
+            .saturating_add(turn.fsp_endpoint_data_ingress_count())
             .saturating_add(turn.fsp_session_ingress().len())
             .saturating_add(turn.deferred_endpoint_data_batches_count())
             .saturating_add(turn.tun_deferred_packets())
@@ -421,7 +421,8 @@ impl Node {
                 fmp_control_ingress = turn.fmp_control_ingress().len(),
                 fsp_coord_warmups = turn.fsp_coord_warmups().len(),
                 fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
-                fsp_endpoint_data_ingress = turn.fsp_endpoint_data_ingress().len(),
+                fsp_endpoint_data_ingress = turn.fsp_endpoint_data_ingress_count(),
+                fsp_endpoint_data_ingress_batches = turn.fsp_endpoint_data_ingress().len(),
                 fsp_session_ingress = turn.fsp_session_ingress().len(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
                 tun_outbound_drops = turn.tun_outbound_drops().len(),
@@ -463,7 +464,8 @@ impl Node {
             fmp_link_ingress = turn.fmp_link_ingress().len(),
             fsp_coord_warmups = turn.fsp_coord_warmups().len(),
             fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
-            fsp_endpoint_data_ingress = turn.fsp_endpoint_data_ingress().len(),
+            fsp_endpoint_data_ingress = turn.fsp_endpoint_data_ingress_count(),
+            fsp_endpoint_data_ingress_batches = turn.fsp_endpoint_data_ingress().len(),
             fsp_session_ingress = turn.fsp_session_ingress().len(),
             "packet mover2 turn completed"
         );

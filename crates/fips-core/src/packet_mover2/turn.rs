@@ -620,6 +620,65 @@ impl PacketMover2FspEndpointDataIngress {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PacketMover2FspEndpointDataIngressBatch {
+    ingresses: Vec<PacketMover2FspEndpointDataIngress>,
+}
+
+impl PacketMover2FspEndpointDataIngressBatch {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            ingresses: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub(crate) fn from_ingress(ingress: PacketMover2FspEndpointDataIngress) -> Self {
+        let mut batch = Self::with_capacity(1);
+        batch.push(ingress);
+        batch
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ingresses.is_empty()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.ingresses.len()
+    }
+
+    pub(crate) fn push(&mut self, ingress: PacketMover2FspEndpointDataIngress) {
+        self.ingresses.push(ingress);
+    }
+
+    pub(crate) fn visit_commit_runs<F>(&self, mut visit: F)
+    where
+        F: FnMut(PacketMover2FspEndpointDataCommit, usize),
+    {
+        let Some(first) = self.ingresses.first() else {
+            return;
+        };
+        let mut current = first.commit();
+        let mut count = 0usize;
+        for ingress in &self.ingresses {
+            let commit = ingress.commit();
+            if commit != current {
+                visit(current, count);
+                current = commit;
+                count = 0;
+            }
+            count = count.saturating_add(1);
+        }
+        visit(current, count);
+    }
+
+    pub(crate) fn append_deliveries_to(self, deliveries: &mut Vec<EndpointDataDelivery>) {
+        deliveries.reserve(self.ingresses.len());
+        for ingress in self.ingresses {
+            deliveries.push(ingress.into_delivery());
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PacketMover2LiveNodeTurn {
     summary: PacketMover2RuntimeSummary,
@@ -628,7 +687,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
-    fsp_endpoint_data_ingress: Vec<PacketMover2FspEndpointDataIngress>,
+    fsp_endpoint_data_ingress: Vec<PacketMover2FspEndpointDataIngressBatch>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
@@ -708,12 +767,19 @@ impl PacketMover2LiveNodeTurn {
 
     pub(crate) fn take_fsp_endpoint_data_ingress(
         &mut self,
-    ) -> Vec<PacketMover2FspEndpointDataIngress> {
+    ) -> Vec<PacketMover2FspEndpointDataIngressBatch> {
         std::mem::take(&mut self.fsp_endpoint_data_ingress)
     }
 
-    pub(crate) fn fsp_endpoint_data_ingress(&self) -> &[PacketMover2FspEndpointDataIngress] {
+    pub(crate) fn fsp_endpoint_data_ingress(&self) -> &[PacketMover2FspEndpointDataIngressBatch] {
         &self.fsp_endpoint_data_ingress
+    }
+
+    pub(crate) fn fsp_endpoint_data_ingress_count(&self) -> usize {
+        self.fsp_endpoint_data_ingress
+            .iter()
+            .map(PacketMover2FspEndpointDataIngressBatch::len)
+            .sum()
     }
 
     pub(crate) fn fsp_session_ingress(&self) -> &[PacketMover2FspSessionIngress] {

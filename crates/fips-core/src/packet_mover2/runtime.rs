@@ -17,7 +17,7 @@ pub(crate) struct PacketMover2TurnDriver {
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
-    fsp_endpoint_data_ingress: Vec<PacketMover2FspEndpointDataIngress>,
+    fsp_endpoint_data_ingress: Vec<PacketMover2FspEndpointDataIngressBatch>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
 }
 
@@ -284,6 +284,15 @@ impl PacketMover2TurnDriver {
             std::time::Instant::now(),
         )
         .unwrap_or(false)
+    }
+
+    fn push_fsp_endpoint_data_ingress(&mut self, ingress: PacketMover2FspEndpointDataIngress) {
+        match self.fsp_endpoint_data_ingress.last_mut() {
+            Some(batch) => batch.push(ingress),
+            None => self
+                .fsp_endpoint_data_ingress
+                .push(PacketMover2FspEndpointDataIngressBatch::from_ingress(ingress)),
+        }
     }
 
     pub(crate) fn record_fsp_decrypt_failure(&mut self, owner: OwnerId) -> Option<u32> {
@@ -1019,7 +1028,7 @@ impl PacketMover2TurnDriver {
                         match PacketMover2FspEndpointDataIngress::from_output(output) {
                             Ok(ingress) => {
                                 self.record_fsp_endpoint_data_ingress_activity(&ingress);
-                                self.fsp_endpoint_data_ingress.push(ingress);
+                                self.push_fsp_endpoint_data_ingress(ingress);
                                 continue;
                             }
                             Err(output) => output,
@@ -1172,8 +1181,10 @@ impl PacketMover2TurnDriver {
                         outbound_packets.push(packet);
                     }
                     RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
-                    RetiredOutput::FspEndpointDataIngress(ingress) => {
-                        self.fsp_endpoint_data_ingress.push(ingress);
+                    RetiredOutput::FspEndpointDataIngressBatch(batch) => {
+                        if !batch.is_empty() {
+                            self.fsp_endpoint_data_ingress.push(batch);
+                        }
                     }
                 }
             }

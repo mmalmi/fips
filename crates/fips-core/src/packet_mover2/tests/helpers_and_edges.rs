@@ -44,7 +44,7 @@
             for item in batch.into_items() {
                 match item {
                     RetiredOutput::Packet(packet) => retired.push(packet),
-                    RetiredOutput::FspEndpointDataIngress(_) => {
+                    RetiredOutput::FspEndpointDataIngressBatch(_) => {
                         panic!("test helper did not request compact endpoint data")
                     }
                 }
