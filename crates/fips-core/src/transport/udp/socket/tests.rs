@@ -41,10 +41,11 @@ async fn test_async_udp_socket_send_recv() {
 
     // Receive on socket 2
     let mut buf = [0u8; 1024];
-    let (n, src, _drops) = async2.recv_from(&mut buf).await.expect("recv_from");
+    let (n, src, _drops, gro_segment_size) = async2.recv_from(&mut buf).await.expect("recv_from");
     assert_eq!(n, payload.len());
     assert_eq!(&buf[..n], payload);
     assert_eq!(src, addr1);
+    assert_eq!(gro_segment_size, 0);
 }
 
 #[cfg(target_os = "linux")]
@@ -63,24 +64,42 @@ async fn recv_batch_writes_into_vec_spare_capacity() {
     let mut bufs: Vec<Vec<u8>> = (0..RECV_BATCH_SIZE)
         .map(|_| Vec::with_capacity(64))
         .collect();
+    let mut gro_overflows: Vec<Vec<u8>> = (0..RECV_BATCH_SIZE)
+        .map(|_| Vec::with_capacity(64))
+        .collect();
     let mut addrs: [Option<SocketAddr>; RECV_BATCH_SIZE] = std::array::from_fn(|_| None);
+    let mut gro_segment_sizes = [usize::MAX; RECV_BATCH_SIZE];
 
     async1
         .send_to(b"first-packet", &addr2)
         .await
         .expect("send first");
     let (count, _drops) = async2
-        .recv_batch(&mut bufs, &mut addrs)
+        .recv_batch(
+            &mut bufs,
+            &mut gro_overflows,
+            &mut addrs,
+            &mut gro_segment_sizes,
+        )
         .await
         .expect("recv first batch");
     assert_eq!(count, 1);
     assert_eq!(bufs[0], b"first-packet");
+    assert_eq!(gro_overflows[0].len(), 0);
     assert_eq!(addrs[0], Some(addr1));
+    assert_eq!(gro_segment_sizes[0], 0);
     assert_eq!(bufs[1].len(), 0);
+    assert_eq!(gro_overflows[1].len(), 0);
+    assert_eq!(gro_segment_sizes[1], 0);
 
     async1.send_to(b"2", &addr2).await.expect("send second");
     let (count, _drops) = async2
-        .recv_batch(&mut bufs, &mut addrs)
+        .recv_batch(
+            &mut bufs,
+            &mut gro_overflows,
+            &mut addrs,
+            &mut gro_segment_sizes,
+        )
         .await
         .expect("recv second batch");
     assert_eq!(count, 1);
@@ -88,5 +107,74 @@ async fn recv_batch_writes_into_vec_spare_capacity() {
         bufs[0], b"2",
         "recv_batch should clear and refill the Vec rather than append"
     );
+    assert_eq!(gro_overflows[0].len(), 0);
     assert_eq!(addrs[0], Some(addr1));
+    assert_eq!(gro_segment_sizes[0], 0);
+}
+
+#[cfg(target_os = "linux")]
+struct TestPayloadBatch(Vec<Vec<u8>>);
+
+#[cfg(target_os = "linux")]
+impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn payload(&self, index: usize) -> &[u8] {
+        &self.0[index]
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "requires a Linux loopback path that coalesces UDP_SEGMENT into UDP_GRO"]
+async fn recv_batch_reports_udp_gro_segment_size_for_gso() {
+    let sock1 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
+        .expect("failed to bind socket 1");
+    let async1 = sock1.into_async().expect("into_async 1");
+
+    let sock2 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
+        .expect("failed to bind socket 2");
+    let addr2 = sock2.local_addr();
+    let async2 = sock2.into_async().expect("into_async 2");
+    assert!(
+        async2.udp_gro_enabled(),
+        "UDP_GRO sockopt should be enabled"
+    );
+
+    let payloads = TestPayloadBatch(vec![vec![0x11; 256], vec![0x22; 256], vec![0x33; 128]]);
+    let sent = async1
+        .send_batch_to(&payloads, 0, addr2)
+        .await
+        .expect("send GSO batch");
+    assert_eq!(sent, payloads.0.len());
+
+    let mut bufs: Vec<Vec<u8>> = (0..RECV_BATCH_SIZE)
+        .map(|_| Vec::with_capacity(300))
+        .collect();
+    let mut gro_overflows: Vec<Vec<u8>> = (0..RECV_BATCH_SIZE)
+        .map(|_| Vec::with_capacity(u16::MAX as usize))
+        .collect();
+    let mut addrs: [Option<SocketAddr>; RECV_BATCH_SIZE] = std::array::from_fn(|_| None);
+    let mut gro_segment_sizes = [0usize; RECV_BATCH_SIZE];
+    let (count, _drops) = async2
+        .recv_batch(
+            &mut bufs,
+            &mut gro_overflows,
+            &mut addrs,
+            &mut gro_segment_sizes,
+        )
+        .await
+        .expect("recv GRO batch");
+
+    assert_eq!(count, 1);
+    assert_eq!(bufs[0].len() + gro_overflows[0].len(), 640);
+    assert_eq!(gro_segment_sizes[0], 256);
+
+    let mut coalesced = bufs[0].clone();
+    coalesced.extend_from_slice(&gro_overflows[0]);
+    assert_eq!(&coalesced[..256], &[0x11; 256]);
+    assert_eq!(&coalesced[256..512], &[0x22; 256]);
+    assert_eq!(&coalesced[512..], &[0x33; 128]);
 }

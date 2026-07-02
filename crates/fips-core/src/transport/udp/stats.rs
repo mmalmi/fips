@@ -46,6 +46,14 @@ impl UdpStats {
         self.bytes_recv.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
+    /// Record multiple successful receives that arrived in one kernel batch.
+    #[cfg(target_os = "linux")]
+    pub fn record_recv_batch(&self, packets: usize, bytes: usize) {
+        self.packets_recv
+            .fetch_add(packets as u64, Ordering::Relaxed);
+        self.bytes_recv.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
     /// Record a send error.
     pub fn record_send_error(&self) {
         self.send_errors.fetch_add(1, Ordering::Relaxed);

@@ -17,6 +17,18 @@ fn udp_receive_batch_width_matches_reference_packet_movers() {
     assert_eq!(UDP_RECV_BATCH_SIZE, 128);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn udp_gro_split_copy_spans_primary_and_overflow_buffers() {
+    assert_eq!(udp_gro_segment_count(10, 4), 3);
+
+    let head = b"abcde";
+    let tail = b"fghij";
+    let mut out = Vec::new();
+    extend_udp_gro_segment(&mut out, head, tail, 3, 8);
+    assert_eq!(out, b"defgh");
+}
+
 #[test]
 fn proc_net_snmp_udp_parser_reads_rcvbuf_errors() {
     let contents = "\

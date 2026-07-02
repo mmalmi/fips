@@ -36,6 +36,9 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 #[cfg(any(target_os = "linux", test))]
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 
+#[cfg(target_os = "linux")]
+const UDP_GRO_RECV_BUFFER_SIZE: usize = u16::MAX as usize;
+
 #[derive(Clone)]
 pub(crate) struct UdpSendSnapshot {
     socket: AsyncUdpSocket,
@@ -152,6 +155,34 @@ impl UdpSendSnapshot {
 #[cfg(target_os = "linux")]
 pub(crate) fn reset_recv_buffer(buffer: &mut Vec<u8>) {
     buffer.clear();
+}
+
+#[cfg(target_os = "linux")]
+fn udp_gro_segment_count(len: usize, segment_size: usize) -> usize {
+    if len == 0 || segment_size == 0 {
+        0
+    } else {
+        len.div_ceil(segment_size)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn extend_udp_gro_segment(out: &mut Vec<u8>, head: &[u8], tail: &[u8], start: usize, end: usize) {
+    debug_assert!(start <= end);
+    debug_assert!(end <= head.len().saturating_add(tail.len()));
+
+    let head_len = head.len();
+    if start < head_len {
+        let head_end = end.min(head_len);
+        out.extend_from_slice(&head[start..head_end]);
+        if end > head_len {
+            out.extend_from_slice(&tail[..end - head_len]);
+        }
+    } else {
+        let tail_start = start - head_len;
+        let tail_end = end - head_len;
+        out.extend_from_slice(&tail[tail_start..tail_end]);
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -712,7 +743,13 @@ async fn udp_receive_loop(
     #[cfg(target_os = "linux")]
     {
         const BATCH: usize = UDP_RECV_BATCH_SIZE;
-        let buf_size = mtu as usize + 100;
+        let packet_buf_size = mtu as usize + 100;
+        let recv_head_size = packet_buf_size.min(UDP_GRO_RECV_BUFFER_SIZE);
+        let recv_overflow_size = if socket.udp_gro_enabled() {
+            UDP_GRO_RECV_BUFFER_SIZE.saturating_sub(recv_head_size)
+        } else {
+            0
+        };
         // Backing pool: one Vec<u8> per recvmmsg slot. We **own** each
         // slot here — when a packet lands, we `mem::replace` the filled
         // Vec out (handing the buffer directly to rx_loop via mpsc) and
@@ -728,15 +765,29 @@ async fn udp_receive_loop(
         // memset on Linux — the receive buffer becomes the packet buffer
         // in one move.
         let mut backing: Vec<Vec<u8>> = (0..BATCH)
-            .map(|_| packet_tx.recv_buffer(buf_size))
+            .map(|_| packet_tx.recv_buffer(recv_head_size))
+            .collect();
+        // Dedicated UDP receive-loop scratch. These jumbo tails never enter
+        // PacketBufferPool; only actual GRO segments are copied out as normal
+        // packet-sized buffers before PM2/packet-channel ingress.
+        let mut gro_overflows: Vec<Vec<u8>> = (0..BATCH)
+            .map(|_| Vec::with_capacity(recv_overflow_size))
             .collect();
         let mut addrs: [Option<std::net::SocketAddr>; BATCH] = std::array::from_fn(|_| None);
+        let mut gro_segment_sizes = [0usize; BATCH];
         let mut addr_cache: Vec<(SocketAddr, TransportAddr)> = Vec::new();
 
         loop {
             let recv_result = {
                 let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpRecv);
-                socket.recv_batch(&mut backing, &mut addrs).await
+                socket
+                    .recv_batch(
+                        &mut backing,
+                        &mut gro_overflows,
+                        &mut addrs,
+                        &mut gro_segment_sizes,
+                    )
+                    .await
             };
             match recv_result {
                 Ok((count, kernel_drops)) => {
@@ -745,16 +796,35 @@ async fn udp_receive_loop(
                     let trace_enqueued_at = crate::perf_profile::stamp();
                     let mut packets = packet_tx.packet_batch(count);
                     for i in 0..count {
-                        let len = backing[i].len();
+                        let head_len = backing[i].len();
+                        let overflow_len = gro_overflows[i].len();
+                        let len = head_len.saturating_add(overflow_len);
+                        let gro_segment_size = gro_segment_sizes[i];
+                        gro_segment_sizes[i] = 0;
                         let Some(remote_addr) = addrs[i].take() else {
                             reset_recv_buffer(&mut backing[i]);
+                            reset_recv_buffer(&mut gro_overflows[i]);
                             continue;
                         };
-                        stats.record_recv(len);
+                        let gro_segment_count = udp_gro_segment_count(len, gro_segment_size);
+
+                        if overflow_len > 0 && gro_segment_count <= 1 {
+                            stats.record_recv_error();
+                            reset_recv_buffer(&mut backing[i]);
+                            reset_recv_buffer(&mut gro_overflows[i]);
+                            trace!(
+                                transport_id = %transport_id,
+                                remote_addr = %remote_addr,
+                                bytes = len,
+                                gro_segment_size = gro_segment_size,
+                                "Dropping oversized UDP datagram without GRO segments"
+                            );
+                            continue;
+                        }
 
                         // Peek before swap: punch probes / acks are
                         // discarded without consuming a buffer move.
-                        if is_punch_packet(&backing[i][..len]) {
+                        if gro_segment_count <= 1 && is_punch_packet(&backing[i]) {
                             trace!(
                                 transport_id = %transport_id,
                                 remote_addr = %remote_addr,
@@ -762,16 +832,54 @@ async fn udp_receive_loop(
                                 "Dropping stray punch probe/ack on UDP transport"
                             );
                             reset_recv_buffer(&mut backing[i]);
+                            reset_recv_buffer(&mut gro_overflows[i]);
                             continue;
                         }
 
+                        let addr = cached_transport_addr(&mut addr_cache, remote_addr);
+                        if gro_segment_count > 1 {
+                            stats.record_recv_batch(gro_segment_count, len);
+                            let head = &backing[i][..head_len];
+                            let tail = &gro_overflows[i][..overflow_len];
+                            let mut start = 0usize;
+                            while start < len {
+                                let end = start.saturating_add(gro_segment_size).min(len);
+                                let mut data = packet_tx.recv_buffer(end - start);
+                                extend_udp_gro_segment(&mut data, head, tail, start, end);
+                                let data = packet_tx.packet_buffer(data);
+                                if !is_punch_packet(data.as_slice()) {
+                                    packets.push(ReceivedPacket::with_trace_timestamp(
+                                        transport_id,
+                                        addr.clone(),
+                                        data,
+                                        timestamp_ms,
+                                        trace_enqueued_at,
+                                    ));
+                                }
+                                start = end;
+                            }
+                            reset_recv_buffer(&mut backing[i]);
+                            reset_recv_buffer(&mut gro_overflows[i]);
+                            trace!(
+                                transport_id = %transport_id,
+                                remote_addr = %remote_addr,
+                                bytes = len,
+                                gro_segment_size = gro_segment_size,
+                                gro_segments = gro_segment_count,
+                                "UDP GRO packet split"
+                            );
+                            continue;
+                        }
+
+                        stats.record_recv(len);
                         // Move the filled buffer out of the slot and
                         // refill with a fresh one. `mem::replace`
                         // returns the OLD value and writes the new one
                         // — single pointer swap, no copy.
-                        let data =
-                            std::mem::replace(&mut backing[i], packet_tx.recv_buffer(buf_size));
-                        let addr = cached_transport_addr(&mut addr_cache, remote_addr);
+                        let data = std::mem::replace(
+                            &mut backing[i],
+                            packet_tx.recv_buffer(recv_head_size),
+                        );
                         let packet = ReceivedPacket::with_trace_timestamp(
                             transport_id,
                             addr,
@@ -784,6 +892,7 @@ async fn udp_receive_loop(
                             transport_id = %transport_id,
                             remote_addr = %remote_addr,
                             bytes = len,
+                            gro_segment_size = gro_segment_size,
                             "UDP packet received"
                         );
 
@@ -819,7 +928,7 @@ async fn udp_receive_loop(
 
         loop {
             match socket.recv_from(&mut buf).await {
-                Ok((len, remote_addr, kernel_drops)) => {
+                Ok((len, remote_addr, kernel_drops, _gro_segment_size)) => {
                     stats.record_recv(len);
                     stats.set_kernel_drops(kernel_drops as u64);
 
@@ -881,7 +990,7 @@ async fn udp_receive_loop(
 
         loop {
             match socket.recv_from(&mut buf).await {
-                Ok((len, remote_addr, kernel_drops)) => {
+                Ok((len, remote_addr, kernel_drops, _gro_segment_size)) => {
                     stats.record_recv(len);
                     stats.set_kernel_drops(kernel_drops as u64);
 
