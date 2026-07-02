@@ -473,7 +473,9 @@ impl PacketMover2TurnDriver {
         // continuations consume this turn's bounded crypto budget before
         // admitting fresh raw/outbound packets.
         let mut remaining_crypto_limit = crypto_limit;
-        if admission_summary.has_activity() {
+        let completion_can_join_admission =
+            self.completion_activity_is_compact_endpoint_data_only(admission_summary);
+        if admission_summary.has_activity() && !completion_can_join_admission {
             let report = self
                 .finish_aead_live_node_output_turn_with_executor(
                     admission_summary,
@@ -548,6 +550,33 @@ impl PacketMover2TurnDriver {
             )
             .await
         }
+    }
+
+    fn completion_activity_is_compact_endpoint_data_only(
+        &self,
+        summary: PacketMover2RuntimeSummary,
+    ) -> bool {
+        summary.completions > 0
+            && summary.raw_ingress_dropped == 0
+            && summary.inbound_admitted == 0
+            && summary.inbound_dropped == 0
+            && summary.outbound_admitted == 0
+            && summary.outbound_dropped == 0
+            && summary.dispatched == 0
+            && summary.outputs == 0
+            && summary.outputs_sent == 0
+            && summary.outputs_dropped == 0
+            && summary.drops == 0
+            && !self.fsp_endpoint_data_ingress.is_empty()
+            && self.outputs.is_empty()
+            && self.raw_ingress_drops.is_empty()
+            && self.output_drops.is_empty()
+            && self.drops.is_empty()
+            && self.fmp_ingress_receipts.is_empty()
+            && self.fmp_link_ingress.is_empty()
+            && self.fsp_coord_warmups.is_empty()
+            && self.fsp_local_session_ingress.is_empty()
+            && self.fsp_session_ingress.is_empty()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -944,8 +973,10 @@ impl PacketMover2TurnDriver {
         S: PacketMover2OutputSink,
     {
         let dropped_before = self.output_drops.len();
-        crate::perf_profile::record_packet_mover2_live_output_batch(self.outputs.len());
-        let sent = {
+        let sent = if self.outputs.is_empty() {
+            0
+        } else {
+            crate::perf_profile::record_packet_mover2_live_output_batch(self.outputs.len());
             let _output_sink_timer = crate::perf_profile::Timer::start(
                 crate::perf_profile::Stage::PacketMover2OutputSink,
             );

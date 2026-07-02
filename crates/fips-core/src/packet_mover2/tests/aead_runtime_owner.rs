@@ -1541,6 +1541,7 @@
         }
         assert!(completion_source.is_empty());
         assert!(sink.outputs.is_empty());
+        assert_eq!(sink.batch_calls, 0);
 
         completion_source.extend([first, second]);
         {
@@ -1563,6 +1564,7 @@
         }
 
         assert!(completion_source.is_empty());
+        assert_eq!(sink.batch_calls, 1);
         assert_eq!(sink.outputs.len(), 3);
         assert_eq!(sink.outputs[0].counter(), 100);
         assert_eq!(sink.outputs[1].counter(), 101);
@@ -1580,6 +1582,66 @@
             b"third"
         );
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 0);
+    }
+
+    #[test]
+    fn compact_endpoint_data_completion_can_join_admission_finish() {
+        let source_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let previous_hop = test_node_addr(915);
+        let local_addr = test_node_addr(916);
+        let key = 0x91;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
+        );
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let endpoint_payload = b"compact-endpoint";
+        let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            915_001,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            endpoint_payload,
+        );
+        driver
+            .mover
+            .submit_socket_packet(
+                SocketPacket::new(
+                    owner,
+                    1,
+                    915,
+                    PacketClass::Bulk,
+                    OutputTarget::SessionPayload { local_addr },
+                    fsp_encrypted_wire(915, 0, &fsp_inner, key),
+                )
+                .with_previous_hop(previous_hop)
+                .with_activity_tick(ActivityTick::new(915_010)),
+            )
+            .unwrap();
+
+        let mut prepared = capture_prepared_work(&mut driver.mover, 8);
+        assert_eq!(prepared.len(), 1);
+        let mut completions = VecDeque::from([prepared.pop().unwrap().execute()]);
+        let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
+
+        assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
+        assert_eq!(driver.fsp_endpoint_data_ingress.len(), 1);
+        assert_eq!(
+            driver
+                .fsp_endpoint_data_ingress
+                .iter()
+                .map(PacketMover2FspEndpointDataIngressBatch::len)
+                .sum::<usize>(),
+            1
+        );
+        assert!(driver.outputs.is_empty());
     }
 
     #[test]
