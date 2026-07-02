@@ -190,6 +190,14 @@ impl PacketMover2LiveNode {
         rx
     }
 
+    pub(crate) fn update_established_fast_ingress_direct_fsp_sources(
+        &self,
+        sources: DirectFspSourceMap,
+    ) {
+        self.routes
+            .update_established_fast_ingress_direct_fsp_sources(sources);
+    }
+
     pub(crate) fn register_owner(&mut self, owner: OwnerId, config: OwnerConfig) {
         self.driver.register_owner(owner, config);
     }

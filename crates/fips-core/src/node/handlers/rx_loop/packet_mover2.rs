@@ -26,6 +26,8 @@ impl Node {
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
         let direct_fsp_sources = self.packet_mover2_direct_fsp_sources();
+        self.packet_mover2
+            .update_established_fast_ingress_direct_fsp_sources(direct_fsp_sources.clone());
         let turn = self
             .packet_mover2
             .pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker(
