@@ -127,6 +127,49 @@ fn endpoint_event_message_count_treats_batch_items_as_public_messages() {
 }
 
 #[test]
+fn direct_endpoint_batch_splits_consecutive_source_runs() {
+    let source_a = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let source_b = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let captured_batch = std::sync::Arc::clone(&captured);
+    let sink = EndpointDirectSink::new(move |batch| {
+        *captured_batch.lock().expect("direct batch lock") = Some(batch);
+        Ok::<(), FipsEndpointDirectDeliveryError>(())
+    });
+
+    sink.deliver_endpoint_data_batch(vec![
+        EndpointDataDelivery::new(source_a, b"a1".to_vec()),
+        EndpointDataDelivery::new(source_a, b"a2".to_vec()),
+        EndpointDataDelivery::new(source_b, b"b1".to_vec()),
+        EndpointDataDelivery::new(source_b, b"b2".to_vec()),
+        EndpointDataDelivery::new(source_a, b"a3".to_vec()),
+    ])
+    .expect("direct delivery");
+
+    let batch = captured
+        .lock()
+        .expect("direct batch lock")
+        .take()
+        .expect("captured direct batch");
+    assert!(!batch.is_single_source());
+    let runs = batch.into_source_runs();
+
+    assert_eq!(runs.len(), 3);
+    assert!(runs.iter().all(FipsEndpointDirectBatch::is_single_source));
+    assert_eq!(runs[0].messages().len(), 2);
+    assert_eq!(runs[0].messages()[0].source_peer, source_a);
+    assert_eq!(runs[0].messages()[0].data, b"a1");
+    assert_eq!(runs[0].messages()[1].data, b"a2");
+    assert_eq!(runs[1].messages().len(), 2);
+    assert_eq!(runs[1].messages()[0].source_peer, source_b);
+    assert_eq!(runs[1].messages()[0].data, b"b1");
+    assert_eq!(runs[1].messages()[1].data, b"b2");
+    assert_eq!(runs[2].messages().len(), 1);
+    assert_eq!(runs[2].messages()[0].source_peer, source_a);
+    assert_eq!(runs[2].messages()[0].data, b"a3");
+}
+
+#[test]
 fn release_endpoint_event_messages_subtracts_exact_count() {
     let counter = AtomicUsize::new(5);
 

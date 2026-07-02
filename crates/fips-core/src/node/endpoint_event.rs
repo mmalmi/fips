@@ -36,6 +36,47 @@ impl FipsEndpointDirectBatch {
         &self.messages
     }
 
+    /// Whether every message in this batch came from the same FIPS node.
+    pub fn is_single_source(&self) -> bool {
+        self.messages
+            .windows(2)
+            .all(|pair| pair[0].source_node_addr() == pair[1].source_node_addr())
+    }
+
+    /// Split this batch into consecutive same-source runs.
+    ///
+    /// FIPS may coalesce endpoint output from multiple authenticated sources.
+    /// Consumers that shard or cache admission by source should use this at
+    /// the ownership boundary instead of assuming the first message describes
+    /// the whole batch.
+    pub fn into_source_runs(self) -> Vec<Self> {
+        if self.messages.is_empty() {
+            return Vec::new();
+        }
+        if self.is_single_source() {
+            return vec![self];
+        }
+
+        let mut runs = Vec::new();
+        let mut current = Vec::new();
+        let mut current_source = None;
+
+        for message in self.messages {
+            let source = *message.source_node_addr();
+            if current_source.is_some_and(|current| current != source) {
+                runs.push(Self { messages: current });
+                current = Vec::new();
+            }
+            current_source = Some(source);
+            current.push(message);
+        }
+
+        if !current.is_empty() {
+            runs.push(Self { messages: current });
+        }
+        runs
+    }
+
     /// Take ownership of the delivered messages.
     pub fn into_messages(self) -> Vec<FipsEndpointDirectMessage> {
         self.messages
