@@ -305,6 +305,102 @@
     }
 
     #[test]
+    fn fast_ingress_consumes_direct_fsp_fragments_while_output_queue_full() {
+        let source = NodeAddr::from_bytes([0x48; 16]);
+        let owner = OwnerId::fsp_node(source);
+        let transport_id = TransportId::new(48);
+        let remote_addr = TransportAddr::from_string("198.51.100.48:9000");
+        let route = PacketMover2IngressRoute::new(owner, 12, OutputTarget::Endpoint)
+            .with_class(PacketClass::Bulk);
+        let mut routes = PacketMover2LiveRouteTable::default();
+        routes.register_fsp(source, route);
+        let mut direct_sources = std::collections::HashMap::new();
+        direct_sources.insert(
+            (transport_id, remote_addr.clone()),
+            PacketMover2DirectFspSource {
+                source_addr: source,
+                path_mtu: 240,
+            },
+        );
+        routes.set_established_fast_ingress_direct_fsp_sources(direct_sources);
+
+        let (sink, fast_rx) =
+            PacketMover2EstablishedFastIngressSink::channel(
+                routes.established_fast_ingress_snapshot(),
+                1,
+            );
+        let mut fill_queue = vec![ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr.clone(),
+            fsp_wire(
+                4800,
+                crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+            ),
+            48_000,
+        )];
+        assert_eq!(sink.try_ingest_batch(&mut fill_queue), 1);
+        assert!(fill_queue.is_empty());
+        assert_eq!(fast_rx.len(), 1);
+
+        let mut wire = fsp_wire(
+            4848,
+            crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+        );
+        wire.extend((0..900).map(|idx| (idx % 251) as u8));
+        let mut output =
+            transport_output(owner, 4848, 12, transport_id, remote_addr.clone(), wire.clone());
+        output.path_mtu = 240;
+        let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
+            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+        };
+        assert!(segments.len() > 2);
+
+        let split = segments.len() / 2;
+        let mut first_half: Vec<_> = segments[..split]
+            .iter()
+            .enumerate()
+            .map(|(idx, segment)| {
+                ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr.clone(),
+                    segment.payload.clone(),
+                    48_100 + idx as u64,
+                )
+            })
+            .collect();
+        let first_half_len = first_half.len();
+        assert_eq!(sink.try_ingest_batch(&mut first_half), first_half_len);
+        assert!(
+            first_half.is_empty(),
+            "pending direct-FSP fragments should not fall back to the packet channel"
+        );
+        assert_eq!(fast_rx.len(), 1);
+
+        let mut second_half: Vec<_> = segments[split..]
+            .iter()
+            .enumerate()
+            .map(|(idx, segment)| {
+                ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr.clone(),
+                    segment.payload.clone(),
+                    48_200 + idx as u64,
+                )
+            })
+            .collect();
+        let second_half_len = second_half.len();
+        assert_eq!(sink.try_ingest_batch(&mut second_half), second_half_len);
+        assert_eq!(
+            second_half.len(),
+            1,
+            "full fast queue should fall back with one reassembled direct-FSP record"
+        );
+        assert_eq!(second_half[0].data.as_slice(), wire.as_slice());
+        assert_eq!(fast_rx.len(), 1);
+    }
+
+    #[test]
     fn fast_ingress_preserves_direct_fsp_fragment_until_route_exists() {
         let source = NodeAddr::from_bytes([0x47; 16]);
         let owner = OwnerId::fsp_node(source);

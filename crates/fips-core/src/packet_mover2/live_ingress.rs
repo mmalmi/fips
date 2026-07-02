@@ -560,11 +560,57 @@ impl PacketMover2EstablishedFastIngressSink {
             }
         }
     }
+
+    fn direct_fsp_fragment_packet(
+        &self,
+        direct_sources: &HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>,
+        fsp_routes: &HashMap<NodeAddr, PacketMover2IngressRoute>,
+        packet: ReceivedPacket,
+    ) -> PacketMover2FastIngressDirectFragmentResult {
+        if !packet_mover2_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) {
+            return PacketMover2FastIngressDirectFragmentResult::Miss(packet);
+        }
+        let Some(source) = direct_sources
+            .get(&(packet.transport_id, packet.remote_addr.clone()))
+            .copied()
+        else {
+            return PacketMover2FastIngressDirectFragmentResult::Miss(packet);
+        };
+        if !fsp_routes.contains_key(&source.source_addr) {
+            return PacketMover2FastIngressDirectFragmentResult::Miss(packet);
+        }
+        if packet.data.len() > source.path_mtu as usize {
+            return PacketMover2FastIngressDirectFragmentResult::Consumed;
+        }
+
+        let mut reassembler = self
+            .direct_fsp_reassembler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match reassembler.ingest(packet) {
+            PacketMover2DirectFspReassemblyResult::NotFragment(packet) => {
+                PacketMover2FastIngressDirectFragmentResult::Miss(packet)
+            }
+            PacketMover2DirectFspReassemblyResult::Pending
+            | PacketMover2DirectFspReassemblyResult::Dropped => {
+                PacketMover2FastIngressDirectFragmentResult::Consumed
+            }
+            PacketMover2DirectFspReassemblyResult::Complete(packet) => {
+                PacketMover2FastIngressDirectFragmentResult::Complete(packet)
+            }
+        }
+    }
 }
 
 enum PacketMover2FastIngressDirectFspResult {
     Fast(SocketPacket),
     Consumed,
+    Miss(ReceivedPacket),
+}
+
+enum PacketMover2FastIngressDirectFragmentResult {
+    Consumed,
+    Complete(ReceivedPacket),
     Miss(ReceivedPacket),
 }
 
@@ -574,39 +620,70 @@ impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
             return 0;
         }
 
-        let mut reservation = match self.queue.reserve_prefix(packets.len()) {
+        let routes = self.routes.fmp_routes();
+        let fsp_routes = self.routes.fsp_routes();
+        let direct_sources = self.routes.direct_fsp_sources();
+
+        let mut consumed_inputs = 0usize;
+        let mut candidates = Vec::with_capacity(packets.len());
+        for packet in std::mem::take(packets) {
+            match self.direct_fsp_fragment_packet(&direct_sources, &fsp_routes, packet) {
+                PacketMover2FastIngressDirectFragmentResult::Consumed => {
+                    consumed_inputs = consumed_inputs.saturating_add(1);
+                }
+                PacketMover2FastIngressDirectFragmentResult::Complete(packet) => {
+                    consumed_inputs = consumed_inputs.saturating_add(1);
+                    candidates.push((packet, 0usize));
+                }
+                PacketMover2FastIngressDirectFragmentResult::Miss(packet) => {
+                    candidates.push((packet, 1usize));
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return consumed_inputs;
+        }
+
+        let candidate_count = candidates.len();
+        let mut reservation = match self.queue.reserve_prefix(candidate_count) {
             Some(reservation) => reservation,
-            None => return 0,
+            None => {
+                packets.extend(candidates.into_iter().map(|(packet, _)| packet));
+                return consumed_inputs;
+            }
         };
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
             Err(_) => {
                 reservation.release();
-                return 0;
+                packets.extend(candidates.into_iter().map(|(packet, _)| packet));
+                return consumed_inputs;
             }
         };
-        let routes = self.routes.fmp_routes();
-        let fsp_routes = self.routes.fsp_routes();
-        let direct_sources = self.routes.direct_fsp_sources();
-        let mut misses = Vec::with_capacity(packets.len());
-        let mut fast_packets = Vec::with_capacity(reservation.len().min(packets.len()));
-        let mut direct_consumed = 0usize;
+        let mut misses = Vec::with_capacity(candidate_count);
+        let mut fast_packets = Vec::with_capacity(reservation.len().min(candidate_count));
+        let mut accepted_inputs = 0usize;
         let fast_limit = reservation.len();
-        for packet in std::mem::take(packets) {
+        for (packet, input_count) in candidates {
             if fast_packets.len() >= fast_limit {
                 misses.push(packet);
                 continue;
             }
             match self.direct_fsp_socket_packet(&direct_sources, &fsp_routes, packet) {
                 PacketMover2FastIngressDirectFspResult::Fast(packet) => {
+                    accepted_inputs = accepted_inputs.saturating_add(input_count);
                     fast_packets.push(packet);
                 }
                 PacketMover2FastIngressDirectFspResult::Consumed => {
-                    direct_consumed = direct_consumed.saturating_add(1);
+                    accepted_inputs = accepted_inputs.saturating_add(input_count);
                 }
                 PacketMover2FastIngressDirectFspResult::Miss(packet) => {
                     match Self::fmp_socket_packet_from_received(&routes, packet) {
-                        Ok(packet) => fast_packets.push(packet),
+                        Ok(packet) => {
+                            accepted_inputs = accepted_inputs.saturating_add(input_count);
+                            fast_packets.push(packet);
+                        }
                         Err(packet) => misses.push(packet),
                     }
                 }
@@ -618,13 +695,13 @@ impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
         reservation.truncate(accepted);
         if accepted == 0 {
             reservation.release();
-            return direct_consumed;
+            return consumed_inputs.saturating_add(accepted_inputs);
         }
         permit.send(PacketMover2FastIngressBatch::new(
             fast_packets,
             reservation,
         ));
-        direct_consumed.saturating_add(accepted)
+        consumed_inputs.saturating_add(accepted_inputs)
     }
 }
 
