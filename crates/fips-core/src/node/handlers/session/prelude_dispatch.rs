@@ -263,6 +263,10 @@ impl SessionReceiveBatchCommit {
             node.clear_retry_unless_direct_refresh_needed(&retry_peer);
         }
 
+        for source_addr in &self.pending_flush_sources {
+            clear_pm2_confirmed_retransmits_for(node, source_addr);
+        }
+
         self.pending_flush_sources
             .into_iter()
             .filter(|source_addr| node.pending_session_traffic.has_traffic_for(source_addr))
@@ -484,6 +488,7 @@ impl SessionDispatchCommit {
                 completion.previous_hop_addr
             };
             node.clear_retry_unless_direct_refresh_needed(&retry_peer);
+            clear_pm2_confirmed_retransmits_for(node, &completion.source_addr);
         }
 
         SessionDispatchFinish {
@@ -502,6 +507,20 @@ impl SessionDispatchCommit {
             node.flush_pending_packets(&dest_addr).await;
         }
     }
+}
+
+fn clear_pm2_confirmed_retransmits_for(node: &mut Node, source_addr: &NodeAddr) -> bool {
+    let confirmed = node
+        .packet_mover2
+        .fsp_owner_activity(source_addr)
+        .is_some_and(|activity| activity.current_epoch_confirmed());
+    if !confirmed {
+        return false;
+    }
+
+    node.sessions
+        .get_mut(source_addr)
+        .is_some_and(|entry| entry.clear_pm2_confirmed_fsp_retransmits())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

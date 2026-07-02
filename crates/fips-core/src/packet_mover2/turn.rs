@@ -478,6 +478,16 @@ impl PacketMover2FspSessionIngress {
         self.activity_tick
     }
 
+    pub(crate) fn receive_sync(&self) -> FspReceiveSync {
+        self.receive_sync
+    }
+
+    pub(crate) fn body_len(&self) -> usize {
+        self.receive_sync
+            .plaintext_len
+            .saturating_sub(crate::node::session_wire::FSP_INNER_HEADER_SIZE)
+    }
+
     pub(crate) fn msg_type(&self) -> u8 {
         self.msg_type
     }

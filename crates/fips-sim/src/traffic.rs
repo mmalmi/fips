@@ -44,8 +44,9 @@ pub(super) async fn recv_payload_set(
         };
         match tokio::time::timeout(remaining, endpoint.recv()).await {
             Ok(Some(message)) => {
-                let len = message.data.len();
-                if expected.remove(&message.data) {
+                let data = message.data.as_slice();
+                let len = data.len();
+                if expected.remove(data) {
                     delivered += 1;
                     delivered_bytes += len;
                 }
