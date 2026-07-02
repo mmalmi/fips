@@ -24,6 +24,74 @@ impl FipsEndpointDirectMessage {
     }
 }
 
+/// Consecutive direct endpoint packets from one authenticated FIPS source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointDirectSourceRun {
+    source_peer: PeerIdentity,
+    packets: Vec<PacketBuffer>,
+}
+
+impl FipsEndpointDirectSourceRun {
+    fn from_message(message: FipsEndpointDirectMessage) -> Self {
+        Self::from_message_with_capacity(message, 1)
+    }
+
+    fn from_message_with_capacity(message: FipsEndpointDirectMessage, capacity: usize) -> Self {
+        let source_peer = message.source_peer;
+        let mut packets = Vec::with_capacity(capacity.max(1));
+        packets.push(message.data);
+        Self {
+            source_peer,
+            packets,
+        }
+    }
+
+    fn push_message(&mut self, message: FipsEndpointDirectMessage) {
+        debug_assert_eq!(self.source_node_addr(), message.source_node_addr());
+        self.packets.push(message.data);
+    }
+
+    /// Authenticated FIPS peer that originated every packet in this run.
+    pub fn source_peer(&self) -> &PeerIdentity {
+        &self.source_peer
+    }
+
+    /// FIPS node address that originated every packet in this run.
+    pub fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    /// Source Nostr public key as human-facing bech32 text.
+    pub fn source_npub(&self) -> String {
+        self.source_peer.npub()
+    }
+
+    /// Packets delivered for this source run.
+    pub fn packets(&self) -> &[PacketBuffer] {
+        &self.packets
+    }
+
+    /// Take ownership of the run source and packets.
+    pub fn into_parts(self) -> (PeerIdentity, Vec<PacketBuffer>) {
+        (self.source_peer, self.packets)
+    }
+
+    /// Take ownership of the delivered packets.
+    pub fn into_packets(self) -> Vec<PacketBuffer> {
+        self.packets
+    }
+
+    /// Number of endpoint packets in the run.
+    pub fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    /// Whether the run contains no packets.
+    pub fn is_empty(&self) -> bool {
+        self.packets.is_empty()
+    }
+}
+
 /// A PM2 endpoint-output batch delivered without the endpoint-event queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointDirectBatch {
@@ -50,34 +118,39 @@ impl FipsEndpointDirectBatch {
     /// Split this batch into consecutive same-source runs.
     ///
     /// FIPS may coalesce endpoint output from multiple authenticated sources.
-    /// Consumers that shard or cache admission by source should use this at
-    /// the ownership boundary instead of assuming the first message describes
-    /// the whole batch.
-    pub fn into_source_runs(self) -> Vec<Self> {
+    /// Consumers that shard or cache admission by source can consume these
+    /// runs without carrying repeated source identity on every packet.
+    pub fn into_source_runs(self) -> Vec<FipsEndpointDirectSourceRun> {
         if self.messages.is_empty() {
             return Vec::new();
         }
+        let message_count = self.messages.len();
         if self.is_single_source() {
-            return vec![self];
+            let mut messages = self.messages.into_iter();
+            let first = messages.next().expect("non-empty direct batch");
+            let mut run =
+                FipsEndpointDirectSourceRun::from_message_with_capacity(first, message_count);
+            for message in messages {
+                run.push_message(message);
+            }
+            return vec![run];
         }
 
         let mut runs = Vec::new();
-        let mut current = Vec::new();
-        let mut current_source = None;
+        let mut messages = self.messages.into_iter();
+        let first = messages.next().expect("non-empty direct batch");
+        let mut current = FipsEndpointDirectSourceRun::from_message(first);
 
-        for message in self.messages {
-            let source = *message.source_node_addr();
-            if current_source.is_some_and(|current| current != source) {
-                runs.push(Self { messages: current });
-                current = Vec::new();
+        for message in messages {
+            if current.source_node_addr() != message.source_node_addr() {
+                runs.push(current);
+                current = FipsEndpointDirectSourceRun::from_message(message);
+            } else {
+                current.push_message(message);
             }
-            current_source = Some(source);
-            current.push(message);
         }
 
-        if !current.is_empty() {
-            runs.push(Self { messages: current });
-        }
+        runs.push(current);
         runs
     }
 

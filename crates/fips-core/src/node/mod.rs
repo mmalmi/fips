@@ -57,7 +57,7 @@ pub(crate) use endpoint_event::{
 };
 pub use endpoint_event::{
     FipsEndpointDirectBatch, FipsEndpointDirectDeliveryError, FipsEndpointDirectMessage,
-    FipsEndpointDirectSink,
+    FipsEndpointDirectSink, FipsEndpointDirectSourceRun,
 };
 pub(crate) use endpoint_traffic::{PendingEndpointData, PendingSessionTrafficQueues};
 pub(in crate::node) use identity_cache::IdentityCache;

@@ -155,18 +155,17 @@ fn direct_endpoint_batch_splits_consecutive_source_runs() {
     let runs = batch.into_source_runs();
 
     assert_eq!(runs.len(), 3);
-    assert!(runs.iter().all(FipsEndpointDirectBatch::is_single_source));
-    assert_eq!(runs[0].messages().len(), 2);
-    assert_eq!(runs[0].messages()[0].source_peer, source_a);
-    assert_eq!(runs[0].messages()[0].data, b"a1");
-    assert_eq!(runs[0].messages()[1].data, b"a2");
-    assert_eq!(runs[1].messages().len(), 2);
-    assert_eq!(runs[1].messages()[0].source_peer, source_b);
-    assert_eq!(runs[1].messages()[0].data, b"b1");
-    assert_eq!(runs[1].messages()[1].data, b"b2");
-    assert_eq!(runs[2].messages().len(), 1);
-    assert_eq!(runs[2].messages()[0].source_peer, source_a);
-    assert_eq!(runs[2].messages()[0].data, b"a3");
+    assert_eq!(runs[0].source_peer(), &source_a);
+    assert_eq!(runs[0].packets().len(), 2);
+    assert_eq!(runs[0].packets()[0].as_slice(), b"a1");
+    assert_eq!(runs[0].packets()[1].as_slice(), b"a2");
+    assert_eq!(runs[1].source_peer(), &source_b);
+    assert_eq!(runs[1].packets().len(), 2);
+    assert_eq!(runs[1].packets()[0].as_slice(), b"b1");
+    assert_eq!(runs[1].packets()[1].as_slice(), b"b2");
+    assert_eq!(runs[2].source_peer(), &source_a);
+    assert_eq!(runs[2].packets().len(), 1);
+    assert_eq!(runs[2].packets()[0].as_slice(), b"a3");
 }
 
 #[test]
