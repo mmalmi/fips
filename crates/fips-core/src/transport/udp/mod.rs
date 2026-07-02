@@ -786,6 +786,32 @@ async fn udp_receive_loop(
                             continue;
                         }
 
+                        if gro_segment_size == 0 && len > packet_buf_size {
+                            stats.record_recv_error();
+                            debug!(
+                                transport_id = %transport_id,
+                                remote_addr = %remote_addr,
+                                bytes = len,
+                                packet_buf_size = packet_buf_size,
+                                "Dropping oversized UDP receive without GRO segment metadata"
+                            );
+                            reset_recv_buffer(&mut backing[i]);
+                            continue;
+                        }
+                        if gro_segment_size > packet_buf_size {
+                            stats.record_recv_error();
+                            debug!(
+                                transport_id = %transport_id,
+                                remote_addr = %remote_addr,
+                                bytes = len,
+                                gro_segment_size = gro_segment_size,
+                                packet_buf_size = packet_buf_size,
+                                "Dropping UDP GRO receive with oversized segment"
+                            );
+                            reset_recv_buffer(&mut backing[i]);
+                            continue;
+                        }
+
                         let addr = cached_transport_addr(&mut addr_cache, remote_addr);
                         let gro_segment_count = udp_gro_segment_count(len, gro_segment_size);
                         if gro_segment_count > 1 {
