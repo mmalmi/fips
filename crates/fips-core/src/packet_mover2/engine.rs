@@ -628,6 +628,7 @@ impl PacketMover2 {
                 false,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
+                compact_endpoint_data,
             );
             dispatched_total = dispatched_total.saturating_add(pre_priority_inbound_dispatched);
             open_priority_capacity =
@@ -654,6 +655,7 @@ impl PacketMover2 {
                 true,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
+                compact_endpoint_data,
             );
             dispatched_total = dispatched_total.saturating_add(priority_inbound_dispatched);
 
@@ -667,6 +669,7 @@ impl PacketMover2 {
                 false,
                 &mut fsp_path_open,
                 &mut fsp_path_open_bulk,
+                compact_endpoint_data,
             );
             dispatched_total = dispatched_total.saturating_add(inbound_dispatched);
             let outbound_start = prepared_work.len();
@@ -761,6 +764,7 @@ impl PacketMover2 {
         priority_only: bool,
         fsp_path_open: &mut u64,
         fsp_path_open_bulk: &mut u64,
+        compact_endpoint_data: bool,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
             crate::perf_profile::record_packet_mover2_crypto_open_batch(0);
@@ -795,6 +799,7 @@ impl PacketMover2 {
                     fsp_path_open,
                     fsp_path_open_bulk,
                     &mut self.drops,
+                    compact_endpoint_data,
                 );
                 let after = LaneLens::from_tuple(self.shards[shard].admission_queue_lens());
                 let ready_after = LaneLens::from_tuple(self.shards[shard].admission_ready_lens());

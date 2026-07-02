@@ -123,6 +123,14 @@
     }
 
     fn capture_prepared_work(mover: &mut PacketMover2, limit: usize) -> Vec<PreparedCryptoWork> {
+        capture_prepared_work_with_compact_endpoint_data(mover, limit, false)
+    }
+
+    fn capture_prepared_work_with_compact_endpoint_data(
+        mover: &mut PacketMover2,
+        limit: usize,
+        compact_endpoint_data: bool,
+    ) -> Vec<PreparedCryptoWork> {
         seed_missing_test_owner_keys(mover);
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
@@ -136,7 +144,7 @@
             &mut retired,
             &mut drops,
             &mut executor,
-            false,
+            compact_endpoint_data,
         );
         debug_assert!(prepared_work.is_empty());
         debug_assert!(completion_work.is_empty());
@@ -890,7 +898,7 @@
     }
 
     fn open_aead_completion(work: CryptoWork, key: u8) -> CryptoCompletion {
-        PreparedCryptoWork::open(work, test_key(key)).execute()
+        PreparedCryptoWork::open(work, test_key(key), false).execute()
     }
 
     fn retire_completion(

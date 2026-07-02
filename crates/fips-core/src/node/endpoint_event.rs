@@ -219,6 +219,10 @@ impl FipsEndpointDirectPacketRun {
         self.meta.enqueued_at_ms()
     }
 
+    pub(crate) fn refresh_enqueued_at_ms(&mut self, enqueued_at_ms: u64) {
+        self.meta.enqueued_at_ms = enqueued_at_ms;
+    }
+
     /// Number of endpoint packets in the run.
     pub fn len(&self) -> usize {
         match &self.storage {

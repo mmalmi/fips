@@ -35,9 +35,9 @@ pub(crate) struct CryptoCompletionBatch {
 impl CryptoCompletion {
     fn source(&self) -> CryptoCompletionSource {
         match &self.result {
-            CryptoResult::Opened(_) | CryptoResult::Failed(CryptoFailureKind::Open) => {
-                CryptoCompletionSource::Open
-            }
+            CryptoResult::Opened(_)
+            | CryptoResult::OpenedEndpointData(_)
+            | CryptoResult::Failed(CryptoFailureKind::Open) => CryptoCompletionSource::Open,
             CryptoResult::Sealed(_)
             | CryptoResult::Outbound(_)
             | CryptoResult::Failed(CryptoFailureKind::Seal) => CryptoCompletionSource::Seal,
@@ -198,6 +198,7 @@ fn completion_run_is_contiguous(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CryptoResult {
     Opened(PacketOutput),
+    OpenedEndpointData(PacketMover2FspEndpointDataIngress),
     Sealed(PacketOutput),
     Outbound(OutboundPacket),
     Failed(CryptoFailureKind),

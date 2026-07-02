@@ -1844,6 +1844,15 @@ impl OwnerState {
                     .max(completion.reservation.counter);
                 self.retire_opened_output_into(output, retired, compact_endpoint_data);
             }
+            CryptoResult::OpenedEndpointData(mut ingress) => {
+                debug_assert!(compact_endpoint_data);
+                self.authenticated_counter_highest = self
+                    .authenticated_counter_highest
+                    .max(completion.reservation.counter);
+                ingress.refresh_enqueued_at_ms(crate::time::now_ms());
+                self.record_retired_endpoint_data_ingress(&ingress);
+                retired.push_endpoint_data_bulk(ingress);
+            }
             CryptoResult::Sealed(output) => retired.push_output(output),
             CryptoResult::Outbound(packet) => retired.push_outbound(packet),
             CryptoResult::Failed(failure) => {

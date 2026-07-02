@@ -1510,7 +1510,7 @@
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 1);
 
         let completion =
-            PreparedCryptoWork::open(work.pop().unwrap(), test_key(open_key)).execute();
+            PreparedCryptoWork::open(work.pop().unwrap(), test_key(open_key), false).execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [completion], 8);
@@ -1572,7 +1572,7 @@
 
         let mut completions = work
             .drain(..)
-            .map(|work| PreparedCryptoWork::open(work, test_key(open_key)).execute())
+            .map(|work| PreparedCryptoWork::open(work, test_key(open_key), false).execute())
             .collect::<VecDeque<_>>();
         let third = completions.pop_back().unwrap();
         let first = completions.pop_front().unwrap();
@@ -1751,7 +1751,8 @@
             )
             .unwrap();
 
-        let mut prepared = capture_prepared_work(&mut driver.mover, 8);
+        let mut prepared =
+            capture_prepared_work_with_compact_endpoint_data(&mut driver.mover, 8, true);
         assert_eq!(prepared.len(), 1);
         let mut completions = VecDeque::from([prepared.pop().unwrap().execute()]);
         let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
@@ -1849,7 +1850,7 @@
 
         let mut completions = work
             .drain(..)
-            .map(|work| PreparedCryptoWork::open(work, test_key(open_key)).execute())
+            .map(|work| PreparedCryptoWork::open(work, test_key(open_key), false).execute())
             .collect::<Vec<_>>();
         assert_eq!(
             completions
@@ -1914,7 +1915,7 @@
 
         let mut completions = dispatch_available(&mut mover, 8)
             .drain(..)
-            .map(|work| PreparedCryptoWork::open(work, test_key(open_key)).execute())
+            .map(|work| PreparedCryptoWork::open(work, test_key(open_key), false).execute())
             .collect::<Vec<_>>();
         assert_eq!(completions.len(), 4);
 
@@ -1955,7 +1956,7 @@
 
         let mut completions = dispatch_available(&mut mover, 8)
             .drain(..)
-            .map(|work| PreparedCryptoWork::open(work, test_key(open_key)).execute())
+            .map(|work| PreparedCryptoWork::open(work, test_key(open_key), false).execute())
             .collect::<Vec<_>>();
         assert_eq!(completions.len(), 3);
         let third = completions.pop().unwrap();
@@ -2011,7 +2012,7 @@
 
         let completions = dispatch_available(&mut mover, 8)
             .drain(..)
-            .map(|work| PreparedCryptoWork::open(work, test_key(open_key)).execute())
+            .map(|work| PreparedCryptoWork::open(work, test_key(open_key), false).execute())
             .collect::<Vec<_>>();
         assert_eq!(completions.len(), 6);
 
@@ -2117,9 +2118,9 @@
         assert_eq!(driver.owner_mut(owner).unwrap().in_flight, 2);
 
         let old_completion =
-            PreparedCryptoWork::open(old_work.pop().unwrap(), test_key(open_key)).execute();
+            PreparedCryptoWork::open(old_work.pop().unwrap(), test_key(open_key), false).execute();
         let new_completion =
-            PreparedCryptoWork::open(new_work.pop().unwrap(), test_key(open_key)).execute();
+            PreparedCryptoWork::open(new_work.pop().unwrap(), test_key(open_key), false).execute();
 
         {
             let turn = run_aead_completion_turn(&mut driver, [new_completion], 8);

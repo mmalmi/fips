@@ -299,6 +299,7 @@ impl PacketMover2OwnerShard {
         fsp_path_open: &mut u64,
         fsp_path_open_bulk: &mut u64,
         drops: &mut Vec<PacketDrop>,
+        compact_endpoint_data: bool,
     ) -> usize {
         let mut dispatched = 0usize;
         let mut attempts_remaining = self.admission.len();
@@ -357,6 +358,7 @@ impl PacketMover2OwnerShard {
                                     packet: queued.packet,
                                 },
                                 open_key,
+                                compact_endpoint_data,
                             ),
                             None => {
                                 PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open)

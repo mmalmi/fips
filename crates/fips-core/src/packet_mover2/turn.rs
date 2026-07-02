@@ -571,7 +571,7 @@ impl PacketMover2FspEndpointDataCommitRun {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PacketMover2FspEndpointDataIngress {
     commit: PacketMover2FspEndpointDataCommit,
     msg_type: u8,
@@ -667,6 +667,10 @@ impl PacketMover2FspEndpointDataIngress {
 
     pub(crate) fn into_direct_packet_run(self) -> FipsEndpointDirectPacketRun {
         self.packet_run
+    }
+
+    pub(crate) fn refresh_enqueued_at_ms(&mut self, enqueued_at_ms: u64) {
+        self.packet_run.refresh_enqueued_at_ms(enqueued_at_ms);
     }
 }
 
