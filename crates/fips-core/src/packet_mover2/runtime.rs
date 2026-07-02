@@ -10,7 +10,7 @@ pub(crate) struct PacketMover2TurnDriver {
     output_rewrite_buffer: Vec<PacketOutput>,
     raw_socket_packets: Vec<SocketPacket>,
     retired_outbound_packets: Vec<OutboundPacket>,
-    retired: Vec<RetiredPacket>,
+    retired: Vec<RetiredOutputs>,
     transport_output: PacketMover2TransportSendGroups,
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
@@ -383,6 +383,7 @@ impl PacketMover2TurnDriver {
         &mut self,
         completions: &mut C,
         completion_limit: usize,
+        compact_endpoint_data: bool,
     ) -> PacketMover2RuntimeSummary
     where
         C: PacketMover2CompletionSource,
@@ -392,6 +393,7 @@ impl PacketMover2TurnDriver {
             PacketMover2RuntimeSummary::default(),
             completions,
             completion_limit,
+            compact_endpoint_data,
         )
     }
 
@@ -400,6 +402,7 @@ impl PacketMover2TurnDriver {
         mut summary: PacketMover2RuntimeSummary,
         completions: &mut C,
         completion_limit: usize,
+        compact_endpoint_data: bool,
     ) -> PacketMover2RuntimeSummary
     where
         C: PacketMover2CompletionSource,
@@ -413,7 +416,7 @@ impl PacketMover2TurnDriver {
             completions.drain_completion_batches_into(completion_limit, &mut self.completion_batches);
         summary.completions = summary.completions.saturating_add(queued);
         self.mover.queue_completion_batches(&mut self.completion_batches);
-        self.retire_queued_completed_aead_outputs(completion_limit);
+        self.retire_queued_completed_aead_outputs(completion_limit, compact_endpoint_data);
         self.collect_retired_outputs(summary)
     }
 
@@ -1050,23 +1053,21 @@ impl PacketMover2TurnDriver {
         summary.inbound_admitted.saturating_sub(admitted_before)
     }
 
-    fn retire_queued_completed_aead_outputs(&mut self, limit: usize) {
+    fn retire_queued_completed_aead_outputs(
+        &mut self,
+        limit: usize,
+        compact_endpoint_data: bool,
+    ) {
         let retired_start = self.retired.len();
         let retired_completions = self
             .mover
-            .retire_queued_completions_into(limit, &mut self.retired);
+            .retire_queued_completions_into(limit, &mut self.retired, compact_endpoint_data);
         crate::perf_profile::record_packet_mover2_live_completions_retired(retired_completions);
         let mut mover_drops = self.mover.drain_drops();
         let emitted_drop_start = self.drops.len();
         self.drops.append(&mut mover_drops);
-        for item in &self.retired[retired_start..] {
-            if let RetiredPacket::Drop(drop) = item
-                && !self.drops[emitted_drop_start..]
-                    .iter()
-                    .any(|emitted| emitted == drop)
-            {
-                self.drops.push(drop.clone());
-            }
+        for batch in &self.retired[retired_start..] {
+            batch.append_missing_drops_to(&mut self.drops, emitted_drop_start);
         }
     }
 
@@ -1090,6 +1091,7 @@ impl PacketMover2TurnDriver {
                 summary,
                 remaining,
                 executor,
+                compact_endpoint_data,
             );
             let dispatched = summary.dispatched.saturating_sub(dispatched_before);
             remaining = remaining.saturating_sub(dispatched);
@@ -1116,6 +1118,7 @@ impl PacketMover2TurnDriver {
         mut summary: PacketMover2RuntimeSummary,
         limit: usize,
         executor: &mut E,
+        compact_endpoint_data: bool,
     ) -> PacketMover2RuntimeSummary
     where
         E: PacketMover2CryptoExecutor,
@@ -1133,6 +1136,7 @@ impl PacketMover2TurnDriver {
                     &mut self.retired,
                     &mut self.drops,
                     executor,
+                    compact_endpoint_data,
                 )
             };
             summary.dispatched = summary.dispatched.saturating_add(dispatched);
@@ -1158,15 +1162,20 @@ impl PacketMover2TurnDriver {
         let mut retired = std::mem::take(&mut self.retired);
         let mut outbound_packets = std::mem::take(&mut self.retired_outbound_packets);
         outbound_packets.clear();
-        for packet in retired.drain(..) {
-            match packet {
-                RetiredPacket::Output(output) => {
-                    self.outputs.push(output);
+        for batch in retired.drain(..) {
+            for item in batch.into_items() {
+                match item {
+                    RetiredOutput::Packet(RetiredPacket::Output(output)) => {
+                        self.outputs.push(output);
+                    }
+                    RetiredOutput::Packet(RetiredPacket::Outbound(packet)) => {
+                        outbound_packets.push(packet);
+                    }
+                    RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
+                    RetiredOutput::FspEndpointDataIngress(ingress) => {
+                        self.fsp_endpoint_data_ingress.push(ingress);
+                    }
                 }
-                RetiredPacket::Outbound(packet) => {
-                    outbound_packets.push(packet);
-                }
-                RetiredPacket::Drop(_) => {}
             }
         }
         self.admit_outbound_packets(&mut outbound_packets, &mut summary);

@@ -1,9 +1,69 @@
 #[derive(Debug)]
+struct PacketMover2OwnerShardRetireWorker {
+    completed: VecDeque<CryptoCompletionBatch>,
+}
+
+impl PacketMover2OwnerShardRetireWorker {
+    fn new() -> Self {
+        Self {
+            completed: VecDeque::new(),
+        }
+    }
+
+    fn queue_completion_batch(&mut self, batch: CryptoCompletionBatch) -> bool {
+        if batch.is_empty() {
+            return false;
+        }
+        let was_empty = self.completed.is_empty();
+        self.completed.push_back(batch);
+        was_empty
+    }
+
+    fn retire_queued_completions_into(
+        &mut self,
+        owner_shard: &mut PacketMover2OwnerShard,
+        limit: usize,
+        retired: &mut Vec<RetiredOutputs>,
+        drops: &mut Vec<PacketDrop>,
+        compact_endpoint_data: bool,
+    ) -> usize {
+        let mut retired_count = 0usize;
+        while retired_count < limit {
+            let Some(mut batch) = self.completed.pop_front() else {
+                break;
+            };
+            let batch_limit = limit.saturating_sub(retired_count);
+            let pending = if batch.len() > batch_limit {
+                Some(batch.split_off(batch_limit))
+            } else {
+                None
+            };
+            let batch_len = batch.len();
+            owner_shard.retire_completion_batch_into(
+                batch,
+                retired,
+                drops,
+                compact_endpoint_data,
+            );
+            retired_count = retired_count.saturating_add(batch_len);
+            if let Some(pending) = pending {
+                self.completed.push_front(pending);
+                break;
+            }
+        }
+        retired_count
+    }
+
+    fn has_queued_completions(&self) -> bool {
+        !self.completed.is_empty()
+    }
+}
+
+#[derive(Debug)]
 struct PacketMover2OwnerShard {
     index: usize,
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
-    completed: VecDeque<CryptoCompletionBatch>,
     owners: HashMap<OwnerId, OwnerState>,
 }
 
@@ -13,7 +73,6 @@ impl PacketMover2OwnerShard {
             index,
             admission: AdmissionQueue::new(),
             outbound_admission: OutboundAdmissionQueue::new(),
-            completed: VecDeque::new(),
             owners: HashMap::new(),
         }
     }
@@ -423,29 +482,18 @@ impl PacketMover2OwnerShard {
         prepared.len().saturating_sub(start_len)
     }
 
-    pub(crate) fn retire_completion_into(
-        &mut self,
-        completion: CryptoCompletion,
-        retired: &mut Vec<RetiredPacket>,
-        drops: &mut Vec<PacketDrop>,
-    ) {
-        self.retire_completion_batch_into(
-            CryptoCompletionBatch::from_completion(completion),
-            retired,
-            drops,
-        );
-    }
-
     pub(crate) fn retire_completion_batch_into(
         &mut self,
         batch: CryptoCompletionBatch,
-        retired: &mut Vec<RetiredPacket>,
+        retired: &mut Vec<RetiredOutputs>,
         drops: &mut Vec<PacketDrop>,
+        compact_endpoint_data: bool,
     ) {
         let _timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2Retire);
         let owner_id = batch.owner();
         let Some(owner) = self.owners.get_mut(&owner_id) else {
+            let mut retired_batch = RetiredOutputs::with_capacity(batch.len());
             for completion in batch.into_completions() {
                 let drop = PacketDrop::from_completion(
                     &completion,
@@ -453,67 +501,23 @@ impl PacketMover2OwnerShard {
                     None,
                 );
                 drops.push(drop.clone());
-                retired.push(RetiredPacket::Drop(drop));
+                retired_batch.push_drop(drop);
+            }
+            if !retired_batch.is_empty() {
+                retired.push(retired_batch);
             }
             return;
         };
         let retired_start = retired.len();
         let before_in_flight = owner.in_flight;
-        owner.retire_batch_into(batch, retired);
+        owner.retire_batch_outputs_into(batch, retired, compact_endpoint_data);
         if owner.in_flight < before_in_flight {
             self.admission.wake_owner(owner_id);
             self.outbound_admission.wake_owner(owner_id);
         }
-        drops.extend(retired[retired_start..].iter().filter_map(|item| match item {
-                RetiredPacket::Drop(drop) => Some(drop.clone()),
-                RetiredPacket::Output(_) => None,
-                RetiredPacket::Outbound(_) => None,
-            }));
-    }
-
-    fn queue_completion(&mut self, completion: CryptoCompletion) -> bool {
-        self.queue_completion_batch(CryptoCompletionBatch::from_completion(completion))
-    }
-
-    fn queue_completion_batch(&mut self, batch: CryptoCompletionBatch) -> bool {
-        if batch.is_empty() {
-            return false;
+        for batch in &retired[retired_start..] {
+            batch.append_drops_to(drops);
         }
-        let was_empty = self.completed.is_empty();
-        self.completed.push_back(batch);
-        was_empty
-    }
-
-    fn retire_queued_completions_into(
-        &mut self,
-        limit: usize,
-        retired: &mut Vec<RetiredPacket>,
-        drops: &mut Vec<PacketDrop>,
-    ) -> usize {
-        let mut retired_count = 0usize;
-        while retired_count < limit {
-            let Some(mut batch) = self.completed.pop_front() else {
-                break;
-            };
-            let batch_limit = limit.saturating_sub(retired_count);
-            let pending = if batch.len() > batch_limit {
-                Some(batch.split_off(batch_limit))
-            } else {
-                None
-            };
-            let batch_len = batch.len();
-            self.retire_completion_batch_into(batch, retired, drops);
-            retired_count = retired_count.saturating_add(batch_len);
-            if let Some(pending) = pending {
-                self.completed.push_front(pending);
-                break;
-            }
-        }
-        retired_count
-    }
-
-    fn has_queued_completions(&self) -> bool {
-        !self.completed.is_empty()
     }
 
     fn admission_queue_lens(&self) -> (usize, usize) {

@@ -65,8 +65,9 @@
             &mut retired,
             &mut drops,
             executor,
+            false,
         );
-        (dispatched, retired, drops)
+        (dispatched, flatten_retired_outputs(retired), drops)
     }
 
     fn drain_worker_pool_completions(

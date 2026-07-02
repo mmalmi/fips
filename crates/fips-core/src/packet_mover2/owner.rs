@@ -1725,31 +1725,31 @@ impl OwnerState {
         Some(activity_ms.wrapping_sub(session_start_ms) as u32)
     }
 
-    pub(crate) fn retire_into(
-        &mut self,
-        completion: CryptoCompletion,
-        retired: &mut Vec<RetiredPacket>,
-    ) {
-        self.stage_retire_completion(completion);
-        self.drain_ready_retirements_into(retired);
-    }
-
-    pub(crate) fn retire_batch_into(
+    pub(crate) fn retire_batch_outputs_into(
         &mut self,
         batch: CryptoCompletionBatch,
-        retired: &mut Vec<RetiredPacket>,
+        retired: &mut Vec<RetiredOutputs>,
+        compact_endpoint_data: bool,
     ) {
+        let mut retired_batch = RetiredOutputs::with_capacity(batch.len());
         for completion in batch.into_completions() {
             self.stage_retire_completion(completion);
         }
-        self.drain_ready_retirements_into(retired);
+        self.drain_ready_retirements_into(&mut retired_batch, compact_endpoint_data);
+        if !retired_batch.is_empty() {
+            retired.push(retired_batch);
+        }
     }
 
     fn stage_retire_completion(&mut self, completion: CryptoCompletion) {
         self.pending.insert(completion.reservation.order, completion);
     }
 
-    fn drain_ready_retirements_into(&mut self, retired: &mut Vec<RetiredPacket>) {
+    fn drain_ready_retirements_into(
+        &mut self,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
         while let Some(completion) = self.pending.remove(&OrderToken(self.next_retire)) {
             self.next_retire = self.next_retire.wrapping_add(1);
             self.in_flight = self.in_flight.saturating_sub(1);
@@ -1758,11 +1758,11 @@ impl OwnerState {
             }
 
             if completion.reservation.generation != self.generation {
-                retired.push(RetiredPacket::Drop(PacketDrop::from_completion(
+                retired.push_drop(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::StaleCompletionGeneration,
                     None,
-                )));
+                ));
                 continue;
             }
 
@@ -1771,22 +1771,58 @@ impl OwnerState {
                     self.authenticated_counter_highest = self
                         .authenticated_counter_highest
                         .max(completion.reservation.counter);
-                    retired.push(RetiredPacket::Output(output));
+                    self.retire_opened_output_into(output, retired, compact_endpoint_data);
                 }
-                CryptoResult::Sealed(output) => retired.push(RetiredPacket::Output(output)),
-                CryptoResult::Outbound(packet) => retired.push(RetiredPacket::Outbound(packet)),
+                CryptoResult::Sealed(output) => retired.push_output(output),
+                CryptoResult::Outbound(packet) => retired.push_outbound(packet),
                 CryptoResult::Failed(failure) => {
-                    retired.push(RetiredPacket::Drop(
-                        PacketDrop::from_completion_with_authenticated_highest(
-                            &completion,
-                            PacketDropReason::CryptoFailed,
-                            failure,
-                            self.authenticated_counter_highest,
-                        ),
+                    retired.push_drop(PacketDrop::from_completion_with_authenticated_highest(
+                        &completion,
+                        PacketDropReason::CryptoFailed,
+                        failure,
+                        self.authenticated_counter_highest,
                     ));
                 }
             }
         }
+    }
+
+    fn retire_opened_output_into(
+        &mut self,
+        output: PacketOutput,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
+            match PacketMover2FspEndpointDataIngress::from_output(output) {
+                Ok(ingress) => {
+                    self.record_retired_endpoint_data_ingress(&ingress);
+                    retired.push_fsp_endpoint_data_ingress(ingress);
+                }
+                Err(output) => retired.push_output(output),
+            }
+            return;
+        }
+
+        retired.push_output(output);
+    }
+
+    fn record_retired_endpoint_data_ingress(
+        &mut self,
+        ingress: &PacketMover2FspEndpointDataIngress,
+    ) {
+        let commit = ingress.commit();
+        if self.owner != OwnerId::fsp_node(commit.source_addr()) {
+            return;
+        }
+        let _ = self.record_authenticated_fsp_session(
+            commit.previous_hop_addr(),
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            ingress.body_len,
+            ingress.receive_sync,
+            ingress.activity_tick,
+            std::time::Instant::now(),
+        );
     }
 
     fn reserve_class(&mut self, class: PacketClass) {

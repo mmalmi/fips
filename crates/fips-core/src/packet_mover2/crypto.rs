@@ -209,9 +209,10 @@ enum PacketMover2AeadDirection {
 pub(crate) struct PacketMover2AeadWorkerPool {
     open_txs: Vec<crossbeam_channel::Sender<PreparedCryptoJob>>,
     seal_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
-    completion_rx: Option<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
+    completion_rxs: Vec<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
     completion_notify: Arc<tokio::sync::Notify>,
     pending_completion_batches: VecDeque<CryptoCompletionBatch>,
+    completion_rx_cursor: usize,
     open_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     seal_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     open_bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
@@ -225,10 +226,16 @@ impl PacketMover2AeadWorkerPool {
     pub(crate) fn new(worker_count: usize, max_in_flight: usize) -> Self {
         let worker_count = worker_count.max(1);
         let max_in_flight = max_in_flight.max(1);
-        let (completion_tx, completion_rx): (
-            crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
-            crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>,
-        ) = crossbeam_channel::bounded(max_in_flight);
+        let mut completion_txs = Vec::with_capacity(worker_count);
+        let mut completion_rxs = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let (completion_tx, completion_rx): (
+                crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
+                crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>,
+            ) = crossbeam_channel::bounded(max_in_flight);
+            completion_txs.push(completion_tx);
+            completion_rxs.push(completion_rx);
+        }
         let completion_notify = Arc::new(tokio::sync::Notify::new());
         let open_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seal_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -238,7 +245,7 @@ impl PacketMover2AeadWorkerPool {
             PacketMover2AeadDirection::Open,
             worker_count,
             max_in_flight,
-            completion_tx.clone(),
+            completion_txs.clone(),
             Arc::clone(&completion_notify),
             Arc::clone(&open_in_flight),
             Arc::clone(&open_bulk_in_flight),
@@ -247,7 +254,7 @@ impl PacketMover2AeadWorkerPool {
             PacketMover2AeadDirection::Seal,
             worker_count,
             max_in_flight,
-            completion_tx,
+            completion_txs,
             Arc::clone(&completion_notify),
             Arc::clone(&seal_in_flight),
             Arc::clone(&seal_bulk_in_flight),
@@ -256,9 +263,10 @@ impl PacketMover2AeadWorkerPool {
         Self {
             open_txs,
             seal_tx: Some(seal_tx),
-            completion_rx: Some(completion_rx),
+            completion_rxs,
             completion_notify,
             pending_completion_batches: VecDeque::new(),
+            completion_rx_cursor: 0,
             open_in_flight,
             seal_in_flight,
             open_bulk_in_flight,
@@ -293,7 +301,7 @@ impl PacketMover2AeadWorkerPool {
             .map(CryptoCompletionBatch::len)
             .sum::<usize>();
         let completion_depth =
-            pending_completion_depth.saturating_add(self.completion_rx.as_ref().map_or(0, |rx| rx.len()));
+            pending_completion_depth.saturating_add(self.completion_rxs.iter().map(|rx| rx.len()).sum::<usize>());
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::PacketMover2AeadCompletionQueueDepth,
             completion_depth as u64,
@@ -538,33 +546,47 @@ impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
                 continue;
             }
 
-            let Some(completion_rx) = &self.completion_rx else {
+            if self.completion_rxs.is_empty() {
                 break;
-            };
-            match completion_rx.try_recv() {
-                Ok(mut batches) => {
-                    let mut batches = batches.drain(..);
-                    while let Some(batch) = batches.next() {
-                        if drained >= limit {
-                            self.pending_completion_batches.push_back(batch);
-                            self.pending_completion_batches.extend(batches);
-                            break;
-                        }
-                        let (got, pending) = self.drain_completion_batch(
-                            batch,
-                            limit.saturating_sub(drained),
-                            completion_batches,
-                        );
-                        drained = drained.saturating_add(got);
-                        if let Some(pending) = pending {
-                            self.pending_completion_batches.push_back(pending);
-                            self.pending_completion_batches.extend(batches);
-                            break;
+            }
+
+            let mut made_progress = false;
+            for _ in 0..self.completion_rxs.len() {
+                if drained >= limit {
+                    break;
+                }
+                let rx_idx = self.completion_rx_cursor % self.completion_rxs.len();
+                self.completion_rx_cursor = (rx_idx + 1) % self.completion_rxs.len();
+                let received = self.completion_rxs[rx_idx].try_recv();
+                match received {
+                    Ok(mut batches) => {
+                        made_progress = true;
+                        let mut batches = batches.drain(..);
+                        while let Some(batch) = batches.next() {
+                            if drained >= limit {
+                                self.pending_completion_batches.push_back(batch);
+                                self.pending_completion_batches.extend(batches);
+                                break;
+                            }
+                            let (got, pending) = self.drain_completion_batch(
+                                batch,
+                                limit.saturating_sub(drained),
+                                completion_batches,
+                            );
+                            drained = drained.saturating_add(got);
+                            if let Some(pending) = pending {
+                                self.pending_completion_batches.push_back(pending);
+                                self.pending_completion_batches.extend(batches);
+                                break;
+                            }
                         }
                     }
+                    Err(crossbeam_channel::TryRecvError::Empty)
+                    | Err(crossbeam_channel::TryRecvError::Disconnected) => {}
                 }
-                Err(crossbeam_channel::TryRecvError::Empty)
-                | Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+            }
+            if !made_progress {
+                break;
             }
         }
         drained
@@ -575,7 +597,7 @@ fn spawn_packet_mover2_aead_workers(
     direction: PacketMover2AeadDirection,
     worker_count: usize,
     max_in_flight: usize,
-    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
+    completion_txs: Vec<crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>>,
     completion_notify: Arc<tokio::sync::Notify>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
@@ -594,7 +616,7 @@ fn spawn_packet_mover2_aead_workers(
             direction,
             worker_idx,
             work_rx,
-            completion_tx.clone(),
+            completion_txs.clone(),
             Arc::clone(&completion_notify),
             Arc::clone(&in_flight),
             Arc::clone(&bulk_in_flight),
@@ -607,7 +629,7 @@ fn spawn_packet_mover2_aead_worker_shards(
     direction: PacketMover2AeadDirection,
     worker_count: usize,
     max_in_flight: usize,
-    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
+    completion_txs: Vec<crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>>,
     completion_notify: Arc<tokio::sync::Notify>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
@@ -627,7 +649,7 @@ fn spawn_packet_mover2_aead_worker_shards(
             direction,
             worker_idx,
             work_rx,
-            completion_tx.clone(),
+            completion_txs.clone(),
             Arc::clone(&completion_notify),
             Arc::clone(&in_flight),
             Arc::clone(&bulk_in_flight),
@@ -640,7 +662,7 @@ fn spawn_packet_mover2_aead_worker_thread(
     direction: PacketMover2AeadDirection,
     worker_idx: usize,
     work_rx: crossbeam_channel::Receiver<PreparedCryptoJob>,
-    completion_tx: crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>,
+    completion_txs: Vec<crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>>,
     completion_notify: Arc<tokio::sync::Notify>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     bulk_in_flight: Arc<std::sync::atomic::AtomicUsize>,
@@ -665,7 +687,7 @@ fn spawn_packet_mover2_aead_worker_thread(
                 for work in job.work {
                     CryptoCompletionBatch::push_grouped(work.execute(), &mut completions);
                 }
-                if completion_tx.send(completions).is_err() {
+                if send_completion_batches_to_shards(completions, &completion_txs).is_err() {
                     in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
                     bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
                     break;
@@ -674,6 +696,35 @@ fn spawn_packet_mover2_aead_worker_thread(
             }
         })
         .expect("spawn packet_mover2 AEAD worker")
+}
+
+fn send_completion_batches_to_shards(
+    batches: Vec<CryptoCompletionBatch>,
+    completion_txs: &[crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>],
+) -> Result<(), ()> {
+    if batches.is_empty() {
+        return Ok(());
+    }
+    if completion_txs.is_empty() {
+        return Err(());
+    }
+
+    let mut grouped: Vec<(usize, Vec<CryptoCompletionBatch>)> = Vec::new();
+    for batch in batches {
+        let rx_idx = batch.owner_shard() % completion_txs.len();
+        if let Some((last_rx_idx, last_batches)) = grouped.last_mut()
+            && *last_rx_idx == rx_idx
+        {
+            last_batches.push(batch);
+            continue;
+        }
+        grouped.push((rx_idx, vec![batch]));
+    }
+
+    for (rx_idx, batches) in grouped {
+        completion_txs[rx_idx].send(batches).map_err(|_| ())?;
+    }
+    Ok(())
 }
 
 fn packet_mover2_aead_direction_for_completion_source(
@@ -720,7 +771,7 @@ impl Drop for PacketMover2AeadWorkerPool {
     fn drop(&mut self) {
         self.open_txs.clear();
         self.seal_tx.take();
-        self.completion_rx.take();
+        self.completion_rxs.clear();
         for worker in self.open_workers.drain(..) {
             let _ = worker.join();
         }

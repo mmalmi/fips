@@ -2,6 +2,7 @@
 pub(crate) struct PacketMover2 {
     config: AdmissionConfig,
     shards: Vec<PacketMover2OwnerShard>,
+    retire_workers: Vec<PacketMover2OwnerShardRetireWorker>,
     admission_lens: LaneLens,
     outbound_admission_lens: LaneLens,
     drops: Vec<PacketDrop>,
@@ -18,9 +19,13 @@ impl PacketMover2 {
         let shards = (0..shard_count)
             .map(PacketMover2OwnerShard::new)
             .collect();
+        let retire_workers = (0..shard_count)
+            .map(|_| PacketMover2OwnerShardRetireWorker::new())
+            .collect();
         Self {
             config,
             shards,
+            retire_workers,
             admission_lens: LaneLens::default(),
             outbound_admission_lens: LaneLens::default(),
             drops: Vec::new(),
@@ -455,17 +460,7 @@ impl PacketMover2 {
     }
 
     fn queue_completion(&mut self, completion: CryptoCompletion) {
-        let shard = completion.reservation.owner_shard();
-        debug_assert_eq!(shard, self.owner_shard_index(completion.reservation.owner));
-        let Some(owner_shard) = self.shards.get_mut(shard) else {
-            let drop =
-                PacketDrop::from_completion(&completion, PacketDropReason::UnknownOwner, None);
-            self.drops.push(drop);
-            return;
-        };
-        if owner_shard.queue_completion(completion) {
-            self.completion_ready_shards.mark(shard);
-        }
+        self.queue_completion_run(CryptoCompletionBatch::from_completion(completion));
     }
 
     fn queue_completion_batch(&mut self, completions: &mut Vec<CryptoCompletion>) -> usize {
@@ -491,7 +486,7 @@ impl PacketMover2 {
         }
         let shard = batch.owner_shard();
         let expected_shard = self.owner_shard_index(batch.owner());
-        let Some(owner_shard) = self.shards.get_mut(shard) else {
+        let Some(retire_worker) = self.retire_workers.get_mut(shard) else {
             for completion in batch.into_completions() {
                 let drop =
                     PacketDrop::from_completion(&completion, PacketDropReason::UnknownOwner, None);
@@ -500,7 +495,7 @@ impl PacketMover2 {
             return;
         };
         debug_assert_eq!(shard, expected_shard);
-        if owner_shard.queue_completion_batch(batch) {
+        if retire_worker.queue_completion_batch(batch) {
             self.completion_ready_shards.mark(shard);
         }
     }
@@ -508,7 +503,8 @@ impl PacketMover2 {
     fn retire_queued_completions_into(
         &mut self,
         limit: usize,
-        retired: &mut Vec<RetiredPacket>,
+        retired: &mut Vec<RetiredOutputs>,
+        compact_endpoint_data: bool,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
             return 0;
@@ -536,16 +532,21 @@ impl PacketMover2 {
                     let Some(owner_shard) = self.shards.get_mut(shard) else {
                         continue;
                     };
-                    let got = owner_shard.retire_queued_completions_into(
+                    let Some(retire_worker) = self.retire_workers.get_mut(shard) else {
+                        continue;
+                    };
+                    let got = retire_worker.retire_queued_completions_into(
+                        owner_shard,
                         shard_limit.min(limit.saturating_sub(retired_count)),
                         retired,
                         &mut self.drops,
+                        compact_endpoint_data,
                     );
                     (
                         got,
                         LaneLens::from_tuple(owner_shard.admission_ready_lens()),
                         LaneLens::from_tuple(owner_shard.outbound_admission_ready_lens()),
-                        owner_shard.has_queued_completions(),
+                        retire_worker.has_queued_completions(),
                     )
                 };
                 retired_count = retired_count.saturating_add(got);
@@ -570,9 +571,10 @@ impl PacketMover2 {
         limit: usize,
         prepared_work: &mut Vec<PreparedCryptoWork>,
         completion_work: &mut Vec<CryptoCompletion>,
-        retired: &mut Vec<RetiredPacket>,
+        retired: &mut Vec<RetiredOutputs>,
         drops: &mut Vec<PacketDrop>,
         executor: &mut E,
+        compact_endpoint_data: bool,
     ) -> usize
     where
         E: PacketMover2CryptoExecutor,
@@ -700,7 +702,7 @@ impl PacketMover2 {
                 crate::perf_profile::Stage::PacketMover2CompletionQueue,
             );
             self.queue_completion_batch(completion_work);
-            self.retire_queued_completions_into(limit, retired);
+            self.retire_queued_completions_into(limit, retired, compact_endpoint_data);
         }
 
         drops.append(&mut self.drops);

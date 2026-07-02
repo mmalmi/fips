@@ -656,9 +656,14 @@ impl PacketMover2LiveNode {
         let _turn_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
         self.crypto_worker.record_perf_depths();
+        let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
         let summary = self
             .driver
-            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
+            .start_aead_completion_turn(
+                &mut self.crypto_worker,
+                crypto_limit,
+                compact_endpoint_data,
+            );
         let turn = self.driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,
@@ -699,9 +704,14 @@ impl PacketMover2LiveNode {
         let _turn_timer =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
         self.crypto_worker.record_perf_depths();
+        let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
         let summary = self
             .driver
-            .start_aead_completion_turn(&mut self.crypto_worker, crypto_limit);
+            .start_aead_completion_turn(
+                &mut self.crypto_worker,
+                crypto_limit,
+                compact_endpoint_data,
+            );
         if !summary.has_activity() {
             return PacketMover2LiveNodeTurn::default();
         }

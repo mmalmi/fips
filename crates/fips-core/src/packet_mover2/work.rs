@@ -279,6 +279,78 @@ pub(crate) enum RetiredPacket {
     Drop(PacketDrop),
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RetiredOutputs {
+    items: Vec<RetiredOutput>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum RetiredOutput {
+    Packet(RetiredPacket),
+    FspEndpointDataIngress(PacketMover2FspEndpointDataIngress),
+}
+
+impl RetiredOutputs {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            items: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub(crate) fn into_items(self) -> Vec<RetiredOutput> {
+        self.items
+    }
+
+    pub(crate) fn push_output(&mut self, output: PacketOutput) {
+        self.push_packet(RetiredPacket::Output(output));
+    }
+
+    pub(crate) fn push_outbound(&mut self, packet: OutboundPacket) {
+        self.push_packet(RetiredPacket::Outbound(packet));
+    }
+
+    pub(crate) fn push_drop(&mut self, drop: PacketDrop) {
+        self.push_packet(RetiredPacket::Drop(drop));
+    }
+
+    pub(crate) fn push_fsp_endpoint_data_ingress(
+        &mut self,
+        ingress: PacketMover2FspEndpointDataIngress,
+    ) {
+        self.items.push(RetiredOutput::FspEndpointDataIngress(ingress));
+    }
+
+    pub(crate) fn append_drops_to(&self, drops: &mut Vec<PacketDrop>) {
+        for item in &self.items {
+            if let RetiredOutput::Packet(RetiredPacket::Drop(drop)) = item {
+                drops.push(drop.clone());
+            }
+        }
+    }
+
+    pub(crate) fn append_missing_drops_to(
+        &self,
+        drops: &mut Vec<PacketDrop>,
+        emitted_start: usize,
+    ) {
+        for item in &self.items {
+            if let RetiredOutput::Packet(RetiredPacket::Drop(drop)) = item
+                && !drops[emitted_start..].iter().any(|emitted| emitted == drop)
+            {
+                drops.push(drop.clone());
+            }
+        }
+    }
+
+    fn push_packet(&mut self, packet: RetiredPacket) {
+        self.items.push(RetiredOutput::Packet(packet));
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketDropReason {
     Admission(AdmissionDropReason),

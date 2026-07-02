@@ -38,6 +38,21 @@
         }
     }
 
+    fn flatten_retired_outputs(batches: Vec<RetiredOutputs>) -> Vec<RetiredPacket> {
+        let mut retired = Vec::new();
+        for batch in batches {
+            for item in batch.into_items() {
+                match item {
+                    RetiredOutput::Packet(packet) => retired.push(packet),
+                    RetiredOutput::FspEndpointDataIngress(_) => {
+                        panic!("test helper did not request compact endpoint data")
+                    }
+                }
+            }
+        }
+        retired
+    }
+
     #[derive(Debug, Default)]
     struct InlinePacketMover2CryptoExecutor;
 
@@ -121,6 +136,7 @@
             &mut retired,
             &mut drops,
             &mut executor,
+            false,
         );
         debug_assert!(prepared_work.is_empty());
         debug_assert!(completion_work.is_empty());
@@ -253,11 +269,12 @@
             &mut retired,
             &mut drops,
             &mut executor,
+            false,
         );
 
         PacketMoverTurn {
             dispatched,
-            retired,
+            retired: flatten_retired_outputs(retired),
             drops,
         }
     }
@@ -280,10 +297,11 @@
         driver
             .mover
             .queue_completion_batch(&mut driver.completion_work);
-        driver.retire_queued_completed_aead_outputs(queued);
+        driver.retire_queued_completed_aead_outputs(queued, false);
         let summary = driver.collect_retired_outputs(summary);
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
+        let summary =
+            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
 
         PacketMover2RuntimeTurn {
             summary,
@@ -421,7 +439,7 @@
         driver
             .mover
             .queue_completion_batch(&mut driver.completion_work);
-        driver.retire_queued_completed_aead_outputs(completion_limit);
+        driver.retire_queued_completed_aead_outputs(completion_limit, false);
         summary = driver.collect_retired_outputs(summary);
 
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
@@ -431,7 +449,8 @@
             driver.admit_outbound_packet(packet, &mut summary);
         });
 
-        summary = driver.collect_aead_outputs_with_executor(summary, crypto_limit, &mut executor);
+        summary =
+            driver.collect_aead_outputs_with_executor(summary, crypto_limit, &mut executor, false);
         driver.send_collected_outputs(summary, sink)
     }
 
@@ -502,7 +521,11 @@
     {
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary = driver.start_aead_completion_turn(completions, completion_limit);
+        let summary = driver.start_aead_completion_turn(
+            completions,
+            completion_limit,
+            endpoint_tx.direct_sink().is_some(),
+        );
         driver
             .pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts(
                 summary,
@@ -533,7 +556,8 @@
         limit: usize,
     ) -> PacketMover2RuntimeTurn<'_> {
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
+        let summary =
+            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
         PacketMover2RuntimeTurn {
             summary,
             raw_ingress_drops: &driver.raw_ingress_drops,
@@ -553,7 +577,8 @@
         S: PacketMover2OutputSink,
     {
         let mut executor = InlinePacketMover2CryptoExecutor::default();
-        let summary = driver.collect_aead_outputs_with_executor(summary, limit, &mut executor);
+        let summary =
+            driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
         driver.send_collected_outputs(summary, sink)
     }
 
@@ -874,8 +899,8 @@
     ) -> Vec<RetiredPacket> {
         let mut retired = Vec::new();
         mover.queue_completion(completion);
-        mover.retire_queued_completions_into(1, &mut retired);
-        retired
+        mover.retire_queued_completions_into(1, &mut retired, false);
+        flatten_retired_outputs(retired)
     }
 
     fn empty_fsp_coords_prefix() -> Vec<u8> {
