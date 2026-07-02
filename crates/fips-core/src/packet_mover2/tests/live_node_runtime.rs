@@ -197,6 +197,104 @@
     }
 
     #[tokio::test]
+    async fn live_bulk_prefetch_turn_drains_tail_completion_backlog() {
+        let owner = fmp_owner(181);
+        let key = 181;
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+        live_node.register_owner(owner, OwnerConfig::new(1, 8));
+        live_node
+            .driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        for (counter, payload) in [(10, b"first".as_slice()), (11, b"second".as_slice())] {
+            live_node
+                .driver
+                .mover
+                .submit_socket_packet(
+                    fmp_socket_packet(
+                        owner,
+                        1,
+                        OutputTarget::Tun,
+                        fmp_encrypted_wire(test_receiver_idx(owner), counter, 0, payload, key),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::new());
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(1);
+        let feed = live_node
+            .pump_turn_with_firsts_and_transport_worker(
+                None,
+                &mut raw_source,
+                0,
+                PacketMover2LiveOutboundFirsts::default(),
+                &mut endpoint_data_rx,
+                0,
+                &mut tun_outbound_rx,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                &transports,
+                2,
+                &mut transport_worker,
+            )
+            .await;
+        assert_eq!(feed.summary().dispatched(), 2);
+        assert_eq!(feed.summary().completions(), 0);
+        assert_eq!(feed.summary().outputs_sent(), 0);
+        wait_for_live_worker_completion(&live_node).await;
+
+        let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
+        let tail = live_node
+            .pump_packet_rx_turn_with_firsts_and_transport_worker(
+                &mut packet_rx,
+                PacketMover2LiveTurnFirsts {
+                    raw_ingress_prefetch: true,
+                    ..Default::default()
+                },
+                1,
+                &mut endpoint_data_rx,
+                0,
+                &mut tun_outbound_rx,
+                0,
+                &tun_tx,
+                &endpoint_io.event_tx,
+                &transports,
+                1,
+                &mut transport_worker,
+            )
+            .await;
+
+        assert_eq!(tail.summary().completions(), 2);
+        assert_eq!(tail.summary().outputs_sent(), 2);
+        assert_eq!(tun_rx.try_recv().unwrap(), b"first".to_vec());
+        assert_eq!(tun_rx.try_recv().unwrap(), b"second".to_vec());
+        assert!(tun_rx.try_recv().is_err());
+
+        let leftover = live_node
+            .pump_completion_output_turn_with_transport_worker(
+                &tun_tx,
+                &endpoint_io.event_tx,
+                &transports,
+                1,
+                &mut transport_worker,
+            )
+            .await;
+        assert!(!leftover.has_activity());
+    }
+
+    #[tokio::test]
     async fn live_completion_turn_sends_ready_output_and_dispatches_next_work() {
         let send_transport_id = TransportId::new(176);
         let recv_transport_id = TransportId::new(177);

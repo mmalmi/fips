@@ -723,6 +723,35 @@ impl PacketMover2LiveNode {
     }
 
     #[allow(clippy::too_many_arguments)]
+    async fn drain_bulk_tail_completion_turn<Transports>(
+        &mut self,
+        turn: &mut PacketMover2LiveNodeTurn,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) where
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
+        if !packet_mover2_bulk_tail_completion_sweep_ready(turn, crypto_limit) {
+            return;
+        }
+        let tail = self
+            .pump_completion_output_turn_with_transport_worker(
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                transport_send_worker,
+            )
+            .await;
+        if tail.has_activity() {
+            turn.absorb(tail);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn pump_packet_rx_turn_with_firsts_and_transport_worker<Transports>(
         &mut self,
         packet_rx: &mut PacketRx,
@@ -777,7 +806,17 @@ impl PacketMover2LiveNode {
                     transport_send_worker,
                 )
                 .await;
-            turn.fmp_control_ingress = raw_ingress.take_control_ingress();
+            self.drain_bulk_tail_completion_turn(
+                &mut turn,
+                tun_tx,
+                endpoint_tx,
+                transports,
+                crypto_limit,
+                transport_send_worker,
+            )
+            .await;
+            turn.fmp_control_ingress
+                .append(&mut raw_ingress.take_control_ingress());
             self.empty_raw_ingress = prefetched;
             return turn;
         }
@@ -808,6 +847,17 @@ fn packet_mover2_aead_worker_count() -> usize {
         .map(|count| count.get())
         .unwrap_or(1)
         .max(1)
+}
+
+fn packet_mover2_bulk_tail_completion_sweep_ready(
+    turn: &PacketMover2LiveNodeTurn,
+    crypto_limit: usize,
+) -> bool {
+    if crypto_limit == 0 {
+        return false;
+    }
+    let summary = turn.summary();
+    summary.dispatched() > 0 || summary.completions() >= crypto_limit
 }
 
 fn record_packet_mover2_live_turn_perf(turn: &PacketMover2LiveNodeTurn) {
