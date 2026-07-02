@@ -269,15 +269,18 @@ impl FipsEndpointDirectPacketRun {
                 packet_bytes,
             } => {
                 let bytes = buffer.as_slice();
-                let mut retained = Vec::with_capacity(ranges.len());
+                let mut index = 0usize;
                 let mut retained_bytes = 0usize;
-                for (index, range) in ranges.iter().cloned().enumerate() {
-                    if keep(index, &bytes[range.clone()]) {
+                ranges.retain(|range| {
+                    let current_index = index;
+                    index = index.saturating_add(1);
+                    if keep(current_index, &bytes[range.clone()]) {
                         retained_bytes = retained_bytes.saturating_add(range.len());
-                        retained.push(range);
+                        true
+                    } else {
+                        false
                     }
-                }
-                *ranges = retained;
+                });
                 *packet_bytes = retained_bytes;
             }
         }
