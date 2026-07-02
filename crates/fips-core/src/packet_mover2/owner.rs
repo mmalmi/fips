@@ -1810,10 +1810,79 @@ impl OwnerState {
         retired: &mut RetiredOutputs,
         compact_endpoint_data: bool,
     ) {
+        let batch = if compact_endpoint_data {
+            match self.retire_ready_open_fsp_endpoint_data_run_into(batch, retired) {
+                Ok(()) => return,
+                Err(batch) => batch,
+            }
+        } else {
+            batch
+        };
+
         for completion in batch.into_completions() {
             debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
             self.retire_ready_completion_into(completion, retired, compact_endpoint_data);
         }
+    }
+
+    fn retire_ready_open_fsp_endpoint_data_run_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut RetiredOutputs,
+    ) -> Result<(), CryptoCompletionBatch> {
+        if !batch.is_open_fsp_session_payload_run() {
+            return Err(batch);
+        }
+
+        let mut endpoint_data_bulk = None;
+        let mut endpoint_packets = 0usize;
+        for completion in batch.into_completions() {
+            debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
+            self.next_retire = self.next_retire.wrapping_add(1);
+            self.in_flight = self.in_flight.saturating_sub(1);
+            if completion.reservation.lane == Lane::Bulk {
+                self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
+            }
+
+            if completion.reservation.generation != self.generation {
+                flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+                retired.push_drop(PacketDrop::from_completion(
+                    &completion,
+                    PacketDropReason::StaleCompletionGeneration,
+                    None,
+                ));
+                continue;
+            }
+
+            let CryptoResult::Opened(output) = completion.result else {
+                unreachable!("open FSP session payload run contains only opened outputs");
+            };
+            self.authenticated_counter_highest = self
+                .authenticated_counter_highest
+                .max(completion.reservation.counter);
+            match PacketMover2FspEndpointDataIngress::from_output(output) {
+                Ok(ingress) => {
+                    self.record_retired_endpoint_data_ingress(&ingress);
+                    endpoint_packets = endpoint_packets.saturating_add(ingress.len());
+                    match &mut endpoint_data_bulk {
+                        Some(bulk) => bulk.push(ingress),
+                        None => {
+                            endpoint_data_bulk =
+                                Some(PacketMover2EndpointDataBulk::from_ingress(ingress));
+                        }
+                    }
+                }
+                Err(output) => {
+                    flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+                    retired.push_output(output);
+                }
+            }
+        }
+        flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+        crate::perf_profile::record_packet_mover2_established_fsp_data_retire_run(
+            endpoint_packets,
+        );
+        Ok(())
     }
 
     fn retire_ready_completion_into(
@@ -1907,6 +1976,15 @@ fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) {
     match slot {
         Some(current) if *current >= tick => {}
         _ => *slot = Some(tick),
+    }
+}
+
+fn flush_retired_endpoint_data_bulk(
+    retired: &mut RetiredOutputs,
+    endpoint_data_bulk: &mut Option<PacketMover2EndpointDataBulk>,
+) {
+    if let Some(bulk) = endpoint_data_bulk.take() {
+        retired.push_endpoint_data_bulk_batch(bulk);
     }
 }
 

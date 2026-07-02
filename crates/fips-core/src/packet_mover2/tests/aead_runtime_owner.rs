@@ -1951,11 +1951,14 @@
         let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
         assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
+        assert_eq!(summary.completions(), 2);
+        assert_eq!(summary.outputs(), 0);
         assert_eq!(driver.endpoint_data_bulk.len(), 1);
         assert_eq!(driver.endpoint_data_bulk[0].len(), 5);
         assert_eq!(driver.endpoint_data_bulk[0].commit_runs().len(), 1);
         assert_eq!(driver.endpoint_data_bulk[0].commit_runs()[0].len(), 5);
         assert_eq!(driver.endpoint_data_bulk[0].direct_packet_run_count(), 1);
+        assert!(driver.outputs.is_empty());
 
         let mut batches = std::mem::take(&mut driver.endpoint_data_bulk)
             .into_iter()

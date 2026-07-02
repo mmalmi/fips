@@ -143,6 +143,19 @@ impl CryptoCompletionBatch {
         self.source
     }
 
+    pub(crate) fn is_open_fsp_session_payload_run(&self) -> bool {
+        !self.completions.is_empty()
+            && self.source == CryptoCompletionSource::Open
+            && self.owner.protocol() == PacketProtocol::Fsp
+            && self.completions.iter().all(|completion| {
+                matches!(
+                    &completion.result,
+                    CryptoResult::Opened(output)
+                        if matches!(output.target(), OutputTarget::SessionPayload { .. })
+                )
+            })
+    }
+
     pub(crate) fn split_off(&mut self, at: usize) -> Self {
         Self {
             owner_shard: self.owner_shard,
@@ -387,6 +400,13 @@ impl RetiredOutputs {
             _ => self.items.push(RetiredOutput::EndpointDataBulk(
                 PacketMover2EndpointDataBulk::from_ingress(ingress),
             )),
+        }
+    }
+
+    pub(crate) fn push_endpoint_data_bulk_batch(&mut self, bulk: PacketMover2EndpointDataBulk) {
+        match self.items.last_mut() {
+            Some(RetiredOutput::EndpointDataBulk(last)) => last.extend(bulk),
+            _ => self.items.push(RetiredOutput::EndpointDataBulk(bulk)),
         }
     }
 

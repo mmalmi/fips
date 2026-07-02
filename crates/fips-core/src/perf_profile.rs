@@ -32,7 +32,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 69;
-const N_EVENTS: usize = 243;
+const N_EVENTS: usize = 245;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -507,6 +507,8 @@ pub enum Event {
     PacketMover2AeadSealQueueDepth = 240,
     PacketMover2FastIngressOwnerRuns = 241,
     PacketMover2FastIngressOwnerRunPackets = 242,
+    PacketMover2EstablishedFspDataRetireRuns = 243,
+    PacketMover2EstablishedFspDataRetirePackets = 244,
 }
 
 impl Event {
@@ -775,6 +777,12 @@ impl Event {
             Event::PacketMover2FastIngressOwnerRunPackets => {
                 "packet_mover2_fast_ingress_owner_run_packets"
             }
+            Event::PacketMover2EstablishedFspDataRetireRuns => {
+                "packet_mover2_established_fsp_data_retire_runs"
+            }
+            Event::PacketMover2EstablishedFspDataRetirePackets => {
+                "packet_mover2_established_fsp_data_retire_packets"
+            }
         }
     }
 }
@@ -1024,6 +1032,8 @@ fn event_from_index(idx: usize) -> Event {
         240 => Event::PacketMover2AeadSealQueueDepth,
         241 => Event::PacketMover2FastIngressOwnerRuns,
         242 => Event::PacketMover2FastIngressOwnerRunPackets,
+        243 => Event::PacketMover2EstablishedFspDataRetireRuns,
+        244 => Event::PacketMover2EstablishedFspDataRetirePackets,
         _ => unreachable!(),
     }
 }
@@ -1292,6 +1302,18 @@ pub(crate) fn record_packet_mover2_fast_ingress_owner_run(packets: usize) {
     record_event_count_sample(Event::PacketMover2FastIngressOwnerRuns, 1);
     record_event_count_sample(
         Event::PacketMover2FastIngressOwnerRunPackets,
+        packets as u64,
+    );
+}
+
+#[inline]
+pub(crate) fn record_packet_mover2_established_fsp_data_retire_run(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::PacketMover2EstablishedFspDataRetireRuns, 1);
+    record_event_count_sample(
+        Event::PacketMover2EstablishedFspDataRetirePackets,
         packets as u64,
     );
 }

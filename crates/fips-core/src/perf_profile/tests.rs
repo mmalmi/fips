@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_current_pm2_and_queue_events() {
-    assert_eq!(N_EVENTS, 241);
+    assert_eq!(N_EVENTS, 245);
     assert!(
-        (Event::PacketMover2AeadSealQueueDepth as usize) < N_EVENTS,
+        (Event::PacketMover2EstablishedFspDataRetirePackets as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
 
@@ -281,6 +281,22 @@ fn event_table_exposes_current_pm2_and_queue_events() {
         (
             Event::PacketMover2AeadSealQueueDepth,
             "packet_mover2_aead_seal_queue_depth",
+        ),
+        (
+            Event::PacketMover2FastIngressOwnerRuns,
+            "packet_mover2_fast_ingress_owner_runs",
+        ),
+        (
+            Event::PacketMover2FastIngressOwnerRunPackets,
+            "packet_mover2_fast_ingress_owner_run_packets",
+        ),
+        (
+            Event::PacketMover2EstablishedFspDataRetireRuns,
+            "packet_mover2_established_fsp_data_retire_runs",
+        ),
+        (
+            Event::PacketMover2EstablishedFspDataRetirePackets,
+            "packet_mover2_established_fsp_data_retire_packets",
         ),
     ];
     for (event, name) in live_events {
