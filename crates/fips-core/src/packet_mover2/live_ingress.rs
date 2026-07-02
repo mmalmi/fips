@@ -170,6 +170,10 @@ impl FmpIngressRouteKey {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PacketMover2EstablishedFastIngressSnapshot {
     fmp: Arc<RwLock<Arc<HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>>>>,
+    fsp: Arc<RwLock<Arc<HashMap<NodeAddr, PacketMover2IngressRoute>>>>,
+    direct_fsp: Arc<
+        RwLock<Arc<HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>>>,
+    >,
 }
 
 impl PacketMover2EstablishedFastIngressSnapshot {
@@ -184,14 +188,50 @@ impl PacketMover2EstablishedFastIngressSnapshot {
         });
     }
 
+    fn register_fsp(&self, source_addr: NodeAddr, route: PacketMover2IngressRoute) {
+        self.update_fsp(|routes| {
+            routes.insert(source_addr, route);
+        });
+    }
+
+    fn set_direct_fsp_sources<DirectSources>(&self, sources: DirectSources)
+    where
+        DirectSources:
+            Into<Arc<HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>>>,
+    {
+        *self
+            .direct_fsp
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sources.into();
+    }
+
     fn unregister_owner(&self, owner: OwnerId) {
         self.update_fmp(|routes| {
+            routes.retain(|_, route| route.owner != owner);
+        });
+        self.update_fsp(|routes| {
             routes.retain(|_, route| route.owner != owner);
         });
     }
 
     fn fmp_routes(&self) -> Arc<HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>> {
         self.fmp
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn fsp_routes(&self) -> Arc<HashMap<NodeAddr, PacketMover2IngressRoute>> {
+        self.fsp
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn direct_fsp_sources(
+        &self,
+    ) -> Arc<HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>> {
+        self.direct_fsp
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -207,12 +247,32 @@ impl PacketMover2EstablishedFastIngressSnapshot {
             .copied()
     }
 
+    fn lookup_fsp_in(
+        routes: &HashMap<NodeAddr, PacketMover2IngressRoute>,
+        source_addr: NodeAddr,
+    ) -> Option<PacketMover2IngressRoute> {
+        routes.get(&source_addr).copied()
+    }
+
     fn update_fmp<F>(&self, update: F)
     where
         F: FnOnce(&mut HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>),
     {
         let mut guard = self
             .fmp
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut routes = (**guard).clone();
+        update(&mut routes);
+        *guard = Arc::new(routes);
+    }
+
+    fn update_fsp<F>(&self, update: F)
+    where
+        F: FnOnce(&mut HashMap<NodeAddr, PacketMover2IngressRoute>),
+    {
+        let mut guard = self
+            .fsp
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut routes = (**guard).clone();
@@ -378,39 +438,7 @@ impl PacketMover2EstablishedFastIngressSink {
         )
     }
 
-    fn coalesce_direct_fsp_fragments(
-        &self,
-        packets: Vec<ReceivedPacket>,
-    ) -> Vec<ReceivedPacket> {
-        if !packets.iter().any(|packet| {
-            packet_mover2_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice())
-        }) {
-            return packets;
-        }
-
-        let mut reassembler = self
-            .direct_fsp_reassembler
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut coalesced = Vec::with_capacity(packets.len());
-        for packet in packets {
-            if !packet_mover2_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) {
-                coalesced.push(packet);
-                continue;
-            }
-            match reassembler.ingest(packet) {
-                PacketMover2DirectFspReassemblyResult::NotFragment(packet)
-                | PacketMover2DirectFspReassemblyResult::Complete(packet) => {
-                    coalesced.push(packet);
-                }
-                PacketMover2DirectFspReassemblyResult::Pending
-                | PacketMover2DirectFspReassemblyResult::Dropped => {}
-            }
-        }
-        coalesced
-    }
-
-    fn socket_packet_from_received(
+    fn fmp_socket_packet_from_received(
         routes: &HashMap<FmpIngressRouteKey, PacketMover2IngressRoute>,
         packet: ReceivedPacket,
     ) -> Result<SocketPacket, ReceivedPacket> {
@@ -442,47 +470,146 @@ impl PacketMover2EstablishedFastIngressSink {
         socket_packet = socket_packet.with_path_mtu(u16::MAX);
         Ok(socket_packet)
     }
+
+    fn direct_fsp_socket_packet_from_received(
+        direct_sources: &HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>,
+        fsp_routes: &HashMap<NodeAddr, PacketMover2IngressRoute>,
+        packet: ReceivedPacket,
+    ) -> PacketMover2FastIngressDirectFspResult {
+        let Some(source) = direct_sources
+            .get(&(packet.transport_id, packet.remote_addr.clone()))
+            .copied()
+        else {
+            return PacketMover2FastIngressDirectFspResult::Miss(packet);
+        };
+        Self::direct_fsp_socket_packet_from_whole(source, fsp_routes, packet)
+    }
+
+    fn direct_fsp_socket_packet_from_whole(
+        source: PacketMover2DirectFspSource,
+        fsp_routes: &HashMap<NodeAddr, PacketMover2IngressRoute>,
+        packet: ReceivedPacket,
+    ) -> PacketMover2FastIngressDirectFspResult {
+        let Ok(header) = FspWireHeader::parse(&packet.data) else {
+            return PacketMover2FastIngressDirectFspResult::Miss(packet);
+        };
+        if header.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT == 0 {
+            return PacketMover2FastIngressDirectFspResult::Miss(packet);
+        }
+        let Some(route) = PacketMover2EstablishedFastIngressSnapshot::lookup_fsp_in(
+            fsp_routes,
+            source.source_addr,
+        ) else {
+            return PacketMover2FastIngressDirectFspResult::Miss(packet);
+        };
+
+        let source_path = TransportPath::live(packet.transport_id, packet.remote_addr.clone());
+        let activity_tick = ActivityTick::new(packet.timestamp_ms);
+        let socket_packet = SocketPacket::new(
+            route.owner,
+            route.generation,
+            header.counter(),
+            route.class,
+            route.output,
+            packet.data,
+        )
+        .with_source_path(source_path)
+        .with_previous_hop(source.source_addr)
+        .with_path_mtu(source.path_mtu)
+        .with_activity_tick(activity_tick)
+        .with_wire_flags(header.flags());
+        PacketMover2FastIngressDirectFspResult::Fast(socket_packet)
+    }
+
+    fn direct_fsp_socket_packet(
+        &self,
+        direct_sources: &HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>,
+        fsp_routes: &HashMap<NodeAddr, PacketMover2IngressRoute>,
+        packet: ReceivedPacket,
+    ) -> PacketMover2FastIngressDirectFspResult {
+        if !packet_mover2_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) {
+            return Self::direct_fsp_socket_packet_from_received(direct_sources, fsp_routes, packet);
+        }
+        let Some(source) = direct_sources
+            .get(&(packet.transport_id, packet.remote_addr.clone()))
+            .copied()
+        else {
+            return PacketMover2FastIngressDirectFspResult::Miss(packet);
+        };
+        if !fsp_routes.contains_key(&source.source_addr) {
+            return PacketMover2FastIngressDirectFspResult::Miss(packet);
+        }
+        if packet.data.len() > source.path_mtu as usize {
+            return PacketMover2FastIngressDirectFspResult::Consumed;
+        }
+
+        let mut reassembler = self
+            .direct_fsp_reassembler
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match reassembler.ingest(packet) {
+            PacketMover2DirectFspReassemblyResult::NotFragment(packet) => {
+                Self::direct_fsp_socket_packet_from_whole(source, fsp_routes, packet)
+            }
+            PacketMover2DirectFspReassemblyResult::Pending
+            | PacketMover2DirectFspReassemblyResult::Dropped => {
+                PacketMover2FastIngressDirectFspResult::Consumed
+            }
+            PacketMover2DirectFspReassemblyResult::Complete(packet) => {
+                Self::direct_fsp_socket_packet_from_whole(source, fsp_routes, packet)
+            }
+        }
+    }
+}
+
+enum PacketMover2FastIngressDirectFspResult {
+    Fast(SocketPacket),
+    Consumed,
+    Miss(ReceivedPacket),
 }
 
 impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
     fn try_ingest_batch(&self, packets: &mut Vec<ReceivedPacket>) -> usize {
-        if packets.is_empty() {
+        if packets.is_empty() || self.tx.is_closed() {
             return 0;
         }
 
-        let remaining = self.coalesce_direct_fsp_fragments(std::mem::take(packets));
-        if remaining.is_empty() || self.tx.is_closed() {
-            *packets = remaining;
-            return 0;
-        }
-
-        let mut reservation = match self.queue.reserve_prefix(remaining.len()) {
+        let mut reservation = match self.queue.reserve_prefix(packets.len()) {
             Some(reservation) => reservation,
-            None => {
-                *packets = remaining;
-                return 0;
-            }
+            None => return 0,
         };
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
             Err(_) => {
                 reservation.release();
-                *packets = remaining;
                 return 0;
             }
         };
         let routes = self.routes.fmp_routes();
-        let mut misses = Vec::with_capacity(remaining.len());
-        let mut fast_packets = Vec::with_capacity(reservation.len().min(remaining.len()));
+        let fsp_routes = self.routes.fsp_routes();
+        let direct_sources = self.routes.direct_fsp_sources();
+        let mut misses = Vec::with_capacity(packets.len());
+        let mut fast_packets = Vec::with_capacity(reservation.len().min(packets.len()));
+        let mut direct_consumed = 0usize;
         let fast_limit = reservation.len();
-        for packet in remaining {
+        for packet in std::mem::take(packets) {
             if fast_packets.len() >= fast_limit {
                 misses.push(packet);
                 continue;
             }
-            match Self::socket_packet_from_received(&routes, packet) {
-                Ok(packet) => fast_packets.push(packet),
-                Err(packet) => misses.push(packet),
+            match self.direct_fsp_socket_packet(&direct_sources, &fsp_routes, packet) {
+                PacketMover2FastIngressDirectFspResult::Fast(packet) => {
+                    fast_packets.push(packet);
+                }
+                PacketMover2FastIngressDirectFspResult::Consumed => {
+                    direct_consumed = direct_consumed.saturating_add(1);
+                }
+                PacketMover2FastIngressDirectFspResult::Miss(packet) => {
+                    match Self::fmp_socket_packet_from_received(&routes, packet) {
+                        Ok(packet) => fast_packets.push(packet),
+                        Err(packet) => misses.push(packet),
+                    }
+                }
             }
         }
         *packets = misses;
@@ -491,13 +618,13 @@ impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
         reservation.truncate(accepted);
         if accepted == 0 {
             reservation.release();
-            return 0;
+            return direct_consumed;
         }
         permit.send(PacketMover2FastIngressBatch::new(
             fast_packets,
             reservation,
         ));
-        accepted
+        direct_consumed.saturating_add(accepted)
     }
 }
 
@@ -535,6 +662,19 @@ impl PacketMover2LiveRouteTable {
         route: PacketMover2IngressRoute,
     ) {
         self.fsp.insert(source_addr, route);
+        self.established_fast_ingress
+            .register_fsp(source_addr, route);
+    }
+
+    pub(crate) fn set_established_fast_ingress_direct_fsp_sources<DirectSources>(
+        &self,
+        sources: DirectSources,
+    ) where
+        DirectSources:
+            Into<Arc<HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>>>,
+    {
+        self.established_fast_ingress
+            .set_direct_fsp_sources(sources);
     }
 
     pub(crate) fn register_tun_destination(
@@ -567,7 +707,6 @@ impl PacketMover2LiveRouteTable {
             self.fmp.len() + self.fsp.len() + self.tun_outbound.len() + self.endpoint.len();
         before.saturating_sub(after)
     }
-
 }
 
 impl PacketMover2IngressRouter for PacketMover2LiveRouteTable {
@@ -671,6 +810,18 @@ impl PacketMover2FspSourceClassifier for PacketMover2NoDirectFspSources {
 
 impl PacketMover2FspSourceClassifier
     for std::collections::HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>
+{
+    fn direct_fsp_source(
+        &mut self,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<PacketMover2DirectFspSource> {
+        self.get(&(transport_id, remote_addr.clone())).copied()
+    }
+}
+
+impl PacketMover2FspSourceClassifier
+    for Arc<HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>>
 {
     fn direct_fsp_source(
         &mut self,
