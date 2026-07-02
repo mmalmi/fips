@@ -93,6 +93,9 @@ pub const FSP_FLAG_K: u8 = 0x02;
 /// Unencrypted — payload is plaintext (error signals).
 pub const FSP_FLAG_U: u8 = 0x04;
 
+/// Direct Transport — encrypted FSP is carried directly on the transport.
+pub const FSP_FLAG_DIRECT_TRANSPORT: u8 = 0x08;
+
 // Inner flag bit constants (byte 5 of decrypted inner header).
 
 /// Spin bit for end-to-end RTT measurement (inside AEAD).

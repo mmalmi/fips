@@ -596,21 +596,76 @@ impl PacketMover2FmpControlIngress {
     }
 }
 
-/// Drains live transport packets from `PacketRx` as FMP link ingress.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2DirectFspSource {
+    pub(crate) source_addr: NodeAddr,
+    pub(crate) path_mtu: u16,
+}
+
+pub(crate) trait PacketMover2FspSourceClassifier {
+    fn direct_fsp_source(
+        &mut self,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<PacketMover2DirectFspSource>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PacketMover2NoDirectFspSources;
+
+impl PacketMover2FspSourceClassifier for PacketMover2NoDirectFspSources {
+    fn direct_fsp_source(
+        &mut self,
+        _transport_id: TransportId,
+        _remote_addr: &TransportAddr,
+    ) -> Option<PacketMover2DirectFspSource> {
+        None
+    }
+}
+
+impl PacketMover2FspSourceClassifier
+    for std::collections::HashMap<(TransportId, TransportAddr), PacketMover2DirectFspSource>
+{
+    fn direct_fsp_source(
+        &mut self,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<PacketMover2DirectFspSource> {
+        self.get(&(transport_id, remote_addr.clone())).copied()
+    }
+}
+
+/// Drains live transport packets from `PacketRx` as PM2 ingress.
 ///
-/// FSP ingress needs authenticated source context, so it must enter through a
-/// source that can attach `with_fsp_source`.
-pub(crate) struct PacketMover2FmpPacketRxSource<'a> {
+/// FSP direct transport ingress needs authenticated source context, so callers
+/// pass a current transport-address classifier. Unflagged established packets
+/// stay on the FMP path.
+pub(crate) struct PacketMover2FmpPacketRxSource<'a, C = PacketMover2NoDirectFspSources> {
     rx: &'a mut PacketRx,
     first: Option<ReceivedPacket>,
+    direct_fsp_sources: C,
     control_ingress: Vec<PacketMover2FmpControlIngress>,
 }
 
-impl<'a> PacketMover2FmpPacketRxSource<'a> {
+impl<'a> PacketMover2FmpPacketRxSource<'a, PacketMover2NoDirectFspSources> {
     pub(crate) fn with_first(rx: &'a mut PacketRx, first: Option<ReceivedPacket>) -> Self {
+        Self::with_first_and_direct_fsp_sources(rx, first, PacketMover2NoDirectFspSources)
+    }
+}
+
+impl<'a, C> PacketMover2FmpPacketRxSource<'a, C>
+where
+    C: PacketMover2FspSourceClassifier,
+{
+    pub(crate) fn with_first_and_direct_fsp_sources(
+        rx: &'a mut PacketRx,
+        first: Option<ReceivedPacket>,
+        direct_fsp_sources: C,
+    ) -> Self {
         Self {
             rx,
             first,
+            direct_fsp_sources,
             control_ingress: Vec::new(),
         }
     }
@@ -620,6 +675,7 @@ impl<'a> PacketMover2FmpPacketRxSource<'a> {
     }
 
     fn push_packet<F>(
+        direct_fsp_sources: &mut C,
         control_ingress: &mut Vec<PacketMover2FmpControlIngress>,
         packet: ReceivedPacket,
         push: &mut F,
@@ -631,6 +687,10 @@ impl<'a> PacketMover2FmpPacketRxSource<'a> {
             crate::perf_profile::Stage::TransportRxLoopOwnedWait,
             packet.trace_rx_loop_owned_at,
         );
+        if let Some(raw) = classify_direct_fsp_packet(direct_fsp_sources, &packet) {
+            push(raw);
+            return true;
+        }
         match classify_live_fmp_packet(&packet) {
             LiveFmpPacketClass::Established => {
                 push(PacketMover2RawIngress::from_live_received(
@@ -654,7 +714,10 @@ impl<'a> PacketMover2FmpPacketRxSource<'a> {
     }
 }
 
-impl PacketMover2RawIngressSource for PacketMover2FmpPacketRxSource<'_> {
+impl<C> PacketMover2RawIngressSource for PacketMover2FmpPacketRxSource<'_, C>
+where
+    C: PacketMover2FspSourceClassifier,
+{
     fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
     where
         F: FnMut(PacketMover2RawIngress),
@@ -663,23 +726,45 @@ impl PacketMover2RawIngressSource for PacketMover2FmpPacketRxSource<'_> {
         let Self {
             rx,
             first,
+            direct_fsp_sources,
             control_ingress,
         } = self;
 
         if drained < limit
             && let Some(packet) = first.take()
         {
-            let keep_draining = Self::push_packet(control_ingress, packet, &mut push);
+            let keep_draining =
+                Self::push_packet(direct_fsp_sources, control_ingress, packet, &mut push);
             drained += 1;
             if !keep_draining {
                 return drained;
             }
         }
         drained += rx.drain_ready(limit.saturating_sub(drained), |packet| {
-            Self::push_packet(control_ingress, packet, &mut push)
+            Self::push_packet(direct_fsp_sources, control_ingress, packet, &mut push)
         });
         drained
     }
+}
+
+fn classify_direct_fsp_packet<C>(
+    direct_fsp_sources: &mut C,
+    packet: &ReceivedPacket,
+) -> Option<PacketMover2RawIngress>
+where
+    C: PacketMover2FspSourceClassifier,
+{
+    let prefix = FspWireHeader::parse(&packet.data).ok()?;
+    if prefix.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT == 0 {
+        return None;
+    }
+    let source = direct_fsp_sources.direct_fsp_source(packet.transport_id, &packet.remote_addr)?;
+    Some(
+        PacketMover2RawIngress::from_live_received(PacketProtocol::Fsp, packet.clone())
+            .with_fsp_source(source.source_addr)
+            .with_previous_hop(source.source_addr)
+            .with_path_mtu(source.path_mtu),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

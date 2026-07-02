@@ -95,6 +95,52 @@
     }
 
     #[test]
+    fn packet_rx_source_classifies_flagged_direct_fsp_with_source_context() {
+        let source = NodeAddr::from_bytes([0x44; 16]);
+        let transport_id = TransportId::new(44);
+        let remote_addr = TransportAddr::from_string("198.51.100.44:9000");
+        let (_tx, mut rx) = crate::transport::packet_channel(1);
+        let mut direct_sources = std::collections::HashMap::new();
+        direct_sources.insert(
+            (transport_id, remote_addr.clone()),
+            PacketMover2DirectFspSource {
+                source_addr: source,
+                path_mtu: 1400,
+            },
+        );
+        let first = ReceivedPacket::with_timestamp(
+            transport_id,
+            remote_addr.clone(),
+            fsp_wire(
+                88,
+                crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+            ),
+            44_000,
+        );
+        let mut source_rx =
+            PacketMover2FmpPacketRxSource::with_first_and_direct_fsp_sources(
+                &mut rx,
+                Some(first),
+                direct_sources,
+            );
+        let mut packets = Vec::new();
+        assert_eq!(
+            source_rx.drain_raw_ingress(1, |packet| packets.push(packet)),
+            1
+        );
+        assert!(source_rx.take_control_ingress().is_empty());
+        assert_eq!(packets.len(), 1);
+        let packet = &packets[0];
+        assert_eq!(packet.protocol(), PacketProtocol::Fsp);
+        assert_eq!(packet.fsp_source(), Some(source));
+        assert_eq!(packet.previous_hop(), Some(source));
+        assert_eq!(packet.path_mtu(), 1400);
+        assert_eq!(packet.path().transport_id(), Some(transport_id));
+        assert_eq!(packet.path().remote_addr(), Some(&remote_addr));
+        assert_eq!(packet.activity_tick(), Some(ActivityTick::new(44_000)));
+    }
+
+    #[test]
     fn live_ingress_keeps_encrypted_fsp_bulk_before_decrypt() {
         let source = NodeAddr::from_bytes([0x43; 16]);
         let local = NodeAddr::from_bytes([0x44; 16]);

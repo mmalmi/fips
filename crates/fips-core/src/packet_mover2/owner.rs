@@ -924,6 +924,10 @@ impl OwnerState {
         self.active_path = Some(path);
     }
 
+    pub(crate) fn clear_active_path(&mut self) {
+        self.active_path = None;
+    }
+
     pub(crate) fn active_path(&self) -> Option<TransportPath> {
         self.active_path.clone()
     }
@@ -1207,6 +1211,7 @@ impl OwnerState {
         let fsp_timestamp_ms = self.reserve_fsp_timestamp(packet.activity_tick);
         self.refresh_fsp_outbound_headers(&mut packet);
         self.apply_fsp_wrap_route(&mut packet);
+        self.apply_fsp_direct_transport_flag(&mut packet);
         self.reserve_fsp_coords_warmup(&mut packet);
         let fsp_next_hop = packet.fsp_next_hop();
         let fsp_application_data_len = packet.fsp_application_data_len();
@@ -1697,6 +1702,19 @@ impl OwnerState {
             return;
         };
         packet.apply_fsp_owner_wrap_route(route);
+    }
+
+    fn apply_fsp_direct_transport_flag(&self, packet: &mut OutboundPacket) {
+        if self.owner.protocol() != PacketProtocol::Fsp
+            || self.fsp_wrap_route.is_some()
+            || self.active_path.is_none()
+        {
+            return;
+        }
+        let OutboundWire::Fsp { flags } = &mut packet.wire else {
+            return;
+        };
+        *flags |= crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT;
     }
 
     fn reserve_send_counter(&mut self) -> Result<u64, OwnerReserveError> {

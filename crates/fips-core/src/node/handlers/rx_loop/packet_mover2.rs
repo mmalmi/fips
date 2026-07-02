@@ -25,12 +25,14 @@ impl Node {
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
     ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
+        let direct_fsp_sources = self.packet_mover2_direct_fsp_sources();
         let turn = self
             .packet_mover2
-            .pump_packet_rx_turn_with_firsts_and_transport_worker(
+            .pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker(
                 packet_rx,
                 firsts,
                 packet_limit,
+                direct_fsp_sources,
                 endpoint_data_rx,
                 endpoint_limit,
                 tun_outbound_rx,

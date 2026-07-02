@@ -405,6 +405,69 @@
     }
 
     #[test]
+    fn direct_fsp_endpoint_data_seals_once_to_transport() {
+        let owner = fsp_owner(320);
+        let key = 32;
+        let path = live_path(3200);
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(90)
+                .with_fsp_session_start_ms(2_000),
+        );
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+        driver.owner_mut(owner).unwrap().set_active_path(path.clone());
+
+        let route = PacketMover2EndpointDataRoute::fsp(owner, 1, 0, 0);
+        let mut routed = route.route_batch(vec![
+            b"direct-one".to_vec(),
+            b"direct-two".to_vec(),
+        ]);
+        assert!(routed.dropped.is_empty());
+        assert_eq!(routed.routed.len(), 1);
+        let packet = routed
+            .routed
+            .pop()
+            .unwrap()
+            .with_activity_tick(ActivityTick::new(2_345));
+
+        let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet], 8);
+        assert_eq!(turn.summary().outbound_admitted(), 1);
+        assert_eq!(turn.summary().dispatched(), 1);
+        assert_eq!(turn.summary().outputs(), 1);
+        assert!(turn.drops().is_empty());
+
+        let output = &turn.outputs()[0];
+        assert_eq!(output.owner(), owner);
+        assert_eq!(output.counter(), 90);
+        assert_eq!(output.target(), OutputTarget::Transport);
+        assert_eq!(output.path(), Some(path));
+        assert!(output.fsp_send_receipt.is_none());
+
+        let header = FspWireHeader::parse(output.payload()).unwrap();
+        assert_eq!(header.counter(), 90);
+        assert_eq!(
+            header.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+            crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT
+        );
+        let plaintext = open_sealed_output(output, key);
+        let (_timestamp, msg_type, _inner_flags, body) =
+            crate::node::session_wire::fsp_strip_inner_header(&plaintext).unwrap();
+        assert_eq!(
+            msg_type,
+            crate::protocol::SessionMessageType::EndpointDataBulk.to_byte()
+        );
+        assert_eq!(
+            crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(body).unwrap(),
+            vec![10, 10]
+        );
+    }
+
+    #[test]
     fn aead_turn_runner_spends_remaining_budget_on_owner_routed_fsp_wrap() {
         let source = NodeAddr::from_bytes([0x31; 16]);
         let dest = NodeAddr::from_bytes([0x32; 16]);

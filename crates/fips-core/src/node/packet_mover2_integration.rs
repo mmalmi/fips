@@ -2,14 +2,15 @@ use super::endpoint_traffic::fmp_plaintext_is_bulk_session_datagram;
 use super::*;
 use crate::packet_mover2::{
     ActivityTick, OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass,
-    PacketMover2EndpointDataRoute, PacketMover2FspSendReceipt, PacketMover2FspWrapRoute,
-    PacketMover2IngressRoute, PacketMover2LiveEndpointRoute, PacketMover2LiveFmpIngressRoute,
-    PacketMover2LiveFspIngressRoute, PacketMover2LiveNodeTurn, PacketMover2LiveOutboundFirsts,
-    PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute, PacketMover2OutputDrop,
-    PacketMover2OutputError, PacketMover2TunDestinationRoute, PacketMover2TunOutboundRoute,
-    TransportPath,
+    PacketMover2DirectFspSource, PacketMover2EndpointDataRoute, PacketMover2FspSendReceipt,
+    PacketMover2FspWrapRoute, PacketMover2IngressRoute, PacketMover2LiveEndpointRoute,
+    PacketMover2LiveFmpIngressRoute, PacketMover2LiveFspIngressRoute, PacketMover2LiveNodeTurn,
+    PacketMover2LiveOutboundFirsts, PacketMover2LiveOwnerRoutes, PacketMover2LiveTunRoute,
+    PacketMover2OutputDrop, PacketMover2OutputError, PacketMover2TunDestinationRoute,
+    PacketMover2TunOutboundRoute, TransportPath,
 };
 use crate::protocol::SessionMessageType;
+use std::collections::HashMap;
 
 const PACKET_MOVER2_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
 const PACKET_MOVER2_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
@@ -28,6 +29,7 @@ struct PacketMover2FspOwnerSeed {
     keys: OwnerCryptoKeys,
     routes: PacketMover2LiveOwnerRoutes,
     wrap: Option<PacketMover2FspWrapRoute>,
+    path: Option<TransportPath>,
 }
 
 struct PacketMover2FspOwnerSessionSnapshot {
@@ -44,15 +46,17 @@ struct PacketMover2FspOwnerSessionSnapshot {
 struct PacketMover2FspOwnerRouteUpdate {
     routes: PacketMover2LiveOwnerRoutes,
     wrap: Option<PacketMover2FspWrapRoute>,
+    path: Option<TransportPath>,
+    next_hop: Option<NodeAddr>,
 }
 
 impl PacketMover2FspOwnerRouteUpdate {
     fn route_ready(&self) -> bool {
-        self.wrap.is_some()
+        self.wrap.is_some() || self.path.is_some()
     }
 
     fn next_hop(&self) -> Option<NodeAddr> {
-        self.wrap.map(PacketMover2FspWrapRoute::next_hop_addr)
+        self.next_hop
     }
 }
 
@@ -696,11 +700,12 @@ impl Node {
             send_context.inner_flags(),
         );
         let route_ready = update.route_ready();
-        let next_hop_ready = update
-            .next_hop()
-            .is_some_and(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
+        let next_hop_ready = update.path.is_some()
+            || update
+                .next_hop()
+                .is_some_and(|next_hop| self.packet_mover2_has_fmp_owner(&next_hop));
         self.packet_mover2
-            .replace_owner_fsp_routes(owner, update.routes, update.wrap)
+            .replace_owner_fsp_routes(owner, update.routes, update.wrap, update.path)
             .is_ok()
             && route_ready
             && next_hop_ready
@@ -834,6 +839,41 @@ impl Node {
         self.packet_mover2.has_owner(OwnerId::fsp_node(*node_addr))
     }
 
+    pub(in crate::node) fn packet_mover2_direct_fsp_sources(
+        &self,
+    ) -> HashMap<
+        (
+            crate::transport::TransportId,
+            crate::transport::TransportAddr,
+        ),
+        PacketMover2DirectFspSource,
+    > {
+        let mut sources = HashMap::new();
+        for (node_addr, peer) in &self.peers {
+            if !self.packet_mover2_has_fsp_owner(node_addr) {
+                continue;
+            }
+            let (Some(transport_id), Some(remote_addr)) =
+                (peer.transport_id(), peer.current_addr().cloned())
+            else {
+                continue;
+            };
+            let path_mtu = self
+                .transports
+                .get(&transport_id)
+                .map(|transport| transport.link_mtu(&remote_addr))
+                .unwrap_or_else(|| self.transport_mtu());
+            sources.insert(
+                (transport_id, remote_addr),
+                PacketMover2DirectFspSource {
+                    source_addr: *node_addr,
+                    path_mtu,
+                },
+            );
+        }
+        sources
+    }
+
     pub(in crate::node) fn sync_packet_mover2_fsp_owner_from_current_session(
         &mut self,
         node_addr: &NodeAddr,
@@ -890,6 +930,7 @@ impl Node {
                 seed.keys,
                 seed.routes,
                 seed.wrap,
+                seed.path,
             )
             .is_ok()
             && next_hop_ready;
@@ -1015,6 +1056,7 @@ impl Node {
             keys: OwnerCryptoKeys::new(Arc::new(snapshot.open), Arc::new(snapshot.seal)),
             routes: route_update.routes,
             wrap: route_update.wrap,
+            path: route_update.path,
         })
     }
 
@@ -1048,13 +1090,36 @@ impl Node {
         inner_flags: u8,
     ) -> PacketMover2FspOwnerRouteUpdate {
         let owner = OwnerId::fsp_node(*node_addr);
-        let Some(wrap) = self.packet_mover2_fsp_wrap_route(node_addr) else {
+        let Some(next_hop) = self.find_next_hop(node_addr).map(|peer| *peer.node_addr()) else {
             return PacketMover2FspOwnerRouteUpdate {
                 routes: PacketMover2LiveOwnerRoutes::new(),
                 wrap: None,
+                path: None,
+                next_hop: None,
             };
         };
-
+        let (wrap, path) = if next_hop == *node_addr {
+            match self.packet_mover2_direct_fsp_path(node_addr) {
+                Some(path) => (None, Some(path)),
+                None => (
+                    self.packet_mover2_fsp_wrap_route_to(node_addr, next_hop),
+                    None,
+                ),
+            }
+        } else {
+            (
+                self.packet_mover2_fsp_wrap_route_to(node_addr, next_hop),
+                None,
+            )
+        };
+        if wrap.is_none() && path.is_none() {
+            return PacketMover2FspOwnerRouteUpdate {
+                routes: PacketMover2LiveOwnerRoutes::new(),
+                wrap: None,
+                path: None,
+                next_hop: Some(next_hop),
+            };
+        };
         let mut routes = PacketMover2LiveOwnerRoutes::new();
         routes.push_fsp_ingress(PacketMover2LiveFspIngressRoute::new(
             *node_addr,
@@ -1086,18 +1151,24 @@ impl Node {
 
         PacketMover2FspOwnerRouteUpdate {
             routes,
-            wrap: Some(wrap),
+            wrap,
+            path,
+            next_hop: Some(next_hop),
         }
     }
 
-    fn packet_mover2_fsp_wrap_route(
+    fn packet_mover2_direct_fsp_path(&self, dest_addr: &NodeAddr) -> Option<TransportPath> {
+        let peer = self.peers.get(dest_addr)?;
+        let transport_id = peer.transport_id()?;
+        let remote_addr = peer.current_addr()?.clone();
+        Some(TransportPath::live(transport_id, remote_addr))
+    }
+
+    fn packet_mover2_fsp_wrap_route_to(
         &mut self,
         dest_addr: &NodeAddr,
+        next_hop: NodeAddr,
     ) -> Option<PacketMover2FspWrapRoute> {
-        let next_hop = {
-            let peer = self.find_next_hop(dest_addr)?;
-            *peer.node_addr()
-        };
         let send_context = self.packet_mover2.fmp_owner_send_context(&next_hop)?;
         let active_path = self
             .packet_mover2

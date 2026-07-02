@@ -231,6 +231,7 @@ impl PacketMover2LiveNode {
         keys: OwnerCryptoKeys,
         routes: PacketMover2LiveOwnerRoutes,
         wrap: Option<PacketMover2FspWrapRoute>,
+        path: Option<TransportPath>,
     ) -> Result<(), PacketMover2LiveOwnerError> {
         if routes.has_owner_mismatch(owner) {
             return Err(PacketMover2LiveOwnerError::OwnerMismatch);
@@ -243,6 +244,10 @@ impl PacketMover2LiveNode {
         }
         if !owner_state.set_fsp_wrap_route(wrap) {
             return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        match path {
+            Some(path) => owner_state.set_active_path(path),
+            None => owner_state.clear_active_path(),
         }
 
         self.replace_registered_owner_routes(owner, routes);
@@ -607,6 +612,7 @@ impl PacketMover2LiveNode {
         owner: OwnerId,
         routes: PacketMover2LiveOwnerRoutes,
         wrap: Option<PacketMover2FspWrapRoute>,
+        path: Option<TransportPath>,
     ) -> Result<(), PacketMover2LiveOwnerError> {
         if routes.has_owner_mismatch(owner) {
             return Err(PacketMover2LiveOwnerError::OwnerMismatch);
@@ -616,6 +622,10 @@ impl PacketMover2LiveNode {
         };
         if !owner_state.set_fsp_wrap_route(wrap) {
             return Err(PacketMover2LiveOwnerError::OwnerMismatch);
+        }
+        match path {
+            Some(path) => owner_state.set_active_path(path),
+            None => owner_state.clear_active_path(),
         }
 
         self.replace_registered_owner_routes(owner, routes);
@@ -751,6 +761,48 @@ impl PacketMover2LiveNode {
     where
         Transports: PacketMover2TransportResolver + ?Sized,
     {
+        self.pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker(
+            packet_rx,
+            firsts,
+            packet_limit,
+            PacketMover2NoDirectFspSources,
+            endpoint_data_rx,
+            endpoint_limit,
+            tun_outbound_rx,
+            tun_limit,
+            tun_tx,
+            endpoint_tx,
+            transports,
+            crypto_limit,
+            transport_send_worker,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker<
+        C,
+        Transports,
+    >(
+        &mut self,
+        packet_rx: &mut PacketRx,
+        firsts: PacketMover2LiveTurnFirsts,
+        packet_limit: usize,
+        direct_fsp_sources: C,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        endpoint_limit: usize,
+        tun_outbound_rx: &mut TunOutboundRx,
+        tun_limit: usize,
+        tun_tx: &crate::upper::tun::TunTx,
+        endpoint_tx: &EndpointEventSender,
+        transports: &Transports,
+        crypto_limit: usize,
+        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+    ) -> PacketMover2LiveNodeTurn
+    where
+        C: PacketMover2FspSourceClassifier,
+        Transports: PacketMover2TransportResolver + ?Sized,
+    {
         let PacketMover2LiveTurnFirsts {
             raw_packet,
             fast_ingress,
@@ -763,7 +815,11 @@ impl PacketMover2LiveNode {
             tun_packet,
             ..Default::default()
         };
-        let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first(packet_rx, raw_packet);
+        let mut raw_ingress = PacketMover2FmpPacketRxSource::with_first_and_direct_fsp_sources(
+            packet_rx,
+            raw_packet,
+            direct_fsp_sources,
+        );
         if raw_ingress_prefetch && packet_limit > 0 {
             let mut prefetched = std::mem::take(&mut self.empty_raw_ingress);
             prefetched.clear();
