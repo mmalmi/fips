@@ -846,11 +846,13 @@ async fn udp_receive_loop(
                         "UDP packet received"
                     );
 
-                    let packet = match packet_tx.try_fast_ingress_packet(packet) {
-                        Ok(()) => continue,
-                        Err(packet) => packet,
-                    };
-                    if packet_tx.send(packet).is_err() {
+                    let mut packets = packet_tx.packet_batch(1);
+                    packets.push(packet);
+                    packet_tx.try_fast_ingress_packet_batch(&mut packets);
+                    if packets.is_empty() {
+                        continue;
+                    }
+                    if packet_tx.send_packet_batch(packets).is_err() {
                         debug!(
                             transport_id = %transport_id,
                             "Packet channel closed, stopping receive loop"
@@ -904,11 +906,13 @@ async fn udp_receive_loop(
                         "UDP packet received"
                     );
 
-                    let packet = match packet_tx.try_fast_ingress_packet(packet) {
-                        Ok(()) => continue,
-                        Err(packet) => packet,
-                    };
-                    if packet_tx.send(packet).is_err() {
+                    let mut packets = packet_tx.packet_batch(1);
+                    packets.push(packet);
+                    packet_tx.try_fast_ingress_packet_batch(&mut packets);
+                    if packets.is_empty() {
+                        continue;
+                    }
+                    if packet_tx.send_packet_batch(packets).is_err() {
                         debug!(
                             transport_id = %transport_id,
                             "Packet channel closed, stopping receive loop"

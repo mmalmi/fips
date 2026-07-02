@@ -14,7 +14,6 @@ use tokio::sync::mpsc::{
 };
 
 pub(crate) trait PacketFastIngressSink: std::fmt::Debug + Send + Sync {
-    fn try_ingest_packet(&self, packet: ReceivedPacket) -> Result<(), ReceivedPacket>;
     fn try_ingest_batch(&self, packets: &mut Vec<ReceivedPacket>) -> usize;
 }
 
@@ -706,17 +705,6 @@ impl PendingPackets {
 impl PacketTx {
     pub(crate) fn set_fast_ingress_sink(&mut self, sink: Arc<dyn PacketFastIngressSink>) {
         self.fast_ingress = Some(sink);
-    }
-
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
-    pub(crate) fn try_fast_ingress_packet(
-        &self,
-        packet: ReceivedPacket,
-    ) -> Result<(), ReceivedPacket> {
-        let Some(sink) = &self.fast_ingress else {
-            return Err(packet);
-        };
-        sink.try_ingest_packet(packet)
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

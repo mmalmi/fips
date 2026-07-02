@@ -409,34 +409,6 @@ impl PacketMover2EstablishedFastIngressSink {
 }
 
 impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
-    fn try_ingest_packet(&self, packet: ReceivedPacket) -> Result<(), ReceivedPacket> {
-        let mut reservation = match self.queue.reserve_prefix(1) {
-            Some(reservation) => reservation,
-            None => return Err(packet),
-        };
-        let permit = match self.tx.try_reserve() {
-            Ok(permit) => permit,
-            Err(_) => {
-                reservation.release();
-                return Err(packet);
-            }
-        };
-        let routes = self.routes.fmp_routes();
-        let socket_packet = match Self::socket_packet_from_received(&routes, packet) {
-            Ok(packet) => packet,
-            Err(packet) => {
-                reservation.release();
-                return Err(packet);
-            }
-        };
-        reservation.truncate(1);
-        permit.send(PacketMover2FastIngressBatch::new(
-            vec![socket_packet],
-            reservation,
-        ));
-        Ok(())
-    }
-
     fn try_ingest_batch(&self, packets: &mut Vec<ReceivedPacket>) -> usize {
         if packets.is_empty() || self.tx.is_closed() {
             return 0;
