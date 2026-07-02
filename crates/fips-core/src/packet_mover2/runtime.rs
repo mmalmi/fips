@@ -17,7 +17,7 @@ pub(crate) struct PacketMover2TurnDriver {
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
-    fsp_endpoint_data_ingress: Vec<PacketMover2FspEndpointDataIngressBatch>,
+    endpoint_data_bulk: Vec<PacketMover2EndpointDataBulk>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
 }
 
@@ -57,7 +57,7 @@ impl PacketMover2TurnDriver {
             fmp_link_ingress: Vec::new(),
             fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
-            fsp_endpoint_data_ingress: Vec::new(),
+            endpoint_data_bulk: Vec::new(),
             fsp_session_ingress: Vec::new(),
         }
     }
@@ -321,8 +321,7 @@ impl PacketMover2TurnDriver {
         report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
         report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
         report.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
-        report.fsp_endpoint_data_ingress =
-            std::mem::take(&mut self.fsp_endpoint_data_ingress);
+        report.endpoint_data_bulk = std::mem::take(&mut self.endpoint_data_bulk);
         report.fsp_session_ingress = std::mem::take(&mut self.fsp_session_ingress);
         report.transport_planned = transport_output.planned_packets();
         let dropped_before = report.output_drops.len();
@@ -541,7 +540,7 @@ impl PacketMover2TurnDriver {
             && summary.outputs_sent == 0
             && summary.outputs_dropped == 0
             && summary.drops == 0
-            && !self.fsp_endpoint_data_ingress.is_empty()
+            && !self.endpoint_data_bulk.is_empty()
             && self.outputs.is_empty()
             && self.raw_ingress_drops.is_empty()
             && self.output_drops.is_empty()
@@ -769,7 +768,7 @@ impl PacketMover2TurnDriver {
         self.fmp_link_ingress.clear();
         self.fsp_coord_warmups.clear();
         self.fsp_local_session_ingress.clear();
-        self.fsp_endpoint_data_ingress.clear();
+        self.endpoint_data_bulk.clear();
         self.fsp_session_ingress.clear();
     }
 
@@ -1173,9 +1172,7 @@ impl PacketMover2TurnDriver {
                         outbound_packets.push(packet);
                     }
                     RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
-                    RetiredOutput::FspEndpointDataIngressBatch(batch) => {
-                        self.fsp_endpoint_data_ingress.push(batch);
-                    }
+                    RetiredOutput::EndpointDataBulk(bulk) => self.push_endpoint_data_bulk(bulk),
                 }
             }
         }
@@ -1185,5 +1182,13 @@ impl PacketMover2TurnDriver {
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
         summary
+    }
+
+    fn push_endpoint_data_bulk(&mut self, bulk: PacketMover2EndpointDataBulk) {
+        if let Some(last) = self.endpoint_data_bulk.last_mut() {
+            last.extend(bulk);
+        } else {
+            self.endpoint_data_bulk.push(bulk);
+        }
     }
 }

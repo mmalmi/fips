@@ -348,7 +348,7 @@ pub(crate) struct RetiredOutputs {
 #[derive(Clone, Debug)]
 pub(crate) enum RetiredOutput {
     Packet(RetiredPacket),
-    FspEndpointDataIngressBatch(PacketMover2FspEndpointDataIngressBatch),
+    EndpointDataBulk(PacketMover2EndpointDataBulk),
 }
 
 impl RetiredOutputs {
@@ -378,14 +378,14 @@ impl RetiredOutputs {
         self.push_packet(RetiredPacket::Drop(drop));
     }
 
-    pub(crate) fn push_fsp_endpoint_data_ingress(
+    pub(crate) fn push_endpoint_data_bulk(
         &mut self,
         ingress: PacketMover2FspEndpointDataIngress,
     ) {
         match self.items.last_mut() {
-            Some(RetiredOutput::FspEndpointDataIngressBatch(batch)) => batch.push(ingress),
-            _ => self.items.push(RetiredOutput::FspEndpointDataIngressBatch(
-                PacketMover2FspEndpointDataIngressBatch::from_ingress(ingress),
+            Some(RetiredOutput::EndpointDataBulk(bulk)) => bulk.push(ingress),
+            _ => self.items.push(RetiredOutput::EndpointDataBulk(
+                PacketMover2EndpointDataBulk::from_ingress(ingress),
             )),
         }
     }

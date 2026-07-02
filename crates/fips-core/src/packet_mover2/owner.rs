@@ -1867,7 +1867,7 @@ impl OwnerState {
             match PacketMover2FspEndpointDataIngress::from_output(output) {
                 Ok(ingress) => {
                     self.record_retired_endpoint_data_ingress(&ingress);
-                    retired.push_fsp_endpoint_data_ingress(ingress);
+                    retired.push_endpoint_data_bulk(ingress);
                 }
                 Err(output) => retired.push_output(output),
             }

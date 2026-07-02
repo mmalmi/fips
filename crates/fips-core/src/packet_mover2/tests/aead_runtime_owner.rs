@@ -1757,18 +1757,20 @@
         let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
         assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
-        assert_eq!(driver.fsp_endpoint_data_ingress.len(), 1);
+        assert_eq!(driver.endpoint_data_bulk.len(), 1);
         assert_eq!(
             driver
-                .fsp_endpoint_data_ingress
+                .endpoint_data_bulk
                 .iter()
-                .map(PacketMover2FspEndpointDataIngressBatch::len)
+                .map(PacketMover2EndpointDataBulk::len)
                 .sum::<usize>(),
             3
         );
+        assert_eq!(driver.endpoint_data_bulk[0].commit_runs().len(), 1);
+        assert_eq!(driver.endpoint_data_bulk[0].commit_runs()[0].len(), 3);
         let mut runs = Vec::new();
-        for batch in std::mem::take(&mut driver.fsp_endpoint_data_ingress) {
-            batch.append_direct_packet_runs_to(&mut runs);
+        for bulk in std::mem::take(&mut driver.endpoint_data_bulk) {
+            bulk.append_direct_packet_runs_to(&mut runs);
         }
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].source_peer(), &source_peer);

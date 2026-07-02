@@ -543,6 +543,34 @@ impl PacketMover2FspEndpointDataCommit {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PacketMover2FspEndpointDataCommitRun {
+    commit: PacketMover2FspEndpointDataCommit,
+    len: usize,
+}
+
+impl PacketMover2FspEndpointDataCommitRun {
+    fn new(commit: PacketMover2FspEndpointDataCommit, len: usize) -> Self {
+        Self { commit, len }
+    }
+
+    pub(crate) fn commit(self) -> PacketMover2FspEndpointDataCommit {
+        self.commit
+    }
+
+    pub(crate) fn len(self) -> usize {
+        self.len
+    }
+
+    fn try_extend(&mut self, commit: PacketMover2FspEndpointDataCommit, len: usize) -> bool {
+        if self.commit != commit {
+            return false;
+        }
+        self.len = self.len.saturating_add(len);
+        true
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PacketMover2FspEndpointDataIngress {
     commit: PacketMover2FspEndpointDataCommit,
@@ -632,85 +660,72 @@ impl PacketMover2FspEndpointDataIngress {
         self.packet_run.len()
     }
 
-    pub(crate) fn into_direct_source_run(self) -> FipsEndpointDirectSourceRun {
-        self.packet_run.into_source_run()
-    }
-
     pub(crate) fn into_direct_packet_run(self) -> FipsEndpointDirectPacketRun {
         self.packet_run
     }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PacketMover2FspEndpointDataIngressBatch {
-    ingresses: Vec<PacketMover2FspEndpointDataIngress>,
+pub(crate) struct PacketMover2EndpointDataBulk {
+    commit_runs: Vec<PacketMover2FspEndpointDataCommitRun>,
+    packet_runs: Vec<FipsEndpointDirectPacketRun>,
+    len: usize,
 }
 
-impl PacketMover2FspEndpointDataIngressBatch {
+impl PacketMover2EndpointDataBulk {
     pub(crate) fn from_ingress(ingress: PacketMover2FspEndpointDataIngress) -> Self {
+        let len = ingress.len();
+        let commit = ingress.commit();
         Self {
-            ingresses: vec![ingress],
+            commit_runs: vec![PacketMover2FspEndpointDataCommitRun::new(commit, len)],
+            packet_runs: vec![ingress.into_direct_packet_run()],
+            len,
         }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.ingresses
-            .iter()
-            .map(PacketMover2FspEndpointDataIngress::len)
-            .sum()
+        self.len
     }
 
     pub(crate) fn push(&mut self, ingress: PacketMover2FspEndpointDataIngress) {
-        self.ingresses.push(ingress);
+        let len = ingress.len();
+        let commit = ingress.commit();
+        if !self
+            .commit_runs
+            .last_mut()
+            .is_some_and(|run| run.try_extend(commit, len))
+        {
+            self.commit_runs
+                .push(PacketMover2FspEndpointDataCommitRun::new(commit, len));
+        }
+        self.packet_runs.push(ingress.into_direct_packet_run());
+        self.len = self.len.saturating_add(len);
     }
 
-    pub(crate) fn visit_commit_runs<F>(&self, mut visit: F)
-    where
-        F: FnMut(PacketMover2FspEndpointDataCommit, usize),
-    {
-        let Some(first) = self.ingresses.first() else {
-            return;
-        };
-        let mut current = first.commit();
-        let mut count = 0usize;
-        for ingress in &self.ingresses {
-            let commit = ingress.commit();
-            if commit != current {
-                visit(current, count);
-                current = commit;
-                count = 0;
+    pub(crate) fn extend(&mut self, other: Self) {
+        for run in other.commit_runs {
+            if !self
+                .commit_runs
+                .last_mut()
+                .is_some_and(|last| last.try_extend(run.commit(), run.len()))
+            {
+                self.commit_runs.push(run);
             }
-            count = count.saturating_add(ingress.len());
         }
-        visit(current, count);
+        self.len = self.len.saturating_add(other.len);
+        self.packet_runs.extend(other.packet_runs);
     }
 
-    pub(crate) fn append_direct_source_runs_to(
-        self,
-        runs: &mut Vec<FipsEndpointDirectSourceRun>,
-    ) {
-        runs.reserve(self.ingresses.len());
-        for ingress in self.ingresses {
-            let run = ingress.into_direct_source_run();
-            if let Some(last) = runs.last_mut() {
-                match last.try_extend(run) {
-                    Ok(()) => continue,
-                    Err(run) => runs.push(run),
-                }
-            } else {
-                runs.push(run);
-            }
-        }
+    pub(crate) fn commit_runs(&self) -> &[PacketMover2FspEndpointDataCommitRun] {
+        &self.commit_runs
     }
 
     pub(crate) fn append_direct_packet_runs_to(
         self,
         runs: &mut Vec<FipsEndpointDirectPacketRun>,
     ) {
-        runs.reserve(self.ingresses.len());
-        for ingress in self.ingresses {
-            runs.push(ingress.into_direct_packet_run());
-        }
+        runs.reserve(self.packet_runs.len());
+        runs.extend(self.packet_runs);
     }
 }
 
@@ -722,7 +737,7 @@ pub(crate) struct PacketMover2LiveNodeTurn {
     fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
     fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
     fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
-    fsp_endpoint_data_ingress: Vec<PacketMover2FspEndpointDataIngressBatch>,
+    endpoint_data_bulk: Vec<PacketMover2EndpointDataBulk>,
     fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
     raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
     tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
@@ -800,20 +815,18 @@ impl PacketMover2LiveNodeTurn {
         std::mem::take(&mut self.fsp_local_session_ingress)
     }
 
-    pub(crate) fn take_fsp_endpoint_data_ingress(
-        &mut self,
-    ) -> Vec<PacketMover2FspEndpointDataIngressBatch> {
-        std::mem::take(&mut self.fsp_endpoint_data_ingress)
+    pub(crate) fn take_endpoint_data_bulk(&mut self) -> Vec<PacketMover2EndpointDataBulk> {
+        std::mem::take(&mut self.endpoint_data_bulk)
     }
 
-    pub(crate) fn fsp_endpoint_data_ingress(&self) -> &[PacketMover2FspEndpointDataIngressBatch] {
-        &self.fsp_endpoint_data_ingress
+    pub(crate) fn endpoint_data_bulk(&self) -> &[PacketMover2EndpointDataBulk] {
+        &self.endpoint_data_bulk
     }
 
-    pub(crate) fn fsp_endpoint_data_ingress_count(&self) -> usize {
-        self.fsp_endpoint_data_ingress
+    pub(crate) fn endpoint_data_bulk_count(&self) -> usize {
+        self.endpoint_data_bulk
             .iter()
-            .map(PacketMover2FspEndpointDataIngressBatch::len)
+            .map(PacketMover2EndpointDataBulk::len)
             .sum()
     }
 
@@ -880,7 +893,7 @@ impl PacketMover2LiveNodeTurn {
             || !self.fmp_link_ingress.is_empty()
             || !self.fsp_coord_warmups.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
-            || !self.fsp_endpoint_data_ingress.is_empty()
+            || !self.endpoint_data_bulk.is_empty()
             || !self.fsp_session_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
@@ -917,8 +930,8 @@ impl PacketMover2LiveNodeTurn {
         self.fsp_coord_warmups.append(&mut other.fsp_coord_warmups);
         self.fsp_local_session_ingress
             .append(&mut other.fsp_local_session_ingress);
-        self.fsp_endpoint_data_ingress
-            .append(&mut other.fsp_endpoint_data_ingress);
+        self.endpoint_data_bulk
+            .append(&mut other.endpoint_data_bulk);
         self.fsp_session_ingress
             .append(&mut other.fsp_session_ingress);
         self.raw_ingress_drops.append(&mut other.raw_ingress_drops);

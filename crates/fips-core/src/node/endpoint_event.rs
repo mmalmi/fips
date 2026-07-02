@@ -84,14 +84,6 @@ impl FipsEndpointDirectSourceRun {
         self.packets.push(delivery.payload);
     }
 
-    pub(crate) fn try_extend(&mut self, other: Self) -> Result<(), Self> {
-        if self.source_node_addr() != other.source_node_addr() {
-            return Err(other);
-        }
-        self.packets.extend(other.packets);
-        Ok(())
-    }
-
     /// Authenticated FIPS peer that originated every packet in this run.
     pub fn source_peer(&self) -> &PeerIdentity {
         &self.source_peer

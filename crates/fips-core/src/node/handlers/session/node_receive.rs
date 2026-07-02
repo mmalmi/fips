@@ -111,27 +111,28 @@ impl Node {
 
     pub(in crate::node) async fn process_packet_mover2_compact_endpoint_data(
         &mut self,
-        ingress_batches: Vec<crate::packet_mover2::PacketMover2FspEndpointDataIngressBatch>,
+        endpoint_bulks: Vec<crate::packet_mover2::PacketMover2EndpointDataBulk>,
     ) -> usize {
-        if ingress_batches.is_empty() {
+        if endpoint_bulks.is_empty() {
             return 0;
         }
-        let message_count = ingress_batches
+        let message_count = endpoint_bulks
             .iter()
-            .map(crate::packet_mover2::PacketMover2FspEndpointDataIngressBatch::len)
+            .map(crate::packet_mover2::PacketMover2EndpointDataBulk::len)
             .sum::<usize>();
         let Some(direct_sink) = self.packet_mover2_endpoint_direct_sink() else {
             debug!(
                 messages = message_count,
-                "Dropping compact PM2 endpoint-data ingress without direct sink"
+                "Dropping PM2 endpoint-data bulk without direct sink"
             );
             return 0;
         };
 
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
-        let mut direct_packet_runs = Vec::with_capacity(ingress_batches.len());
-        for batch in ingress_batches {
-            batch.visit_commit_runs(|commit, run_len| {
+        let mut direct_packet_runs = Vec::with_capacity(endpoint_bulks.len());
+        for bulk in endpoint_bulks {
+            for run in bulk.commit_runs() {
+                let commit = run.commit();
                 let source_addr = commit.source_addr();
                 let previous_hop_addr = commit.previous_hop_addr();
                 if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
@@ -141,7 +142,7 @@ impl Node {
                     debug!(
                         src = %self.peer_display_name(&source_addr),
                         received_k_bit = commit.received_k_bit(),
-                        run_len,
+                        run_len = run.len(),
                         "FSP rekey cutover complete after PM2 compact endpoint-data receive commit"
                     );
                 }
@@ -151,8 +152,8 @@ impl Node {
                     previous_hop_addr,
                     direct_path: commit.direct_path(),
                 });
-            });
-            batch.append_direct_packet_runs_to(&mut direct_packet_runs);
+            }
+            bulk.append_direct_packet_runs_to(&mut direct_packet_runs);
         }
 
         let pending_flush_destinations = endpoint_commit.finish(self);
