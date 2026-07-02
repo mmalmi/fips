@@ -28,8 +28,8 @@ impl PreparedCryptoWork {
                 let _timer = crate::perf_profile::Timer::start(
                     crate::perf_profile::Stage::PacketMover2AeadOpen,
                 );
-                match AeadOpenWork::from_crypto_work(work, cipher) {
-                    Ok(work) => work.execute(),
+                match AeadOpenWork::from_crypto_work(work) {
+                    Ok(work) => work.execute(&cipher),
                     Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Open),
                 }
             }
@@ -75,15 +75,176 @@ impl PreparedCryptoWork {
     }
 }
 
-#[derive(Debug)]
-struct PreparedCryptoJob {
-    queued_at: Option<crate::perf_profile::TraceStamp>,
-    work: Vec<PreparedCryptoWork>,
-    bulk_count: usize,
+enum PreparedCryptoJob {
+    OpenRun {
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+        work: Vec<CryptoWork>,
+        cipher: AeadKey,
+        bulk_count: usize,
+    },
+    Prepared {
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+        work: Vec<PreparedCryptoWork>,
+        bulk_count: usize,
+    },
+}
+
+impl PreparedCryptoJob {
+    fn open_run(work: Vec<CryptoWork>, cipher: AeadKey) -> Self {
+        let bulk_count = packet_mover2_open_run_bulk_count(&work);
+        Self::OpenRun {
+            queued_at: crate::perf_profile::stamp(),
+            work,
+            cipher,
+            bulk_count,
+        }
+    }
+
+    fn prepared(work: Vec<PreparedCryptoWork>, bulk_count: usize) -> Self {
+        Self::Prepared {
+            queued_at: crate::perf_profile::stamp(),
+            work,
+            bulk_count,
+        }
+    }
+
+    fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
+        match self {
+            Self::OpenRun { queued_at, .. } | Self::Prepared { queued_at, .. } => *queued_at,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::OpenRun { work, .. } => work.len(),
+            Self::Prepared { work, .. } => work.len(),
+        }
+    }
+
+    fn bulk_count(&self) -> usize {
+        match self {
+            Self::OpenRun { bulk_count, .. } | Self::Prepared { bulk_count, .. } => *bulk_count,
+        }
+    }
+
+    fn push_executor_failed_completions(self, completions: &mut Vec<CryptoCompletion>) {
+        match self {
+            Self::OpenRun { work, .. } => push_failed_open_work(work, completions),
+            Self::Prepared { work, .. } => push_failed_prepared_work(work, completions),
+        }
+    }
+
+    fn execute_completion_batches(self) -> Vec<CryptoCompletionBatch> {
+        match self {
+            Self::OpenRun { work, cipher, .. } => execute_open_run_job(work, cipher),
+            Self::Prepared { work, .. } => {
+                let mut completions = Vec::with_capacity(work.len());
+                for work in work {
+                    CryptoCompletionBatch::push_grouped(work.execute(), &mut completions);
+                }
+                completions
+            }
+        }
+    }
+}
+
+struct PreparedOpenRunJobBuilder {
+    job_packets: usize,
+    work: Vec<CryptoWork>,
+    cipher: Option<AeadKey>,
+    next_order: Option<OrderToken>,
+    closed: bool,
+}
+
+impl PreparedOpenRunJobBuilder {
+    fn new(job_packets: usize) -> Self {
+        Self {
+            job_packets: job_packets.max(1),
+            work: Vec::new(),
+            cipher: None,
+            next_order: None,
+            closed: false,
+        }
+    }
+
+    fn push(
+        &mut self,
+        pool: &PacketMover2AeadWorkerPool,
+        work: CryptoWork,
+        cipher: AeadKey,
+        completions: &mut Vec<CryptoCompletion>,
+    ) {
+        if self.closed {
+            completions.push(failed_crypto_completion(
+                work.reservation,
+                CryptoFailureKind::Open,
+            ));
+            return;
+        }
+        if !self.matches_run(&work, &cipher) {
+            self.flush(pool, completions);
+            if self.closed {
+                completions.push(failed_crypto_completion(
+                    work.reservation,
+                    CryptoFailureKind::Open,
+                ));
+                return;
+            }
+        }
+        if self.work.len() >= self.job_packets {
+            self.flush(pool, completions);
+            if self.closed {
+                completions.push(failed_crypto_completion(
+                    work.reservation,
+                    CryptoFailureKind::Open,
+                ));
+                return;
+            }
+        }
+        self.next_order = Some(work.reservation.order.next());
+        self.work.push(work);
+        if self.cipher.is_none() {
+            self.cipher = Some(cipher);
+        }
+    }
+
+    fn flush(
+        &mut self,
+        pool: &PacketMover2AeadWorkerPool,
+        completions: &mut Vec<CryptoCompletion>,
+    ) {
+        if self.work.is_empty() || self.closed {
+            return;
+        }
+        let work = std::mem::take(&mut self.work);
+        let cipher = self
+            .cipher
+            .take()
+            .expect("open run cipher exists when work is non-empty");
+        self.next_order = None;
+        if !pool.submit_open_run_job(work, cipher, completions) {
+            self.closed = true;
+        }
+    }
+
+    fn matches_run(&self, work: &CryptoWork, cipher: &AeadKey) -> bool {
+        let Some(first) = self.work.first() else {
+            return true;
+        };
+        let Some(current_cipher) = self.cipher.as_ref() else {
+            return true;
+        };
+        Arc::ptr_eq(current_cipher, cipher)
+            && first.reservation.owner_shard() == work.reservation.owner_shard()
+            && first.reservation.owner == work.reservation.owner
+            && first.reservation.generation == work.reservation.generation
+            && first.reservation.lane == work.reservation.lane
+            && first.reservation.source_path == work.reservation.source_path
+            && self.next_order == Some(work.reservation.order)
+    }
 }
 
 struct PreparedCryptoJobBuilder {
-    direction: PacketMover2AeadDirection,
     job_packets: usize,
     work: Vec<PreparedCryptoWork>,
     bulk_count: usize,
@@ -91,10 +252,9 @@ struct PreparedCryptoJobBuilder {
 }
 
 impl PreparedCryptoJobBuilder {
-    fn new(direction: PacketMover2AeadDirection, job_packets: usize) -> Self {
+    fn new(job_packets: usize) -> Self {
         let job_packets = job_packets.max(1);
         Self {
-            direction,
             job_packets,
             work: Vec::with_capacity(job_packets),
             bulk_count: 0,
@@ -132,7 +292,12 @@ impl PreparedCryptoJobBuilder {
         let next = Vec::with_capacity(self.job_packets);
         let work = std::mem::replace(&mut self.work, next);
         let bulk_count = std::mem::take(&mut self.bulk_count);
-        if !pool.submit_prepared_job(self.direction, work, bulk_count, completions) {
+        if !pool.submit_prepared_job(
+            PacketMover2AeadDirection::Seal,
+            work,
+            bulk_count,
+            completions,
+        ) {
             self.closed = true;
         }
     }
@@ -388,17 +553,42 @@ impl PacketMover2AeadWorkerPool {
             return false;
         };
 
-        let chunk_len = work.len();
+        let job = PreparedCryptoJob::prepared(work, bulk_count);
+        self.submit_job(work_tx, direction, job, completions)
+    }
+
+    fn submit_open_run_job(
+        &self,
+        work: Vec<CryptoWork>,
+        cipher: AeadKey,
+        completions: &mut Vec<CryptoCompletion>,
+    ) -> bool {
+        if work.is_empty() {
+            return true;
+        }
+        let Some(work_tx) = self.open_tx.as_ref() else {
+            push_failed_open_work(work, completions);
+            return false;
+        };
+
+        let job = PreparedCryptoJob::open_run(work, cipher);
+        self.submit_job(work_tx, PacketMover2AeadDirection::Open, job, completions)
+    }
+
+    fn submit_job(
+        &self,
+        work_tx: &crossbeam_channel::Sender<PreparedCryptoJob>,
+        direction: PacketMover2AeadDirection,
+        job: PreparedCryptoJob,
+        completions: &mut Vec<CryptoCompletion>,
+    ) -> bool {
+        let chunk_len = job.len();
+        let bulk_count = job.bulk_count();
         let (in_flight, bulk_in_flight) = self.direction_counters(direction);
         in_flight.fetch_add(chunk_len, std::sync::atomic::Ordering::AcqRel);
         if bulk_count > 0 {
             bulk_in_flight.fetch_add(bulk_count, std::sync::atomic::Ordering::AcqRel);
         }
-        let job = PreparedCryptoJob {
-            queued_at: crate::perf_profile::stamp(),
-            work,
-            bulk_count,
-        };
         match work_tx.try_send(job) {
             Ok(()) => {
                 crate::perf_profile::record_packet_mover2_aead_prepared_job(chunk_len);
@@ -410,7 +600,7 @@ impl PacketMover2AeadWorkerPool {
                 if bulk_count > 0 {
                     bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
                 }
-                push_failed_prepared_work(job.work, completions);
+                job.push_executor_failed_completions(completions);
                 false
             }
         }
@@ -454,14 +644,12 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
             packet_mover2_aead_worker_job_packets(count, self.direction_worker_count(PacketMover2AeadDirection::Open));
         let seal_job_packets =
             packet_mover2_aead_worker_job_packets(count, self.direction_worker_count(PacketMover2AeadDirection::Seal));
-        let mut open_jobs =
-            PreparedCryptoJobBuilder::new(PacketMover2AeadDirection::Open, open_job_packets);
-        let mut seal_jobs =
-            PreparedCryptoJobBuilder::new(PacketMover2AeadDirection::Seal, seal_job_packets);
+        let mut open_jobs = PreparedOpenRunJobBuilder::new(open_job_packets);
+        let mut seal_jobs = PreparedCryptoJobBuilder::new(seal_job_packets);
         for work in prepared.drain(..) {
             match work {
-                work @ PreparedCryptoWork::Open { .. } => {
-                    open_jobs.push(self, work, completions);
+                PreparedCryptoWork::Open { work, cipher } => {
+                    open_jobs.push(self, work, cipher, completions);
                 }
                 work @ PreparedCryptoWork::Seal { .. } => {
                     seal_jobs.push(self, work, completions);
@@ -610,14 +798,11 @@ fn spawn_packet_mover2_aead_worker_thread(
             while let Ok(job) = work_rx.recv() {
                 crate::perf_profile::record_since(
                     crate::perf_profile::Stage::PacketMover2AeadWorkerQueueWait,
-                    job.queued_at,
+                    job.queued_at(),
                 );
-                let count = job.work.len();
-                let bulk_count = job.bulk_count;
-                let mut completions = Vec::with_capacity(count);
-                for work in job.work {
-                    CryptoCompletionBatch::push_grouped(work.execute(), &mut completions);
-                }
+                let count = job.len();
+                let bulk_count = job.bulk_count();
+                let completions = job.execute_completion_batches();
                 if send_completion_batches_to_shards(completions, &completion_txs).is_err() {
                     in_flight.fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
                     bulk_in_flight.fetch_sub(bulk_count, std::sync::atomic::Ordering::AcqRel);
@@ -670,6 +855,37 @@ fn packet_mover2_aead_direction_for_completion_source(
 fn push_failed_prepared_work(work: Vec<PreparedCryptoWork>, completions: &mut Vec<CryptoCompletion>) {
     for work in work {
         work.push_executor_failed_completions(completions);
+    }
+}
+
+fn push_failed_open_work(work: Vec<CryptoWork>, completions: &mut Vec<CryptoCompletion>) {
+    for work in work {
+        completions.push(failed_crypto_completion(
+            work.reservation,
+            CryptoFailureKind::Open,
+        ));
+    }
+}
+
+fn execute_open_run_job(work: Vec<CryptoWork>, cipher: AeadKey) -> Vec<CryptoCompletionBatch> {
+    if work.is_empty() {
+        return Vec::new();
+    }
+    let _timer =
+        crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2AeadOpen);
+    let mut completions = Vec::with_capacity(work.len());
+    for work in work {
+        completions.push(execute_open_crypto_work(work, &cipher));
+    }
+    CryptoCompletionBatch::from_completion_run(completions)
+        .into_iter()
+        .collect()
+}
+
+fn packet_mover2_open_run_bulk_count(work: &[CryptoWork]) -> usize {
+    match work.first() {
+        Some(first) if first.reservation.lane == Lane::Bulk => work.len(),
+        Some(_) | None => 0,
     }
 }
 
@@ -744,13 +960,20 @@ impl AeadHeader {
 
 struct AeadOpenWork {
     work: CryptoWork,
-    cipher: AeadKey,
     header: AeadHeader,
     ciphertext_offset: usize,
 }
 
+fn execute_open_crypto_work(work: CryptoWork, cipher: &LessSafeKey) -> CryptoCompletion {
+    let reservation = work.reservation.clone();
+    match AeadOpenWork::from_crypto_work(work) {
+        Ok(work) => work.execute(cipher),
+        Err(_) => failed_crypto_completion(reservation, CryptoFailureKind::Open),
+    }
+}
+
 impl AeadOpenWork {
-    fn from_crypto_work(work: CryptoWork, cipher: AeadKey) -> Result<Self, WirePreflightError> {
+    fn from_crypto_work(work: CryptoWork) -> Result<Self, WirePreflightError> {
         let (header, ciphertext_offset, counter) = match work.packet.owner.protocol {
             PacketProtocol::Fmp => {
                 let header = FmpWireHeader::parse(&work.packet.payload)?;
@@ -775,12 +998,11 @@ impl AeadOpenWork {
 
         Ok(Self {
             work,
-            cipher,
             header,
             ciphertext_offset,
         })
     }
-    fn execute(self) -> CryptoCompletion {
+    fn execute(self, cipher: &LessSafeKey) -> CryptoCompletion {
         let mut work = self;
         let reservation = work.work.reservation;
         let target = work.work.packet.output;
@@ -789,7 +1011,7 @@ impl AeadOpenWork {
         let opened_len = match work.work.packet.payload.get_mut(work.ciphertext_offset..) {
             Some(ciphertext) => {
                 let nonce = aead_nonce(reservation.counter);
-                work.cipher
+                cipher
                     .open_in_place(nonce, Aad::from(header.as_aad()), ciphertext)
                     .map(|plaintext| plaintext.len())
                     .ok()
