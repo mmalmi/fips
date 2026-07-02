@@ -46,6 +46,8 @@ pub(crate) struct PacketMover2EndpointDataRoute {
     flags: u8,
     inner_flags: u8,
     fsp_cleartext_prefix: Vec<u8>,
+    max_wire_len: Option<usize>,
+    fsp_auto_coords_warmup: bool,
 }
 
 impl PacketMover2EndpointDataRoute {
@@ -56,11 +58,19 @@ impl PacketMover2EndpointDataRoute {
             flags,
             inner_flags,
             fsp_cleartext_prefix: Vec::new(),
+            max_wire_len: None,
+            fsp_auto_coords_warmup: true,
         }
     }
 
     pub(crate) fn with_fsp_cleartext_prefix(mut self, prefix: Vec<u8>) -> Self {
         self.fsp_cleartext_prefix = prefix;
+        self
+    }
+
+    pub(crate) fn with_direct_transport_mtu(mut self, path_mtu: u16) -> Self {
+        self.max_wire_len = Some(path_mtu as usize);
+        self.fsp_auto_coords_warmup = false;
         self
     }
 
@@ -71,7 +81,7 @@ impl PacketMover2EndpointDataRoute {
     fn route_batch(&self, payloads: Vec<Vec<u8>>) -> PacketMover2EndpointDataBatchRoute {
         let mut result = PacketMover2EndpointDataBatchRoute::with_capacity(payloads.len());
         let routed_at_ms = crate::time::now_ms();
-        let max_fsp_payload = crate::node::session_wire::fsp_endpoint_data_max_body_len();
+        let max_fsp_payload = self.max_fsp_bulk_body_len();
         let mut bulk_payloads = Vec::new();
         let mut bulk_wire_len = crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len();
         for payload in payloads {
@@ -116,6 +126,18 @@ impl PacketMover2EndpointDataRoute {
         result
     }
 
+    fn max_fsp_bulk_body_len(&self) -> usize {
+        let protocol_max = crate::node::session_wire::fsp_endpoint_data_max_body_len();
+        let Some(max_wire_len) = self.max_wire_len else {
+            return protocol_max;
+        };
+        let overhead = FSP_HEADER_SIZE
+            .saturating_add(self.fsp_cleartext_prefix.len())
+            .saturating_add(FSP_INNER_HEADER_SIZE)
+            .saturating_add(AEAD_TAG_SIZE);
+        protocol_max.min(max_wire_len.saturating_sub(overhead))
+    }
+
     fn push_endpoint_data_bulk(
         &self,
         result: &mut PacketMover2EndpointDataBatchRoute,
@@ -148,7 +170,7 @@ impl PacketMover2EndpointDataRoute {
     }
 
     fn build_bulk_packet(&self, msg_type: u8, payload: Vec<u8>) -> OutboundPacket {
-        OutboundPacket::fsp(
+        let mut packet = OutboundPacket::fsp(
             self.owner,
             self.generation,
             PacketClass::Bulk,
@@ -156,7 +178,11 @@ impl PacketMover2EndpointDataRoute {
             payload,
         )
         .with_fsp_inner_header(msg_type, self.inner_flags)
-        .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone())
+        .with_fsp_cleartext_prefix(self.fsp_cleartext_prefix.clone());
+        if !self.fsp_auto_coords_warmup {
+            packet = packet.without_fsp_auto_coords_warmup();
+        }
+        packet
     }
 }
 

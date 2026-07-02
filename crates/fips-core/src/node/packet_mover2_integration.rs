@@ -1098,9 +1098,13 @@ impl Node {
                 next_hop: None,
             };
         };
+        let mut direct_path_mtu = None;
         let (wrap, path) = if next_hop == *node_addr {
             match self.packet_mover2_direct_fsp_path(node_addr) {
-                Some(path) => (None, Some(path)),
+                Some((path, path_mtu)) => {
+                    direct_path_mtu = Some(path_mtu);
+                    (None, Some(path))
+                }
                 None => (
                     self.packet_mover2_fsp_wrap_route_to(node_addr, next_hop),
                     None,
@@ -1145,8 +1149,11 @@ impl Node {
                 .with_max_packet_len(self.packet_mover2_tun_max_packet_len(node_addr)),
         ));
 
-        let endpoint =
+        let mut endpoint =
             PacketMover2EndpointDataRoute::fsp(owner, generation, fsp_flags, inner_flags);
+        if let Some(path_mtu) = direct_path_mtu {
+            endpoint = endpoint.with_direct_transport_mtu(path_mtu);
+        }
         routes.push_endpoint_destination(PacketMover2LiveEndpointRoute::new(*node_addr, endpoint));
 
         PacketMover2FspOwnerRouteUpdate {
@@ -1157,11 +1164,16 @@ impl Node {
         }
     }
 
-    fn packet_mover2_direct_fsp_path(&self, dest_addr: &NodeAddr) -> Option<TransportPath> {
+    fn packet_mover2_direct_fsp_path(&self, dest_addr: &NodeAddr) -> Option<(TransportPath, u16)> {
         let peer = self.peers.get(dest_addr)?;
         let transport_id = peer.transport_id()?;
         let remote_addr = peer.current_addr()?.clone();
-        Some(TransportPath::live(transport_id, remote_addr))
+        let path_mtu = self
+            .transports
+            .get(&transport_id)
+            .map(|transport| transport.link_mtu(&remote_addr))
+            .unwrap_or_else(|| self.transport_mtu());
+        Some((TransportPath::live(transport_id, remote_addr), path_mtu))
     }
 
     fn packet_mover2_fsp_wrap_route_to(
