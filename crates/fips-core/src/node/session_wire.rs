@@ -38,6 +38,7 @@
 use crate::protocol::{ProtocolError, decode_optional_coords};
 use crate::transport::PacketBuffer;
 use crate::tree::TreeCoordinate;
+use std::ops::Range;
 
 // ============================================================================
 // Constants
@@ -149,6 +150,20 @@ pub fn encode_fsp_endpoint_data_bulk_payload(mut packets: Vec<Vec<u8>>) -> Optio
 
 /// Decode packet lengths from an endpoint-data bulk body.
 pub fn decode_fsp_endpoint_data_bulk_lengths(payload: &[u8]) -> Option<Vec<usize>> {
+    Some(
+        decode_fsp_endpoint_data_bulk_ranges(payload)?
+            .into_iter()
+            .map(|range| range.len())
+            .collect(),
+    )
+}
+
+/// Decode packet byte ranges from an endpoint-data bulk body.
+///
+/// The returned ranges point into `payload`; they skip the bulk count and each
+/// per-packet length field. Keeping ranges instead of splitting immediately lets
+/// endpoint embedders borrow packet slices from one opened AEAD buffer.
+pub fn decode_fsp_endpoint_data_bulk_ranges(payload: &[u8]) -> Option<Vec<Range<usize>>> {
     if payload.len() < FSP_ENDPOINT_DATA_BULK_COUNT_SIZE {
         return None;
     }
@@ -166,7 +181,7 @@ pub fn decode_fsp_endpoint_data_bulk_lengths(payload: &[u8]) -> Option<Vec<usize
         offset = len_end;
         let packet_end = offset.checked_add(packet_len)?;
         payload.get(offset..packet_end)?;
-        lengths.push(packet_len);
+        lengths.push(offset..packet_end);
         offset = packet_end;
     }
 

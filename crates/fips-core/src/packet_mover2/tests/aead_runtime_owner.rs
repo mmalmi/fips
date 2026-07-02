@@ -1768,14 +1768,27 @@
         );
         let mut runs = Vec::new();
         for batch in std::mem::take(&mut driver.fsp_endpoint_data_ingress) {
-            batch.append_direct_source_runs_to(&mut runs);
+            batch.append_direct_packet_runs_to(&mut runs);
         }
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].source_peer(), &source_peer);
-        assert_eq!(runs[0].packets().len(), 3);
-        assert_eq!(runs[0].packets()[0].as_slice(), b"compact-one");
-        assert_eq!(runs[0].packets()[1].as_slice(), b"compact-two");
-        assert_eq!(runs[0].packets()[2].as_slice(), b"compact-three");
+        assert_eq!(runs[0].len(), 3);
+        assert_eq!(
+            runs[0].packet_bytes(),
+            b"compact-one".len() + b"compact-two".len() + b"compact-three".len()
+        );
+        let packets = runs[0]
+            .packet_slices()
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            packets,
+            vec![
+                b"compact-one".to_vec(),
+                b"compact-two".to_vec(),
+                b"compact-three".to_vec()
+            ]
+        );
         assert!(driver.outputs.is_empty());
     }
 

@@ -32,7 +32,7 @@ mod tests;
 
 pub use crate::node::{
     FipsEndpointDirectBatch, FipsEndpointDirectDeliveryError, FipsEndpointDirectMessage,
-    FipsEndpointDirectSink, FipsEndpointDirectSourceRun,
+    FipsEndpointDirectPacketRun, FipsEndpointDirectSink, FipsEndpointDirectSourceRun,
 };
 pub use builder::FipsEndpointBuilder;
 use receive::EndpointReceiveState;

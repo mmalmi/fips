@@ -550,7 +550,7 @@ pub(crate) struct PacketMover2FspEndpointDataIngress {
     body_len: usize,
     receive_sync: FspReceiveSync,
     activity_tick: Option<ActivityTick>,
-    source_run: FipsEndpointDirectSourceRun,
+    packet_run: FipsEndpointDirectPacketRun,
 }
 
 impl PacketMover2FspEndpointDataIngress {
@@ -571,7 +571,7 @@ impl PacketMover2FspEndpointDataIngress {
         };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
-        let (timestamp_ms, inner_flags, plaintext_len, body_len, lengths) = {
+        let (timestamp_ms, inner_flags, plaintext_len, body_len, ranges) = {
             let Some(plaintext) = output.opened_payload() else {
                 return Err(output);
             };
@@ -584,11 +584,11 @@ impl PacketMover2FspEndpointDataIngress {
             {
                 return Err(output);
             }
-            let Some(lengths) = crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(body)
+            let Some(ranges) = crate::node::session_wire::decode_fsp_endpoint_data_bulk_ranges(body)
             else {
                 return Err(output);
             };
-            (timestamp_ms, inner_flags, plaintext.len(), body.len(), lengths)
+            (timestamp_ms, inner_flags, plaintext.len(), body.len(), ranges)
         };
         let receive_sync = FspReceiveSync {
             counter: output.counter(),
@@ -602,11 +602,10 @@ impl PacketMover2FspEndpointDataIngress {
         let mut payload = output.into_opened_payload()?;
         payload.drain(..FSP_INNER_HEADER_SIZE);
         payload.truncate(body_len);
-        let packets =
-            crate::node::session_wire::split_fsp_endpoint_data_bulk_payload(payload, &lengths);
-        let source_run = FipsEndpointDirectSourceRun::from_source_packets(
+        let packet_run = FipsEndpointDirectPacketRun::from_segmented_payload(
             source_peer,
-            packets,
+            payload,
+            ranges,
             crate::time::now_ms(),
         );
 
@@ -621,7 +620,7 @@ impl PacketMover2FspEndpointDataIngress {
             body_len,
             receive_sync,
             activity_tick,
-            source_run,
+            packet_run,
         })
     }
 
@@ -630,11 +629,15 @@ impl PacketMover2FspEndpointDataIngress {
     }
 
     fn len(&self) -> usize {
-        self.source_run.len()
+        self.packet_run.len()
     }
 
     pub(crate) fn into_direct_source_run(self) -> FipsEndpointDirectSourceRun {
-        self.source_run
+        self.packet_run.into_source_run()
+    }
+
+    pub(crate) fn into_direct_packet_run(self) -> FipsEndpointDirectPacketRun {
+        self.packet_run
     }
 }
 
@@ -697,6 +700,16 @@ impl PacketMover2FspEndpointDataIngressBatch {
             } else {
                 runs.push(run);
             }
+        }
+    }
+
+    pub(crate) fn append_direct_packet_runs_to(
+        self,
+        runs: &mut Vec<FipsEndpointDirectPacketRun>,
+    ) {
+        runs.reserve(self.ingresses.len());
+        for ingress in self.ingresses {
+            runs.push(ingress.into_direct_packet_run());
         }
     }
 }
