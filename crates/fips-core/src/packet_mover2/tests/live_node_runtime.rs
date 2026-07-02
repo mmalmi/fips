@@ -1071,10 +1071,10 @@
     }
 
     #[tokio::test]
-    async fn transport_plan_worker_drops_bulk_without_inline_fallback() {
+    async fn transport_plan_worker_spools_ordered_bulk_past_soft_capacity() {
         let send_transport_id = TransportId::new(64);
         let recv_transport_id = TransportId::new(65);
-        let (recv_packet_tx, _recv_packet_rx) = crate::transport::packet_channel(8);
+        let (recv_packet_tx, mut recv_packet_rx) = crate::transport::packet_channel(8);
         let mut recv_transport = TransportHandle::Udp(crate::transport::udp::UdpTransport::new(
             recv_transport_id,
             None,
@@ -1123,27 +1123,35 @@
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
         let mut worker = PacketMover2TransportSendWorkerPool::new(1);
-        assert!(worker.try_reserve(Lane::Bulk, 1));
-        assert!(!worker.try_reserve(Lane::Bulk, 1));
-        assert!(worker.try_reserve(Lane::Priority, 1));
-        assert!(!worker.try_reserve(Lane::Priority, 1));
 
-        let sent = send_packet_mover2_transport_groups_with_worker(
-            &transports,
-                    groups,
-            &mut drops,
-            &mut worker,
-            None,
+        let sent = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            send_packet_mover2_transport_groups_with_worker(
+                &transports,
+                groups,
+                &mut drops,
+                &mut worker,
+                None,
+            ),
         )
-        .await;
+        .await
+        .expect("ordered worker spool should not block on soft capacity");
 
-        assert_eq!(sent, 0);
-        assert_eq!(drops.len(), 2);
-        for drop in &drops {
-            assert_eq!(drop.owner(), owner);
-            assert_eq!(drop.target(), OutputTarget::Transport);
-            assert_eq!(drop.reason(), PacketMover2OutputError::Unavailable);
+        assert_eq!(sent, 2);
+        assert!(drops.is_empty());
+        let mut payloads = Vec::new();
+        for _ in 0..2 {
+            let received =
+                tokio::time::timeout(std::time::Duration::from_secs(1), recv_packet_rx.recv())
+                    .await
+                    .expect("receive ordered worker packet")
+                    .expect("packet channel open");
+            payloads.push(received.data.as_slice().to_vec());
         }
+        assert_eq!(
+            payloads,
+            [b"bulk-full-a".to_vec(), b"bulk-full-b".to_vec()]
+        );
 
         send_transport = transports.remove(&send_transport_id).unwrap();
         send_transport.stop().await.expect("stop send udp");

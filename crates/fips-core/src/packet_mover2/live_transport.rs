@@ -49,7 +49,7 @@ impl PacketMover2TransportSendWorkerPool {
         }
     }
 
-    fn enqueue(
+    async fn enqueue(
         &mut self,
         job: PacketMover2TransportSendJob,
     ) -> Result<usize, PacketMover2TransportSendJob> {
@@ -58,13 +58,7 @@ impl PacketMover2TransportSendWorkerPool {
             return Ok(0);
         }
         self.ensure_started();
-        if !self.try_reserve(job.lane, packet_count) {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::PacketMover2TransportSendWorkerBackpressure,
-                packet_count as u64,
-            );
-            return Err(job);
-        }
+        self.reserve(job.lane, packet_count);
         let shard = packet_mover2_transport_send_worker_shard(
             job.transport_id,
             job.remote_addr,
@@ -112,33 +106,33 @@ impl PacketMover2TransportSendWorkerPool {
         }
     }
 
-    fn try_reserve(&self, lane: Lane, packet_count: usize) -> bool {
-        if packet_count > self.max_job_packets_for_lane(lane) {
-            return false;
-        }
-        if lane == Lane::Priority
-            && !try_reserve_transport_send_packets(
-                &self.queued_priority_packets,
-                packet_count,
-                self.max_priority_queued_packets,
-            )
-        {
-            return false;
-        }
-        let total_limit = match lane {
+    fn reserve(&self, lane: Lane, packet_count: usize) {
+        let previous = self
+            .queued_packets
+            .fetch_add(packet_count, std::sync::atomic::Ordering::AcqRel);
+        let soft_limit = match lane {
             Lane::Priority => self
                 .max_queued_packets
                 .saturating_add(self.max_priority_queued_packets),
             Lane::Bulk => self.max_queued_packets,
         };
-        if !try_reserve_transport_send_packets(&self.queued_packets, packet_count, total_limit) {
-            if lane == Lane::Priority {
-                self.queued_priority_packets
-                    .fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
-            }
-            return false;
+        if previous.saturating_add(packet_count) > soft_limit {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::PacketMover2TransportSendWorkerBackpressure,
+                packet_count as u64,
+            );
         }
-        true
+        if lane == Lane::Priority {
+            let priority_previous = self
+                .queued_priority_packets
+                .fetch_add(packet_count, std::sync::atomic::Ordering::AcqRel);
+            if priority_previous.saturating_add(packet_count) > self.max_priority_queued_packets {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::PacketMover2TransportSendWorkerBackpressure,
+                    packet_count as u64,
+                );
+            }
+        }
     }
 
     fn release(&self, lane: Lane, packet_count: usize) {
@@ -147,31 +141,6 @@ impl PacketMover2TransportSendWorkerPool {
         if lane == Lane::Priority {
             self.queued_priority_packets
                 .fetch_sub(packet_count, std::sync::atomic::Ordering::AcqRel);
-        }
-    }
-}
-
-fn try_reserve_transport_send_packets(
-    queued_packets: &std::sync::atomic::AtomicUsize,
-    packet_count: usize,
-    max_queued_packets: usize,
-) -> bool {
-    let mut queued = queued_packets.load(std::sync::atomic::Ordering::Acquire);
-    loop {
-        let Some(next) = queued.checked_add(packet_count) else {
-            return false;
-        };
-        if next > max_queued_packets {
-            return false;
-        }
-        match queued_packets.compare_exchange_weak(
-            queued,
-            next,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        ) {
-            Ok(_) => return true,
-            Err(current) => queued = current,
         }
     }
 }
@@ -532,7 +501,8 @@ async fn send_udp_transport_plan_group(
                     worker,
                     sent_receipts,
                     sent,
-                );
+                )
+                .await;
             }
             Ok(PacketMover2DirectFspTransportOutput::Segments(segments)) => {
                 for output in segments {
@@ -548,7 +518,8 @@ async fn send_udp_transport_plan_group(
                         worker,
                         sent_receipts,
                         sent,
-                    );
+                    )
+                    .await;
                 }
             }
             Err(output) => {
@@ -572,11 +543,12 @@ async fn send_udp_transport_plan_group(
         worker,
         sent_receipts,
         sent,
-    );
+    )
+    .await;
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push_packet_mover2_udp_output(
+async fn push_packet_mover2_udp_output(
     snapshot: &crate::transport::udp::UdpSendSnapshot,
     socket_addr: std::net::SocketAddr,
     lane: Lane,
@@ -610,11 +582,12 @@ fn push_packet_mover2_udp_output(
             worker,
             sent_receipts,
             sent,
-        );
+        )
+        .await;
     }
 }
 
-fn flush_packet_mover2_udp_send_job(
+async fn flush_packet_mover2_udp_send_job(
     job: PacketMover2TransportSendJob,
     drops: &mut Vec<PacketMover2OutputDrop>,
     worker: &mut PacketMover2TransportSendWorkerPool,
@@ -634,7 +607,7 @@ fn flush_packet_mover2_udp_send_job(
     } else {
         None
     };
-    match worker.enqueue(job) {
+    match worker.enqueue(job).await {
         Ok(count) => {
             *sent += count;
             if let (Some(sent_receipts), Some(job_receipts)) =
