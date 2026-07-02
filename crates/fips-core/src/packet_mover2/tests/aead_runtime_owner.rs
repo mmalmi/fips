@@ -1821,6 +1821,105 @@
     }
 
     #[test]
+    fn compact_endpoint_data_completion_coalesces_adjacent_direct_runs() {
+        let source_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let previous_hop = test_node_addr(917);
+        let local_addr = test_node_addr(918);
+        let key = 0x93;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
+        );
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let endpoint_payloads = [
+            vec![b"run-one-a".to_vec(), b"run-one-b".to_vec()],
+            vec![
+                b"run-two-a".to_vec(),
+                b"run-two-b".to_vec(),
+                b"run-two-c".to_vec(),
+            ],
+        ];
+        for (counter, payloads) in endpoint_payloads.into_iter().enumerate() {
+            let endpoint_bulk =
+                crate::node::session_wire::encode_fsp_endpoint_data_bulk_payload(payloads)
+                    .unwrap();
+            let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
+                917_001 + counter as u32,
+                crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
+                0,
+                &endpoint_bulk,
+            );
+            driver
+                .mover
+                .submit_socket_packet(
+                    SocketPacket::new(
+                        owner,
+                        1,
+                        counter as u64,
+                        PacketClass::Bulk,
+                        OutputTarget::SessionPayload { local_addr },
+                        fsp_encrypted_wire(counter as u64, 0, &fsp_inner, key),
+                    )
+                    .with_previous_hop(previous_hop)
+                    .with_activity_tick(ActivityTick::new(917_010 + counter as u64)),
+                )
+                .unwrap();
+        }
+
+        let prepared = capture_prepared_work(&mut driver.mover, 8);
+        assert_eq!(prepared.len(), 2);
+        let mut completions = prepared
+            .into_iter()
+            .map(PreparedCryptoWork::execute)
+            .collect::<VecDeque<_>>();
+        let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
+
+        assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
+        assert_eq!(driver.endpoint_data_bulk.len(), 1);
+        assert_eq!(driver.endpoint_data_bulk[0].len(), 5);
+        assert_eq!(driver.endpoint_data_bulk[0].commit_runs().len(), 1);
+        assert_eq!(driver.endpoint_data_bulk[0].commit_runs()[0].len(), 5);
+        assert_eq!(driver.endpoint_data_bulk[0].direct_packet_run_count(), 1);
+
+        let mut batches = std::mem::take(&mut driver.endpoint_data_bulk)
+            .into_iter()
+            .map(PacketMover2EndpointDataBulk::into_direct_packet_batch)
+            .collect::<Vec<_>>();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), 5);
+        assert_eq!(batches[0].run_count(), 1);
+        let runs = batches[0].packet_runs();
+        assert_eq!(runs[0].source_peer(), &source_peer);
+        assert_eq!(runs[0].previous_hop_node_addr(), &previous_hop);
+        assert_eq!(runs[0].len(), 5);
+        let packets = runs[0]
+            .packet_slices()
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            packets,
+            vec![
+                b"run-one-a".to_vec(),
+                b"run-one-b".to_vec(),
+                b"run-two-a".to_vec(),
+                b"run-two-b".to_vec(),
+                b"run-two-c".to_vec(),
+            ]
+        );
+        let runs_mut = batches[0].packet_runs_mut();
+        runs_mut[0].packet_slice_mut(3).unwrap()[0] = b'R';
+        assert_eq!(runs_mut[0].packet_slice(3), Some(b"Run-two-b".as_slice()));
+    }
+
+    #[test]
     fn completion_only_turn_retires_out_of_order_completions_in_owner_order() {
         let owner = fmp_owner(81);
         let open_key = 81;
