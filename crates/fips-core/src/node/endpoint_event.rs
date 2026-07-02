@@ -1,6 +1,7 @@
 use super::*;
 use crate::transport::PacketBuffer;
 use std::ops::Range;
+use std::sync::Arc;
 
 /// Authenticated source/session facts for a direct endpoint packet run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,13 +136,17 @@ impl FipsEndpointDirectSourceRun {
 /// Consecutive direct endpoint packets from one authenticated FIPS source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FipsEndpointDirectPacketSegment {
-    buffer: PacketBuffer,
+    buffer: Arc<PacketBuffer>,
     ranges: Vec<Range<usize>>,
     packet_bytes: usize,
 }
 
 impl FipsEndpointDirectPacketSegment {
     fn new(buffer: PacketBuffer, ranges: Vec<Range<usize>>) -> Self {
+        Self::from_shared_buffer(Arc::new(buffer), ranges)
+    }
+
+    fn from_shared_buffer(buffer: Arc<PacketBuffer>, ranges: Vec<Range<usize>>) -> Self {
         debug_assert!(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start));
         let packet_bytes = ranges.iter().map(|range| range.len()).sum();
         Self {
@@ -157,6 +162,54 @@ impl FipsEndpointDirectPacketSegment {
 
     fn is_empty(&self) -> bool {
         self.ranges.is_empty()
+    }
+
+    fn push_range_from_shared_buffer(
+        &mut self,
+        buffer: &Arc<PacketBuffer>,
+        range: Range<usize>,
+    ) -> bool {
+        if !Arc::ptr_eq(&self.buffer, buffer) {
+            return false;
+        }
+        if self
+            .ranges
+            .last()
+            .is_some_and(|previous| previous.end > range.start)
+        {
+            return false;
+        }
+        self.packet_bytes = self.packet_bytes.saturating_add(range.len());
+        self.ranges.push(range);
+        true
+    }
+}
+
+#[derive(Debug)]
+struct FipsEndpointDirectPacketSplitGroup {
+    lane: usize,
+    segments: Vec<FipsEndpointDirectPacketSegment>,
+}
+
+impl FipsEndpointDirectPacketSplitGroup {
+    fn new(lane: usize) -> Self {
+        Self {
+            lane,
+            segments: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, buffer: Arc<PacketBuffer>, range: Range<usize>) {
+        if let Some(last) = self.segments.last_mut()
+            && last.push_range_from_shared_buffer(&buffer, range.clone())
+        {
+            return;
+        }
+        self.segments
+            .push(FipsEndpointDirectPacketSegment::from_shared_buffer(
+                buffer,
+                vec![range],
+            ));
     }
 }
 
@@ -203,6 +256,13 @@ impl FipsEndpointDirectPacketStorage {
         match self {
             Self::Segmented(segment) => segment.len(),
             Self::Chained { packet_ends, .. } => packet_ends.last().copied().unwrap_or(0),
+        }
+    }
+
+    fn into_segments(self) -> Vec<FipsEndpointDirectPacketSegment> {
+        match self {
+            Self::Segmented(segment) => vec![segment],
+            Self::Chained { segments, .. } => segments,
         }
     }
 }
@@ -333,7 +393,7 @@ impl FipsEndpointDirectPacketRun {
         match &mut self.storage {
             FipsEndpointDirectPacketStorage::Segmented(segment) => {
                 let range = segment.ranges.get(index)?.clone();
-                Some(&mut segment.buffer.as_mut_slice()[range])
+                Some(&mut Arc::make_mut(&mut segment.buffer).as_mut_slice()[range])
             }
             FipsEndpointDirectPacketStorage::Chained {
                 segments,
@@ -347,7 +407,7 @@ impl FipsEndpointDirectPacketRun {
                     .unwrap_or(0);
                 let segment = segments.get_mut(segment_index)?;
                 let range = segment.ranges.get(index - previous_end)?.clone();
-                Some(&mut segment.buffer.as_mut_slice()[range])
+                Some(&mut Arc::make_mut(&mut segment.buffer).as_mut_slice()[range])
             }
         }
     }
@@ -395,6 +455,54 @@ impl FipsEndpointDirectPacketRun {
             segment_packet_index: 0,
             remaining: self.len(),
         }
+    }
+
+    /// Partition this run into packet-lane groups without copying packet bytes.
+    ///
+    /// The caller chooses a lane from immutable endpoint packet bytes. FIPS keeps
+    /// authentication/session metadata on every child run and shares the opened
+    /// endpoint payload buffer across lane runs.
+    pub fn partition_by_packet_lane<F>(
+        self,
+        lane_count: usize,
+        mut lane_for_packet: F,
+    ) -> Vec<(usize, Self)>
+    where
+        F: FnMut(&[u8]) -> usize,
+    {
+        let meta = self.meta;
+        let mut groups: Vec<FipsEndpointDirectPacketSplitGroup> = Vec::new();
+        for segment in self.storage.into_segments() {
+            let buffer = segment.buffer;
+            let bytes = buffer.as_slice();
+            for range in segment.ranges {
+                let lane = if lane_count == 0 {
+                    0
+                } else {
+                    lane_for_packet(&bytes[range.clone()]) % lane_count
+                };
+                let group_index = groups.iter().position(|group| group.lane == lane);
+                let group = match group_index {
+                    Some(index) => &mut groups[index],
+                    None => {
+                        groups.push(FipsEndpointDirectPacketSplitGroup::new(lane));
+                        groups.last_mut().expect("group was just pushed")
+                    }
+                };
+                group.push(Arc::clone(&buffer), range);
+            }
+        }
+
+        groups
+            .into_iter()
+            .map(|group| {
+                let run = Self {
+                    meta: meta.clone(),
+                    storage: FipsEndpointDirectPacketStorage::build_chained(group.segments),
+                };
+                (group.lane, run)
+            })
+            .collect()
     }
 
     /// Keep only packets accepted by the caller while preserving backing storage.
@@ -466,14 +574,14 @@ impl FipsEndpointDirectPacketRun {
     {
         match &mut self.storage {
             FipsEndpointDirectPacketStorage::Segmented(segment) => {
-                let bytes = segment.buffer.as_mut_slice();
+                let bytes = Arc::make_mut(&mut segment.buffer).as_mut_slice();
                 for range in &segment.ranges {
                     visit(&mut bytes[range.clone()]);
                 }
             }
             FipsEndpointDirectPacketStorage::Chained { segments, .. } => {
                 for segment in segments {
-                    let bytes = segment.buffer.as_mut_slice();
+                    let bytes = Arc::make_mut(&mut segment.buffer).as_mut_slice();
                     for range in &segment.ranges {
                         visit(&mut bytes[range.clone()]);
                     }
