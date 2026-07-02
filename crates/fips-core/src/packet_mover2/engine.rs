@@ -775,10 +775,15 @@ impl PacketMover2 {
             if ready_lanes == 0 {
                 break;
             }
-            let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
-                limit.saturating_sub(dispatched),
-                ready_lanes,
-            );
+            let remaining = limit.saturating_sub(dispatched);
+            let shard_limit = if priority_only {
+                packet_mover2_owner_shard_dispatch_quantum(remaining, ready_lanes)
+            } else {
+                // Bulk ingress is already owner/lane queued. Let one hot shard
+                // feed the crypto chunk instead of slicing established data
+                // across every ready shard before AEAD sees the run.
+                remaining
+            };
             let mut pass_dispatched = 0usize;
             for _ in 0..ready_lanes {
                 if dispatched >= limit {
