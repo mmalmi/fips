@@ -630,7 +630,7 @@ impl PacketMover2TurnDriver {
             0
         };
         if let Some(fast_ingress) = fast_ingress {
-            raw_socket_packets.extend(fast_ingress.into_packets());
+            self.admit_fast_ingress_runs(fast_ingress, &mut summary);
         }
         {
             let raw_ingress_drops = &mut self.raw_ingress_drops;
@@ -875,6 +875,22 @@ impl PacketMover2TurnDriver {
                 summary.inbound_admitted = summary.inbound_admitted.saturating_add(admitted);
                 summary.inbound_dropped = summary.inbound_dropped.saturating_add(dropped);
             }
+        }
+    }
+
+    fn admit_fast_ingress_runs(
+        &mut self,
+        fast_ingress: PacketMover2FastIngressBatch,
+        summary: &mut PacketMover2RuntimeSummary,
+    ) {
+        for run in fast_ingress.into_runs() {
+            let run_len = run.len();
+            crate::perf_profile::record_packet_mover2_fast_ingress_owner_run(run_len);
+            let (owner, lane, packets) = run.into_parts();
+            let (admitted, dropped) =
+                self.mover.submit_socket_packet_run(Some(owner), Some(lane), packets);
+            summary.inbound_admitted = summary.inbound_admitted.saturating_add(admitted);
+            summary.inbound_dropped = summary.inbound_dropped.saturating_add(dropped);
         }
     }
 

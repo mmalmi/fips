@@ -32,7 +32,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 69;
-const N_EVENTS: usize = 241;
+const N_EVENTS: usize = 243;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -505,6 +505,8 @@ pub enum Event {
     PacketMover2LiveOutputBatchPackets = 238,
     PacketMover2AeadOpenQueueDepth = 239,
     PacketMover2AeadSealQueueDepth = 240,
+    PacketMover2FastIngressOwnerRuns = 241,
+    PacketMover2FastIngressOwnerRunPackets = 242,
 }
 
 impl Event {
@@ -769,6 +771,10 @@ impl Event {
             Event::PacketMover2LiveOutputBatchPackets => "packet_mover2_live_output_batch_packets",
             Event::PacketMover2AeadOpenQueueDepth => "packet_mover2_aead_open_queue_depth",
             Event::PacketMover2AeadSealQueueDepth => "packet_mover2_aead_seal_queue_depth",
+            Event::PacketMover2FastIngressOwnerRuns => "packet_mover2_fast_ingress_owner_runs",
+            Event::PacketMover2FastIngressOwnerRunPackets => {
+                "packet_mover2_fast_ingress_owner_run_packets"
+            }
         }
     }
 }
@@ -1016,6 +1022,8 @@ fn event_from_index(idx: usize) -> Event {
         238 => Event::PacketMover2LiveOutputBatchPackets,
         239 => Event::PacketMover2AeadOpenQueueDepth,
         240 => Event::PacketMover2AeadSealQueueDepth,
+        241 => Event::PacketMover2FastIngressOwnerRuns,
+        242 => Event::PacketMover2FastIngressOwnerRunPackets,
         _ => unreachable!(),
     }
 }
@@ -1274,6 +1282,18 @@ pub(crate) fn record_packet_mover2_aead_prepared_job(packets: usize) {
     }
     record_event_count_sample(Event::PacketMover2AeadPreparedJob, 1);
     record_event_count_sample(Event::PacketMover2AeadPreparedJobPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_packet_mover2_fast_ingress_owner_run(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::PacketMover2FastIngressOwnerRuns, 1);
+    record_event_count_sample(
+        Event::PacketMover2FastIngressOwnerRunPackets,
+        packets as u64,
+    );
 }
 
 #[inline]

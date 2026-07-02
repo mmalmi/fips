@@ -282,35 +282,115 @@ impl PacketMover2EstablishedFastIngressSnapshot {
 }
 
 #[derive(Debug)]
-pub(crate) struct PacketMover2FastIngressBatch {
+pub(crate) struct PacketMover2FastIngressRun {
+    owner: OwnerId,
+    lane: Lane,
     packets: Vec<SocketPacket>,
+}
+
+impl PacketMover2FastIngressRun {
+    fn new(packet: SocketPacket) -> Self {
+        let owner = packet.owner;
+        let lane = packet.lane();
+        Self {
+            owner,
+            lane,
+            packets: vec![packet],
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    fn matches_packet(&self, packet: &SocketPacket) -> bool {
+        self.owner == packet.owner && self.lane == packet.lane()
+    }
+
+    fn push(&mut self, packet: SocketPacket) -> Result<(), SocketPacket> {
+        if !self.matches_packet(&packet) {
+            return Err(packet);
+        }
+        self.packets.push(packet);
+        Ok(())
+    }
+
+    fn append(&mut self, other: Self) -> Result<(), Self> {
+        if self.owner != other.owner || self.lane != other.lane {
+            return Err(other);
+        }
+        self.packets.extend(other.packets);
+        Ok(())
+    }
+
+    fn into_parts(self) -> (OwnerId, Lane, Vec<SocketPacket>) {
+        (self.owner, self.lane, self.packets)
+    }
+
+    fn into_packets(self) -> Vec<SocketPacket> {
+        self.packets
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketMover2FastIngressBatch {
+    runs: Vec<PacketMover2FastIngressRun>,
+    packet_count: usize,
     reservation: Option<PacketMover2FastIngressReservation>,
 }
 
 impl PacketMover2FastIngressBatch {
     fn new(
-        packets: Vec<SocketPacket>,
+        runs: Vec<PacketMover2FastIngressRun>,
         reservation: PacketMover2FastIngressReservation,
     ) -> Self {
+        let packet_count = runs.iter().map(PacketMover2FastIngressRun::len).sum();
         Self {
-            packets,
+            runs,
+            packet_count,
             reservation: Some(reservation),
         }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.packets.len()
+        self.packet_count
     }
 
     pub(crate) fn absorb(&mut self, other: Self) {
-        self.packets.extend(other.into_packets());
+        for run in other.into_runs() {
+            self.push_run(run);
+        }
     }
 
-    fn into_packets(mut self) -> Vec<SocketPacket> {
+    fn push_run(&mut self, run: PacketMover2FastIngressRun) {
+        let run_len = run.len();
+        if let Some(last) = self.runs.last_mut() {
+            match last.append(run) {
+                Ok(()) => {
+                    self.packet_count = self.packet_count.saturating_add(run_len);
+                    return;
+                }
+                Err(run) => self.runs.push(run),
+            }
+        } else {
+            self.runs.push(run);
+        }
+        self.packet_count = self.packet_count.saturating_add(run_len);
+    }
+
+    fn into_runs(mut self) -> Vec<PacketMover2FastIngressRun> {
         if let Some(reservation) = self.reservation.take() {
             reservation.release();
         }
-        std::mem::take(&mut self.packets)
+        self.packet_count = 0;
+        std::mem::take(&mut self.runs)
+    }
+
+    fn into_packets(self) -> Vec<SocketPacket> {
+        self.into_runs()
+            .into_iter()
+            .flat_map(PacketMover2FastIngressRun::into_packets)
+            .collect()
     }
 }
 
@@ -662,18 +742,20 @@ impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
             }
         };
         let mut misses = Vec::with_capacity(candidate_count);
-        let mut fast_packets = Vec::with_capacity(reservation.len().min(candidate_count));
+        let mut fast_runs = Vec::new();
         let mut accepted_inputs = 0usize;
+        let mut accepted_fast_packets = 0usize;
         let fast_limit = reservation.len();
         for (packet, input_count) in candidates {
-            if fast_packets.len() >= fast_limit {
+            if accepted_fast_packets >= fast_limit {
                 misses.push(packet);
                 continue;
             }
             match self.direct_fsp_socket_packet(&direct_sources, &fsp_routes, packet) {
                 PacketMover2FastIngressDirectFspResult::Fast(packet) => {
                     accepted_inputs = accepted_inputs.saturating_add(input_count);
-                    fast_packets.push(packet);
+                    accepted_fast_packets = accepted_fast_packets.saturating_add(1);
+                    push_fast_ingress_packet_run(&mut fast_runs, packet);
                 }
                 PacketMover2FastIngressDirectFspResult::Consumed => {
                     accepted_inputs = accepted_inputs.saturating_add(input_count);
@@ -682,7 +764,8 @@ impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
                     match Self::fmp_socket_packet_from_received(&routes, packet) {
                         Ok(packet) => {
                             accepted_inputs = accepted_inputs.saturating_add(input_count);
-                            fast_packets.push(packet);
+                            accepted_fast_packets = accepted_fast_packets.saturating_add(1);
+                            push_fast_ingress_packet_run(&mut fast_runs, packet);
                         }
                         Err(packet) => misses.push(packet),
                     }
@@ -691,17 +774,30 @@ impl PacketFastIngressSink for PacketMover2EstablishedFastIngressSink {
         }
         *packets = misses;
 
-        let accepted = fast_packets.len();
-        reservation.truncate(accepted);
-        if accepted == 0 {
+        reservation.truncate(accepted_fast_packets);
+        if accepted_fast_packets == 0 {
             reservation.release();
             return consumed_inputs.saturating_add(accepted_inputs);
         }
         permit.send(PacketMover2FastIngressBatch::new(
-            fast_packets,
+            fast_runs,
             reservation,
         ));
         consumed_inputs.saturating_add(accepted_inputs)
+    }
+}
+
+fn push_fast_ingress_packet_run(
+    runs: &mut Vec<PacketMover2FastIngressRun>,
+    packet: SocketPacket,
+) {
+    if let Some(last) = runs.last_mut() {
+        match last.push(packet) {
+            Ok(()) => return,
+            Err(packet) => runs.push(PacketMover2FastIngressRun::new(packet)),
+        }
+    } else {
+        runs.push(PacketMover2FastIngressRun::new(packet));
     }
 }
 
