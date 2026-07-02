@@ -1777,6 +1777,10 @@
             runs[0].packet_bytes(),
             b"compact-one".len() + b"compact-two".len() + b"compact-three".len()
         );
+        assert_eq!(runs[0].packet_slice(0), Some(b"compact-one".as_slice()));
+        assert_eq!(runs[0].packet_slice(1), Some(b"compact-two".as_slice()));
+        assert_eq!(runs[0].packet_slice(2), Some(b"compact-three".as_slice()));
+        assert!(runs[0].packet_slice(3).is_none());
         let packets = runs[0]
             .packet_slices()
             .map(<[u8]>::to_vec)
@@ -1788,6 +1792,22 @@
                 b"compact-two".to_vec(),
                 b"compact-three".to_vec()
             ]
+        );
+        runs[0].packet_slice_mut(1).unwrap()[0] = b'C';
+        assert_eq!(runs[0].packet_slice(1), Some(b"Compact-two".as_slice()));
+        runs[0].retain_packets(|index, _packet| index != 1);
+        assert_eq!(runs[0].len(), 2);
+        assert_eq!(
+            runs[0].packet_bytes(),
+            b"compact-one".len() + b"compact-three".len()
+        );
+        let retained = runs[0]
+            .packet_slices()
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained,
+            vec![b"compact-one".to_vec(), b"compact-three".to_vec()]
         );
         assert!(driver.outputs.is_empty());
     }

@@ -226,11 +226,60 @@ impl FipsEndpointDirectPacketRun {
         }
     }
 
+    /// Borrow one packet by index.
+    pub fn packet_slice(&self, index: usize) -> Option<&[u8]> {
+        match &self.storage {
+            FipsEndpointDirectPacketStorage::Segmented { buffer, ranges, .. } => ranges
+                .get(index)
+                .map(|range| &buffer.as_slice()[range.clone()]),
+        }
+    }
+
+    /// Mutably borrow one packet by index.
+    pub fn packet_slice_mut(&mut self, index: usize) -> Option<&mut [u8]> {
+        match &mut self.storage {
+            FipsEndpointDirectPacketStorage::Segmented { buffer, ranges, .. } => {
+                let range = ranges.get(index)?.clone();
+                Some(&mut buffer.as_mut_slice()[range])
+            }
+        }
+    }
+
     /// Borrow packet bytes without materializing per-packet buffers.
     pub fn packet_slices(&self) -> FipsEndpointDirectPacketSlices<'_> {
         FipsEndpointDirectPacketSlices {
             storage: &self.storage,
             index: 0,
+        }
+    }
+
+    /// Keep only packets accepted by the caller while preserving backing storage.
+    ///
+    /// The predicate receives the original packet index and immutable bytes. This
+    /// keeps routing/admission policy outside FIPS while allowing embedders to
+    /// remove rejected ranges before a TUN writer borrows or mutates the run.
+    pub fn retain_packets<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(usize, &[u8]) -> bool,
+    {
+        match &mut self.storage {
+            FipsEndpointDirectPacketStorage::Segmented {
+                buffer,
+                ranges,
+                packet_bytes,
+            } => {
+                let bytes = buffer.as_slice();
+                let mut retained = Vec::with_capacity(ranges.len());
+                let mut retained_bytes = 0usize;
+                for (index, range) in ranges.iter().cloned().enumerate() {
+                    if keep(index, &bytes[range.clone()]) {
+                        retained_bytes = retained_bytes.saturating_add(range.len());
+                        retained.push(range);
+                    }
+                }
+                *ranges = retained;
+                *packet_bytes = retained_bytes;
+            }
         }
     }
 
