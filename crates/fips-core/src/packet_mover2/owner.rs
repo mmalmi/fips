@@ -1732,12 +1732,31 @@ impl OwnerState {
         compact_endpoint_data: bool,
     ) {
         let mut retired_batch = RetiredOutputs::with_capacity(batch.len());
-        for completion in batch.into_completions() {
-            self.stage_retire_completion(completion);
-        }
+        self.retire_completion_batch_into(batch, &mut retired_batch, compact_endpoint_data);
         self.drain_ready_retirements_into(&mut retired_batch, compact_endpoint_data);
         if !retired_batch.is_empty() {
             retired.push(retired_batch);
+        }
+    }
+
+    fn retire_completion_batch_into(
+        &mut self,
+        batch: CryptoCompletionBatch,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        let mut completions = batch.into_completions().into_iter();
+        while let Some(completion) = completions.next() {
+            if completion.order() == OrderToken(self.next_retire) {
+                self.retire_ready_completion_into(completion, retired, compact_endpoint_data);
+                continue;
+            }
+
+            self.stage_retire_completion(completion);
+            for completion in completions {
+                self.stage_retire_completion(completion);
+            }
+            break;
         }
     }
 
@@ -1751,38 +1770,47 @@ impl OwnerState {
         compact_endpoint_data: bool,
     ) {
         while let Some(completion) = self.pending.remove(&OrderToken(self.next_retire)) {
-            self.next_retire = self.next_retire.wrapping_add(1);
-            self.in_flight = self.in_flight.saturating_sub(1);
-            if completion.reservation.lane == Lane::Bulk {
-                self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
-            }
+            self.retire_ready_completion_into(completion, retired, compact_endpoint_data);
+        }
+    }
 
-            if completion.reservation.generation != self.generation {
-                retired.push_drop(PacketDrop::from_completion(
+    fn retire_ready_completion_into(
+        &mut self,
+        completion: CryptoCompletion,
+        retired: &mut RetiredOutputs,
+        compact_endpoint_data: bool,
+    ) {
+        self.next_retire = self.next_retire.wrapping_add(1);
+        self.in_flight = self.in_flight.saturating_sub(1);
+        if completion.reservation.lane == Lane::Bulk {
+            self.bulk_in_flight = self.bulk_in_flight.saturating_sub(1);
+        }
+
+        if completion.reservation.generation != self.generation {
+            retired.push_drop(PacketDrop::from_completion(
+                &completion,
+                PacketDropReason::StaleCompletionGeneration,
+                None,
+            ));
+            return;
+        }
+
+        match completion.result {
+            CryptoResult::Opened(output) => {
+                self.authenticated_counter_highest = self
+                    .authenticated_counter_highest
+                    .max(completion.reservation.counter);
+                self.retire_opened_output_into(output, retired, compact_endpoint_data);
+            }
+            CryptoResult::Sealed(output) => retired.push_output(output),
+            CryptoResult::Outbound(packet) => retired.push_outbound(packet),
+            CryptoResult::Failed(failure) => {
+                retired.push_drop(PacketDrop::from_completion_with_authenticated_highest(
                     &completion,
-                    PacketDropReason::StaleCompletionGeneration,
-                    None,
+                    PacketDropReason::CryptoFailed,
+                    failure,
+                    self.authenticated_counter_highest,
                 ));
-                continue;
-            }
-
-            match completion.result {
-                CryptoResult::Opened(output) => {
-                    self.authenticated_counter_highest = self
-                        .authenticated_counter_highest
-                        .max(completion.reservation.counter);
-                    self.retire_opened_output_into(output, retired, compact_endpoint_data);
-                }
-                CryptoResult::Sealed(output) => retired.push_output(output),
-                CryptoResult::Outbound(packet) => retired.push_outbound(packet),
-                CryptoResult::Failed(failure) => {
-                    retired.push_drop(PacketDrop::from_completion_with_authenticated_highest(
-                        &completion,
-                        PacketDropReason::CryptoFailed,
-                        failure,
-                        self.authenticated_counter_highest,
-                    ));
-                }
             }
         }
     }

@@ -43,6 +43,10 @@ impl CryptoCompletion {
             | CryptoResult::Failed(CryptoFailureKind::Seal) => CryptoCompletionSource::Seal,
         }
     }
+
+    fn order(&self) -> OrderToken {
+        self.reservation.order
+    }
 }
 
 impl CryptoCompletionBatch {
