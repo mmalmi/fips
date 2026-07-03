@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Delivered direct endpoint packet batches before PM2 transport sends, reducing
+  app-facing receive queue residence during bulk nvpn traffic.
 - Deferred PM2 FSP ingress until local routes catch up, avoiding transient
   route-missing drops during reconnect or route churn.
 - Bumped `fips-endpoint` to 0.3.53 so app-facing consumers pick up the
