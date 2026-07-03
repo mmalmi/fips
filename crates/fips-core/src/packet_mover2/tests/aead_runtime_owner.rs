@@ -1978,6 +1978,139 @@
         );
     }
 
+    struct DirectDrainAssertingRawIngressSource {
+        delivered: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+        checked: bool,
+    }
+
+    impl PacketMover2RawIngressSource for DirectDrainAssertingRawIngressSource {
+        fn drain_raw_ingress<F>(&mut self, _limit: usize, _push: F) -> usize
+        where
+            F: FnMut(PacketMover2RawIngress),
+        {
+            self.checked = true;
+            assert!(
+                !self
+                    .delivered
+                    .lock()
+                    .expect("direct deliveries lock")
+                    .is_empty(),
+                "direct endpoint packets should drain before fresh raw admission"
+            );
+            0
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_endpoint_completion_drains_before_joined_admission() {
+        let source_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let previous_hop = test_node_addr(918);
+        let local_addr = test_node_addr(919);
+        let key = 0x94;
+        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
+        );
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let endpoint_bulk = crate::node::session_wire::encode_fsp_endpoint_data_bulk_payload(vec![
+            b"tail-one".to_vec(),
+            b"tail-two".to_vec(),
+        ])
+        .unwrap();
+        let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            918_001,
+            crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
+            0,
+            &endpoint_bulk,
+        );
+        driver
+            .mover
+            .submit_socket_packet(
+                SocketPacket::new(
+                    owner,
+                    1,
+                    918,
+                    PacketClass::Bulk,
+                    OutputTarget::SessionPayload { local_addr },
+                    fsp_encrypted_wire(918, 0, &fsp_inner, key),
+                )
+                .with_previous_hop(previous_hop)
+                .with_activity_tick(ActivityTick::new(918_010)),
+            )
+            .unwrap();
+
+        let mut prepared = capture_prepared_work(&mut driver.mover, 8);
+        assert_eq!(prepared.len(), 1);
+        let mut completions = VecDeque::from([prepared.pop().unwrap().execute()]);
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let captured = Arc::clone(&delivered);
+        let direct_sink = EndpointDirectSink::new(move |batch: crate::FipsEndpointDirectPacketBatch| {
+            captured
+                .lock()
+                .expect("direct deliveries lock")
+                .extend(
+                    batch
+                        .packet_runs()
+                        .iter()
+                        .flat_map(|run| run.packet_slices().map(<[u8]>::to_vec)),
+                );
+            Ok::<(), crate::FipsEndpointDirectDeliveryError>(())
+        });
+        let mut node = crate::Node::new(crate::Config::new()).expect("node");
+        let endpoint_io = node
+            .attach_endpoint_data_io_with_direct_sink(8, direct_sink)
+            .expect("endpoint data io");
+        let mut raw_source = DirectDrainAssertingRawIngressSource {
+            delivered: Arc::clone(&delivered),
+            checked: false,
+        };
+        let mut routes = PacketMover2LiveRouteTable::default();
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+        let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
+        let mut deferred_endpoint_data_batches = Vec::new();
+        let mut deferred_tun_packets = Vec::new();
+        let transports = HashMap::<TransportId, TransportHandle>::new();
+
+        let turn = pump_aead_live_node_route_table_turn_with_completions(
+            &mut driver,
+            &mut completions,
+            8,
+            &mut raw_source,
+            &mut routes,
+            0,
+            &mut endpoint_data_rx,
+            0,
+            &mut tun_outbound_rx,
+            0,
+            &mut deferred_endpoint_data_batches,
+            &mut deferred_tun_packets,
+            &tun_tx,
+            &endpoint_io.event_tx,
+            &transports,
+            8,
+        )
+        .await;
+
+        assert!(raw_source.checked);
+        assert_eq!(
+            delivered.lock().expect("direct deliveries lock").as_slice(),
+            &[b"tail-one".to_vec(), b"tail-two".to_vec()]
+        );
+        assert_eq!(turn.endpoint_data_bulk_count(), 2);
+        assert_eq!(turn.endpoint_data_bulk().len(), 1);
+        assert_eq!(turn.endpoint_data_bulk()[0].direct_packet_run_count(), 0);
+        assert_eq!(turn.endpoint_data_bulk()[0].commit_runs()[0].len(), 2);
+    }
+
     #[test]
     fn compact_endpoint_data_completion_coalesces_adjacent_direct_runs() {
         let source_peer =

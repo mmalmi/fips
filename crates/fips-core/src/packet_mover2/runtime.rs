@@ -299,13 +299,15 @@ impl PacketMover2TurnDriver {
         Transports: PacketMover2TransportResolver + ?Sized,
         E: PacketMover2CryptoExecutor,
     {
-        let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
+        let direct_sink = endpoint_tx.direct_sink();
+        let compact_endpoint_data = direct_sink.is_some();
         let summary = self.collect_live_session_outputs_with_executor(
             summary,
             routes,
             crypto_limit,
             executor,
             compact_endpoint_data,
+            direct_sink,
         );
         let mut transport_output = std::mem::take(&mut self.transport_output);
         transport_output.clear();
@@ -356,7 +358,7 @@ impl PacketMover2TurnDriver {
             .summary
             .outputs_dropped
             .saturating_add(report.transport_dropped);
-        self.deliver_direct_endpoint_packet_batches(endpoint_tx.direct_sink());
+        self.deliver_direct_endpoint_packet_batches(direct_sink);
         report.endpoint_data_bulk = std::mem::take(&mut self.endpoint_data_bulk);
         self.transport_output = transport_output;
         report
@@ -449,6 +451,9 @@ impl PacketMover2TurnDriver {
         let mut remaining_crypto_limit = crypto_limit;
         let completion_can_join_admission =
             self.completion_activity_is_compact_endpoint_data_only(admission_summary);
+        if completion_can_join_admission {
+            self.deliver_direct_endpoint_packet_batches(endpoint_tx.direct_sink());
+        }
         if admission_summary.has_activity() && !completion_can_join_admission {
             let report = self
                 .finish_aead_live_node_output_turn_with_executor(
@@ -1095,6 +1100,7 @@ impl PacketMover2TurnDriver {
         crypto_limit: usize,
         executor: &mut E,
         compact_endpoint_data: bool,
+        direct_sink: Option<&EndpointDirectSink>,
     ) -> PacketMover2RuntimeSummary
     where
         R: PacketMover2IngressRouter,
@@ -1102,6 +1108,7 @@ impl PacketMover2TurnDriver {
     {
         let mut remaining = crypto_limit;
         self.process_live_internal_outputs(router, &mut summary);
+        self.deliver_direct_endpoint_packet_batches(direct_sink);
         loop {
             let dispatched_before = summary.dispatched;
             summary = self.collect_aead_outputs_with_executor(
@@ -1116,11 +1123,14 @@ impl PacketMover2TurnDriver {
                 break;
             }
 
-            if self.process_live_internal_outputs(router, &mut summary) == 0 {
+            let internal_admitted = self.process_live_internal_outputs(router, &mut summary);
+            self.deliver_direct_endpoint_packet_batches(direct_sink);
+            if internal_admitted == 0 {
                 break;
             }
         }
         self.process_live_internal_outputs(router, &mut summary);
+        self.deliver_direct_endpoint_packet_batches(direct_sink);
         summary
     }
 
