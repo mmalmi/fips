@@ -37,12 +37,16 @@ use tracing::{error, warn};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::Layer;
 
-pub(crate) use super::tun_outbound::{TunOutboundAdmission, tun_outbound_channel};
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+pub(crate) use super::tun_outbound::TunOutboundAdmission;
+pub(crate) use super::tun_outbound::tun_outbound_channel;
 pub use super::tun_outbound::{TunOutboundRx, TunOutboundTx};
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
+pub(crate) use super::tun_write::TunRx;
 pub use super::tun_write::TunTx;
 #[cfg(test)]
 pub(crate) use super::tun_write::write_channel_with_bulk_capacity;
-pub(crate) use super::tun_write::{TunRx, TunWriteErrorKind, TunWriteLane, write_channel};
+pub(crate) use super::tun_write::{TunWriteErrorKind, TunWriteLane, write_channel};
 
 /// Read-only handle to the per-destination path MTU map. Populated by
 /// the discovery handler on `LookupResponse`; read by the TUN reader

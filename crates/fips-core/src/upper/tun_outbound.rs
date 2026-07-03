@@ -26,6 +26,7 @@ impl QueuedTunOutboundPacket {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum TunOutboundAdmission {
     Enqueued,
@@ -85,6 +86,7 @@ impl TunOutboundTx {
             .map_err(map_queued_try_send_error)
     }
 
+    #[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
     pub(crate) fn admit_from_tun_reader(
         &self,
         packet: Vec<u8>,

@@ -81,6 +81,7 @@ impl TunWritePacket {
         }
     }
 
+    #[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
     pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
         match self {
             Self::Vec(packet) => packet,
@@ -88,6 +89,7 @@ impl TunWritePacket {
         }
     }
 
+    #[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
     pub(crate) fn len(&self) -> usize {
         self.as_slice().len()
     }
