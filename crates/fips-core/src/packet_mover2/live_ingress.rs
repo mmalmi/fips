@@ -921,12 +921,12 @@ impl PacketMover2EndpointDataRouter for PacketMover2LiveRouteTable {
     fn route_endpoint_data_batch(
         &mut self,
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataBulkBody>,
     ) -> PacketMover2EndpointDataBatchRoute {
         let Some(route) = self.endpoint.get(remote.node_addr()) else {
             return PacketMover2EndpointDataBatchRoute::deferred(payloads);
         };
-        route.route_batch(payloads)
+        route.route_bulk_bodies(payloads)
     }
 }
 

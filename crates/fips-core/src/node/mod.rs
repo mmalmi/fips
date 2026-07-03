@@ -46,8 +46,9 @@ pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
 pub(crate) use endpoint_channels::{
-    ENDPOINT_STALE_DATA_DROP_MS, EndpointDataBatchRx, EndpointDataBatchTx,
-    NodeEndpointControlCommand, NodeEndpointDataBatch, endpoint_data_batch_channel,
+    ENDPOINT_STALE_DATA_DROP_MS, EndpointDataBatchRx, EndpointDataBatchTx, EndpointDataBulkBody,
+    EndpointDataBulkBodyBuilder, NodeEndpointControlCommand, NodeEndpointDataBatch,
+    endpoint_data_batch_channel,
 };
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
 pub(crate) use endpoint_event::{

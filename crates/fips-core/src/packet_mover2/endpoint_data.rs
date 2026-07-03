@@ -2,7 +2,7 @@
 pub(crate) struct PacketMover2EndpointDataBatchRoute {
     routed: Vec<OutboundPacket>,
     dropped: Vec<(usize, PacketMover2EndpointDataDropReason)>,
-    deferred_payloads: Option<Vec<Vec<u8>>>,
+    deferred_payloads: Option<Vec<EndpointDataBulkBody>>,
 }
 
 impl PacketMover2EndpointDataBatchRoute {
@@ -13,7 +13,7 @@ impl PacketMover2EndpointDataBatchRoute {
         }
     }
 
-    fn deferred(payloads: Vec<Vec<u8>>) -> Self {
+    fn deferred(payloads: Vec<EndpointDataBulkBody>) -> Self {
         Self {
             deferred_payloads: (!payloads.is_empty()).then_some(payloads),
             ..Default::default()
@@ -25,7 +25,7 @@ impl PacketMover2EndpointDataBatchRoute {
         remote: PeerIdentity,
         drops: &mut Vec<PacketMover2EndpointDataDrop>,
         mut push: F,
-    ) -> Option<Vec<Vec<u8>>>
+    ) -> Option<Vec<EndpointDataBulkBody>>
     where
         F: FnMut(Vec<OutboundPacket>),
     {
@@ -75,87 +75,60 @@ impl PacketMover2EndpointDataRoute {
         self.owner
     }
 
+    #[cfg(test)]
     fn route_batch(&self, payloads: Vec<Vec<u8>>) -> PacketMover2EndpointDataBatchRoute {
-        let mut result = PacketMover2EndpointDataBatchRoute::with_capacity(payloads.len());
-        let routed_at_ms = crate::time::now_ms();
-        let max_fsp_payload = self.max_fsp_bulk_body_len();
-        let mut bulk_payloads = Vec::new();
-        let mut bulk_wire_len = crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len();
+        let mut bodies = Vec::new();
+        let mut dropped = Vec::new();
+        let mut builder = EndpointDataBulkBodyBuilder::new();
         for payload in payloads {
-            let Some(packet_wire_len) =
-                crate::node::session_wire::fsp_endpoint_data_bulk_packet_wire_len(payload.len())
-            else {
-                result
-                    .dropped
-                    .push((payload.len(), PacketMover2EndpointDataDropReason::InvalidPayload));
+            if !builder.can_push_packet(&payload) {
+                if let Some(body) = builder.finish() {
+                    bodies.push(body);
+                }
+                builder = EndpointDataBulkBodyBuilder::new();
+            }
+            if !builder.push_packet(&payload) {
+                dropped.push((payload.len(), PacketMover2EndpointDataDropReason::InvalidPayload));
                 continue;
             };
-            if crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len()
-                .saturating_add(packet_wire_len)
-                > max_fsp_payload
-            {
-                result
-                    .dropped
-                    .push((payload.len(), PacketMover2EndpointDataDropReason::InvalidPayload));
+        }
+        if let Some(body) = builder.finish() {
+            bodies.push(body);
+        }
+        let mut result = self.route_bulk_bodies(bodies);
+        result.dropped.extend(dropped);
+        result
+    }
+
+    fn route_bulk_bodies(
+        &self,
+        bodies: Vec<EndpointDataBulkBody>,
+    ) -> PacketMover2EndpointDataBatchRoute {
+        let mut result = PacketMover2EndpointDataBatchRoute::with_capacity(bodies.len());
+        let routed_at_ms = crate::time::now_ms();
+        let max_fsp_payload = self.max_fsp_bulk_body_len();
+        for body in bodies {
+            if body.body_len() > max_fsp_payload {
+                for packet_len in body.packet_lengths() {
+                    result
+                        .dropped
+                        .push((packet_len, PacketMover2EndpointDataDropReason::InvalidPayload));
+                }
                 continue;
             }
-            if !bulk_payloads.is_empty()
-                && (bulk_payloads.len()
-                    >= crate::node::session_wire::FSP_ENDPOINT_DATA_BULK_MAX_PACKETS
-                    || bulk_wire_len.saturating_add(packet_wire_len) > max_fsp_payload)
-            {
-                self.push_endpoint_data_bulk(
-                    &mut result,
-                    &mut bulk_payloads,
-                    &mut bulk_wire_len,
-                    routed_at_ms,
-                );
-            }
-            bulk_wire_len = bulk_wire_len.saturating_add(packet_wire_len);
-            bulk_payloads.push(payload);
+            result.routed.push(
+                self.build_bulk_packet(
+                    crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
+                    body.into_body(),
+                )
+                .with_activity_tick(ActivityTick::new(routed_at_ms)),
+            );
         }
-        self.push_endpoint_data_bulk(
-            &mut result,
-            &mut bulk_payloads,
-            &mut bulk_wire_len,
-            routed_at_ms,
-        );
         result
     }
 
     fn max_fsp_bulk_body_len(&self) -> usize {
         crate::node::session_wire::fsp_endpoint_data_max_body_len()
-    }
-
-    fn push_endpoint_data_bulk(
-        &self,
-        result: &mut PacketMover2EndpointDataBatchRoute,
-        bulk_payloads: &mut Vec<Vec<u8>>,
-        bulk_wire_len: &mut usize,
-        routed_at_ms: u64,
-    ) {
-        if bulk_payloads.is_empty() {
-            return;
-        }
-        let payloads = std::mem::take(bulk_payloads);
-        *bulk_wire_len = crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len();
-        let packet_count = payloads.len();
-        match crate::node::session_wire::encode_fsp_endpoint_data_bulk_payload(payloads) {
-            Some(payload) => result.routed.push(
-                self.build_bulk_packet(
-                    crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
-                    payload,
-                )
-                .with_activity_tick(ActivityTick::new(routed_at_ms)),
-            ),
-            None => {
-                for _ in 0..packet_count {
-                    result
-                        .dropped
-                        .push((0, PacketMover2EndpointDataDropReason::InvalidPayload));
-                }
-            }
-        }
     }
 
     fn build_bulk_packet(&self, msg_type: u8, payload: Vec<u8>) -> OutboundPacket {
@@ -219,7 +192,7 @@ pub(crate) trait PacketMover2EndpointDataRouter {
     fn route_endpoint_data_batch(
         &mut self,
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataBulkBody>,
     ) -> PacketMover2EndpointDataBatchRoute;
 }
 
@@ -250,7 +223,7 @@ fn route_endpoint_data_batch_with_router<R, F>(
     let route = router.route_endpoint_data_batch(remote, payloads);
     let deferred_payloads = route.finish_batch(remote, drops, &mut push);
     if let Some(payloads) = deferred_payloads {
-        let batch = NodeEndpointDataBatch::batch_with_enqueued_at_ms(
+        let batch = NodeEndpointDataBatch::bulk_bodies_with_enqueued_at_ms(
             remote,
             payloads,
             queued_at,
@@ -277,13 +250,15 @@ fn drop_stale_endpoint_data_batch(
     batch: NodeEndpointDataBatch,
     drops: &mut Vec<PacketMover2EndpointDataDrop>,
 ) {
-    let (remote, payloads, _, _) = batch.into_parts();
-    for payload in payloads {
-        push_endpoint_data_drop(
-            remote,
-            payload.len(),
-            PacketMover2EndpointDataDropReason::StaleQueuedBatch,
-            drops,
-        );
+    let (remote, bodies, _, _) = batch.into_parts();
+    for body in bodies {
+        for payload_len in body.packet_lengths() {
+            push_endpoint_data_drop(
+                remote,
+                payload_len,
+                PacketMover2EndpointDataDropReason::StaleQueuedBatch,
+                drops,
+            );
+        }
     }
 }

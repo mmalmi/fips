@@ -174,6 +174,10 @@ fn endpoint_data_batch_owns_payload_bytes_and_queue_stamp() {
 
     let (owned_remote, owned_payloads, owned_queued_at, owned_enqueued_at_ms) = batch.into_parts();
     assert_eq!(owned_remote, remote);
+    let owned_payloads = owned_payloads
+        .into_iter()
+        .flat_map(EndpointDataBulkBody::into_packet_payloads)
+        .collect::<Vec<_>>();
     assert_eq!(owned_payloads, vec![payload]);
     assert_eq!(owned_queued_at, queued_at);
     assert_eq!(owned_enqueued_at_ms, enqueued_at_ms);

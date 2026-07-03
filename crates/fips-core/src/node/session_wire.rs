@@ -84,7 +84,7 @@ pub const FSP_PORT_IPV6_SHIM: u16 = 256;
 pub const FSP_ENDPOINT_DATA_BULK_MAX_PACKETS: usize = 48;
 
 const FSP_ENDPOINT_DATA_BULK_COUNT_SIZE: usize = 2;
-const FSP_ENDPOINT_DATA_BULK_LEN_SIZE: usize = 2;
+pub(crate) const FSP_ENDPOINT_DATA_BULK_LEN_SIZE: usize = 2;
 
 // Cleartext flag bit constants (byte 1 of common prefix, phase 0x0 only).
 
@@ -126,7 +126,8 @@ pub const fn fsp_endpoint_data_bulk_base_wire_len() -> usize {
 }
 
 /// Encode packet boundaries and bytes for `SessionMessageType::EndpointDataBulk`.
-pub fn encode_fsp_endpoint_data_bulk_payload(mut packets: Vec<Vec<u8>>) -> Option<Vec<u8>> {
+#[cfg(test)]
+pub(crate) fn encode_fsp_endpoint_data_bulk_payload(mut packets: Vec<Vec<u8>>) -> Option<Vec<u8>> {
     if packets.is_empty() || packets.len() > FSP_ENDPOINT_DATA_BULK_MAX_PACKETS {
         return None;
     }

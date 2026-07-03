@@ -64,8 +64,15 @@ impl Node {
         batch: NodeEndpointDataBatch,
     ) {
         let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
-        self.queue_packet_mover2_unrouted_endpoint_batch(remote, payloads, enqueued_at_ms)
-            .await;
+        self.queue_packet_mover2_unrouted_endpoint_batch(
+            remote,
+            payloads
+                .into_iter()
+                .flat_map(EndpointDataBulkBody::into_packet_payloads)
+                .collect(),
+            enqueued_at_ms,
+        )
+        .await;
     }
 
     pub(in crate::node) async fn handle_endpoint_control(
