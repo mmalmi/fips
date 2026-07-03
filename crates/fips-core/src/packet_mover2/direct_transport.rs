@@ -8,13 +8,48 @@ const DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS: usize = 128;
 #[derive(Debug)]
 enum PacketMover2DirectFspTransportOutput {
     Whole(PacketOutput),
-    Segments(Vec<PacketOutput>),
+    Segments(PacketMover2DirectFspTransportSegments),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PacketMover2DirectFspTransportSegmentation {
     max_fragment_payload: usize,
     fragment_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PacketMover2DirectFspTransportSegment {
+    header: [u8; DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN],
+    payload_range: std::ops::Range<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PacketMover2DirectFspTransportSegments {
+    output: PacketOutput,
+    segments: Vec<PacketMover2DirectFspTransportSegment>,
+}
+
+impl PacketMover2DirectFspTransportSegments {
+    fn len(&self) -> usize {
+        self.segments.len()
+    }
+
+    fn payload_len(&self, index: usize) -> usize {
+        let segment = &self.segments[index];
+        DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + segment.payload_range.len()
+    }
+
+    fn payload_slices<'a>(
+        &'a self,
+        index: usize,
+        out: &mut [Option<&'a [u8]>; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES],
+    ) -> usize {
+        out.fill(None);
+        let segment = &self.segments[index];
+        out[0] = Some(segment.header.as_slice());
+        out[1] = Some(&self.output.payload()[segment.payload_range.clone()]);
+        2
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -25,12 +60,35 @@ struct PacketMover2DirectFspFragmentKey {
 }
 
 #[derive(Debug)]
+struct PacketMover2DirectFspFragmentPayload {
+    buffer: PacketBuffer,
+    range: std::ops::Range<usize>,
+}
+
+impl PacketMover2DirectFspFragmentPayload {
+    fn new(buffer: PacketBuffer, range: std::ops::Range<usize>) -> Option<Self> {
+        if range.is_empty() || range.end > buffer.len() {
+            return None;
+        }
+        Some(Self { buffer, range })
+    }
+
+    fn len(&self) -> usize {
+        self.range.len()
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.buffer[self.range.clone()]
+    }
+}
+
+#[derive(Debug)]
 struct PacketMover2DirectFspReassembly {
     created_at_ms: u64,
     total_len: usize,
     received_bytes: usize,
     received_count: usize,
-    fragments: Vec<Option<PacketBuffer>>,
+    fragments: Vec<Option<PacketMover2DirectFspFragmentPayload>>,
 }
 
 impl PacketMover2DirectFspReassembly {
@@ -40,7 +98,7 @@ impl PacketMover2DirectFspReassembly {
             total_len,
             received_bytes: 0,
             received_count: 0,
-            fragments: vec![None; fragment_count],
+            fragments: (0..fragment_count).map(|_| None).collect(),
         }
     }
 
@@ -48,15 +106,14 @@ impl PacketMover2DirectFspReassembly {
         self.total_len == total_len && self.fragments.len() == fragment_count
     }
 
-    fn insert(&mut self, index: usize, payload: PacketBuffer) -> bool {
+    fn insert(&mut self, index: usize, payload: PacketMover2DirectFspFragmentPayload) -> bool {
         let Some(slot) = self.fragments.get_mut(index) else {
             return false;
         };
         if slot.is_some() {
             return true;
         }
-        if payload.is_empty()
-            || self.received_bytes.saturating_add(payload.len()) > self.total_len
+        if payload.len() == 0 || self.received_bytes.saturating_add(payload.len()) > self.total_len
         {
             return false;
         }
@@ -121,8 +178,18 @@ impl PacketMover2DirectFspReassembler {
             remote_addr: packet.remote_addr.clone(),
             record_id: header.record_id,
         };
-        let mut fragment_payload = std::mem::take(&mut packet.data);
-        fragment_payload.drain(..DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
+        let fragment_payload_len = packet
+            .data
+            .len()
+            .saturating_sub(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
+        let fragment_payload = match PacketMover2DirectFspFragmentPayload::new(
+            std::mem::take(&mut packet.data),
+            DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN
+                ..DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + fragment_payload_len,
+        ) {
+            Some(payload) => payload,
+            None => return PacketMover2DirectFspReassemblyResult::Dropped,
+        };
         let entry = self.entries.entry(key.clone()).or_insert_with(|| {
             PacketMover2DirectFspReassembly::new(
                 header.total_len,
@@ -230,17 +297,20 @@ fn packet_mover2_direct_fsp_transport_output(
         let end = start
             .saturating_add(segmentation.max_fragment_payload)
             .min(output.payload_len());
-        let mut segment =
-            Vec::with_capacity(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + end - start);
-        segment.extend_from_slice(&DIRECT_FSP_TRANSPORT_FRAGMENT_MAGIC);
-        segment.extend_from_slice(&header.counter().to_le_bytes());
-        segment.extend_from_slice(&(output.payload_len() as u32).to_le_bytes());
-        segment.extend_from_slice(&(fragment_index as u16).to_le_bytes());
-        segment.extend_from_slice(&(segmentation.fragment_count as u16).to_le_bytes());
-        segment.extend_from_slice(&output.payload()[start..end]);
-        segments.push(packet_output_with_payload(&output, segment.into()));
+        let mut segment_header = [0u8; DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN];
+        segment_header[..4].copy_from_slice(&DIRECT_FSP_TRANSPORT_FRAGMENT_MAGIC);
+        segment_header[4..12].copy_from_slice(&header.counter().to_le_bytes());
+        segment_header[12..16].copy_from_slice(&(output.payload_len() as u32).to_le_bytes());
+        segment_header[16..18].copy_from_slice(&(fragment_index as u16).to_le_bytes());
+        segment_header[18..20].copy_from_slice(&(segmentation.fragment_count as u16).to_le_bytes());
+        segments.push(PacketMover2DirectFspTransportSegment {
+            header: segment_header,
+            payload_range: start..end,
+        });
     }
-    Ok(PacketMover2DirectFspTransportOutput::Segments(segments))
+    Ok(PacketMover2DirectFspTransportOutput::Segments(
+        PacketMover2DirectFspTransportSegments { output, segments },
+    ))
 }
 
 fn packet_mover2_direct_fsp_transport_max_datagram_len(

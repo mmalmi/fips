@@ -1,3 +1,19 @@
+    fn materialize_direct_fsp_segments(
+        segments: &PacketMover2DirectFspTransportSegments,
+    ) -> Vec<PacketOutput> {
+        let mut outputs = Vec::with_capacity(segments.len());
+        for index in 0..segments.len() {
+            let mut payload = Vec::with_capacity(segments.payload_len(index));
+            let mut slices = [None; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+            let slice_count = segments.payload_slices(index, &mut slices);
+            for slice in slices.iter().take(slice_count).flatten() {
+                payload.extend_from_slice(slice);
+            }
+            outputs.push(packet_output_with_payload(&segments.output, payload.into()));
+        }
+        outputs
+    }
+
     #[test]
     fn live_ingress_routes_fmp_by_transport_and_receiver_idx() {
         let transport_id = TransportId::new(40);
@@ -165,7 +181,9 @@
         output.path_mtu = 220;
 
         let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
-            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Segments(segments) => {
+                materialize_direct_fsp_segments(&segments)
+            }
             PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 1);
@@ -236,7 +254,9 @@
         output.path_mtu = 240;
 
         let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
-            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Segments(segments) => {
+                materialize_direct_fsp_segments(&segments)
+            }
             PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 1);
@@ -351,7 +371,9 @@
             transport_output(owner, 4848, 12, transport_id, remote_addr.clone(), wire.clone());
         output.path_mtu = 240;
         let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
-            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Segments(segments) => {
+                materialize_direct_fsp_segments(&segments)
+            }
             PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 2);
@@ -426,7 +448,9 @@
             transport_output(owner, 4747, 10, transport_id, remote_addr.clone(), wire);
         output.path_mtu = 240;
         let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
-            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Segments(segments) => {
+                materialize_direct_fsp_segments(&segments)
+            }
             PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
         };
         let fragment = segments.into_iter().next().expect("fragment").payload;

@@ -53,6 +53,9 @@ mod platform {
     #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_SEGMENTS: usize = 64;
     #[cfg(target_os = "linux")]
+    const UDP_GSO_MAX_IOV: usize =
+        UDP_GSO_MAX_SEGMENTS * crate::transport::udp::UDP_PAYLOAD_MAX_SLICES;
+    #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_PAYLOAD: usize = u16::MAX as usize - 8;
     #[cfg(target_os = "linux")]
     static UDP_GSO_DISABLED: std::sync::atomic::AtomicBool =
@@ -679,17 +682,34 @@ mod platform {
                 );
             }
 
-            let mut iovs: [libc::iovec; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut iovs: [[libc::iovec; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+                SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
             let mut msgs: [libc::mmsghdr; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
-                let data = payloads.payload(offset + i);
-                iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
-                iovs[i].iov_len = data.len();
+                let mut slices = [None; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+                let payload_index = offset + i;
+                let expected_len = payloads.payload_len(payload_index);
+                let slice_count = payloads.payload_slices(payload_index, &mut slices);
+                if slice_count == 0 || slice_count > crate::transport::udp::UDP_PAYLOAD_MAX_SLICES {
+                    return Err(std::io::Error::other("invalid UDP payload slices"));
+                }
+
+                let mut slice_total = 0usize;
+                for (slice_idx, data) in slices.iter().take(slice_count).flatten().enumerate() {
+                    slice_total = slice_total.saturating_add(data.len());
+                    iovs[i][slice_idx].iov_base = data.as_ptr() as *mut libc::c_void;
+                    iovs[i][slice_idx].iov_len = data.len();
+                }
+                if slice_total != expected_len {
+                    return Err(std::io::Error::other(
+                        "UDP payload slices do not match payload length",
+                    ));
+                }
                 msgs[i].msg_hdr.msg_name = &mut storage as *mut _ as *mut libc::c_void;
                 msgs[i].msg_hdr.msg_namelen = sa_len;
-                msgs[i].msg_hdr.msg_iov = &mut iovs[i];
-                msgs[i].msg_hdr.msg_iovlen = 1;
+                msgs[i].msg_hdr.msg_iov = iovs[i].as_mut_ptr();
+                msgs[i].msg_hdr.msg_iovlen = slice_count as _;
             }
 
             let r = unsafe { libc::sendmmsg(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0) };
@@ -714,7 +734,7 @@ mod platform {
         {
             debug_assert!(count > 1);
             let n = count.min(UDP_GSO_MAX_SEGMENTS);
-            let segment_size = payloads.payload(offset).len();
+            let segment_size = payloads.payload_len(offset);
             debug_assert!(segment_size > 0);
             debug_assert!(segment_size <= u16::MAX as usize);
 
@@ -730,11 +750,37 @@ mod platform {
                 );
             }
 
-            let mut iovs: [libc::iovec; UDP_GSO_MAX_SEGMENTS] = unsafe { std::mem::zeroed() };
+            let mut iovs: [libc::iovec; UDP_GSO_MAX_IOV] = unsafe { std::mem::zeroed() };
+            let mut iov_count = 0usize;
             for i in 0..n {
-                let data = payloads.payload(offset + i);
-                iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
-                iovs[i].iov_len = data.len();
+                let payload_index = offset + i;
+                let payload_len = payloads.payload_len(payload_index);
+                if payload_len == 0 || payload_len > segment_size {
+                    return Err(std::io::Error::other(
+                        "UDP GSO payload length changed after prefix selection",
+                    ));
+                }
+                let mut slices = [None; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+                let slice_count = payloads.payload_slices(payload_index, &mut slices);
+                if slice_count == 0
+                    || slice_count > crate::transport::udp::UDP_PAYLOAD_MAX_SLICES
+                    || iov_count.saturating_add(slice_count) > iovs.len()
+                {
+                    return Err(std::io::Error::other("invalid UDP GSO payload slices"));
+                }
+
+                let mut slice_total = 0usize;
+                for data in slices.iter().take(slice_count).flatten() {
+                    slice_total = slice_total.saturating_add(data.len());
+                    iovs[iov_count].iov_base = data.as_ptr() as *mut libc::c_void;
+                    iovs[iov_count].iov_len = data.len();
+                    iov_count += 1;
+                }
+                if slice_total != payload_len {
+                    return Err(std::io::Error::other(
+                        "UDP GSO payload slices do not match payload length",
+                    ));
+                }
             }
 
             let cmsg_space =
@@ -746,7 +792,7 @@ mod platform {
             msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
             msg.msg_namelen = sa_len;
             msg.msg_iov = iovs.as_mut_ptr();
-            msg.msg_iovlen = n as _;
+            msg.msg_iovlen = iov_count as _;
             msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
             msg.msg_controllen = cmsg_space as _;
 
@@ -781,7 +827,7 @@ mod platform {
     }
 
     #[cfg(target_os = "linux")]
-    fn udp_gso_prefix_len<B>(payloads: &B, offset: usize, candidate: usize) -> usize
+    pub(super) fn udp_gso_prefix_len<B>(payloads: &B, offset: usize, candidate: usize) -> usize
     where
         B: crate::transport::udp::UdpPayloadBatch + ?Sized,
     {
@@ -795,7 +841,7 @@ mod platform {
             return 0;
         }
 
-        let segment_size = payloads.payload(offset).len();
+        let segment_size = payloads.payload_len(offset);
         if segment_size == 0 || segment_size > u16::MAX as usize {
             return 0;
         }
@@ -803,7 +849,7 @@ mod platform {
         let mut count = 0usize;
 
         for i in 0..max {
-            let len = payloads.payload(offset + i).len();
+            let len = payloads.payload_len(offset + i);
             if len == 0 || len > segment_size {
                 break;
             }

@@ -47,9 +47,28 @@ pub(crate) struct UdpSendSnapshot {
     stats: Arc<UdpStats>,
 }
 
+pub(crate) const UDP_PAYLOAD_MAX_SLICES: usize = 2;
+
 pub(crate) trait UdpPayloadBatch {
     fn len(&self) -> usize;
-    fn payload(&self, index: usize) -> &[u8];
+    fn payload_len(&self, index: usize) -> usize;
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    fn contiguous_payload(&self, index: usize) -> Option<&[u8]>;
+    fn payload_slices<'a>(
+        &'a self,
+        index: usize,
+        out: &mut [Option<&'a [u8]>; UDP_PAYLOAD_MAX_SLICES],
+    ) -> usize;
+
+    #[cfg(not(target_os = "linux"))]
+    fn copy_payload_into(&self, index: usize, out: &mut Vec<u8>) {
+        out.clear();
+        let mut slices = [None; UDP_PAYLOAD_MAX_SLICES];
+        let slice_count = self.payload_slices(index, &mut slices);
+        for slice in slices.iter().take(slice_count).flatten() {
+            out.extend_from_slice(slice);
+        }
+    }
 }
 
 impl std::fmt::Debug for UdpSendSnapshot {
@@ -114,7 +133,7 @@ impl UdpSendSnapshot {
                 Ok(sent) => {
                     let end = offset.saturating_add(sent).min(packet_count);
                     for batch_index in offset..end {
-                        self.stats.record_send(payloads.payload(batch_index).len());
+                        self.stats.record_send(payloads.payload_len(batch_index));
                     }
                     offset = end;
                 }
@@ -138,10 +157,19 @@ impl UdpSendSnapshot {
         B: UdpPayloadBatch + ?Sized,
     {
         let mut failed = 0usize;
+        let mut scratch = Vec::new();
         for index in 0..payloads.len() {
-            let data = payloads.payload(index);
+            let expected_len = payloads.payload_len(index);
+            let data = match payloads.contiguous_payload(index) {
+                Some(data) => data,
+                None => {
+                    payloads.copy_payload_into(index, &mut scratch);
+                    scratch.as_slice()
+                }
+            };
             let result = self.socket.send_to(data, &remote_addr).await;
             if let Ok(bytes_sent) = result {
+                debug_assert_eq!(bytes_sent, expected_len);
                 self.stats.record_send(bytes_sent);
             } else {
                 self.stats.record_send_error();
