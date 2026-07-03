@@ -780,7 +780,7 @@ impl FipsEndpoint {
     /// delivered endpoint message without staging them in a caller-owned
     /// `Vec`.
     ///
-    /// This is for dedicated dataplane threads that immediately forward
+    /// This is for dedicated packet-mover threads that immediately forward
     /// messages onward. It preserves internal batch-tail handling and the receive limit as
     /// [`Self::blocking_recv_batch_into`]. Returning `false` from the callback
     /// stops the current drain after that message; any unconsumed messages from

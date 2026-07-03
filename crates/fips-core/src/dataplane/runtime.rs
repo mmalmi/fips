@@ -430,7 +430,7 @@ impl DataplaneTurnDriver {
         tun_limit: usize,
         outbound_firsts: DataplaneLiveOutboundFirsts,
         deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
-        deferred_tun_packets: &mut Vec<PacketBuffer>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
         deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
@@ -754,7 +754,7 @@ impl DataplaneTurnDriver {
         executor: &mut E,
         transport_send_worker: &mut DataplaneTransportSendWorkerPool,
         deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
-        deferred_tun_packets: &mut Vec<PacketBuffer>,
+        deferred_tun_packets: &mut Vec<Vec<u8>>,
     ) -> DataplaneLiveNodeTurn
     where
         E: DataplaneCryptoExecutor,

@@ -99,7 +99,7 @@ impl DataplaneTunOutboundRoute {
 
     fn into_outbound_packet(
         self,
-        mut payload: PacketBuffer,
+        mut payload: Vec<u8>,
     ) -> Result<OutboundPacket, DataplaneTunOutboundDropReason> {
         let Self {
             owner,
@@ -112,7 +112,7 @@ impl DataplaneTunOutboundRoute {
         let inner_flags = match payload_kind {
             DataplaneTunPayload::Raw => None,
             DataplaneTunPayload::Ipv6Shim { inner_flags } => {
-                if !crate::upper::ipv6_shim::compress_ipv6_packet_buffer_with_port_header_in_place(
+                if !crate::upper::ipv6_shim::compress_ipv6_with_port_header_in_place(
                     &mut payload,
                     crate::node::session_wire::FSP_PORT_IPV6_SHIM,
                     crate::node::session_wire::FSP_PORT_IPV6_SHIM,
@@ -234,11 +234,11 @@ pub(crate) trait DataplaneTunOutboundRouter {
 }
 
 fn route_tun_outbound_packet_with_router<R, F>(
-    packet: PacketBuffer,
+    packet: Vec<u8>,
     router: &mut R,
     activity_tick: ActivityTick,
     drops: &mut Vec<DataplaneTunOutboundDrop>,
-    deferred_packets: &mut Vec<PacketBuffer>,
+    deferred_packets: &mut Vec<Vec<u8>>,
     mut push: F,
 ) where
     R: DataplaneTunOutboundRouter,
@@ -248,7 +248,7 @@ fn route_tun_outbound_packet_with_router<R, F>(
     let dest = match FipsTunDestinationPrefix::from_ipv6_packet(&packet) {
         Ok(dest) => dest,
         Err(reason) => {
-            drops.push(DataplaneTunOutboundDrop::new(packet.into_vec(), reason));
+            drops.push(DataplaneTunOutboundDrop::new(packet, reason));
             return;
         }
     };
@@ -264,6 +264,6 @@ fn route_tun_outbound_packet_with_router<R, F>(
             }
         },
         Err(DataplaneTunOutboundDropReason::NoRoute) => deferred_packets.push(packet),
-        Err(reason) => drops.push(DataplaneTunOutboundDrop::new(packet.into_vec(), reason)),
+        Err(reason) => drops.push(DataplaneTunOutboundDrop::new(packet, reason)),
     }
 }
