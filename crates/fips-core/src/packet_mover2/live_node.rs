@@ -152,6 +152,7 @@ pub(crate) struct PacketMover2LiveNode {
     fast_ingress_capacity: usize,
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     deferred_tun_packets: Vec<Vec<u8>>,
+    deferred_raw_ingress: VecDeque<(PacketMover2RawIngress, u8)>,
     empty_raw_ingress: VecDeque<PacketMover2RawIngress>,
     direct_fsp_reassembler: PacketMover2DirectFspReassembler,
 }
@@ -169,6 +170,7 @@ impl PacketMover2LiveNode {
             fast_ingress_capacity: worker_capacity,
             deferred_endpoint_data_batches: Vec::new(),
             deferred_tun_packets: Vec::new(),
+            deferred_raw_ingress: VecDeque::new(),
             empty_raw_ingress: VecDeque::new(),
             direct_fsp_reassembler: PacketMover2DirectFspReassembler::default(),
         }
@@ -176,6 +178,10 @@ impl PacketMover2LiveNode {
 
     pub(crate) fn completion_notify(&self) -> Arc<tokio::sync::Notify> {
         self.crypto_worker.completion_notify()
+    }
+
+    pub(crate) fn has_deferred_raw_ingress(&self) -> bool {
+        !self.deferred_raw_ingress.is_empty()
     }
 
     pub(crate) fn attach_established_fast_ingress(
@@ -702,6 +708,7 @@ impl PacketMover2LiveNode {
                 outbound_firsts,
                 &mut self.deferred_endpoint_data_batches,
                 &mut self.deferred_tun_packets,
+                &mut self.deferred_raw_ingress,
                 tun_tx,
                 endpoint_tx,
                 transports,
@@ -709,12 +716,17 @@ impl PacketMover2LiveNode {
                 transport_send_worker,
             )
             .await;
+        if !self.deferred_raw_ingress.is_empty() && !turn.fsp_local_session_ingress().is_empty() {
+            self.crypto_worker.completion_notify().notify_one();
+        }
         record_packet_mover2_live_turn_perf(&turn);
         turn
     }
 
     pub(crate) async fn pump_completion_output_turn_with_transport_worker<Transports>(
         &mut self,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        tun_outbound_rx: &mut TunOutboundRx,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
@@ -724,34 +736,31 @@ impl PacketMover2LiveNode {
     where
         Transports: PacketMover2TransportResolver + ?Sized,
     {
-        let _turn_timer =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveTurn);
-        self.crypto_worker.record_perf_depths();
-        let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
-        let summary = self
-            .driver
-            .start_aead_completion_turn(
-                &mut self.crypto_worker,
-                crypto_limit,
-                compact_endpoint_data,
-            );
-        if !summary.has_activity() {
-            return PacketMover2LiveNodeTurn::default();
-        }
-        let turn = self.driver
-            .finish_aead_live_node_output_turn_with_executor(
-                summary,
-                &mut self.routes,
+        let mut empty_raw_ingress = std::mem::take(&mut self.empty_raw_ingress);
+        empty_raw_ingress.clear();
+        let raw_ingress_limit = if self.deferred_raw_ingress.is_empty() {
+            0
+        } else {
+            crypto_limit.max(1)
+        };
+        let turn = self
+            .pump_turn_with_firsts_and_transport_worker(
+                None,
+                &mut empty_raw_ingress,
+                raw_ingress_limit,
+                PacketMover2LiveOutboundFirsts::default(),
+                endpoint_data_rx,
+                0,
+                tun_outbound_rx,
+                0,
                 tun_tx,
                 endpoint_tx,
                 transports,
                 crypto_limit,
-                false,
-                &mut self.crypto_worker,
                 transport_send_worker,
             )
             .await;
-        record_packet_mover2_live_turn_perf(&turn);
+        self.empty_raw_ingress = empty_raw_ingress;
         turn
     }
 

@@ -858,9 +858,6 @@ impl Node {
     > {
         let mut sources = HashMap::new();
         for (node_addr, peer) in &self.peers {
-            if !self.packet_mover2_has_fsp_owner(node_addr) {
-                continue;
-            }
             let (Some(transport_id), Some(remote_addr)) =
                 (peer.transport_id(), peer.current_addr().cloned())
             else {

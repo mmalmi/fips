@@ -1,3 +1,5 @@
+const PACKET_MOVER2_DEFERRED_RAW_INGRESS_MAX_RETRIES: u8 = 8;
+
 #[derive(Debug)]
 pub(crate) struct PacketMover2TurnDriver {
     mover: PacketMover2,
@@ -429,6 +431,7 @@ impl PacketMover2TurnDriver {
         outbound_firsts: PacketMover2LiveOutboundFirsts,
         deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
         deferred_tun_packets: &mut Vec<Vec<u8>>,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(PacketMover2RawIngress, u8)>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
@@ -480,6 +483,7 @@ impl PacketMover2TurnDriver {
             tun_outbound_rx,
             tun_limit,
             outbound_firsts,
+            deferred_raw_ingress,
         );
         if let Some(mut completion_report) = completion_report {
             if !admission.has_activity() {
@@ -566,6 +570,7 @@ impl PacketMover2TurnDriver {
         tun_outbound_rx: &mut TunOutboundRx,
         tun_limit: usize,
         outbound_firsts: PacketMover2LiveOutboundFirsts,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(PacketMover2RawIngress, u8)>,
     ) -> PacketMover2LiveAdmissionResult
     where
         RI: PacketMover2RawIngressSource,
@@ -635,13 +640,39 @@ impl PacketMover2TurnDriver {
         }
         {
             let raw_ingress_drops = &mut self.raw_ingress_drops;
-            raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
+            let deferred_available = deferred_raw_ingress.len();
+            let fresh_drained = raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
                 if let Some(socket_packet) =
-                    Self::raw_ingress_socket_packet(packet, routes, &mut summary, raw_ingress_drops)
+                    Self::raw_ingress_socket_packet(
+                        packet,
+                        routes,
+                        &mut summary,
+                        raw_ingress_drops,
+                        deferred_raw_ingress,
+                        0,
+                    )
                 {
                     raw_socket_packets.push(socket_packet);
                 }
             });
+            let deferred_limit = raw_ingress_limit
+                .saturating_sub(fresh_drained)
+                .min(deferred_available);
+            for _ in 0..deferred_limit {
+                let Some((packet, retry_count)) = deferred_raw_ingress.pop_front() else {
+                    break;
+                };
+                if let Some(socket_packet) = Self::raw_ingress_socket_packet(
+                    packet,
+                    routes,
+                    &mut summary,
+                    raw_ingress_drops,
+                    deferred_raw_ingress,
+                    retry_count,
+                ) {
+                    raw_socket_packets.push(socket_packet);
+                }
+            }
         }
         self.admit_socket_packets(&mut raw_socket_packets, &mut summary);
         self.raw_socket_packets = raw_socket_packets;
@@ -778,6 +809,8 @@ impl PacketMover2TurnDriver {
         router: &mut R,
         summary: &mut PacketMover2RuntimeSummary,
         raw_ingress_drops: &mut Vec<PacketMover2RawIngressDrop>,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(PacketMover2RawIngress, u8)>,
+        retry_count: u8,
     ) -> Option<SocketPacket>
     where
         R: PacketMover2IngressRouter,
@@ -808,6 +841,13 @@ impl PacketMover2TurnDriver {
         };
 
         let Some(route) = router.route(&packet, header) else {
+            if packet.protocol == PacketProtocol::Fsp
+                && packet.fsp_source.is_some()
+                && retry_count < PACKET_MOVER2_DEFERRED_RAW_INGRESS_MAX_RETRIES
+            {
+                deferred_raw_ingress.push_back((packet, retry_count.saturating_add(1)));
+                return None;
+            }
             summary.raw_ingress_dropped += 1;
             raw_ingress_drops.push(PacketMover2RawIngressDrop::from_packet(
                 packet,
@@ -1014,6 +1054,8 @@ impl PacketMover2TurnDriver {
                                 router,
                                 summary,
                                 &mut self.raw_ingress_drops,
+                                &mut std::collections::VecDeque::new(),
+                                1,
                             ) {
                                 raw_socket_packets.push(socket_packet);
                             }

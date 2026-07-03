@@ -52,6 +52,8 @@ impl Node {
 
     pub(in crate::node) async fn drain_packet_mover2_completion_turn(
         &mut self,
+        endpoint_data_rx: &mut EndpointDataBatchRx,
+        tun_outbound_rx: &mut TunOutboundRx,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
@@ -59,6 +61,8 @@ impl Node {
         let turn = self
             .packet_mover2
             .pump_completion_output_turn_with_transport_worker(
+                endpoint_data_rx,
+                tun_outbound_rx,
                 tun_tx,
                 endpoint_tx,
                 &self.transports,

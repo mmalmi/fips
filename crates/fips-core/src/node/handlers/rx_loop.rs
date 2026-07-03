@@ -296,6 +296,8 @@ impl Node {
                 }
                 _ = packet_mover2_completion_notify.notified() => {
                     let mut turn = self.drain_packet_mover2_completion_turn(
+                        &mut endpoint_data_rx,
+                        &mut tun_outbound_rx,
                         &packet_mover2_tun_tx,
                         &packet_mover2_endpoint_tx,
                         LATENCY_PACKET_DRAIN_BUDGET,
@@ -548,6 +550,9 @@ impl Node {
     ) -> usize {
         let had_activity = turn.has_activity();
         let control_drained = self.process_packet_mover2_control_ingress(turn).await;
+        if control_drained > 0 && self.packet_mover2.has_deferred_raw_ingress() {
+            self.packet_mover2.completion_notify().notify_one();
+        }
         let query_drained = if control_query_budget > 0 {
             self.drain_control_queries(control_query_rx, None, control_query_budget)
                 .await

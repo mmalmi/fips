@@ -375,11 +375,14 @@
     ) where
         R: PacketMover2IngressRouter,
     {
+        let mut deferred_raw_ingress = std::collections::VecDeque::new();
         let Some(socket_packet) = PacketMover2TurnDriver::raw_ingress_socket_packet(
             packet,
             router,
             summary,
             &mut driver.raw_ingress_drops,
+            &mut deferred_raw_ingress,
+            0,
         ) else {
             return;
         };
@@ -521,6 +524,7 @@
     {
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let mut deferred_raw_ingress = std::collections::VecDeque::new();
         let summary = driver.start_aead_completion_turn(
             completions,
             completion_limit,
@@ -541,6 +545,7 @@
                 PacketMover2LiveOutboundFirsts::default(),
                 deferred_endpoint_data_batches,
                 deferred_tun_packets,
+                &mut deferred_raw_ingress,
                 tun_tx,
                 endpoint_tx,
                 transports,

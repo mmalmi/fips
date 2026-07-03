@@ -179,12 +179,16 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let transports = HashMap::<TransportId, TransportHandle>::new();
         let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
 
         let turn = live_node
             .pump_completion_output_turn_with_transport_worker(
+                &mut endpoint_data_rx,
+                &mut tun_outbound_rx,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 &transports,
@@ -226,6 +230,8 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
         let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
         live_node.register_owner(
@@ -284,6 +290,8 @@
             .unwrap();
         let completion_turn = live_node
             .pump_completion_output_turn_with_transport_worker(
+                &mut endpoint_data_rx,
+                &mut tun_outbound_rx,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 &transports,
@@ -313,6 +321,8 @@
         wait_for_live_worker_completion(&live_node).await;
         let second_turn = live_node
             .pump_completion_output_turn_with_transport_worker(
+                &mut endpoint_data_rx,
+                &mut tun_outbound_rx,
                 &tun_tx,
                 &endpoint_io.event_tx,
                 &transports,
