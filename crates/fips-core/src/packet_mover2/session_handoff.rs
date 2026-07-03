@@ -96,7 +96,7 @@ fn packet_mover2_session_ingress_from_output(
         .into_opened_payload()
         .map_err(|output| (output, PacketMover2SessionHandoffError::InvalidPacket))?;
     debug_assert!(payload.len() >= FMP_SESSION_PAYLOAD_OFFSET);
-    payload.drain(..FMP_SESSION_PAYLOAD_OFFSET);
+    assert!(payload.trim_front(FMP_SESSION_PAYLOAD_OFFSET));
 
     let path = TransportPath::Live {
         transport_id,

@@ -133,7 +133,7 @@ impl AuthenticatedSessionMessage {
             let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
             let body_len = self.body_len();
             if body_offset > 0 {
-                self.buffer.drain(..body_offset);
+                assert!(self.buffer.trim_front(body_offset));
             }
             self.buffer.truncate(body_len);
             let source_peer = self.source_peer;
@@ -148,14 +148,12 @@ impl AuthenticatedSessionMessage {
         }
 
         debug_assert_eq!(self.msg_type, SessionMessageType::EndpointData.to_byte());
-        // Keep the receive hot path allocation-free after AEAD open. Plaintext
-        // may start at offset 0 or inside a retained packet buffer; in both
-        // cases, move the endpoint body to the front of the existing Vec and
-        // truncate the trailing bytes instead of allocating a fresh payload Vec.
+        // Keep the receive hot path allocation-free after AEAD open by making
+        // the endpoint body the visible packet window in the existing buffer.
         let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
         let body_len = self.body_len();
         if body_offset > 0 {
-            self.buffer.drain(..body_offset);
+            assert!(self.buffer.trim_front(body_offset));
         }
         self.buffer.truncate(body_len);
         let source_peer = self.source_peer;

@@ -281,6 +281,22 @@ fn packet_channel_recycles_pooled_packet_buffer_when_bulk_batch_is_dropped() {
 }
 
 #[test]
+fn packet_buffer_trim_front_keeps_visible_payload_canonical() {
+    let mut packet = PacketBuffer::new(b"headerpayload".to_vec());
+
+    assert!(packet.trim_front(b"header".len()));
+    assert_eq!(packet.as_slice(), b"payload");
+    assert_eq!(&packet[..], b"payload");
+    assert_eq!(packet.to_vec(), b"payload".to_vec());
+    assert_eq!(packet.len(), b"payload".len());
+
+    assert!(packet.try_prepend_slices(&[b"ip"], 0));
+    assert_eq!(packet.as_slice(), b"ippayload");
+    assert_eq!(packet.clone().into_vec(), b"ippayload".to_vec());
+    assert_eq!(packet.into_vec(), b"ippayload".to_vec());
+}
+
+#[test]
 fn packet_channel_keeps_single_lane_batches_grouped() {
     let (tx, mut rx) = packet_channel(10);
     let addr = TransportAddr::from_string("test");

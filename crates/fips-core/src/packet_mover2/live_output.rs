@@ -393,7 +393,7 @@ impl PacketOutput {
         }
     }
 
-    fn take_opened_payload(&mut self) -> Option<PacketBuffer> {
+    fn opened_payload_header_len(&self) -> Option<usize> {
         let header_len = match self.owner.protocol {
             PacketProtocol::Fmp => FMP_ESTABLISHED_HEADER_SIZE,
             PacketProtocol::Fsp => match FspWireHeader::parse(&self.payload) {
@@ -404,7 +404,14 @@ impl PacketOutput {
         if self.payload.len() < header_len {
             return None;
         }
-        self.payload.drain(..header_len);
+        Some(header_len)
+    }
+
+    fn take_opened_payload(&mut self) -> Option<PacketBuffer> {
+        let header_len = self.opened_payload_header_len()?;
+        if !self.payload.trim_front(header_len) {
+            return None;
+        }
         Some(std::mem::take(&mut self.payload))
     }
 }
@@ -774,7 +781,13 @@ where
             ));
             return None;
         }
-        match output.take_opened_payload() {
+        let payload = match output.target() {
+            OutputTarget::Tun | OutputTarget::Endpoint => output.take_opened_payload(),
+            OutputTarget::Transport
+            | OutputTarget::SessionIngress { .. }
+            | OutputTarget::SessionPayload { .. } => None,
+        };
+        match payload {
             Some(payload) => Some((output, payload)),
             None => {
                 drops.push(PacketMover2OutputDrop::from_output(

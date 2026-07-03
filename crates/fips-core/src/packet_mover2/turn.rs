@@ -628,7 +628,7 @@ impl PacketMover2FspEndpointDataIngress {
             spin_bit: inner_flags & 0x01 != 0,
         };
         let mut payload = output.into_opened_payload()?;
-        payload.drain(..FSP_INNER_HEADER_SIZE);
+        assert!(payload.trim_front(FSP_INNER_HEADER_SIZE));
         payload.truncate(body_len);
         let packet_run = FipsEndpointDirectPacketRun::from_segmented_payload(
             FipsEndpointDirectPacketRunMeta::new(

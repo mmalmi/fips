@@ -105,6 +105,7 @@ impl ReceivedPacket {
 #[derive(Debug, Default)]
 pub struct PacketBuffer {
     data: Vec<u8>,
+    start: usize,
     pool: Option<PacketBufferPool>,
 }
 
@@ -112,33 +113,60 @@ impl PacketBuffer {
     fn pooled(data: Vec<u8>, pool: PacketBufferPool) -> Self {
         Self {
             data,
+            start: 0,
             pool: Some(pool),
         }
     }
 
     pub fn new(data: Vec<u8>) -> Self {
-        Self { data, pool: None }
+        Self {
+            data,
+            start: 0,
+            pool: None,
+        }
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        &self.data
+        &self.data[self.start..]
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.data
+        &mut self.data[self.start..]
     }
 
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.data.len().saturating_sub(self.start)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.len() == 0
     }
 
     pub fn into_vec(mut self) -> Vec<u8> {
         self.pool = None;
+        if self.start > 0 {
+            self.data.drain(..self.start);
+            self.start = 0;
+        }
         mem::take(&mut self.data)
+    }
+
+    pub(crate) fn trim_front(&mut self, len: usize) -> bool {
+        if len > self.len() {
+            return false;
+        }
+        self.start += len;
+        true
+    }
+
+    pub(crate) fn truncate(&mut self, len: usize) {
+        if len < self.len() {
+            self.data.truncate(self.start + len);
+        }
+    }
+
+    pub(crate) fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.data.extend_from_slice(bytes);
     }
 
     pub(crate) fn try_prepend_slices(&mut self, parts: &[&[u8]], reserve_tail: usize) -> bool {
@@ -150,6 +178,17 @@ impl PacketBuffer {
         }
 
         let len = self.data.len();
+        if self.start >= prefix_len && self.data.capacity().saturating_sub(len) >= reserve_tail {
+            let new_start = self.start - prefix_len;
+            let mut offset = new_start;
+            for part in parts {
+                self.data[offset..offset + part.len()].copy_from_slice(part);
+                offset += part.len();
+            }
+            self.start = new_start;
+            return true;
+        }
+
         if self.data.capacity().saturating_sub(len) < prefix_len.saturating_add(reserve_tail) {
             return false;
         }
@@ -159,8 +198,12 @@ impl PacketBuffer {
         // fixed headroom WireGuard-go keeps in its message buffers.
         unsafe {
             let ptr = self.data.as_mut_ptr();
-            std::ptr::copy(ptr, ptr.add(prefix_len), len);
-            let mut offset = 0usize;
+            std::ptr::copy(
+                ptr.add(self.start),
+                ptr.add(self.start + prefix_len),
+                self.len(),
+            );
+            let mut offset = self.start;
             for part in parts {
                 std::ptr::copy_nonoverlapping(part.as_ptr(), ptr.add(offset), part.len());
                 offset += part.len();
@@ -174,7 +217,8 @@ impl PacketBuffer {
 impl Clone for PacketBuffer {
     fn clone(&self) -> Self {
         Self {
-            data: self.data.clone(),
+            data: self.as_slice().to_vec(),
+            start: 0,
             pool: None,
         }
     }
@@ -201,34 +245,34 @@ impl From<PacketBuffer> for Vec<u8> {
 }
 
 impl Deref for PacketBuffer {
-    type Target = Vec<u8>;
+    type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.data
+        self.as_slice()
     }
 }
 
 impl DerefMut for PacketBuffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.data
+        self.as_mut_slice()
     }
 }
 
 impl AsRef<[u8]> for PacketBuffer {
     fn as_ref(&self) -> &[u8] {
-        &self.data
+        self.as_slice()
     }
 }
 
 impl AsMut<[u8]> for PacketBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.data
+        self.as_mut_slice()
     }
 }
 
 impl PartialEq for PacketBuffer {
     fn eq(&self, other: &Self) -> bool {
-        self.data == other.data
+        self.as_slice() == other.as_slice()
     }
 }
 
@@ -236,31 +280,31 @@ impl Eq for PacketBuffer {}
 
 impl PartialEq<Vec<u8>> for PacketBuffer {
     fn eq(&self, other: &Vec<u8>) -> bool {
-        self.data == *other
+        self.as_slice() == other.as_slice()
     }
 }
 
 impl PartialEq<PacketBuffer> for Vec<u8> {
     fn eq(&self, other: &PacketBuffer) -> bool {
-        *self == other.data
+        self.as_slice() == other.as_slice()
     }
 }
 
 impl PartialEq<&[u8]> for PacketBuffer {
     fn eq(&self, other: &&[u8]) -> bool {
-        self.data.as_slice() == *other
+        self.as_slice() == *other
     }
 }
 
 impl<const N: usize> PartialEq<[u8; N]> for PacketBuffer {
     fn eq(&self, other: &[u8; N]) -> bool {
-        self.data.as_slice() == other
+        self.as_slice() == other
     }
 }
 
 impl<const N: usize> PartialEq<&[u8; N]> for PacketBuffer {
     fn eq(&self, other: &&[u8; N]) -> bool {
-        self.data.as_slice() == *other
+        self.as_slice() == *other
     }
 }
 
