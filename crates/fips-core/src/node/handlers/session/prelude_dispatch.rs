@@ -159,6 +159,35 @@ impl AuthenticatedSessionMessage {
         let source_peer = self.source_peer;
         vec![EndpointDataDelivery::new(source_peer, self.buffer)]
     }
+
+    pub(in crate::node) fn into_ipv6_shim_packet(
+        mut self,
+        src_ipv6: [u8; 16],
+        dst_ipv6: [u8; 16],
+    ) -> Option<(PacketBuffer, bool)> {
+        debug_assert_eq!(self.msg_type, SessionMessageType::DataPacket.to_byte());
+        if self.body_len() < FSP_PORT_HEADER_SIZE {
+            return None;
+        }
+        let service_payload_offset =
+            self.plaintext_offset + FSP_INNER_HEADER_SIZE + FSP_PORT_HEADER_SIZE;
+        let service_payload_len = self.body_len() - FSP_PORT_HEADER_SIZE;
+        if !self.buffer.trim_front(service_payload_offset) {
+            return None;
+        }
+        self.buffer.truncate(service_payload_len);
+
+        if crate::upper::ipv6_shim::decompress_ipv6_in_place(
+            &mut self.buffer,
+            src_ipv6,
+            dst_ipv6,
+        ) {
+            return Some((self.buffer, true));
+        }
+
+        crate::upper::ipv6_shim::decompress_ipv6(self.buffer.as_slice(), src_ipv6, dst_ipv6)
+            .map(|packet| (PacketBuffer::new(packet), false))
+    }
 }
 
 /// Local dispatch context for an authenticated established-FSP message.
@@ -340,19 +369,21 @@ impl AuthenticatedSessionDispatch {
         // Capture the dispatch facts now, before the EndpointData branch takes
         // ownership of the message and drains the inner header in place.
         let source_addr = *self.source_addr();
+        let ce_flag = self.ce_flag();
         let msg_type = self.msg_type();
         let commit = self.commit();
 
         match SessionMessageType::from_byte(msg_type) {
             Some(SessionMessageType::DataPacket) => {
-                let rest = self.body();
-                // msg_type 0x10: port-multiplexed service dispatch
-                if rest.len() < FSP_PORT_HEADER_SIZE {
-                    debug!(len = rest.len(), "DataPacket too short for port header");
-                    return;
-                }
-                let dst_port = u16::from_le_bytes([rest[2], rest[3]]);
-                let service_payload = &rest[FSP_PORT_HEADER_SIZE..];
+                let dst_port = {
+                    let rest = self.body();
+                    // msg_type 0x10: port-multiplexed service dispatch
+                    if rest.len() < FSP_PORT_HEADER_SIZE {
+                        debug!(len = rest.len(), "DataPacket too short for port header");
+                        return;
+                    }
+                    u16::from_le_bytes([rest[2], rest[3]])
+                };
 
                 match dst_port {
                     FSP_PORT_IPV6_SHIM => {
@@ -362,23 +393,30 @@ impl AuthenticatedSessionDispatch {
                             .to_ipv6()
                             .octets();
 
-                        match crate::upper::ipv6_shim::decompress_ipv6(
-                            service_payload,
-                            src_ipv6,
-                            dst_ipv6,
-                        ) {
-                            Some(mut packet) => {
-                                if self.ce_flag() {
-                                    mark_ipv6_ecn_ce(&mut packet);
+                        match self.message.into_ipv6_shim_packet(src_ipv6, dst_ipv6) {
+                            Some((mut packet, decompressed_in_place)) => {
+                                crate::perf_profile::record_event(if decompressed_in_place {
+                                    crate::perf_profile::Event::Ipv6ShimDecompressInPlace
+                                } else {
+                                    crate::perf_profile::Event::Ipv6ShimDecompressAllocated
+                                });
+                                if ce_flag {
+                                    mark_ipv6_ecn_ce(packet.as_mut_slice());
                                     node.stats_mut().congestion.record_ce_received();
                                 }
                                 if node.external_packet_tx.is_some() {
-                                    node.deliver_external_ipv6_packet(&source_addr, packet);
+                                    node.deliver_external_ipv6_packet(
+                                        &source_addr,
+                                        packet.into_vec(),
+                                    );
                                 } else if let Some(tun_tx) = &node.tun_tx {
                                     let _t = crate::perf_profile::Timer::start(
                                         crate::perf_profile::Stage::TunWrite,
                                     );
-                                    if let Err(e) = tun_tx.send(packet) {
+                                    if let Err(e) = tun_tx.send_with_lane(
+                                        packet,
+                                        crate::upper::tun::TunWriteLane::Priority,
+                                    ) {
                                         debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
                                     }
                                 } else {
@@ -391,7 +429,6 @@ impl AuthenticatedSessionDispatch {
                             None => {
                                 debug!(
                                     src = %node.peer_display_name(&source_addr),
-                                    len = service_payload.len(),
                                     "IPv6 shim decompression failed"
                                 );
                             }
