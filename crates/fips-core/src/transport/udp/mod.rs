@@ -52,6 +52,7 @@ pub(crate) const UDP_PAYLOAD_MAX_SLICES: usize = 2;
 pub(crate) trait UdpPayloadBatch {
     fn len(&self) -> usize;
     fn payload_len(&self, index: usize) -> usize;
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     fn contiguous_payload(&self, index: usize) -> Option<&[u8]>;
     fn payload_slices<'a>(
         &'a self,

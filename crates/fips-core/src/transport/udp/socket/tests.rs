@@ -1,5 +1,50 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct TestPayloadBatch {
+    payloads: Vec<Vec<Vec<u8>>>,
+}
+
+#[cfg(target_os = "linux")]
+impl TestPayloadBatch {
+    fn new(payloads: Vec<Vec<&[u8]>>) -> Self {
+        Self {
+            payloads: payloads
+                .into_iter()
+                .map(|payload| payload.into_iter().map(Vec::from).collect())
+                .collect(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
+    fn len(&self) -> usize {
+        self.payloads.len()
+    }
+
+    fn payload_len(&self, index: usize) -> usize {
+        self.payloads[index].iter().map(Vec::len).sum()
+    }
+
+    fn contiguous_payload(&self, index: usize) -> Option<&[u8]> {
+        (self.payloads[index].len() == 1).then_some(self.payloads[index][0].as_slice())
+    }
+
+    fn payload_slices<'a>(
+        &'a self,
+        index: usize,
+        out: &mut [Option<&'a [u8]>; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES],
+    ) -> usize {
+        out.fill(None);
+        for (slot, slice) in self.payloads[index].iter().enumerate() {
+            out[slot] = Some(slice.as_slice());
+        }
+        self.payloads[index].len()
+    }
+}
+
 #[test]
 fn test_udp_socket_bind() {
     // Bind to an ephemeral port
@@ -9,6 +54,45 @@ fn test_udp_socket_bind() {
     let addr = sock.local_addr();
     assert!(addr.port() > 0, "should be assigned an ephemeral port");
     assert!(addr.ip().is_loopback());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn udp_gso_prefix_accepts_vectored_equal_len_payloads() {
+    use crate::transport::udp::UdpPayloadBatch;
+
+    let payloads = TestPayloadBatch::new(vec![
+        vec![b"DFP1".as_slice(), b"aaaaaaaa".as_slice()],
+        vec![b"DFP1".as_slice(), b"bbbbbbbb".as_slice()],
+        vec![b"DFP1".as_slice(), b"cccccccc".as_slice()],
+    ]);
+
+    assert_eq!(payloads.contiguous_payload(0), None);
+    assert_eq!(super::platform::udp_gso_prefix_len(&payloads, 0, 64), 3);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn udp_gso_prefix_stops_before_longer_vectored_payload() {
+    let payloads = TestPayloadBatch::new(vec![
+        vec![b"DFP1".as_slice(), b"aaaa".as_slice()],
+        vec![b"DFP1".as_slice(), b"bbbbbbbb".as_slice()],
+    ]);
+
+    assert_eq!(super::platform::udp_gso_prefix_len(&payloads, 0, 64), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn udp_gso_prefix_preserves_short_tail_segment() {
+    let payloads = TestPayloadBatch::new(vec![
+        vec![b"DFP1".as_slice(), b"aaaaaaaa".as_slice()],
+        vec![b"DFP1".as_slice(), b"bbbbbbbb".as_slice()],
+        vec![b"DFP1".as_slice(), b"cc".as_slice()],
+        vec![b"DFP1".as_slice(), b"dddddddd".as_slice()],
+    ]);
+
+    assert_eq!(super::platform::udp_gso_prefix_len(&payloads, 0, 64), 3);
 }
 
 #[test]

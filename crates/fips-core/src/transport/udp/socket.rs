@@ -53,6 +53,9 @@ mod platform {
     #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_SEGMENTS: usize = 64;
     #[cfg(target_os = "linux")]
+    const UDP_GSO_MAX_IOV: usize =
+        UDP_GSO_MAX_SEGMENTS * crate::transport::udp::UDP_PAYLOAD_MAX_SLICES;
+    #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_PAYLOAD: usize = u16::MAX as usize - 8;
     #[cfg(target_os = "linux")]
     static UDP_GSO_DISABLED: std::sync::atomic::AtomicBool =
@@ -720,12 +723,7 @@ mod platform {
         {
             debug_assert!(count > 1);
             let n = count.min(UDP_GSO_MAX_SEGMENTS);
-            let Some(first_payload) = payloads.contiguous_payload(offset) else {
-                return Err(std::io::Error::other(
-                    "UDP GSO requires contiguous payloads",
-                ));
-            };
-            let segment_size = first_payload.len();
+            let segment_size = payloads.payload_len(offset);
             debug_assert!(segment_size > 0);
             debug_assert!(segment_size <= u16::MAX as usize);
 
@@ -741,15 +739,37 @@ mod platform {
                 );
             }
 
-            let mut iovs: [libc::iovec; UDP_GSO_MAX_SEGMENTS] = unsafe { std::mem::zeroed() };
+            let mut iovs: [libc::iovec; UDP_GSO_MAX_IOV] = unsafe { std::mem::zeroed() };
+            let mut iov_count = 0usize;
             for i in 0..n {
-                let Some(data) = payloads.contiguous_payload(offset + i) else {
+                let payload_index = offset + i;
+                let payload_len = payloads.payload_len(payload_index);
+                if payload_len == 0 || payload_len > segment_size {
                     return Err(std::io::Error::other(
-                        "UDP GSO requires contiguous payloads",
+                        "UDP GSO payload length changed after prefix selection",
                     ));
-                };
-                iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
-                iovs[i].iov_len = data.len();
+                }
+                let mut slices = [None; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+                let slice_count = payloads.payload_slices(payload_index, &mut slices);
+                if slice_count == 0
+                    || slice_count > crate::transport::udp::UDP_PAYLOAD_MAX_SLICES
+                    || iov_count.saturating_add(slice_count) > iovs.len()
+                {
+                    return Err(std::io::Error::other("invalid UDP GSO payload slices"));
+                }
+
+                let mut slice_total = 0usize;
+                for data in slices.iter().take(slice_count).flatten() {
+                    slice_total = slice_total.saturating_add(data.len());
+                    iovs[iov_count].iov_base = data.as_ptr() as *mut libc::c_void;
+                    iovs[iov_count].iov_len = data.len();
+                    iov_count += 1;
+                }
+                if slice_total != payload_len {
+                    return Err(std::io::Error::other(
+                        "UDP GSO payload slices do not match payload length",
+                    ));
+                }
             }
 
             let cmsg_space =
@@ -761,7 +781,7 @@ mod platform {
             msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
             msg.msg_namelen = sa_len;
             msg.msg_iov = iovs.as_mut_ptr();
-            msg.msg_iovlen = n as _;
+            msg.msg_iovlen = iov_count as _;
             msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
             msg.msg_controllen = cmsg_space as _;
 
@@ -796,7 +816,7 @@ mod platform {
     }
 
     #[cfg(target_os = "linux")]
-    fn udp_gso_prefix_len<B>(payloads: &B, offset: usize, candidate: usize) -> usize
+    pub(super) fn udp_gso_prefix_len<B>(payloads: &B, offset: usize, candidate: usize) -> usize
     where
         B: crate::transport::udp::UdpPayloadBatch + ?Sized,
     {
@@ -810,10 +830,7 @@ mod platform {
             return 0;
         }
 
-        let Some(first_payload) = payloads.contiguous_payload(offset) else {
-            return 0;
-        };
-        let segment_size = first_payload.len();
+        let segment_size = payloads.payload_len(offset);
         if segment_size == 0 || segment_size > u16::MAX as usize {
             return 0;
         }
@@ -821,10 +838,7 @@ mod platform {
         let mut count = 0usize;
 
         for i in 0..max {
-            let Some(payload) = payloads.contiguous_payload(offset + i) else {
-                break;
-            };
-            let len = payload.len();
+            let len = payloads.payload_len(offset + i);
             if len == 0 || len > segment_size {
                 break;
             }
