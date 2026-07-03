@@ -113,3 +113,101 @@ fn simulate_forwarding(
         hops: max_hops,
     }
 }
+
+#[test]
+fn test_parent_loss_reparent_invalidates_coord_cache() {
+    let mut node = make_node();
+    let my_addr = *node.node_addr();
+
+    let root = make_node_addr(0);
+    let parent = make_node_addr(1);
+    let alt = make_node_addr(2);
+
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(parent, root, 1, 1000),
+        TreeCoordinate::from_addrs(vec![parent, root]).unwrap(),
+    );
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(alt, root, 1, 1000),
+        TreeCoordinate::from_addrs(vec![alt, root]).unwrap(),
+    );
+    node.tree_state_mut().set_parent(parent, 1, 1000);
+    node.tree_state_mut().recompute_coords();
+    assert!(!node.tree_state().is_root());
+    assert_eq!(node.tree_state().root(), &root);
+
+    let now_ms = Node::now_ms();
+
+    let downstream = make_node_addr(10);
+    node.coord_cache_mut().insert(
+        downstream,
+        TreeCoordinate::from_addrs(vec![downstream, my_addr, root]).unwrap(),
+        now_ms,
+    );
+    let sibling_dest = make_node_addr(11);
+    node.coord_cache_mut().insert(
+        sibling_dest,
+        TreeCoordinate::from_addrs(vec![sibling_dest, alt, root]).unwrap(),
+        now_ms,
+    );
+
+    let changed = node.handle_peer_removal_tree_cleanup(&parent);
+    assert!(changed);
+    assert_eq!(node.tree_state().my_declaration().parent_id(), &alt);
+    assert_eq!(node.tree_state().root(), &root);
+
+    assert!(
+        !node.coord_cache().contains(&downstream, now_ms),
+        "entry routing through our old coordinate prefix must be invalidated"
+    );
+    assert!(
+        node.coord_cache().contains(&sibling_dest, now_ms),
+        "same-root entry not routing through us should survive"
+    );
+}
+
+#[test]
+fn test_parent_loss_selfroot_invalidates_coord_cache() {
+    let mut node = make_node();
+    let my_addr = *node.node_addr();
+
+    let old_root = make_node_addr(0);
+    let parent = make_node_addr(1);
+
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(parent, old_root, 1, 1000),
+        TreeCoordinate::from_addrs(vec![parent, old_root]).unwrap(),
+    );
+    node.tree_state_mut().set_parent(parent, 1, 1000);
+    node.tree_state_mut().recompute_coords();
+    assert!(!node.tree_state().is_root());
+
+    let now_ms = Node::now_ms();
+
+    let downstream = make_node_addr(10);
+    node.coord_cache_mut().insert(
+        downstream,
+        TreeCoordinate::from_addrs(vec![downstream, my_addr, old_root]).unwrap(),
+        now_ms,
+    );
+    let foreign = make_node_addr(11);
+    node.coord_cache_mut().insert(
+        foreign,
+        TreeCoordinate::from_addrs(vec![foreign, parent, old_root]).unwrap(),
+        now_ms,
+    );
+
+    let changed = node.handle_peer_removal_tree_cleanup(&parent);
+    assert!(changed);
+    assert!(node.tree_state().is_root());
+    assert_eq!(node.tree_state().root(), &my_addr);
+
+    assert!(
+        !node.coord_cache().contains(&downstream, now_ms),
+        "via-node entry must be invalidated after self-root"
+    );
+    assert!(
+        !node.coord_cache().contains(&foreign, now_ms),
+        "old-root entry must be invalidated after self-root"
+    );
+}

@@ -210,6 +210,16 @@ impl Node {
             "Processed TreeAnnounce"
         );
 
+        if *announce.ancestry.root_id() > *self.tree_state.root()
+            && let Err(e) = self.send_tree_announce_to_peer(from).await
+        {
+            debug!(
+                peer = %self.peer_display_name(from),
+                error = %e,
+                "Failed to re-push TreeAnnounce on root disagreement"
+            );
+        }
+
         // Bloom filter exchange initiation is handled at handshake completion
         // ([handshake.rs] mark_update_needed on the new peer) and on actual
         // content changes via [bloom.rs::handle_filter_announce]'s
@@ -481,6 +491,10 @@ impl Node {
                 if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
                     warn!(error = %e, "Failed to sign declaration after parent loss");
                 }
+                let our_addr = *self.identity.node_addr();
+                self.coord_cache.invalidate_via_node(&our_addr);
+                self.coord_cache
+                    .invalidate_other_roots(self.tree_state.root());
                 info!(
                     new_root = %self.tree_state.root(),
                     is_root = self.tree_state.is_root(),

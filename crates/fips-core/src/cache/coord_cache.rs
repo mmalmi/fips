@@ -205,6 +205,30 @@ impl CoordCache {
         self.entries.clear();
     }
 
+    /// Drop entries whose cached destination ancestry contains `node_addr`.
+    ///
+    /// When this node changes position in the tree, destinations downstream of
+    /// its old coordinate prefix must be re-learned. Unrelated same-root entries
+    /// remain usable and are retained.
+    pub fn invalidate_via_node(&mut self, node_addr: &NodeAddr) -> usize {
+        let len_before = self.entries.len();
+        self.entries
+            .retain(|_, entry| !entry.coords().contains(node_addr));
+        len_before - self.entries.len()
+    }
+
+    /// Drop entries whose cached root differs from `current_root`.
+    ///
+    /// Entries from a stale root cannot route after a root change; removing them
+    /// prevents active traffic from keeping those stale entries alive forever by
+    /// refreshing their TTL.
+    pub fn invalidate_other_roots(&mut self, current_root: &NodeAddr) -> usize {
+        let len_before = self.entries.len();
+        self.entries
+            .retain(|_, entry| entry.coords().root_id() == current_root);
+        len_before - self.entries.len()
+    }
+
     /// Evict one entry (expired first, then LRU).
     fn evict_one(&mut self, current_time_ms: u64) {
         // First try to evict an expired entry
@@ -472,6 +496,36 @@ mod tests {
         cache.clear();
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_coord_cache_invalidate_via_node_is_surgical() {
+        let mut cache = CoordCache::new(100, 1000);
+        let node = make_node_addr(1);
+        let downstream = make_node_addr(2);
+        let sibling = make_node_addr(3);
+
+        cache.insert(downstream, make_coords(&[2, 1, 0]), 0);
+        cache.insert(sibling, make_coords(&[3, 4, 0]), 0);
+
+        assert_eq!(cache.invalidate_via_node(&node), 1);
+        assert!(!cache.contains(&downstream, 0));
+        assert!(cache.contains(&sibling, 0));
+    }
+
+    #[test]
+    fn test_coord_cache_invalidate_other_roots_keeps_current_root() {
+        let mut cache = CoordCache::new(100, 1000);
+        let current_root = make_node_addr(0);
+        let current = make_node_addr(2);
+        let stale = make_node_addr(3);
+
+        cache.insert(current, make_coords(&[2, 1, 0]), 0);
+        cache.insert(stale, make_coords(&[3, 4, 9]), 0);
+
+        assert_eq!(cache.invalidate_other_roots(&current_root), 1);
+        assert!(cache.contains(&current, 0));
+        assert!(!cache.contains(&stale, 0));
     }
 
     #[test]

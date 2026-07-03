@@ -133,6 +133,55 @@ async fn test_rejects_tree_announce_with_inconsistent_root() {
 }
 
 #[tokio::test]
+async fn test_tree_announce_repushed_on_root_disagreement() {
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+
+    let root_idx = if nodes[0].node.tree_state().is_root() {
+        0
+    } else {
+        1
+    };
+    let child_idx = 1 - root_idx;
+    let root_addr = *nodes[root_idx].node.node_addr();
+
+    assert_eq!(nodes[child_idx].node.tree_state().root(), &root_addr);
+    assert!(!nodes[child_idx].node.tree_state().is_root());
+
+    {
+        let child = &mut nodes[child_idx].node;
+        child.tree_state.become_root();
+        child.tree_state.remove_peer(&root_addr);
+        child.tree_state.sign_declaration(&child.identity).unwrap();
+    }
+    assert!(nodes[child_idx].node.tree_state().is_root());
+
+    let _ = drain_all_packets(&mut nodes, false).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let root_sent_before = nodes[root_idx].node.stats().tree.sent;
+    nodes[child_idx]
+        .node
+        .send_tree_announce_to_peer(&root_addr)
+        .await
+        .unwrap();
+
+    let _ = drain_all_packets(&mut nodes, false).await;
+
+    let root_sent_after = nodes[root_idx].node.stats().tree.sent;
+    assert!(
+        root_sent_after > root_sent_before,
+        "root should re-push its TreeAnnounce when a peer advertises a worse root"
+    );
+    assert!(
+        !nodes[child_idx].node.tree_state().is_root(),
+        "child should re-attach instead of staying self-rooted"
+    );
+    assert_eq!(nodes[child_idx].node.tree_state().root(), &root_addr);
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_parent_reeval_ignores_unmeasured_peer_costs() {
     let mut config = Config::new();
     config.node.tree.hold_down_secs = 0;
