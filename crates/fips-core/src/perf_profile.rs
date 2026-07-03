@@ -481,8 +481,8 @@ pub enum Event {
     DataplaneOutboundBatchAdmit = 214,
     DataplaneOutboundBatchPackets = 215,
     DataplaneTransportSendWorkerSendFailed = 216,
-    Ipv6ShimDecompressInPlace = 217,
-    Ipv6ShimDecompressAllocated = 218,
+    ReservedEvent217 = 217,
+    ReservedEvent218 = 218,
     ReservedEvent219 = 219,
     ReservedEvent220 = 220,
     DataplaneLiveRawAdmitted = 221,
@@ -737,8 +737,8 @@ impl Event {
             Event::DataplaneTransportSendWorkerSendFailed => {
                 "dataplane_transport_send_worker_send_failed"
             }
-            Event::Ipv6ShimDecompressInPlace => "ipv6_shim_decompress_in_place",
-            Event::Ipv6ShimDecompressAllocated => "ipv6_shim_decompress_allocated",
+            Event::ReservedEvent217 => "reserved_event_217",
+            Event::ReservedEvent218 => "reserved_event_218",
             Event::ReservedEvent219 => "reserved_event_219",
             Event::ReservedEvent220 => "reserved_event_220",
             Event::DataplaneLiveRawAdmitted => "dataplane_live_raw_admitted",
@@ -994,8 +994,8 @@ fn event_from_index(idx: usize) -> Event {
         214 => Event::DataplaneOutboundBatchAdmit,
         215 => Event::DataplaneOutboundBatchPackets,
         216 => Event::DataplaneTransportSendWorkerSendFailed,
-        217 => Event::Ipv6ShimDecompressInPlace,
-        218 => Event::Ipv6ShimDecompressAllocated,
+        217 => Event::ReservedEvent217,
+        218 => Event::ReservedEvent218,
         219 => Event::ReservedEvent219,
         220 => Event::ReservedEvent220,
         221 => Event::DataplaneLiveRawAdmitted,

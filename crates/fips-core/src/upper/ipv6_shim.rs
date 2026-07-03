@@ -16,8 +16,6 @@
 //! is forced to 6, payload length is computed from the remaining data,
 //! and source/destination addresses are reconstructed from session context.
 
-use crate::transport::PacketBuffer;
-
 /// Compressed format byte for mesh-internal traffic.
 pub const IPV6_SHIM_FORMAT_COMPRESSED: u8 = 0x00;
 
@@ -125,61 +123,32 @@ pub fn decompress_ipv6(
     let residual = &shim_payload[1..1 + IPV6_SHIM_RESIDUAL_SIZE];
     let upper_payload = &shim_payload[1 + IPV6_SHIM_RESIDUAL_SIZE..];
     let upper_len = upper_payload.len();
-    let header = decompressed_ipv6_header(residual, upper_len, src_ipv6, dst_ipv6)?;
 
     let mut ipv6 = Vec::with_capacity(IPV6_HEADER_SIZE + upper_len);
-    ipv6.extend_from_slice(&header);
+
+    // Bytes 0-3: restore version nibble to 6
+    ipv6.push((residual[0] & 0x0F) | 0x60);
+    ipv6.extend_from_slice(&residual[1..4]);
+
+    // Bytes 4-5: payload length (big-endian)
+    ipv6.extend_from_slice(&(upper_len as u16).to_be_bytes());
+
+    // Byte 6: next header
+    ipv6.push(residual[4]);
+
+    // Byte 7: hop limit
+    ipv6.push(residual[5]);
+
+    // Bytes 8-23: source address
+    ipv6.extend_from_slice(&src_ipv6);
+
+    // Bytes 24-39: destination address
+    ipv6.extend_from_slice(&dst_ipv6);
+
+    // Upper-layer payload
     ipv6.extend_from_slice(upper_payload);
 
     Some(ipv6)
-}
-
-pub(crate) fn decompress_ipv6_in_place(
-    shim_payload: &mut PacketBuffer,
-    src_ipv6: [u8; 16],
-    dst_ipv6: [u8; 16],
-) -> bool {
-    if shim_payload.len() < 1 + IPV6_SHIM_RESIDUAL_SIZE {
-        return false;
-    }
-    if shim_payload[0] != IPV6_SHIM_FORMAT_COMPRESSED {
-        return false;
-    }
-
-    let residual = &shim_payload[1..1 + IPV6_SHIM_RESIDUAL_SIZE];
-    let upper_len = shim_payload.len() - (1 + IPV6_SHIM_RESIDUAL_SIZE);
-    let Some(header) = decompressed_ipv6_header(residual, upper_len, src_ipv6, dst_ipv6) else {
-        return false;
-    };
-
-    shim_payload.replace_prefix(1 + IPV6_SHIM_RESIDUAL_SIZE, &header)
-}
-
-fn decompressed_ipv6_header(
-    residual: &[u8],
-    upper_len: usize,
-    src_ipv6: [u8; 16],
-    dst_ipv6: [u8; 16],
-) -> Option<[u8; IPV6_HEADER_SIZE]> {
-    if residual.len() != IPV6_SHIM_RESIDUAL_SIZE || upper_len > u16::MAX as usize {
-        return None;
-    }
-
-    let mut header = [0u8; IPV6_HEADER_SIZE];
-    // Bytes 0-3: restore version nibble to 6.
-    header[0] = (residual[0] & 0x0F) | 0x60;
-    header[1..4].copy_from_slice(&residual[1..4]);
-    // Bytes 4-5: payload length (big-endian).
-    header[4..6].copy_from_slice(&(upper_len as u16).to_be_bytes());
-    // Bytes 6-7: next header and hop limit.
-    header[6] = residual[4];
-    header[7] = residual[5];
-    // Bytes 8-23: source address.
-    header[8..24].copy_from_slice(&src_ipv6);
-    // Bytes 24-39: destination address.
-    header[24..40].copy_from_slice(&dst_ipv6);
-
-    Some(header)
 }
 
 #[cfg(test)]
@@ -274,43 +243,6 @@ mod tests {
         ));
 
         assert_eq!(in_place, expected);
-    }
-
-    #[test]
-    fn test_in_place_decompression_matches_allocating_path() {
-        let payload = vec![0xB7; 512];
-        let pkt = build_ipv6_packet(0x2C, 0x23456, 17, 48, sample_src(), sample_dst(), &payload);
-        let compressed = compress_ipv6(&pkt).unwrap();
-        let mut storage = Vec::with_capacity(compressed.len() + IPV6_HEADER_SIZE);
-        storage.extend_from_slice(&compressed);
-        let mut in_place = PacketBuffer::new(storage);
-
-        assert!(decompress_ipv6_in_place(
-            &mut in_place,
-            sample_src(),
-            sample_dst()
-        ));
-
-        assert_eq!(in_place.as_slice(), pkt.as_slice());
-    }
-
-    #[test]
-    fn test_in_place_decompression_reports_missing_capacity_without_mutating() {
-        let payload = vec![0xC3; 64];
-        let pkt = build_ipv6_packet(0x18, 0x11111, 6, 64, sample_src(), sample_dst(), &payload);
-        let compressed = compress_ipv6(&pkt).unwrap();
-        let mut in_place = PacketBuffer::new(compressed.clone());
-
-        assert!(!decompress_ipv6_in_place(
-            &mut in_place,
-            sample_src(),
-            sample_dst()
-        ));
-        assert_eq!(in_place.as_slice(), compressed.as_slice());
-        assert_eq!(
-            decompress_ipv6(in_place.as_slice(), sample_src(), sample_dst()).unwrap(),
-            pkt
-        );
     }
 
     #[test]

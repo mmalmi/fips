@@ -291,54 +291,6 @@
     }
 
     #[test]
-    fn authenticated_session_message_reuses_ipv6_shim_packet_buffer() {
-        let peer = Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-        let src_ipv6 = [0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        let dst_ipv6 = [0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
-        let payload = b"tun-payload";
-        let mut ipv6 = Vec::with_capacity(40 + payload.len());
-        ipv6.extend_from_slice(&[0x60, 0, 0, 0]);
-        ipv6.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-        ipv6.push(17);
-        ipv6.push(64);
-        ipv6.extend_from_slice(&src_ipv6);
-        ipv6.extend_from_slice(&dst_ipv6);
-        ipv6.extend_from_slice(payload);
-        let shim_payload = crate::upper::ipv6_shim::compress_ipv6(&ipv6).unwrap();
-        let mut datapacket_body = Vec::with_capacity(4 + shim_payload.len());
-        datapacket_body.extend_from_slice(
-            &crate::node::session_wire::FSP_PORT_IPV6_SHIM.to_le_bytes(),
-        );
-        datapacket_body.extend_from_slice(
-            &crate::node::session_wire::FSP_PORT_IPV6_SHIM.to_le_bytes(),
-        );
-        datapacket_body.extend_from_slice(&shim_payload);
-        let plaintext = fsp_prepend_inner_header(
-            0x0102_0304,
-            SessionMessageType::DataPacket.to_byte(),
-            0,
-            &datapacket_body,
-        );
-        let mut storage = Vec::with_capacity(plaintext.len() + 64);
-        storage.extend_from_slice(&plaintext);
-
-        let message = AuthenticatedSessionMessage::new(
-            source_peer,
-            crate::transport::PacketBuffer::new(storage),
-            SessionMessageType::DataPacket.to_byte(),
-            0,
-            0x0102_0304,
-        );
-
-        let (packet, decompressed_in_place) = message
-            .into_ipv6_shim_packet(src_ipv6, dst_ipv6)
-            .expect("IPv6 shim packet");
-        assert!(decompressed_in_place);
-        assert_eq!(packet.as_slice(), ipv6.as_slice());
-    }
-
-    #[test]
     fn authenticated_session_dispatch_owns_route_ce_and_completion_facts() {
         let peer = Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());

@@ -197,14 +197,6 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             "dataplane_transport_send_worker_send_failed",
         ),
         (
-            Event::Ipv6ShimDecompressInPlace,
-            "ipv6_shim_decompress_in_place",
-        ),
-        (
-            Event::Ipv6ShimDecompressAllocated,
-            "ipv6_shim_decompress_allocated",
-        ),
-        (
             Event::DataplaneLiveRawAdmitted,
             "dataplane_live_raw_admitted",
         ),
@@ -471,8 +463,6 @@ fn live_event_counters_increment() {
         (Event::DataplaneTransportSendWorkerBackpressure, 101),
         (Event::DataplaneTransportSendWorkerDropped, 103),
         (Event::DataplaneTransportSendWorkerSendFailed, 107),
-        (Event::Ipv6ShimDecompressInPlace, 109),
-        (Event::Ipv6ShimDecompressAllocated, 113),
     ];
 
     for (event, count) in samples {

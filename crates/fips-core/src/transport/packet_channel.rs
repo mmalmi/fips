@@ -212,55 +212,6 @@ impl PacketBuffer {
         }
         true
     }
-
-    pub(crate) fn replace_prefix(&mut self, old_prefix_len: usize, new_prefix: &[u8]) -> bool {
-        if old_prefix_len > self.len() {
-            return false;
-        }
-
-        let new_prefix_len = new_prefix.len();
-        if new_prefix_len == old_prefix_len {
-            self.data[self.start..self.start + new_prefix_len].copy_from_slice(new_prefix);
-            return true;
-        }
-
-        let len = self.data.len();
-        let tail_len = self.len() - old_prefix_len;
-        if new_prefix_len > old_prefix_len {
-            let delta = new_prefix_len - old_prefix_len;
-            if self.data.capacity().saturating_sub(len) < delta {
-                return false;
-            }
-            unsafe {
-                let ptr = self.data.as_mut_ptr();
-                std::ptr::copy(
-                    ptr.add(self.start + old_prefix_len),
-                    ptr.add(self.start + new_prefix_len),
-                    tail_len,
-                );
-                std::ptr::copy_nonoverlapping(
-                    new_prefix.as_ptr(),
-                    ptr.add(self.start),
-                    new_prefix_len,
-                );
-                self.data.set_len(len + delta);
-            }
-            return true;
-        }
-
-        let delta = old_prefix_len - new_prefix_len;
-        unsafe {
-            let ptr = self.data.as_mut_ptr();
-            std::ptr::copy_nonoverlapping(new_prefix.as_ptr(), ptr.add(self.start), new_prefix_len);
-            std::ptr::copy(
-                ptr.add(self.start + old_prefix_len),
-                ptr.add(self.start + new_prefix_len),
-                tail_len,
-            );
-            self.data.set_len(len - delta);
-        }
-        true
-    }
 }
 
 impl Clone for PacketBuffer {
