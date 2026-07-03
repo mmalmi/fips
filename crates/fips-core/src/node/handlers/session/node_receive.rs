@@ -227,7 +227,7 @@ impl Node {
             body_len,
             endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte()
                 || msg_type == SessionMessageType::EndpointDataBulk.to_byte(),
-            "Dispatching packet mover2 authenticated session"
+            "Dispatching dataplane authenticated session"
         );
 
         if self.promote_dataplane_authenticated_pending_fsp_epoch(

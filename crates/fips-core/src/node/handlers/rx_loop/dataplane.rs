@@ -204,7 +204,7 @@ impl Node {
                 transport_id = %packet.transport_id,
                 remote_addr = %packet.remote_addr,
                 bytes = packet.data.len(),
-                "Dropping stray punch probe/ack from packet mover2 control ingress"
+                "Dropping stray punch probe/ack from dataplane control ingress"
             );
             return false;
         }
@@ -233,7 +233,7 @@ impl Node {
                 debug!(
                     phase = prefix.phase,
                     transport_id = %packet.transport_id,
-                    "Unknown packet mover2 FMP control phase, dropping"
+                    "Unknown dataplane FMP control phase, dropping"
                 );
                 false
             }
@@ -249,7 +249,7 @@ impl Node {
         debug!(
             version,
             transport_id = %packet.transport_id,
-            "Unknown packet mover2 FMP version, dropping"
+            "Unknown dataplane FMP version, dropping"
         );
 
         let looks_like_fmp_phase = matches!(phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2);
@@ -423,7 +423,7 @@ impl Node {
                 tun_deferred_packets = turn.tun_deferred_packets(),
                 packet_drops = turn.drops().len(),
                 transport_dropped = turn.transport_dropped(),
-                "packet mover2 turn reported drops"
+                "dataplane turn reported drops"
             );
             for drop in turn.raw_ingress_drops() {
                 debug!(
@@ -432,7 +432,7 @@ impl Node {
                     remote_addr = ?drop.remote_addr(),
                     payload_len = drop.payload_len(),
                     reason = ?drop.reason(),
-                    "packet mover2 raw ingress dropped"
+                    "dataplane raw ingress dropped"
                 );
             }
             for drop in turn.endpoint_data_drops() {
@@ -440,7 +440,7 @@ impl Node {
                     dest_addr = ?drop.dest_addr(),
                     payload_len = drop.payload_len(),
                     reason = ?drop.reason(),
-                    "packet mover2 endpoint data batch dropped"
+                    "dataplane endpoint data batch dropped"
                 );
             }
             return;
@@ -460,7 +460,7 @@ impl Node {
             endpoint_data_bulk = turn.endpoint_data_bulk_count(),
             endpoint_data_bulk_batches = turn.endpoint_data_bulk().len(),
             fsp_session_ingress = turn.fsp_session_ingress().len(),
-            "packet mover2 turn completed"
+            "dataplane turn completed"
         );
     }
 }
