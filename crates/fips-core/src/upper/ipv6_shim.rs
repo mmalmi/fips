@@ -57,6 +57,47 @@ pub fn compress_ipv6(ipv6_packet: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Compress an IPv6 packet in-place and prepend the FSP DataPacket port header.
+///
+/// On success `packet` is rewritten to:
+///
+/// ```text
+/// [src_port:2][dst_port:2][format:1][ver_tc_flow:4][next_header:1][hop_limit:1][payload...]
+/// ```
+///
+/// This is byte-identical to prefixing [`compress_ipv6`] with the two LE port
+/// fields, but it avoids allocating and copying the whole upper-layer payload on
+/// the TUN outbound hot path.
+pub fn compress_ipv6_with_port_header_in_place(
+    packet: &mut Vec<u8>,
+    src_port: u16,
+    dst_port: u16,
+) -> bool {
+    if packet.len() < IPV6_HEADER_SIZE || packet[0] >> 4 != 6 {
+        return false;
+    }
+
+    let residual_0_3 = [packet[0], packet[1], packet[2], packet[3]];
+    let next_header = packet[6];
+    let hop_limit = packet[7];
+    let upper_payload_len = packet.len() - IPV6_HEADER_SIZE;
+    const PORT_HEADER_SIZE: usize = 4;
+    let compressed_len = PORT_HEADER_SIZE + 1 + IPV6_SHIM_RESIDUAL_SIZE + upper_payload_len;
+
+    packet[0..2].copy_from_slice(&src_port.to_le_bytes());
+    packet[2..4].copy_from_slice(&dst_port.to_le_bytes());
+    packet[4] = IPV6_SHIM_FORMAT_COMPRESSED;
+    packet[5..9].copy_from_slice(&residual_0_3);
+    packet[9] = next_header;
+    packet[10] = hop_limit;
+    packet.copy_within(
+        IPV6_HEADER_SIZE..,
+        PORT_HEADER_SIZE + 1 + IPV6_SHIM_RESIDUAL_SIZE,
+    );
+    packet.truncate(compressed_len);
+    true
+}
+
 /// Decompress a shim payload back to a full IPv6 packet.
 ///
 /// Reconstructs the full 40-byte IPv6 header from the residual fields and
@@ -180,6 +221,28 @@ mod tests {
         let decompressed = decompress_ipv6(&compressed, sample_src(), sample_dst()).unwrap();
 
         assert_eq!(decompressed, pkt);
+    }
+
+    #[test]
+    fn test_in_place_port_header_compression_matches_allocating_path() {
+        let payload = vec![0x5A; 256];
+        let pkt = build_ipv6_packet(0x24, 0x12345, 6, 32, sample_src(), sample_dst(), &payload);
+        let compressed = compress_ipv6(&pkt).unwrap();
+        let src_port = 0x0100u16;
+        let dst_port = 0x0200u16;
+        let mut expected = Vec::with_capacity(4 + compressed.len());
+        expected.extend_from_slice(&src_port.to_le_bytes());
+        expected.extend_from_slice(&dst_port.to_le_bytes());
+        expected.extend_from_slice(&compressed);
+
+        let mut in_place = pkt.clone();
+        assert!(compress_ipv6_with_port_header_in_place(
+            &mut in_place,
+            src_port,
+            dst_port
+        ));
+
+        assert_eq!(in_place, expected);
     }
 
     #[test]

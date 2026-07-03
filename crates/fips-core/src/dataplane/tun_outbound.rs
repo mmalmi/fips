@@ -112,19 +112,13 @@ impl DataplaneTunOutboundRoute {
         let inner_flags = match payload_kind {
             DataplaneTunPayload::Raw => None,
             DataplaneTunPayload::Ipv6Shim { inner_flags } => {
-                let compressed = crate::upper::ipv6_shim::compress_ipv6(&payload)
-                    .ok_or(DataplaneTunOutboundDropReason::InvalidPacket)?;
-                let mut port_payload = Vec::with_capacity(
-                    crate::node::session_wire::FSP_PORT_HEADER_SIZE + compressed.len(),
-                );
-                port_payload.extend_from_slice(
-                    &crate::node::session_wire::FSP_PORT_IPV6_SHIM.to_le_bytes(),
-                );
-                port_payload.extend_from_slice(
-                    &crate::node::session_wire::FSP_PORT_IPV6_SHIM.to_le_bytes(),
-                );
-                port_payload.extend_from_slice(&compressed);
-                payload = port_payload;
+                if !crate::upper::ipv6_shim::compress_ipv6_with_port_header_in_place(
+                    &mut payload,
+                    crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+                    crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+                ) {
+                    return Err(DataplaneTunOutboundDropReason::InvalidPacket);
+                }
                 Some(inner_flags)
             }
         };
