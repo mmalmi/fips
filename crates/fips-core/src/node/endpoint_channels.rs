@@ -4,6 +4,9 @@ use tokio::sync::mpsc::error::TryRecvError;
 pub(crate) const ENDPOINT_STALE_DATA_DROP_MS: u64 = 150;
 
 const ENDPOINT_DATA_BATCH_DRAIN_QUANTUM: usize = 8;
+const ENDPOINT_DATA_BULK_SEAL_HEADROOM: usize =
+    crate::node::session_wire::FSP_HEADER_SIZE + crate::node::session_wire::FSP_INNER_HEADER_SIZE;
+const ENDPOINT_DATA_BULK_SEAL_TAILROOM: usize = crate::noise::TAG_SIZE;
 
 fn endpoint_data_batch_drain_cost(packet_count: usize) -> usize {
     packet_count
@@ -117,7 +120,7 @@ pub(crate) struct NodeEndpointDataBatch {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EndpointDataBulkBody {
-    body: Vec<u8>,
+    body: crate::transport::PacketBuffer,
     packet_count: usize,
     packet_bytes: usize,
 }
@@ -130,9 +133,13 @@ impl EndpointDataBulkBody {
         Some(Self::from_parts(body, packet_count, packet_bytes))
     }
 
-    fn from_parts(body: Vec<u8>, packet_count: usize, packet_bytes: usize) -> Self {
+    fn from_parts(
+        body: impl Into<crate::transport::PacketBuffer>,
+        packet_count: usize,
+        packet_bytes: usize,
+    ) -> Self {
         Self {
-            body,
+            body: body.into(),
             packet_count,
             packet_bytes,
         }
@@ -179,7 +186,7 @@ impl EndpointDataBulkBody {
             .unwrap_or_default()
     }
 
-    pub(crate) fn into_body(self) -> Vec<u8> {
+    pub(crate) fn into_body(self) -> crate::transport::PacketBuffer {
         self.body
     }
 
@@ -211,8 +218,12 @@ impl Default for EndpointDataBulkBodyBuilder {
 
 impl EndpointDataBulkBodyBuilder {
     pub(crate) fn new() -> Self {
-        let mut body =
-            Vec::with_capacity(crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len());
+        let mut body = Vec::with_capacity(
+            crate::node::session_wire::fsp_endpoint_data_max_body_len()
+                .max(crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len())
+                .saturating_add(ENDPOINT_DATA_BULK_SEAL_HEADROOM)
+                .saturating_add(ENDPOINT_DATA_BULK_SEAL_TAILROOM),
+        );
         body.extend_from_slice(&0_u16.to_le_bytes());
         Self {
             body,

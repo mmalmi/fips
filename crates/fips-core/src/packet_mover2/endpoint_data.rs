@@ -131,7 +131,11 @@ impl PacketMover2EndpointDataRoute {
         crate::node::session_wire::fsp_endpoint_data_max_body_len()
     }
 
-    fn build_bulk_packet(&self, msg_type: u8, payload: Vec<u8>) -> OutboundPacket {
+    fn build_bulk_packet(
+        &self,
+        msg_type: u8,
+        payload: crate::transport::PacketBuffer,
+    ) -> OutboundPacket {
         let mut packet = OutboundPacket::fsp(
             self.owner,
             self.generation,

@@ -206,8 +206,140 @@ impl crate::transport::udp::UdpPayloadBatch for [PacketOutput] {
         <[PacketOutput]>::len(self)
     }
 
-    fn payload(&self, index: usize) -> &[u8] {
-        self[index].payload()
+    fn payload_len(&self, index: usize) -> usize {
+        self[index].payload_len()
+    }
+
+    fn contiguous_payload(&self, index: usize) -> Option<&[u8]> {
+        Some(self[index].payload())
+    }
+
+    fn payload_slices<'a>(
+        &'a self,
+        index: usize,
+        out: &mut [Option<&'a [u8]>; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES],
+    ) -> usize {
+        out.fill(None);
+        out[0] = Some(self[index].payload());
+        1
+    }
+}
+
+#[derive(Debug)]
+enum PacketMover2TransportPayloadRecord {
+    Whole(PacketOutput),
+    DirectFspSegments(PacketMover2DirectFspTransportSegments),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PacketMover2TransportPayloadItem {
+    Whole {
+        record_index: usize,
+    },
+    DirectFspSegment {
+        record_index: usize,
+        segment_index: usize,
+    },
+}
+
+#[derive(Debug)]
+struct PacketMover2TransportPayloadBatch {
+    records: Vec<PacketMover2TransportPayloadRecord>,
+    items: Vec<PacketMover2TransportPayloadItem>,
+}
+
+impl PacketMover2TransportPayloadBatch {
+    fn with_capacity(record_capacity: usize) -> Self {
+        Self {
+            records: Vec::with_capacity(record_capacity),
+            items: Vec::with_capacity(record_capacity),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    fn push_whole(&mut self, output: PacketOutput) {
+        let record_index = self.records.len();
+        self.records
+            .push(PacketMover2TransportPayloadRecord::Whole(output));
+        self.items
+            .push(PacketMover2TransportPayloadItem::Whole { record_index });
+    }
+
+    fn push_direct_fsp_segments(&mut self, segments: PacketMover2DirectFspTransportSegments) {
+        let record_index = self.records.len();
+        let segment_count = segments.len();
+        self.records
+            .push(PacketMover2TransportPayloadRecord::DirectFspSegments(segments));
+        self.items.reserve(segment_count);
+        for segment_index in 0..segment_count {
+            self.items.push(PacketMover2TransportPayloadItem::DirectFspSegment {
+                record_index,
+                segment_index,
+            });
+        }
+    }
+}
+
+impl crate::transport::udp::UdpPayloadBatch for PacketMover2TransportPayloadBatch {
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn payload_len(&self, index: usize) -> usize {
+        match self.items[index] {
+            PacketMover2TransportPayloadItem::Whole { record_index } => match &self.records[record_index] {
+                PacketMover2TransportPayloadRecord::Whole(output) => output.payload_len(),
+                PacketMover2TransportPayloadRecord::DirectFspSegments(_) => unreachable!(),
+            },
+            PacketMover2TransportPayloadItem::DirectFspSegment {
+                record_index,
+                segment_index,
+            } => match &self.records[record_index] {
+                PacketMover2TransportPayloadRecord::DirectFspSegments(segments) => {
+                    segments.payload_len(segment_index)
+                }
+                PacketMover2TransportPayloadRecord::Whole(_) => unreachable!(),
+            },
+        }
+    }
+
+    fn contiguous_payload(&self, index: usize) -> Option<&[u8]> {
+        match self.items[index] {
+            PacketMover2TransportPayloadItem::Whole { record_index } => match &self.records[record_index] {
+                PacketMover2TransportPayloadRecord::Whole(output) => Some(output.payload()),
+                PacketMover2TransportPayloadRecord::DirectFspSegments(_) => unreachable!(),
+            },
+            PacketMover2TransportPayloadItem::DirectFspSegment { .. } => None,
+        }
+    }
+
+    fn payload_slices<'a>(
+        &'a self,
+        index: usize,
+        out: &mut [Option<&'a [u8]>; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES],
+    ) -> usize {
+        out.fill(None);
+        match self.items[index] {
+            PacketMover2TransportPayloadItem::Whole { record_index } => match &self.records[record_index] {
+                PacketMover2TransportPayloadRecord::Whole(output) => {
+                    out[0] = Some(output.payload());
+                    1
+                }
+                PacketMover2TransportPayloadRecord::DirectFspSegments(_) => unreachable!(),
+            },
+            PacketMover2TransportPayloadItem::DirectFspSegment {
+                record_index,
+                segment_index,
+            } => match &self.records[record_index] {
+                PacketMover2TransportPayloadRecord::DirectFspSegments(segments) => {
+                    segments.payload_slices(segment_index, out)
+                }
+                PacketMover2TransportPayloadRecord::Whole(_) => unreachable!(),
+            },
+        }
     }
 }
 
@@ -222,12 +354,12 @@ async fn send_packet_mover2_transport_worker_job(
         crate::perf_profile::Stage::PacketMover2TransportSendWorker,
     );
     let remote_addr = job.remote_addr;
-    let mut packets = Vec::with_capacity(record_count);
+    let mut packets = PacketMover2TransportPayloadBatch::with_capacity(record_count);
     let mut failed_records = 0usize;
     for record in job.records {
         match packet_mover2_direct_fsp_transport_output(record) {
             Ok(PacketMover2DirectFspTransportOutput::Whole(output)) => {
-                push_packet_mover2_transport_worker_packet(
+                push_packet_mover2_transport_worker_whole_packet(
                     &job.snapshot,
                     remote_addr,
                     output,
@@ -236,15 +368,13 @@ async fn send_packet_mover2_transport_worker_job(
                 );
             }
             Ok(PacketMover2DirectFspTransportOutput::Segments(segments)) => {
-                for output in segments {
-                    push_packet_mover2_transport_worker_packet(
-                        &job.snapshot,
-                        remote_addr,
-                        output,
-                        &mut packets,
-                        &mut failed_records,
-                    );
-                }
+                push_packet_mover2_transport_worker_direct_fsp_segments(
+                    &job.snapshot,
+                    remote_addr,
+                    segments,
+                    &mut packets,
+                    &mut failed_records,
+                );
             }
             Err(_output) => {
                 failed_records = failed_records.saturating_add(1);
@@ -257,10 +387,13 @@ async fn send_packet_mover2_transport_worker_job(
             failed_records as u64,
         );
     }
-    let failed = job
-        .snapshot
-        .send_payload_batch_to(packets.as_slice(), remote_addr)
-        .await;
+    let failed = if packets.is_empty() {
+        0
+    } else {
+        job.snapshot
+            .send_payload_batch_to(&packets, remote_addr)
+            .await
+    };
     if failed > 0 {
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::PacketMover2TransportSendWorkerSendFailed,
@@ -273,11 +406,11 @@ async fn send_packet_mover2_transport_worker_job(
     }
 }
 
-fn push_packet_mover2_transport_worker_packet(
+fn push_packet_mover2_transport_worker_whole_packet(
     snapshot: &crate::transport::udp::UdpSendSnapshot,
     remote_addr: std::net::SocketAddr,
     output: PacketOutput,
-    packets: &mut Vec<PacketOutput>,
+    packets: &mut PacketMover2TransportPayloadBatch,
     failed_records: &mut usize,
 ) {
     if snapshot
@@ -287,7 +420,26 @@ fn push_packet_mover2_transport_worker_packet(
         *failed_records = (*failed_records).saturating_add(1);
         return;
     }
-    packets.push(output);
+    packets.push_whole(output);
+}
+
+fn push_packet_mover2_transport_worker_direct_fsp_segments(
+    snapshot: &crate::transport::udp::UdpSendSnapshot,
+    remote_addr: std::net::SocketAddr,
+    segments: PacketMover2DirectFspTransportSegments,
+    packets: &mut PacketMover2TransportPayloadBatch,
+    failed_records: &mut usize,
+) {
+    for index in 0..segments.len() {
+        if snapshot
+            .validate_packet(segments.payload_len(index), remote_addr)
+            .is_err()
+        {
+            *failed_records = (*failed_records).saturating_add(1);
+            return;
+        }
+    }
+    packets.push_direct_fsp_segments(segments);
 }
 
 fn packet_mover2_transport_send_worker_count() -> usize {

@@ -165,7 +165,9 @@
         output.path_mtu = 220;
 
         let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
-            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Segments(segments) => {
+                segments.materialize_packet_outputs()
+            }
             PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 1);
@@ -236,7 +238,9 @@
         output.path_mtu = 240;
 
         let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
-            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Segments(segments) => {
+                segments.materialize_packet_outputs()
+            }
             PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 1);
@@ -351,7 +355,9 @@
             transport_output(owner, 4848, 12, transport_id, remote_addr.clone(), wire.clone());
         output.path_mtu = 240;
         let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
-            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Segments(segments) => {
+                segments.materialize_packet_outputs()
+            }
             PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
         };
         assert!(segments.len() > 2);
@@ -426,7 +432,9 @@
             transport_output(owner, 4747, 10, transport_id, remote_addr.clone(), wire);
         output.path_mtu = 240;
         let segments = match packet_mover2_direct_fsp_transport_output(output).unwrap() {
-            PacketMover2DirectFspTransportOutput::Segments(segments) => segments,
+            PacketMover2DirectFspTransportOutput::Segments(segments) => {
+                segments.materialize_packet_outputs()
+            }
             PacketMover2DirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
         };
         let fragment = segments.into_iter().next().expect("fragment").payload;

@@ -679,17 +679,23 @@ mod platform {
                 );
             }
 
-            let mut iovs: [libc::iovec; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut iovs: [[libc::iovec; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+                SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
             let mut msgs: [libc::mmsghdr; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
-                let data = payloads.payload(offset + i);
-                iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
-                iovs[i].iov_len = data.len();
+                let mut slices = [None; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+                let slice_count = payloads.payload_slices(offset + i, &mut slices);
+                debug_assert!(slice_count > 0);
+                debug_assert!(slice_count <= crate::transport::udp::UDP_PAYLOAD_MAX_SLICES);
+                for (slice_idx, data) in slices.iter().take(slice_count).flatten().enumerate() {
+                    iovs[i][slice_idx].iov_base = data.as_ptr() as *mut libc::c_void;
+                    iovs[i][slice_idx].iov_len = data.len();
+                }
                 msgs[i].msg_hdr.msg_name = &mut storage as *mut _ as *mut libc::c_void;
                 msgs[i].msg_hdr.msg_namelen = sa_len;
-                msgs[i].msg_hdr.msg_iov = &mut iovs[i];
-                msgs[i].msg_hdr.msg_iovlen = 1;
+                msgs[i].msg_hdr.msg_iov = iovs[i].as_mut_ptr();
+                msgs[i].msg_hdr.msg_iovlen = slice_count as _;
             }
 
             let r = unsafe { libc::sendmmsg(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0) };
@@ -714,7 +720,12 @@ mod platform {
         {
             debug_assert!(count > 1);
             let n = count.min(UDP_GSO_MAX_SEGMENTS);
-            let segment_size = payloads.payload(offset).len();
+            let Some(first_payload) = payloads.contiguous_payload(offset) else {
+                return Err(std::io::Error::other(
+                    "UDP GSO requires contiguous payloads",
+                ));
+            };
+            let segment_size = first_payload.len();
             debug_assert!(segment_size > 0);
             debug_assert!(segment_size <= u16::MAX as usize);
 
@@ -732,7 +743,11 @@ mod platform {
 
             let mut iovs: [libc::iovec; UDP_GSO_MAX_SEGMENTS] = unsafe { std::mem::zeroed() };
             for i in 0..n {
-                let data = payloads.payload(offset + i);
+                let Some(data) = payloads.contiguous_payload(offset + i) else {
+                    return Err(std::io::Error::other(
+                        "UDP GSO requires contiguous payloads",
+                    ));
+                };
                 iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
                 iovs[i].iov_len = data.len();
             }
@@ -795,7 +810,10 @@ mod platform {
             return 0;
         }
 
-        let segment_size = payloads.payload(offset).len();
+        let Some(first_payload) = payloads.contiguous_payload(offset) else {
+            return 0;
+        };
+        let segment_size = first_payload.len();
         if segment_size == 0 || segment_size > u16::MAX as usize {
             return 0;
         }
@@ -803,7 +821,10 @@ mod platform {
         let mut count = 0usize;
 
         for i in 0..max {
-            let len = payloads.payload(offset + i).len();
+            let Some(payload) = payloads.contiguous_payload(offset + i) else {
+                break;
+            };
+            let len = payload.len();
             if len == 0 || len > segment_size {
                 break;
             }
