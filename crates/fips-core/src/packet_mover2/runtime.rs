@@ -319,6 +319,7 @@ impl PacketMover2TurnDriver {
             let turn = self.send_collected_outputs(summary, &mut sink);
             PacketMover2LiveNodeTurn::from_runtime_turn(&turn)
         };
+        self.deliver_direct_endpoint_packet_batches(endpoint_tx.direct_sink());
         report.fmp_ingress_receipts = std::mem::take(&mut self.fmp_ingress_receipts);
         report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
         report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
@@ -358,7 +359,6 @@ impl PacketMover2TurnDriver {
             .summary
             .outputs_dropped
             .saturating_add(report.transport_dropped);
-        self.deliver_direct_endpoint_packet_batches(endpoint_tx.direct_sink());
         report.endpoint_data_bulk = std::mem::take(&mut self.endpoint_data_bulk);
         self.transport_output = transport_output;
         report
