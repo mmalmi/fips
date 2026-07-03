@@ -211,6 +211,19 @@ impl Node {
         crate::upper::icmp::effective_ipv6_mtu(self.transport_mtu())
     }
 
+    /// Resolve the TUN MTU to use at runtime.
+    ///
+    /// An explicit `tun.mtu` remains authoritative. When omitted, use the
+    /// effective FIPS IPv6 MTU if transports can carry more than the IPv6
+    /// minimum, while preserving the 1280-byte floor for default/unknown
+    /// transport paths.
+    pub(in crate::node) fn runtime_tun_mtu(&self) -> u16 {
+        self.config.tun.mtu.unwrap_or_else(|| {
+            self.effective_ipv6_mtu()
+                .max(crate::upper::config::DEFAULT_TUN_MTU)
+        })
+    }
+
     /// Get the transport MTU governing the global TUN-boundary MSS clamp.
     ///
     /// Returns the **minimum** MTU across all operational transports, or

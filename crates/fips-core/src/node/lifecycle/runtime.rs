@@ -144,7 +144,11 @@ impl Node {
         if self.config.tun.enabled {
             node_start_debug_log("Node::start tun init begin");
             let address = *self.identity.address();
-            match TunDevice::create(&self.config.tun, address).await {
+            let mut tun_config = self.config.tun.clone();
+            if tun_config.mtu.is_none() {
+                tun_config.mtu = Some(self.runtime_tun_mtu());
+            }
+            match TunDevice::create(&tun_config, address).await {
                 Ok(device) => {
                     let mtu = device.mtu();
                     let name = device.name().to_string();

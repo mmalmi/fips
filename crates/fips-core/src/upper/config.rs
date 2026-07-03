@@ -8,8 +8,11 @@ use serde::{Deserialize, Serialize};
 /// Default TUN device name.
 const DEFAULT_TUN_NAME: &str = "fips0";
 
-/// Default TUN MTU (IPv6 minimum).
-const DEFAULT_TUN_MTU: u16 = 1280;
+/// Minimum/default TUN MTU (IPv6 minimum).
+///
+/// Runtime startup may raise an omitted `tun.mtu` to the effective FIPS
+/// IPv6 MTU when the configured transports can carry larger packets.
+pub const DEFAULT_TUN_MTU: u16 = 1280;
 
 /// Default DNS responder bind address.
 ///

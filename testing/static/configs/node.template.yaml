@@ -9,7 +9,6 @@ node:
 tun:
   enabled: true
   name: fips0
-  mtu: 1280
 
 dns:
   enabled: true

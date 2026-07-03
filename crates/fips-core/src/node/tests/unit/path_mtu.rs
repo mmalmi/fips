@@ -57,6 +57,61 @@ async fn test_transport_mtu_min_with_single_operational() {
     }
 }
 
+#[tokio::test]
+async fn test_runtime_tun_mtu_uses_effective_ipv6_mtu_when_larger() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx);
+    node.packet_rx = Some(packet_rx);
+
+    let udp = make_udp_transport_with_mtu(1, 1472).await;
+    node.transports.insert(TransportId::new(1), udp);
+
+    assert_eq!(node.effective_ipv6_mtu(), 1395);
+    assert_eq!(node.runtime_tun_mtu(), 1395);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn test_runtime_tun_mtu_keeps_ipv6_minimum_floor() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx);
+    node.packet_rx = Some(packet_rx);
+
+    let udp = make_udp_transport_with_mtu(1, 1280).await;
+    node.transports.insert(TransportId::new(1), udp);
+
+    assert_eq!(node.effective_ipv6_mtu(), 1203);
+    assert_eq!(node.runtime_tun_mtu(), 1280);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn test_runtime_tun_mtu_preserves_explicit_config() {
+    let mut node = make_node();
+    node.config.tun.mtu = Some(1280);
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx);
+    node.packet_rx = Some(packet_rx);
+
+    let udp = make_udp_transport_with_mtu(1, 1472).await;
+    node.transports.insert(TransportId::new(1), udp);
+
+    assert_eq!(node.effective_ipv6_mtu(), 1395);
+    assert_eq!(node.runtime_tun_mtu(), 1280);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 // path_mtu_lookup seeding for direct-link (configured) peers — closes the
 // B3 coverage gap where configured/auto-connect peers never go through the
 // discovery Lookup flow and so their FipsAddress was missing from
