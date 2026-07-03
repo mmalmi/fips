@@ -176,13 +176,16 @@ impl Node {
             .sum::<usize>();
         if count > 0 {
             let direct_sink = direct_sink.expect("direct sink is required when packet runs remain");
-            for batch in direct_packet_batches {
-                if direct_sink.deliver_direct_packet_batch(batch).is_err() {
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::EndpointEventBulkDropped,
-                        count as u64,
-                    );
-                    break;
+            'deliver: for batch in direct_packet_batches {
+                for batch in batch.into_packet_limited_batches(FIPS_ENDPOINT_DIRECT_PACKET_BATCH_MAX)
+                {
+                    if direct_sink.deliver_direct_packet_batch(batch).is_err() {
+                        crate::perf_profile::record_event_count(
+                            crate::perf_profile::Event::EndpointEventBulkDropped,
+                            count as u64,
+                        );
+                        break 'deliver;
+                    }
                 }
             }
         }

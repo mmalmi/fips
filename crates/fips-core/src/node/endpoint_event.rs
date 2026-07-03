@@ -3,6 +3,8 @@ use crate::transport::PacketBuffer;
 use std::ops::Range;
 use std::sync::Arc;
 
+pub(crate) const FIPS_ENDPOINT_DIRECT_PACKET_BATCH_MAX: usize = 128;
+
 /// Authenticated source/session facts for a direct endpoint packet run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointDirectPacketRunMeta {
@@ -446,6 +448,58 @@ impl FipsEndpointDirectPacketRun {
             && self.is_direct_path() == other.is_direct_path()
     }
 
+    pub(crate) fn split_off_packets(&mut self, at: usize) -> Option<Self> {
+        if at >= self.len() {
+            return None;
+        }
+        if at == 0 {
+            let storage = std::mem::replace(
+                &mut self.storage,
+                FipsEndpointDirectPacketStorage::empty_segmented(),
+            );
+            return Some(Self {
+                meta: self.meta.clone(),
+                storage,
+            });
+        }
+
+        let current = std::mem::replace(
+            &mut self.storage,
+            FipsEndpointDirectPacketStorage::empty_segmented(),
+        );
+        let mut head_segments = Vec::new();
+        let mut tail_segments = Vec::new();
+        let mut head_remaining = at;
+
+        for mut segment in current.into_segments() {
+            if head_remaining == 0 {
+                tail_segments.push(segment);
+                continue;
+            }
+            if segment.len() <= head_remaining {
+                head_remaining -= segment.len();
+                head_segments.push(segment);
+                continue;
+            }
+
+            let tail_ranges = segment.ranges.split_off(head_remaining);
+            let tail_segment = FipsEndpointDirectPacketSegment::from_shared_buffer(
+                Arc::clone(&segment.buffer),
+                tail_ranges,
+            );
+            segment.packet_bytes = segment.ranges.iter().map(|range| range.len()).sum();
+            head_segments.push(segment);
+            tail_segments.push(tail_segment);
+            head_remaining = 0;
+        }
+
+        self.storage = FipsEndpointDirectPacketStorage::build_chained(head_segments);
+        Some(Self {
+            meta: self.meta.clone(),
+            storage: FipsEndpointDirectPacketStorage::build_chained(tail_segments),
+        })
+    }
+
     /// Borrow packet bytes without materializing per-packet buffers.
     pub fn packet_slices(&self) -> FipsEndpointDirectPacketSlices<'_> {
         FipsEndpointDirectPacketSlices {
@@ -687,6 +741,42 @@ pub struct FipsEndpointDirectPacketBatch {
 impl FipsEndpointDirectPacketBatch {
     pub(crate) fn from_packet_runs(packet_runs: Vec<FipsEndpointDirectPacketRun>) -> Self {
         Self { packet_runs }
+    }
+
+    pub(crate) fn into_packet_limited_batches(self, limit: usize) -> Vec<Self> {
+        let limit = limit.max(1);
+        let mut batches = Vec::new();
+        let mut current_runs = Vec::new();
+        let mut current_len = 0usize;
+
+        for mut run in self.packet_runs {
+            while !run.is_empty() {
+                if current_len >= limit {
+                    batches.push(Self::from_packet_runs(std::mem::take(&mut current_runs)));
+                    current_len = 0;
+                }
+
+                let remaining = limit - current_len;
+                if run.len() <= remaining {
+                    current_len = current_len.saturating_add(run.len());
+                    current_runs.push(run);
+                    break;
+                }
+
+                let tail = run
+                    .split_off_packets(remaining)
+                    .expect("oversized direct endpoint run must split");
+                current_runs.push(run);
+                batches.push(Self::from_packet_runs(std::mem::take(&mut current_runs)));
+                current_len = 0;
+                run = tail;
+            }
+        }
+
+        if !current_runs.is_empty() {
+            batches.push(Self::from_packet_runs(current_runs));
+        }
+        batches
     }
 
     /// Packet runs in this direct delivery batch.

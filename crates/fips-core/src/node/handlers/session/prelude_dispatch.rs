@@ -8,10 +8,10 @@ use crate::node::session_wire::{
 };
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
-    EndpointDataBulkBody, EndpointDataDelivery, LocalSessionPayload, Node, NodeEndpointControlCommand,
-    NodeEndpointDataBatch, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
-    SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    EndpointDataBulkBody, EndpointDataDelivery, FIPS_ENDPOINT_DIRECT_PACKET_BATCH_MAX,
+    LocalSessionPayload, Node, NodeEndpointControlCommand, NodeEndpointDataBatch,
+    NodeEndpointPeer, NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
+    SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,

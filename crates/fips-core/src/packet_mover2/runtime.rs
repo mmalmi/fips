@@ -1260,17 +1260,21 @@ impl PacketMover2TurnDriver {
         let mut sink_failed = false;
         for bulk in &mut self.endpoint_data_bulk {
             let packet_batch = bulk.take_direct_packet_batch();
-            let count = packet_batch.len();
-            if count == 0 {
+            if packet_batch.is_empty() {
                 continue;
             }
-            if sink_failed {
-                dropped = dropped.saturating_add(count);
-                continue;
-            }
-            if direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
-                dropped = dropped.saturating_add(count);
-                sink_failed = true;
+            for packet_batch in
+                packet_batch.into_packet_limited_batches(FIPS_ENDPOINT_DIRECT_PACKET_BATCH_MAX)
+            {
+                let count = packet_batch.len();
+                if sink_failed {
+                    dropped = dropped.saturating_add(count);
+                    continue;
+                }
+                if direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
+                    dropped = dropped.saturating_add(count);
+                    sink_failed = true;
+                }
             }
         }
 

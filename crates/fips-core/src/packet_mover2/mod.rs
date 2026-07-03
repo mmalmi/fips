@@ -27,8 +27,9 @@ use crate::node::EndpointDataBulkBodyBuilder;
 use crate::node::endpoint_data_batch_channel;
 use crate::node::{
     EndpointDataBatchRx, EndpointDataBulkBody, EndpointDataDelivery, EndpointDirectSink,
-    EndpointEventSender, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
-    FipsEndpointDirectPacketRunMeta, NodeEndpointDataBatch, NodeEndpointEvent,
+    EndpointEventSender, FIPS_ENDPOINT_DIRECT_PACKET_BATCH_MAX, FipsEndpointDirectPacketBatch,
+    FipsEndpointDirectPacketRun, FipsEndpointDirectPacketRunMeta, NodeEndpointDataBatch,
+    NodeEndpointEvent,
 };
 use crate::transport::{
     PacketBuffer, PacketFastIngressSink, PacketRx, PacketTx, ReceivedPacket, TransportAddr,

@@ -53,8 +53,8 @@ pub(crate) use endpoint_channels::{
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
 pub(crate) use endpoint_event::{
     EndpointDataDelivery, EndpointDataIo, EndpointDirectSink, EndpointEventReceiver,
-    EndpointEventSender, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
-    UpdatePeersOutcome,
+    EndpointEventSender, FIPS_ENDPOINT_DIRECT_PACKET_BATCH_MAX, NodeEndpointEvent,
+    NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome,
 };
 pub use endpoint_event::{
     FipsEndpointDirectDeliveryError, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
