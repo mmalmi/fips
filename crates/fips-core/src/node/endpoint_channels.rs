@@ -4,6 +4,9 @@ use tokio::sync::mpsc::error::TryRecvError;
 pub(crate) const ENDPOINT_STALE_DATA_DROP_MS: u64 = 150;
 
 const ENDPOINT_DATA_BATCH_DRAIN_QUANTUM: usize = 8;
+const ENDPOINT_DATA_BULK_SEAL_SLACK: usize = crate::node::session_wire::FSP_HEADER_SIZE
+    + crate::node::session_wire::FSP_INNER_HEADER_SIZE
+    + crate::noise::TAG_SIZE;
 
 fn endpoint_data_batch_drain_cost(packet_count: usize) -> usize {
     packet_count
@@ -130,7 +133,8 @@ impl EndpointDataBulkBody {
         Some(Self::from_parts(body, packet_count, packet_bytes))
     }
 
-    fn from_parts(body: Vec<u8>, packet_count: usize, packet_bytes: usize) -> Self {
+    fn from_parts(mut body: Vec<u8>, packet_count: usize, packet_bytes: usize) -> Self {
+        body.reserve(ENDPOINT_DATA_BULK_SEAL_SLACK);
         Self {
             body,
             packet_count,
@@ -211,8 +215,10 @@ impl Default for EndpointDataBulkBodyBuilder {
 
 impl EndpointDataBulkBodyBuilder {
     pub(crate) fn new() -> Self {
-        let mut body =
-            Vec::with_capacity(crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len());
+        let mut body = Vec::with_capacity(
+            crate::node::session_wire::fsp_endpoint_data_bulk_base_wire_len()
+                + ENDPOINT_DATA_BULK_SEAL_SLACK,
+        );
         body.extend_from_slice(&0_u16.to_le_bytes());
         Self {
             body,
@@ -252,6 +258,11 @@ impl EndpointDataBulkBodyBuilder {
         if !self.can_push_packet(packet) {
             return false;
         }
+        self.body.reserve(
+            crate::node::session_wire::FSP_ENDPOINT_DATA_BULK_LEN_SIZE
+                .saturating_add(packet.len())
+                .saturating_add(ENDPOINT_DATA_BULK_SEAL_SLACK),
+        );
         self.body
             .extend_from_slice(&(packet.len() as u16).to_le_bytes());
         self.body.extend_from_slice(packet);
