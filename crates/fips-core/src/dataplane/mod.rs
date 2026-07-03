@@ -1,4 +1,4 @@
-//! Packet mover for the straight dataplane.
+//! Straight dataplane packet processing.
 //!
 //! This module owns the canonical FIPS dataplane. The path is:
 //!

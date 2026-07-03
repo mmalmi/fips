@@ -217,8 +217,8 @@ pub struct Node {
     /// Packet receiver (for event loop).
     packet_rx: Option<PacketRx>,
 
-    // === Packet Mover2 ===
-    /// Canonical dataplane dataplane state owned by the node.
+    // === Dataplane ===
+    /// Canonical dataplane state owned by the node.
     #[allow(dead_code)]
     dataplane: DataplaneNode,
     /// Pre-routed established FMP packets accepted directly from UDP receive.

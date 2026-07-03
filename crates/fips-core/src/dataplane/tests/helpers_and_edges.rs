@@ -8,13 +8,13 @@
     }
 
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
-    struct PacketMoverTurn {
+    struct DataplaneTurn {
         dispatched: usize,
         retired: Vec<RetiredPacket>,
         drops: Vec<PacketDrop>,
     }
 
-    impl PacketMoverTurn {
+    impl DataplaneTurn {
         fn dispatched(&self) -> usize {
             self.dispatched
         }
@@ -256,7 +256,7 @@
         }
     }
 
-    fn run_aead_available(mover: &mut Dataplane, limit: usize) -> PacketMoverTurn {
+    fn run_aead_available(mover: &mut Dataplane, limit: usize) -> DataplaneTurn {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
         let mut retired = Vec::new();
@@ -272,7 +272,7 @@
             false,
         );
 
-        PacketMoverTurn {
+        DataplaneTurn {
             dispatched,
             retired: flatten_retired_outputs(retired),
             drops,
