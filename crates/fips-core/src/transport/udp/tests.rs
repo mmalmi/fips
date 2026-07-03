@@ -13,7 +13,7 @@ fn make_config(port: u16) -> UdpConfig {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn udp_receive_batch_width_matches_reference_packet_movers() {
+fn udp_receive_batch_width_matches_dataplane_reference() {
     assert_eq!(UDP_RECV_BATCH_SIZE, 128);
 }
 

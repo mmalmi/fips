@@ -19,7 +19,7 @@ fn endpoint_drain_budget_caps_large_packet_turns() {
 }
 
 #[test]
-fn tun_outbound_gets_dataplane_sized_packet_mover_turns() {
+fn tun_outbound_gets_dataplane_sized_turns() {
     assert_eq!(
         endpoint_drain_budget(PACKET_DRAIN_BUDGET),
         ENDPOINT_DRAIN_BUDGET
