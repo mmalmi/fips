@@ -18,8 +18,8 @@ impl Node {
         // Create packet channel for transport -> Node communication
         let packet_buffer_size = self.config.node.buffers.packet_channel;
         let (mut packet_tx, packet_rx) = packet_channel(packet_buffer_size);
-        self.packet_mover2_fast_ingress_rx = Some(
-            self.packet_mover2
+        self.dataplane_fast_ingress_rx = Some(
+            self.dataplane
                 .attach_established_fast_ingress(&mut packet_tx),
         );
         self.packet_tx = Some(packet_tx.clone());
@@ -547,7 +547,7 @@ impl Node {
     ) -> bool {
         let plaintext = Disconnect::new(reason).encode();
         match self
-            .send_packet_mover2_fmp_link_plaintext(node_addr, &plaintext, false)
+            .send_dataplane_fmp_link_plaintext(node_addr, &plaintext, false)
             .await
         {
             Ok(()) => true,

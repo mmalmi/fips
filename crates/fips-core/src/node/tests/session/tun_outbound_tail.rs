@@ -18,7 +18,7 @@ async fn test_tun_outbound_unknown_destination() {
     let unknown_fips = crate::FipsAddress::from_node_addr(&unknown_addr);
     let ipv6_packet = build_ipv6_packet(&src_fips, &unknown_fips, b"unknown");
 
-    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet).await;
+    send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet).await;
 
     // Should receive ICMPv6 Destination Unreachable back on TUN
     let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
@@ -67,7 +67,7 @@ async fn test_tun_outbound_3node_forwarded() {
     let test_payload = b"forwarded-data-plane";
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, test_payload);
 
-    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
+    send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
 
     // Drain packets: handshake + queued data delivery
     drain_to_quiescence(&mut nodes).await;
@@ -113,7 +113,7 @@ async fn test_tun_outbound_pending_queue_flush() {
         let payload = format!("queued-pkt-{}", i).into_bytes();
         let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, &payload);
         packets.push(ipv6_packet.clone());
-        enqueue_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet);
+        enqueue_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet);
     }
     process_available_packets(&mut nodes).await;
 

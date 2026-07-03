@@ -154,7 +154,7 @@
             b"old packet before cutover"
         );
 
-        // After cutover, SessionEntry promotes only the new session. PM2 owns
+        // After cutover, SessionEntry promotes only the new session. dataplane owns
         // stale-epoch drain handling, so registry state no longer retains the
         // old NoiseSession for decrypt fallback.
         assert!(entry.cutover_to_new_session(2000));

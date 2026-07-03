@@ -66,7 +66,7 @@ fn identity_cache_validates_claims_touches_lru_and_keeps_lookup_views() {
 #[tokio::test]
 async fn test_tun_outbound_established_session() {
     // Two directly connected nodes, session established.
-    // Inject IPv6 packet via PM2's TUN outbound queue on Node 0,
+    // Inject IPv6 packet via dataplane's TUN outbound queue on Node 0,
     // verify plaintext arrives at Node 1's tun_tx.
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
@@ -103,7 +103,7 @@ async fn test_tun_outbound_established_session() {
     let test_payload = b"data-plane-test-12345";
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, test_payload);
 
-    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
+    send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
 
     // Verify plaintext arrived at Node 1's TUN
     let delivered = recv_tun_packet_while_draining(
@@ -148,7 +148,7 @@ async fn test_tun_outbound_triggers_session_initiation() {
     let test_payload = b"trigger-session-test";
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, test_payload);
 
-    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
+    send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
 
     // Session should now be initiating
     assert_eq!(nodes[0].node.session_count(), 1);
@@ -197,7 +197,7 @@ async fn test_endpoint_data_for_pending_session_triggers_reply_learned_discovery
     let baseline = node.stats().discovery.req_initiated;
     let remote = crate::PeerIdentity::from_pubkey_full(dest.pubkey_full());
 
-    send_endpoint_data_via_pm2(&mut node, remote, b"status-probe".to_vec())
+    send_endpoint_data_via_dataplane(&mut node, remote, b"status-probe".to_vec())
         .await
         .unwrap();
 
@@ -233,7 +233,7 @@ async fn test_endpoint_data_for_established_session_with_no_route_queues_and_dis
     let baseline = node.stats().discovery.req_initiated;
     let remote = crate::PeerIdentity::from_pubkey_full(dest.pubkey_full());
 
-    send_endpoint_data_via_pm2(&mut node, remote, b"status-probe".to_vec())
+    send_endpoint_data_via_dataplane(&mut node, remote, b"status-probe".to_vec())
         .await
         .unwrap();
 

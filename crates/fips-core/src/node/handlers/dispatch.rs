@@ -151,9 +151,9 @@ impl Node {
         };
         let peer = removed_peer.peer;
         let link_mmp = self
-            .packet_mover2
+            .dataplane
             .fmp_link_metrics(node_addr, std::time::Instant::now());
-        self.remove_packet_mover2_fmp_owner(node_addr);
+        self.remove_dataplane_fmp_owner(node_addr);
 
         // Log suppressed replay detection summary before teardown
         let suppressed = peer.replay_suppressed_count();
@@ -186,7 +186,7 @@ impl Node {
         //      entry and silently returns Ok(()), preventing a new session over
         //      fallback or a recovered direct link.
         let session_mmp = self.session_mmp_snapshot(node_addr);
-        self.remove_packet_mover2_fsp_owner(node_addr);
+        self.remove_dataplane_fsp_owner(node_addr);
         if self.sessions.remove(node_addr).is_some()
             && let Some(mmp) = session_mmp
         {

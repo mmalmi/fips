@@ -1,8 +1,8 @@
 use super::*;
 
 impl Node {
-    fn new_packet_mover2_node() -> PacketMover2Node {
-        PacketMover2LiveNode::new(AdmissionConfig::new(1024, 4096))
+    fn new_dataplane_node() -> DataplaneNode {
+        DataplaneLiveNode::new(AdmissionConfig::new(1024, 4096))
     }
 
     /// Create a new node from configuration.
@@ -83,9 +83,9 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
-            packet_mover2: Self::new_packet_mover2_node(),
-            packet_mover2_fast_ingress_rx: None,
-            packet_mover2_transport_send_worker: Default::default(),
+            dataplane: Self::new_dataplane_node(),
+            dataplane_fast_ingress_rx: None,
+            dataplane_transport_send_worker: Default::default(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
@@ -223,9 +223,9 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
-            packet_mover2: Self::new_packet_mover2_node(),
-            packet_mover2_fast_ingress_rx: None,
-            packet_mover2_transport_send_worker: Default::default(),
+            dataplane: Self::new_dataplane_node(),
+            dataplane_fast_ingress_rx: None,
+            dataplane_transport_send_worker: Default::default(),
             peers: PeerLifecycleRegistry::default(),
             sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),

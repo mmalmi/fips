@@ -104,29 +104,29 @@ impl crate::node::PeerLifecycleRegistry {
 }
 
 impl Node {
-    pub(crate) fn packet_mover2_fmp_link_metrics(
+    pub(crate) fn dataplane_fmp_link_metrics(
         &self,
         node_addr: &NodeAddr,
         now: Instant,
-    ) -> Option<crate::packet_mover2::PacketMover2FmpLinkMetrics> {
-        self.packet_mover2.fmp_link_metrics(node_addr, now)
+    ) -> Option<crate::dataplane::DataplaneFmpLinkMetrics> {
+        self.dataplane.fmp_link_metrics(node_addr, now)
     }
 
-    pub(crate) fn packet_mover2_fmp_link_cost(&self, node_addr: &NodeAddr) -> f64 {
-        self.packet_mover2.fmp_link_cost(node_addr).unwrap_or(1.0)
+    pub(crate) fn dataplane_fmp_link_cost(&self, node_addr: &NodeAddr) -> f64 {
+        self.dataplane.fmp_link_cost(node_addr).unwrap_or(1.0)
     }
 
-    pub(crate) fn packet_mover2_fmp_has_srtt(&self, node_addr: &NodeAddr) -> bool {
-        self.packet_mover2.fmp_has_srtt(node_addr)
+    pub(crate) fn dataplane_fmp_has_srtt(&self, node_addr: &NodeAddr) -> bool {
+        self.dataplane.fmp_has_srtt(node_addr)
     }
 
-    pub(crate) fn packet_mover2_fmp_peer_costs(&self) -> std::collections::HashMap<NodeAddr, f64> {
+    pub(crate) fn dataplane_fmp_peer_costs(&self) -> std::collections::HashMap<NodeAddr, f64> {
         self.peers
             .iter()
             .filter(|(_, peer)| peer.can_send())
             .filter_map(|(addr, _)| {
-                self.packet_mover2_fmp_has_srtt(addr)
-                    .then(|| (*addr, self.packet_mover2_fmp_link_cost(addr)))
+                self.dataplane_fmp_has_srtt(addr)
+                    .then(|| (*addr, self.dataplane_fmp_link_cost(addr)))
             })
             .collect()
     }
@@ -145,7 +145,7 @@ impl Node {
             }
         };
 
-        if !self.packet_mover2_has_fmp_owner(from) {
+        if !self.dataplane_has_fmp_owner(from) {
             debug!(from = %self.peer_display_name(from), "SenderReport from unknown peer");
             return;
         }
@@ -181,18 +181,18 @@ impl Node {
 
         let peer_name = self.peer_display_name(from);
 
-        let processed = match self.packet_mover2.process_fmp_mmp_receiver_report(
+        let processed = match self.dataplane.process_fmp_mmp_receiver_report(
             from,
             &rr,
             Self::now_ms(),
             Instant::now(),
         ) {
             Ok(processed) => processed,
-            Err(crate::packet_mover2::PacketMover2FmpMmpSkip::UnknownOwner) => {
+            Err(crate::dataplane::DataplaneFmpMmpSkip::UnknownOwner) => {
                 debug!(from = %peer_name, "ReceiverReport from unknown peer");
                 return;
             }
-            Err(crate::packet_mover2::PacketMover2FmpMmpSkip::MmpDisabled) => return,
+            Err(crate::dataplane::DataplaneFmpMmpSkip::MmpDisabled) => return,
         };
 
         trace!(
@@ -207,7 +207,7 @@ impl Node {
         // Trigger re-evaluation so the node doesn't wait for the next
         // periodic tick or TreeAnnounce.
         if processed.first_rtt {
-            let peer_costs = self.packet_mover2_fmp_peer_costs();
+            let peer_costs = self.dataplane_fmp_peer_costs();
             if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
                 let new_seq = self.tree_state.my_declaration().sequence() + 1;
                 let timestamp = crate::time::now_secs();
@@ -262,7 +262,7 @@ impl Node {
     ///
     /// Called from the tick handler. Also emits periodic operator logs.
     pub(in crate::node) async fn check_mmp_reports(&mut self) {
-        let batch = self.packet_mover2.collect_fmp_mmp_reports(Instant::now());
+        let batch = self.dataplane.collect_fmp_mmp_reports(Instant::now());
 
         for metrics in &batch.metric_logs {
             let peer_name = self.peer_display_name(&metrics.node_addr);
@@ -271,11 +271,11 @@ impl Node {
 
         for report in batch.reports {
             let report_name = match report.kind {
-                crate::packet_mover2::PacketMover2FmpMmpReportKind::Sender => "SenderReport",
-                crate::packet_mover2::PacketMover2FmpMmpReportKind::Receiver => "ReceiverReport",
+                crate::dataplane::DataplaneFmpMmpReportKind::Sender => "SenderReport",
+                crate::dataplane::DataplaneFmpMmpReportKind::Receiver => "ReceiverReport",
             };
             if let Err(e) = self
-                .send_packet_mover2_fmp_link_plaintext(&report.node_addr, &report.encoded, false)
+                .send_dataplane_fmp_link_plaintext(&report.node_addr, &report.encoded, false)
                 .await
             {
                 debug!(peer = %self.peer_display_name(&report.node_addr), error = %e, report = report_name, "Failed to send MMP report");
@@ -284,10 +284,7 @@ impl Node {
     }
 
     /// Emit periodic MMP metrics for a peer.
-    fn log_mmp_metrics(
-        peer_name: &str,
-        metrics: &crate::packet_mover2::PacketMover2FmpLinkMetrics,
-    ) {
+    fn log_mmp_metrics(peer_name: &str, metrics: &crate::dataplane::DataplaneFmpLinkMetrics) {
         let rtt_str = metrics
             .srtt_ms
             .map(|rtt| format!("{rtt:.1}ms"))
@@ -312,7 +309,7 @@ impl Node {
     /// Emit a teardown log summarizing lifetime MMP metrics for a removed peer.
     pub(in crate::node) fn log_mmp_teardown(
         peer_name: &str,
-        metrics: &crate::packet_mover2::PacketMover2FmpLinkMetrics,
+        metrics: &crate::dataplane::DataplaneFmpLinkMetrics,
     ) {
         let rtt_str = match metrics.srtt_ms {
             Some(rtt) => format!("{:.1}ms", rtt),
@@ -343,7 +340,7 @@ impl Node {
     /// Uses the collect-then-send pattern to avoid borrowing conflicts.
     pub(in crate::node) async fn check_session_mmp_reports(&mut self) {
         let now = Instant::now();
-        let batch = self.packet_mover2.collect_fsp_mmp_reports(now);
+        let batch = self.dataplane.collect_fsp_mmp_reports(now);
 
         for metrics in &batch.metric_logs {
             let session_name = self
@@ -382,7 +379,7 @@ impl Node {
                 }
             };
             if let Some(resumed) = self
-                .packet_mover2
+                .dataplane
                 .record_fsp_mmp_send_result(report.dest_addr, success)
             {
                 debug!(
@@ -397,7 +394,7 @@ impl Node {
     /// Emit periodic session MMP metrics.
     fn log_session_mmp_metrics(
         session_name: &str,
-        metrics: &crate::packet_mover2::PacketMover2FspMmpSnapshot,
+        metrics: &crate::dataplane::DataplaneFspMmpSnapshot,
     ) {
         let rtt_str = metrics
             .rtt_ms
@@ -422,7 +419,7 @@ impl Node {
     /// Emit a teardown log summarizing lifetime session MMP metrics.
     pub(in crate::node) fn log_session_mmp_teardown(
         session_name: &str,
-        mmp: &crate::packet_mover2::PacketMover2FspMmpSnapshot,
+        mmp: &crate::dataplane::DataplaneFspMmpSnapshot,
     ) {
         let rtt_str = match mmp.rtt_ms {
             Some(rtt) => format!("{:.1}ms", rtt),
@@ -497,7 +494,7 @@ impl Node {
         now_ms: u64,
     ) -> Duration {
         let mut quiet_for = self
-            .packet_mover2
+            .dataplane
             .fmp_link_metrics(node_addr, now)
             .and_then(|metrics| metrics.last_recv_age_ms)
             .map(Duration::from_millis)
@@ -505,14 +502,14 @@ impl Node {
         quiet_for = quiet_for.min(Duration::from_millis(peer.idle_time(now_ms)));
 
         if let Some(session_age_ms) = self
-            .packet_mover2
+            .dataplane
             .min_fsp_rx_age_for_next_hop(node_addr, now_ms)
         {
             quiet_for = quiet_for.min(Duration::from_millis(session_age_ms));
         }
 
         if let Some(session_data_age_ms) = self
-            .packet_mover2
+            .dataplane
             .min_fsp_data_rx_age_for_next_hop(node_addr, now_ms)
         {
             quiet_for = quiet_for.min(Duration::from_millis(session_data_age_ms));
@@ -763,7 +760,7 @@ impl Node {
                 continue;
             }
             match self
-                .send_packet_mover2_fmp_link_plaintext(&addr, &heartbeat_msg, false)
+                .send_dataplane_fmp_link_plaintext(&addr, &heartbeat_msg, false)
                 .await
             {
                 Ok(()) => {

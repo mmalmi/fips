@@ -905,7 +905,7 @@ mod platform {
         ///
         /// Used by `UdpTransport::send_async` for the low-rate control
         /// plane (handshakes, MMP reports, rekeys). The high-throughput
-        /// packet_mover2 data path goes through `send_batch`.
+        /// dataplane data path goes through `send_batch`.
         pub async fn send_to(
             &self,
             data: &[u8],

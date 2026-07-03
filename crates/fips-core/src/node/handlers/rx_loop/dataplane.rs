@@ -12,10 +12,10 @@ use crate::{NodeAddr, PeerIdentity};
 use tracing::{debug, trace, warn};
 
 impl Node {
-    pub(in crate::node) async fn drain_packet_mover2_turn_with_firsts(
+    pub(in crate::node) async fn drain_dataplane_turn_with_firsts(
         &mut self,
         packet_rx: &mut PacketRx,
-        firsts: crate::packet_mover2::PacketMover2LiveTurnFirsts,
+        firsts: crate::dataplane::DataplaneLiveTurnFirsts,
         packet_limit: usize,
         endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
@@ -24,12 +24,12 @@ impl Node {
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
-    ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
-        let direct_fsp_sources = std::sync::Arc::new(self.packet_mover2_direct_fsp_sources());
-        self.packet_mover2
+    ) -> crate::dataplane::DataplaneLiveNodeTurn {
+        let direct_fsp_sources = std::sync::Arc::new(self.dataplane_direct_fsp_sources());
+        self.dataplane
             .set_established_fast_ingress_direct_fsp_sources(direct_fsp_sources.clone());
         let turn = self
-            .packet_mover2
+            .dataplane
             .pump_packet_rx_turn_with_firsts_direct_fsp_sources_and_transport_worker(
                 packet_rx,
                 firsts,
@@ -43,23 +43,23 @@ impl Node {
                 endpoint_tx,
                 &self.transports,
                 crypto_limit,
-                &mut self.packet_mover2_transport_send_worker,
+                &mut self.dataplane_transport_send_worker,
             )
             .await;
-        Self::observe_packet_mover2_turn(&turn);
+        Self::observe_dataplane_turn(&turn);
         turn
     }
 
-    pub(in crate::node) async fn drain_packet_mover2_completion_turn(
+    pub(in crate::node) async fn drain_dataplane_completion_turn(
         &mut self,
         endpoint_data_rx: &mut EndpointDataBatchRx,
         tun_outbound_rx: &mut TunOutboundRx,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         crypto_limit: usize,
-    ) -> crate::packet_mover2::PacketMover2LiveNodeTurn {
+    ) -> crate::dataplane::DataplaneLiveNodeTurn {
         let turn = self
-            .packet_mover2
+            .dataplane
             .pump_completion_output_turn_with_transport_worker(
                 endpoint_data_rx,
                 tun_outbound_rx,
@@ -67,42 +67,38 @@ impl Node {
                 endpoint_tx,
                 &self.transports,
                 crypto_limit,
-                &mut self.packet_mover2_transport_send_worker,
+                &mut self.dataplane_transport_send_worker,
             )
             .await;
-        Self::observe_packet_mover2_turn(&turn);
+        Self::observe_dataplane_turn(&turn);
         turn
     }
 
-    pub(in crate::node) async fn process_packet_mover2_control_ingress(
+    pub(in crate::node) async fn process_dataplane_control_ingress(
         &mut self,
-        turn: &mut crate::packet_mover2::PacketMover2LiveNodeTurn,
+        turn: &mut crate::dataplane::DataplaneLiveNodeTurn,
     ) -> usize {
         let mut processed = 0usize;
         let fmp_crypto_failures: Vec<_> = turn
             .drops()
             .iter()
-            .filter_map(Self::packet_mover2_fmp_crypto_failure)
+            .filter_map(Self::dataplane_fmp_crypto_failure)
             .collect();
         for (source_addr, counter, authenticated_highest) in fmp_crypto_failures {
             if self
-                .handle_packet_mover2_fmp_decrypt_failure(
-                    &source_addr,
-                    counter,
-                    authenticated_highest,
-                )
+                .handle_dataplane_fmp_decrypt_failure(&source_addr, counter, authenticated_highest)
                 .await
             {
                 processed += 1;
             }
         }
         for receipt in turn.take_fmp_ingress_receipts() {
-            if self.record_packet_mover2_fmp_ingress_receipt(&receipt) {
+            if self.record_dataplane_fmp_ingress_receipt(&receipt) {
                 processed += 1;
             }
         }
         for ingress in turn.take_fmp_link_ingress() {
-            if self.process_packet_mover2_fmp_link_ingress(ingress).await {
+            if self.process_dataplane_fmp_link_ingress(ingress).await {
                 processed += 1;
             }
         }
@@ -113,50 +109,44 @@ impl Node {
         let fsp_crypto_failures: Vec<_> = turn
             .drops()
             .iter()
-            .filter_map(Self::packet_mover2_fsp_crypto_failure)
+            .filter_map(Self::dataplane_fsp_crypto_failure)
             .collect();
         for (source_addr, counter, received_k_bit) in fsp_crypto_failures {
             if self
-                .handle_packet_mover2_fsp_decrypt_failure(source_addr, counter, received_k_bit)
+                .handle_dataplane_fsp_decrypt_failure(source_addr, counter, received_k_bit)
                 .await
             {
                 processed += 1;
             }
         }
         for ingress in turn.take_fsp_local_session_ingress() {
-            if self
-                .process_packet_mover2_local_session_ingress(ingress)
-                .await
-            {
+            if self.process_dataplane_local_session_ingress(ingress).await {
                 processed += 1;
             }
         }
         processed = processed.saturating_add(
-            self.process_packet_mover2_compact_endpoint_data(turn.take_endpoint_data_bulk())
+            self.process_dataplane_compact_endpoint_data(turn.take_endpoint_data_bulk())
                 .await,
         );
         processed = processed.saturating_add(
-            self.process_packet_mover2_authenticated_sessions(turn.take_fsp_session_ingress())
+            self.process_dataplane_authenticated_sessions(turn.take_fsp_session_ingress())
                 .await,
         );
         for control in turn.take_fmp_control_ingress() {
-            if self
-                .process_packet_mover2_fmp_control_ingress(control)
-                .await
-            {
+            if self.process_dataplane_fmp_control_ingress(control).await {
                 processed += 1;
             }
         }
         for drop in turn.tun_outbound_drops() {
-            if self.process_packet_mover2_tun_outbound_drop(drop) {
+            if self.process_dataplane_tun_outbound_drop(drop) {
                 processed += 1;
             }
         }
-        for packet in self.packet_mover2.take_deferred_tun_packets() {
-            self.handle_packet_mover2_deferred_tun_packet(packet).await;
+        for packet in self.dataplane.take_deferred_tun_packets() {
+            self.handle_dataplane_deferred_tun_packet(packet).await;
             processed += 1;
         }
-        for batch in self.packet_mover2.take_deferred_endpoint_data_batches() {
+        for batch in self.dataplane.take_deferred_endpoint_data_batches() {
             self.handle_endpoint_data_batch_no_established_flush(batch)
                 .await;
             processed += 1;
@@ -164,12 +154,12 @@ impl Node {
         processed
     }
 
-    fn packet_mover2_fmp_crypto_failure(
-        drop: &crate::packet_mover2::PacketDrop,
+    fn dataplane_fmp_crypto_failure(
+        drop: &crate::dataplane::PacketDrop,
     ) -> Option<(NodeAddr, u64, u64)> {
-        if drop.owner().protocol() != crate::packet_mover2::PacketProtocol::Fmp
-            || drop.reason() != crate::packet_mover2::PacketDropReason::CryptoFailed
-            || drop.crypto_failure() != Some(crate::packet_mover2::CryptoFailureKind::Open)
+        if drop.owner().protocol() != crate::dataplane::PacketProtocol::Fmp
+            || drop.reason() != crate::dataplane::PacketDropReason::CryptoFailed
+            || drop.crypto_failure() != Some(crate::dataplane::CryptoFailureKind::Open)
         {
             return None;
         }
@@ -180,12 +170,12 @@ impl Node {
         ))
     }
 
-    fn packet_mover2_fsp_crypto_failure(
-        drop: &crate::packet_mover2::PacketDrop,
+    fn dataplane_fsp_crypto_failure(
+        drop: &crate::dataplane::PacketDrop,
     ) -> Option<(NodeAddr, u64, bool)> {
-        if drop.owner().protocol() != crate::packet_mover2::PacketProtocol::Fsp
-            || drop.reason() != crate::packet_mover2::PacketDropReason::CryptoFailed
-            || drop.crypto_failure() != Some(crate::packet_mover2::CryptoFailureKind::Open)
+        if drop.owner().protocol() != crate::dataplane::PacketProtocol::Fsp
+            || drop.reason() != crate::dataplane::PacketDropReason::CryptoFailed
+            || drop.crypto_failure() != Some(crate::dataplane::CryptoFailureKind::Open)
         {
             return None;
         }
@@ -194,9 +184,9 @@ impl Node {
         Some((drop.owner().node_addr(), drop.counter()?, received_k_bit))
     }
 
-    async fn process_packet_mover2_local_session_ingress(
+    async fn process_dataplane_local_session_ingress(
         &mut self,
-        ingress: crate::packet_mover2::PacketMover2FspLocalSessionIngress,
+        ingress: crate::dataplane::DataplaneFspLocalSessionIngress,
     ) -> bool {
         let (source_addr, _previous_hop_addr, _ce_flag, _path_mtu, payload) = ingress.into_parts();
         let delivery = LocalSessionPayload::new(source_addr, &payload);
@@ -204,9 +194,9 @@ impl Node {
         true
     }
 
-    async fn process_packet_mover2_fmp_control_ingress(
+    async fn process_dataplane_fmp_control_ingress(
         &mut self,
-        control: crate::packet_mover2::PacketMover2FmpControlIngress,
+        control: crate::dataplane::DataplaneFmpControlIngress,
     ) -> bool {
         let packet = control.into_packet();
         if is_punch_packet(&packet.data) {
@@ -226,7 +216,7 @@ impl Node {
             return false;
         };
         if prefix.version != FMP_VERSION {
-            self.record_packet_mover2_fmp_protocol_mismatch(&packet, prefix.version, prefix.phase);
+            self.record_dataplane_fmp_protocol_mismatch(&packet, prefix.version, prefix.phase);
             return false;
         }
 
@@ -250,7 +240,7 @@ impl Node {
         }
     }
 
-    fn record_packet_mover2_fmp_protocol_mismatch(
+    fn record_dataplane_fmp_protocol_mismatch(
         &mut self,
         packet: &ReceivedPacket,
         version: u8,
@@ -283,9 +273,9 @@ impl Node {
         }
     }
 
-    fn record_packet_mover2_fmp_ingress_receipt(
+    fn record_dataplane_fmp_ingress_receipt(
         &mut self,
-        receipt: &crate::packet_mover2::PacketMover2FmpIngressReceipt,
+        receipt: &crate::dataplane::DataplaneFmpIngressReceipt,
     ) -> bool {
         let source_peer = receipt.source_peer();
         let fmp = AuthenticatedFmpReceiveFacts::new(
@@ -302,29 +292,29 @@ impl Node {
         true
     }
 
-    fn process_packet_mover2_tun_outbound_drop(
+    fn process_dataplane_tun_outbound_drop(
         &mut self,
-        drop: &crate::packet_mover2::PacketMover2TunOutboundDrop,
+        drop: &crate::dataplane::DataplaneTunOutboundDrop,
     ) -> bool {
         if drop.packet().is_empty() {
             return false;
         }
         match drop.reason() {
-            crate::packet_mover2::PacketMover2TunOutboundDropReason::MtuExceeded { mtu } => {
+            crate::dataplane::DataplaneTunOutboundDropReason::MtuExceeded { mtu } => {
                 self.send_icmpv6_packet_too_big(drop.packet(), mtu);
                 true
             }
-            crate::packet_mover2::PacketMover2TunOutboundDropReason::NoRoute => {
+            crate::dataplane::DataplaneTunOutboundDropReason::NoRoute => {
                 self.send_icmpv6_dest_unreachable(drop.packet());
                 true
             }
-            crate::packet_mover2::PacketMover2TunOutboundDropReason::InvalidPacket => false,
+            crate::dataplane::DataplaneTunOutboundDropReason::InvalidPacket => false,
         }
     }
 
-    async fn process_packet_mover2_fmp_link_ingress(
+    async fn process_dataplane_fmp_link_ingress(
         &mut self,
-        ingress: crate::packet_mover2::PacketMover2FmpLinkIngress,
+        ingress: crate::dataplane::DataplaneFmpLinkIngress,
     ) -> bool {
         let receipt = ingress.receipt();
         let source_peer = receipt.source_peer();
@@ -352,10 +342,7 @@ impl Node {
         true
     }
 
-    pub(in crate::node) fn packet_mover2_peer_identity(
-        &self,
-        addr: &NodeAddr,
-    ) -> Option<PeerIdentity> {
+    pub(in crate::node) fn dataplane_peer_identity(&self, addr: &NodeAddr) -> Option<PeerIdentity> {
         if let Some(identity) = self
             .sessions
             .get(addr)
@@ -373,8 +360,8 @@ impl Node {
             })
     }
 
-    pub(super) fn packet_mover2_packet_activity(
-        turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
+    pub(super) fn dataplane_packet_activity(
+        turn: &crate::dataplane::DataplaneLiveNodeTurn,
     ) -> usize {
         let summary = turn.summary();
         summary
@@ -391,8 +378,8 @@ impl Node {
             .saturating_add(turn.tun_deferred_packets())
     }
 
-    pub(super) fn packet_mover2_raw_ingress_activity(
-        turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
+    pub(super) fn dataplane_raw_ingress_activity(
+        turn: &crate::dataplane::DataplaneLiveNodeTurn,
     ) -> usize {
         let summary = turn.summary();
         summary
@@ -402,8 +389,8 @@ impl Node {
             .saturating_add(turn.fmp_control_ingress().len())
     }
 
-    pub(super) fn packet_mover2_control_activity(
-        turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
+    pub(super) fn dataplane_control_activity(
+        turn: &crate::dataplane::DataplaneLiveNodeTurn,
     ) -> usize {
         turn.fmp_control_ingress()
             .len()
@@ -412,9 +399,7 @@ impl Node {
             .saturating_add(turn.fsp_local_session_ingress().len())
     }
 
-    pub(in crate::node) fn observe_packet_mover2_turn(
-        turn: &crate::packet_mover2::PacketMover2LiveNodeTurn,
-    ) {
+    pub(in crate::node) fn observe_dataplane_turn(turn: &crate::dataplane::DataplaneLiveNodeTurn) {
         if !turn.has_activity() {
             return;
         }

@@ -336,9 +336,9 @@ impl Node {
                 resend_interval,
             );
             if let Some((pending_k_bit, open)) = pending_receive {
-                self.install_packet_mover2_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
+                self.install_dataplane_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
             }
-            self.refresh_packet_mover2_fsp_owner_routes(src_addr);
+            self.refresh_dataplane_fsp_owner_routes(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -436,7 +436,7 @@ impl Node {
         entry.establish(session, now_ms);
         entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
         self.sessions.insert(*src_addr, entry);
-        self.sync_packet_mover2_fsp_owner_from_current_session(
+        self.sync_dataplane_fsp_owner_from_current_session(
             src_addr,
             self.config.node.session.coords_warmup_packets,
         );
@@ -515,9 +515,9 @@ impl Node {
             self.sessions
                 .install_rekey_responder_pending_session(*src_addr, entry, session);
             if let Some((pending_k_bit, open)) = pending_receive {
-                self.install_packet_mover2_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
+                self.install_dataplane_fsp_pending_receive_epoch(src_addr, pending_k_bit, open);
             }
-            self.refresh_packet_mover2_fsp_owner_routes(src_addr);
+            self.refresh_dataplane_fsp_owner_routes(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -574,7 +574,7 @@ impl Node {
             false,
         );
         self.sessions.insert(*src_addr, entry);
-        self.sync_packet_mover2_fsp_owner_from_current_session(
+        self.sync_dataplane_fsp_owner_from_current_session(
             src_addr,
             self.config.node.session.coords_warmup_packets,
         );

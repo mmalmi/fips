@@ -217,9 +217,9 @@ async fn test_parent_reeval_ignores_unmeasured_peer_costs() {
     node.tree_state_mut().set_parent(current_parent, 2, 1_000);
     node.tree_state_mut().recompute_coords();
 
-    super::super::seed_packet_mover2_fmp_srtt_for_test(&mut node, current_parent, 10_000);
+    super::super::seed_dataplane_fmp_srtt_for_test(&mut node, current_parent, 10_000);
     assert!(
-        !node.packet_mover2_fmp_has_srtt(&unmeasured_candidate),
+        !node.dataplane_fmp_has_srtt(&unmeasured_candidate),
         "fixture should leave the candidate without RTT evidence"
     );
 
@@ -276,7 +276,7 @@ async fn test_parent_reeval_ignores_fresh_bogus_metrics_without_valid_rtt() {
     node.tree_state_mut().set_parent(current_parent, 2, 1_000);
     node.tree_state_mut().recompute_coords();
 
-    super::super::seed_packet_mover2_fmp_srtt_for_test(&mut node, current_parent, 10_000);
+    super::super::seed_dataplane_fmp_srtt_for_test(&mut node, current_parent, 10_000);
 
     let parent_before = *node.tree_state().my_declaration().parent_id();
     let switches_before = node.stats().tree.parent_switches;
@@ -324,10 +324,10 @@ async fn test_parent_reeval_ignores_fresh_bogus_metrics_without_valid_rtt() {
         .await;
 
     let metrics = node
-        .packet_mover2_fmp_link_metrics(&bogus_candidate, std::time::Instant::now())
-        .expect("candidate PM2 FMP metrics");
+        .dataplane_fmp_link_metrics(&bogus_candidate, std::time::Instant::now())
+        .expect("candidate dataplane FMP metrics");
     assert!(
-        !node.packet_mover2_fmp_has_srtt(&bogus_candidate),
+        !node.dataplane_fmp_has_srtt(&bogus_candidate),
         "invalid RTT samples must not make the candidate parent-eligible"
     );
     assert_eq!(

@@ -1,9 +1,9 @@
 #[derive(Debug)]
-struct PacketMover2OwnerShardRetireWorker {
+struct DataplaneOwnerShardRetireWorker {
     completed: VecDeque<CryptoCompletionBatch>,
 }
 
-impl PacketMover2OwnerShardRetireWorker {
+impl DataplaneOwnerShardRetireWorker {
     fn new() -> Self {
         Self {
             completed: VecDeque::new(),
@@ -21,7 +21,7 @@ impl PacketMover2OwnerShardRetireWorker {
 
     fn retire_queued_completions_into(
         &mut self,
-        owner_shard: &mut PacketMover2OwnerShard,
+        owner_shard: &mut DataplaneOwnerShard,
         limit: usize,
         retired: &mut Vec<RetiredOutputs>,
         drops: &mut Vec<PacketDrop>,
@@ -60,14 +60,14 @@ impl PacketMover2OwnerShardRetireWorker {
 }
 
 #[derive(Debug)]
-struct PacketMover2OwnerShard {
+struct DataplaneOwnerShard {
     index: usize,
     admission: AdmissionQueue,
     outbound_admission: OutboundAdmissionQueue,
     owners: HashMap<OwnerId, OwnerState>,
 }
 
-impl PacketMover2OwnerShard {
+impl DataplaneOwnerShard {
     fn new(index: usize) -> Self {
         Self {
             index,
@@ -115,7 +115,7 @@ impl PacketMover2OwnerShard {
         self.owners.get(&owner)
     }
 
-    fn owner_fsp_activity(&self, owner: OwnerId) -> Option<PacketMover2FspOwnerActivity> {
+    fn owner_fsp_activity(&self, owner: OwnerId) -> Option<DataplaneFspOwnerActivity> {
         self.owner(owner).and_then(OwnerState::fsp_activity)
     }
 
@@ -128,15 +128,15 @@ impl PacketMover2OwnerShard {
             .is_some_and(|owner| owner.has_fsp_pending_receive_epoch(received_k_bit))
     }
 
-    fn owner_fsp_mmp_snapshot(&self, owner: OwnerId) -> Option<PacketMover2FspMmpSnapshot> {
+    fn owner_fsp_mmp_snapshot(&self, owner: OwnerId) -> Option<DataplaneFspMmpSnapshot> {
         self.owner(owner).and_then(OwnerState::fsp_mmp_snapshot)
     }
 
-    fn owner_fsp_send_context(&self, owner: OwnerId) -> Option<PacketMover2FspSendContext> {
+    fn owner_fsp_send_context(&self, owner: OwnerId) -> Option<DataplaneFspSendContext> {
         self.owner(owner).and_then(OwnerState::fsp_send_context)
     }
 
-    fn owner_fmp_send_context(&self, owner: OwnerId) -> Option<PacketMover2FmpSendContext> {
+    fn owner_fmp_send_context(&self, owner: OwnerId) -> Option<DataplaneFmpSendContext> {
         self.owner(owner).and_then(OwnerState::fmp_send_context)
     }
 
@@ -144,7 +144,7 @@ impl PacketMover2OwnerShard {
         &self,
         owner: OwnerId,
         now: std::time::Instant,
-    ) -> Option<PacketMover2FmpLinkMetrics> {
+    ) -> Option<DataplaneFmpLinkMetrics> {
         self.owner(owner)
             .and_then(|owner| owner.fmp_link_metrics(now))
     }
@@ -160,7 +160,7 @@ impl PacketMover2OwnerShard {
     fn collect_fmp_mmp_reports(
         &mut self,
         now: std::time::Instant,
-        batch: &mut PacketMover2FmpMmpReportBatch,
+        batch: &mut DataplaneFmpMmpReportBatch,
     ) {
         for owner in self.owners.values_mut() {
             owner.collect_fmp_mmp_reports(now, batch);
@@ -170,7 +170,7 @@ impl PacketMover2OwnerShard {
     fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,
-        batch: &mut PacketMover2FspMmpReportBatch,
+        batch: &mut DataplaneFspMmpReportBatch,
     ) {
         for owner in self.owners.values_mut() {
             owner.collect_fsp_mmp_reports(now, batch);
@@ -181,7 +181,7 @@ impl PacketMover2OwnerShard {
         &mut self,
         owner: OwnerId,
         success: bool,
-    ) -> Option<PacketMover2FspMmpReportingResumed> {
+    ) -> Option<DataplaneFspMmpReportingResumed> {
         self.owner_mut(owner)
             .and_then(|owner| owner.record_fsp_mmp_send_result(success))
     }
@@ -190,9 +190,9 @@ impl PacketMover2OwnerShard {
         &mut self,
         owner: OwnerId,
         path_mtu: u16,
-    ) -> Result<(), PacketMover2FspMmpSkip> {
+    ) -> Result<(), DataplaneFspMmpSkip> {
         self.owner_mut(owner)
-            .ok_or(PacketMover2FspMmpSkip::UnknownOwner)?
+            .ok_or(DataplaneFspMmpSkip::UnknownOwner)?
             .seed_fsp_path_mtu(path_mtu)
     }
 
@@ -204,9 +204,9 @@ impl PacketMover2OwnerShard {
         now_ms: u64,
         now: std::time::Instant,
         min_loss_sample: u64,
-    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+    ) -> Result<DataplaneFspReceiverReportResult, DataplaneFspMmpSkip> {
         self.owner_mut(owner)
-            .ok_or(PacketMover2FspMmpSkip::UnknownOwner)?
+            .ok_or(DataplaneFspMmpSkip::UnknownOwner)?
             .process_fsp_mmp_receiver_report(
                 rr,
                 last_outbound_next_hop,
@@ -221,9 +221,9 @@ impl PacketMover2OwnerShard {
         owner: OwnerId,
         path_mtu: u16,
         now: std::time::Instant,
-    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+    ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
         self.owner_mut(owner)
-            .ok_or(PacketMover2FspMmpSkip::UnknownOwner)?
+            .ok_or(DataplaneFspMmpSkip::UnknownOwner)?
             .apply_fsp_path_mtu_signal(path_mtu, now)
     }
 
@@ -307,7 +307,7 @@ impl PacketMover2OwnerShard {
             let Some(mut run) = self.admission.pop_next_run(priority_only, run_limit) else {
                 if !priority_only && limit > 0 {
                     crate::perf_profile::record_event(
-                        crate::perf_profile::Event::PacketMover2DispatchNoIngress,
+                        crate::perf_profile::Event::DataplaneDispatchNoIngress,
                     );
                 }
                 break;
@@ -315,7 +315,7 @@ impl PacketMover2OwnerShard {
             attempts_remaining = attempts_remaining.saturating_sub(run.items.len());
             if run.items.len() > 1 {
                 crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::PacketMover2IngressOwnerRunContinue,
+                    crate::perf_profile::Event::DataplaneIngressOwnerRunContinue,
                     run.items.len().saturating_sub(1) as u64,
                 );
             }
@@ -382,7 +382,7 @@ impl PacketMover2OwnerShard {
 
         if !priority_only && limit > 0 && dispatched >= limit {
             crate::perf_profile::record_event(
-                crate::perf_profile::Event::PacketMover2DispatchLimitHit,
+                crate::perf_profile::Event::DataplaneDispatchLimitHit,
             );
         }
         dispatched
@@ -409,7 +409,7 @@ impl PacketMover2OwnerShard {
             attempts_remaining = attempts_remaining.saturating_sub(run.items.len());
             if run.items.len() > 1 {
                 crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::PacketMover2OutboundOwnerRunContinue,
+                    crate::perf_profile::Event::DataplaneOutboundOwnerRunContinue,
                     run.items.len().saturating_sub(1) as u64,
                 );
             }
@@ -490,7 +490,7 @@ impl PacketMover2OwnerShard {
         compact_endpoint_data: bool,
     ) {
         let _timer =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2Retire);
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneRetire);
         let owner_id = batch.owner();
         let Some(owner) = self.owners.get_mut(&owner_id) else {
             let mut retired_batch = RetiredOutputs::with_capacity(batch.len());

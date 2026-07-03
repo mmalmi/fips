@@ -315,11 +315,11 @@ pub(crate) fn received_timestamp_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// FMP packet shape that is visible before PM2 authenticates established data.
+/// FMP packet shape that is visible before dataplane authenticates established data.
 ///
 /// App payloads, TCP ACKs, pings, and established FSP/MMP frames are all opaque
 /// phase-0 data at this boundary. Only first-contact/link rekey handshakes get
-/// the unbounded reserve lane before PM2 can classify authenticated contents.
+/// the unbounded reserve lane before dataplane can classify authenticated contents.
 const FMP_VERSION: u8 = 0;
 const FMP_PHASE_MSG1: u8 = 0x1;
 const FMP_PHASE_MSG2: u8 = 0x2;

@@ -187,7 +187,7 @@ async fn quiet_recent_endpoint_path_refresh_keeps_direct_payload_without_demotin
         None,
     );
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(11),
@@ -272,7 +272,7 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
         None,
     );
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(11),
@@ -291,7 +291,7 @@ async fn active_endpoint_traffic_on_quiet_traversal_path_warms_fallback() {
         true,
     );
     node.sessions.insert(peer_addr, session);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
+    seed_dataplane_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
 
     node.check_link_heartbeats().await;
 
@@ -362,7 +362,7 @@ async fn endpoint_session_traffic_keeps_traversal_liveness_fresh() {
         None,
     );
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(11),
@@ -376,7 +376,7 @@ async fn endpoint_session_traffic_keeps_traversal_liveness_fresh() {
         true,
     );
     node.sessions.insert(peer_addr, session);
-    seed_packet_mover2_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
+    seed_dataplane_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
 
     node.check_link_heartbeats().await;
 
@@ -443,7 +443,7 @@ async fn endpoint_session_traffic_from_direct_peer_keeps_liveness_fresh_without_
         None,
     );
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(11),
@@ -457,7 +457,7 @@ async fn endpoint_session_traffic_from_direct_peer_keeps_liveness_fresh_without_
         true,
     );
     node.sessions.insert(peer_addr, session);
-    seed_packet_mover2_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
+    seed_dataplane_fsp_data_rx_for_test(&mut node, peer_addr, peer_addr, Node::now_ms());
 
     node.check_link_heartbeats().await;
 
@@ -524,7 +524,7 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
         None,
     );
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(11),
@@ -544,8 +544,8 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
         true,
     );
     node.sessions.insert(peer_addr, session);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
-    seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
     node.check_link_heartbeats().await;
 
@@ -613,11 +613,7 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
-        &mut node,
-        peer_addr,
-        std::time::Duration::ZERO,
-    );
+    super::super::seed_dataplane_fmp_rx_for_test(&mut node, peer_addr, std::time::Duration::ZERO);
     node.peers.insert(
         transit_addr,
         ActivePeer::new(transit_peer, LinkId::new(9), 0),
@@ -632,8 +628,8 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
         true,
     );
     node.sessions.insert(peer_addr, session);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
-    seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
     let mut retry = super::super::retry::RetryState::new(peer_config);
     retry.reconnect = true;
@@ -709,11 +705,7 @@ async fn fresh_bootstrap_path_keeps_static_direct_refresh_pending() {
     let now_ms = Node::now_ms();
     active.touch(now_ms);
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
-        &mut node,
-        peer_addr,
-        std::time::Duration::ZERO,
-    );
+    super::super::seed_dataplane_fmp_rx_for_test(&mut node, peer_addr, std::time::Duration::ZERO);
     node.bootstrap_transports.mark(bootstrap_transport);
 
     let mut retry = super::super::retry::RetryState::new(peer_config);
@@ -777,11 +769,7 @@ async fn fresh_bootstrap_endpoint_data_clears_static_direct_refresh_pending() {
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
-        &mut node,
-        peer_addr,
-        std::time::Duration::ZERO,
-    );
+    super::super::seed_dataplane_fmp_rx_for_test(&mut node, peer_addr, std::time::Duration::ZERO);
     node.bootstrap_transports.mark(bootstrap_transport);
 
     let now_ms = Node::now_ms();
@@ -793,8 +781,8 @@ async fn fresh_bootstrap_endpoint_data_clears_static_direct_refresh_pending() {
         true,
     );
     node.sessions.insert(app_addr, session);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
-    seed_packet_mover2_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
 
     assert!(
         !node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
@@ -858,11 +846,7 @@ async fn fresh_control_with_unreturned_endpoint_data_keeps_direct_without_fallba
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
-        &mut node,
-        peer_addr,
-        std::time::Duration::ZERO,
-    );
+    super::super::seed_dataplane_fmp_rx_for_test(&mut node, peer_addr, std::time::Duration::ZERO);
 
     let now_ms = Node::now_ms();
     let session = crate::node::session::SessionEntry::new(
@@ -873,8 +857,8 @@ async fn fresh_control_with_unreturned_endpoint_data_keeps_direct_without_fallba
         true,
     );
     node.sessions.insert(peer_addr, session);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
-    seed_packet_mover2_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, peer_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_control_rx_for_test(&mut node, peer_addr, peer_addr, now_ms);
 
     let discovery_initiated = node.stats().discovery.req_initiated;
     node.check_link_heartbeats().await;
@@ -951,7 +935,7 @@ async fn endpoint_return_via_direct_next_hop_keeps_link_liveness_fresh() {
         None,
     );
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(11),
@@ -966,8 +950,8 @@ async fn endpoint_return_via_direct_next_hop_keeps_link_liveness_fresh() {
         true,
     );
     node.sessions.insert(app_addr, session);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
-    seed_packet_mover2_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
 
     node.check_link_heartbeats().await;
 
@@ -1030,7 +1014,7 @@ async fn authenticated_endpoint_return_clears_static_retry_on_fresh_discovered_u
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(11),
@@ -1050,8 +1034,8 @@ async fn authenticated_endpoint_return_clears_static_retry_on_fresh_discovered_u
         true,
     );
     node.sessions.insert(app_addr, session);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
-    seed_packet_mover2_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, app_addr, peer_addr, now_ms);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, app_addr, peer_addr, now_ms);
 
     let mut retry = super::super::retry::RetryState::new(peer_config);
     retry.reconnect = true;
@@ -1112,7 +1096,7 @@ async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_pe
         None,
     );
     node.peers.insert(quiet_addr, quiet_active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         quiet_addr,
         std::time::Duration::from_secs(6),
@@ -1383,7 +1367,7 @@ async fn quiet_recent_endpoint_path_stays_alive_within_mobile_window() {
         None,
     );
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(29),
@@ -1578,7 +1562,7 @@ async fn local_route_failure_does_not_collapse_recent_endpoint_liveness_window()
         None,
     );
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(6),
@@ -1639,7 +1623,7 @@ async fn recent_authenticated_fmp_receive_prevents_traversal_link_dead() {
     );
     active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(23),
@@ -1697,9 +1681,9 @@ async fn outbound_fmp_send_does_not_refresh_direct_path_liveness() {
         None,
     );
     node.peers.insert(peer_addr, active);
-    assert!(node.sync_packet_mover2_fmp_owner(&peer_addr));
+    assert!(node.sync_dataplane_fmp_owner(&peer_addr));
     assert!(
-        node.packet_mover2
+        node.dataplane
             .record_authenticated_fmp_mmp_receive(
                 &peer_addr,
                 1,
@@ -1710,7 +1694,7 @@ async fn outbound_fmp_send_does_not_refresh_direct_path_liveness() {
                 std::time::Instant::now() - std::time::Duration::from_secs(23),
             )
             .is_ok(),
-        "PM2 FMP MMP receive bookkeeping recorded"
+        "dataplane FMP MMP receive bookkeeping recorded"
     );
     assert!(
         node.peers
@@ -1822,7 +1806,7 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
     );
     active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
     node.peers.insert(peer_addr, active);
-    super::super::seed_packet_mover2_fmp_rx_for_test(
+    super::super::seed_dataplane_fmp_rx_for_test(
         &mut node,
         peer_addr,
         std::time::Duration::from_secs(31),

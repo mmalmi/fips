@@ -137,7 +137,7 @@ impl Node {
         // rare error paths only.
         let encoded = encode_forwarded_session_datagram(&datagram_ref, new_ttl, path_mtu);
         if let Err(e) = self
-            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, outgoing_ce)
+            .send_dataplane_fmp_link_plaintext(&next_hop_addr, &encoded, outgoing_ce)
             .await
         {
             self.record_route_failure(datagram_ref.dest_addr, next_hop_addr);
@@ -308,7 +308,7 @@ impl Node {
 
         let encoded = error_dg.encode();
         if let Err(e) = self
-            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
+            .send_dataplane_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(
@@ -327,7 +327,7 @@ impl Node {
 
     /// Generate and send an MtuExceeded error signal back to the datagram's source.
     ///
-    /// Called when PM2 FMP-link output fails with
+    /// Called when dataplane FMP-link output fails with
     /// `NodeError::MtuExceeded` during forwarding. The signal tells the
     /// source the bottleneck MTU so it can immediately reduce its path MTU.
     async fn send_mtu_exceeded_error(&mut self, original: &SessionDatagram, bottleneck_mtu: u16) {
@@ -360,7 +360,7 @@ impl Node {
 
         let encoded = error_dg.encode();
         if let Err(e) = self
-            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
+            .send_dataplane_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(
@@ -391,7 +391,7 @@ impl Node {
         }
         // Outgoing link MMP metrics
         if let Some(metrics) = self
-            .packet_mover2
+            .dataplane
             .fmp_link_metrics(next_hop, std::time::Instant::now())
             && (metrics.loss_rate >= self.config.node.ecn.loss_threshold
                 || metrics.etx >= self.config.node.ecn.etx_threshold)

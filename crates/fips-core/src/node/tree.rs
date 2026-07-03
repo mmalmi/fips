@@ -62,7 +62,7 @@ impl Node {
 
         // Send
         if let Err(e) = self
-            .send_packet_mover2_fmp_link_plaintext(peer_addr, &encoded, false)
+            .send_dataplane_fmp_link_plaintext(peer_addr, &encoded, false)
             .await
         {
             self.stats_mut().tree.send_failed += 1;
@@ -232,7 +232,7 @@ impl Node {
         // Re-evaluate parent selection with current link costs.
         // Exclude peers without MMP RTT data — they are not yet eligible
         // as parent candidates (prevents oscillation from optimistic defaults).
-        let peer_costs: HashMap<NodeAddr, f64> = self.packet_mover2_fmp_peer_costs();
+        let peer_costs: HashMap<NodeAddr, f64> = self.dataplane_fmp_peer_costs();
         if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
             let new_seq = self.tree_state.my_declaration().sequence() + 1;
             let timestamp = crate::time::now_secs();
@@ -300,7 +300,7 @@ impl Node {
                     parent = %self.peer_display_name(from),
                     "Parent ancestry contains us — loop detected, dropping parent"
                 );
-                let peer_costs: HashMap<NodeAddr, f64> = self.packet_mover2_fmp_peer_costs();
+                let peer_costs: HashMap<NodeAddr, f64> = self.dataplane_fmp_peer_costs();
                 if self.tree_state.handle_parent_lost(&peer_costs) {
                     if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
                         warn!(error = %e, "Failed to sign declaration after loop detection");
@@ -407,7 +407,7 @@ impl Node {
 
         self.last_parent_reeval = Some(now);
 
-        let peer_costs: HashMap<NodeAddr, f64> = self.packet_mover2_fmp_peer_costs();
+        let peer_costs: HashMap<NodeAddr, f64> = self.dataplane_fmp_peer_costs();
 
         if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
             let new_seq = self.tree_state.my_declaration().sequence() + 1;
@@ -484,7 +484,7 @@ impl Node {
 
         if was_parent {
             self.stats_mut().tree.parent_losses += 1;
-            let peer_costs: HashMap<NodeAddr, f64> = self.packet_mover2_fmp_peer_costs();
+            let peer_costs: HashMap<NodeAddr, f64> = self.dataplane_fmp_peer_costs();
             let changed = self.tree_state.handle_parent_lost(&peer_costs);
             if changed {
                 // Re-sign the new declaration

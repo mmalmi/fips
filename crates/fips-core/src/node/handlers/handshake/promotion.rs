@@ -119,7 +119,7 @@ impl Node {
                 }
 
                 if remote_epoch_changed {
-                    self.remove_packet_mover2_fsp_owner(&peer_node_addr);
+                    self.remove_dataplane_fsp_owner(&peer_node_addr);
                     if self.sessions.remove(&peer_node_addr).is_some() {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),
@@ -162,7 +162,7 @@ impl Node {
                     &inserted,
                     "cross_connection_won",
                 );
-                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
+                self.sync_dataplane_fmp_owner(&peer_node_addr);
                 self.clear_session_direct_path_degraded_after_promotion(
                     &peer_node_addr,
                     current_time_ms,
@@ -174,10 +174,10 @@ impl Node {
                 );
                 self.register_identity(peer_node_addr, verified_identity.pubkey_full());
 
-                // Refresh the packet_mover2 FMP owner after cross-connection
+                // Refresh the dataplane FMP owner after cross-connection
                 // replacement. The sibling "no existing peer" branch below
                 // already does this on initial promotion.
-                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
+                self.sync_dataplane_fmp_owner(&peer_node_addr);
 
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),
@@ -276,7 +276,7 @@ impl Node {
                 .peers
                 .insert_with_current_session_index(peer_node_addr, new_peer);
             self.log_active_peer_insert_result(&peer_node_addr, &inserted, "promoted");
-            self.sync_packet_mover2_fmp_owner(&peer_node_addr);
+            self.sync_dataplane_fmp_owner(&peer_node_addr);
             self.clear_session_direct_path_degraded_after_promotion(
                 &peer_node_addr,
                 current_time_ms,
@@ -288,10 +288,10 @@ impl Node {
             );
             self.register_identity(peer_node_addr, verified_identity.pubkey_full());
 
-            // Eagerly hand the FMP recv state to the packet_mover2 owner.
+            // Eagerly hand the FMP recv state to the dataplane owner.
             // From this point on the owner is the authoritative
             // FMP-replay-window writer for this peer.
-            self.sync_packet_mover2_fmp_owner(&peer_node_addr);
+            self.sync_dataplane_fmp_owner(&peer_node_addr);
 
             info!(
                 peer = %self.peer_display_name(&peer_node_addr),

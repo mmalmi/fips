@@ -1,5 +1,5 @@
     fn register_owner_with_test_keys(
-        mover: &mut PacketMover2,
+        mover: &mut Dataplane,
         owner: OwnerId,
         open_key: u8,
         seal_key: u8,
@@ -12,7 +12,7 @@
     }
 
     fn submit_fmp_inbound_range<I>(
-        mover: &mut PacketMover2,
+        mover: &mut Dataplane,
         owner: OwnerId,
         receiver_idx: u32,
         open_key: u8,
@@ -37,22 +37,22 @@
     }
 
     fn run_with_executor<E>(
-        mover: &mut PacketMover2,
+        mover: &mut Dataplane,
         executor: &mut E,
     ) -> (usize, Vec<RetiredPacket>, Vec<PacketDrop>)
     where
-        E: PacketMover2CryptoExecutor,
+        E: DataplaneCryptoExecutor,
     {
         run_with_executor_limit(mover, executor, 8)
     }
 
     fn run_with_executor_limit<E>(
-        mover: &mut PacketMover2,
+        mover: &mut Dataplane,
         executor: &mut E,
         limit: usize,
     ) -> (usize, Vec<RetiredPacket>, Vec<PacketDrop>)
     where
-        E: PacketMover2CryptoExecutor,
+        E: DataplaneCryptoExecutor,
     {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
@@ -71,7 +71,7 @@
     }
 
     fn drain_worker_pool_completions(
-        pool: &mut PacketMover2AeadWorkerPool,
+        pool: &mut DataplaneAeadWorkerPool,
         expected: usize,
     ) -> Vec<CryptoCompletion> {
         let mut completions = Vec::new();
@@ -86,7 +86,7 @@
     }
 
     fn drain_worker_pool_completion_batches(
-        pool: &mut PacketMover2AeadWorkerPool,
+        pool: &mut DataplaneAeadWorkerPool,
         expected: usize,
     ) -> Vec<CryptoCompletionBatch> {
         let mut batches = Vec::new();
@@ -109,7 +109,7 @@
         register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
         submit_fmp_inbound_range(&mut mover, owner, 706, open_key, 100..104, b"worker");
 
-        let mut pool = PacketMover2AeadWorkerPool::new(2, 8);
+        let mut pool = DataplaneAeadWorkerPool::new(2, 8);
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
 
         assert_eq!(dispatched, 4);
@@ -169,7 +169,7 @@
                 .unwrap();
         }
 
-        let mut pool = PacketMover2AeadWorkerPool::new(1, 2);
+        let mut pool = DataplaneAeadWorkerPool::new(1, 2);
         let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut pool, 4);
 
         assert_eq!(dispatched, 4);
@@ -183,7 +183,7 @@
     fn aead_worker_pool_splits_large_open_owner_run_into_completion_batches() {
         let owner = fmp_owner(714);
         let open_key = 25;
-        let mut mover = PacketMover2::new(AdmissionConfig::new(4, 32));
+        let mut mover = Dataplane::new(AdmissionConfig::new(4, 32));
         mover.register_owner(owner, OwnerConfig::new(1, 32));
         mover
             .owner_mut(owner)
@@ -191,7 +191,7 @@
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
         submit_fmp_inbound_range(&mut mover, owner, 714, open_key, 100..116, b"fanout");
 
-        let mut pool = PacketMover2AeadWorkerPool::new(4, 32);
+        let mut pool = DataplaneAeadWorkerPool::new(4, 32);
         let (dispatched, retired, drops) = run_with_executor_limit(&mut mover, &mut pool, 16);
 
         assert_eq!(dispatched, 16);
@@ -235,21 +235,21 @@
     fn aead_worker_pool_reserves_priority_capacity_from_bulk() {
         let owner = fmp_owner(709);
         let open_key = 22;
-        let mut mover = PacketMover2::new(AdmissionConfig::new(16, 32));
+        let mut mover = Dataplane::new(AdmissionConfig::new(16, 32));
         mover.register_owner(
             owner,
-            OwnerConfig::new(1, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2),
+            OwnerConfig::new(1, DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2),
         );
         mover
             .owner_mut(owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
-        let mut pool = PacketMover2AeadWorkerPool::new(
+        let mut pool = DataplaneAeadWorkerPool::new(
             1,
-            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
+            DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2,
         );
 
-        for counter in 0..(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2) as u64 {
+        for counter in 0..(DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2) as u64 {
             mover
                 .submit_socket_packet(encrypted_fmp_packet(
                     owner,
@@ -265,15 +265,15 @@
         let (dispatched, retired, drops) = run_with_executor_limit(
             &mut mover,
             &mut pool,
-            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
+            DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2,
         );
-        assert_eq!(dispatched, PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS);
+        assert_eq!(dispatched, DATAPLANE_AEAD_WORKER_JOB_PACKETS);
         assert!(retired.is_empty());
         assert!(drops.is_empty());
         assert_eq!(pool.available_open_capacity_for_lane(Lane::Bulk), 0);
         assert_eq!(
             pool.available_open_capacity_for_lane(Lane::Priority),
-            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS
+            DATAPLANE_AEAD_WORKER_JOB_PACKETS
         );
 
         mover
@@ -289,7 +289,7 @@
         let (dispatched, retired, drops) = run_with_executor_limit(
             &mut mover,
             &mut pool,
-            PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 2,
+            DATAPLANE_AEAD_WORKER_JOB_PACKETS * 2,
         );
         assert_eq!(dispatched, 1);
         assert!(retired.is_empty());
@@ -304,7 +304,7 @@
         register_owner_with_test_keys(&mut mover, owner, open_key, open_key);
         submit_fmp_inbound_range(&mut mover, owner, 707, open_key, 100..104, b"worker-cap");
 
-        let mut pool = PacketMover2AeadWorkerPool::new(1, 2);
+        let mut pool = DataplaneAeadWorkerPool::new(1, 2);
         let (dispatched, retired, drops) = run_with_executor(&mut mover, &mut pool);
         assert_eq!(dispatched, 2);
         assert!(retired.is_empty());
@@ -356,7 +356,7 @@
         let fmp_key = 22;
         let fmp_path = live_path(2200);
         let mut driver =
-            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+            DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             fsp_owner,
             OwnerConfig::new(1, 8)
@@ -377,7 +377,7 @@
             .unwrap()
             .set_active_path(fmp_path.clone());
 
-        let wrap = PacketMover2FspWrapRoute::new(
+        let wrap = DataplaneFspWrapRoute::new(
             fmp_owner,
             1,
             4242,
@@ -477,7 +477,7 @@
         let owner = fsp_owner(320);
         let key = 32;
         let path = live_path(3200);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             owner,
             OwnerConfig::new(1, 8)
@@ -490,7 +490,7 @@
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
         driver.owner_mut(owner).unwrap().set_active_path(path.clone());
 
-        let route = PacketMover2EndpointDataRoute::fsp(owner, 1, 0, 0);
+        let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0);
         let mut routed = route.route_batch(vec![
             b"direct-one".to_vec(),
             b"direct-two".to_vec(),
@@ -546,7 +546,7 @@
         let fmp_key = 32;
         let fmp_path = live_path(3200);
         let mut driver =
-            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+            DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(90));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(100));
         driver
@@ -562,7 +562,7 @@
             .unwrap()
             .set_active_path(fmp_path.clone());
 
-        let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 5151, source, dest)
+        let wrap = DataplaneFspWrapRoute::new(fmp_owner, 1, 5151, source, dest)
             .with_ttl(42)
             .with_path_mtu(1280);
         driver
@@ -611,7 +611,7 @@
         let fmp_key = 42;
         let fmp_path = live_path(4200);
         let mut driver =
-            PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+            DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             fsp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(10),
@@ -633,7 +633,7 @@
             .unwrap()
             .set_active_path(fmp_path.clone());
 
-        let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 6000, source, dest)
+        let wrap = DataplaneFspWrapRoute::new(fmp_owner, 1, 6000, source, dest)
             .with_ttl(42)
             .with_path_mtu(1280);
         driver
@@ -1026,7 +1026,7 @@
         let owner = fsp_owner(77);
         let next_hop = fmp_owner(78);
         let wrap =
-            PacketMover2FspWrapRoute::new(next_hop, 1, 7878, test_node_addr(1), owner.node_addr());
+            DataplaneFspWrapRoute::new(next_hop, 1, 7878, test_node_addr(1), owner.node_addr());
         let mut mover = mover();
         mover.register_owner(
             owner,
@@ -1465,8 +1465,8 @@
         );
         assert_eq!(
             mover.apply_fsp_path_mtu_signal(owner, 1280, std::time::Instant::now()),
-            Ok(PacketMover2FspPathMtuApplyResult::Changed(
-                PacketMover2FspPathMtuChange {
+            Ok(DataplaneFspPathMtuApplyResult::Changed(
+                DataplaneFspPathMtuChange {
                     old_mtu: 1400,
                     new_mtu: 1280
                 }
@@ -1478,7 +1478,7 @@
         );
         assert_eq!(
             mover.apply_fsp_path_mtu_signal(owner, 1400, std::time::Instant::now()),
-            Ok(PacketMover2FspPathMtuApplyResult::Unchanged)
+            Ok(DataplaneFspPathMtuApplyResult::Unchanged)
         );
     }
 
@@ -1488,7 +1488,7 @@
         let open_key = 31;
         let seal_key = 32;
         let path = live_path(7800);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(300));
         driver
             .owner_mut(owner)
@@ -1517,7 +1517,7 @@
         let turn = run_aead_classified_turn(&mut driver, [inbound], [outbound], 8);
         assert_eq!(
             turn.summary(),
-            PacketMover2RuntimeSummary {
+            DataplaneRuntimeSummary {
                 raw_ingress_dropped: 0,
                 inbound_admitted: 1,
                 inbound_dropped: 0,
@@ -1557,7 +1557,7 @@
     fn completion_only_turn_retires_worker_completion_without_new_dispatch() {
         let owner = fmp_owner(80);
         let open_key = 80;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
 
         driver
@@ -1584,7 +1584,7 @@
             let turn = run_aead_completion_turn(&mut driver, [completion], 8);
             assert_eq!(
                 turn.summary(),
-                PacketMover2RuntimeSummary {
+                DataplaneRuntimeSummary {
                     raw_ingress_dropped: 0,
                     inbound_admitted: 0,
                     inbound_dropped: 0,
@@ -1616,7 +1616,7 @@
     fn completion_source_pump_reports_completion_activity_before_output_is_ready() {
         let owner = fmp_owner(84);
         let open_key = 84;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
 
         let packets: [(u64, &[u8]); 3] = [(100, b"first"), (101, b"second"), (102, b"third")];
@@ -1718,7 +1718,7 @@
     #[test]
     fn endpoint_data_route_packs_payloads_into_bulk_records() {
         let owner = fsp_owner(914);
-        let route = PacketMover2EndpointDataRoute::fsp(owner, 1, 0, 0);
+        let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0);
         let route_result = route.route_batch(vec![
             b"first".to_vec(),
             b"second".to_vec(),
@@ -1755,7 +1755,7 @@
         let first = vec![0x11; 100];
         let small = vec![0x22; 10];
         let third = vec![0x33; 100];
-        let route = PacketMover2EndpointDataRoute::fsp(owner, 1, 0, 0).with_direct_transport();
+        let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0).with_direct_transport();
 
         let route_result = route.route_batch(vec![first, small, third]);
 
@@ -1779,7 +1779,7 @@
         let previous_hop = test_node_addr(915);
         let local_addr = test_node_addr(916);
         let key = 0x91;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_source_peer(source_peer),
@@ -1830,7 +1830,7 @@
             driver
                 .endpoint_data_bulk
                 .iter()
-                .map(PacketMover2EndpointDataBulk::len)
+                .map(DataplaneEndpointDataBulk::len)
                 .sum::<usize>(),
             3
         );
@@ -1838,7 +1838,7 @@
         assert_eq!(driver.endpoint_data_bulk[0].commit_runs()[0].len(), 3);
         let mut batches = std::mem::take(&mut driver.endpoint_data_bulk)
             .into_iter()
-            .map(PacketMover2EndpointDataBulk::into_direct_packet_batch)
+            .map(DataplaneEndpointDataBulk::into_direct_packet_batch)
             .collect::<Vec<_>>();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].len(), 3);
@@ -1897,7 +1897,7 @@
         let previous_hop = test_node_addr(916);
         let local_addr = test_node_addr(917);
         let key = 0x92;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_source_peer(source_peer),
@@ -1987,7 +1987,7 @@
         let previous_hop = test_node_addr(917);
         let local_addr = test_node_addr(918);
         let key = 0x93;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_source_peer(source_peer),
@@ -2052,7 +2052,7 @@
 
         let mut batches = std::mem::take(&mut driver.endpoint_data_bulk)
             .into_iter()
-            .map(PacketMover2EndpointDataBulk::into_direct_packet_batch)
+            .map(DataplaneEndpointDataBulk::into_direct_packet_batch)
             .collect::<Vec<_>>();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].len(), 5);
@@ -2102,7 +2102,7 @@
     fn completion_only_turn_retires_out_of_order_completions_in_owner_order() {
         let owner = fmp_owner(81);
         let open_key = 81;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
 
         let packets: [(u64, &[u8]); 3] = [(100, b"first"), (101, b"second"), (102, b"third")];
@@ -2359,7 +2359,7 @@
     fn completion_only_turn_drops_stale_generation_and_unblocks_newer_completion() {
         let owner = fmp_owner(82);
         let open_key = 82;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
 
         driver
@@ -2434,7 +2434,7 @@
         let owner = fmp_owner(83);
         let seal_key = 83;
         let path = live_path(8300);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(
             owner,
             OwnerConfig::new(1, 3).with_next_send_counter(10),
@@ -2520,7 +2520,7 @@
         let fsp_key = 81;
         let fmp_key = 82;
         let fmp_path = live_path(8200);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(70));
         driver
@@ -2536,7 +2536,7 @@
             .unwrap()
             .set_active_path(fmp_path.clone());
 
-        let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 8282, source, dest)
+        let wrap = DataplaneFspWrapRoute::new(fmp_owner, 1, 8282, source, dest)
             .with_ttl(42)
             .with_path_mtu(1280);
         driver
@@ -2602,7 +2602,7 @@
         let fsp_owner = OwnerId::fsp_node(dest);
         let fmp_owner = OwnerId::fmp_node(next_hop);
         let fmp_path = live_path(8500);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
         driver.register_owner(fmp_owner, OwnerConfig::new(1, 8).with_next_send_counter(70));
         driver
@@ -2614,7 +2614,7 @@
             .unwrap()
             .set_active_path(fmp_path);
 
-        let wrap = PacketMover2FspWrapRoute::new(fmp_owner, 1, 8585, source, dest)
+        let wrap = DataplaneFspWrapRoute::new(fmp_owner, 1, 8585, source, dest)
             .with_ttl(42)
             .with_path_mtu(1280);
         driver
@@ -2653,7 +2653,7 @@
     #[test]
     fn runtime_turn_driver_reports_admission_and_crypto_drops() {
         let owner = fsp_owner(79);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(1, 1));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(1, 1));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
 
         let first = fsp_socket_packet(
@@ -2705,15 +2705,15 @@
     }
 
     struct FixedIngressRouter {
-        route: Option<PacketMover2IngressRoute>,
+        route: Option<DataplaneIngressRoute>,
     }
 
-    impl PacketMover2IngressRouter for FixedIngressRouter {
+    impl DataplaneIngressRouter for FixedIngressRouter {
         fn route(
             &mut self,
-            packet: &PacketMover2RawIngress,
-            header: PacketMover2IngressHeader,
-        ) -> Option<PacketMover2IngressRoute> {
+            packet: &DataplaneRawIngress,
+            header: DataplaneIngressHeader,
+        ) -> Option<DataplaneIngressRoute> {
             assert_eq!(packet.transport_id(), TransportId::new(5));
             assert_eq!(
                 packet.remote_addr(),
@@ -2726,7 +2726,7 @@
                 FMP_ESTABLISHED_HEADER_SIZE + b"raw-in".len() + AEAD_TAG_SIZE
             );
             assert_eq!(packet.protocol(), PacketProtocol::Fmp);
-            assert!(matches!(header, PacketMover2IngressHeader::Fmp(_)));
+            assert!(matches!(header, DataplaneIngressHeader::Fmp(_)));
             assert_eq!(header.counter(), 1200);
             self.route
         }
@@ -2734,12 +2734,12 @@
 
     struct NullIngressRouter;
 
-    impl PacketMover2IngressRouter for NullIngressRouter {
+    impl DataplaneIngressRouter for NullIngressRouter {
         fn route(
             &mut self,
-            _packet: &PacketMover2RawIngress,
-            _header: PacketMover2IngressHeader,
-        ) -> Option<PacketMover2IngressRoute> {
+            _packet: &DataplaneRawIngress,
+            _header: DataplaneIngressHeader,
+        ) -> Option<DataplaneIngressRoute> {
             None
         }
     }
@@ -2750,8 +2750,8 @@
         outputs: Vec<PacketOutput>,
     }
 
-    impl PacketMover2OutputSink for BatchRecordingOutputSink {
-        fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
+    impl DataplaneOutputSink for BatchRecordingOutputSink {
+        fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<DataplaneOutputDrop>) -> usize
         where
             I: IntoIterator<Item = PacketOutput>,
         {
@@ -2792,12 +2792,12 @@
         outputs: Vec<LiveOutputRecord>,
     }
 
-    impl PacketMover2TunOutput for LiveTunRecorder {
+    impl DataplaneTunOutput for LiveTunRecorder {
         fn send_tun(
             &mut self,
             output: &PacketOutput,
             payload: PacketBuffer,
-        ) -> Result<(), PacketMover2OutputError> {
+        ) -> Result<(), DataplaneOutputError> {
             let payload = payload.into_vec();
             self.outputs
                 .push(LiveOutputRecord::from_opened(output, &payload));
@@ -2810,12 +2810,12 @@
         outputs: Vec<LiveOutputRecord>,
     }
 
-    impl PacketMover2EndpointOutput for LiveEndpointRecorder {
+    impl DataplaneEndpointOutput for LiveEndpointRecorder {
         fn send_endpoint(
             &mut self,
             output: &PacketOutput,
             payload: PacketBuffer,
-        ) -> Result<(), PacketMover2OutputError> {
+        ) -> Result<(), DataplaneOutputError> {
             let payload = payload.into_vec();
             self.outputs
                 .push(LiveOutputRecord::from_opened(output, &payload));
@@ -2830,14 +2830,14 @@
         output: OutputTarget,
     }
 
-    impl PacketMover2IngressRouter for SimpleIngressRouter {
+    impl DataplaneIngressRouter for SimpleIngressRouter {
         fn route(
             &mut self,
-            _packet: &PacketMover2RawIngress,
-            _header: PacketMover2IngressHeader,
-        ) -> Option<PacketMover2IngressRoute> {
+            _packet: &DataplaneRawIngress,
+            _header: DataplaneIngressHeader,
+        ) -> Option<DataplaneIngressRoute> {
             Some(
-                PacketMover2IngressRoute::new(self.owner, self.generation, self.output)
+                DataplaneIngressRoute::new(self.owner, self.generation, self.output)
                     .with_class(self.class),
             )
         }

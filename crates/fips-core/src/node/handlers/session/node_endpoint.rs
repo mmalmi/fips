@@ -1,5 +1,5 @@
 impl Node {
-    async fn queue_packet_mover2_unrouted_endpoint_batch(
+    async fn queue_dataplane_unrouted_endpoint_batch(
         &mut self,
         remote: PeerIdentity,
         payloads: Vec<Vec<u8>>,
@@ -9,7 +9,7 @@ impl Node {
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
         let _ = self
-            .queue_packet_mover2_unrouted_endpoint_payloads(
+            .queue_dataplane_unrouted_endpoint_payloads(
                 dest_addr,
                 dest_pubkey,
                 payloads,
@@ -18,7 +18,7 @@ impl Node {
             .await;
     }
 
-    async fn queue_packet_mover2_unrouted_endpoint_payloads(
+    async fn queue_dataplane_unrouted_endpoint_payloads(
         &mut self,
         dest_addr: NodeAddr,
         dest_pubkey: secp256k1::PublicKey,
@@ -29,7 +29,7 @@ impl Node {
             return Ok(());
         }
 
-        match self.packet_mover2_outbound_session_state(&dest_addr) {
+        match self.dataplane_outbound_session_state(&dest_addr) {
             OutboundSessionState::Established => {
                 let route_available = self.find_next_hop(&dest_addr).is_some();
                 self.queue_pending_endpoint_data_batch_with_enqueued_at_ms(

@@ -50,8 +50,8 @@ enum DiscoveryRetrySessionDecision {
 }
 
 impl Node {
-    fn packet_mover2_outbound_session_state(&self, dest_addr: &NodeAddr) -> OutboundSessionState {
-        if self.packet_mover2_has_fsp_owner(dest_addr) {
+    fn dataplane_outbound_session_state(&self, dest_addr: &NodeAddr) -> OutboundSessionState {
+        if self.dataplane_has_fsp_owner(dest_addr) {
             OutboundSessionState::Established
         } else if self.sessions.get(dest_addr).is_some() {
             OutboundSessionState::Pending
@@ -262,7 +262,7 @@ impl SessionReceiveBatchCommit {
         }
 
         for source_addr in &self.pending_flush_sources {
-            clear_pm2_confirmed_retransmits_for(node, source_addr);
+            clear_dataplane_confirmed_retransmits_for(node, source_addr);
         }
 
         self.pending_flush_sources
@@ -486,7 +486,7 @@ impl SessionDispatchCommit {
                 completion.previous_hop_addr
             };
             node.clear_retry_unless_direct_refresh_needed(&retry_peer);
-            clear_pm2_confirmed_retransmits_for(node, &completion.source_addr);
+            clear_dataplane_confirmed_retransmits_for(node, &completion.source_addr);
         }
 
         SessionDispatchFinish {
@@ -507,9 +507,9 @@ impl SessionDispatchCommit {
     }
 }
 
-fn clear_pm2_confirmed_retransmits_for(node: &mut Node, source_addr: &NodeAddr) -> bool {
+fn clear_dataplane_confirmed_retransmits_for(node: &mut Node, source_addr: &NodeAddr) -> bool {
     let confirmed = node
-        .packet_mover2
+        .dataplane
         .fsp_owner_activity(source_addr)
         .is_some_and(|activity| activity.current_epoch_confirmed());
     if !confirmed {
@@ -518,7 +518,7 @@ fn clear_pm2_confirmed_retransmits_for(node: &mut Node, source_addr: &NodeAddr) 
 
     node.sessions
         .get_mut(source_addr)
-        .is_some_and(|entry| entry.clear_pm2_confirmed_fsp_retransmits())
+        .is_some_and(|entry| entry.clear_dataplane_confirmed_fsp_retransmits())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -418,7 +418,7 @@ impl Node {
             .peers
             .keys()
             .filter_map(|addr| {
-                self.packet_mover2
+                self.dataplane
                     .fmp_link_metrics(addr, now)
                     .map(|metrics| metrics.loss_rate)
             })
@@ -447,7 +447,7 @@ impl Node {
             .values()
             .map(|p| {
                 let stats = p.link_stats();
-                let metrics = self.packet_mover2.fmp_link_metrics(p.node_addr(), now);
+                let metrics = self.dataplane.fmp_link_metrics(p.node_addr(), now);
                 let srtt_ms = metrics.and_then(|metrics| metrics.srtt_ms);
                 let loss_rate = metrics.map(|metrics| metrics.loss_rate);
                 let ecn_ce = metrics.map_or(0, |metrics| metrics.ecn_ce_count as u64);

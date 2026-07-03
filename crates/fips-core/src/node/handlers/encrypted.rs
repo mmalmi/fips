@@ -1,6 +1,6 @@
-//! Established-frame recovery hooks used by packet_mover2.
+//! Established-frame recovery hooks used by dataplane.
 //!
-//! Production established receive is owned by packet_mover2. This module keeps
+//! Production established receive is owned by dataplane. This module keeps
 //! the shared decrypt-failure recovery policy.
 
 use crate::node::Node;
@@ -115,7 +115,7 @@ impl Node {
         }
     }
 
-    pub(in crate::node) async fn handle_packet_mover2_fmp_decrypt_failure(
+    pub(in crate::node) async fn handle_dataplane_fmp_decrypt_failure(
         &mut self,
         source_node_addr: &crate::NodeAddr,
         fmp_counter: u64,
@@ -125,7 +125,7 @@ impl Node {
             peer = %self.peer_display_name(source_node_addr),
             counter = fmp_counter,
             replay_highest = fmp_replay_highest,
-            "packet_mover2 FMP AEAD decryption failed"
+            "dataplane FMP AEAD decryption failed"
         );
         self.handle_reported_fmp_decrypt_failure(source_node_addr, fmp_counter, fmp_replay_highest)
             .await

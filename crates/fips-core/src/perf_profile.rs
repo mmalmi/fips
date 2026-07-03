@@ -1,4 +1,4 @@
-//! Runtime perf profiler for the packet_mover2 hot path and queue handoffs.
+//! Runtime perf profiler for the dataplane hot path and queue handoffs.
 //!
 //! Avoids external dependencies (`perf`, samply, etc.) by instrumenting
 //! the key stages directly with `AtomicU64` ns counters, histograms,
@@ -14,7 +14,7 @@
 //! waits.
 //!
 //! Live stages track UDP receive/send, TUN and endpoint output, bounded
-//! transport/endpoint queue residence, PM2 stateless AEAD service, and PM2
+//! transport/endpoint queue residence, dataplane stateless AEAD service, and dataplane
 //! ordered retirement. Historical slots stay reserved so old logs remain
 //! index-comparable without advertising retired paths.
 
@@ -92,21 +92,21 @@ pub enum Stage {
     ReservedStage50 = 50,
     ReservedStage51 = 51,
     ReservedStage52 = 52,
-    PacketMover2AeadOpen = 53,
-    PacketMover2AeadSeal = 54,
-    PacketMover2Retire = 55,
-    PacketMover2FspOwnerSync = 56,
-    PacketMover2LiveTurn = 57,
-    PacketMover2CompletionDrain = 58,
-    PacketMover2LiveAdmit = 59,
-    PacketMover2AeadDispatch = 60,
-    PacketMover2OutputSink = 61,
-    PacketMover2TransportSend = 62,
-    PacketMover2TransportSendWorker = 63,
-    PacketMover2OwnerDispatch = 64,
-    PacketMover2ExecutorSubmit = 65,
-    PacketMover2CompletionQueue = 66,
-    PacketMover2AeadWorkerQueueWait = 67,
+    DataplaneAeadOpen = 53,
+    DataplaneAeadSeal = 54,
+    DataplaneRetire = 55,
+    DataplaneFspOwnerSync = 56,
+    DataplaneLiveTurn = 57,
+    DataplaneCompletionDrain = 58,
+    DataplaneLiveAdmit = 59,
+    DataplaneAeadDispatch = 60,
+    DataplaneOutputSink = 61,
+    DataplaneTransportSend = 62,
+    DataplaneTransportSendWorker = 63,
+    DataplaneOwnerDispatch = 64,
+    DataplaneExecutorSubmit = 65,
+    DataplaneCompletionQueue = 66,
+    DataplaneAeadWorkerQueueWait = 67,
     ReservedStage68 = 68,
 }
 
@@ -166,21 +166,21 @@ impl Stage {
             Stage::ReservedStage50 => "reserved_stage_50",
             Stage::ReservedStage51 => "reserved_stage_51",
             Stage::ReservedStage52 => "reserved_stage_52",
-            Stage::PacketMover2AeadOpen => "packet_mover2_aead_open",
-            Stage::PacketMover2AeadSeal => "packet_mover2_aead_seal",
-            Stage::PacketMover2Retire => "packet_mover2_retire",
-            Stage::PacketMover2FspOwnerSync => "packet_mover2_fsp_owner_sync",
-            Stage::PacketMover2LiveTurn => "packet_mover2_live_turn",
-            Stage::PacketMover2CompletionDrain => "packet_mover2_completion_drain",
-            Stage::PacketMover2LiveAdmit => "packet_mover2_live_admit",
-            Stage::PacketMover2AeadDispatch => "packet_mover2_aead_dispatch",
-            Stage::PacketMover2OutputSink => "packet_mover2_output_sink",
-            Stage::PacketMover2TransportSend => "packet_mover2_transport_send",
-            Stage::PacketMover2TransportSendWorker => "packet_mover2_transport_send_worker",
-            Stage::PacketMover2OwnerDispatch => "packet_mover2_owner_dispatch",
-            Stage::PacketMover2ExecutorSubmit => "packet_mover2_executor_submit",
-            Stage::PacketMover2CompletionQueue => "packet_mover2_completion_queue",
-            Stage::PacketMover2AeadWorkerQueueWait => "packet_mover2_aead_worker_queue_wait",
+            Stage::DataplaneAeadOpen => "dataplane_aead_open",
+            Stage::DataplaneAeadSeal => "dataplane_aead_seal",
+            Stage::DataplaneRetire => "dataplane_retire",
+            Stage::DataplaneFspOwnerSync => "dataplane_fsp_owner_sync",
+            Stage::DataplaneLiveTurn => "dataplane_live_turn",
+            Stage::DataplaneCompletionDrain => "dataplane_completion_drain",
+            Stage::DataplaneLiveAdmit => "dataplane_live_admit",
+            Stage::DataplaneAeadDispatch => "dataplane_aead_dispatch",
+            Stage::DataplaneOutputSink => "dataplane_output_sink",
+            Stage::DataplaneTransportSend => "dataplane_transport_send",
+            Stage::DataplaneTransportSendWorker => "dataplane_transport_send_worker",
+            Stage::DataplaneOwnerDispatch => "dataplane_owner_dispatch",
+            Stage::DataplaneExecutorSubmit => "dataplane_executor_submit",
+            Stage::DataplaneCompletionQueue => "dataplane_completion_queue",
+            Stage::DataplaneAeadWorkerQueueWait => "dataplane_aead_worker_queue_wait",
             Stage::ReservedStage68 => "reserved_stage_68",
         }
     }
@@ -241,21 +241,21 @@ fn stage_from_index(idx: usize) -> Stage {
         50 => Stage::ReservedStage50,
         51 => Stage::ReservedStage51,
         52 => Stage::ReservedStage52,
-        53 => Stage::PacketMover2AeadOpen,
-        54 => Stage::PacketMover2AeadSeal,
-        55 => Stage::PacketMover2Retire,
-        56 => Stage::PacketMover2FspOwnerSync,
-        57 => Stage::PacketMover2LiveTurn,
-        58 => Stage::PacketMover2CompletionDrain,
-        59 => Stage::PacketMover2LiveAdmit,
-        60 => Stage::PacketMover2AeadDispatch,
-        61 => Stage::PacketMover2OutputSink,
-        62 => Stage::PacketMover2TransportSend,
-        63 => Stage::PacketMover2TransportSendWorker,
-        64 => Stage::PacketMover2OwnerDispatch,
-        65 => Stage::PacketMover2ExecutorSubmit,
-        66 => Stage::PacketMover2CompletionQueue,
-        67 => Stage::PacketMover2AeadWorkerQueueWait,
+        53 => Stage::DataplaneAeadOpen,
+        54 => Stage::DataplaneAeadSeal,
+        55 => Stage::DataplaneRetire,
+        56 => Stage::DataplaneFspOwnerSync,
+        57 => Stage::DataplaneLiveTurn,
+        58 => Stage::DataplaneCompletionDrain,
+        59 => Stage::DataplaneLiveAdmit,
+        60 => Stage::DataplaneAeadDispatch,
+        61 => Stage::DataplaneOutputSink,
+        62 => Stage::DataplaneTransportSend,
+        63 => Stage::DataplaneTransportSendWorker,
+        64 => Stage::DataplaneOwnerDispatch,
+        65 => Stage::DataplaneExecutorSubmit,
+        66 => Stage::DataplaneCompletionQueue,
+        67 => Stage::DataplaneAeadWorkerQueueWait,
         68 => Stage::ReservedStage68,
         _ => unreachable!(),
     }
@@ -452,63 +452,63 @@ pub enum Event {
     ReservedEvent185 = 185,
     TunWriteBulkDropped = 186,
     TunWriteBulkBacklogHigh = 187,
-    PacketMover2FspPathOpen = 188,
-    PacketMover2FspPathOpenBulk = 189,
-    PacketMover2FspOwnerSyncCall = 190,
-    PacketMover2CryptoOpenBatch = 191,
-    PacketMover2CryptoOpenPackets = 192,
-    PacketMover2CryptoSealBatch = 193,
-    PacketMover2CryptoSealPackets = 194,
-    PacketMover2CryptoBatchSingle = 195,
-    PacketMover2CryptoBatchGe8 = 196,
-    PacketMover2CryptoBatchGe32 = 197,
-    PacketMover2CryptoBatchGe64 = 198,
+    DataplaneFspPathOpen = 188,
+    DataplaneFspPathOpenBulk = 189,
+    DataplaneFspOwnerSyncCall = 190,
+    DataplaneCryptoOpenBatch = 191,
+    DataplaneCryptoOpenPackets = 192,
+    DataplaneCryptoSealBatch = 193,
+    DataplaneCryptoSealPackets = 194,
+    DataplaneCryptoBatchSingle = 195,
+    DataplaneCryptoBatchGe8 = 196,
+    DataplaneCryptoBatchGe32 = 197,
+    DataplaneCryptoBatchGe64 = 198,
     ReservedEvent199 = 199,
-    PacketMover2FspOwnerSyncApplied = 200,
-    PacketMover2DispatchOwnerBlocked = 201,
-    PacketMover2DispatchNoIngress = 202,
-    PacketMover2DispatchLimitHit = 203,
-    PacketMover2DispatchExecutorFull = 204,
-    PacketMover2DispatchOwnerBlockedTotal = 205,
-    PacketMover2DispatchOwnerBlockedBulkLane = 206,
+    DataplaneFspOwnerSyncApplied = 200,
+    DataplaneDispatchOwnerBlocked = 201,
+    DataplaneDispatchNoIngress = 202,
+    DataplaneDispatchLimitHit = 203,
+    DataplaneDispatchExecutorFull = 204,
+    DataplaneDispatchOwnerBlockedTotal = 205,
+    DataplaneDispatchOwnerBlockedBulkLane = 206,
     ReservedEvent207 = 207,
-    PacketMover2SealInPlace = 208,
-    PacketMover2SealAllocated = 209,
-    PacketMover2TransportSendWorkerBackpressure = 210,
-    PacketMover2TransportSendWorkerDropped = 211,
-    PacketMover2IngressOwnerRunContinue = 212,
-    PacketMover2OutboundOwnerRunContinue = 213,
-    PacketMover2OutboundBatchAdmit = 214,
-    PacketMover2OutboundBatchPackets = 215,
-    PacketMover2TransportSendWorkerSendFailed = 216,
+    DataplaneSealInPlace = 208,
+    DataplaneSealAllocated = 209,
+    DataplaneTransportSendWorkerBackpressure = 210,
+    DataplaneTransportSendWorkerDropped = 211,
+    DataplaneIngressOwnerRunContinue = 212,
+    DataplaneOutboundOwnerRunContinue = 213,
+    DataplaneOutboundBatchAdmit = 214,
+    DataplaneOutboundBatchPackets = 215,
+    DataplaneTransportSendWorkerSendFailed = 216,
     ReservedEvent217 = 217,
     ReservedEvent218 = 218,
     ReservedEvent219 = 219,
     ReservedEvent220 = 220,
-    PacketMover2LiveRawAdmitted = 221,
-    PacketMover2LiveEndpointAdmitted = 222,
-    PacketMover2LiveTunAdmitted = 223,
-    PacketMover2LivePreparedDispatched = 224,
-    PacketMover2LiveCompletionsDrained = 225,
-    PacketMover2LiveRetiredOutputs = 226,
-    PacketMover2LiveRetiredDrops = 227,
-    PacketMover2LiveOutputDrops = 228,
-    PacketMover2AeadOpenInFlight = 229,
-    PacketMover2AeadSealInFlight = 230,
-    PacketMover2AeadCompletionQueueDepth = 231,
-    PacketMover2AeadCompletionBatch = 232,
-    PacketMover2AeadCompletionBatchPackets = 233,
-    PacketMover2AeadPreparedJob = 234,
-    PacketMover2AeadPreparedJobPackets = 235,
-    PacketMover2LiveCompletionsRetired = 236,
-    PacketMover2LiveOutputBatch = 237,
-    PacketMover2LiveOutputBatchPackets = 238,
-    PacketMover2AeadOpenQueueDepth = 239,
-    PacketMover2AeadSealQueueDepth = 240,
-    PacketMover2FastIngressOwnerRuns = 241,
-    PacketMover2FastIngressOwnerRunPackets = 242,
-    PacketMover2EstablishedFspDataRetireRuns = 243,
-    PacketMover2EstablishedFspDataRetirePackets = 244,
+    DataplaneLiveRawAdmitted = 221,
+    DataplaneLiveEndpointAdmitted = 222,
+    DataplaneLiveTunAdmitted = 223,
+    DataplaneLivePreparedDispatched = 224,
+    DataplaneLiveCompletionsDrained = 225,
+    DataplaneLiveRetiredOutputs = 226,
+    DataplaneLiveRetiredDrops = 227,
+    DataplaneLiveOutputDrops = 228,
+    DataplaneAeadOpenInFlight = 229,
+    DataplaneAeadSealInFlight = 230,
+    DataplaneAeadCompletionQueueDepth = 231,
+    DataplaneAeadCompletionBatch = 232,
+    DataplaneAeadCompletionBatchPackets = 233,
+    DataplaneAeadPreparedJob = 234,
+    DataplaneAeadPreparedJobPackets = 235,
+    DataplaneLiveCompletionsRetired = 236,
+    DataplaneLiveOutputBatch = 237,
+    DataplaneLiveOutputBatchPackets = 238,
+    DataplaneAeadOpenQueueDepth = 239,
+    DataplaneAeadSealQueueDepth = 240,
+    DataplaneFastIngressOwnerRuns = 241,
+    DataplaneFastIngressOwnerRunPackets = 242,
+    DataplaneEstablishedFspDataRetireRuns = 243,
+    DataplaneEstablishedFspDataRetirePackets = 244,
 }
 
 impl Event {
@@ -702,86 +702,74 @@ impl Event {
             Event::ReservedEvent185 => "reserved_event_185",
             Event::TunWriteBulkDropped => "tun_write_bulk_dropped",
             Event::TunWriteBulkBacklogHigh => "tun_write_bulk_backlog_high",
-            Event::PacketMover2FspPathOpen => "packet_mover2_fsp_path_open",
-            Event::PacketMover2FspPathOpenBulk => "packet_mover2_fsp_path_open_bulk",
-            Event::PacketMover2FspOwnerSyncCall => "packet_mover2_fsp_owner_sync_call",
-            Event::PacketMover2CryptoOpenBatch => "packet_mover2_crypto_open_batch",
-            Event::PacketMover2CryptoOpenPackets => "packet_mover2_crypto_open_packets",
-            Event::PacketMover2CryptoSealBatch => "packet_mover2_crypto_seal_batch",
-            Event::PacketMover2CryptoSealPackets => "packet_mover2_crypto_seal_packets",
-            Event::PacketMover2CryptoBatchSingle => "packet_mover2_crypto_batch_single",
-            Event::PacketMover2CryptoBatchGe8 => "packet_mover2_crypto_batch_ge8",
-            Event::PacketMover2CryptoBatchGe32 => "packet_mover2_crypto_batch_ge32",
-            Event::PacketMover2CryptoBatchGe64 => "packet_mover2_crypto_batch_ge64",
+            Event::DataplaneFspPathOpen => "dataplane_fsp_path_open",
+            Event::DataplaneFspPathOpenBulk => "dataplane_fsp_path_open_bulk",
+            Event::DataplaneFspOwnerSyncCall => "dataplane_fsp_owner_sync_call",
+            Event::DataplaneCryptoOpenBatch => "dataplane_crypto_open_batch",
+            Event::DataplaneCryptoOpenPackets => "dataplane_crypto_open_packets",
+            Event::DataplaneCryptoSealBatch => "dataplane_crypto_seal_batch",
+            Event::DataplaneCryptoSealPackets => "dataplane_crypto_seal_packets",
+            Event::DataplaneCryptoBatchSingle => "dataplane_crypto_batch_single",
+            Event::DataplaneCryptoBatchGe8 => "dataplane_crypto_batch_ge8",
+            Event::DataplaneCryptoBatchGe32 => "dataplane_crypto_batch_ge32",
+            Event::DataplaneCryptoBatchGe64 => "dataplane_crypto_batch_ge64",
             Event::ReservedEvent199 => "reserved_event_199",
-            Event::PacketMover2FspOwnerSyncApplied => "packet_mover2_fsp_owner_sync_applied",
-            Event::PacketMover2DispatchOwnerBlocked => "packet_mover2_dispatch_owner_blocked",
-            Event::PacketMover2DispatchNoIngress => "packet_mover2_dispatch_no_ingress",
-            Event::PacketMover2DispatchLimitHit => "packet_mover2_dispatch_limit_hit",
-            Event::PacketMover2DispatchExecutorFull => "packet_mover2_dispatch_executor_full",
-            Event::PacketMover2DispatchOwnerBlockedTotal => {
-                "packet_mover2_dispatch_owner_blocked_total"
-            }
-            Event::PacketMover2DispatchOwnerBlockedBulkLane => {
-                "packet_mover2_dispatch_owner_blocked_bulk_lane"
+            Event::DataplaneFspOwnerSyncApplied => "dataplane_fsp_owner_sync_applied",
+            Event::DataplaneDispatchOwnerBlocked => "dataplane_dispatch_owner_blocked",
+            Event::DataplaneDispatchNoIngress => "dataplane_dispatch_no_ingress",
+            Event::DataplaneDispatchLimitHit => "dataplane_dispatch_limit_hit",
+            Event::DataplaneDispatchExecutorFull => "dataplane_dispatch_executor_full",
+            Event::DataplaneDispatchOwnerBlockedTotal => "dataplane_dispatch_owner_blocked_total",
+            Event::DataplaneDispatchOwnerBlockedBulkLane => {
+                "dataplane_dispatch_owner_blocked_bulk_lane"
             }
             Event::ReservedEvent207 => "reserved_event_207",
-            Event::PacketMover2SealInPlace => "packet_mover2_seal_in_place",
-            Event::PacketMover2SealAllocated => "packet_mover2_seal_allocated",
-            Event::PacketMover2TransportSendWorkerBackpressure => {
-                "packet_mover2_transport_send_worker_backpressure"
+            Event::DataplaneSealInPlace => "dataplane_seal_in_place",
+            Event::DataplaneSealAllocated => "dataplane_seal_allocated",
+            Event::DataplaneTransportSendWorkerBackpressure => {
+                "dataplane_transport_send_worker_backpressure"
             }
-            Event::PacketMover2TransportSendWorkerDropped => {
-                "packet_mover2_transport_send_worker_dropped"
-            }
-            Event::PacketMover2IngressOwnerRunContinue => {
-                "packet_mover2_ingress_owner_run_continue"
-            }
-            Event::PacketMover2OutboundOwnerRunContinue => {
-                "packet_mover2_outbound_owner_run_continue"
-            }
-            Event::PacketMover2OutboundBatchAdmit => "packet_mover2_outbound_batch_admit",
-            Event::PacketMover2OutboundBatchPackets => "packet_mover2_outbound_batch_packets",
-            Event::PacketMover2TransportSendWorkerSendFailed => {
-                "packet_mover2_transport_send_worker_send_failed"
+            Event::DataplaneTransportSendWorkerDropped => "dataplane_transport_send_worker_dropped",
+            Event::DataplaneIngressOwnerRunContinue => "dataplane_ingress_owner_run_continue",
+            Event::DataplaneOutboundOwnerRunContinue => "dataplane_outbound_owner_run_continue",
+            Event::DataplaneOutboundBatchAdmit => "dataplane_outbound_batch_admit",
+            Event::DataplaneOutboundBatchPackets => "dataplane_outbound_batch_packets",
+            Event::DataplaneTransportSendWorkerSendFailed => {
+                "dataplane_transport_send_worker_send_failed"
             }
             Event::ReservedEvent217 => "reserved_event_217",
             Event::ReservedEvent218 => "reserved_event_218",
             Event::ReservedEvent219 => "reserved_event_219",
             Event::ReservedEvent220 => "reserved_event_220",
-            Event::PacketMover2LiveRawAdmitted => "packet_mover2_live_raw_admitted",
-            Event::PacketMover2LiveEndpointAdmitted => "packet_mover2_live_endpoint_admitted",
-            Event::PacketMover2LiveTunAdmitted => "packet_mover2_live_tun_admitted",
-            Event::PacketMover2LivePreparedDispatched => "packet_mover2_live_prepared_dispatched",
-            Event::PacketMover2LiveCompletionsDrained => "packet_mover2_live_completions_drained",
-            Event::PacketMover2LiveRetiredOutputs => "packet_mover2_live_retired_outputs",
-            Event::PacketMover2LiveRetiredDrops => "packet_mover2_live_retired_drops",
-            Event::PacketMover2LiveOutputDrops => "packet_mover2_live_output_drops",
-            Event::PacketMover2AeadOpenInFlight => "packet_mover2_aead_open_in_flight",
-            Event::PacketMover2AeadSealInFlight => "packet_mover2_aead_seal_in_flight",
-            Event::PacketMover2AeadCompletionQueueDepth => {
-                "packet_mover2_aead_completion_queue_depth"
+            Event::DataplaneLiveRawAdmitted => "dataplane_live_raw_admitted",
+            Event::DataplaneLiveEndpointAdmitted => "dataplane_live_endpoint_admitted",
+            Event::DataplaneLiveTunAdmitted => "dataplane_live_tun_admitted",
+            Event::DataplaneLivePreparedDispatched => "dataplane_live_prepared_dispatched",
+            Event::DataplaneLiveCompletionsDrained => "dataplane_live_completions_drained",
+            Event::DataplaneLiveRetiredOutputs => "dataplane_live_retired_outputs",
+            Event::DataplaneLiveRetiredDrops => "dataplane_live_retired_drops",
+            Event::DataplaneLiveOutputDrops => "dataplane_live_output_drops",
+            Event::DataplaneAeadOpenInFlight => "dataplane_aead_open_in_flight",
+            Event::DataplaneAeadSealInFlight => "dataplane_aead_seal_in_flight",
+            Event::DataplaneAeadCompletionQueueDepth => "dataplane_aead_completion_queue_depth",
+            Event::DataplaneAeadCompletionBatch => "dataplane_aead_completion_batch",
+            Event::DataplaneAeadCompletionBatchPackets => "dataplane_aead_completion_batch_packets",
+            Event::DataplaneAeadPreparedJob => "dataplane_aead_prepared_job",
+            Event::DataplaneAeadPreparedJobPackets => "dataplane_aead_prepared_job_packets",
+            Event::DataplaneLiveCompletionsRetired => "dataplane_live_completions_retired",
+            Event::DataplaneLiveOutputBatch => "dataplane_live_output_batch",
+            Event::DataplaneLiveOutputBatchPackets => "dataplane_live_output_batch_packets",
+            Event::DataplaneAeadOpenQueueDepth => "dataplane_aead_open_queue_depth",
+            Event::DataplaneAeadSealQueueDepth => "dataplane_aead_seal_queue_depth",
+            Event::DataplaneFastIngressOwnerRuns => "dataplane_fast_ingress_owner_runs",
+            Event::DataplaneFastIngressOwnerRunPackets => {
+                "dataplane_fast_ingress_owner_run_packets"
             }
-            Event::PacketMover2AeadCompletionBatch => "packet_mover2_aead_completion_batch",
-            Event::PacketMover2AeadCompletionBatchPackets => {
-                "packet_mover2_aead_completion_batch_packets"
+            Event::DataplaneEstablishedFspDataRetireRuns => {
+                "dataplane_established_fsp_data_retire_runs"
             }
-            Event::PacketMover2AeadPreparedJob => "packet_mover2_aead_prepared_job",
-            Event::PacketMover2AeadPreparedJobPackets => "packet_mover2_aead_prepared_job_packets",
-            Event::PacketMover2LiveCompletionsRetired => "packet_mover2_live_completions_retired",
-            Event::PacketMover2LiveOutputBatch => "packet_mover2_live_output_batch",
-            Event::PacketMover2LiveOutputBatchPackets => "packet_mover2_live_output_batch_packets",
-            Event::PacketMover2AeadOpenQueueDepth => "packet_mover2_aead_open_queue_depth",
-            Event::PacketMover2AeadSealQueueDepth => "packet_mover2_aead_seal_queue_depth",
-            Event::PacketMover2FastIngressOwnerRuns => "packet_mover2_fast_ingress_owner_runs",
-            Event::PacketMover2FastIngressOwnerRunPackets => {
-                "packet_mover2_fast_ingress_owner_run_packets"
-            }
-            Event::PacketMover2EstablishedFspDataRetireRuns => {
-                "packet_mover2_established_fsp_data_retire_runs"
-            }
-            Event::PacketMover2EstablishedFspDataRetirePackets => {
-                "packet_mover2_established_fsp_data_retire_packets"
+            Event::DataplaneEstablishedFspDataRetirePackets => {
+                "dataplane_established_fsp_data_retire_packets"
             }
         }
     }
@@ -977,63 +965,63 @@ fn event_from_index(idx: usize) -> Event {
         185 => Event::ReservedEvent185,
         186 => Event::TunWriteBulkDropped,
         187 => Event::TunWriteBulkBacklogHigh,
-        188 => Event::PacketMover2FspPathOpen,
-        189 => Event::PacketMover2FspPathOpenBulk,
-        190 => Event::PacketMover2FspOwnerSyncCall,
-        191 => Event::PacketMover2CryptoOpenBatch,
-        192 => Event::PacketMover2CryptoOpenPackets,
-        193 => Event::PacketMover2CryptoSealBatch,
-        194 => Event::PacketMover2CryptoSealPackets,
-        195 => Event::PacketMover2CryptoBatchSingle,
-        196 => Event::PacketMover2CryptoBatchGe8,
-        197 => Event::PacketMover2CryptoBatchGe32,
-        198 => Event::PacketMover2CryptoBatchGe64,
+        188 => Event::DataplaneFspPathOpen,
+        189 => Event::DataplaneFspPathOpenBulk,
+        190 => Event::DataplaneFspOwnerSyncCall,
+        191 => Event::DataplaneCryptoOpenBatch,
+        192 => Event::DataplaneCryptoOpenPackets,
+        193 => Event::DataplaneCryptoSealBatch,
+        194 => Event::DataplaneCryptoSealPackets,
+        195 => Event::DataplaneCryptoBatchSingle,
+        196 => Event::DataplaneCryptoBatchGe8,
+        197 => Event::DataplaneCryptoBatchGe32,
+        198 => Event::DataplaneCryptoBatchGe64,
         199 => Event::ReservedEvent199,
-        200 => Event::PacketMover2FspOwnerSyncApplied,
-        201 => Event::PacketMover2DispatchOwnerBlocked,
-        202 => Event::PacketMover2DispatchNoIngress,
-        203 => Event::PacketMover2DispatchLimitHit,
-        204 => Event::PacketMover2DispatchExecutorFull,
-        205 => Event::PacketMover2DispatchOwnerBlockedTotal,
-        206 => Event::PacketMover2DispatchOwnerBlockedBulkLane,
+        200 => Event::DataplaneFspOwnerSyncApplied,
+        201 => Event::DataplaneDispatchOwnerBlocked,
+        202 => Event::DataplaneDispatchNoIngress,
+        203 => Event::DataplaneDispatchLimitHit,
+        204 => Event::DataplaneDispatchExecutorFull,
+        205 => Event::DataplaneDispatchOwnerBlockedTotal,
+        206 => Event::DataplaneDispatchOwnerBlockedBulkLane,
         207 => Event::ReservedEvent207,
-        208 => Event::PacketMover2SealInPlace,
-        209 => Event::PacketMover2SealAllocated,
-        210 => Event::PacketMover2TransportSendWorkerBackpressure,
-        211 => Event::PacketMover2TransportSendWorkerDropped,
-        212 => Event::PacketMover2IngressOwnerRunContinue,
-        213 => Event::PacketMover2OutboundOwnerRunContinue,
-        214 => Event::PacketMover2OutboundBatchAdmit,
-        215 => Event::PacketMover2OutboundBatchPackets,
-        216 => Event::PacketMover2TransportSendWorkerSendFailed,
+        208 => Event::DataplaneSealInPlace,
+        209 => Event::DataplaneSealAllocated,
+        210 => Event::DataplaneTransportSendWorkerBackpressure,
+        211 => Event::DataplaneTransportSendWorkerDropped,
+        212 => Event::DataplaneIngressOwnerRunContinue,
+        213 => Event::DataplaneOutboundOwnerRunContinue,
+        214 => Event::DataplaneOutboundBatchAdmit,
+        215 => Event::DataplaneOutboundBatchPackets,
+        216 => Event::DataplaneTransportSendWorkerSendFailed,
         217 => Event::ReservedEvent217,
         218 => Event::ReservedEvent218,
         219 => Event::ReservedEvent219,
         220 => Event::ReservedEvent220,
-        221 => Event::PacketMover2LiveRawAdmitted,
-        222 => Event::PacketMover2LiveEndpointAdmitted,
-        223 => Event::PacketMover2LiveTunAdmitted,
-        224 => Event::PacketMover2LivePreparedDispatched,
-        225 => Event::PacketMover2LiveCompletionsDrained,
-        226 => Event::PacketMover2LiveRetiredOutputs,
-        227 => Event::PacketMover2LiveRetiredDrops,
-        228 => Event::PacketMover2LiveOutputDrops,
-        229 => Event::PacketMover2AeadOpenInFlight,
-        230 => Event::PacketMover2AeadSealInFlight,
-        231 => Event::PacketMover2AeadCompletionQueueDepth,
-        232 => Event::PacketMover2AeadCompletionBatch,
-        233 => Event::PacketMover2AeadCompletionBatchPackets,
-        234 => Event::PacketMover2AeadPreparedJob,
-        235 => Event::PacketMover2AeadPreparedJobPackets,
-        236 => Event::PacketMover2LiveCompletionsRetired,
-        237 => Event::PacketMover2LiveOutputBatch,
-        238 => Event::PacketMover2LiveOutputBatchPackets,
-        239 => Event::PacketMover2AeadOpenQueueDepth,
-        240 => Event::PacketMover2AeadSealQueueDepth,
-        241 => Event::PacketMover2FastIngressOwnerRuns,
-        242 => Event::PacketMover2FastIngressOwnerRunPackets,
-        243 => Event::PacketMover2EstablishedFspDataRetireRuns,
-        244 => Event::PacketMover2EstablishedFspDataRetirePackets,
+        221 => Event::DataplaneLiveRawAdmitted,
+        222 => Event::DataplaneLiveEndpointAdmitted,
+        223 => Event::DataplaneLiveTunAdmitted,
+        224 => Event::DataplaneLivePreparedDispatched,
+        225 => Event::DataplaneLiveCompletionsDrained,
+        226 => Event::DataplaneLiveRetiredOutputs,
+        227 => Event::DataplaneLiveRetiredDrops,
+        228 => Event::DataplaneLiveOutputDrops,
+        229 => Event::DataplaneAeadOpenInFlight,
+        230 => Event::DataplaneAeadSealInFlight,
+        231 => Event::DataplaneAeadCompletionQueueDepth,
+        232 => Event::DataplaneAeadCompletionBatch,
+        233 => Event::DataplaneAeadCompletionBatchPackets,
+        234 => Event::DataplaneAeadPreparedJob,
+        235 => Event::DataplaneAeadPreparedJobPackets,
+        236 => Event::DataplaneLiveCompletionsRetired,
+        237 => Event::DataplaneLiveOutputBatch,
+        238 => Event::DataplaneLiveOutputBatchPackets,
+        239 => Event::DataplaneAeadOpenQueueDepth,
+        240 => Event::DataplaneAeadSealQueueDepth,
+        241 => Event::DataplaneFastIngressOwnerRuns,
+        242 => Event::DataplaneFastIngressOwnerRunPackets,
+        243 => Event::DataplaneEstablishedFspDataRetireRuns,
+        244 => Event::DataplaneEstablishedFspDataRetirePackets,
         _ => unreachable!(),
     }
 }
@@ -1222,114 +1210,108 @@ pub(crate) fn record_udp_namespace_rcvbuf_errors(drops: u64) {
     record_event_count(Event::UdpNamespaceRcvbufErrors, drops);
 }
 
-/// Record the prepared PM2 open chunk width before inline AEAD execution.
+/// Record the prepared dataplane open chunk width before inline AEAD execution.
 ///
 /// These counters describe the natural work unit available to a future
 /// stateless crypto worker pool. They stay trace-gated and do not imply a
 /// second packet path.
 #[inline]
-pub(crate) fn record_packet_mover2_crypto_open_batch(packets: usize) {
-    record_packet_mover2_crypto_batch(
-        Event::PacketMover2CryptoOpenBatch,
-        Event::PacketMover2CryptoOpenPackets,
+pub(crate) fn record_dataplane_crypto_open_batch(packets: usize) {
+    record_dataplane_crypto_batch(
+        Event::DataplaneCryptoOpenBatch,
+        Event::DataplaneCryptoOpenPackets,
         packets,
     );
 }
 
-/// Record the prepared PM2 seal chunk width before inline AEAD execution.
+/// Record the prepared dataplane seal chunk width before inline AEAD execution.
 #[inline]
-pub(crate) fn record_packet_mover2_crypto_seal_batch(packets: usize) {
-    record_packet_mover2_crypto_batch(
-        Event::PacketMover2CryptoSealBatch,
-        Event::PacketMover2CryptoSealPackets,
+pub(crate) fn record_dataplane_crypto_seal_batch(packets: usize) {
+    record_dataplane_crypto_batch(
+        Event::DataplaneCryptoSealBatch,
+        Event::DataplaneCryptoSealPackets,
         packets,
     );
 }
 
 #[inline]
-fn record_packet_mover2_crypto_batch(batch_event: Event, packet_event: Event, packets: usize) {
+fn record_dataplane_crypto_batch(batch_event: Event, packet_event: Event, packets: usize) {
     if !enabled() || packets == 0 {
         return;
     }
     record_event_count_sample(batch_event, 1);
     record_event_count_sample(packet_event, packets as u64);
-    let (single, ge8, ge32, ge64) = packet_mover2_crypto_batch_bucket_flags(packets);
+    let (single, ge8, ge32, ge64) = dataplane_crypto_batch_bucket_flags(packets);
     if single {
-        record_event_count_sample(Event::PacketMover2CryptoBatchSingle, 1);
+        record_event_count_sample(Event::DataplaneCryptoBatchSingle, 1);
     }
     if ge8 {
-        record_event_count_sample(Event::PacketMover2CryptoBatchGe8, 1);
+        record_event_count_sample(Event::DataplaneCryptoBatchGe8, 1);
     }
     if ge32 {
-        record_event_count_sample(Event::PacketMover2CryptoBatchGe32, 1);
+        record_event_count_sample(Event::DataplaneCryptoBatchGe32, 1);
     }
     if ge64 {
-        record_event_count_sample(Event::PacketMover2CryptoBatchGe64, 1);
+        record_event_count_sample(Event::DataplaneCryptoBatchGe64, 1);
     }
 }
 
 #[inline]
-fn packet_mover2_crypto_batch_bucket_flags(packets: usize) -> (bool, bool, bool, bool) {
+fn dataplane_crypto_batch_bucket_flags(packets: usize) -> (bool, bool, bool, bool) {
     (packets == 1, packets >= 8, packets >= 32, packets >= 64)
 }
 
 #[inline]
-pub(crate) fn record_packet_mover2_aead_completion_batch(packets: usize) {
+pub(crate) fn record_dataplane_aead_completion_batch(packets: usize) {
     if !enabled() || packets == 0 {
         return;
     }
-    record_event_count_sample(Event::PacketMover2AeadCompletionBatch, 1);
+    record_event_count_sample(Event::DataplaneAeadCompletionBatch, 1);
+    record_event_count_sample(Event::DataplaneAeadCompletionBatchPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_dataplane_aead_prepared_job(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::DataplaneAeadPreparedJob, 1);
+    record_event_count_sample(Event::DataplaneAeadPreparedJobPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_dataplane_fast_ingress_owner_run(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::DataplaneFastIngressOwnerRuns, 1);
+    record_event_count_sample(Event::DataplaneFastIngressOwnerRunPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_dataplane_established_fsp_data_retire_run(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::DataplaneEstablishedFspDataRetireRuns, 1);
     record_event_count_sample(
-        Event::PacketMover2AeadCompletionBatchPackets,
+        Event::DataplaneEstablishedFspDataRetirePackets,
         packets as u64,
     );
 }
 
 #[inline]
-pub(crate) fn record_packet_mover2_aead_prepared_job(packets: usize) {
-    if !enabled() || packets == 0 {
-        return;
-    }
-    record_event_count_sample(Event::PacketMover2AeadPreparedJob, 1);
-    record_event_count_sample(Event::PacketMover2AeadPreparedJobPackets, packets as u64);
+pub(crate) fn record_dataplane_live_completions_retired(count: usize) {
+    record_event_count(Event::DataplaneLiveCompletionsRetired, count as u64);
 }
 
 #[inline]
-pub(crate) fn record_packet_mover2_fast_ingress_owner_run(packets: usize) {
+pub(crate) fn record_dataplane_live_output_batch(packets: usize) {
     if !enabled() || packets == 0 {
         return;
     }
-    record_event_count_sample(Event::PacketMover2FastIngressOwnerRuns, 1);
-    record_event_count_sample(
-        Event::PacketMover2FastIngressOwnerRunPackets,
-        packets as u64,
-    );
-}
-
-#[inline]
-pub(crate) fn record_packet_mover2_established_fsp_data_retire_run(packets: usize) {
-    if !enabled() || packets == 0 {
-        return;
-    }
-    record_event_count_sample(Event::PacketMover2EstablishedFspDataRetireRuns, 1);
-    record_event_count_sample(
-        Event::PacketMover2EstablishedFspDataRetirePackets,
-        packets as u64,
-    );
-}
-
-#[inline]
-pub(crate) fn record_packet_mover2_live_completions_retired(count: usize) {
-    record_event_count(Event::PacketMover2LiveCompletionsRetired, count as u64);
-}
-
-#[inline]
-pub(crate) fn record_packet_mover2_live_output_batch(packets: usize) {
-    if !enabled() || packets == 0 {
-        return;
-    }
-    record_event_count_sample(Event::PacketMover2LiveOutputBatch, 1);
-    record_event_count_sample(Event::PacketMover2LiveOutputBatchPackets, packets as u64);
+    record_event_count_sample(Event::DataplaneLiveOutputBatch, 1);
+    record_event_count_sample(Event::DataplaneLiveOutputBatchPackets, packets as u64);
 }
 
 #[inline]
@@ -1340,7 +1322,7 @@ fn record_wait_threshold(event: Event, elapsed_ns: u64, count: u64, threshold_ns
     }
 }
 
-/// Record Linux `sendmmsg(2)` UDP batches submitted by the PM2 send side.
+/// Record Linux `sendmmsg(2)` UDP batches submitted by the dataplane send side.
 
 #[inline]
 #[cfg(target_os = "linux")]
@@ -1358,7 +1340,7 @@ pub(crate) fn record_udp_send_sendmmsg_batch(packets: usize) {
     );
 }
 
-/// Record Linux `sendmsg(2)+UDP_SEGMENT` batches submitted by the PM2 send side.
+/// Record Linux `sendmsg(2)+UDP_SEGMENT` batches submitted by the dataplane send side.
 #[inline]
 #[cfg(target_os = "linux")]
 pub(crate) fn record_udp_send_gso_batch(packets: usize) {
@@ -1418,7 +1400,7 @@ fn record_event_count_sample(event: Event, count: u64) {
 /// RAII timer - `drop` records the elapsed time into the stage.
 /// Use:
 /// ```ignore
-/// let _t = profile::Timer::start(Stage::PacketMover2AeadOpen);
+/// let _t = profile::Timer::start(Stage::DataplaneAeadOpen);
 /// // ... AEAD work ...
 /// ```
 pub struct Timer {

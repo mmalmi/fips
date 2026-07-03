@@ -42,9 +42,9 @@ fn test_purge_idle_sessions_keeps_active() {
     );
 
     node.sessions.insert(remote_addr, entry);
-    seed_packet_mover2_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, 81_000);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, 81_000);
 
-    // Purge at t=92s — only 11s since PM2 owner receive activity.
+    // Purge at t=92s — only 11s since dataplane owner receive activity.
     let now_ms = 92_000;
     node.purge_idle_sessions(now_ms);
 
@@ -173,7 +173,7 @@ fn test_purge_idle_sessions_mmp_activity_does_not_prevent_purge() {
         true,
     );
 
-    // Do not seed PM2 application receive/send activity. SessionRegistry MMP
+    // Do not seed dataplane application receive/send activity. SessionRegistry MMP
     // state alone must not keep an established dataplane session alive.
     node.sessions.insert(remote_addr, entry);
 
@@ -206,7 +206,7 @@ fn test_purge_idle_sessions_removes_outbound_only_stale_session() {
     );
 
     node.sessions.insert(remote_addr, entry);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);
 
     let now_ms = 92_000;
     node.purge_idle_sessions(now_ms);
@@ -234,8 +234,8 @@ fn test_purge_idle_sessions_keeps_outbound_session_with_recent_inbound_frame() {
     );
 
     node.sessions.insert(remote_addr, entry);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);
-    seed_packet_mover2_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, 91_500);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, remote_addr, 91_000);
+    seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, remote_addr, 91_500);
 
     let now_ms = 92_000;
     node.purge_idle_sessions(now_ms);

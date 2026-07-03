@@ -94,7 +94,7 @@ impl Node {
         }
         if let Some(direct_addr) = healthy_direct_route
             && !direct_session_untrusted
-            && self.packet_mover2_fmp_link_cost(&direct_addr)
+            && self.dataplane_fmp_link_cost(&direct_addr)
                 <= 1.0 + ROUTING_FALLBACK_MIN_COST_ADVANTAGE
         {
             return self.peers.get(&direct_addr);
@@ -148,7 +148,7 @@ impl Node {
         }
 
         if let Some(next_hop_addr) = sendable_learned_peers.as_ref().and_then(|sendable| {
-            let activity = self.packet_mover2.fsp_owner_activity(dest_node_addr)?;
+            let activity = self.dataplane.fsp_owner_activity(dest_node_addr)?;
             let next_hop_addr = activity.last_outbound_next_hop()?;
             if next_hop_addr == *dest_node_addr
                 || !activity.has_recent_outbound_activity(
@@ -329,8 +329,8 @@ impl Node {
             return false;
         }
 
-        let direct_cost = self.packet_mover2_fmp_link_cost(&direct_addr);
-        let candidate_cost = self.packet_mover2_fmp_link_cost(&candidate_addr);
+        let direct_cost = self.dataplane_fmp_link_cost(&direct_addr);
+        let candidate_cost = self.dataplane_fmp_link_cost(&candidate_addr);
         candidate_cost + ROUTING_FALLBACK_MIN_COST_ADVANTAGE < direct_cost
     }
 
@@ -424,7 +424,7 @@ impl Node {
         {
             return false;
         }
-        let Some(activity) = self.packet_mover2.fsp_owner_activity(dest) else {
+        let Some(activity) = self.dataplane.fsp_owner_activity(dest) else {
             return false;
         };
         activity.has_recent_outbound_without_inbound(
@@ -438,7 +438,7 @@ impl Node {
         dest: &NodeAddr,
         now_ms: u64,
     ) -> bool {
-        self.packet_mover2
+        self.dataplane
             .fsp_owner_activity(dest)
             .and_then(|activity| activity.last_rx_data_age_ms(now_ms))
             .is_some_and(|age_ms| age_ms <= self.session_direct_path_exclusive_trust_timeout_ms())
@@ -467,7 +467,7 @@ impl Node {
             SESSION_DIRECT_DEGRADED_HOLD_MS,
         );
         if changed {
-            let _ = self.refresh_packet_mover2_fsp_owner_routes(&dest);
+            let _ = self.refresh_dataplane_fsp_owner_routes(&dest);
         }
         changed
     }
@@ -475,7 +475,7 @@ impl Node {
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
         let changed = self.session_direct_degradation.clear(dest);
         if changed {
-            let _ = self.refresh_packet_mover2_fsp_owner_routes(dest);
+            let _ = self.refresh_dataplane_fsp_owner_routes(dest);
         }
         changed
     }
@@ -535,7 +535,7 @@ impl Node {
             self.config.node.routing.learned_ttl_secs,
             self.config.node.routing.max_learned_routes_per_dest,
         );
-        let _ = self.refresh_packet_mover2_fsp_owner_routes(&destination);
+        let _ = self.refresh_dataplane_fsp_owner_routes(&destination);
     }
 
     pub(in crate::node) fn record_route_failure(
@@ -547,7 +547,7 @@ impl Node {
             return;
         }
         self.learned_routes.record_failure(&destination, &next_hop);
-        let _ = self.refresh_packet_mover2_fsp_owner_routes(&destination);
+        let _ = self.refresh_dataplane_fsp_owner_routes(&destination);
     }
 
     pub(crate) fn learned_route_table_snapshot(&self, now_ms: u64) -> LearnedRouteTableSnapshot {
@@ -580,7 +580,7 @@ impl Node {
                 continue;
             }
 
-            let cost = self.packet_mover2_fmp_link_cost(candidate.node_addr());
+            let cost = self.dataplane_fmp_link_cost(candidate.node_addr());
 
             let dist = self
                 .tree_state

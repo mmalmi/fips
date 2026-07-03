@@ -54,7 +54,7 @@ impl PacketClass {
     }
 }
 
-pub(crate) fn packet_mover2_fsp_message_is_application_data(msg_type: u8) -> bool {
+pub(crate) fn dataplane_fsp_message_is_application_data(msg_type: u8) -> bool {
     msg_type == crate::protocol::SessionMessageType::DataPacket.to_byte()
         || msg_type == crate::protocol::SessionMessageType::EndpointData.to_byte()
         || msg_type == crate::protocol::SessionMessageType::EndpointDataBulk.to_byte()
@@ -75,7 +75,7 @@ pub(crate) enum OutputTarget {
     SessionPayload { local_addr: NodeAddr },
 }
 
-/// Authenticated FSP receive metadata produced by packet_mover2.
+/// Authenticated FSP receive metadata produced by dataplane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FspReceiveSync {
     pub(crate) counter: u64,
@@ -159,7 +159,7 @@ pub(crate) enum OutboundWire {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutboundPostSeal {
     Transport,
-    FmpWrap(PacketMover2FspWrapRoute),
+    FmpWrap(DataplaneFspWrapRoute),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,7 +178,7 @@ pub(crate) struct OutboundPacket {
     payload_transform: OutboundPayloadTransform,
     fsp_cleartext_prefix: Vec<u8>,
     fsp_auto_coords_warmup: bool,
-    fsp_send_receipt: Option<PacketMover2FspSendReceipt>,
+    fsp_send_receipt: Option<DataplaneFspSendReceipt>,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -248,7 +248,7 @@ impl OutboundPacket {
         }
     }
 
-    fn apply_fsp_owner_wrap_route(&mut self, route: PacketMover2FspWrapRoute) {
+    fn apply_fsp_owner_wrap_route(&mut self, route: DataplaneFspWrapRoute) {
         if self.owner.protocol() != PacketProtocol::Fsp
             || !matches!(self.post_seal, OutboundPostSeal::Transport)
         {
@@ -267,7 +267,7 @@ impl OutboundPacket {
         self
     }
 
-    fn with_fsp_send_receipt(mut self, receipt: PacketMover2FspSendReceipt) -> Self {
+    fn with_fsp_send_receipt(mut self, receipt: DataplaneFspSendReceipt) -> Self {
         self.fsp_send_receipt = Some(receipt);
         self
     }
@@ -321,7 +321,7 @@ impl OutboundPacket {
         }
         match self.payload_transform {
             OutboundPayloadTransform::FspInnerHeader { msg_type, .. } => {
-                packet_mover2_fsp_message_is_application_data(msg_type)
+                dataplane_fsp_message_is_application_data(msg_type)
                     .then_some(self.payload.len())
             }
             OutboundPayloadTransform::None => None,

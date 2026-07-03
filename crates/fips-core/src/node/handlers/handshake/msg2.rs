@@ -121,7 +121,7 @@ impl Node {
                         );
 
                         if remote_epoch_changed {
-                            self.remove_packet_mover2_fsp_owner(&peer_node_addr);
+                            self.remove_dataplane_fsp_owner(&peer_node_addr);
                             if self.sessions.remove(&peer_node_addr).is_some() {
                                 debug!(
                                     peer = %display_name,
@@ -359,7 +359,7 @@ impl Node {
                     &replacement,
                     "outbound_alternate_path_refresh",
                 );
-                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
+                self.sync_dataplane_fmp_owner(&peer_node_addr);
 
                 if let Some(old_index) = replacement.old_session_index {
                     self.deregister_session_index(old_index.key);
@@ -378,10 +378,10 @@ impl Node {
                 );
                 self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
                 self.register_identity(peer_node_addr, peer_identity.pubkey_full());
-                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
+                self.sync_dataplane_fmp_owner(&peer_node_addr);
 
                 if remote_epoch_changed {
-                    self.remove_packet_mover2_fsp_owner(&peer_node_addr);
+                    self.remove_dataplane_fsp_owner(&peer_node_addr);
                     if self.sessions.remove(&peer_node_addr).is_some() {
                         debug!(
                             peer = %display_name,
@@ -469,14 +469,14 @@ impl Node {
                     &replacement,
                     "outbound_cross_connection_swap",
                 );
-                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
+                self.sync_dataplane_fmp_owner(&peer_node_addr);
                 if let Some(old_index) = replacement.old_session_index {
                     self.deregister_session_index(old_index.key);
                     let _ = self.index_allocator.free(old_index.index);
                 }
                 self.links
                     .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
-                self.sync_packet_mover2_fmp_owner(&peer_node_addr);
+                self.sync_dataplane_fmp_owner(&peer_node_addr);
 
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),

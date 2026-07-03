@@ -99,7 +99,7 @@ impl crate::node::SessionRegistry {
 }
 
 impl Node {
-    fn clear_pm2_confirmed_session_retransmits(&mut self) {
+    fn clear_dataplane_confirmed_session_retransmits(&mut self) {
         let confirmed: Vec<_> = self
             .sessions
             .iter()
@@ -107,7 +107,7 @@ impl Node {
                 entry.handshake_payload().is_some() || entry.rekey_msg3_payload().is_some()
             })
             .filter_map(|(addr, _)| {
-                self.packet_mover2
+                self.dataplane
                     .fsp_owner_activity(addr)
                     .is_some_and(|activity| activity.current_epoch_confirmed())
                     .then_some(*addr)
@@ -118,12 +118,12 @@ impl Node {
             let cleared = self
                 .sessions
                 .get_mut(&addr)
-                .is_some_and(|entry| entry.clear_pm2_confirmed_fsp_retransmits());
+                .is_some_and(|entry| entry.clear_dataplane_confirmed_fsp_retransmits());
             if cleared {
                 let name = self.peer_display_name(&addr);
                 debug!(
                     dest = %name,
-                    "Cleared session retransmit payload after PM2 authenticated current epoch"
+                    "Cleared session retransmit payload after dataplane authenticated current epoch"
                 );
             }
         }
@@ -326,7 +326,7 @@ impl Node {
         for addr in &timed_out {
             let name = self.peer_display_name(addr);
             info!(dest = %name, "Session handshake timed out, removing");
-            self.remove_packet_mover2_fsp_owner(addr);
+            self.remove_dataplane_fsp_owner(addr);
             self.sessions.remove(addr);
             self.pending_session_traffic.remove_destination(addr);
         }
@@ -346,7 +346,7 @@ impl Node {
             }
         }
 
-        self.clear_pm2_confirmed_session_retransmits();
+        self.clear_dataplane_confirmed_session_retransmits();
 
         // Established sessions can temporarily retain a session-layer
         // handshake payload: the initial final msg3, an FSP rekey msg1, or a
@@ -421,7 +421,7 @@ impl Node {
                 if !entry.is_established() {
                     return None;
                 }
-                if let Some(activity) = self.packet_mover2.fsp_owner_activity(addr) {
+                if let Some(activity) = self.dataplane.fsp_owner_activity(addr) {
                     if activity.has_stale_outbound_only_activity(now_ms, timeout_ms) {
                         return Some((*addr, "outbound-only"));
                     }
@@ -429,7 +429,7 @@ impl Node {
                         return Some((*addr, "idle"));
                     }
                 } else {
-                    return Some((*addr, "missing-pm2-owner"));
+                    return Some((*addr, "missing-dataplane-owner"));
                 }
                 None
             })
@@ -440,7 +440,7 @@ impl Node {
             let name = self.peer_display_name(&addr);
 
             let session_mmp = self.session_mmp_snapshot(&addr);
-            self.remove_packet_mover2_fsp_owner(&addr);
+            self.remove_dataplane_fsp_owner(&addr);
             self.sessions.remove(&addr);
             if let Some(mmp) = session_mmp {
                 Self::log_session_mmp_teardown(&name, &mmp);

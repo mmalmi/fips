@@ -165,7 +165,7 @@ impl Node {
 
                 let encoded = response.encode();
                 if let Err(e) = self
-                    .send_packet_mover2_fmp_link_plaintext(&from_peer, &encoded, false)
+                    .send_dataplane_fmp_link_plaintext(&from_peer, &encoded, false)
                     .await
                 {
                     debug!(
@@ -277,10 +277,10 @@ impl Node {
                     .get(&target)
                     .is_some_and(|entry| entry.is_established());
 
-                // If an established session exists, reset the PM2 owner warmup budget.
+                // If an established session exists, reset the dataplane owner warmup budget.
                 if session_established {
                     let n = self.config.node.session.coords_warmup_packets;
-                    self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&target, n);
+                    self.refresh_dataplane_fsp_owner_routes_with_coords_warmup(&target, n);
                     debug!(
                         dest = %self.peer_display_name(&target),
                         warmup_packets = n,
@@ -380,7 +380,7 @@ impl Node {
 
         let encoded = response.encode();
         if let Err(e) = self
-            .send_packet_mover2_fmp_link_plaintext(&next_hop_addr, &encoded, false)
+            .send_dataplane_fmp_link_plaintext(&next_hop_addr, &encoded, false)
             .await
         {
             debug!(
@@ -421,7 +421,7 @@ impl Node {
         {
             let encoded = request.encode();
             match self
-                .send_packet_mover2_fmp_link_plaintext(&request.target, &encoded, false)
+                .send_dataplane_fmp_link_plaintext(&request.target, &encoded, false)
                 .await
             {
                 Ok(()) => {
@@ -537,7 +537,7 @@ impl Node {
 
         for peer_addr in forward_to {
             if let Err(e) = self
-                .send_packet_mover2_fmp_link_plaintext(&peer_addr, &encoded, false)
+                .send_dataplane_fmp_link_plaintext(&peer_addr, &encoded, false)
                 .await
             {
                 debug!(
@@ -616,7 +616,7 @@ impl Node {
 
         for peer_addr in peer_addrs {
             if let Err(e) = self
-                .send_packet_mover2_fmp_link_plaintext(&peer_addr, &encoded, false)
+                .send_dataplane_fmp_link_plaintext(&peer_addr, &encoded, false)
                 .await
             {
                 debug!(

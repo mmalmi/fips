@@ -169,7 +169,7 @@ async fn test_decrypt_failure_threshold_starts_recovery_rekey_when_transport_ava
 }
 
 #[tokio::test]
-async fn test_packet_mover2_decrypt_failures_suppressed_during_fresh_session_drain() {
+async fn test_dataplane_decrypt_failures_suppressed_during_fresh_session_drain() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -185,7 +185,7 @@ async fn test_packet_mover2_decrypt_failures_suppressed_during_fresh_session_dra
     node.promote_connection(link_id, identity, 2_000).unwrap();
 
     for counter in 1..=THRESHOLD + 5 {
-        node.handle_packet_mover2_fmp_decrypt_failure(&node_addr, counter as u64, 0)
+        node.handle_dataplane_fmp_decrypt_failure(&node_addr, counter as u64, 0)
             .await;
     }
 
@@ -195,7 +195,7 @@ async fn test_packet_mover2_decrypt_failures_suppressed_during_fresh_session_dra
     assert_eq!(
         peer.consecutive_decrypt_failures(),
         0,
-        "fresh PM2 failures before any authenticated counter should be ignored"
+        "fresh dataplane failures before any authenticated counter should be ignored"
     );
     assert!(
         !peer.rekey_in_progress(),
@@ -207,7 +207,7 @@ async fn test_packet_mover2_decrypt_failures_suppressed_during_fresh_session_dra
 }
 
 #[tokio::test]
-async fn test_packet_mover2_decrypt_failures_suppressed_during_post_auth_fresh_session_drain() {
+async fn test_dataplane_decrypt_failures_suppressed_during_post_auth_fresh_session_drain() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -221,7 +221,7 @@ async fn test_packet_mover2_decrypt_failures_suppressed_during_post_auth_fresh_s
     node.promote_connection(link_id, identity, 2_000).unwrap();
 
     for counter in 1..=THRESHOLD {
-        node.handle_packet_mover2_fmp_decrypt_failure(&node_addr, counter as u64, 1)
+        node.handle_dataplane_fmp_decrypt_failure(&node_addr, counter as u64, 1)
             .await;
     }
 
@@ -231,12 +231,12 @@ async fn test_packet_mover2_decrypt_failures_suppressed_during_post_auth_fresh_s
     assert_eq!(
         peer.consecutive_decrypt_failures(),
         0,
-        "fresh PM2 failures after an authenticated counter should still be ignored briefly"
+        "fresh dataplane failures after an authenticated counter should still be ignored briefly"
     );
 }
 
 #[tokio::test]
-async fn test_packet_mover2_decrypt_failures_count_after_post_auth_grace() {
+async fn test_dataplane_decrypt_failures_count_after_post_auth_grace() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -253,18 +253,18 @@ async fn test_packet_mover2_decrypt_failures_count_after_post_auth_grace() {
         .set_session_established_at_for_test(Instant::now() - Duration::from_secs(11));
 
     for counter in 1..=THRESHOLD {
-        node.handle_packet_mover2_fmp_decrypt_failure(&node_addr, counter as u64, 1)
+        node.handle_dataplane_fmp_decrypt_failure(&node_addr, counter as u64, 1)
             .await;
     }
 
     assert!(
         node.get_peer(&node_addr).is_none(),
-        "PM2 failures must trigger recovery/removal after the post-auth stale drain grace"
+        "dataplane failures must trigger recovery/removal after the post-auth stale drain grace"
     );
 }
 
 #[tokio::test]
-async fn test_packet_mover2_decrypt_failures_count_after_fresh_session_grace() {
+async fn test_dataplane_decrypt_failures_count_after_fresh_session_grace() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -281,7 +281,7 @@ async fn test_packet_mover2_decrypt_failures_count_after_fresh_session_grace() {
         .set_session_established_at_for_test(Instant::now() - Duration::from_secs(31));
 
     for counter in 1..=THRESHOLD {
-        node.handle_packet_mover2_fmp_decrypt_failure(&node_addr, counter as u64, 0)
+        node.handle_dataplane_fmp_decrypt_failure(&node_addr, counter as u64, 0)
             .await;
     }
 

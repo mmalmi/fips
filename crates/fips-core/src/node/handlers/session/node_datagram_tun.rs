@@ -26,7 +26,7 @@ impl Node {
 
     /// Send a non-data session message (reports, notifications) over an established session.
     ///
-    /// Similar to endpoint/TUN PM2 data sends, but:
+    /// Similar to endpoint/TUN dataplane data sends, but:
     /// - Takes an explicit `msg_type` byte (0x11, 0x12, 0x13, etc.)
     /// - Never includes COORDS_PRESENT (reports are lightweight)
     /// - Reads spin bit from MMP state for the inner header
@@ -37,7 +37,7 @@ impl Node {
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), NodeError> {
-        self.send_packet_mover2_fsp_session_msg(dest_addr, msg_type, payload)
+        self.send_dataplane_fsp_session_msg(dest_addr, msg_type, payload)
             .await
     }
 
@@ -52,7 +52,7 @@ impl Node {
         &mut self,
         dest_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
-        self.send_packet_mover2_fsp_coords_warmup(dest_addr).await?;
+        self.send_dataplane_fsp_coords_warmup(dest_addr).await?;
 
         debug!(dest = %self.peer_display_name(dest_addr), "Sent standalone CoordsWarmup");
         Ok(())
@@ -60,7 +60,7 @@ impl Node {
 
     /// Route and send a SessionDatagram through the mesh.
     ///
-    /// Finds the next hop for the destination, seeds PM2 owner path_mtu from
+    /// Finds the next hop for the destination, seeds dataplane owner path_mtu from
     /// the first-hop transport MTU, and sends as an encrypted link message.
     pub(in crate::node) async fn send_session_datagram(
         &mut self,
@@ -70,7 +70,7 @@ impl Node {
 
         let encoded = datagram.encode();
         if let Err(err) = self
-            .send_packet_mover2_fmp_link_plaintext(&runtime_route.next_hop_addr, &encoded, false)
+            .send_dataplane_fmp_link_plaintext(&runtime_route.next_hop_addr, &encoded, false)
             .await
         {
             let dest_addr = runtime_route.dest_addr;
@@ -125,7 +125,7 @@ impl Node {
         }
         datagram.path_mtu = path_mtu;
 
-        let _ = self.packet_mover2.seed_fsp_path_mtu(dest_addr, path_mtu);
+        let _ = self.dataplane.seed_fsp_path_mtu(dest_addr, path_mtu);
 
         Ok(SessionDatagramRuntimeRoute {
             dest_addr,
@@ -156,7 +156,7 @@ impl Node {
         crate::time::now_ms()
     }
 
-    pub(in crate::node) async fn handle_packet_mover2_deferred_tun_packet(
+    pub(in crate::node) async fn handle_dataplane_deferred_tun_packet(
         &mut self,
         ipv6_packet: Vec<u8>,
     ) {
@@ -180,22 +180,22 @@ impl Node {
             }
         };
 
-        self.queue_packet_mover2_unrouted_tun_packet(dest_addr, dest_pubkey, ipv6_packet)
+        self.queue_dataplane_unrouted_tun_packet(dest_addr, dest_pubkey, ipv6_packet)
             .await;
     }
 
-    async fn queue_packet_mover2_unrouted_tun_packet(
+    async fn queue_dataplane_unrouted_tun_packet(
         &mut self,
         dest_addr: NodeAddr,
         dest_pubkey: secp256k1::PublicKey,
         ipv6_packet: Vec<u8>,
     ) {
-        match self.packet_mover2_outbound_session_state(&dest_addr) {
+        match self.dataplane_outbound_session_state(&dest_addr) {
             OutboundSessionState::Established => {
                 if self.find_next_hop(&dest_addr).is_some()
                 {
                     match self
-                        .send_packet_mover2_cached_tun_packet(&dest_addr, ipv6_packet.clone())
+                        .send_dataplane_cached_tun_packet(&dest_addr, ipv6_packet.clone())
                         .await
                     {
                         Ok(()) | Err(NodeError::MtuExceeded { .. }) => return,
@@ -353,10 +353,10 @@ impl Node {
         if !self.pending_session_traffic.has_traffic_for(dest_addr) {
             return;
         }
-        if !self.packet_mover2_has_fsp_owner(dest_addr) {
+        if !self.dataplane_has_fsp_owner(dest_addr) {
             debug!(
                 dest = %self.peer_display_name(dest_addr),
-                "Skipping pending packet flush because packet_mover2 FSP owner is not registered"
+                "Skipping pending packet flush because dataplane FSP owner is not registered"
             );
             return;
         }
@@ -379,7 +379,7 @@ impl Node {
             }
             while let Some(packet) = packets.pop_front() {
                 if let Err(e) = self
-                    .send_packet_mover2_cached_tun_packet(dest_addr, packet.into_packet())
+                    .send_dataplane_cached_tun_packet(dest_addr, packet.into_packet())
                     .await
                 {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
@@ -405,7 +405,7 @@ impl Node {
                     }
 
                     if let Err(e) = self
-                        .send_packet_mover2_cached_endpoint_payloads(
+                        .send_dataplane_cached_endpoint_payloads(
                             dest_addr,
                             batch.clone(),
                             enqueued_at_ms,

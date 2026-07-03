@@ -566,7 +566,7 @@ async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
         true,
     );
     node.sessions.insert(peer_node_addr, endpoint_entry);
-    seed_packet_mover2_fsp_data_sent_for_test(&mut node, peer_node_addr, peer_node_addr, now_ms);
+    seed_dataplane_fsp_data_sent_for_test(&mut node, peer_node_addr, peer_node_addr, now_ms);
     assert!(
         node.session_direct_path_exclusive_trust_expired(&peer_node_addr, now_ms),
         "active endpoint traffic without authenticated return should expire exclusive direct trust"

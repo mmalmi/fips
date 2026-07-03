@@ -331,7 +331,7 @@ async fn test_forwarding_single_hop() {
     // Send from node 0 to node 1 (the first hop)
     nodes[0]
         .node
-        .send_packet_mover2_fmp_link_plaintext(&node1_addr, &encoded, false)
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, false)
         .await
         .unwrap();
 
@@ -375,7 +375,7 @@ async fn test_forwarding_multi_hop() {
     // Inject at node 0 → node 1
     nodes[0]
         .node
-        .send_packet_mover2_fmp_link_plaintext(&node1_addr, &encoded, false)
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, false)
         .await
         .unwrap();
 
@@ -416,7 +416,7 @@ async fn test_forwarding_hop_limit_prevents_infinite_loops() {
 
     nodes[0]
         .node
-        .send_packet_mover2_fmp_link_plaintext(&node1_addr, &encoded, false)
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, false)
         .await
         .unwrap();
 
@@ -449,7 +449,7 @@ async fn test_forwarding_no_route_generates_error() {
     // Inject at node 1 → node 0
     nodes[1]
         .node
-        .send_packet_mover2_fmp_link_plaintext(&node0_addr, &encoded, false)
+        .send_dataplane_fmp_link_plaintext(&node0_addr, &encoded, false)
         .await
         .unwrap();
 
@@ -550,7 +550,7 @@ async fn test_forwarding_with_cache_warming_enables_routing() {
     // Inject: node 0 → node 1
     nodes[0]
         .node
-        .send_packet_mover2_fmp_link_plaintext(&node1_addr, &encoded, false)
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, false)
         .await
         .unwrap();
 
@@ -687,7 +687,7 @@ async fn test_ce_relay_through_forwarding() {
     // Record ecn_ce_count at node 2 before
     let ce_before = nodes[2]
         .node
-        .packet_mover2_fmp_link_metrics(&node1_addr, std::time::Instant::now())
+        .dataplane_fmp_link_metrics(&node1_addr, std::time::Instant::now())
         .map(|metrics| metrics.ecn_ce_count)
         .unwrap_or(0);
 
@@ -702,7 +702,7 @@ async fn test_ce_relay_through_forwarding() {
     // Send from node 0 to node 1 with CE flag set
     nodes[0]
         .node
-        .send_packet_mover2_fmp_link_plaintext(&node1_addr, &encoded, true)
+        .send_dataplane_fmp_link_plaintext(&node1_addr, &encoded, true)
         .await
         .unwrap();
 
@@ -715,7 +715,7 @@ async fn test_ce_relay_through_forwarding() {
     // Node 2's link-layer MMP should have received a CE-flagged frame from node 1
     let ce_after = nodes[2]
         .node
-        .packet_mover2_fmp_link_metrics(&node1_addr, std::time::Instant::now())
+        .dataplane_fmp_link_metrics(&node1_addr, std::time::Instant::now())
         .map(|metrics| metrics.ecn_ce_count)
         .unwrap_or(0);
 

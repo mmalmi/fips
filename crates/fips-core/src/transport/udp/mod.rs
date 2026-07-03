@@ -245,7 +245,7 @@ fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> boo
 /// transport (commit 5929019) maintained a `pending_send` queue and
 /// flushed it via `sendmmsg(2)` once a threshold was hit, in order
 /// to amortise the per-syscall cost on the bulk-data hot path. That
-/// path now flows through packet_mover2 — which does its own
+/// path now flows through dataplane — which does its own
 /// `sendmmsg(2)` (target-grouped) directly on the raw fd — so
 /// `send_async` is left handling only low-rate handshakes, MMP
 /// reports, control messages, and rekeys (typical aggregate < 100
@@ -770,7 +770,7 @@ async fn udp_receive_loop(
         // ~150 MB/sec of avoidable memory bandwidth on the RX hot path.
         // With UDP_GRO enabled, the backing slot is large enough for a
         // coalesced kernel receive and is split back into ordinary FIPS
-        // datagrams before PM2 fast ingress or packet-channel delivery.
+        // datagrams before dataplane fast ingress or packet-channel delivery.
         let mut backing: Vec<Vec<u8>> = (0..BATCH)
             .map(|_| packet_tx.recv_buffer(recv_buf_size))
             .collect();

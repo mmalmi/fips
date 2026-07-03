@@ -141,7 +141,7 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
     let dest_fips = crate::FipsAddress::from_node_addr(&dest_addr);
     let ipv6_packet = build_ipv6_packet(&src_fips, &dest_fips, b"link-dead-fallback-data");
 
-    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
+    send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
     drain_to_quiescence(&mut nodes).await;
 
     let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
@@ -188,7 +188,7 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
     let bob_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
 
-    send_endpoint_data_via_pm2(&mut nodes[0].node, bob_identity, b"direct-first".to_vec())
+    send_endpoint_data_via_dataplane(&mut nodes[0].node, bob_identity, b"direct-first".to_vec())
         .await
         .expect("initial endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
@@ -239,10 +239,10 @@ async fn direct_established_endpoint_data_falls_back_after_link_dead() {
     assert_ne!(alice_next_hop, bob_addr);
     assert_ne!(bob_next_hop, alice_addr);
 
-    send_endpoint_data_via_pm2(&mut nodes[0].node, bob_identity, b"alice-fallback".to_vec())
+    send_endpoint_data_via_dataplane(&mut nodes[0].node, bob_identity, b"alice-fallback".to_vec())
         .await
         .expect("alice fallback endpoint data should send");
-    send_endpoint_data_via_pm2(&mut nodes[1].node, alice_identity, b"bob-fallback".to_vec())
+    send_endpoint_data_via_dataplane(&mut nodes[1].node, alice_identity, b"bob-fallback".to_vec())
         .await
         .expect("bob fallback endpoint data should send");
     drain_to_quiescence(&mut nodes).await;

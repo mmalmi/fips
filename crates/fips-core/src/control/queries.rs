@@ -38,7 +38,7 @@ fn trend_label(short: f64, long: f64) -> &'static str {
     }
 }
 
-fn session_mmp_json(mmp: &crate::packet_mover2::PacketMover2FspMmpSnapshot) -> Value {
+fn session_mmp_json(mmp: &crate::dataplane::DataplaneFspMmpSnapshot) -> Value {
     let mut mmp_json = json!({
         "mode": format!("{}", mmp.mode),
         "loss_rate": mmp.loss_rate,
@@ -268,9 +268,9 @@ pub fn show_peers(node: &Node) -> Value {
             }
             peer_json["current_k_bit"] = json!(peer.current_k_bit());
 
-            // Add PM2-owned link MMP metrics if available.
+            // Add dataplane-owned link MMP metrics if available.
             if let Some(mmp) =
-                node.packet_mover2_fmp_link_metrics(peer.node_addr(), std::time::Instant::now())
+                node.dataplane_fmp_link_metrics(peer.node_addr(), std::time::Instant::now())
             {
                 let mut mmp_json = json!({
                     "mode": format!("{}", mmp.mode),
@@ -509,7 +509,7 @@ pub fn show_mmp(node: &Node) -> Value {
         .peers()
         .filter_map(|peer| {
             let addr = *peer.node_addr();
-            let metrics = node.packet_mover2_fmp_link_metrics(&addr, std::time::Instant::now())?;
+            let metrics = node.dataplane_fmp_link_metrics(&addr, std::time::Instant::now())?;
 
             let mut link_layer = json!({
                 "loss_rate": metrics.loss_rate,

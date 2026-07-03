@@ -45,10 +45,10 @@ impl Node {
         let now_ms = Self::now_ms();
         let peer_name = self.peer_display_name(src_addr);
         let last_outbound_next_hop = self
-            .packet_mover2
+            .dataplane
             .fsp_owner_activity(src_addr)
             .and_then(|activity| activity.last_outbound_next_hop());
-        let processed = match self.packet_mover2.process_fsp_mmp_receiver_report(
+        let processed = match self.dataplane.process_fsp_mmp_receiver_report(
             *src_addr,
             &rr,
             last_outbound_next_hop,
@@ -65,11 +65,11 @@ impl Node {
                     processed.srtt_ms,
                 ),
             },
-            Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner) => {
+            Err(crate::dataplane::DataplaneFspMmpSkip::UnknownOwner) => {
                 debug!(src = %peer_name, "SessionReceiverReport for unknown session");
                 return;
             }
-            Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => return,
+            Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled) => return,
         };
 
         if let Some((span, loss)) = processed.sample
@@ -134,18 +134,18 @@ impl Node {
         };
 
         let peer_name = self.peer_display_name(src_addr);
-        let change = match self.apply_packet_mover2_fsp_path_mtu_signal(
+        let change = match self.apply_dataplane_fsp_path_mtu_signal(
             src_addr,
             notif.path_mtu,
             std::time::Instant::now(),
         ) {
-            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Changed(change)) => change,
-            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Unchanged) => return,
-            Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner) => {
+            Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Changed(change)) => change,
+            Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Unchanged) => return,
+            Err(crate::dataplane::DataplaneFspMmpSkip::UnknownOwner) => {
                 debug!(src = %peer_name, "PathMtuNotification for unknown session");
                 return;
             }
-            Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => return,
+            Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled) => return,
         };
 
         debug!(
@@ -225,7 +225,7 @@ impl Node {
             .coords_response_rate_limiter
             .should_send(&msg.dest_addr)
         {
-            if self.packet_mover2_has_fsp_owner(&msg.dest_addr)
+            if self.dataplane_has_fsp_owner(&msg.dest_addr)
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
             {
                 debug!(dest = %msg.dest_addr, error = %e,
@@ -248,7 +248,7 @@ impl Node {
         // Reset coords warmup counter so the next N packets also include
         // COORDS_PRESENT, re-warming transit caches along the path.
         let n = self.config.node.session.coords_warmup_packets;
-        if self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&msg.dest_addr, n) {
+        if self.refresh_dataplane_fsp_owner_routes_with_coords_warmup(&msg.dest_addr, n) {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -284,7 +284,7 @@ impl Node {
             .coords_response_rate_limiter
             .should_send(&msg.dest_addr)
         {
-            if self.packet_mover2_has_fsp_owner(&msg.dest_addr)
+            if self.dataplane_has_fsp_owner(&msg.dest_addr)
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
             {
                 debug!(dest = %msg.dest_addr, error = %e,
@@ -312,7 +312,7 @@ impl Node {
         // Reset coords warmup counter so the next N packets include
         // COORDS_PRESENT, re-warming transit caches along the new path.
         let n = self.config.node.session.coords_warmup_packets;
-        if self.refresh_packet_mover2_fsp_owner_routes_with_coords_warmup(&msg.dest_addr, n) {
+        if self.refresh_dataplane_fsp_owner_routes_with_coords_warmup(&msg.dest_addr, n) {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -346,12 +346,12 @@ impl Node {
         );
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
-        match self.apply_packet_mover2_fsp_path_mtu_signal(
+        match self.apply_dataplane_fsp_path_mtu_signal(
             &msg.dest_addr,
             msg.mtu,
             std::time::Instant::now(),
         ) {
-            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Changed(change)) => {
+            Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Changed(change)) => {
                 info!(
                     dest = %peer_name,
                     old_mtu = change.old_mtu,
@@ -360,9 +360,9 @@ impl Node {
                     "Path MTU decreased via reactive MtuExceeded signal"
                 );
             }
-            Ok(crate::packet_mover2::PacketMover2FspPathMtuApplyResult::Unchanged)
-            | Err(crate::packet_mover2::PacketMover2FspMmpSkip::UnknownOwner)
-            | Err(crate::packet_mover2::PacketMover2FspMmpSkip::MmpDisabled) => {}
+            Ok(crate::dataplane::DataplaneFspPathMtuApplyResult::Unchanged)
+            | Err(crate::dataplane::DataplaneFspMmpSkip::UnknownOwner)
+            | Err(crate::dataplane::DataplaneFspMmpSkip::MmpDisabled) => {}
         };
 
         // Mirror the bottleneck into the FipsAddress-keyed lookup used by

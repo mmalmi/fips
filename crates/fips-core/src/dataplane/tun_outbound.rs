@@ -10,12 +10,12 @@ impl FipsTunDestinationPrefix {
         Self(prefix)
     }
 
-    fn from_ipv6_packet(packet: &[u8]) -> Result<Self, PacketMover2TunOutboundDropReason> {
+    fn from_ipv6_packet(packet: &[u8]) -> Result<Self, DataplaneTunOutboundDropReason> {
         if packet.len() < Self::IPV6_HEADER_LEN || packet[0] >> 4 != 6 {
-            return Err(PacketMover2TunOutboundDropReason::InvalidPacket);
+            return Err(DataplaneTunOutboundDropReason::InvalidPacket);
         }
         if packet[24] != crate::identity::FIPS_ADDRESS_PREFIX {
-            return Err(PacketMover2TunOutboundDropReason::NoRoute);
+            return Err(DataplaneTunOutboundDropReason::NoRoute);
         }
         let mut prefix = [0u8; 15];
         prefix.copy_from_slice(&packet[25..40]);
@@ -24,22 +24,22 @@ impl FipsTunDestinationPrefix {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2TunOutboundRoute {
+pub(crate) struct DataplaneTunOutboundRoute {
     owner: OwnerId,
     generation: u64,
     class: PacketClass,
     wire: OutboundWire,
     fsp_cleartext_prefix: Vec<u8>,
-    payload: PacketMover2TunPayload,
+    payload: DataplaneTunPayload,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PacketMover2TunPayload {
+enum DataplaneTunPayload {
     Raw,
     Ipv6Shim { inner_flags: u8 },
 }
 
-impl PacketMover2TunOutboundRoute {
+impl DataplaneTunOutboundRoute {
     pub(crate) fn fmp(
         owner: OwnerId,
         generation: u64,
@@ -56,7 +56,7 @@ impl PacketMover2TunOutboundRoute {
                 flags,
             },
             fsp_cleartext_prefix: Vec::new(),
-            payload: PacketMover2TunPayload::Raw,
+            payload: DataplaneTunPayload::Raw,
         }
     }
 
@@ -67,7 +67,7 @@ impl PacketMover2TunOutboundRoute {
             class,
             wire: OutboundWire::Fsp { flags },
             fsp_cleartext_prefix: Vec::new(),
-            payload: PacketMover2TunPayload::Raw,
+            payload: DataplaneTunPayload::Raw,
         }
     }
 
@@ -84,7 +84,7 @@ impl PacketMover2TunOutboundRoute {
             class,
             wire: OutboundWire::Fsp { flags },
             fsp_cleartext_prefix: Vec::new(),
-            payload: PacketMover2TunPayload::Ipv6Shim { inner_flags },
+            payload: DataplaneTunPayload::Ipv6Shim { inner_flags },
         }
     }
 
@@ -100,7 +100,7 @@ impl PacketMover2TunOutboundRoute {
     fn into_outbound_packet(
         self,
         mut payload: Vec<u8>,
-    ) -> Result<OutboundPacket, PacketMover2TunOutboundDropReason> {
+    ) -> Result<OutboundPacket, DataplaneTunOutboundDropReason> {
         let Self {
             owner,
             generation,
@@ -110,10 +110,10 @@ impl PacketMover2TunOutboundRoute {
             payload: payload_kind,
         } = self;
         let inner_flags = match payload_kind {
-            PacketMover2TunPayload::Raw => None,
-            PacketMover2TunPayload::Ipv6Shim { inner_flags } => {
+            DataplaneTunPayload::Raw => None,
+            DataplaneTunPayload::Ipv6Shim { inner_flags } => {
                 let compressed = crate::upper::ipv6_shim::compress_ipv6(&payload)
-                    .ok_or(PacketMover2TunOutboundDropReason::InvalidPacket)?;
+                    .ok_or(DataplaneTunOutboundDropReason::InvalidPacket)?;
                 let mut port_payload = Vec::with_capacity(
                     crate::node::session_wire::FSP_PORT_HEADER_SIZE + compressed.len(),
                 );
@@ -149,13 +149,13 @@ impl PacketMover2TunOutboundRoute {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2TunDestinationRoute {
-    route: PacketMover2TunOutboundRoute,
+pub(crate) struct DataplaneTunDestinationRoute {
+    route: DataplaneTunOutboundRoute,
     max_packet_len: Option<usize>,
 }
 
-impl PacketMover2TunDestinationRoute {
-    pub(crate) fn new(route: PacketMover2TunOutboundRoute) -> Self {
+impl DataplaneTunDestinationRoute {
+    pub(crate) fn new(route: DataplaneTunOutboundRoute) -> Self {
         Self {
             route,
             max_packet_len: None,
@@ -174,11 +174,11 @@ impl PacketMover2TunDestinationRoute {
     fn route_packet(
         &self,
         packet: &[u8],
-    ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason> {
+    ) -> Result<DataplaneTunOutboundRoute, DataplaneTunOutboundDropReason> {
         if let Some(max_packet_len) = self.max_packet_len
             && packet.len() > max_packet_len
         {
-            return Err(PacketMover2TunOutboundDropReason::MtuExceeded {
+            return Err(DataplaneTunOutboundDropReason::MtuExceeded {
                 mtu: max_packet_len as u32,
             });
         }
@@ -187,21 +187,21 @@ impl PacketMover2TunDestinationRoute {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PacketMover2TunOutboundDropReason {
+pub(crate) enum DataplaneTunOutboundDropReason {
     InvalidPacket,
     NoRoute,
     MtuExceeded { mtu: u32 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2TunOutboundDrop {
+pub(crate) struct DataplaneTunOutboundDrop {
     packet: Vec<u8>,
     payload_len: usize,
-    reason: PacketMover2TunOutboundDropReason,
+    reason: DataplaneTunOutboundDropReason,
 }
 
-impl PacketMover2TunOutboundDrop {
-    fn new(packet: Vec<u8>, reason: PacketMover2TunOutboundDropReason) -> Self {
+impl DataplaneTunOutboundDrop {
+    fn new(packet: Vec<u8>, reason: DataplaneTunOutboundDropReason) -> Self {
         let payload_len = packet.len();
         Self::with_payload_len(packet, payload_len, reason)
     }
@@ -209,7 +209,7 @@ impl PacketMover2TunOutboundDrop {
     fn with_payload_len(
         packet: Vec<u8>,
         payload_len: usize,
-        reason: PacketMover2TunOutboundDropReason,
+        reason: DataplaneTunOutboundDropReason,
     ) -> Self {
         Self {
             packet,
@@ -226,35 +226,35 @@ impl PacketMover2TunOutboundDrop {
         self.payload_len
     }
 
-    pub(crate) fn reason(&self) -> PacketMover2TunOutboundDropReason {
+    pub(crate) fn reason(&self) -> DataplaneTunOutboundDropReason {
         self.reason
     }
 }
 
-pub(crate) trait PacketMover2TunOutboundRouter {
+pub(crate) trait DataplaneTunOutboundRouter {
     fn route_tun_outbound(
         &mut self,
         packet: &[u8],
         dest: FipsTunDestinationPrefix,
-    ) -> Result<PacketMover2TunOutboundRoute, PacketMover2TunOutboundDropReason>;
+    ) -> Result<DataplaneTunOutboundRoute, DataplaneTunOutboundDropReason>;
 }
 
 fn route_tun_outbound_packet_with_router<R, F>(
     packet: Vec<u8>,
     router: &mut R,
     activity_tick: ActivityTick,
-    drops: &mut Vec<PacketMover2TunOutboundDrop>,
+    drops: &mut Vec<DataplaneTunOutboundDrop>,
     deferred_packets: &mut Vec<Vec<u8>>,
     mut push: F,
 ) where
-    R: PacketMover2TunOutboundRouter,
+    R: DataplaneTunOutboundRouter,
     F: FnMut(OutboundPacket),
 {
     let payload_len = packet.len();
     let dest = match FipsTunDestinationPrefix::from_ipv6_packet(&packet) {
         Ok(dest) => dest,
         Err(reason) => {
-            drops.push(PacketMover2TunOutboundDrop::new(packet, reason));
+            drops.push(DataplaneTunOutboundDrop::new(packet, reason));
             return;
         }
     };
@@ -262,14 +262,14 @@ fn route_tun_outbound_packet_with_router<R, F>(
         Ok(route) => match route.into_outbound_packet(packet) {
             Ok(packet) => push(packet.with_activity_tick(activity_tick)),
             Err(reason) => {
-                drops.push(PacketMover2TunOutboundDrop::with_payload_len(
+                drops.push(DataplaneTunOutboundDrop::with_payload_len(
                     Vec::new(),
                     payload_len,
                     reason,
                 ));
             }
         },
-        Err(PacketMover2TunOutboundDropReason::NoRoute) => deferred_packets.push(packet),
-        Err(reason) => drops.push(PacketMover2TunOutboundDrop::new(packet, reason)),
+        Err(DataplaneTunOutboundDropReason::NoRoute) => deferred_packets.push(packet),
+        Err(reason) => drops.push(DataplaneTunOutboundDrop::new(packet, reason)),
     }
 }

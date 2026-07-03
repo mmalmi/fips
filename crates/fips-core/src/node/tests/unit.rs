@@ -134,45 +134,45 @@ fn peer_identity_for_outbound_refresh_loser(node: &Node) -> (Identity, PeerIdent
     }
 }
 
-fn ensure_packet_mover2_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
-    node.packet_mover2.register_owner_if_missing(
-        crate::packet_mover2::OwnerId::fsp_node(dest_addr),
-        crate::packet_mover2::OwnerConfig::new(1, 8)
+fn ensure_dataplane_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
+    node.dataplane.register_owner_if_missing(
+        crate::dataplane::OwnerId::fsp_node(dest_addr),
+        crate::dataplane::OwnerConfig::new(1, 8)
             .with_fsp_session_start_ms(1_000)
             .with_fsp_mmp(node.config.node.session_mmp.clone(), true),
     );
 }
 
-fn seed_packet_mover2_fsp_data_sent_for_test(
+fn seed_dataplane_fsp_data_sent_for_test(
     node: &mut Node,
     dest_addr: NodeAddr,
     next_hop: NodeAddr,
     now_ms: u64,
 ) {
-    ensure_packet_mover2_fsp_owner_for_test(node, dest_addr);
-    assert!(node.packet_mover2.record_fsp_data_sent(
+    ensure_dataplane_fsp_owner_for_test(node, dest_addr);
+    assert!(node.dataplane.record_fsp_data_sent(
         dest_addr,
         next_hop,
         512,
-        crate::packet_mover2::ActivityTick::new(now_ms),
+        crate::dataplane::ActivityTick::new(now_ms),
     ));
 }
 
-fn seed_packet_mover2_fsp_control_rx_for_test(
+fn seed_dataplane_fsp_control_rx_for_test(
     node: &mut Node,
     source_addr: NodeAddr,
     previous_hop: NodeAddr,
     now_ms: u64,
 ) {
-    ensure_packet_mover2_fsp_owner_for_test(node, source_addr);
+    ensure_dataplane_fsp_owner_for_test(node, source_addr);
     assert!(
-        node.packet_mover2
+        node.dataplane
             .record_authenticated_fsp_session(
                 source_addr,
                 previous_hop,
                 crate::protocol::SessionMessageType::SenderReport.to_byte(),
                 0,
-                crate::packet_mover2::FspReceiveSync {
+                crate::dataplane::FspReceiveSync {
                     counter: 1,
                     received_k_bit: false,
                     timestamp: 0,
@@ -181,29 +181,29 @@ fn seed_packet_mover2_fsp_control_rx_for_test(
                     path_mtu: u16::MAX,
                     spin_bit: false,
                 },
-                Some(crate::packet_mover2::ActivityTick::new(now_ms)),
+                Some(crate::dataplane::ActivityTick::new(now_ms)),
                 std::time::Instant::now(),
             )
             .is_some()
     );
 }
 
-fn seed_packet_mover2_fsp_data_rx_for_test(
+fn seed_dataplane_fsp_data_rx_for_test(
     node: &mut Node,
     source_addr: NodeAddr,
     previous_hop: NodeAddr,
     now_ms: u64,
 ) {
-    ensure_packet_mover2_fsp_owner_for_test(node, source_addr);
+    ensure_dataplane_fsp_owner_for_test(node, source_addr);
     let body_len = 512;
     assert!(
-        node.packet_mover2
+        node.dataplane
             .record_authenticated_fsp_session(
                 source_addr,
                 previous_hop,
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 body_len,
-                crate::packet_mover2::FspReceiveSync {
+                crate::dataplane::FspReceiveSync {
                     counter: 2,
                     received_k_bit: false,
                     timestamp: 0,
@@ -212,7 +212,7 @@ fn seed_packet_mover2_fsp_data_rx_for_test(
                     path_mtu: u16::MAX,
                     spin_bit: false,
                 },
-                Some(crate::packet_mover2::ActivityTick::new(now_ms)),
+                Some(crate::dataplane::ActivityTick::new(now_ms)),
                 std::time::Instant::now(),
             )
             .is_some()

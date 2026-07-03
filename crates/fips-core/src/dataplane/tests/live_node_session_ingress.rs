@@ -1,5 +1,5 @@
     fn assert_fmp_receipt(
-        receipt: &PacketMover2FmpIngressReceipt,
+        receipt: &DataplaneFmpIngressReceipt,
         source_addr: NodeAddr,
         transport_id: TransportId,
         remote_addr: &TransportAddr,
@@ -20,7 +20,7 @@
     }
 
     fn register_keyed_owner(
-        driver: &mut PacketMover2TurnDriver,
+        driver: &mut DataplaneTurnDriver,
         owner: OwnerId,
         config: OwnerConfig,
         key: u8,
@@ -33,7 +33,7 @@
     }
 
     fn register_fmp_session_ingress_route(
-        routes: &mut PacketMover2LiveRouteTable,
+        routes: &mut DataplaneLiveRouteTable,
         transport_id: TransportId,
         receiver_idx: u32,
         owner: OwnerId,
@@ -42,7 +42,7 @@
         routes.register_fmp(
             transport_id,
             receiver_idx,
-            PacketMover2IngressRoute::new(
+            DataplaneIngressRoute::new(
                 owner,
                 1,
                 OutputTarget::SessionIngress { local_addr },
@@ -52,14 +52,14 @@
     }
 
     fn register_fsp_session_payload_route(
-        routes: &mut PacketMover2LiveRouteTable,
+        routes: &mut DataplaneLiveRouteTable,
         source_addr: NodeAddr,
         owner: OwnerId,
         local_addr: NodeAddr,
     ) {
         routes.register_fsp(
             source_addr,
-            PacketMover2IngressRoute::new(
+            DataplaneIngressRoute::new(
                 owner,
                 1,
                 OutputTarget::SessionPayload { local_addr },
@@ -69,15 +69,15 @@
     }
 
     async fn pump_one_fmp_session_ingress_turn(
-        driver: &mut PacketMover2TurnDriver,
-        routes: &mut PacketMover2LiveRouteTable,
+        driver: &mut DataplaneTurnDriver,
+        routes: &mut DataplaneLiveRouteTable,
         transport_id: TransportId,
         remote_addr: TransportAddr,
         wire: Vec<u8>,
         timestamp_ms: u64,
-    ) -> PacketMover2LiveNodeTurn {
+    ) -> DataplaneLiveNodeTurn {
         let mut raw_source =
-            PacketMover2LiveRawIngressSource::new(VecDeque::from([PacketMover2LiveIngressPacket::fmp(
+            DataplaneLiveRawIngressSource::new(VecDeque::from([DataplaneLiveIngressPacket::fmp(
                 ReceivedPacket::with_timestamp(transport_id, remote_addr, wire, timestamp_ms),
             )]));
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
@@ -160,7 +160,7 @@
         let fmp_wire = fmp_encrypted_wire(0xa7, fmp_counter, fmp_flags, &fmp_plaintext, fmp_key);
         let fmp_wire_len = fmp_wire.len();
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         register_keyed_owner(
             &mut driver,
             fmp_owner,
@@ -174,7 +174,7 @@
             fsp_key,
         );
 
-        let mut routes = PacketMover2LiveRouteTable::default();
+        let mut routes = DataplaneLiveRouteTable::default();
         register_fmp_session_ingress_route(&mut routes, transport_id, 0xa7, fmp_owner, local_addr);
         register_fsp_session_payload_route(&mut routes, source_addr, fsp_owner, local_addr);
 
@@ -275,7 +275,7 @@
         fmp_plaintext.extend_from_slice(&datagram);
         let fmp_wire = fmp_encrypted_wire(0xc7, 199, 0, &fmp_plaintext, fmp_key);
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         register_keyed_owner(
             &mut driver,
             fmp_owner,
@@ -289,7 +289,7 @@
             fsp_key,
         );
         assert_eq!(driver.record_fsp_decrypt_failure(fsp_owner), Some(1));
-        let mut routes = PacketMover2LiveRouteTable::default();
+        let mut routes = DataplaneLiveRouteTable::default();
         register_fmp_session_ingress_route(&mut routes, transport_id, 0xc7, fmp_owner, local_addr);
         register_fsp_session_payload_route(&mut routes, source_addr, fsp_owner, local_addr);
 
@@ -366,14 +366,14 @@
         let fmp_wire = fmp_encrypted_wire(0xb1, fmp_counter, fmp_flags, &fmp_plaintext, fmp_key);
         let fmp_wire_len = fmp_wire.len();
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         register_keyed_owner(
             &mut driver,
             fmp_owner,
             OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
             fmp_key,
         );
-        let mut routes = PacketMover2LiveRouteTable::default();
+        let mut routes = DataplaneLiveRouteTable::default();
         register_fmp_session_ingress_route(&mut routes, transport_id, 0xb1, fmp_owner, local_addr);
 
         let turn = pump_one_fmp_session_ingress_turn(
@@ -433,14 +433,14 @@
         let fmp_wire = fmp_encrypted_wire(0xb5, fmp_counter, fmp_flags, &fmp_plaintext, fmp_key);
         let fmp_wire_len = fmp_wire.len();
 
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         register_keyed_owner(
             &mut driver,
             fmp_owner,
             OwnerConfig::new(1, 8).with_source_peer(next_hop_peer),
             fmp_key,
         );
-        let mut routes = PacketMover2LiveRouteTable::default();
+        let mut routes = DataplaneLiveRouteTable::default();
         register_fmp_session_ingress_route(&mut routes, transport_id, 0xb5, fmp_owner, local_addr);
 
         let turn = pump_one_fmp_session_ingress_turn(

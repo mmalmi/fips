@@ -1,13 +1,13 @@
 
 #[derive(Debug, Default)]
-pub(crate) struct PacketMover2LiveOutboundFirsts {
+pub(crate) struct DataplaneLiveOutboundFirsts {
     pub(crate) initial_outbound: Option<OutboundPacket>,
     pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
     pub(crate) tun_packet: Option<Vec<u8>>,
     pub(crate) collect_transport_sent_receipts: bool,
 }
 
-pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
+pub(crate) struct DataplaneRouteTableOutboundSource<'a, Routes> {
     first_endpoint_data_batch: Option<NodeEndpointDataBatch>,
     first_tun_packet: Option<Vec<u8>>,
     endpoint_data_rx: &'a mut EndpointDataBatchRx,
@@ -15,19 +15,19 @@ pub(crate) struct PacketMover2RouteTableOutboundSource<'a, Routes> {
     tun_outbound_rx: &'a mut TunOutboundRx,
     tun_limit: usize,
     routes: &'a mut Routes,
-    buffers: &'a mut PacketMover2RouteTableOutboundBuffers,
+    buffers: &'a mut DataplaneRouteTableOutboundBuffers,
     endpoint_stale_data_drop_ms: u64,
 }
 
 #[derive(Default)]
-struct PacketMover2RouteTableOutboundBuffers {
-    endpoint_drops: Vec<PacketMover2EndpointDataDrop>,
+struct DataplaneRouteTableOutboundBuffers {
+    endpoint_drops: Vec<DataplaneEndpointDataDrop>,
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
-    tun_drops: Vec<PacketMover2TunOutboundDrop>,
+    tun_drops: Vec<DataplaneTunOutboundDrop>,
     tun_deferred_packets: Vec<Vec<u8>>,
 }
 
-impl PacketMover2RouteTableOutboundBuffers {
+impl DataplaneRouteTableOutboundBuffers {
     fn has_activity(&self) -> bool {
         !self.endpoint_drops.is_empty()
             || !self.deferred_endpoint_data_batches.is_empty()
@@ -36,25 +36,25 @@ impl PacketMover2RouteTableOutboundBuffers {
     }
 }
 
-pub(crate) enum PacketMover2RoutedOutbound {
+pub(crate) enum DataplaneRoutedOutbound {
     Packet(OutboundPacket),
     Batch(Vec<OutboundPacket>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PacketMover2OutboundSource {
+enum DataplaneOutboundSource {
     Endpoint,
     Tun,
 }
 
-impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
+impl<'a, Routes> DataplaneRouteTableOutboundSource<'a, Routes> {
     fn new(
         endpoint_data_rx: &'a mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &'a mut TunOutboundRx,
         tun_limit: usize,
         routes: &'a mut Routes,
-        buffers: &'a mut PacketMover2RouteTableOutboundBuffers,
+        buffers: &'a mut DataplaneRouteTableOutboundBuffers,
     ) -> Self {
         Self {
             first_endpoint_data_batch: None,
@@ -69,14 +69,14 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
         }
     }
 
-    fn with_firsts(mut self, firsts: PacketMover2LiveOutboundFirsts) -> Self {
+    fn with_firsts(mut self, firsts: DataplaneLiveOutboundFirsts) -> Self {
         self.first_endpoint_data_batch = firsts.endpoint_data_batch;
         self.first_tun_packet = firsts.tun_packet;
         self
     }
 
-    fn take_firsts(&mut self) -> PacketMover2LiveOutboundFirsts {
-        PacketMover2LiveOutboundFirsts {
+    fn take_firsts(&mut self) -> DataplaneLiveOutboundFirsts {
+        DataplaneLiveOutboundFirsts {
             endpoint_data_batch: self.first_endpoint_data_batch.take(),
             tun_packet: self.first_tun_packet.take(),
             ..Default::default()
@@ -84,9 +84,9 @@ impl<'a, Routes> PacketMover2RouteTableOutboundSource<'a, Routes> {
     }
 }
 
-impl<Routes> PacketMover2RouteTableOutboundSource<'_, Routes>
+impl<Routes> DataplaneRouteTableOutboundSource<'_, Routes>
 where
-    Routes: PacketMover2EndpointDataRouter + PacketMover2TunOutboundRouter,
+    Routes: DataplaneEndpointDataRouter + DataplaneTunOutboundRouter,
 {
     fn cache_first_tun_packet(&mut self) {
         if self.first_tun_packet.is_none() && let Ok(packet) = self.tun_outbound_rx.try_recv() {
@@ -96,7 +96,7 @@ where
 
     fn drain_endpoint_batched<F>(&mut self, limit: usize, mut push: F) -> usize
     where
-        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
+        F: FnMut(DataplaneOutboundSource, DataplaneRoutedOutbound),
     {
         let mut drained_cost = 0usize;
         if drained_cost < limit {
@@ -120,7 +120,7 @@ where
         batch: NodeEndpointDataBatch,
         mut push: F,
     ) where
-        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
+        F: FnMut(DataplaneOutboundSource, DataplaneRoutedOutbound),
     {
         let drop_count = stale_endpoint_data_drop_count(
             &batch,
@@ -141,13 +141,13 @@ where
             self.routes,
             &mut self.buffers.endpoint_drops,
             &mut self.buffers.deferred_endpoint_data_batches,
-            |packets| push(PacketMover2OutboundSource::Endpoint, PacketMover2RoutedOutbound::Batch(packets)),
+            |packets| push(DataplaneOutboundSource::Endpoint, DataplaneRoutedOutbound::Batch(packets)),
         );
     }
 
     fn drain_tun_batched<F>(&mut self, limit: usize, mut push: F) -> usize
     where
-        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
+        F: FnMut(DataplaneOutboundSource, DataplaneRoutedOutbound),
     {
         let mut drained = 0usize;
         let mut first_routed = None;
@@ -182,14 +182,14 @@ where
             drained += 1;
         }
         flush_tun_routed_packets(first_routed, routed_batch, &mut |routed| {
-            push(PacketMover2OutboundSource::Tun, routed);
+            push(DataplaneOutboundSource::Tun, routed);
         });
         drained
     }
 
     fn drain_outbound_batched<F>(&mut self, limit: usize, mut push: F) -> (usize, usize, usize)
     where
-        F: FnMut(PacketMover2OutboundSource, PacketMover2RoutedOutbound),
+        F: FnMut(DataplaneOutboundSource, DataplaneRoutedOutbound),
     {
         let endpoint_limit = self.endpoint_limit.min(limit);
         let endpoint_drained = self.drain_endpoint_batched(endpoint_limit, &mut push);
@@ -227,21 +227,21 @@ fn flush_tun_routed_packets<F>(
     batch: Vec<OutboundPacket>,
     push: &mut F,
 ) where
-    F: FnMut(PacketMover2RoutedOutbound),
+    F: FnMut(DataplaneRoutedOutbound),
 {
     if batch.is_empty() {
         if let Some(packet) = first {
-            push(PacketMover2RoutedOutbound::Packet(packet));
+            push(DataplaneRoutedOutbound::Packet(packet));
         }
     } else {
-        push(PacketMover2RoutedOutbound::Batch(batch));
+        push(DataplaneRoutedOutbound::Batch(batch));
     }
 }
 
-impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
+impl DataplaneRawIngressSource for VecDeque<DataplaneRawIngress> {
     fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
     where
-        F: FnMut(PacketMover2RawIngress),
+        F: FnMut(DataplaneRawIngress),
     {
         let mut drained = 0;
         while drained < limit {
@@ -256,25 +256,25 @@ impl PacketMover2RawIngressSource for VecDeque<PacketMover2RawIngress> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PacketMover2RawIngressDropReason {
+pub(crate) enum DataplaneRawIngressDropReason {
     Wire(WirePreflightError),
     Unrouted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2RawIngressDrop {
+pub(crate) struct DataplaneRawIngressDrop {
     protocol: PacketProtocol,
     transport_id: TransportId,
     remote_addr: TransportAddr,
     path: TransportPath,
     payload_len: usize,
-    reason: PacketMover2RawIngressDropReason,
+    reason: DataplaneRawIngressDropReason,
 }
 
-impl PacketMover2RawIngressDrop {
+impl DataplaneRawIngressDrop {
     fn from_packet(
-        packet: PacketMover2RawIngress,
-        reason: PacketMover2RawIngressDropReason,
+        packet: DataplaneRawIngress,
+        reason: DataplaneRawIngressDropReason,
     ) -> Self {
         Self {
             protocol: packet.protocol,
@@ -306,13 +306,13 @@ impl PacketMover2RawIngressDrop {
         self.payload_len
     }
 
-    pub(crate) fn reason(&self) -> PacketMover2RawIngressDropReason {
+    pub(crate) fn reason(&self) -> DataplaneRawIngressDropReason {
         self.reason
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PacketMover2OutputError {
+pub(crate) enum DataplaneOutputError {
     Unavailable,
     Backpressure,
     StaleQueuedBulk,
@@ -323,18 +323,18 @@ pub(crate) enum PacketMover2OutputError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2OutputDrop {
+pub(crate) struct DataplaneOutputDrop {
     owner: OwnerId,
     counter: u64,
     ingress_seq: u64,
     target: OutputTarget,
     path: Option<TransportPath>,
     payload_len: usize,
-    reason: PacketMover2OutputError,
+    reason: DataplaneOutputError,
 }
 
-impl PacketMover2OutputDrop {
-    pub(crate) fn from_output(output: &PacketOutput, reason: PacketMover2OutputError) -> Self {
+impl DataplaneOutputDrop {
+    pub(crate) fn from_output(output: &PacketOutput, reason: DataplaneOutputError) -> Self {
         Self {
             owner: output.owner,
             counter: output.counter,
@@ -370,7 +370,7 @@ impl PacketMover2OutputDrop {
         self.payload_len
     }
 
-    pub(crate) fn reason(&self) -> PacketMover2OutputError {
+    pub(crate) fn reason(&self) -> DataplaneOutputError {
         self.reason
     }
 }
@@ -416,28 +416,28 @@ impl PacketOutput {
     }
 }
 
-pub(crate) trait PacketMover2OutputSink {
-    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
+pub(crate) trait DataplaneOutputSink {
+    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<DataplaneOutputDrop>) -> usize
     where
         I: IntoIterator<Item = PacketOutput>;
 }
 
-pub(crate) trait PacketMover2TunOutput {
+pub(crate) trait DataplaneTunOutput {
     fn send_tun(
         &mut self,
         output: &PacketOutput,
         payload: PacketBuffer,
-    ) -> Result<(), PacketMover2OutputError>;
+    ) -> Result<(), DataplaneOutputError>;
 
     fn send_tun_batch(
         &mut self,
         outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
-        drops: &mut Vec<PacketMover2OutputDrop>,
+        drops: &mut Vec<DataplaneOutputDrop>,
     ) -> usize {
         let mut sent = 0usize;
         for (output, payload) in outputs.drain(..) {
             let mut drop =
-                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+                DataplaneOutputDrop::from_output(&output, DataplaneOutputError::Unavailable);
             match self.send_tun(&output, payload) {
                 Ok(()) => sent = sent.saturating_add(1),
                 Err(reason) => {
@@ -450,46 +450,46 @@ pub(crate) trait PacketMover2TunOutput {
     }
 }
 
-impl<T: PacketMover2TunOutput + ?Sized> PacketMover2TunOutput for &mut T {
+impl<T: DataplaneTunOutput + ?Sized> DataplaneTunOutput for &mut T {
     fn send_tun(
         &mut self,
         output: &PacketOutput,
         payload: PacketBuffer,
-    ) -> Result<(), PacketMover2OutputError> {
+    ) -> Result<(), DataplaneOutputError> {
         (**self).send_tun(output, payload)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct PacketMover2TunTxOutput<'a> {
+pub(crate) struct DataplaneTunTxOutput<'a> {
     tx: &'a crate::upper::tun::TunTx,
 }
 
-impl<'a> PacketMover2TunTxOutput<'a> {
+impl<'a> DataplaneTunTxOutput<'a> {
     pub(crate) fn new(tx: &'a crate::upper::tun::TunTx) -> Self {
         Self { tx }
     }
 }
 
-impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
+impl DataplaneTunOutput for DataplaneTunTxOutput<'_> {
     fn send_tun(
         &mut self,
         output: &PacketOutput,
         payload: PacketBuffer,
-    ) -> Result<(), PacketMover2OutputError> {
+    ) -> Result<(), DataplaneOutputError> {
         let lane = match output.lane() {
             Lane::Priority => crate::upper::tun::TunWriteLane::Priority,
             Lane::Bulk => crate::upper::tun::TunWriteLane::Bulk,
         };
         self.tx
             .send_with_lane(payload, lane)
-            .map_err(|error| packet_mover2_output_error_for_tun_write(error.kind()))
+            .map_err(|error| dataplane_output_error_for_tun_write(error.kind()))
     }
 
     fn send_tun_batch(
         &mut self,
         outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
-        drops: &mut Vec<PacketMover2OutputDrop>,
+        drops: &mut Vec<DataplaneOutputDrop>,
     ) -> usize {
         if outputs.is_empty() {
             return 0;
@@ -507,9 +507,9 @@ impl PacketMover2TunOutput for PacketMover2TunTxOutput<'_> {
         let failure_count = failures.len();
         for failure in failures {
             if let Some(output) = output_meta.get(failure.index) {
-                drops.push(PacketMover2OutputDrop::from_output(
+                drops.push(DataplaneOutputDrop::from_output(
                     output,
-                    packet_mover2_output_error_for_tun_write(failure.kind),
+                    dataplane_output_error_for_tun_write(failure.kind),
                 ));
             }
         }
@@ -524,31 +524,31 @@ fn tun_write_lane_for_output(output: &PacketOutput) -> crate::upper::tun::TunWri
     }
 }
 
-fn packet_mover2_output_error_for_tun_write(
+fn dataplane_output_error_for_tun_write(
     kind: crate::upper::tun::TunWriteErrorKind,
-) -> PacketMover2OutputError {
+) -> DataplaneOutputError {
     match kind {
-        crate::upper::tun::TunWriteErrorKind::Closed => PacketMover2OutputError::Unavailable,
-        crate::upper::tun::TunWriteErrorKind::BulkFull => PacketMover2OutputError::Backpressure,
+        crate::upper::tun::TunWriteErrorKind::Closed => DataplaneOutputError::Unavailable,
+        crate::upper::tun::TunWriteErrorKind::BulkFull => DataplaneOutputError::Backpressure,
     }
 }
 
-pub(crate) trait PacketMover2EndpointOutput {
+pub(crate) trait DataplaneEndpointOutput {
     fn send_endpoint(
         &mut self,
         output: &PacketOutput,
         payload: PacketBuffer,
-    ) -> Result<(), PacketMover2OutputError>;
+    ) -> Result<(), DataplaneOutputError>;
 
     fn send_endpoint_batch(
         &mut self,
         outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
-        drops: &mut Vec<PacketMover2OutputDrop>,
+        drops: &mut Vec<DataplaneOutputDrop>,
     ) -> usize {
         let mut sent = 0usize;
         for (output, payload) in outputs.drain(..) {
             let mut drop =
-                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+                DataplaneOutputDrop::from_output(&output, DataplaneOutputError::Unavailable);
             match self.send_endpoint(&output, payload) {
                 Ok(()) => sent = sent.saturating_add(1),
                 Err(reason) => {
@@ -561,39 +561,39 @@ pub(crate) trait PacketMover2EndpointOutput {
     }
 }
 
-impl<T: PacketMover2EndpointOutput + ?Sized> PacketMover2EndpointOutput for &mut T {
+impl<T: DataplaneEndpointOutput + ?Sized> DataplaneEndpointOutput for &mut T {
     fn send_endpoint(
         &mut self,
         output: &PacketOutput,
         payload: PacketBuffer,
-    ) -> Result<(), PacketMover2OutputError> {
+    ) -> Result<(), DataplaneOutputError> {
         (**self).send_endpoint(output, payload)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct PacketMover2EndpointEventOutput<'a> {
+pub(crate) struct DataplaneEndpointEventOutput<'a> {
     tx: &'a EndpointEventSender,
 }
 
-impl<'a> PacketMover2EndpointEventOutput<'a> {
+impl<'a> DataplaneEndpointEventOutput<'a> {
     pub(crate) fn new(tx: &'a EndpointEventSender) -> Self {
         Self { tx }
     }
 }
 
-impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
+impl DataplaneEndpointOutput for DataplaneEndpointEventOutput<'_> {
     fn send_endpoint(
         &mut self,
         output: &PacketOutput,
         payload: PacketBuffer,
-    ) -> Result<(), PacketMover2OutputError> {
+    ) -> Result<(), DataplaneOutputError> {
         let source_addr = output.owner().node_addr();
         let Some(source_peer) = output.source_peer() else {
-            return Err(PacketMover2OutputError::NoRoute);
+            return Err(DataplaneOutputError::NoRoute);
         };
         if source_peer.node_addr() != &source_addr {
-            return Err(PacketMover2OutputError::NoRoute);
+            return Err(DataplaneOutputError::NoRoute);
         }
 
         self.tx
@@ -605,13 +605,13 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
                 }],
                 queued_at: crate::perf_profile::stamp(),
             })
-            .map_err(|_| PacketMover2OutputError::Unavailable)
+            .map_err(|_| DataplaneOutputError::Unavailable)
     }
 
     fn send_endpoint_batch(
         &mut self,
         outputs: &mut Vec<(PacketOutput, PacketBuffer)>,
-        drops: &mut Vec<PacketMover2OutputDrop>,
+        drops: &mut Vec<DataplaneOutputDrop>,
     ) -> usize {
         let mut messages = Vec::with_capacity(outputs.len());
         let mut unavailable_drops = Vec::with_capacity(outputs.len());
@@ -619,23 +619,23 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
         for (output, payload) in outputs.drain(..) {
             let source_addr = output.owner().node_addr();
             let Some(source_peer) = output.source_peer() else {
-                drops.push(PacketMover2OutputDrop::from_output(
+                drops.push(DataplaneOutputDrop::from_output(
                     &output,
-                    PacketMover2OutputError::NoRoute,
+                    DataplaneOutputError::NoRoute,
                 ));
                 continue;
             };
             if source_peer.node_addr() != &source_addr {
-                drops.push(PacketMover2OutputDrop::from_output(
+                drops.push(DataplaneOutputDrop::from_output(
                     &output,
-                    PacketMover2OutputError::NoRoute,
+                    DataplaneOutputError::NoRoute,
                 ));
                 continue;
             }
 
-            unavailable_drops.push(PacketMover2OutputDrop::from_output(
+            unavailable_drops.push(DataplaneOutputDrop::from_output(
                 &output,
-                PacketMover2OutputError::Unavailable,
+                DataplaneOutputError::Unavailable,
             ));
             messages.push(EndpointDataDelivery {
                 source_peer,
@@ -662,18 +662,18 @@ impl PacketMover2EndpointOutput for PacketMover2EndpointEventOutput<'_> {
 }
 
 #[derive(Debug)]
-struct PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
+struct DataplaneLiveOutputSink<'a, Tun, Endpoint> {
     tun: Tun,
     endpoint: Endpoint,
-    transport: &'a mut PacketMover2TransportSendGroups,
+    transport: &'a mut DataplaneTransportSendGroups,
     stale_bulk_output_drop_ms: u64,
 }
 
-impl<'a, Tun, Endpoint> PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
+impl<'a, Tun, Endpoint> DataplaneLiveOutputSink<'a, Tun, Endpoint> {
     fn new(
         tun: Tun,
         endpoint: Endpoint,
-        transport: &'a mut PacketMover2TransportSendGroups,
+        transport: &'a mut DataplaneTransportSendGroups,
     ) -> Self {
         Self {
             tun,
@@ -684,12 +684,12 @@ impl<'a, Tun, Endpoint> PacketMover2LiveOutputSink<'a, Tun, Endpoint> {
     }
 }
 
-impl<Tun, Endpoint> PacketMover2OutputSink for PacketMover2LiveOutputSink<'_, Tun, Endpoint>
+impl<Tun, Endpoint> DataplaneOutputSink for DataplaneLiveOutputSink<'_, Tun, Endpoint>
 where
-    Tun: PacketMover2TunOutput,
-    Endpoint: PacketMover2EndpointOutput,
+    Tun: DataplaneTunOutput,
+    Endpoint: DataplaneEndpointOutput,
 {
-    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<PacketMover2OutputDrop>) -> usize
+    fn send_batch<I>(&mut self, outputs: I, drops: &mut Vec<DataplaneOutputDrop>) -> usize
     where
         I: IntoIterator<Item = PacketOutput>,
     {
@@ -741,7 +741,7 @@ where
                 sent = sent.saturating_add(self.tun.send_tun_batch(&mut tun_batch, drops));
             }
             let mut drop =
-                PacketMover2OutputDrop::from_output(&output, PacketMover2OutputError::Unavailable);
+                DataplaneOutputDrop::from_output(&output, DataplaneOutputError::Unavailable);
             match self.send_unbatched_output(output) {
                 Ok(()) => sent = sent.saturating_add(1),
                 Err(reason) => {
@@ -763,21 +763,21 @@ where
     }
 }
 
-impl<Tun, Endpoint> PacketMover2LiveOutputSink<'_, Tun, Endpoint>
+impl<Tun, Endpoint> DataplaneLiveOutputSink<'_, Tun, Endpoint>
 where
-    Tun: PacketMover2TunOutput,
-    Endpoint: PacketMover2EndpointOutput,
+    Tun: DataplaneTunOutput,
+    Endpoint: DataplaneEndpointOutput,
 {
     fn prepare_opened_output(
         &mut self,
         mut output: PacketOutput,
-        drops: &mut Vec<PacketMover2OutputDrop>,
+        drops: &mut Vec<DataplaneOutputDrop>,
     ) -> Option<(PacketOutput, PacketBuffer)> {
         if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
             record_stale_bulk_output_drop(output.target());
-            drops.push(PacketMover2OutputDrop::from_output(
+            drops.push(DataplaneOutputDrop::from_output(
                 &output,
-                PacketMover2OutputError::StaleQueuedBulk,
+                DataplaneOutputError::StaleQueuedBulk,
             ));
             return None;
         }
@@ -790,9 +790,9 @@ where
         match payload {
             Some(payload) => Some((output, payload)),
             None => {
-                drops.push(PacketMover2OutputDrop::from_output(
+                drops.push(DataplaneOutputDrop::from_output(
                     &output,
-                    PacketMover2OutputError::Unavailable,
+                    DataplaneOutputError::Unavailable,
                 ));
                 None
             }
@@ -802,10 +802,10 @@ where
     fn send_unbatched_output(
         &mut self,
         output: PacketOutput,
-    ) -> Result<(), PacketMover2OutputError> {
+    ) -> Result<(), DataplaneOutputError> {
         if stale_bulk_output(&output, self.stale_bulk_output_drop_ms) {
             record_stale_bulk_output_drop(output.target());
-            return Err(PacketMover2OutputError::StaleQueuedBulk);
+            return Err(DataplaneOutputError::StaleQueuedBulk);
         }
 
         match output.target {
@@ -818,7 +818,7 @@ where
                         } => Some((*transport_id, remote_addr.clone())),
                     })
                 else {
-                    return Err(PacketMover2OutputError::NoRoute);
+                    return Err(DataplaneOutputError::NoRoute);
                 };
                 self.transport
                     .send_transport(transport_id, remote_addr, output)
@@ -826,7 +826,7 @@ where
             OutputTarget::SessionIngress { .. }
             | OutputTarget::SessionPayload { .. }
             | OutputTarget::Tun
-            | OutputTarget::Endpoint => Err(PacketMover2OutputError::NoRoute),
+            | OutputTarget::Endpoint => Err(DataplaneOutputError::NoRoute),
         }
     }
 }
@@ -851,11 +851,11 @@ fn record_stale_bulk_output_drop(target: OutputTarget) {
     crate::perf_profile::record_event(event);
 }
 
-fn packet_mover2_output_error_from_session_handoff(
-    error: PacketMover2SessionHandoffError,
-) -> PacketMover2OutputError {
+fn dataplane_output_error_from_session_handoff(
+    error: DataplaneSessionHandoffError,
+) -> DataplaneOutputError {
     match error {
-        PacketMover2SessionHandoffError::InvalidPacket => PacketMover2OutputError::InvalidPacket,
-        PacketMover2SessionHandoffError::NoRoute => PacketMover2OutputError::NoRoute,
+        DataplaneSessionHandoffError::InvalidPacket => DataplaneOutputError::InvalidPacket,
+        DataplaneSessionHandoffError::NoRoute => DataplaneOutputError::NoRoute,
     }
 }

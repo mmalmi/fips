@@ -397,7 +397,7 @@ impl FipsEndpoint {
 
     /// Send application-owned endpoint data to a remote npub.
     ///
-    /// Fire-and-forget: enqueues endpoint data on the PM2 bulk lane. TCP and
+    /// Fire-and-forget: enqueues endpoint data on the dataplane bulk lane. TCP and
     /// the upper protocol handle loss recovery, and the per-packet oneshot
     /// round-trip the previous design used for error reporting added avoidable
     /// scheduler work to the hot endpoint-data path.
@@ -436,7 +436,7 @@ impl FipsEndpoint {
         }
         // Fire-and-forget: caller already drops the result, so skip
         // the per-packet `oneshot::channel()` allocation entirely.
-        // Endpoint data now enters the PM2 bulk lane directly, without a
+        // Endpoint data now enters the dataplane bulk lane directly, without a
         // per-packet oneshot or control-command hop.
         if let Some(batch) =
             NodeEndpointDataBatch::batch(remote, vec![data], crate::perf_profile::stamp())
@@ -470,7 +470,7 @@ impl FipsEndpoint {
 
     /// Send prebuilt endpoint bulk bodies to one resolved peer.
     ///
-    /// This keeps FIPS as the owner of the endpoint-data queue and PM2 send
+    /// This keeps FIPS as the owner of the endpoint-data queue and dataplane send
     /// policy while letting a hot embedder build the canonical bulk body from
     /// borrowed packet slices before crossing the FIPS boundary.
     pub async fn send_endpoint_bulk_data_batch_to_peer(

@@ -238,7 +238,7 @@ pub(crate) struct PacketOutput {
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
     source_wire_len: Option<usize>,
-    fsp_send_receipt: Option<PacketMover2FspSendReceipt>,
+    fsp_send_receipt: Option<DataplaneFspSendReceipt>,
     payload: PacketBuffer,
 }
 
@@ -297,15 +297,15 @@ impl PacketOutput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2TransportSentReceipt {
+pub(crate) struct DataplaneTransportSentReceipt {
     pub(crate) owner: OwnerId,
     pub(crate) counter: u64,
     pub(crate) fmp_timestamp_ms: Option<u32>,
     pub(crate) payload_len: usize,
-    pub(crate) fsp_send_receipt: Option<PacketMover2FspSendReceipt>,
+    pub(crate) fsp_send_receipt: Option<DataplaneFspSendReceipt>,
 }
 
-impl PacketMover2TransportSentReceipt {
+impl DataplaneTransportSentReceipt {
     pub(crate) fn from_output(output: &PacketOutput) -> Self {
         Self {
             owner: output.owner,
@@ -318,13 +318,13 @@ impl PacketMover2TransportSentReceipt {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspSendReceipt {
+pub(crate) struct DataplaneFspSendReceipt {
     owner: OwnerId,
     counter: u64,
     timestamp_ms: Option<u32>,
 }
 
-impl PacketMover2FspSendReceipt {
+impl DataplaneFspSendReceipt {
     pub(crate) fn new(owner: OwnerId, counter: u64, timestamp_ms: Option<u32>) -> Self {
         Self {
             owner,
@@ -361,7 +361,7 @@ pub(crate) struct RetiredOutputs {
 #[derive(Clone, Debug)]
 pub(crate) enum RetiredOutput {
     Packet(RetiredPacket),
-    EndpointDataBulk(PacketMover2EndpointDataBulk),
+    EndpointDataBulk(DataplaneEndpointDataBulk),
 }
 
 impl RetiredOutputs {
@@ -393,17 +393,17 @@ impl RetiredOutputs {
 
     pub(crate) fn push_endpoint_data_bulk(
         &mut self,
-        ingress: PacketMover2FspEndpointDataIngress,
+        ingress: DataplaneFspEndpointDataIngress,
     ) {
         match self.items.last_mut() {
             Some(RetiredOutput::EndpointDataBulk(bulk)) => bulk.push(ingress),
             _ => self.items.push(RetiredOutput::EndpointDataBulk(
-                PacketMover2EndpointDataBulk::from_ingress(ingress),
+                DataplaneEndpointDataBulk::from_ingress(ingress),
             )),
         }
     }
 
-    pub(crate) fn push_endpoint_data_bulk_batch(&mut self, bulk: PacketMover2EndpointDataBulk) {
+    pub(crate) fn push_endpoint_data_bulk_batch(&mut self, bulk: DataplaneEndpointDataBulk) {
         match self.items.last_mut() {
             Some(RetiredOutput::EndpointDataBulk(last)) => last.extend(bulk),
             _ => self.items.push(RetiredOutput::EndpointDataBulk(bulk)),

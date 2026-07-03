@@ -3,8 +3,8 @@
     use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
     use ring::aead::UnboundKey;
 
-    fn mover() -> PacketMover2 {
-        PacketMover2::new(AdmissionConfig::new(4, 8))
+    fn mover() -> Dataplane {
+        Dataplane::new(AdmissionConfig::new(4, 8))
     }
 
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -54,9 +54,9 @@
     }
 
     #[derive(Debug, Default)]
-    struct InlinePacketMover2CryptoExecutor;
+    struct InlineDataplaneCryptoExecutor;
 
-    impl PacketMover2CryptoExecutor for InlinePacketMover2CryptoExecutor {
+    impl DataplaneCryptoExecutor for InlineDataplaneCryptoExecutor {
         fn execute_prepared_chunk(
             &mut self,
             prepared: &mut Vec<PreparedCryptoWork>,
@@ -76,7 +76,7 @@
         prepared: Vec<PreparedCryptoWork>,
     }
 
-    impl PacketMover2CryptoExecutor for CapturingPreparedCryptoExecutor {
+    impl DataplaneCryptoExecutor for CapturingPreparedCryptoExecutor {
         fn execute_prepared_chunk(
             &mut self,
             prepared: &mut Vec<PreparedCryptoWork>,
@@ -89,7 +89,7 @@
         }
     }
 
-    fn dispatch_available(mover: &mut PacketMover2, limit: usize) -> Vec<CryptoWork> {
+    fn dispatch_available(mover: &mut Dataplane, limit: usize) -> Vec<CryptoWork> {
         capture_prepared_work(mover, limit)
             .into_iter()
             .filter_map(|prepared| match prepared {
@@ -105,7 +105,7 @@
     }
 
     fn dispatch_outbound_available(
-        mover: &mut PacketMover2,
+        mover: &mut Dataplane,
         limit: usize,
     ) -> Vec<OutboundCryptoWork> {
         capture_prepared_work(mover, limit)
@@ -122,7 +122,7 @@
             .collect()
     }
 
-    fn capture_prepared_work(mover: &mut PacketMover2, limit: usize) -> Vec<PreparedCryptoWork> {
+    fn capture_prepared_work(mover: &mut Dataplane, limit: usize) -> Vec<PreparedCryptoWork> {
         seed_missing_test_owner_keys(mover);
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
@@ -147,7 +147,7 @@
         executor.prepared
     }
 
-    fn seed_missing_test_owner_keys(mover: &mut PacketMover2) {
+    fn seed_missing_test_owner_keys(mover: &mut Dataplane) {
         let key = test_key(0);
         for shard in &mut mover.shards {
             for owner in shard.owners.values_mut() {
@@ -177,7 +177,7 @@
         drained
     }
 
-    impl PacketMover2CompletionSource for VecDeque<CryptoCompletion> {
+    impl DataplaneCompletionSource for VecDeque<CryptoCompletion> {
         fn drain_completions_into(
             &mut self,
             limit: usize,
@@ -196,13 +196,13 @@
     }
 
     #[derive(Clone, Debug)]
-    struct PacketMover2LiveIngressPacket {
+    struct DataplaneLiveIngressPacket {
         protocol: PacketProtocol,
         fsp_source: Option<NodeAddr>,
         packet: ReceivedPacket,
     }
 
-    impl PacketMover2LiveIngressPacket {
+    impl DataplaneLiveIngressPacket {
         fn fmp(packet: ReceivedPacket) -> Self {
             Self {
                 protocol: PacketProtocol::Fmp,
@@ -219,8 +219,8 @@
             }
         }
 
-        fn into_raw_ingress(self) -> PacketMover2RawIngress {
-            let raw = PacketMover2RawIngress::from_live_received(self.protocol, self.packet);
+        fn into_raw_ingress(self) -> DataplaneRawIngress {
+            let raw = DataplaneRawIngress::from_live_received(self.protocol, self.packet);
             match self.fsp_source {
                 Some(source_addr) => raw.with_fsp_source(source_addr),
                 None => raw,
@@ -229,20 +229,20 @@
     }
 
     #[derive(Clone, Debug)]
-    struct PacketMover2LiveRawIngressSource {
-        source: VecDeque<PacketMover2LiveIngressPacket>,
+    struct DataplaneLiveRawIngressSource {
+        source: VecDeque<DataplaneLiveIngressPacket>,
     }
 
-    impl PacketMover2LiveRawIngressSource {
-        fn new(source: VecDeque<PacketMover2LiveIngressPacket>) -> Self {
+    impl DataplaneLiveRawIngressSource {
+        fn new(source: VecDeque<DataplaneLiveIngressPacket>) -> Self {
             Self { source }
         }
     }
 
-    impl PacketMover2RawIngressSource for PacketMover2LiveRawIngressSource {
+    impl DataplaneRawIngressSource for DataplaneLiveRawIngressSource {
         fn drain_raw_ingress<F>(&mut self, limit: usize, mut push: F) -> usize
         where
-            F: FnMut(PacketMover2RawIngress),
+            F: FnMut(DataplaneRawIngress),
         {
             let mut drained = 0;
             while drained < limit {
@@ -256,12 +256,12 @@
         }
     }
 
-    fn run_aead_available(mover: &mut PacketMover2, limit: usize) -> PacketMoverTurn {
+    fn run_aead_available(mover: &mut Dataplane, limit: usize) -> PacketMoverTurn {
         let mut prepared_work = Vec::new();
         let mut completion_work = Vec::new();
         let mut retired = Vec::new();
         let mut drops = Vec::new();
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let mut executor = InlineDataplaneCryptoExecutor::default();
         let dispatched = mover.run_aead_available_into_with_executor(
             limit,
             &mut prepared_work,
@@ -280,10 +280,10 @@
     }
 
     fn run_aead_completion_turn<I>(
-        driver: &mut PacketMover2TurnDriver,
+        driver: &mut DataplaneTurnDriver,
         completions: I,
         limit: usize,
-    ) -> PacketMover2RuntimeTurn<'_>
+    ) -> DataplaneRuntimeTurn<'_>
     where
         I: IntoIterator<Item = CryptoCompletion>,
     {
@@ -292,18 +292,18 @@
         driver.completion_work.clear();
         driver.completion_work.extend(completions);
         let queued = driver.completion_work.len();
-        let mut summary = PacketMover2RuntimeSummary::default();
+        let mut summary = DataplaneRuntimeSummary::default();
         summary.completions = summary.completions.saturating_add(queued);
         driver
             .mover
             .queue_completion_batch(&mut driver.completion_work);
         driver.retire_queued_completed_aead_outputs(queued, false);
         let summary = driver.collect_retired_outputs(summary);
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let mut executor = InlineDataplaneCryptoExecutor::default();
         let summary =
             driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
 
-        PacketMover2RuntimeTurn {
+        DataplaneRuntimeTurn {
             summary,
             raw_ingress_drops: &driver.raw_ingress_drops,
             output_drops: &driver.output_drops,
@@ -312,26 +312,26 @@
         }
     }
 
-    async fn wait_for_live_worker_completion(live_node: &PacketMover2LiveNode) {
+    async fn wait_for_live_worker_completion(live_node: &DataplaneLiveNode) {
         let notify = live_node.completion_notify();
         tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
             .await
-            .expect("live packet_mover2 worker completion");
+            .expect("live dataplane worker completion");
     }
 
     fn run_aead_classified_turn<I, O>(
-        driver: &mut PacketMover2TurnDriver,
+        driver: &mut DataplaneTurnDriver,
         inbound: I,
         outbound: O,
         limit: usize,
-    ) -> PacketMover2RuntimeTurn<'_>
+    ) -> DataplaneRuntimeTurn<'_>
     where
         I: IntoIterator<Item = SocketPacket>,
         O: IntoIterator<Item = OutboundPacket>,
     {
         driver.reset_turn_buffers();
 
-        let mut summary = PacketMover2RuntimeSummary::default();
+        let mut summary = DataplaneRuntimeSummary::default();
         for packet in inbound {
             driver.admit_socket_packet(packet, &mut summary);
         }
@@ -343,20 +343,20 @@
     }
 
     fn run_aead_classified_output_turn<'a, I, O, S>(
-        driver: &'a mut PacketMover2TurnDriver,
+        driver: &'a mut DataplaneTurnDriver,
         inbound: I,
         outbound: O,
         sink: &mut S,
         limit: usize,
-    ) -> PacketMover2RuntimeTurn<'a>
+    ) -> DataplaneRuntimeTurn<'a>
     where
         I: IntoIterator<Item = SocketPacket>,
         O: IntoIterator<Item = OutboundPacket>,
-        S: PacketMover2OutputSink,
+        S: DataplaneOutputSink,
     {
         driver.reset_turn_buffers();
 
-        let mut summary = PacketMover2RuntimeSummary::default();
+        let mut summary = DataplaneRuntimeSummary::default();
         for packet in inbound {
             driver.admit_socket_packet(packet, &mut summary);
         }
@@ -368,15 +368,15 @@
     }
 
     fn admit_test_raw_ingress_packet<R>(
-        driver: &mut PacketMover2TurnDriver,
-        packet: PacketMover2RawIngress,
+        driver: &mut DataplaneTurnDriver,
+        packet: DataplaneRawIngress,
         router: &mut R,
-        summary: &mut PacketMover2RuntimeSummary,
+        summary: &mut DataplaneRuntimeSummary,
     ) where
-        R: PacketMover2IngressRouter,
+        R: DataplaneIngressRouter,
     {
         let mut deferred_raw_ingress = std::collections::VecDeque::new();
-        let Some(socket_packet) = PacketMover2TurnDriver::raw_ingress_socket_packet(
+        let Some(socket_packet) = DataplaneTurnDriver::raw_ingress_socket_packet(
             packet,
             router,
             summary,
@@ -390,20 +390,20 @@
     }
 
     fn run_aead_raw_ingress_turn<'a, I, O, R>(
-        driver: &'a mut PacketMover2TurnDriver,
+        driver: &'a mut DataplaneTurnDriver,
         inbound: I,
         router: &mut R,
         outbound: O,
         limit: usize,
-    ) -> PacketMover2RuntimeTurn<'a>
+    ) -> DataplaneRuntimeTurn<'a>
     where
-        I: IntoIterator<Item = PacketMover2RawIngress>,
+        I: IntoIterator<Item = DataplaneRawIngress>,
         O: IntoIterator<Item = OutboundPacket>,
-        R: PacketMover2IngressRouter,
+        R: DataplaneIngressRouter,
     {
         driver.reset_turn_buffers();
 
-        let mut summary = PacketMover2RuntimeSummary::default();
+        let mut summary = DataplaneRuntimeSummary::default();
         for packet in inbound {
             admit_test_raw_ingress_packet(driver, packet, router, &mut summary);
         }
@@ -414,7 +414,7 @@
     }
 
     fn pump_aead_output_completion_turn<'a, C, RI, R, S>(
-        driver: &'a mut PacketMover2TurnDriver,
+        driver: &'a mut DataplaneTurnDriver,
         completions: &mut C,
         completion_limit: usize,
         raw_ingress: &mut RI,
@@ -424,17 +424,17 @@
         outbound_limit: usize,
         sink: &mut S,
         crypto_limit: usize,
-    ) -> PacketMover2RuntimeTurn<'a>
+    ) -> DataplaneRuntimeTurn<'a>
     where
-        C: PacketMover2CompletionSource,
-        RI: PacketMover2RawIngressSource,
-        R: PacketMover2IngressRouter,
-        S: PacketMover2OutputSink,
+        C: DataplaneCompletionSource,
+        RI: DataplaneRawIngressSource,
+        R: DataplaneIngressRouter,
+        S: DataplaneOutputSink,
     {
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let mut executor = InlineDataplaneCryptoExecutor::default();
         driver.reset_turn_buffers();
 
-        let mut summary = PacketMover2RuntimeSummary::default();
+        let mut summary = DataplaneRuntimeSummary::default();
         driver.completion_work.clear();
         let queued =
             completions.drain_completions_into(completion_limit, &mut driver.completion_work);
@@ -458,9 +458,9 @@
     }
 
     async fn pump_aead_live_node_route_table_turn<RI, Transports>(
-        driver: &mut PacketMover2TurnDriver,
+        driver: &mut DataplaneTurnDriver,
         raw_ingress: &mut RI,
-        routes: &mut PacketMover2LiveRouteTable,
+        routes: &mut DataplaneLiveRouteTable,
         raw_ingress_limit: usize,
         endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
@@ -472,10 +472,10 @@
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
         crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
+    ) -> DataplaneLiveNodeTurn
     where
-        RI: PacketMover2RawIngressSource,
-        Transports: PacketMover2TransportResolver + ?Sized,
+        RI: DataplaneRawIngressSource,
+        Transports: DataplaneTransportResolver + ?Sized,
     {
         let mut completions = VecDeque::<CryptoCompletion>::new();
         pump_aead_live_node_route_table_turn_with_completions(
@@ -500,11 +500,11 @@
     }
 
     async fn pump_aead_live_node_route_table_turn_with_completions<C, RI, Transports>(
-        driver: &mut PacketMover2TurnDriver,
+        driver: &mut DataplaneTurnDriver,
         completions: &mut C,
         completion_limit: usize,
         raw_ingress: &mut RI,
-        routes: &mut PacketMover2LiveRouteTable,
+        routes: &mut DataplaneLiveRouteTable,
         raw_ingress_limit: usize,
         endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
@@ -516,14 +516,14 @@
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
         crypto_limit: usize,
-    ) -> PacketMover2LiveNodeTurn
+    ) -> DataplaneLiveNodeTurn
     where
-        C: PacketMover2CompletionSource,
-        RI: PacketMover2RawIngressSource,
-        Transports: PacketMover2TransportResolver + ?Sized,
+        C: DataplaneCompletionSource,
+        RI: DataplaneRawIngressSource,
+        Transports: DataplaneTransportResolver + ?Sized,
     {
-        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
+        let mut executor = InlineDataplaneCryptoExecutor::default();
         let mut deferred_raw_ingress = std::collections::VecDeque::new();
         let summary = driver.start_aead_completion_turn(
             completions,
@@ -542,7 +542,7 @@
                 endpoint_limit,
                 tun_outbound_rx,
                 tun_limit,
-                PacketMover2LiveOutboundFirsts::default(),
+                DataplaneLiveOutboundFirsts::default(),
                 deferred_endpoint_data_batches,
                 deferred_tun_packets,
                 &mut deferred_raw_ingress,
@@ -556,14 +556,14 @@
     }
 
     fn finish_aead_turn_with_inline(
-        driver: &mut PacketMover2TurnDriver,
-        summary: PacketMover2RuntimeSummary,
+        driver: &mut DataplaneTurnDriver,
+        summary: DataplaneRuntimeSummary,
         limit: usize,
-    ) -> PacketMover2RuntimeTurn<'_> {
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
+    ) -> DataplaneRuntimeTurn<'_> {
+        let mut executor = InlineDataplaneCryptoExecutor::default();
         let summary =
             driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
-        PacketMover2RuntimeTurn {
+        DataplaneRuntimeTurn {
             summary,
             raw_ingress_drops: &driver.raw_ingress_drops,
             output_drops: &driver.output_drops,
@@ -573,15 +573,15 @@
     }
 
     fn finish_aead_output_turn_with_inline<'a, S>(
-        driver: &'a mut PacketMover2TurnDriver,
-        summary: PacketMover2RuntimeSummary,
+        driver: &'a mut DataplaneTurnDriver,
+        summary: DataplaneRuntimeSummary,
         sink: &mut S,
         limit: usize,
-    ) -> PacketMover2RuntimeTurn<'a>
+    ) -> DataplaneRuntimeTurn<'a>
     where
-        S: PacketMover2OutputSink,
+        S: DataplaneOutputSink,
     {
-        let mut executor = InlinePacketMover2CryptoExecutor::default();
+        let mut executor = InlineDataplaneCryptoExecutor::default();
         let summary =
             driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
         driver.send_collected_outputs(summary, sink)
@@ -779,9 +779,9 @@
     fn send_one_output<S>(
         sink: &mut S,
         output: PacketOutput,
-    ) -> Result<(), PacketMover2OutputError>
+    ) -> Result<(), DataplaneOutputError>
     where
-        S: PacketMover2OutputSink,
+        S: DataplaneOutputSink,
     {
         let mut drops = Vec::new();
         let sent = sink.send_batch(std::iter::once(output), &mut drops);
@@ -899,7 +899,7 @@
     }
 
     fn retire_completion(
-        mover: &mut PacketMover2,
+        mover: &mut Dataplane,
         completion: CryptoCompletion,
     ) -> Vec<RetiredPacket> {
         let mut retired = Vec::new();

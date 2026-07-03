@@ -211,8 +211,8 @@ fn test_reply_learned_keeps_configured_static_direct_peer_over_lower_cost_fallba
     node.add_connection(mesh_conn).unwrap();
     node.promote_connection(mesh_link, mesh_id, 2000).unwrap();
 
-    seed_packet_mover2_fmp_srtt_for_test(&mut node, dest_addr, 90);
-    seed_packet_mover2_fmp_srtt_for_test(&mut node, mesh_next_hop, 5);
+    seed_dataplane_fmp_srtt_for_test(&mut node, dest_addr, 90);
+    seed_dataplane_fmp_srtt_for_test(&mut node, mesh_next_hop, 5);
     node.learn_reverse_route(dest_addr, mesh_next_hop);
 
     {
@@ -222,8 +222,7 @@ fn test_reply_learned_keeps_configured_static_direct_peer_over_lower_cost_fallba
             "fixture should model a healthy operator-configured direct UDP path"
         );
         assert!(
-            node.packet_mover2_fmp_link_cost(&mesh_next_hop)
-                < node.packet_mover2_fmp_link_cost(&dest_addr),
+            node.dataplane_fmp_link_cost(&mesh_next_hop) < node.dataplane_fmp_link_cost(&dest_addr),
             "fixture should make the learned fallback look cheaper than direct"
         );
     }
@@ -339,8 +338,8 @@ fn test_reply_learned_prefers_lower_cost_fallback_over_slow_healthy_direct_peer(
     node.add_connection(mesh_conn).unwrap();
     node.promote_connection(mesh_link, mesh_id, 2000).unwrap();
 
-    seed_packet_mover2_fmp_srtt_for_test(&mut node, dest_addr, 90);
-    seed_packet_mover2_fmp_srtt_for_test(&mut node, mesh_next_hop, 5);
+    seed_dataplane_fmp_srtt_for_test(&mut node, dest_addr, 90);
+    seed_dataplane_fmp_srtt_for_test(&mut node, mesh_next_hop, 5);
     node.learn_reverse_route(dest_addr, mesh_next_hop);
 
     assert!(

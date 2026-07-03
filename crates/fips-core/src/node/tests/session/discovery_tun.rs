@@ -76,8 +76,7 @@ async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() 
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-probe");
     let baseline = node.stats().discovery.req_initiated;
 
-    node.handle_packet_mover2_deferred_tun_packet(ipv6_packet)
-        .await;
+    node.handle_dataplane_deferred_tun_packet(ipv6_packet).await;
 
     assert_eq!(
         node.pending_session_traffic
@@ -114,8 +113,7 @@ async fn test_tun_packet_for_established_session_with_no_route_queues_and_discov
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-probe");
     let baseline = node.stats().discovery.req_initiated;
 
-    node.handle_packet_mover2_deferred_tun_packet(ipv6_packet)
-        .await;
+    node.handle_dataplane_deferred_tun_packet(ipv6_packet).await;
 
     assert_eq!(
         node.pending_session_traffic
@@ -161,8 +159,7 @@ async fn test_tun_packet_for_established_session_with_stale_direct_queues_and_di
     let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-stale-direct-probe");
     let baseline = node.stats().discovery.req_initiated;
 
-    node.handle_packet_mover2_deferred_tun_packet(ipv6_packet)
-        .await;
+    node.handle_dataplane_deferred_tun_packet(ipv6_packet).await;
 
     assert_eq!(
         node.pending_session_traffic

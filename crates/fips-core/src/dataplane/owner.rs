@@ -5,30 +5,30 @@ pub(crate) struct OwnerConfig {
     next_send_counter: u64,
     send_counter_authority: Option<crate::noise::SendCounterAuthority>,
     fmp_session_start_ms: Option<u64>,
-    fmp_send_headers: Option<PacketMover2FmpSendHeaders>,
-    fmp_mmp: Option<PacketMover2FmpMmpConfig>,
+    fmp_send_headers: Option<DataplaneFmpSendHeaders>,
+    fmp_mmp: Option<DataplaneFmpMmpConfig>,
     fsp_session_start_ms: Option<u64>,
-    fsp_send_headers: Option<PacketMover2FspSendHeaders>,
+    fsp_send_headers: Option<DataplaneFspSendHeaders>,
     fsp_current_k_bit: Option<bool>,
     fsp_previous_draining_k_bit: Option<bool>,
     fsp_coords_warmup: Option<(u8, Vec<u8>)>,
-    fsp_mmp: Option<PacketMover2FspMmpConfig>,
+    fsp_mmp: Option<DataplaneFspMmpConfig>,
     source_peer: Option<crate::PeerIdentity>,
 }
 
 #[derive(Clone, Debug)]
-struct PacketMover2FmpMmpConfig {
+struct DataplaneFmpMmpConfig {
     config: crate::mmp::MmpConfig,
     is_initiator: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FmpSendHeaders {
+pub(crate) struct DataplaneFmpSendHeaders {
     receiver_idx: u32,
     flags: u8,
 }
 
-impl PacketMover2FmpSendHeaders {
+impl DataplaneFmpSendHeaders {
     pub(crate) fn new(receiver_idx: u32, flags: u8) -> Self {
         Self {
             receiver_idx,
@@ -38,14 +38,14 @@ impl PacketMover2FmpSendHeaders {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FmpSendContext {
+pub(crate) struct DataplaneFmpSendContext {
     generation: u64,
     receiver_idx: u32,
     flags: u8,
 }
 
-impl PacketMover2FmpSendContext {
-    fn new(generation: u64, headers: PacketMover2FmpSendHeaders) -> Self {
+impl DataplaneFmpSendContext {
+    fn new(generation: u64, headers: DataplaneFmpSendHeaders) -> Self {
         Self {
             generation,
             receiver_idx: headers.receiver_idx,
@@ -67,7 +67,7 @@ impl PacketMover2FmpSendContext {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PacketMover2FmpReceiverReportResult {
+pub(crate) struct DataplaneFmpReceiverReportResult {
     pub(crate) first_rtt: bool,
     pub(crate) srtt_ms: Option<f64>,
     pub(crate) loss_rate: f64,
@@ -75,7 +75,7 @@ pub(crate) struct PacketMover2FmpReceiverReportResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct PacketMover2FmpLinkMetrics {
+pub(crate) struct DataplaneFmpLinkMetrics {
     pub(crate) node_addr: NodeAddr,
     pub(crate) mode: crate::mmp::MmpMode,
     pub(crate) spin_bit_initiator: bool,
@@ -104,37 +104,37 @@ pub(crate) struct PacketMover2FmpLinkMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PacketMover2FmpMmpReportKind {
+pub(crate) enum DataplaneFmpMmpReportKind {
     Sender,
     Receiver,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PacketMover2FmpMmpReport {
+pub(crate) struct DataplaneFmpMmpReport {
     pub(crate) node_addr: NodeAddr,
     pub(crate) encoded: Vec<u8>,
-    pub(crate) kind: PacketMover2FmpMmpReportKind,
+    pub(crate) kind: DataplaneFmpMmpReportKind,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
-pub(crate) struct PacketMover2FmpMmpReportBatch {
-    pub(crate) reports: Vec<PacketMover2FmpMmpReport>,
-    pub(crate) metric_logs: Vec<PacketMover2FmpLinkMetrics>,
+pub(crate) struct DataplaneFmpMmpReportBatch {
+    pub(crate) reports: Vec<DataplaneFmpMmpReport>,
+    pub(crate) metric_logs: Vec<DataplaneFmpLinkMetrics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PacketMover2FmpMmpSkip {
+pub(crate) enum DataplaneFmpMmpSkip {
     UnknownOwner,
     MmpDisabled,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspSendHeaders {
+pub(crate) struct DataplaneFspSendHeaders {
     fsp_flags: u8,
     inner_flags: u8,
 }
 
-impl PacketMover2FspSendHeaders {
+impl DataplaneFspSendHeaders {
     pub(crate) fn new(fsp_flags: u8, inner_flags: u8) -> Self {
         Self {
             fsp_flags,
@@ -144,20 +144,20 @@ impl PacketMover2FspSendHeaders {
 }
 
 #[derive(Clone, Debug)]
-struct PacketMover2FspMmpConfig {
+struct DataplaneFspMmpConfig {
     config: crate::config::SessionMmpConfig,
     is_initiator: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspSendContext {
+pub(crate) struct DataplaneFspSendContext {
     generation: u64,
     fsp_flags: u8,
     inner_flags: u8,
 }
 
-impl PacketMover2FspSendContext {
-    fn new(generation: u64, headers: PacketMover2FspSendHeaders) -> Self {
+impl DataplaneFspSendContext {
+    fn new(generation: u64, headers: DataplaneFspSendHeaders) -> Self {
         Self {
             generation,
             fsp_flags: headers.fsp_flags,
@@ -179,7 +179,7 @@ impl PacketMover2FspSendContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PacketMover2FspMmpReport {
+pub(crate) struct DataplaneFspMmpReport {
     pub(crate) dest_addr: NodeAddr,
     pub(crate) msg_type: u8,
     pub(crate) encoded: Vec<u8>,
@@ -187,7 +187,7 @@ pub(crate) struct PacketMover2FspMmpReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PacketMover2FspMmpSnapshot {
+pub(crate) struct DataplaneFspMmpSnapshot {
     pub(crate) dest_addr: NodeAddr,
     pub(crate) fallback_session_name: String,
     pub(crate) mode: crate::mmp::MmpMode,
@@ -211,7 +211,7 @@ pub(crate) struct PacketMover2FspMmpSnapshot {
     pub(crate) ecn_ce_count: u32,
 }
 
-impl PacketMover2FspMmpSnapshot {
+impl DataplaneFspMmpSnapshot {
     fn from_mmp(
         dest_addr: NodeAddr,
         fallback_session_name: String,
@@ -246,13 +246,13 @@ impl PacketMover2FspMmpSnapshot {
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
-pub(crate) struct PacketMover2FspMmpReportBatch {
-    pub(crate) reports: Vec<PacketMover2FspMmpReport>,
-    pub(crate) metric_logs: Vec<PacketMover2FspMmpSnapshot>,
+pub(crate) struct DataplaneFspMmpReportBatch {
+    pub(crate) reports: Vec<DataplaneFspMmpReport>,
+    pub(crate) metric_logs: Vec<DataplaneFspMmpSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct PacketMover2FspReceiverReportResult {
+pub(crate) struct DataplaneFspReceiverReportResult {
     pub(crate) sample: Option<(u64, f64)>,
     pub(crate) used_direct_next_hop: bool,
     pub(crate) srtt_ms: Option<f64>,
@@ -260,25 +260,25 @@ pub(crate) struct PacketMover2FspReceiverReportResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PacketMover2FspMmpSkip {
+pub(crate) enum DataplaneFspMmpSkip {
     UnknownOwner,
     MmpDisabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PacketMover2FspPathMtuChange {
+pub(crate) struct DataplaneFspPathMtuChange {
     pub(crate) old_mtu: u16,
     pub(crate) new_mtu: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PacketMover2FspPathMtuApplyResult {
-    Changed(PacketMover2FspPathMtuChange),
+pub(crate) enum DataplaneFspPathMtuApplyResult {
+    Changed(DataplaneFspPathMtuChange),
     Unchanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PacketMover2FspMmpReportingResumed {
+pub(crate) struct DataplaneFspMmpReportingResumed {
     pub(crate) dest_addr: NodeAddr,
     pub(crate) consecutive_failures: u32,
 }
@@ -323,12 +323,12 @@ impl OwnerConfig {
     }
 
     pub(crate) fn with_fmp_send_headers(mut self, receiver_idx: u32, flags: u8) -> Self {
-        self.fmp_send_headers = Some(PacketMover2FmpSendHeaders::new(receiver_idx, flags));
+        self.fmp_send_headers = Some(DataplaneFmpSendHeaders::new(receiver_idx, flags));
         self
     }
 
     pub(crate) fn with_fmp_mmp(mut self, config: crate::mmp::MmpConfig, is_initiator: bool) -> Self {
-        self.fmp_mmp = Some(PacketMover2FmpMmpConfig {
+        self.fmp_mmp = Some(DataplaneFmpMmpConfig {
             config,
             is_initiator,
         });
@@ -345,7 +345,7 @@ impl OwnerConfig {
         fsp_flags: u8,
         inner_flags: u8,
     ) -> Self {
-        self.fsp_send_headers = Some(PacketMover2FspSendHeaders::new(fsp_flags, inner_flags));
+        self.fsp_send_headers = Some(DataplaneFspSendHeaders::new(fsp_flags, inner_flags));
         self
     }
 
@@ -373,7 +373,7 @@ impl OwnerConfig {
         config: crate::config::SessionMmpConfig,
         is_initiator: bool,
     ) -> Self {
-        self.fsp_mmp = Some(PacketMover2FspMmpConfig {
+        self.fsp_mmp = Some(DataplaneFspMmpConfig {
             config,
             is_initiator,
         });
@@ -461,7 +461,7 @@ pub(crate) enum OwnerReserveBlockReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspOwnerActivity {
+pub(crate) struct DataplaneFspOwnerActivity {
     owner: NodeAddr,
     fsp_session_start_ms: Option<u64>,
     last_rx_activity: Option<ActivityTick>,
@@ -479,7 +479,7 @@ pub(crate) struct PacketMover2FspOwnerActivity {
     data_bytes_recv: u64,
 }
 
-impl PacketMover2FspOwnerActivity {
+impl DataplaneFspOwnerActivity {
     pub(crate) fn last_outbound_next_hop(self) -> Option<NodeAddr> {
         self.last_outbound_next_hop
     }
@@ -603,15 +603,15 @@ pub(crate) struct OwnerState {
     pending_fsp_replay_window: Option<ReplayWindow>,
     active_path: Option<TransportPath>,
     fmp_session_start_ms: Option<u64>,
-    fmp_send_headers: Option<PacketMover2FmpSendHeaders>,
+    fmp_send_headers: Option<DataplaneFmpSendHeaders>,
     fmp_mmp: Option<crate::mmp::MmpPeerState>,
     fsp_session_start_ms: Option<u64>,
-    fsp_send_headers: Option<PacketMover2FspSendHeaders>,
+    fsp_send_headers: Option<DataplaneFspSendHeaders>,
     fsp_current_k_bit: bool,
     fsp_previous_draining_k_bit: Option<bool>,
     fsp_coords_warmup_remaining: u8,
     fsp_coords_prefix: Vec<u8>,
-    fsp_wrap_route: Option<PacketMover2FspWrapRoute>,
+    fsp_wrap_route: Option<DataplaneFspWrapRoute>,
     fsp_mmp: Option<crate::mmp::MmpSessionState>,
     fsp_lifecycle_confirmed: bool,
     source_peer: Option<crate::PeerIdentity>,
@@ -815,7 +815,7 @@ impl OwnerState {
         true
     }
 
-    pub(crate) fn set_fsp_wrap_route(&mut self, route: Option<PacketMover2FspWrapRoute>) -> bool {
+    pub(crate) fn set_fsp_wrap_route(&mut self, route: Option<DataplaneFspWrapRoute>) -> bool {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return false;
         }
@@ -936,10 +936,10 @@ impl OwnerState {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
-        self.fsp_wrap_route.map(PacketMover2FspWrapRoute::next_hop_addr)
+        self.fsp_wrap_route.map(DataplaneFspWrapRoute::next_hop_addr)
     }
 
-    pub(crate) fn fmp_send_context(&self) -> Option<PacketMover2FmpSendContext> {
+    pub(crate) fn fmp_send_context(&self) -> Option<DataplaneFmpSendContext> {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return None;
         }
@@ -949,10 +949,10 @@ impl OwnerState {
         {
             headers.flags |= crate::node::wire::FLAG_SP;
         }
-        Some(PacketMover2FmpSendContext::new(self.generation, headers))
+        Some(DataplaneFmpSendContext::new(self.generation, headers))
     }
 
-    pub(crate) fn fsp_send_context(&self) -> Option<PacketMover2FspSendContext> {
+    pub(crate) fn fsp_send_context(&self) -> Option<DataplaneFspSendContext> {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
@@ -963,7 +963,7 @@ impl OwnerState {
             }
             .to_byte();
         }
-        Some(PacketMover2FspSendContext::new(self.generation, headers))
+        Some(DataplaneFspSendContext::new(self.generation, headers))
     }
 
     pub(crate) fn can_reserve_class(&self, class: PacketClass) -> bool {
@@ -998,8 +998,8 @@ impl OwnerState {
         self.last_tx_activity
     }
 
-    pub(crate) fn fsp_activity(&self) -> Option<PacketMover2FspOwnerActivity> {
-        (self.owner.protocol() == PacketProtocol::Fsp).then_some(PacketMover2FspOwnerActivity {
+    pub(crate) fn fsp_activity(&self) -> Option<DataplaneFspOwnerActivity> {
+        (self.owner.protocol() == PacketProtocol::Fsp).then_some(DataplaneFspOwnerActivity {
             owner: self.owner.node_addr(),
             fsp_session_start_ms: self.fsp_session_start_ms,
             last_rx_activity: self.last_rx_activity,
@@ -1021,7 +1021,7 @@ impl OwnerState {
         })
     }
 
-    pub(crate) fn fsp_mmp_snapshot(&self) -> Option<PacketMover2FspMmpSnapshot> {
+    pub(crate) fn fsp_mmp_snapshot(&self) -> Option<DataplaneFspMmpSnapshot> {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
@@ -1031,7 +1031,7 @@ impl OwnerState {
             .source_peer
             .map(|peer| peer.short_npub())
             .unwrap_or_else(|| dest_addr.to_string());
-        Some(PacketMover2FspMmpSnapshot::from_mmp(
+        Some(DataplaneFspMmpSnapshot::from_mmp(
             dest_addr,
             fallback_session_name,
             mmp,
@@ -1041,13 +1041,13 @@ impl OwnerState {
     pub(crate) fn fmp_link_metrics(
         &self,
         now: std::time::Instant,
-    ) -> Option<PacketMover2FmpLinkMetrics> {
+    ) -> Option<DataplaneFmpLinkMetrics> {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return None;
         }
         let mmp = self.fmp_mmp.as_ref()?;
         let metrics = &mmp.metrics;
-        Some(PacketMover2FmpLinkMetrics {
+        Some(DataplaneFmpLinkMetrics {
             node_addr: self.owner.node_addr(),
             mode: mmp.mode(),
             spin_bit_initiator: mmp.spin_bit.is_initiator(),
@@ -1300,7 +1300,7 @@ impl OwnerState {
         if let Some(tick) = activity_tick {
             note_activity(&mut self.last_rx_activity, tick);
         }
-        if packet_mover2_fsp_message_is_application_data(msg_type)
+        if dataplane_fsp_message_is_application_data(msg_type)
             && (previous_hop == self.owner.node_addr()
                 || self.last_outbound_next_hop == Some(previous_hop))
         {
@@ -1327,12 +1327,12 @@ impl OwnerState {
         ce_flag: bool,
         spin_bit: bool,
         now: std::time::Instant,
-    ) -> Result<Option<std::time::Duration>, PacketMover2FmpMmpSkip> {
+    ) -> Result<Option<std::time::Duration>, DataplaneFmpMmpSkip> {
         if self.owner.protocol() != PacketProtocol::Fmp {
-            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+            return Err(DataplaneFmpMmpSkip::UnknownOwner);
         }
         let Some(mmp) = &mut self.fmp_mmp else {
-            return Err(PacketMover2FmpMmpSkip::MmpDisabled);
+            return Err(DataplaneFmpMmpSkip::MmpDisabled);
         };
         mmp.receiver
             .record_recv(counter, timestamp_ms, packet_len, ce_flag, now);
@@ -1344,12 +1344,12 @@ impl OwnerState {
         counter: u64,
         timestamp_ms: u32,
         bytes_sent: usize,
-    ) -> Result<(), PacketMover2FmpMmpSkip> {
+    ) -> Result<(), DataplaneFmpMmpSkip> {
         if self.owner.protocol() != PacketProtocol::Fmp {
-            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+            return Err(DataplaneFmpMmpSkip::UnknownOwner);
         }
         let Some(mmp) = &mut self.fmp_mmp else {
-            return Err(PacketMover2FmpMmpSkip::MmpDisabled);
+            return Err(DataplaneFmpMmpSkip::MmpDisabled);
         };
         mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);
         Ok(())
@@ -1360,15 +1360,15 @@ impl OwnerState {
         rr: &crate::mmp::report::ReceiverReport,
         now_ms: u64,
         now: std::time::Instant,
-    ) -> Result<PacketMover2FmpReceiverReportResult, PacketMover2FmpMmpSkip> {
+    ) -> Result<DataplaneFmpReceiverReportResult, DataplaneFmpMmpSkip> {
         if self.owner.protocol() != PacketProtocol::Fmp {
-            return Err(PacketMover2FmpMmpSkip::UnknownOwner);
+            return Err(DataplaneFmpMmpSkip::UnknownOwner);
         }
         let session_start_ms = self
             .fmp_session_start_ms
-            .ok_or(PacketMover2FmpMmpSkip::MmpDisabled)?;
+            .ok_or(DataplaneFmpMmpSkip::MmpDisabled)?;
         let Some(mmp) = &mut self.fmp_mmp else {
-            return Err(PacketMover2FmpMmpSkip::MmpDisabled);
+            return Err(DataplaneFmpMmpSkip::MmpDisabled);
         };
         let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
         let first_rtt = mmp.metrics.process_receiver_report(rr, our_timestamp_ms, now);
@@ -1381,7 +1381,7 @@ impl OwnerState {
         let peer_highest = mmp.receiver.highest_counter();
         mmp.metrics
             .update_reverse_delivery(our_recv_packets, peer_highest);
-        Ok(PacketMover2FmpReceiverReportResult {
+        Ok(DataplaneFmpReceiverReportResult {
             first_rtt,
             srtt_ms: mmp.metrics.srtt_ms(),
             loss_rate: mmp.metrics.loss_rate(),
@@ -1409,7 +1409,7 @@ impl OwnerState {
     fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,
-        batch: &mut PacketMover2FspMmpReportBatch,
+        batch: &mut DataplaneFspMmpReportBatch,
     ) {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return;
@@ -1432,7 +1432,7 @@ impl OwnerState {
         {
             let session_sr: crate::protocol::SessionSenderReport =
                 crate::protocol::SessionSenderReport::from(&sr);
-            batch.reports.push(PacketMover2FspMmpReport {
+            batch.reports.push(DataplaneFspMmpReport {
                 dest_addr,
                 msg_type: crate::protocol::SessionMessageType::SenderReport.to_byte(),
                 encoded: session_sr.encode(),
@@ -1446,7 +1446,7 @@ impl OwnerState {
         {
             let session_rr: crate::protocol::SessionReceiverReport =
                 crate::protocol::SessionReceiverReport::from(&rr);
-            batch.reports.push(PacketMover2FspMmpReport {
+            batch.reports.push(DataplaneFspMmpReport {
                 dest_addr,
                 msg_type: crate::protocol::SessionMessageType::ReceiverReport.to_byte(),
                 encoded: session_rr.encode(),
@@ -1458,7 +1458,7 @@ impl OwnerState {
             && let Some(mtu_value) = mmp.path_mtu.build_notification(now)
         {
             let notif = crate::protocol::PathMtuNotification::new(mtu_value);
-            batch.reports.push(PacketMover2FspMmpReport {
+            batch.reports.push(DataplaneFspMmpReport {
                 dest_addr,
                 msg_type: crate::protocol::SessionMessageType::PathMtuNotification.to_byte(),
                 encoded: notif.encode(),
@@ -1467,7 +1467,7 @@ impl OwnerState {
         }
 
         if mmp.should_log(now) {
-            let snapshot = PacketMover2FspMmpSnapshot::from_mmp(dest_addr, fallback_session_name, mmp);
+            let snapshot = DataplaneFspMmpSnapshot::from_mmp(dest_addr, fallback_session_name, mmp);
             batch.metric_logs.push(snapshot);
             mmp.mark_logged(now);
         }
@@ -1476,7 +1476,7 @@ impl OwnerState {
     fn collect_fmp_mmp_reports(
         &mut self,
         now: std::time::Instant,
-        batch: &mut PacketMover2FmpMmpReportBatch,
+        batch: &mut DataplaneFmpMmpReportBatch,
     ) {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return;
@@ -1492,10 +1492,10 @@ impl OwnerState {
             && mmp.sender.should_send_report(now)
             && let Some(sr) = mmp.sender.build_report(now)
         {
-            batch.reports.push(PacketMover2FmpMmpReport {
+            batch.reports.push(DataplaneFmpMmpReport {
                 node_addr,
                 encoded: sr.encode(),
-                kind: PacketMover2FmpMmpReportKind::Sender,
+                kind: DataplaneFmpMmpReportKind::Sender,
             });
         }
 
@@ -1503,16 +1503,16 @@ impl OwnerState {
             && mmp.receiver.should_send_report(now)
             && let Some(rr) = mmp.receiver.build_report(now)
         {
-            batch.reports.push(PacketMover2FmpMmpReport {
+            batch.reports.push(DataplaneFmpMmpReport {
                 node_addr,
                 encoded: rr.encode(),
-                kind: PacketMover2FmpMmpReportKind::Receiver,
+                kind: DataplaneFmpMmpReportKind::Receiver,
             });
         }
 
         if mmp.should_log(now) {
             let metrics = &mmp.metrics;
-            batch.metric_logs.push(PacketMover2FmpLinkMetrics {
+            batch.metric_logs.push(DataplaneFmpLinkMetrics {
                 node_addr,
                 mode: mmp.mode(),
                 spin_bit_initiator: mmp.spin_bit.is_initiator(),
@@ -1567,14 +1567,14 @@ impl OwnerState {
     fn record_fsp_mmp_send_result(
         &mut self,
         success: bool,
-    ) -> Option<PacketMover2FspMmpReportingResumed> {
+    ) -> Option<DataplaneFspMmpReportingResumed> {
         if self.owner.protocol() != PacketProtocol::Fsp {
             return None;
         }
         let mmp = self.fsp_mmp.as_mut()?;
         if success {
             let prev = mmp.sender.record_send_success();
-            (prev > 3).then_some(PacketMover2FspMmpReportingResumed {
+            (prev > 3).then_some(DataplaneFspMmpReportingResumed {
                 dest_addr: self.owner.node_addr(),
                 consecutive_failures: prev,
             })
@@ -1584,12 +1584,12 @@ impl OwnerState {
         }
     }
 
-    fn seed_fsp_path_mtu(&mut self, path_mtu: u16) -> Result<(), PacketMover2FspMmpSkip> {
+    fn seed_fsp_path_mtu(&mut self, path_mtu: u16) -> Result<(), DataplaneFspMmpSkip> {
         if self.owner.protocol() != PacketProtocol::Fsp {
-            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+            return Err(DataplaneFspMmpSkip::UnknownOwner);
         }
         let Some(mmp) = &mut self.fsp_mmp else {
-            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+            return Err(DataplaneFspMmpSkip::MmpDisabled);
         };
         mmp.path_mtu.seed_source_mtu(path_mtu);
         Ok(())
@@ -1602,15 +1602,15 @@ impl OwnerState {
         now_ms: u64,
         now: std::time::Instant,
         min_loss_sample: u64,
-    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+    ) -> Result<DataplaneFspReceiverReportResult, DataplaneFspMmpSkip> {
         if self.owner.protocol() != PacketProtocol::Fsp {
-            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+            return Err(DataplaneFspMmpSkip::UnknownOwner);
         }
         let Some(session_start_ms) = self.fsp_session_start_ms else {
-            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+            return Err(DataplaneFspMmpSkip::MmpDisabled);
         };
         let Some(mmp) = &mut self.fsp_mmp else {
-            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+            return Err(DataplaneFspMmpSkip::MmpDisabled);
         };
 
         let our_timestamp_ms = now_ms.wrapping_sub(session_start_ms) as u32;
@@ -1639,7 +1639,7 @@ impl OwnerState {
         mmp.metrics
             .update_reverse_delivery(our_recv_packets, peer_highest);
 
-        Ok(PacketMover2FspReceiverReportResult {
+        Ok(DataplaneFspReceiverReportResult {
             sample,
             used_direct_next_hop: last_outbound_next_hop
                 .map_or(true, |next_hop| next_hop == self.owner.node_addr()),
@@ -1652,23 +1652,23 @@ impl OwnerState {
         &mut self,
         path_mtu: u16,
         now: std::time::Instant,
-    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+    ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
         if self.owner.protocol() != PacketProtocol::Fsp {
-            return Err(PacketMover2FspMmpSkip::UnknownOwner);
+            return Err(DataplaneFspMmpSkip::UnknownOwner);
         }
         let Some(mmp) = &mut self.fsp_mmp else {
-            return Err(PacketMover2FspMmpSkip::MmpDisabled);
+            return Err(DataplaneFspMmpSkip::MmpDisabled);
         };
         let old_mtu = mmp.path_mtu.current_mtu();
         if mmp.path_mtu.apply_notification(path_mtu, now) {
-            Ok(PacketMover2FspPathMtuApplyResult::Changed(
-                PacketMover2FspPathMtuChange {
+            Ok(DataplaneFspPathMtuApplyResult::Changed(
+                DataplaneFspPathMtuChange {
                     old_mtu,
                     new_mtu: mmp.path_mtu.current_mtu(),
                 },
             ))
         } else {
-            Ok(PacketMover2FspPathMtuApplyResult::Unchanged)
+            Ok(DataplaneFspPathMtuApplyResult::Unchanged)
         }
     }
 
@@ -1860,7 +1860,7 @@ impl OwnerState {
             self.authenticated_counter_highest = self
                 .authenticated_counter_highest
                 .max(completion.reservation.counter);
-            match PacketMover2FspEndpointDataIngress::from_output(output) {
+            match DataplaneFspEndpointDataIngress::from_output(output) {
                 Ok(ingress) => {
                     self.record_retired_endpoint_data_ingress(&ingress);
                     endpoint_packets = endpoint_packets.saturating_add(ingress.len());
@@ -1868,7 +1868,7 @@ impl OwnerState {
                         Some(bulk) => bulk.push(ingress),
                         None => {
                             endpoint_data_bulk =
-                                Some(PacketMover2EndpointDataBulk::from_ingress(ingress));
+                                Some(DataplaneEndpointDataBulk::from_ingress(ingress));
                         }
                     }
                 }
@@ -1879,7 +1879,7 @@ impl OwnerState {
             }
         }
         flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
-        crate::perf_profile::record_packet_mover2_established_fsp_data_retire_run(
+        crate::perf_profile::record_dataplane_established_fsp_data_retire_run(
             endpoint_packets,
         );
         Ok(())
@@ -1933,7 +1933,7 @@ impl OwnerState {
         compact_endpoint_data: bool,
     ) {
         if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
-            match PacketMover2FspEndpointDataIngress::from_output(output) {
+            match DataplaneFspEndpointDataIngress::from_output(output) {
                 Ok(ingress) => {
                     self.record_retired_endpoint_data_ingress(&ingress);
                     retired.push_endpoint_data_bulk(ingress);
@@ -1948,7 +1948,7 @@ impl OwnerState {
 
     fn record_retired_endpoint_data_ingress(
         &mut self,
-        ingress: &PacketMover2FspEndpointDataIngress,
+        ingress: &DataplaneFspEndpointDataIngress,
     ) {
         let commit = ingress.commit();
         if self.owner != OwnerId::fsp_node(commit.source_addr()) {
@@ -1981,7 +1981,7 @@ fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) {
 
 fn flush_retired_endpoint_data_bulk(
     retired: &mut RetiredOutputs,
-    endpoint_data_bulk: &mut Option<PacketMover2EndpointDataBulk>,
+    endpoint_data_bulk: &mut Option<DataplaneEndpointDataBulk>,
 ) {
     if let Some(bulk) = endpoint_data_bulk.take() {
         retired.push_endpoint_data_bulk_batch(bulk);

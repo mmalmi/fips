@@ -4,9 +4,9 @@ pub(crate) enum PreparedCryptoWork {
     Completed(CryptoCompletion),
 }
 
-const PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS: usize = 8;
-const PACKET_MOVER2_AEAD_WORKER_BATCH_PACKETS: usize =
-    PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS * 4;
+const DATAPLANE_AEAD_WORKER_JOB_PACKETS: usize = 8;
+const DATAPLANE_AEAD_WORKER_BATCH_PACKETS: usize =
+    DATAPLANE_AEAD_WORKER_JOB_PACKETS * 4;
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
@@ -26,7 +26,7 @@ impl PreparedCryptoWork {
             Self::Open { work, cipher } => {
                 let reservation = work.reservation.clone();
                 let _timer = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::PacketMover2AeadOpen,
+                    crate::perf_profile::Stage::DataplaneAeadOpen,
                 );
                 match AeadOpenWork::from_crypto_work(work) {
                     Ok(work) => work.execute(&cipher),
@@ -39,7 +39,7 @@ impl PreparedCryptoWork {
             } => {
                 let reservation = work.reservation.clone();
                 let _timer = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::PacketMover2AeadSeal,
+                    crate::perf_profile::Stage::DataplaneAeadSeal,
                 );
                 match AeadSealWork::from_outbound_work(work, cipher) {
                     Ok(work) => work.execute(),
@@ -91,7 +91,7 @@ enum PreparedCryptoJob {
 
 impl PreparedCryptoJob {
     fn open_run(work: Vec<CryptoWork>, cipher: AeadKey) -> Self {
-        let bulk_count = packet_mover2_open_run_bulk_count(&work);
+        let bulk_count = dataplane_open_run_bulk_count(&work);
         Self::OpenRun {
             queued_at: crate::perf_profile::stamp(),
             work,
@@ -169,7 +169,7 @@ impl PreparedOpenRunJobBuilder {
 
     fn push(
         &mut self,
-        pool: &PacketMover2AeadWorkerPool,
+        pool: &DataplaneAeadWorkerPool,
         work: CryptoWork,
         cipher: AeadKey,
         completions: &mut Vec<CryptoCompletion>,
@@ -210,7 +210,7 @@ impl PreparedOpenRunJobBuilder {
 
     fn flush(
         &mut self,
-        pool: &PacketMover2AeadWorkerPool,
+        pool: &DataplaneAeadWorkerPool,
         completions: &mut Vec<CryptoCompletion>,
     ) {
         if self.work.is_empty() || self.closed {
@@ -264,7 +264,7 @@ impl PreparedCryptoJobBuilder {
 
     fn push(
         &mut self,
-        pool: &PacketMover2AeadWorkerPool,
+        pool: &DataplaneAeadWorkerPool,
         work: PreparedCryptoWork,
         completions: &mut Vec<CryptoCompletion>,
     ) {
@@ -283,7 +283,7 @@ impl PreparedCryptoJobBuilder {
 
     fn flush(
         &mut self,
-        pool: &PacketMover2AeadWorkerPool,
+        pool: &DataplaneAeadWorkerPool,
         completions: &mut Vec<CryptoCompletion>,
     ) {
         if self.work.is_empty() || self.closed {
@@ -293,7 +293,7 @@ impl PreparedCryptoJobBuilder {
         let work = std::mem::replace(&mut self.work, next);
         let bulk_count = std::mem::take(&mut self.bulk_count);
         if !pool.submit_prepared_job(
-            PacketMover2AeadDirection::Seal,
+            DataplaneAeadDirection::Seal,
             work,
             bulk_count,
             completions,
@@ -303,7 +303,7 @@ impl PreparedCryptoJobBuilder {
     }
 }
 
-pub(crate) trait PacketMover2CryptoExecutor {
+pub(crate) trait DataplaneCryptoExecutor {
     fn available_capacity(&self) -> usize {
         usize::MAX
     }
@@ -332,13 +332,13 @@ pub(crate) trait PacketMover2CryptoExecutor {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PacketMover2AeadDirection {
+enum DataplaneAeadDirection {
     Open,
     Seal,
 }
 
 #[derive(Debug)]
-pub(crate) struct PacketMover2AeadWorkerPool {
+pub(crate) struct DataplaneAeadWorkerPool {
     open_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
     seal_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
     completion_rxs: Vec<crossbeam_channel::Receiver<Vec<CryptoCompletionBatch>>>,
@@ -354,7 +354,7 @@ pub(crate) struct PacketMover2AeadWorkerPool {
     seal_workers: Vec<std::thread::JoinHandle<()>>,
 }
 
-impl PacketMover2AeadWorkerPool {
+impl DataplaneAeadWorkerPool {
     pub(crate) fn new(worker_count: usize, max_in_flight: usize) -> Self {
         let worker_count = worker_count.max(1);
         let max_in_flight = max_in_flight.max(1);
@@ -373,8 +373,8 @@ impl PacketMover2AeadWorkerPool {
         let seal_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let open_bulk_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let seal_bulk_in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (open_tx, open_workers) = spawn_packet_mover2_aead_workers(
-            PacketMover2AeadDirection::Open,
+        let (open_tx, open_workers) = spawn_dataplane_aead_workers(
+            DataplaneAeadDirection::Open,
             worker_count,
             max_in_flight,
             completion_txs.clone(),
@@ -382,8 +382,8 @@ impl PacketMover2AeadWorkerPool {
             Arc::clone(&open_in_flight),
             Arc::clone(&open_bulk_in_flight),
         );
-        let (seal_tx, seal_workers) = spawn_packet_mover2_aead_workers(
-            PacketMover2AeadDirection::Seal,
+        let (seal_tx, seal_workers) = spawn_dataplane_aead_workers(
+            DataplaneAeadDirection::Seal,
             worker_count,
             max_in_flight,
             completion_txs,
@@ -418,12 +418,12 @@ impl PacketMover2AeadWorkerPool {
             return;
         }
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2AeadOpenInFlight,
+            crate::perf_profile::Event::DataplaneAeadOpenInFlight,
             self.open_in_flight
                 .load(std::sync::atomic::Ordering::Acquire) as u64,
         );
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2AeadSealInFlight,
+            crate::perf_profile::Event::DataplaneAeadSealInFlight,
             self.seal_in_flight
                 .load(std::sync::atomic::Ordering::Acquire) as u64,
         );
@@ -435,22 +435,22 @@ impl PacketMover2AeadWorkerPool {
         let completion_depth =
             pending_completion_depth.saturating_add(self.completion_rxs.iter().map(|rx| rx.len()).sum::<usize>());
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2AeadCompletionQueueDepth,
+            crate::perf_profile::Event::DataplaneAeadCompletionQueueDepth,
             completion_depth as u64,
         );
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2AeadOpenQueueDepth,
+            crate::perf_profile::Event::DataplaneAeadOpenQueueDepth,
             self.open_tx.as_ref().map_or(0, |tx| tx.len()) as u64,
         );
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2AeadSealQueueDepth,
+            crate::perf_profile::Event::DataplaneAeadSealQueueDepth,
             self.seal_tx.as_ref().map_or(0, |tx| tx.len()) as u64,
         );
     }
 
     fn finish_drained_completions(
         &self,
-        direction: PacketMover2AeadDirection,
+        direction: DataplaneAeadDirection,
         count: usize,
         bulk_count: usize,
     ) {
@@ -467,7 +467,7 @@ impl PacketMover2AeadWorkerPool {
         limit: usize,
         out: &mut Vec<CryptoCompletionBatch>,
     ) -> (usize, Option<CryptoCompletionBatch>) {
-        crate::perf_profile::record_packet_mover2_aead_completion_batch(batch.len());
+        crate::perf_profile::record_dataplane_aead_completion_batch(batch.len());
         let drained = batch.len().min(limit);
         if drained == 0 {
             return (0, Some(batch));
@@ -477,7 +477,7 @@ impl PacketMover2AeadWorkerPool {
         } else {
             None
         };
-        let direction = packet_mover2_aead_direction_for_completion_source(batch.source());
+        let direction = dataplane_aead_direction_for_completion_source(batch.source());
         let bulk_count = if batch.lane() == Lane::Bulk { drained } else { 0 };
         self.finish_drained_completions(direction, drained, bulk_count);
         out.push(batch);
@@ -486,32 +486,32 @@ impl PacketMover2AeadWorkerPool {
 
     fn direction_counters(
         &self,
-        direction: PacketMover2AeadDirection,
+        direction: DataplaneAeadDirection,
     ) -> (
         &std::sync::atomic::AtomicUsize,
         &std::sync::atomic::AtomicUsize,
     ) {
         match direction {
-            PacketMover2AeadDirection::Open => (&self.open_in_flight, &self.open_bulk_in_flight),
-            PacketMover2AeadDirection::Seal => (&self.seal_in_flight, &self.seal_bulk_in_flight),
+            DataplaneAeadDirection::Open => (&self.open_in_flight, &self.open_bulk_in_flight),
+            DataplaneAeadDirection::Seal => (&self.seal_in_flight, &self.seal_bulk_in_flight),
         }
     }
 
-    fn direction_has_sender(&self, direction: PacketMover2AeadDirection) -> bool {
+    fn direction_has_sender(&self, direction: DataplaneAeadDirection) -> bool {
         match direction {
-            PacketMover2AeadDirection::Open => self.open_tx.is_some(),
-            PacketMover2AeadDirection::Seal => self.seal_tx.is_some(),
+            DataplaneAeadDirection::Open => self.open_tx.is_some(),
+            DataplaneAeadDirection::Seal => self.seal_tx.is_some(),
         }
     }
 
-    fn direction_worker_count(&self, direction: PacketMover2AeadDirection) -> usize {
+    fn direction_worker_count(&self, direction: DataplaneAeadDirection) -> usize {
         match direction {
-            PacketMover2AeadDirection::Open => self.open_workers.len(),
-            PacketMover2AeadDirection::Seal => self.seal_workers.len(),
+            DataplaneAeadDirection::Open => self.open_workers.len(),
+            DataplaneAeadDirection::Seal => self.seal_workers.len(),
         }
     }
 
-    fn direction_capacity(&self, direction: PacketMover2AeadDirection) -> usize {
+    fn direction_capacity(&self, direction: DataplaneAeadDirection) -> usize {
         if !self.direction_has_sender(direction) {
             return 0;
         }
@@ -519,14 +519,14 @@ impl PacketMover2AeadWorkerPool {
         self.max_in_flight.saturating_sub(in_flight.load(std::sync::atomic::Ordering::Acquire))
     }
 
-    fn direction_capacity_for_lane(&self, direction: PacketMover2AeadDirection, lane: Lane) -> usize {
+    fn direction_capacity_for_lane(&self, direction: DataplaneAeadDirection, lane: Lane) -> usize {
         let total_available = self.direction_capacity(direction);
         if lane == Lane::Priority {
             return total_available;
         }
         let bulk_limit =
             self.max_in_flight
-                .saturating_sub(packet_mover2_aead_worker_priority_reserve(
+                .saturating_sub(dataplane_aead_worker_priority_reserve(
                     self.max_in_flight,
                 ));
         let (_, bulk_in_flight) = self.direction_counters(direction);
@@ -536,7 +536,7 @@ impl PacketMover2AeadWorkerPool {
 
     fn submit_prepared_job(
         &self,
-        direction: PacketMover2AeadDirection,
+        direction: DataplaneAeadDirection,
         work: Vec<PreparedCryptoWork>,
         bulk_count: usize,
         completions: &mut Vec<CryptoCompletion>,
@@ -545,8 +545,8 @@ impl PacketMover2AeadWorkerPool {
             return true;
         }
         let work_tx = match direction {
-            PacketMover2AeadDirection::Open => self.open_tx.as_ref(),
-            PacketMover2AeadDirection::Seal => self.seal_tx.as_ref(),
+            DataplaneAeadDirection::Open => self.open_tx.as_ref(),
+            DataplaneAeadDirection::Seal => self.seal_tx.as_ref(),
         };
         let Some(work_tx) = work_tx else {
             push_failed_prepared_work(work, completions);
@@ -572,13 +572,13 @@ impl PacketMover2AeadWorkerPool {
         };
 
         let job = PreparedCryptoJob::open_run(work, cipher);
-        self.submit_job(work_tx, PacketMover2AeadDirection::Open, job, completions)
+        self.submit_job(work_tx, DataplaneAeadDirection::Open, job, completions)
     }
 
     fn submit_job(
         &self,
         work_tx: &crossbeam_channel::Sender<PreparedCryptoJob>,
-        direction: PacketMover2AeadDirection,
+        direction: DataplaneAeadDirection,
         job: PreparedCryptoJob,
         completions: &mut Vec<CryptoCompletion>,
     ) -> bool {
@@ -591,7 +591,7 @@ impl PacketMover2AeadWorkerPool {
         }
         match work_tx.try_send(job) {
             Ok(()) => {
-                crate::perf_profile::record_packet_mover2_aead_prepared_job(chunk_len);
+                crate::perf_profile::record_dataplane_aead_prepared_job(chunk_len);
                 true
             }
             Err(crossbeam_channel::TrySendError::Full(job))
@@ -607,26 +607,26 @@ impl PacketMover2AeadWorkerPool {
     }
 }
 
-impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
+impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
     fn available_capacity(&self) -> usize {
         self.available_open_capacity()
             .saturating_add(self.available_seal_capacity())
     }
 
     fn available_open_capacity(&self) -> usize {
-        self.direction_capacity(PacketMover2AeadDirection::Open)
+        self.direction_capacity(DataplaneAeadDirection::Open)
     }
 
     fn available_seal_capacity(&self) -> usize {
-        self.direction_capacity(PacketMover2AeadDirection::Seal)
+        self.direction_capacity(DataplaneAeadDirection::Seal)
     }
 
     fn available_open_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.direction_capacity_for_lane(PacketMover2AeadDirection::Open, lane)
+        self.direction_capacity_for_lane(DataplaneAeadDirection::Open, lane)
     }
 
     fn available_seal_capacity_for_lane(&self, lane: Lane) -> usize {
-        self.direction_capacity_for_lane(PacketMover2AeadDirection::Seal, lane)
+        self.direction_capacity_for_lane(DataplaneAeadDirection::Seal, lane)
     }
 
     fn execute_prepared_chunk(
@@ -647,13 +647,13 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
                 PreparedCryptoWork::Seal { .. } => (open, seal.saturating_add(1)),
                 PreparedCryptoWork::Completed(_) => (open, seal),
             });
-        let open_job_packets = packet_mover2_aead_open_worker_job_packets(
+        let open_job_packets = dataplane_aead_open_worker_job_packets(
             open_count,
-            self.direction_worker_count(PacketMover2AeadDirection::Open),
+            self.direction_worker_count(DataplaneAeadDirection::Open),
         );
-        let seal_job_packets = packet_mover2_aead_worker_job_packets(
+        let seal_job_packets = dataplane_aead_worker_job_packets(
             seal_count,
-            self.direction_worker_count(PacketMover2AeadDirection::Seal),
+            self.direction_worker_count(DataplaneAeadDirection::Seal),
         );
         let mut open_jobs = PreparedOpenRunJobBuilder::new(open_job_packets);
         let mut seal_jobs = PreparedCryptoJobBuilder::new(seal_job_packets);
@@ -674,7 +674,7 @@ impl PacketMover2CryptoExecutor for PacketMover2AeadWorkerPool {
     }
 }
 
-impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
+impl DataplaneCompletionSource for DataplaneAeadWorkerPool {
     fn drain_completions_into(
         &mut self,
         limit: usize,
@@ -756,8 +756,8 @@ impl PacketMover2CompletionSource for PacketMover2AeadWorkerPool {
     }
 }
 
-fn spawn_packet_mover2_aead_workers(
-    direction: PacketMover2AeadDirection,
+fn spawn_dataplane_aead_workers(
+    direction: DataplaneAeadDirection,
     worker_count: usize,
     max_in_flight: usize,
     completion_txs: Vec<crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>>,
@@ -775,7 +775,7 @@ fn spawn_packet_mover2_aead_workers(
     let mut workers = Vec::with_capacity(worker_count);
     for worker_idx in 0..worker_count {
         let work_rx = work_rx.clone();
-        workers.push(spawn_packet_mover2_aead_worker_thread(
+        workers.push(spawn_dataplane_aead_worker_thread(
             direction,
             worker_idx,
             work_rx,
@@ -788,8 +788,8 @@ fn spawn_packet_mover2_aead_workers(
     (work_tx, workers)
 }
 
-fn spawn_packet_mover2_aead_worker_thread(
-    direction: PacketMover2AeadDirection,
+fn spawn_dataplane_aead_worker_thread(
+    direction: DataplaneAeadDirection,
     worker_idx: usize,
     work_rx: crossbeam_channel::Receiver<PreparedCryptoJob>,
     completion_txs: Vec<crossbeam_channel::Sender<Vec<CryptoCompletionBatch>>>,
@@ -799,16 +799,16 @@ fn spawn_packet_mover2_aead_worker_thread(
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name(format!(
-            "pm2-aead-{}-{worker_idx}",
+            "dataplane-aead-{}-{worker_idx}",
             match direction {
-                PacketMover2AeadDirection::Open => "open",
-                PacketMover2AeadDirection::Seal => "seal",
+                DataplaneAeadDirection::Open => "open",
+                DataplaneAeadDirection::Seal => "seal",
             }
         ))
         .spawn(move || {
             while let Ok(job) = work_rx.recv() {
                 crate::perf_profile::record_since(
-                    crate::perf_profile::Stage::PacketMover2AeadWorkerQueueWait,
+                    crate::perf_profile::Stage::DataplaneAeadWorkerQueueWait,
                     job.queued_at(),
                 );
                 let count = job.len();
@@ -822,7 +822,7 @@ fn spawn_packet_mover2_aead_worker_thread(
                 completion_notify.notify_one();
             }
         })
-        .expect("spawn packet_mover2 AEAD worker")
+        .expect("spawn dataplane AEAD worker")
 }
 
 fn send_completion_batches_to_shards(
@@ -854,12 +854,12 @@ fn send_completion_batches_to_shards(
     Ok(())
 }
 
-fn packet_mover2_aead_direction_for_completion_source(
+fn dataplane_aead_direction_for_completion_source(
     source: CryptoCompletionSource,
-) -> PacketMover2AeadDirection {
+) -> DataplaneAeadDirection {
     match source {
-        CryptoCompletionSource::Open => PacketMover2AeadDirection::Open,
-        CryptoCompletionSource::Seal => PacketMover2AeadDirection::Seal,
+        CryptoCompletionSource::Open => DataplaneAeadDirection::Open,
+        CryptoCompletionSource::Seal => DataplaneAeadDirection::Seal,
     }
 }
 
@@ -883,7 +883,7 @@ fn execute_open_run_job(work: Vec<CryptoWork>, cipher: AeadKey) -> Vec<CryptoCom
         return Vec::new();
     }
     let _timer =
-        crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2AeadOpen);
+        crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen);
     let mut completions = Vec::with_capacity(work.len());
     for work in work {
         completions.push(execute_open_crypto_work(work, &cipher));
@@ -893,35 +893,35 @@ fn execute_open_run_job(work: Vec<CryptoWork>, cipher: AeadKey) -> Vec<CryptoCom
         .collect()
 }
 
-fn packet_mover2_open_run_bulk_count(work: &[CryptoWork]) -> usize {
+fn dataplane_open_run_bulk_count(work: &[CryptoWork]) -> usize {
     match work.first() {
         Some(first) if first.reservation.lane == Lane::Bulk => work.len(),
         Some(_) | None => 0,
     }
 }
 
-fn packet_mover2_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
+fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
     max_in_flight
-        .saturating_sub(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
-        .min(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
+        .saturating_sub(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
+        .min(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
 }
 
-fn packet_mover2_aead_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
+fn dataplane_aead_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
     let _ = worker_count;
-    work_count.max(1).min(PACKET_MOVER2_AEAD_WORKER_BATCH_PACKETS)
+    work_count.max(1).min(DATAPLANE_AEAD_WORKER_BATCH_PACKETS)
 }
 
-fn packet_mover2_aead_open_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
+fn dataplane_aead_open_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
     let work_count = work_count.max(1);
     work_count.min(
         work_count
             .div_ceil(worker_count.max(1))
-            .max(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
-            .min(PACKET_MOVER2_AEAD_WORKER_BATCH_PACKETS),
+            .max(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
+            .min(DATAPLANE_AEAD_WORKER_BATCH_PACKETS),
     )
 }
 
-impl Drop for PacketMover2AeadWorkerPool {
+impl Drop for DataplaneAeadWorkerPool {
     fn drop(&mut self) {
         self.open_tx.take();
         self.seal_tx.take();
@@ -1136,9 +1136,9 @@ impl AeadSealWork {
             &[aad, coord_prefix.as_slice(), inner_prefix.as_slice()],
             AEAD_TAG_SIZE,
         ) {
-            crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2SealInPlace);
+            crate::perf_profile::record_event(crate::perf_profile::Event::DataplaneSealInPlace);
         } else {
-            crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2SealAllocated);
+            crate::perf_profile::record_event(crate::perf_profile::Event::DataplaneSealAllocated);
             let plaintext = std::mem::take(&mut work.packet.payload);
             let mut payload = Vec::with_capacity(
                 prefix_len
@@ -1210,7 +1210,7 @@ impl AeadSealWork {
                     OutboundPostSeal::FmpWrap(route) => {
                         let mut packet = route
                             .into_fmp_outbound(work.work.packet.class, work.work.packet.payload)
-                            .with_fsp_send_receipt(PacketMover2FspSendReceipt::new(
+                            .with_fsp_send_receipt(DataplaneFspSendReceipt::new(
                                 reservation.owner,
                                 reservation.counter,
                                 reservation.fsp_timestamp_ms,

@@ -1,16 +1,16 @@
     async fn pump_live_node_outbound_firsts<Transports>(
-        live_node: &mut PacketMover2LiveNode,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        live_node: &mut DataplaneLiveNode,
+        outbound_firsts: DataplaneLiveOutboundFirsts,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
         crypto_limit: usize,
-        transport_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
+        transport_worker: &mut DataplaneTransportSendWorkerPool,
+    ) -> DataplaneLiveNodeTurn
     where
-        Transports: PacketMover2TransportResolver + ?Sized,
+        Transports: DataplaneTransportResolver + ?Sized,
     {
-        let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::new());
+        let mut raw_source = DataplaneLiveRawIngressSource::new(VecDeque::new());
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         live_node
@@ -63,8 +63,8 @@
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
-        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
-        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
         live_node.register_owner(
             fmp_owner,
             OwnerConfig::new(1, 8).with_next_send_counter(760),
@@ -75,10 +75,10 @@
         live_node.driver.owner_mut(fmp_owner)
             .unwrap()
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(fmp_key), test_key(fmp_key)));
-        let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::new());
+        let mut raw_source = DataplaneLiveRawIngressSource::new(VecDeque::new());
         live_node.routes.register_tun_destination(
             fmp_source,
-            PacketMover2TunDestinationRoute::new(PacketMover2TunOutboundRoute::fmp(
+            DataplaneTunDestinationRoute::new(DataplaneTunOutboundRoute::fmp(
                 fmp_owner,
                 1,
                 PacketClass::Bulk,
@@ -99,7 +99,7 @@
                 None,
                 &mut raw_source,
                 8,
-                PacketMover2LiveOutboundFirsts::default(),
+                DataplaneLiveOutboundFirsts::default(),
                 &mut endpoint_data_rx,
                 0,
                 &mut tun_outbound_rx,
@@ -135,7 +135,7 @@
         wait_for_live_worker_completion(&live_node).await;
         let mut turn = pump_live_node_outbound_firsts(
             &mut live_node,
-            PacketMover2LiveOutboundFirsts::default(),
+            DataplaneLiveOutboundFirsts::default(),
             &tun_tx,
             &endpoint_io.event_tx,
             &transports,
@@ -182,8 +182,8 @@
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
         let transports = HashMap::<TransportId, TransportHandle>::new();
-        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
-        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
 
         let turn = live_node
             .pump_completion_output_turn_with_transport_worker(
@@ -232,8 +232,8 @@
         let (tun_tx, _tun_rx) = crate::upper::tun::write_channel();
         let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (_tun_outbound_tx, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
-        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
-        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
         live_node.register_owner(
             owner,
             OwnerConfig::new(1, 8).with_next_send_counter(900),
@@ -263,7 +263,7 @@
             .unwrap();
         let first_feed = pump_live_node_outbound_firsts(
             &mut live_node,
-            PacketMover2LiveOutboundFirsts::default(),
+            DataplaneLiveOutboundFirsts::default(),
             &tun_tx,
             &endpoint_io.event_tx,
             &transports,
@@ -356,7 +356,7 @@
         let remote_addr = TransportAddr::from_string("198.51.100.178:9000");
         let owner = fmp_owner(178);
         let key = 78;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
         driver
             .owner_mut(owner)
@@ -380,7 +380,7 @@
         let completion = open_aead_completion(work.pop().unwrap(), key);
         let mut completions = VecDeque::from([completion]);
 
-        let raw = PacketMover2LiveIngressPacket::fmp(
+        let raw = DataplaneLiveIngressPacket::fmp(
             ReceivedPacket::with_timestamp(
                 transport_id,
                 remote_addr,
@@ -388,12 +388,12 @@
                 crate::time::now_ms(),
             ),
         );
-        let mut raw_source = PacketMover2LiveRawIngressSource::new(VecDeque::from([raw]));
-        let mut routes = PacketMover2LiveRouteTable::default();
+        let mut raw_source = DataplaneLiveRawIngressSource::new(VecDeque::from([raw]));
+        let mut routes = DataplaneLiveRouteTable::default();
         routes.register_fmp(
             transport_id,
             receiver_idx,
-            PacketMover2IngressRoute::new(owner, 1, OutputTarget::Tun),
+            DataplaneIngressRoute::new(owner, 1, OutputTarget::Tun),
         );
         let (endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
         let (tun_outbound_tx, mut tun_outbound_rx) =
@@ -473,8 +473,8 @@
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let mut node = crate::Node::new(crate::Config::new()).expect("node");
         let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
-        let mut live_node = PacketMover2LiveNode::new(AdmissionConfig::new(4, 8));
-        let mut transport_worker = PacketMover2TransportSendWorkerPool::new(8);
+        let mut live_node = DataplaneLiveNode::new(AdmissionConfig::new(4, 8));
+        let mut transport_worker = DataplaneTransportSendWorkerPool::new(8);
         live_node.register_owner(
             owner,
             OwnerConfig::new(1, 8)
@@ -499,7 +499,7 @@
         .with_activity_tick(ActivityTick::new(1_234));
         let mut first = pump_live_node_outbound_firsts(
             &mut live_node,
-            PacketMover2LiveOutboundFirsts {
+            DataplaneLiveOutboundFirsts {
                 initial_outbound: Some(outbound),
                 collect_transport_sent_receipts: true,
                 ..Default::default()
@@ -518,7 +518,7 @@
 
         let mut second = pump_live_node_outbound_firsts(
             &mut live_node,
-            PacketMover2LiveOutboundFirsts {
+            DataplaneLiveOutboundFirsts {
                 collect_transport_sent_receipts: true,
                 ..Default::default()
             },
@@ -538,7 +538,7 @@
         wait_for_live_worker_completion(&live_node).await;
         let mut third = pump_live_node_outbound_firsts(
             &mut live_node,
-            PacketMover2LiveOutboundFirsts {
+            DataplaneLiveOutboundFirsts {
                 collect_transport_sent_receipts: true,
                 ..Default::default()
             },
@@ -585,9 +585,9 @@
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel_with_bulk_capacity(1);
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
-        let mut sink = PacketMover2LiveOutputSink::new(
-            PacketMover2TunTxOutput::new(&tun_tx),
+        let mut transport = DataplaneTransportSendGroups::new();
+        let mut sink = DataplaneLiveOutputSink::new(
+            DataplaneTunTxOutput::new(&tun_tx),
             &mut endpoint,
             &mut transport,
         );
@@ -604,7 +604,7 @@
                 &mut sink,
                 opened_output(owner, 48, 1, OutputTarget::Tun, b"bulk-b")
             ),
-            Err(PacketMover2OutputError::Backpressure)
+            Err(DataplaneOutputError::Backpressure)
         );
 
         let mut liveness = opened_output(owner, 49, 2, OutputTarget::Tun, b"live");
@@ -623,9 +623,9 @@
         let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x46; 16]));
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
-        let mut sink = PacketMover2LiveOutputSink::new(
-            PacketMover2TunTxOutput::new(&tun_tx),
+        let mut transport = DataplaneTransportSendGroups::new();
+        let mut sink = DataplaneLiveOutputSink::new(
+            DataplaneTunTxOutput::new(&tun_tx),
             &mut endpoint,
             &mut transport,
         );
@@ -635,7 +635,7 @@
         stale_bulk.activity_tick = Some(ActivityTick::new(1));
         assert_eq!(
             send_one_output(&mut sink, stale_bulk),
-            Err(PacketMover2OutputError::StaleQueuedBulk)
+            Err(DataplaneOutputError::StaleQueuedBulk)
         );
 
         let mut stale_priority = opened_output(owner, 47, 1, OutputTarget::Tun, b"priority");
@@ -682,15 +682,15 @@
         let owner = OwnerId::fsp_node(source_addr);
         let output = opened_endpoint_output(owner, source_peer, 53, 0, b"closed-endpoint");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
+        let mut transport = DataplaneTransportSendGroups::new();
 
         let sent = {
-            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_tx);
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_tx);
+            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
             send_one_output(&mut sink, output)
         };
 
-        assert_eq!(sent, Err(PacketMover2OutputError::Unavailable));
+        assert_eq!(sent, Err(DataplaneOutputError::Unavailable));
         assert!(tun.outputs.is_empty());
         assert!(transport.groups.is_empty());
     }
@@ -707,21 +707,21 @@
             opened_output(owner, 51, 0, OutputTarget::Endpoint, b"missing-identity");
         let mismatched_output = opened_endpoint_output(owner, wrong_peer, 52, 1, b"wrong-identity");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
+        let mut transport = DataplaneTransportSendGroups::new();
 
         let missing = {
-            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_io.event_tx);
+            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
             send_one_output(&mut sink, missing_output)
         };
-        assert_eq!(missing, Err(PacketMover2OutputError::NoRoute));
+        assert_eq!(missing, Err(DataplaneOutputError::NoRoute));
 
         let mismatched = {
-            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_io.event_tx);
+            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
             send_one_output(&mut sink, mismatched_output)
         };
-        assert_eq!(mismatched, Err(PacketMover2OutputError::NoRoute));
+        assert_eq!(mismatched, Err(DataplaneOutputError::NoRoute));
         assert!(endpoint_io.event_rx.try_recv().is_err());
         assert!(tun.outputs.is_empty());
         assert!(transport.groups.is_empty());
@@ -750,12 +750,12 @@
         let first = opened_endpoint_output(owner, source_peer, 53, 0, b"direct-one");
         let second = opened_endpoint_output(owner, source_peer, 54, 1, b"direct-two");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
+        let mut transport = DataplaneTransportSendGroups::new();
         let mut drops = Vec::new();
 
         let sent = {
-            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_io.event_tx);
+            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
             sink.send_batch([first, second], &mut drops)
         };
 
@@ -797,11 +797,11 @@
         let owner = OwnerId::fsp_node(source_addr);
         let output = opened_endpoint_output(owner, source_peer, 55, 0, b"direct-fail");
         let mut tun = LiveTunRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
+        let mut transport = DataplaneTransportSendGroups::new();
 
         let sent = {
-            let endpoint = PacketMover2EndpointEventOutput::new(&endpoint_io.event_tx);
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, endpoint, &mut transport);
+            let endpoint = DataplaneEndpointEventOutput::new(&endpoint_io.event_tx);
+            let mut sink = DataplaneLiveOutputSink::new(&mut tun, endpoint, &mut transport);
             send_one_output(&mut sink, output)
         };
 
@@ -831,10 +831,10 @@
         );
         let mut tun = LiveTunRecorder::default();
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
+        let mut transport = DataplaneTransportSendGroups::new();
 
         let sent = {
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
+            let mut sink = DataplaneLiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
             send_one_output(&mut sink, output)
         };
 
@@ -867,7 +867,7 @@
                 13,
                 b"missing-transport".as_slice(),
                 false,
-                PacketMover2OutputError::NoRoute,
+                DataplaneOutputError::NoRoute,
             ),
             (
                 56,
@@ -876,13 +876,13 @@
                 14,
                 b"not-started".as_slice(),
                 true,
-                PacketMover2OutputError::Unavailable,
+                DataplaneOutputError::Unavailable,
             ),
         ] {
             let transport_id = TransportId::new(id);
             let remote_addr = TransportAddr::from_string(remote);
             let owner = OwnerId::fmp_node(NodeAddr::from_bytes([id as u8; 16]));
-            let plan = PacketMover2TransportPlanGroup::new(
+            let plan = DataplaneTransportPlanGroup::new(
                 transport_id,
                 remote_addr.clone(),
                 transport_output(
@@ -899,9 +899,9 @@
                 transports.insert(transport_id, unstarted_udp_transport(transport_id));
             }
             let mut drops = Vec::new();
-            let mut worker = PacketMover2TransportSendWorkerPool::new(8);
+            let mut worker = DataplaneTransportSendWorkerPool::new(8);
 
-            let sent = send_packet_mover2_transport_groups_with_worker(
+            let sent = send_dataplane_transport_groups_with_worker(
                 &transports,
                 vec![plan],
                 &mut drops,
@@ -956,7 +956,7 @@
                 .to_string(),
         );
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x57; 16]));
-        let plan = PacketMover2TransportPlanGroup::new(
+        let plan = DataplaneTransportPlanGroup::new(
             send_transport_id,
             remote_addr.clone(),
             transport_output(
@@ -970,9 +970,9 @@
         );
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
-        let mut worker = PacketMover2TransportSendWorkerPool::new(8);
+        let mut worker = DataplaneTransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_groups_with_worker(
+        let sent = send_dataplane_transport_groups_with_worker(
             &transports,
             vec![plan],
             &mut drops,
@@ -1049,15 +1049,15 @@
         );
         bulk_b.lane = Lane::Bulk;
         let groups = vec![
-            PacketMover2TransportPlanGroup::new(send_transport_id, remote_addr.clone(), bulk_a),
-            PacketMover2TransportPlanGroup::new(send_transport_id, remote_addr.clone(), priority),
-            PacketMover2TransportPlanGroup::new(send_transport_id, remote_addr, bulk_b),
+            DataplaneTransportPlanGroup::new(send_transport_id, remote_addr.clone(), bulk_a),
+            DataplaneTransportPlanGroup::new(send_transport_id, remote_addr.clone(), priority),
+            DataplaneTransportPlanGroup::new(send_transport_id, remote_addr, bulk_b),
         ];
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
-        let mut worker = PacketMover2TransportSendWorkerPool::new(8);
+        let mut worker = DataplaneTransportSendWorkerPool::new(8);
 
-        let sent = send_packet_mover2_transport_groups_with_worker(
+        let sent = send_dataplane_transport_groups_with_worker(
             &transports,
                     groups,
             &mut drops,
@@ -1127,17 +1127,17 @@
         let expected_fragments =
             wire.len().div_ceil(path_mtu - DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN);
         assert!(expected_fragments > 1);
-        let groups = vec![PacketMover2TransportPlanGroup::new(
+        let groups = vec![DataplaneTransportPlanGroup::new(
             send_transport_id,
             remote_addr,
             output,
         )];
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
-        let mut worker = PacketMover2TransportSendWorkerPool::new(1);
+        let mut worker = DataplaneTransportSendWorkerPool::new(1);
         let mut sent_receipts = Vec::new();
 
-        let sent = send_packet_mover2_transport_groups_with_worker(
+        let sent = send_dataplane_transport_groups_with_worker(
             &transports,
             groups,
             &mut drops,
@@ -1202,7 +1202,7 @@
         send_transport.start().await.expect("start send udp");
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x64; 16]));
         let groups = vec![
-            PacketMover2TransportPlanGroup::new(
+            DataplaneTransportPlanGroup::new(
                 send_transport_id,
                 remote_addr.clone(),
                 transport_output(
@@ -1214,7 +1214,7 @@
                     b"bulk-full-a".to_vec(),
                 ),
             ),
-            PacketMover2TransportPlanGroup::new(
+            DataplaneTransportPlanGroup::new(
                 send_transport_id,
                 remote_addr.clone(),
                 transport_output(
@@ -1229,11 +1229,11 @@
         ];
         let mut transports = HashMap::from([(send_transport_id, send_transport)]);
         let mut drops = Vec::new();
-        let mut worker = PacketMover2TransportSendWorkerPool::new(1);
+        let mut worker = DataplaneTransportSendWorkerPool::new(1);
 
         let sent = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            send_packet_mover2_transport_groups_with_worker(
+            send_dataplane_transport_groups_with_worker(
                 &transports,
                 groups,
                 &mut drops,
@@ -1267,7 +1267,7 @@
 
     #[test]
     fn transport_send_worker_live_bulk_jobs_use_coalesce_cadence() {
-        let worker = PacketMover2TransportSendWorkerPool::default_live();
+        let worker = DataplaneTransportSendWorkerPool::default_live();
 
         assert_eq!(
             worker.max_job_records_for_lane(Lane::Bulk),
@@ -1278,7 +1278,7 @@
             TRANSPORT_SEND_WORKER_PRIORITY_RESERVE_PACKETS
         );
 
-        let small_worker = PacketMover2TransportSendWorkerPool::new(8);
+        let small_worker = DataplaneTransportSendWorkerPool::new(8);
         assert_eq!(small_worker.max_job_records_for_lane(Lane::Bulk), 8);
         assert_eq!(small_worker.max_job_records_for_lane(Lane::Priority), 8);
     }
@@ -1287,7 +1287,7 @@
     fn live_output_sink_drops_transport_without_live_path() {
         let owner = OwnerId::fmp_node(NodeAddr::from_bytes([0x47; 16]));
         let key = 47;
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8).with_next_send_counter(470));
         driver
             .owner_mut(owner)
@@ -1297,10 +1297,10 @@
             OutboundPacket::fmp(owner, 1, PacketClass::Bulk, 471, 0, b"no-route".to_vec());
         let mut tun = LiveTunRecorder::default();
         let mut endpoint = LiveEndpointRecorder::default();
-        let mut transport = PacketMover2TransportSendGroups::new();
+        let mut transport = DataplaneTransportSendGroups::new();
 
         let turn = {
-            let mut sink = PacketMover2LiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
+            let mut sink = DataplaneLiveOutputSink::new(&mut tun, &mut endpoint, &mut transport);
             run_aead_classified_output_turn(&mut driver, std::iter::empty(), [outbound], &mut sink, 8)
         };
 
@@ -1311,7 +1311,7 @@
         assert_eq!(turn.output_drops().len(), 1);
         assert_eq!(
             turn.output_drops()[0].reason(),
-            PacketMover2OutputError::NoRoute
+            DataplaneOutputError::NoRoute
         );
         assert_eq!(turn.output_drops()[0].path(), None);
         assert!(tun.outputs.is_empty());
@@ -1324,7 +1324,7 @@
         let owner = fmp_owner(81);
         let open_key = 51;
         let path = live_path(9005);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(7, 8));
         driver
             .owner_mut(owner)
@@ -1337,10 +1337,10 @@
             123_456,
         );
         let raw =
-            PacketMover2RawIngress::from_received(PacketProtocol::Fmp, path.clone(), received);
+            DataplaneRawIngress::from_received(PacketProtocol::Fmp, path.clone(), received);
         let mut router = FixedIngressRouter {
             route: Some(
-                PacketMover2IngressRoute::new(owner, 7, OutputTarget::Tun)
+                DataplaneIngressRoute::new(owner, 7, OutputTarget::Tun)
                     .with_class(PacketClass::Liveness),
             ),
         };
@@ -1371,9 +1371,9 @@
     fn runtime_raw_ingress_turn_drops_wire_and_unrouted_packets_before_admission() {
         let owner = fsp_owner(82);
         let path = live_path(9105);
-        let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
         driver.register_owner(owner, OwnerConfig::new(1, 8));
-        let bad_wire = PacketMover2RawIngress::from_received(
+        let bad_wire = DataplaneRawIngress::from_received(
             PacketProtocol::Fmp,
             path.clone(),
             ReceivedPacket::with_timestamp(
@@ -1383,7 +1383,7 @@
                 1,
             ),
         );
-        let unrouted = PacketMover2RawIngress::from_received(
+        let unrouted = DataplaneRawIngress::from_received(
             PacketProtocol::Fsp,
             path.clone(),
             ReceivedPacket::with_timestamp(
@@ -1409,11 +1409,11 @@
         assert_eq!(turn.raw_ingress_drops().len(), 2);
         assert_eq!(
             turn.raw_ingress_drops()[0].reason(),
-            PacketMover2RawIngressDropReason::Wire(WirePreflightError::TooShort)
+            DataplaneRawIngressDropReason::Wire(WirePreflightError::TooShort)
         );
         assert_eq!(
             turn.raw_ingress_drops()[1].reason(),
-            PacketMover2RawIngressDropReason::Unrouted
+            DataplaneRawIngressDropReason::Unrouted
         );
         assert_eq!(
             turn.raw_ingress_drops()[1].transport_id(),

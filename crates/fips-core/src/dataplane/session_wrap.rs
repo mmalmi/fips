@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspWrapRoute {
+pub(crate) struct DataplaneFspWrapRoute {
     fmp_owner: OwnerId,
     fmp_generation: u64,
     receiver_idx: u32,
@@ -10,7 +10,7 @@ pub(crate) struct PacketMover2FspWrapRoute {
     path_mtu: u16,
 }
 
-impl PacketMover2FspWrapRoute {
+impl DataplaneFspWrapRoute {
     pub(crate) fn new(
         fmp_owner: OwnerId,
         fmp_generation: u64,

@@ -7,22 +7,22 @@ pub(in crate::node::tests) async fn process_available_packets(nodes: &mut [TestN
     let mut count = 0;
     for node in nodes.iter_mut() {
         while let Ok(packet) = node.packet_rx.try_recv() {
-            count += process_packet_mover2_packet(node, packet).await;
+            count += process_dataplane_packet(node, packet).await;
         }
-        count += process_packet_mover2_side_queues(node).await;
+        count += process_dataplane_side_queues(node).await;
     }
     count
 }
 
-async fn process_packet_mover2_packet(node: &mut TestNode, packet: ReceivedPacket) -> usize {
-    process_packet_mover2_turn(node, Some(packet), 64).await
+async fn process_dataplane_packet(node: &mut TestNode, packet: ReceivedPacket) -> usize {
+    process_dataplane_turn(node, Some(packet), 64).await
 }
 
-async fn process_packet_mover2_side_queues(node: &mut TestNode) -> usize {
-    process_packet_mover2_turn(node, None, 0).await
+async fn process_dataplane_side_queues(node: &mut TestNode) -> usize {
+    process_dataplane_turn(node, None, 0).await
 }
 
-async fn process_packet_mover2_turn(
+async fn process_dataplane_turn(
     node: &mut TestNode,
     first_packet: Option<ReceivedPacket>,
     packet_limit: usize,
@@ -53,9 +53,9 @@ async fn process_packet_mover2_turn(
 
     let mut turn = node
         .node
-        .drain_packet_mover2_turn_with_firsts(
+        .drain_dataplane_turn_with_firsts(
             &mut empty_packet_rx,
-            crate::packet_mover2::PacketMover2LiveTurnFirsts {
+            crate::dataplane::DataplaneLiveTurnFirsts {
                 raw_packet: first_packet,
                 ..Default::default()
             },
@@ -72,10 +72,7 @@ async fn process_packet_mover2_turn(
     let mut active_turns = 0usize;
     let had_activity = turn.has_activity();
     let mut dispatched = turn.summary().dispatched();
-    let processed = node
-        .node
-        .process_packet_mover2_control_ingress(&mut turn)
-        .await;
+    let processed = node.node.process_dataplane_control_ingress(&mut turn).await;
     if had_activity || processed > 0 {
         active_turns = active_turns.saturating_add(1);
     }
@@ -84,14 +81,14 @@ async fn process_packet_mover2_turn(
         if dispatched == 0 {
             break;
         }
-        let notify = node.node.packet_mover2.completion_notify();
+        let notify = node.node.dataplane.completion_notify();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified()).await;
 
         let mut completion_turn = node
             .node
-            .drain_packet_mover2_turn_with_firsts(
+            .drain_dataplane_turn_with_firsts(
                 &mut empty_packet_rx,
-                crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
+                crate::dataplane::DataplaneLiveTurnFirsts::default(),
                 0,
                 endpoint_rx,
                 64,
@@ -106,7 +103,7 @@ async fn process_packet_mover2_turn(
         dispatched = completion_turn.summary().dispatched();
         let completion_processed = node
             .node
-            .process_packet_mover2_control_ingress(&mut completion_turn)
+            .process_dataplane_control_ingress(&mut completion_turn)
             .await;
         if completion_had_activity || completion_processed > 0 {
             active_turns = active_turns.saturating_add(1);

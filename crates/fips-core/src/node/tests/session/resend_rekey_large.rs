@@ -95,7 +95,7 @@ async fn established_initiator_resends_final_msg3_until_responder_establishes() 
         .attach_endpoint_data_io(8)
         .expect("initiator endpoint data I/O should attach");
     let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
-    send_endpoint_data_via_pm2(
+    send_endpoint_data_via_dataplane(
         &mut nodes[1].node,
         node0_identity,
         b"responder-proof".to_vec(),
@@ -237,7 +237,7 @@ async fn rekey_initiator_resends_final_msg3_until_responder_has_pending_session(
         .attach_endpoint_data_io(8)
         .expect("initiator endpoint data I/O should attach");
     let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
-    send_endpoint_data_via_pm2(
+    send_endpoint_data_via_dataplane(
         &mut nodes[1].node,
         node0_identity,
         b"old-session-proof".to_vec(),
@@ -655,7 +655,7 @@ async fn session_100_nodes() {
         // Forward: initiator → responder
         let fwd_payload = format!("fwd-{}", pair_idx).into_bytes();
         let fwd_ipv6 = build_ipv6_packet(&src_fips, &dst_fips, &fwd_payload);
-        send_tun_packet_via_pm2(&mut nodes, src, fwd_ipv6).await;
+        send_tun_packet_via_dataplane(&mut nodes, src, fwd_ipv6).await;
         send_forward_ok += 1;
 
         drain_to_quiescence(&mut nodes).await;
@@ -664,7 +664,7 @@ async fn session_100_nodes() {
         // (Responder should already be Established after XK msg3)
         let rev_payload = format!("rev-{}", pair_idx).into_bytes();
         let rev_ipv6 = build_ipv6_packet(&dst_fips, &src_fips, &rev_payload);
-        send_tun_packet_via_pm2(&mut nodes, dst, rev_ipv6).await;
+        send_tun_packet_via_dataplane(&mut nodes, dst, rev_ipv6).await;
         send_reverse_ok += 1;
 
         drain_to_quiescence(&mut nodes).await;

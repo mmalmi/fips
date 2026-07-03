@@ -8,6 +8,7 @@ mod accessors_impl;
 mod acl;
 mod bloom;
 mod core_impl;
+mod dataplane_integration;
 mod discovery_rate_limit;
 mod endpoint_channels;
 mod endpoint_event;
@@ -18,7 +19,6 @@ mod identity_cache;
 mod io_impl;
 mod lifecycle;
 mod link_registry;
-mod packet_mover2_integration;
 mod peer_lifecycle;
 mod peer_runtime;
 mod rate_limit;
@@ -79,12 +79,11 @@ use self::wire::{FLAG_CE, FLAG_KEY_EPOCH};
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
+use crate::dataplane::{
+    AdmissionConfig, DataplaneFastIngressRx, DataplaneLiveNode, DataplaneTransportSendWorkerPool,
+};
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
-use crate::packet_mover2::{
-    AdmissionConfig, PacketMover2FastIngressRx, PacketMover2LiveNode,
-    PacketMover2TransportSendWorkerPool,
-};
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
@@ -114,7 +113,7 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};
 
-type PacketMover2Node = PacketMover2LiveNode;
+type DataplaneNode = DataplaneLiveNode;
 
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 #[cfg(test)]
@@ -219,13 +218,13 @@ pub struct Node {
     packet_rx: Option<PacketRx>,
 
     // === Packet Mover2 ===
-    /// Canonical packet_mover2 dataplane state owned by the node.
+    /// Canonical dataplane dataplane state owned by the node.
     #[allow(dead_code)]
-    packet_mover2: PacketMover2Node,
+    dataplane: DataplaneNode,
     /// Pre-routed established FMP packets accepted directly from UDP receive.
-    packet_mover2_fast_ingress_rx: Option<PacketMover2FastIngressRx>,
-    /// Bounded PM2 bulk UDP send executor used by the live daemon path.
-    packet_mover2_transport_send_worker: PacketMover2TransportSendWorkerPool,
+    dataplane_fast_ingress_rx: Option<DataplaneFastIngressRx>,
+    /// Bounded dataplane bulk UDP send executor used by the live daemon path.
+    dataplane_transport_send_worker: DataplaneTransportSendWorkerPool,
 
     // === Peer Lifecycle ===
     /// Pending handshake connections plus authenticated peers.

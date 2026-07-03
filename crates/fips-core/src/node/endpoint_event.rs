@@ -325,7 +325,7 @@ impl FipsEndpointDirectPacketStorage {
 ///
 /// Unlike [`FipsEndpointDirectSourceRun`], this can preserve an opened
 /// EndpointDataBulk buffer and expose packet slices by range. That is the
-/// canonical direct PM2 endpoint payload contract for high-throughput embedders:
+/// canonical direct dataplane endpoint payload contract for high-throughput embedders:
 /// FIPS owns authentication and ordering, while the embedder can still apply
 /// live routing policy before borrowing packet bytes for TUN writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -812,10 +812,10 @@ pub enum FipsEndpointDirectDeliveryError {
     Unavailable,
 }
 
-/// Application-provided direct PM2 endpoint delivery sink.
+/// Application-provided direct dataplane endpoint delivery sink.
 ///
-/// This sink is called synchronously from the PM2 output path with owned packet
-/// buffers. It should return quickly and avoid blocking unrelated PM2 progress.
+/// This sink is called synchronously from the dataplane output path with owned packet
+/// buffers. It should return quickly and avoid blocking unrelated dataplane progress.
 pub trait FipsEndpointDirectSink: Send + Sync + 'static {
     /// Deliver established endpoint data as authenticated packet runs.
     fn deliver_endpoint_packet_batch(

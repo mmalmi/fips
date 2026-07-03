@@ -1,36 +1,36 @@
-const PACKET_MOVER2_DEFERRED_RAW_INGRESS_MAX_RETRIES: u8 = 8;
+const DATAPLANE_DEFERRED_RAW_INGRESS_MAX_RETRIES: u8 = 8;
 
 #[derive(Debug)]
-pub(crate) struct PacketMover2TurnDriver {
-    mover: PacketMover2,
+pub(crate) struct DataplaneTurnDriver {
+    mover: Dataplane,
     prepared_work: Vec<PreparedCryptoWork>,
     completion_work: Vec<CryptoCompletion>,
     completion_batches: Vec<CryptoCompletionBatch>,
-    raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
-    output_drops: Vec<PacketMover2OutputDrop>,
+    raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
+    output_drops: Vec<DataplaneOutputDrop>,
     outputs: Vec<PacketOutput>,
     output_rewrite_buffer: Vec<PacketOutput>,
     raw_socket_packets: Vec<SocketPacket>,
     retired_outbound_packets: Vec<OutboundPacket>,
     retired: Vec<RetiredOutputs>,
-    transport_output: PacketMover2TransportSendGroups,
+    transport_output: DataplaneTransportSendGroups,
     drops: Vec<PacketDrop>,
-    fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
-    fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
-    fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
-    fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
-    endpoint_data_bulk: Vec<PacketMover2EndpointDataBulk>,
-    fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
+    fmp_ingress_receipts: Vec<DataplaneFmpIngressReceipt>,
+    fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
+    fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
+    fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
+    endpoint_data_bulk: Vec<DataplaneEndpointDataBulk>,
+    fsp_session_ingress: Vec<DataplaneFspSessionIngress>,
 }
 
-struct PacketMover2LiveAdmissionResult {
-    summary: PacketMover2RuntimeSummary,
-    outbound_buffers: PacketMover2RouteTableOutboundBuffers,
+struct DataplaneLiveAdmissionResult {
+    summary: DataplaneRuntimeSummary,
+    outbound_buffers: DataplaneRouteTableOutboundBuffers,
     endpoint_drained: usize,
     tun_drained: usize,
 }
 
-impl PacketMover2LiveAdmissionResult {
+impl DataplaneLiveAdmissionResult {
     fn has_activity(&self) -> bool {
         self.summary.has_activity()
             || self.endpoint_drained > 0
@@ -39,10 +39,10 @@ impl PacketMover2LiveAdmissionResult {
     }
 }
 
-impl PacketMover2TurnDriver {
+impl DataplaneTurnDriver {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
         Self {
-            mover: PacketMover2::new(config),
+            mover: Dataplane::new(config),
             prepared_work: Vec::new(),
             completion_work: Vec::new(),
             completion_batches: Vec::new(),
@@ -53,7 +53,7 @@ impl PacketMover2TurnDriver {
             raw_socket_packets: Vec::new(),
             retired_outbound_packets: Vec::new(),
             retired: Vec::new(),
-            transport_output: PacketMover2TransportSendGroups::new(),
+            transport_output: DataplaneTransportSendGroups::new(),
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
             fmp_link_ingress: Vec::new(),
@@ -91,7 +91,7 @@ impl PacketMover2TurnDriver {
     pub(crate) fn owner_fsp_activity(
         &self,
         owner: OwnerId,
-    ) -> Option<PacketMover2FspOwnerActivity> {
+    ) -> Option<DataplaneFspOwnerActivity> {
         self.mover.owner_fsp_activity(owner)
     }
 
@@ -107,21 +107,21 @@ impl PacketMover2TurnDriver {
     pub(crate) fn owner_fsp_mmp_snapshot(
         &self,
         owner: OwnerId,
-    ) -> Option<PacketMover2FspMmpSnapshot> {
+    ) -> Option<DataplaneFspMmpSnapshot> {
         self.mover.owner_fsp_mmp_snapshot(owner)
     }
 
     pub(crate) fn owner_fsp_send_context(
         &self,
         owner: OwnerId,
-    ) -> Option<PacketMover2FspSendContext> {
+    ) -> Option<DataplaneFspSendContext> {
         self.mover.owner_fsp_send_context(owner)
     }
 
     pub(crate) fn owner_fmp_send_context(
         &self,
         owner: OwnerId,
-    ) -> Option<PacketMover2FmpSendContext> {
+    ) -> Option<DataplaneFmpSendContext> {
         self.mover.owner_fmp_send_context(owner)
     }
 
@@ -129,7 +129,7 @@ impl PacketMover2TurnDriver {
         &self,
         owner: OwnerId,
         now: std::time::Instant,
-    ) -> Option<PacketMover2FmpLinkMetrics> {
+    ) -> Option<DataplaneFmpLinkMetrics> {
         self.mover.owner_fmp_link_metrics(owner, now)
     }
 
@@ -144,14 +144,14 @@ impl PacketMover2TurnDriver {
     pub(crate) fn collect_fmp_mmp_reports(
         &mut self,
         now: std::time::Instant,
-    ) -> PacketMover2FmpMmpReportBatch {
+    ) -> DataplaneFmpMmpReportBatch {
         self.mover.collect_fmp_mmp_reports(now)
     }
 
     pub(crate) fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,
-    ) -> PacketMover2FspMmpReportBatch {
+    ) -> DataplaneFspMmpReportBatch {
         self.mover.collect_fsp_mmp_reports(now)
     }
 
@@ -159,7 +159,7 @@ impl PacketMover2TurnDriver {
         &mut self,
         owner: OwnerId,
         success: bool,
-    ) -> Option<PacketMover2FspMmpReportingResumed> {
+    ) -> Option<DataplaneFspMmpReportingResumed> {
         self.mover.record_fsp_mmp_send_result(owner, success)
     }
 
@@ -167,7 +167,7 @@ impl PacketMover2TurnDriver {
         &mut self,
         owner: OwnerId,
         path_mtu: u16,
-    ) -> Result<(), PacketMover2FspMmpSkip> {
+    ) -> Result<(), DataplaneFspMmpSkip> {
         self.mover.seed_fsp_path_mtu(owner, path_mtu)
     }
 
@@ -179,7 +179,7 @@ impl PacketMover2TurnDriver {
         now_ms: u64,
         now: std::time::Instant,
         min_loss_sample: u64,
-    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+    ) -> Result<DataplaneFspReceiverReportResult, DataplaneFspMmpSkip> {
         self.mover.process_fsp_mmp_receiver_report(
             owner,
             rr,
@@ -195,7 +195,7 @@ impl PacketMover2TurnDriver {
         owner: OwnerId,
         path_mtu: u16,
         now: std::time::Instant,
-    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+    ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
         self.mover.apply_fsp_path_mtu_signal(owner, path_mtu, now)
     }
 
@@ -253,7 +253,7 @@ impl PacketMover2TurnDriver {
 
     fn record_fsp_session_ingress_activity(
         &mut self,
-        ingress: &PacketMover2FspSessionIngress,
+        ingress: &DataplaneFspSessionIngress,
     ) -> bool {
         let body_len = ingress
             .receive_sync
@@ -287,19 +287,19 @@ impl PacketMover2TurnDriver {
 
     async fn finish_aead_live_node_output_turn_with_executor<Transports, E>(
         &mut self,
-        summary: PacketMover2RuntimeSummary,
-        routes: &mut PacketMover2LiveRouteTable,
+        summary: DataplaneRuntimeSummary,
+        routes: &mut DataplaneLiveRouteTable,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
         crypto_limit: usize,
         collect_transport_sent_receipts: bool,
         executor: &mut E,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
+        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
+    ) -> DataplaneLiveNodeTurn
     where
-        Transports: PacketMover2TransportResolver + ?Sized,
-        E: PacketMover2CryptoExecutor,
+        Transports: DataplaneTransportResolver + ?Sized,
+        E: DataplaneCryptoExecutor,
     {
         let compact_endpoint_data = endpoint_tx.direct_sink().is_some();
         let summary = self.collect_live_session_outputs_with_executor(
@@ -312,12 +312,12 @@ impl PacketMover2TurnDriver {
         let mut transport_output = std::mem::take(&mut self.transport_output);
         transport_output.clear();
         let mut report = {
-            let tun_output = PacketMover2TunTxOutput::new(tun_tx);
-            let endpoint_output = PacketMover2EndpointEventOutput::new(endpoint_tx);
+            let tun_output = DataplaneTunTxOutput::new(tun_tx);
+            let endpoint_output = DataplaneEndpointEventOutput::new(endpoint_tx);
             let mut sink =
-                PacketMover2LiveOutputSink::new(tun_output, endpoint_output, &mut transport_output);
+                DataplaneLiveOutputSink::new(tun_output, endpoint_output, &mut transport_output);
             let turn = self.send_collected_outputs(summary, &mut sink);
-            PacketMover2LiveNodeTurn::from_runtime_turn(&turn)
+            DataplaneLiveNodeTurn::from_runtime_turn(&turn)
         };
         self.deliver_direct_endpoint_packet_batches(endpoint_tx.direct_sink());
         report.fmp_ingress_receipts = std::mem::take(&mut self.fmp_ingress_receipts);
@@ -334,10 +334,10 @@ impl PacketMover2TurnDriver {
         };
         report.transport_sent = {
             let _transport_send_timer = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::PacketMover2TransportSend,
+                crate::perf_profile::Stage::DataplaneTransportSend,
             );
             let groups = transport_output.take_groups_preserving_capacity();
-            send_packet_mover2_transport_groups_with_worker(
+            send_dataplane_transport_groups_with_worker(
                 transports,
                 groups,
                 &mut report.output_drops,
@@ -369,13 +369,13 @@ impl PacketMover2TurnDriver {
         completions: &mut C,
         completion_limit: usize,
         compact_endpoint_data: bool,
-    ) -> PacketMover2RuntimeSummary
+    ) -> DataplaneRuntimeSummary
     where
-        C: PacketMover2CompletionSource,
+        C: DataplaneCompletionSource,
     {
         self.reset_turn_buffers();
         self.drain_aead_completion_turn_into_summary(
-            PacketMover2RuntimeSummary::default(),
+            DataplaneRuntimeSummary::default(),
             completions,
             completion_limit,
             compact_endpoint_data,
@@ -384,16 +384,16 @@ impl PacketMover2TurnDriver {
 
     fn drain_aead_completion_turn_into_summary<C>(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
+        mut summary: DataplaneRuntimeSummary,
         completions: &mut C,
         completion_limit: usize,
         compact_endpoint_data: bool,
-    ) -> PacketMover2RuntimeSummary
+    ) -> DataplaneRuntimeSummary
     where
-        C: PacketMover2CompletionSource,
+        C: DataplaneCompletionSource,
     {
         let _completion_timer = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::PacketMover2CompletionDrain,
+            crate::perf_profile::Stage::DataplaneCompletionDrain,
         );
         let completion_limit = self.completion_drain_limit(completion_limit);
         self.completion_batches.clear();
@@ -406,10 +406,10 @@ impl PacketMover2TurnDriver {
     }
 
     fn completion_drain_limit(&self, limit: usize) -> usize {
-        if limit < PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS || self.mover.has_priority_pending() {
+        if limit < DATAPLANE_AEAD_WORKER_JOB_PACKETS || self.mover.has_priority_pending() {
             return limit;
         }
-        limit.saturating_mul(PACKET_MOVER2_AEAD_WORKER_JOB_PACKETS)
+        limit.saturating_mul(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
     }
 
     async fn pump_aead_live_node_route_table_executor_turn_after_completion_with_firsts<
@@ -418,30 +418,30 @@ impl PacketMover2TurnDriver {
         Transports,
     >(
         &mut self,
-        summary: PacketMover2RuntimeSummary,
+        summary: DataplaneRuntimeSummary,
         executor: &mut E,
-        fast_ingress: Option<PacketMover2FastIngressBatch>,
+        fast_ingress: Option<DataplaneFastIngressBatch>,
         raw_ingress: &mut RI,
-        routes: &mut PacketMover2LiveRouteTable,
+        routes: &mut DataplaneLiveRouteTable,
         raw_ingress_limit: usize,
         endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
         tun_limit: usize,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
+        outbound_firsts: DataplaneLiveOutboundFirsts,
         deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
         deferred_tun_packets: &mut Vec<Vec<u8>>,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(PacketMover2RawIngress, u8)>,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
         crypto_limit: usize,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
-    ) -> PacketMover2LiveNodeTurn
+        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
+    ) -> DataplaneLiveNodeTurn
     where
-        E: PacketMover2CryptoExecutor,
-        RI: PacketMover2RawIngressSource,
-        Transports: PacketMover2TransportResolver + ?Sized,
+        E: DataplaneCryptoExecutor,
+        RI: DataplaneRawIngressSource,
+        Transports: DataplaneTransportResolver + ?Sized,
     {
         let collect_transport_sent_receipts = outbound_firsts.collect_transport_sent_receipts;
         let mut completion_report = None;
@@ -470,7 +470,7 @@ impl PacketMover2TurnDriver {
                 remaining_crypto_limit.saturating_sub(report.summary().dispatched());
             self.reset_turn_buffers();
             completion_report = Some(report);
-            admission_summary = PacketMover2RuntimeSummary::default();
+            admission_summary = DataplaneRuntimeSummary::default();
         }
         let admission = self.admit_live_node_route_table_turn_with_firsts(
             admission_summary,
@@ -532,7 +532,7 @@ impl PacketMover2TurnDriver {
 
     fn completion_activity_is_compact_endpoint_data_only(
         &self,
-        summary: PacketMover2RuntimeSummary,
+        summary: DataplaneRuntimeSummary,
     ) -> bool {
         summary.completions > 0
             && summary.raw_ingress_dropped == 0
@@ -560,23 +560,23 @@ impl PacketMover2TurnDriver {
     #[allow(clippy::too_many_arguments)]
     fn admit_live_node_route_table_turn_with_firsts<RI>(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
-        fast_ingress: Option<PacketMover2FastIngressBatch>,
+        mut summary: DataplaneRuntimeSummary,
+        fast_ingress: Option<DataplaneFastIngressBatch>,
         raw_ingress: &mut RI,
-        routes: &mut PacketMover2LiveRouteTable,
+        routes: &mut DataplaneLiveRouteTable,
         raw_ingress_limit: usize,
         endpoint_data_rx: &mut EndpointDataBatchRx,
         endpoint_limit: usize,
         tun_outbound_rx: &mut TunOutboundRx,
         tun_limit: usize,
-        outbound_firsts: PacketMover2LiveOutboundFirsts,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(PacketMover2RawIngress, u8)>,
-    ) -> PacketMover2LiveAdmissionResult
+        outbound_firsts: DataplaneLiveOutboundFirsts,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
+    ) -> DataplaneLiveAdmissionResult
     where
-        RI: PacketMover2RawIngressSource,
+        RI: DataplaneRawIngressSource,
     {
         let admit_timer =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::PacketMover2LiveAdmit);
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneLiveAdmit);
         let trace_enabled = crate::perf_profile::enabled();
         let mut outbound_firsts = outbound_firsts;
         if let Some(packet) = outbound_firsts.initial_outbound.take() {
@@ -587,7 +587,7 @@ impl PacketMover2TurnDriver {
         let outbound_limit = routed_outbound_limit;
         let reserved_outbound_limit =
             reserved_live_outbound_progress_limit(endpoint_limit, tun_limit, routed_outbound_limit);
-        let mut outbound_buffers = PacketMover2RouteTableOutboundBuffers::default();
+        let mut outbound_buffers = DataplaneRouteTableOutboundBuffers::default();
         let mut endpoint_drained = 0usize;
         let mut tun_drained = 0usize;
         let mut outbound_drained = 0usize;
@@ -595,7 +595,7 @@ impl PacketMover2TurnDriver {
         let mut tun_admitted = 0usize;
 
         if reserved_outbound_limit > 0 {
-            let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
+            let mut outbound_source = DataplaneRouteTableOutboundSource::new(
                 endpoint_data_rx,
                 endpoint_limit,
                 tun_outbound_rx,
@@ -611,10 +611,10 @@ impl PacketMover2TurnDriver {
                         self.admit_routed_outbound(routed, &mut summary);
                         let admitted = summary.outbound_admitted.saturating_sub(admitted_before);
                         match source {
-                            PacketMover2OutboundSource::Endpoint => {
+                            DataplaneOutboundSource::Endpoint => {
                                 endpoint_admitted = endpoint_admitted.saturating_add(admitted);
                             }
-                            PacketMover2OutboundSource::Tun => {
+                            DataplaneOutboundSource::Tun => {
                                 tun_admitted = tun_admitted.saturating_add(admitted);
                             }
                         }
@@ -678,7 +678,7 @@ impl PacketMover2TurnDriver {
         self.raw_socket_packets = raw_socket_packets;
         if trace_enabled {
             crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::PacketMover2LiveRawAdmitted,
+                crate::perf_profile::Event::DataplaneLiveRawAdmitted,
                 summary
                     .inbound_admitted
                     .saturating_sub(raw_admitted_before) as u64,
@@ -688,7 +688,7 @@ impl PacketMover2TurnDriver {
         let remaining_outbound_limit =
             outbound_limit.saturating_sub(outbound_drained.min(outbound_limit));
         if remaining_outbound_limit > 0 {
-            let mut outbound_source = PacketMover2RouteTableOutboundSource::new(
+            let mut outbound_source = DataplaneRouteTableOutboundSource::new(
                 endpoint_data_rx,
                 endpoint_limit,
                 tun_outbound_rx,
@@ -704,10 +704,10 @@ impl PacketMover2TurnDriver {
                         self.admit_routed_outbound(routed, &mut summary);
                         let admitted = summary.outbound_admitted.saturating_sub(admitted_before);
                         match source {
-                            PacketMover2OutboundSource::Endpoint => {
+                            DataplaneOutboundSource::Endpoint => {
                                 endpoint_admitted = endpoint_admitted.saturating_add(admitted);
                             }
-                            PacketMover2OutboundSource::Tun => {
+                            DataplaneOutboundSource::Tun => {
                                 tun_admitted = tun_admitted.saturating_add(admitted);
                             }
                         }
@@ -720,17 +720,17 @@ impl PacketMover2TurnDriver {
         }
         if trace_enabled {
             crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::PacketMover2LiveEndpointAdmitted,
+                crate::perf_profile::Event::DataplaneLiveEndpointAdmitted,
                 endpoint_admitted as u64,
             );
             crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::PacketMover2LiveTunAdmitted,
+                crate::perf_profile::Event::DataplaneLiveTunAdmitted,
                 tun_admitted as u64,
             );
         }
         drop(admit_timer);
 
-        PacketMover2LiveAdmissionResult {
+        DataplaneLiveAdmissionResult {
             summary,
             outbound_buffers,
             endpoint_drained,
@@ -741,24 +741,24 @@ impl PacketMover2TurnDriver {
     #[allow(clippy::too_many_arguments)]
     async fn finish_live_node_turn_after_admission<E, Transports>(
         &mut self,
-        summary: PacketMover2RuntimeSummary,
-        mut outbound_buffers: PacketMover2RouteTableOutboundBuffers,
+        summary: DataplaneRuntimeSummary,
+        mut outbound_buffers: DataplaneRouteTableOutboundBuffers,
         endpoint_drained: usize,
         tun_drained: usize,
-        routes: &mut PacketMover2LiveRouteTable,
+        routes: &mut DataplaneLiveRouteTable,
         tun_tx: &crate::upper::tun::TunTx,
         endpoint_tx: &EndpointEventSender,
         transports: &Transports,
         crypto_limit: usize,
         collect_transport_sent_receipts: bool,
         executor: &mut E,
-        transport_send_worker: &mut PacketMover2TransportSendWorkerPool,
+        transport_send_worker: &mut DataplaneTransportSendWorkerPool,
         deferred_endpoint_data_batches: &mut Vec<NodeEndpointDataBatch>,
         deferred_tun_packets: &mut Vec<Vec<u8>>,
-    ) -> PacketMover2LiveNodeTurn
+    ) -> DataplaneLiveNodeTurn
     where
-        E: PacketMover2CryptoExecutor,
-        Transports: PacketMover2TransportResolver + ?Sized,
+        E: DataplaneCryptoExecutor,
+        Transports: DataplaneTransportResolver + ?Sized,
     {
         let mut report = self
             .finish_aead_live_node_output_turn_with_executor(
@@ -805,35 +805,35 @@ impl PacketMover2TurnDriver {
     }
 
     fn raw_ingress_socket_packet<R>(
-        packet: PacketMover2RawIngress,
+        packet: DataplaneRawIngress,
         router: &mut R,
-        summary: &mut PacketMover2RuntimeSummary,
-        raw_ingress_drops: &mut Vec<PacketMover2RawIngressDrop>,
-        deferred_raw_ingress: &mut std::collections::VecDeque<(PacketMover2RawIngress, u8)>,
+        summary: &mut DataplaneRuntimeSummary,
+        raw_ingress_drops: &mut Vec<DataplaneRawIngressDrop>,
+        deferred_raw_ingress: &mut std::collections::VecDeque<(DataplaneRawIngress, u8)>,
         retry_count: u8,
     ) -> Option<SocketPacket>
     where
-        R: PacketMover2IngressRouter,
+        R: DataplaneIngressRouter,
     {
         let header = match packet.protocol {
             PacketProtocol::Fmp => match FmpWireHeader::parse(&packet.payload) {
-                Ok(header) => PacketMover2IngressHeader::Fmp(header),
+                Ok(header) => DataplaneIngressHeader::Fmp(header),
                 Err(error) => {
                     summary.raw_ingress_dropped += 1;
-                    raw_ingress_drops.push(PacketMover2RawIngressDrop::from_packet(
+                    raw_ingress_drops.push(DataplaneRawIngressDrop::from_packet(
                         packet,
-                        PacketMover2RawIngressDropReason::Wire(error),
+                        DataplaneRawIngressDropReason::Wire(error),
                     ));
                     return None;
                 }
             },
             PacketProtocol::Fsp => match FspWireHeader::parse(&packet.payload) {
-                Ok(header) => PacketMover2IngressHeader::Fsp(header),
+                Ok(header) => DataplaneIngressHeader::Fsp(header),
                 Err(error) => {
                     summary.raw_ingress_dropped += 1;
-                    raw_ingress_drops.push(PacketMover2RawIngressDrop::from_packet(
+                    raw_ingress_drops.push(DataplaneRawIngressDrop::from_packet(
                         packet,
-                        PacketMover2RawIngressDropReason::Wire(error),
+                        DataplaneRawIngressDropReason::Wire(error),
                     ));
                     return None;
                 }
@@ -843,21 +843,21 @@ impl PacketMover2TurnDriver {
         let Some(route) = router.route(&packet, header) else {
             if packet.protocol == PacketProtocol::Fsp
                 && packet.fsp_source.is_some()
-                && retry_count < PACKET_MOVER2_DEFERRED_RAW_INGRESS_MAX_RETRIES
+                && retry_count < DATAPLANE_DEFERRED_RAW_INGRESS_MAX_RETRIES
             {
                 deferred_raw_ingress.push_back((packet, retry_count.saturating_add(1)));
                 return None;
             }
             summary.raw_ingress_dropped += 1;
-            raw_ingress_drops.push(PacketMover2RawIngressDrop::from_packet(
+            raw_ingress_drops.push(DataplaneRawIngressDrop::from_packet(
                 packet,
-                PacketMover2RawIngressDropReason::Unrouted,
+                DataplaneRawIngressDropReason::Unrouted,
             ));
             return None;
         };
 
         let wire_flags = header.flags();
-        let PacketMover2RawIngress {
+        let DataplaneRawIngress {
             path: source_path,
             previous_hop,
             ce_flag,
@@ -890,7 +890,7 @@ impl PacketMover2TurnDriver {
     fn admit_socket_packet(
         &mut self,
         packet: SocketPacket,
-        summary: &mut PacketMover2RuntimeSummary,
+        summary: &mut DataplaneRuntimeSummary,
     ) {
         match self.mover.submit_socket_packet(packet) {
             Ok(_) => summary.inbound_admitted += 1,
@@ -901,7 +901,7 @@ impl PacketMover2TurnDriver {
     fn admit_socket_packets(
         &mut self,
         packets: &mut Vec<SocketPacket>,
-        summary: &mut PacketMover2RuntimeSummary,
+        summary: &mut DataplaneRuntimeSummary,
     ) {
         match packets.len() {
             0 => {}
@@ -921,12 +921,12 @@ impl PacketMover2TurnDriver {
 
     fn admit_fast_ingress_runs(
         &mut self,
-        fast_ingress: PacketMover2FastIngressBatch,
-        summary: &mut PacketMover2RuntimeSummary,
+        fast_ingress: DataplaneFastIngressBatch,
+        summary: &mut DataplaneRuntimeSummary,
     ) {
         for run in fast_ingress.into_runs() {
             let run_len = run.len();
-            crate::perf_profile::record_packet_mover2_fast_ingress_owner_run(run_len);
+            crate::perf_profile::record_dataplane_fast_ingress_owner_run(run_len);
             let (owner, lane, packets) = run.into_parts();
             let (admitted, dropped) =
                 self.mover.submit_socket_packet_run(Some(owner), Some(lane), packets);
@@ -938,7 +938,7 @@ impl PacketMover2TurnDriver {
     fn admit_outbound_packet(
         &mut self,
         packet: OutboundPacket,
-        summary: &mut PacketMover2RuntimeSummary,
+        summary: &mut DataplaneRuntimeSummary,
     ) {
         match self.mover.submit_outbound_packet(packet) {
             Ok(_) => summary.outbound_admitted += 1,
@@ -949,12 +949,12 @@ impl PacketMover2TurnDriver {
     fn admit_outbound_packet_batch(
         &mut self,
         packets: Vec<OutboundPacket>,
-        summary: &mut PacketMover2RuntimeSummary,
+        summary: &mut DataplaneRuntimeSummary,
     ) {
         let packet_count = packets.len();
-        crate::perf_profile::record_event(crate::perf_profile::Event::PacketMover2OutboundBatchAdmit);
+        crate::perf_profile::record_event(crate::perf_profile::Event::DataplaneOutboundBatchAdmit);
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2OutboundBatchPackets,
+            crate::perf_profile::Event::DataplaneOutboundBatchPackets,
             packet_count as u64,
         );
         let (admitted, dropped) = self.mover.submit_outbound_packet_batch(packets);
@@ -965,7 +965,7 @@ impl PacketMover2TurnDriver {
     fn admit_outbound_packets(
         &mut self,
         packets: &mut Vec<OutboundPacket>,
-        summary: &mut PacketMover2RuntimeSummary,
+        summary: &mut DataplaneRuntimeSummary,
     ) {
         match packets.len() {
             0 => {}
@@ -983,12 +983,12 @@ impl PacketMover2TurnDriver {
 
     fn admit_routed_outbound(
         &mut self,
-        routed: PacketMover2RoutedOutbound,
-        summary: &mut PacketMover2RuntimeSummary,
+        routed: DataplaneRoutedOutbound,
+        summary: &mut DataplaneRuntimeSummary,
     ) {
         match routed {
-            PacketMover2RoutedOutbound::Packet(packet) => self.admit_outbound_packet(packet, summary),
-            PacketMover2RoutedOutbound::Batch(packets) => {
+            DataplaneRoutedOutbound::Packet(packet) => self.admit_outbound_packet(packet, summary),
+            DataplaneRoutedOutbound::Batch(packets) => {
                 self.admit_outbound_packet_batch(packets, summary)
             }
         }
@@ -996,26 +996,26 @@ impl PacketMover2TurnDriver {
 
     fn send_collected_outputs<S>(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
+        mut summary: DataplaneRuntimeSummary,
         sink: &mut S,
-    ) -> PacketMover2RuntimeTurn<'_>
+    ) -> DataplaneRuntimeTurn<'_>
     where
-        S: PacketMover2OutputSink,
+        S: DataplaneOutputSink,
     {
         let dropped_before = self.output_drops.len();
         let sent = if self.outputs.is_empty() {
             0
         } else {
-            crate::perf_profile::record_packet_mover2_live_output_batch(self.outputs.len());
+            crate::perf_profile::record_dataplane_live_output_batch(self.outputs.len());
             let _output_sink_timer = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::PacketMover2OutputSink,
+                crate::perf_profile::Stage::DataplaneOutputSink,
             );
             sink.send_batch(self.outputs.drain(..), &mut self.output_drops)
         };
         summary.outputs_sent += sent;
         summary.outputs_dropped += self.output_drops.len().saturating_sub(dropped_before);
 
-        PacketMover2RuntimeTurn {
+        DataplaneRuntimeTurn {
             summary,
             raw_ingress_drops: &self.raw_ingress_drops,
             output_drops: &self.output_drops,
@@ -1027,10 +1027,10 @@ impl PacketMover2TurnDriver {
     fn process_live_internal_outputs<R>(
         &mut self,
         router: &mut R,
-        summary: &mut PacketMover2RuntimeSummary,
+        summary: &mut DataplaneRuntimeSummary,
     ) -> usize
     where
-        R: PacketMover2IngressRouter,
+        R: DataplaneIngressRouter,
     {
         let mut outputs = self.take_outputs_for_rewrite();
         let mut raw_socket_packets = std::mem::take(&mut self.raw_socket_packets);
@@ -1040,9 +1040,9 @@ impl PacketMover2TurnDriver {
         for output in outputs.drain(..) {
             match output.target {
                 OutputTarget::SessionIngress { local_addr } => {
-                    let receipt = PacketMover2FmpIngressReceipt::from_output(&output);
-                    match packet_mover2_session_ingress_from_output(output, local_addr) {
-                        Ok(PacketMover2SessionIngressHandoff::Raw { raw, coord_warmup }) => {
+                    let receipt = DataplaneFmpIngressReceipt::from_output(&output);
+                    match dataplane_session_ingress_from_output(output, local_addr) {
+                        Ok(DataplaneSessionIngressHandoff::Raw { raw, coord_warmup }) => {
                             if let Some(receipt) = receipt {
                                 self.fmp_ingress_receipts.push(receipt);
                             }
@@ -1060,41 +1060,41 @@ impl PacketMover2TurnDriver {
                                 raw_socket_packets.push(socket_packet);
                             }
                         }
-                        Ok(PacketMover2SessionIngressHandoff::Local(ingress)) => {
+                        Ok(DataplaneSessionIngressHandoff::Local(ingress)) => {
                             if let Some(receipt) = receipt {
                                 self.fmp_ingress_receipts.push(receipt);
                             }
                             self.fsp_local_session_ingress.push(ingress);
                         }
-                        Err((output, PacketMover2SessionHandoffError::NoRoute)) => {
-                            match PacketMover2FmpLinkIngress::from_output(output) {
+                        Err((output, DataplaneSessionHandoffError::NoRoute)) => {
+                            match DataplaneFmpLinkIngress::from_output(output) {
                                 Ok(ingress) => self.fmp_link_ingress.push(ingress),
                                 Err(output) => {
-                                    self.output_drops.push(PacketMover2OutputDrop::from_output(
+                                    self.output_drops.push(DataplaneOutputDrop::from_output(
                                         &output,
-                                        PacketMover2OutputError::NoRoute,
+                                        DataplaneOutputError::NoRoute,
                                     ));
                                 }
                             }
                         }
                         Err((output, error)) => {
-                            self.output_drops.push(PacketMover2OutputDrop::from_output(
+                            self.output_drops.push(DataplaneOutputDrop::from_output(
                                 &output,
-                                packet_mover2_output_error_from_session_handoff(error),
+                                dataplane_output_error_from_session_handoff(error),
                             ))
                         }
                     }
                 }
                 OutputTarget::SessionPayload { .. } => {
-                    match PacketMover2FspSessionIngress::from_output(output) {
+                    match DataplaneFspSessionIngress::from_output(output) {
                         Ok(ingress) => {
                             self.record_fsp_session_ingress_activity(&ingress);
                             self.fsp_session_ingress.push(ingress);
                         }
                         Err(output) => {
-                            self.output_drops.push(PacketMover2OutputDrop::from_output(
+                            self.output_drops.push(DataplaneOutputDrop::from_output(
                                 &output,
-                                PacketMover2OutputError::InvalidPacket,
+                                DataplaneOutputError::InvalidPacket,
                             ));
                         }
                     }
@@ -1121,7 +1121,7 @@ impl PacketMover2TurnDriver {
         let retired_completions = self
             .mover
             .retire_queued_completions_into(limit, &mut self.retired, compact_endpoint_data);
-        crate::perf_profile::record_packet_mover2_live_completions_retired(retired_completions);
+        crate::perf_profile::record_dataplane_live_completions_retired(retired_completions);
         let mut mover_drops = self.mover.drain_drops();
         let emitted_drop_start = self.drops.len();
         self.drops.append(&mut mover_drops);
@@ -1132,15 +1132,15 @@ impl PacketMover2TurnDriver {
 
     fn collect_live_session_outputs_with_executor<R, E>(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
+        mut summary: DataplaneRuntimeSummary,
         router: &mut R,
         crypto_limit: usize,
         executor: &mut E,
         compact_endpoint_data: bool,
-    ) -> PacketMover2RuntimeSummary
+    ) -> DataplaneRuntimeSummary
     where
-        R: PacketMover2IngressRouter,
-        E: PacketMover2CryptoExecutor,
+        R: DataplaneIngressRouter,
+        E: DataplaneCryptoExecutor,
     {
         let mut remaining = crypto_limit;
         self.process_live_internal_outputs(router, &mut summary);
@@ -1174,19 +1174,19 @@ impl PacketMover2TurnDriver {
 
     fn collect_aead_outputs_with_executor<E>(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
+        mut summary: DataplaneRuntimeSummary,
         limit: usize,
         executor: &mut E,
         compact_endpoint_data: bool,
-    ) -> PacketMover2RuntimeSummary
+    ) -> DataplaneRuntimeSummary
     where
-        E: PacketMover2CryptoExecutor,
+        E: DataplaneCryptoExecutor,
     {
         let mut remaining = limit;
         while remaining > 0 {
             let dispatched = {
                 let _dispatch_timer = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::PacketMover2AeadDispatch,
+                    crate::perf_profile::Stage::DataplaneAeadDispatch,
                 );
                 self.mover.run_aead_available_into_with_executor(
                     remaining,
@@ -1216,8 +1216,8 @@ impl PacketMover2TurnDriver {
 
     fn collect_retired_outputs(
         &mut self,
-        mut summary: PacketMover2RuntimeSummary,
-    ) -> PacketMover2RuntimeSummary {
+        mut summary: DataplaneRuntimeSummary,
+    ) -> DataplaneRuntimeSummary {
         let mut retired = std::mem::take(&mut self.retired);
         let mut outbound_packets = std::mem::take(&mut self.retired_outbound_packets);
         outbound_packets.clear();
@@ -1243,7 +1243,7 @@ impl PacketMover2TurnDriver {
         summary
     }
 
-    fn push_endpoint_data_bulk(&mut self, bulk: PacketMover2EndpointDataBulk) {
+    fn push_endpoint_data_bulk(&mut self, bulk: DataplaneEndpointDataBulk) {
         if let Some(last) = self.endpoint_data_bulk.last_mut() {
             last.extend(bulk);
         } else {

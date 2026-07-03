@@ -64,7 +64,7 @@ impl Node {
         batch: NodeEndpointDataBatch,
     ) {
         let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
-        self.queue_packet_mover2_unrouted_endpoint_batch(
+        self.queue_dataplane_unrouted_endpoint_batch(
             remote,
             payloads
                 .into_iter()
@@ -119,7 +119,7 @@ impl Node {
                             .sessions
                             .iter()
                             .find(|(dest_addr, _)| {
-                                self.packet_mover2
+                                self.dataplane
                                     .fsp_owner_activity(dest_addr)
                                     .and_then(|activity| activity.last_outbound_next_hop())
                                     == Some(*peer.node_addr())
@@ -132,7 +132,7 @@ impl Node {
                                 }
                             });
                         let srtt = self
-                            .packet_mover2
+                            .dataplane
                             .fmp_link_metrics(peer.node_addr(), snapshot_now)
                             .and_then(|metrics| {
                                 metrics

@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PacketMover2RuntimeSummary {
+pub(crate) struct DataplaneRuntimeSummary {
     raw_ingress_dropped: usize,
     inbound_admitted: usize,
     inbound_dropped: usize,
@@ -13,7 +13,7 @@ pub(crate) struct PacketMover2RuntimeSummary {
     drops: usize,
 }
 
-impl PacketMover2RuntimeSummary {
+impl DataplaneRuntimeSummary {
     pub(crate) fn raw_ingress_dropped(self) -> usize {
         self.raw_ingress_dropped
     }
@@ -102,24 +102,24 @@ impl PacketMover2RuntimeSummary {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2RuntimeTurn<'a> {
-    summary: PacketMover2RuntimeSummary,
-    raw_ingress_drops: &'a [PacketMover2RawIngressDrop],
-    output_drops: &'a [PacketMover2OutputDrop],
+pub(crate) struct DataplaneRuntimeTurn<'a> {
+    summary: DataplaneRuntimeSummary,
+    raw_ingress_drops: &'a [DataplaneRawIngressDrop],
+    output_drops: &'a [DataplaneOutputDrop],
     outputs: &'a [PacketOutput],
     drops: &'a [PacketDrop],
 }
 
-impl PacketMover2RuntimeTurn<'_> {
-    pub(crate) fn summary(&self) -> PacketMover2RuntimeSummary {
+impl DataplaneRuntimeTurn<'_> {
+    pub(crate) fn summary(&self) -> DataplaneRuntimeSummary {
         self.summary
     }
 
-    pub(crate) fn raw_ingress_drops(&self) -> &[PacketMover2RawIngressDrop] {
+    pub(crate) fn raw_ingress_drops(&self) -> &[DataplaneRawIngressDrop] {
         self.raw_ingress_drops
     }
 
-    pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {
+    pub(crate) fn output_drops(&self) -> &[DataplaneOutputDrop] {
         self.output_drops
     }
 
@@ -146,7 +146,7 @@ fn reserved_live_outbound_progress_limit(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FmpIngressReceipt {
+pub(crate) struct DataplaneFmpIngressReceipt {
     source_addr: NodeAddr,
     source_peer: crate::PeerIdentity,
     transport_id: TransportId,
@@ -158,7 +158,7 @@ pub(crate) struct PacketMover2FmpIngressReceipt {
     inner_timestamp_ms: u32,
 }
 
-impl PacketMover2FmpIngressReceipt {
+impl DataplaneFmpIngressReceipt {
     fn from_output(output: &PacketOutput) -> Option<Self> {
         if output.owner().protocol() != PacketProtocol::Fmp {
             return None;
@@ -235,18 +235,18 @@ impl PacketMover2FmpIngressReceipt {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FmpLinkIngress {
-    receipt: PacketMover2FmpIngressReceipt,
+pub(crate) struct DataplaneFmpLinkIngress {
+    receipt: DataplaneFmpIngressReceipt,
     output: PacketOutput,
     msg_type: Option<u8>,
 }
 
-impl PacketMover2FmpLinkIngress {
+impl DataplaneFmpLinkIngress {
     fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
         let Some(plaintext) = output.opened_payload() else {
             return Err(output);
         };
-        let Some(receipt) = PacketMover2FmpIngressReceipt::from_output(&output) else {
+        let Some(receipt) = DataplaneFmpIngressReceipt::from_output(&output) else {
             return Err(output);
         };
         let msg_type = plaintext.get(4).copied();
@@ -257,7 +257,7 @@ impl PacketMover2FmpLinkIngress {
         })
     }
 
-    pub(crate) fn receipt(&self) -> &PacketMover2FmpIngressReceipt {
+    pub(crate) fn receipt(&self) -> &DataplaneFmpIngressReceipt {
         &self.receipt
     }
 
@@ -279,12 +279,12 @@ impl PacketMover2FmpLinkIngress {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspCoordWarmup {
+pub(crate) struct DataplaneFspCoordWarmup {
     source: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
     local: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
 }
 
-impl PacketMover2FspCoordWarmup {
+impl DataplaneFspCoordWarmup {
     fn from_parsed(
         source_addr: NodeAddr,
         local_addr: NodeAddr,
@@ -319,7 +319,7 @@ impl PacketMover2FspCoordWarmup {
     }
 }
 
-impl Default for PacketMover2FspCoordWarmup {
+impl Default for DataplaneFspCoordWarmup {
     fn default() -> Self {
         Self {
             source: None,
@@ -329,7 +329,7 @@ impl Default for PacketMover2FspCoordWarmup {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspLocalSessionIngress {
+pub(crate) struct DataplaneFspLocalSessionIngress {
     source_addr: NodeAddr,
     previous_hop_addr: NodeAddr,
     ce_flag: bool,
@@ -337,7 +337,7 @@ pub(crate) struct PacketMover2FspLocalSessionIngress {
     payload: PacketBuffer,
 }
 
-impl PacketMover2FspLocalSessionIngress {
+impl DataplaneFspLocalSessionIngress {
     fn new(
         source_addr: NodeAddr,
         previous_hop_addr: NodeAddr,
@@ -386,7 +386,7 @@ impl PacketMover2FspLocalSessionIngress {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspSessionIngress {
+pub(crate) struct DataplaneFspSessionIngress {
     source_addr: NodeAddr,
     source_peer: crate::PeerIdentity,
     previous_hop_addr: NodeAddr,
@@ -399,7 +399,7 @@ pub(crate) struct PacketMover2FspSessionIngress {
     plaintext: PacketBuffer,
 }
 
-impl PacketMover2FspSessionIngress {
+impl DataplaneFspSessionIngress {
     fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
         let source_addr = output.owner().node_addr();
         let Some(source_peer) = output.source_peer() else {
@@ -518,14 +518,14 @@ impl PacketMover2FspSessionIngress {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspEndpointDataCommit {
+pub(crate) struct DataplaneFspEndpointDataCommit {
     source_addr: NodeAddr,
     previous_hop_addr: NodeAddr,
     received_k_bit: bool,
     direct_path: bool,
 }
 
-impl PacketMover2FspEndpointDataCommit {
+impl DataplaneFspEndpointDataCommit {
     pub(crate) fn source_addr(self) -> NodeAddr {
         self.source_addr
     }
@@ -544,17 +544,17 @@ impl PacketMover2FspEndpointDataCommit {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketMover2FspEndpointDataCommitRun {
-    commit: PacketMover2FspEndpointDataCommit,
+pub(crate) struct DataplaneFspEndpointDataCommitRun {
+    commit: DataplaneFspEndpointDataCommit,
     len: usize,
 }
 
-impl PacketMover2FspEndpointDataCommitRun {
-    fn new(commit: PacketMover2FspEndpointDataCommit, len: usize) -> Self {
+impl DataplaneFspEndpointDataCommitRun {
+    fn new(commit: DataplaneFspEndpointDataCommit, len: usize) -> Self {
         Self { commit, len }
     }
 
-    pub(crate) fn commit(self) -> PacketMover2FspEndpointDataCommit {
+    pub(crate) fn commit(self) -> DataplaneFspEndpointDataCommit {
         self.commit
     }
 
@@ -562,7 +562,7 @@ impl PacketMover2FspEndpointDataCommitRun {
         self.len
     }
 
-    fn try_extend(&mut self, commit: PacketMover2FspEndpointDataCommit, len: usize) -> bool {
+    fn try_extend(&mut self, commit: DataplaneFspEndpointDataCommit, len: usize) -> bool {
         if self.commit != commit {
             return false;
         }
@@ -572,8 +572,8 @@ impl PacketMover2FspEndpointDataCommitRun {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PacketMover2FspEndpointDataIngress {
-    commit: PacketMover2FspEndpointDataCommit,
+pub(crate) struct DataplaneFspEndpointDataIngress {
+    commit: DataplaneFspEndpointDataCommit,
     msg_type: u8,
     body_len: usize,
     receive_sync: FspReceiveSync,
@@ -581,7 +581,7 @@ pub(crate) struct PacketMover2FspEndpointDataIngress {
     packet_run: FipsEndpointDirectPacketRun,
 }
 
-impl PacketMover2FspEndpointDataIngress {
+impl DataplaneFspEndpointDataIngress {
     fn from_output(output: PacketOutput) -> Result<Self, PacketOutput> {
         let source_addr = output.owner().node_addr();
         let Some(source_peer) = output.source_peer() else {
@@ -643,7 +643,7 @@ impl PacketMover2FspEndpointDataIngress {
         );
 
         Ok(Self {
-            commit: PacketMover2FspEndpointDataCommit {
+            commit: DataplaneFspEndpointDataCommit {
                 source_addr,
                 previous_hop_addr,
                 received_k_bit: receive_sync.received_k_bit,
@@ -657,7 +657,7 @@ impl PacketMover2FspEndpointDataIngress {
         })
     }
 
-    pub(crate) fn commit(&self) -> PacketMover2FspEndpointDataCommit {
+    pub(crate) fn commit(&self) -> DataplaneFspEndpointDataCommit {
         self.commit
     }
 
@@ -671,18 +671,18 @@ impl PacketMover2FspEndpointDataIngress {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PacketMover2EndpointDataBulk {
-    commit_runs: Vec<PacketMover2FspEndpointDataCommitRun>,
+pub(crate) struct DataplaneEndpointDataBulk {
+    commit_runs: Vec<DataplaneFspEndpointDataCommitRun>,
     packet_runs: Vec<FipsEndpointDirectPacketRun>,
     len: usize,
 }
 
-impl PacketMover2EndpointDataBulk {
-    pub(crate) fn from_ingress(ingress: PacketMover2FspEndpointDataIngress) -> Self {
+impl DataplaneEndpointDataBulk {
+    pub(crate) fn from_ingress(ingress: DataplaneFspEndpointDataIngress) -> Self {
         let len = ingress.len();
         let commit = ingress.commit();
         Self {
-            commit_runs: vec![PacketMover2FspEndpointDataCommitRun::new(commit, len)],
+            commit_runs: vec![DataplaneFspEndpointDataCommitRun::new(commit, len)],
             packet_runs: vec![ingress.into_direct_packet_run()],
             len,
         }
@@ -692,7 +692,7 @@ impl PacketMover2EndpointDataBulk {
         self.len
     }
 
-    pub(crate) fn push(&mut self, ingress: PacketMover2FspEndpointDataIngress) {
+    pub(crate) fn push(&mut self, ingress: DataplaneFspEndpointDataIngress) {
         let len = ingress.len();
         let commit = ingress.commit();
         if !self
@@ -701,7 +701,7 @@ impl PacketMover2EndpointDataBulk {
             .is_some_and(|run| run.try_extend(commit, len))
         {
             self.commit_runs
-                .push(PacketMover2FspEndpointDataCommitRun::new(commit, len));
+                .push(DataplaneFspEndpointDataCommitRun::new(commit, len));
         }
         self.push_direct_packet_run(ingress.into_direct_packet_run());
         self.len = self.len.saturating_add(len);
@@ -723,7 +723,7 @@ impl PacketMover2EndpointDataBulk {
         }
     }
 
-    pub(crate) fn commit_runs(&self) -> &[PacketMover2FspEndpointDataCommitRun] {
+    pub(crate) fn commit_runs(&self) -> &[DataplaneFspEndpointDataCommitRun] {
         &self.commit_runs
     }
 
@@ -752,32 +752,32 @@ impl PacketMover2EndpointDataBulk {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PacketMover2LiveNodeTurn {
-    summary: PacketMover2RuntimeSummary,
-    fmp_control_ingress: Vec<PacketMover2FmpControlIngress>,
-    fmp_ingress_receipts: Vec<PacketMover2FmpIngressReceipt>,
-    fmp_link_ingress: Vec<PacketMover2FmpLinkIngress>,
-    fsp_coord_warmups: Vec<PacketMover2FspCoordWarmup>,
-    fsp_local_session_ingress: Vec<PacketMover2FspLocalSessionIngress>,
-    endpoint_data_bulk: Vec<PacketMover2EndpointDataBulk>,
-    fsp_session_ingress: Vec<PacketMover2FspSessionIngress>,
-    raw_ingress_drops: Vec<PacketMover2RawIngressDrop>,
-    tun_outbound_drops: Vec<PacketMover2TunOutboundDrop>,
-    endpoint_data_drops: Vec<PacketMover2EndpointDataDrop>,
+pub(crate) struct DataplaneLiveNodeTurn {
+    summary: DataplaneRuntimeSummary,
+    fmp_control_ingress: Vec<DataplaneFmpControlIngress>,
+    fmp_ingress_receipts: Vec<DataplaneFmpIngressReceipt>,
+    fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
+    fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
+    fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
+    endpoint_data_bulk: Vec<DataplaneEndpointDataBulk>,
+    fsp_session_ingress: Vec<DataplaneFspSessionIngress>,
+    raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
+    tun_outbound_drops: Vec<DataplaneTunOutboundDrop>,
+    endpoint_data_drops: Vec<DataplaneEndpointDataDrop>,
     tun_source_drained: usize,
     endpoint_source_drained: usize,
     deferred_endpoint_data_batches_count: usize,
     tun_deferred_packets: usize,
-    output_drops: Vec<PacketMover2OutputDrop>,
+    output_drops: Vec<DataplaneOutputDrop>,
     drops: Vec<PacketDrop>,
     transport_planned: usize,
     transport_sent: usize,
     transport_dropped: usize,
-    transport_sent_receipts: Vec<PacketMover2TransportSentReceipt>,
+    transport_sent_receipts: Vec<DataplaneTransportSentReceipt>,
 }
 
-impl PacketMover2LiveNodeTurn {
-    fn from_runtime_turn(turn: &PacketMover2RuntimeTurn<'_>) -> Self {
+impl DataplaneLiveNodeTurn {
+    fn from_runtime_turn(turn: &DataplaneRuntimeTurn<'_>) -> Self {
         Self {
             summary: turn.summary(),
             raw_ingress_drops: turn.raw_ingress_drops().to_vec(),
@@ -787,84 +787,84 @@ impl PacketMover2LiveNodeTurn {
         }
     }
 
-    pub(crate) fn summary(&self) -> PacketMover2RuntimeSummary {
+    pub(crate) fn summary(&self) -> DataplaneRuntimeSummary {
         self.summary
     }
 
-    pub(crate) fn raw_ingress_drops(&self) -> &[PacketMover2RawIngressDrop] {
+    pub(crate) fn raw_ingress_drops(&self) -> &[DataplaneRawIngressDrop] {
         &self.raw_ingress_drops
     }
 
-    pub(crate) fn fmp_control_ingress(&self) -> &[PacketMover2FmpControlIngress] {
+    pub(crate) fn fmp_control_ingress(&self) -> &[DataplaneFmpControlIngress] {
         &self.fmp_control_ingress
     }
 
-    pub(crate) fn take_fmp_control_ingress(&mut self) -> Vec<PacketMover2FmpControlIngress> {
+    pub(crate) fn take_fmp_control_ingress(&mut self) -> Vec<DataplaneFmpControlIngress> {
         std::mem::take(&mut self.fmp_control_ingress)
     }
 
-    pub(crate) fn fmp_ingress_receipts(&self) -> &[PacketMover2FmpIngressReceipt] {
+    pub(crate) fn fmp_ingress_receipts(&self) -> &[DataplaneFmpIngressReceipt] {
         &self.fmp_ingress_receipts
     }
 
-    pub(crate) fn take_fmp_ingress_receipts(&mut self) -> Vec<PacketMover2FmpIngressReceipt> {
+    pub(crate) fn take_fmp_ingress_receipts(&mut self) -> Vec<DataplaneFmpIngressReceipt> {
         std::mem::take(&mut self.fmp_ingress_receipts)
     }
 
-    pub(crate) fn fmp_link_ingress(&self) -> &[PacketMover2FmpLinkIngress] {
+    pub(crate) fn fmp_link_ingress(&self) -> &[DataplaneFmpLinkIngress] {
         &self.fmp_link_ingress
     }
 
-    pub(crate) fn take_fmp_link_ingress(&mut self) -> Vec<PacketMover2FmpLinkIngress> {
+    pub(crate) fn take_fmp_link_ingress(&mut self) -> Vec<DataplaneFmpLinkIngress> {
         std::mem::take(&mut self.fmp_link_ingress)
     }
 
-    pub(crate) fn fsp_coord_warmups(&self) -> &[PacketMover2FspCoordWarmup] {
+    pub(crate) fn fsp_coord_warmups(&self) -> &[DataplaneFspCoordWarmup] {
         &self.fsp_coord_warmups
     }
 
-    pub(crate) fn take_fsp_coord_warmups(&mut self) -> Vec<PacketMover2FspCoordWarmup> {
+    pub(crate) fn take_fsp_coord_warmups(&mut self) -> Vec<DataplaneFspCoordWarmup> {
         std::mem::take(&mut self.fsp_coord_warmups)
     }
 
-    pub(crate) fn fsp_local_session_ingress(&self) -> &[PacketMover2FspLocalSessionIngress] {
+    pub(crate) fn fsp_local_session_ingress(&self) -> &[DataplaneFspLocalSessionIngress] {
         &self.fsp_local_session_ingress
     }
 
     pub(crate) fn take_fsp_local_session_ingress(
         &mut self,
-    ) -> Vec<PacketMover2FspLocalSessionIngress> {
+    ) -> Vec<DataplaneFspLocalSessionIngress> {
         std::mem::take(&mut self.fsp_local_session_ingress)
     }
 
-    pub(crate) fn take_endpoint_data_bulk(&mut self) -> Vec<PacketMover2EndpointDataBulk> {
+    pub(crate) fn take_endpoint_data_bulk(&mut self) -> Vec<DataplaneEndpointDataBulk> {
         std::mem::take(&mut self.endpoint_data_bulk)
     }
 
-    pub(crate) fn endpoint_data_bulk(&self) -> &[PacketMover2EndpointDataBulk] {
+    pub(crate) fn endpoint_data_bulk(&self) -> &[DataplaneEndpointDataBulk] {
         &self.endpoint_data_bulk
     }
 
     pub(crate) fn endpoint_data_bulk_count(&self) -> usize {
         self.endpoint_data_bulk
             .iter()
-            .map(PacketMover2EndpointDataBulk::len)
+            .map(DataplaneEndpointDataBulk::len)
             .sum()
     }
 
-    pub(crate) fn fsp_session_ingress(&self) -> &[PacketMover2FspSessionIngress] {
+    pub(crate) fn fsp_session_ingress(&self) -> &[DataplaneFspSessionIngress] {
         &self.fsp_session_ingress
     }
 
-    pub(crate) fn take_fsp_session_ingress(&mut self) -> Vec<PacketMover2FspSessionIngress> {
+    pub(crate) fn take_fsp_session_ingress(&mut self) -> Vec<DataplaneFspSessionIngress> {
         std::mem::take(&mut self.fsp_session_ingress)
     }
 
-    pub(crate) fn tun_outbound_drops(&self) -> &[PacketMover2TunOutboundDrop] {
+    pub(crate) fn tun_outbound_drops(&self) -> &[DataplaneTunOutboundDrop] {
         &self.tun_outbound_drops
     }
 
-    pub(crate) fn endpoint_data_drops(&self) -> &[PacketMover2EndpointDataDrop] {
+    pub(crate) fn endpoint_data_drops(&self) -> &[DataplaneEndpointDataDrop] {
         &self.endpoint_data_drops
     }
 
@@ -884,7 +884,7 @@ impl PacketMover2LiveNodeTurn {
         self.tun_deferred_packets
     }
 
-    pub(crate) fn output_drops(&self) -> &[PacketMover2OutputDrop] {
+    pub(crate) fn output_drops(&self) -> &[DataplaneOutputDrop] {
         &self.output_drops
     }
 
@@ -904,7 +904,7 @@ impl PacketMover2LiveNodeTurn {
         self.transport_dropped
     }
 
-    pub(crate) fn take_transport_sent_receipts(&mut self) -> Vec<PacketMover2TransportSentReceipt> {
+    pub(crate) fn take_transport_sent_receipts(&mut self) -> Vec<DataplaneTransportSentReceipt> {
         std::mem::take(&mut self.transport_sent_receipts)
     }
 

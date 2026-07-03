@@ -71,7 +71,7 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     // Build a tree-peer that:
     //   - has the target in its inbound bloom filter (so `may_reach` is true),
     //   - declares us as its parent (so `is_tree_peer` returns true).
-    // The peer has no Noise session, so PM2 FMP-link output will
+    // The peer has no Noise session, so dataplane FMP-link output will
     // fail at the wire-send step — but `initiate_lookup` already incremented
     // `req_initiated` and the failure is logged at `debug!`. The state-
     // machine bookkeeping we want to test runs to completion either way.

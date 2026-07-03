@@ -125,46 +125,46 @@ where
     }
 }
 
-fn ensure_packet_mover2_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
-    node.packet_mover2.register_owner_if_missing(
-        crate::packet_mover2::OwnerId::fsp_node(dest_addr),
-        crate::packet_mover2::OwnerConfig::new(1, 8)
+fn ensure_dataplane_fsp_owner_for_test(node: &mut Node, dest_addr: NodeAddr) {
+    node.dataplane.register_owner_if_missing(
+        crate::dataplane::OwnerId::fsp_node(dest_addr),
+        crate::dataplane::OwnerConfig::new(1, 8)
             .with_fsp_session_start_ms(1_000)
             .with_fsp_mmp(node.config.node.session_mmp.clone(), true),
     );
 }
 
-fn seed_packet_mover2_fsp_data_sent_for_test(
+fn seed_dataplane_fsp_data_sent_for_test(
     node: &mut Node,
     dest_addr: NodeAddr,
     next_hop: NodeAddr,
     now_ms: u64,
 ) {
-    ensure_packet_mover2_fsp_owner_for_test(node, dest_addr);
-    assert!(node.packet_mover2.record_fsp_data_sent(
+    ensure_dataplane_fsp_owner_for_test(node, dest_addr);
+    assert!(node.dataplane.record_fsp_data_sent(
         dest_addr,
         next_hop,
         512,
-        crate::packet_mover2::ActivityTick::new(now_ms),
+        crate::dataplane::ActivityTick::new(now_ms),
     ));
 }
 
-fn seed_packet_mover2_fsp_data_rx_for_test(
+fn seed_dataplane_fsp_data_rx_for_test(
     node: &mut Node,
     source_addr: NodeAddr,
     previous_hop: NodeAddr,
     now_ms: u64,
 ) {
-    ensure_packet_mover2_fsp_owner_for_test(node, source_addr);
+    ensure_dataplane_fsp_owner_for_test(node, source_addr);
     let body_len = 512;
     assert!(
-        node.packet_mover2
+        node.dataplane
             .record_authenticated_fsp_session(
                 source_addr,
                 previous_hop,
                 crate::protocol::SessionMessageType::EndpointData.to_byte(),
                 body_len,
-                crate::packet_mover2::FspReceiveSync {
+                crate::dataplane::FspReceiveSync {
                     counter: 1,
                     received_k_bit: false,
                     timestamp: 0,
@@ -173,7 +173,7 @@ fn seed_packet_mover2_fsp_data_rx_for_test(
                     path_mtu: u16::MAX,
                     spin_bit: false,
                 },
-                Some(crate::packet_mover2::ActivityTick::new(now_ms)),
+                Some(crate::dataplane::ActivityTick::new(now_ms)),
                 std::time::Instant::now(),
             )
             .is_some()
@@ -215,7 +215,7 @@ fn expect_single_endpoint_data_event(
     }
 }
 
-async fn send_endpoint_data_via_pm2(
+async fn send_endpoint_data_via_dataplane(
     node: &mut Node,
     remote: PeerIdentity,
     payload: Vec<u8>,
@@ -236,15 +236,15 @@ async fn send_endpoint_data_via_pm2(
     Ok(())
 }
 
-fn enqueue_tun_packet_via_pm2(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
+fn enqueue_tun_packet_via_dataplane(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
     nodes[index]
         .tun_outbound_tx
         .try_send(packet)
         .expect("enqueue TUN outbound packet");
 }
 
-async fn send_tun_packet_via_pm2(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
-    enqueue_tun_packet_via_pm2(nodes, index, packet);
+async fn send_tun_packet_via_dataplane(nodes: &mut [TestNode], index: usize, packet: Vec<u8>) {
+    enqueue_tun_packet_via_dataplane(nodes, index, packet);
     process_available_packets(nodes).await;
 }
 
@@ -453,7 +453,7 @@ fn build_path_mtu_notification_body(mtu: u16) -> Vec<u8> {
     mtu.to_le_bytes().to_vec()
 }
 
-/// Insert an Established session and matching PM2 FSP owner.
+/// Insert an Established session and matching dataplane FSP owner.
 fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
     let session = make_noise_session(node.identity(), remote);
     let remote_addr = *remote.node_addr();
@@ -466,7 +466,7 @@ fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
     );
     entry.mark_established(1000);
     node.sessions.insert(remote_addr, entry);
-    ensure_packet_mover2_fsp_owner_for_test(node, remote_addr);
+    ensure_dataplane_fsp_owner_for_test(node, remote_addr);
 }
 
 fn session_timestamp_echo_for(rtt_ms: u32) -> u32 {

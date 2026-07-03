@@ -4,7 +4,7 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
     let open_key = 75;
     let seal_key = 76;
     let path = live_path(8600);
-    let mut driver = PacketMover2TurnDriver::new(AdmissionConfig::new(4, 8));
+    let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
     driver.register_owner(owner, OwnerConfig::new(3, 8).with_next_send_counter(700));
     driver
         .owner_mut(owner)
@@ -12,7 +12,7 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
         .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(seal_key)));
 
     let mut raw_source = VecDeque::from([
-        PacketMover2RawIngress::from_received(
+        DataplaneRawIngress::from_received(
             PacketProtocol::Fmp,
             path.clone(),
             ReceivedPacket::with_timestamp(
@@ -22,7 +22,7 @@ fn runtime_pump_output_turn_drains_bounded_sources_without_vec_staging() {
                 1,
             ),
         ),
-        PacketMover2RawIngress::from_received(
+        DataplaneRawIngress::from_received(
             PacketProtocol::Fmp,
             path.clone(),
             ReceivedPacket::with_timestamp(

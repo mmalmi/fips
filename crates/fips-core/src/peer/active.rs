@@ -143,7 +143,7 @@ pub struct ActivePeer {
     remote_epoch: Option<[u8; 8]>,
 
     // === MMP ===
-    /// Role used when seeding PM2's adjacent-link MMP owner state.
+    /// Role used when seeding dataplane's adjacent-link MMP owner state.
     fmp_mmp_is_initiator: bool,
 
     // === Heartbeat ===

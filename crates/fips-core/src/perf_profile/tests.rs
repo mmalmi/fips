@@ -2,7 +2,7 @@
 use super::udp_send_batch_tail_bucket_flags;
 use super::{
     EVENTS, Event, HIST_BUCKETS, N_EVENTS, N_STAGES, Stage, TraceStamp, bucket_upper_ns,
-    event_from_index, fmt_rate_per_sec, packet_mover2_crypto_batch_bucket_flags, percentile_ns,
+    dataplane_crypto_batch_bucket_flags, event_from_index, fmt_rate_per_sec, percentile_ns,
     record_event_count_sample, record_wait_threshold, stage_from_index,
 };
 use std::sync::atomic::Ordering::Relaxed;
@@ -32,10 +32,10 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 }
 
 #[test]
-fn event_table_exposes_current_pm2_and_queue_events() {
+fn event_table_exposes_current_dataplane_and_queue_events() {
     assert_eq!(N_EVENTS, 245);
     assert!(
-        (Event::PacketMover2EstablishedFspDataRetirePackets as usize) < N_EVENTS,
+        (Event::DataplaneEstablishedFspDataRetirePackets as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
 
@@ -117,186 +117,180 @@ fn event_table_exposes_current_pm2_and_queue_events() {
             Event::TunWriteBulkBacklogHigh,
             "tun_write_bulk_backlog_high",
         ),
+        (Event::DataplaneFspPathOpen, "dataplane_fsp_path_open"),
         (
-            Event::PacketMover2FspPathOpen,
-            "packet_mover2_fsp_path_open",
+            Event::DataplaneFspPathOpenBulk,
+            "dataplane_fsp_path_open_bulk",
         ),
         (
-            Event::PacketMover2FspPathOpenBulk,
-            "packet_mover2_fsp_path_open_bulk",
+            Event::DataplaneFspOwnerSyncCall,
+            "dataplane_fsp_owner_sync_call",
         ),
         (
-            Event::PacketMover2FspOwnerSyncCall,
-            "packet_mover2_fsp_owner_sync_call",
+            Event::DataplaneCryptoOpenBatch,
+            "dataplane_crypto_open_batch",
         ),
         (
-            Event::PacketMover2CryptoOpenBatch,
-            "packet_mover2_crypto_open_batch",
+            Event::DataplaneCryptoOpenPackets,
+            "dataplane_crypto_open_packets",
         ),
         (
-            Event::PacketMover2CryptoOpenPackets,
-            "packet_mover2_crypto_open_packets",
+            Event::DataplaneCryptoSealBatch,
+            "dataplane_crypto_seal_batch",
         ),
         (
-            Event::PacketMover2CryptoSealBatch,
-            "packet_mover2_crypto_seal_batch",
+            Event::DataplaneCryptoSealPackets,
+            "dataplane_crypto_seal_packets",
         ),
         (
-            Event::PacketMover2CryptoSealPackets,
-            "packet_mover2_crypto_seal_packets",
+            Event::DataplaneCryptoBatchSingle,
+            "dataplane_crypto_batch_single",
+        ),
+        (Event::DataplaneCryptoBatchGe8, "dataplane_crypto_batch_ge8"),
+        (
+            Event::DataplaneCryptoBatchGe32,
+            "dataplane_crypto_batch_ge32",
         ),
         (
-            Event::PacketMover2CryptoBatchSingle,
-            "packet_mover2_crypto_batch_single",
-        ),
-        (
-            Event::PacketMover2CryptoBatchGe8,
-            "packet_mover2_crypto_batch_ge8",
-        ),
-        (
-            Event::PacketMover2CryptoBatchGe32,
-            "packet_mover2_crypto_batch_ge32",
-        ),
-        (
-            Event::PacketMover2CryptoBatchGe64,
-            "packet_mover2_crypto_batch_ge64",
+            Event::DataplaneCryptoBatchGe64,
+            "dataplane_crypto_batch_ge64",
         ),
         (Event::ReservedEvent199, "reserved_event_199"),
         (
-            Event::PacketMover2FspOwnerSyncApplied,
-            "packet_mover2_fsp_owner_sync_applied",
+            Event::DataplaneFspOwnerSyncApplied,
+            "dataplane_fsp_owner_sync_applied",
         ),
         (
-            Event::PacketMover2DispatchOwnerBlocked,
-            "packet_mover2_dispatch_owner_blocked",
+            Event::DataplaneDispatchOwnerBlocked,
+            "dataplane_dispatch_owner_blocked",
         ),
         (
-            Event::PacketMover2DispatchNoIngress,
-            "packet_mover2_dispatch_no_ingress",
+            Event::DataplaneDispatchNoIngress,
+            "dataplane_dispatch_no_ingress",
         ),
         (
-            Event::PacketMover2DispatchLimitHit,
-            "packet_mover2_dispatch_limit_hit",
+            Event::DataplaneDispatchLimitHit,
+            "dataplane_dispatch_limit_hit",
         ),
         (
-            Event::PacketMover2DispatchExecutorFull,
-            "packet_mover2_dispatch_executor_full",
+            Event::DataplaneDispatchExecutorFull,
+            "dataplane_dispatch_executor_full",
         ),
         (
-            Event::PacketMover2DispatchOwnerBlockedTotal,
-            "packet_mover2_dispatch_owner_blocked_total",
+            Event::DataplaneDispatchOwnerBlockedTotal,
+            "dataplane_dispatch_owner_blocked_total",
         ),
         (
-            Event::PacketMover2DispatchOwnerBlockedBulkLane,
-            "packet_mover2_dispatch_owner_blocked_bulk_lane",
+            Event::DataplaneDispatchOwnerBlockedBulkLane,
+            "dataplane_dispatch_owner_blocked_bulk_lane",
         ),
         (
-            Event::PacketMover2TransportSendWorkerBackpressure,
-            "packet_mover2_transport_send_worker_backpressure",
+            Event::DataplaneTransportSendWorkerBackpressure,
+            "dataplane_transport_send_worker_backpressure",
         ),
         (
-            Event::PacketMover2TransportSendWorkerDropped,
-            "packet_mover2_transport_send_worker_dropped",
+            Event::DataplaneTransportSendWorkerDropped,
+            "dataplane_transport_send_worker_dropped",
         ),
         (
-            Event::PacketMover2TransportSendWorkerSendFailed,
-            "packet_mover2_transport_send_worker_send_failed",
+            Event::DataplaneTransportSendWorkerSendFailed,
+            "dataplane_transport_send_worker_send_failed",
         ),
         (
-            Event::PacketMover2LiveRawAdmitted,
-            "packet_mover2_live_raw_admitted",
+            Event::DataplaneLiveRawAdmitted,
+            "dataplane_live_raw_admitted",
         ),
         (
-            Event::PacketMover2LiveEndpointAdmitted,
-            "packet_mover2_live_endpoint_admitted",
+            Event::DataplaneLiveEndpointAdmitted,
+            "dataplane_live_endpoint_admitted",
         ),
         (
-            Event::PacketMover2LiveTunAdmitted,
-            "packet_mover2_live_tun_admitted",
+            Event::DataplaneLiveTunAdmitted,
+            "dataplane_live_tun_admitted",
         ),
         (
-            Event::PacketMover2LivePreparedDispatched,
-            "packet_mover2_live_prepared_dispatched",
+            Event::DataplaneLivePreparedDispatched,
+            "dataplane_live_prepared_dispatched",
         ),
         (
-            Event::PacketMover2LiveCompletionsDrained,
-            "packet_mover2_live_completions_drained",
+            Event::DataplaneLiveCompletionsDrained,
+            "dataplane_live_completions_drained",
         ),
         (
-            Event::PacketMover2LiveRetiredOutputs,
-            "packet_mover2_live_retired_outputs",
+            Event::DataplaneLiveRetiredOutputs,
+            "dataplane_live_retired_outputs",
         ),
         (
-            Event::PacketMover2LiveRetiredDrops,
-            "packet_mover2_live_retired_drops",
+            Event::DataplaneLiveRetiredDrops,
+            "dataplane_live_retired_drops",
         ),
         (
-            Event::PacketMover2LiveOutputDrops,
-            "packet_mover2_live_output_drops",
+            Event::DataplaneLiveOutputDrops,
+            "dataplane_live_output_drops",
         ),
         (
-            Event::PacketMover2AeadOpenInFlight,
-            "packet_mover2_aead_open_in_flight",
+            Event::DataplaneAeadOpenInFlight,
+            "dataplane_aead_open_in_flight",
         ),
         (
-            Event::PacketMover2AeadSealInFlight,
-            "packet_mover2_aead_seal_in_flight",
+            Event::DataplaneAeadSealInFlight,
+            "dataplane_aead_seal_in_flight",
         ),
         (
-            Event::PacketMover2AeadCompletionQueueDepth,
-            "packet_mover2_aead_completion_queue_depth",
+            Event::DataplaneAeadCompletionQueueDepth,
+            "dataplane_aead_completion_queue_depth",
         ),
         (
-            Event::PacketMover2AeadCompletionBatch,
-            "packet_mover2_aead_completion_batch",
+            Event::DataplaneAeadCompletionBatch,
+            "dataplane_aead_completion_batch",
         ),
         (
-            Event::PacketMover2AeadCompletionBatchPackets,
-            "packet_mover2_aead_completion_batch_packets",
+            Event::DataplaneAeadCompletionBatchPackets,
+            "dataplane_aead_completion_batch_packets",
         ),
         (
-            Event::PacketMover2AeadPreparedJob,
-            "packet_mover2_aead_prepared_job",
+            Event::DataplaneAeadPreparedJob,
+            "dataplane_aead_prepared_job",
         ),
         (
-            Event::PacketMover2AeadPreparedJobPackets,
-            "packet_mover2_aead_prepared_job_packets",
+            Event::DataplaneAeadPreparedJobPackets,
+            "dataplane_aead_prepared_job_packets",
         ),
         (
-            Event::PacketMover2LiveCompletionsRetired,
-            "packet_mover2_live_completions_retired",
+            Event::DataplaneLiveCompletionsRetired,
+            "dataplane_live_completions_retired",
         ),
         (
-            Event::PacketMover2LiveOutputBatch,
-            "packet_mover2_live_output_batch",
+            Event::DataplaneLiveOutputBatch,
+            "dataplane_live_output_batch",
         ),
         (
-            Event::PacketMover2LiveOutputBatchPackets,
-            "packet_mover2_live_output_batch_packets",
+            Event::DataplaneLiveOutputBatchPackets,
+            "dataplane_live_output_batch_packets",
         ),
         (
-            Event::PacketMover2AeadOpenQueueDepth,
-            "packet_mover2_aead_open_queue_depth",
+            Event::DataplaneAeadOpenQueueDepth,
+            "dataplane_aead_open_queue_depth",
         ),
         (
-            Event::PacketMover2AeadSealQueueDepth,
-            "packet_mover2_aead_seal_queue_depth",
+            Event::DataplaneAeadSealQueueDepth,
+            "dataplane_aead_seal_queue_depth",
         ),
         (
-            Event::PacketMover2FastIngressOwnerRuns,
-            "packet_mover2_fast_ingress_owner_runs",
+            Event::DataplaneFastIngressOwnerRuns,
+            "dataplane_fast_ingress_owner_runs",
         ),
         (
-            Event::PacketMover2FastIngressOwnerRunPackets,
-            "packet_mover2_fast_ingress_owner_run_packets",
+            Event::DataplaneFastIngressOwnerRunPackets,
+            "dataplane_fast_ingress_owner_run_packets",
         ),
         (
-            Event::PacketMover2EstablishedFspDataRetireRuns,
-            "packet_mover2_established_fsp_data_retire_runs",
+            Event::DataplaneEstablishedFspDataRetireRuns,
+            "dataplane_established_fsp_data_retire_runs",
         ),
         (
-            Event::PacketMover2EstablishedFspDataRetirePackets,
-            "packet_mover2_established_fsp_data_retire_packets",
+            Event::DataplaneEstablishedFspDataRetirePackets,
+            "dataplane_established_fsp_data_retire_packets",
         ),
     ];
     for (event, name) in live_events {
@@ -332,39 +326,39 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 }
 
 #[test]
-fn packet_mover2_crypto_batch_buckets_classify_worker_chunks() {
+fn dataplane_crypto_batch_buckets_classify_worker_chunks() {
     assert_eq!(
-        packet_mover2_crypto_batch_bucket_flags(0),
+        dataplane_crypto_batch_bucket_flags(0),
         (false, false, false, false)
     );
     assert_eq!(
-        packet_mover2_crypto_batch_bucket_flags(1),
+        dataplane_crypto_batch_bucket_flags(1),
         (true, false, false, false)
     );
     assert_eq!(
-        packet_mover2_crypto_batch_bucket_flags(7),
+        dataplane_crypto_batch_bucket_flags(7),
         (false, false, false, false)
     );
     assert_eq!(
-        packet_mover2_crypto_batch_bucket_flags(8),
+        dataplane_crypto_batch_bucket_flags(8),
         (false, true, false, false)
     );
     assert_eq!(
-        packet_mover2_crypto_batch_bucket_flags(31),
+        dataplane_crypto_batch_bucket_flags(31),
         (false, true, false, false)
     );
     assert_eq!(
-        packet_mover2_crypto_batch_bucket_flags(32),
+        dataplane_crypto_batch_bucket_flags(32),
         (false, true, true, false)
     );
     assert_eq!(
-        packet_mover2_crypto_batch_bucket_flags(64),
+        dataplane_crypto_batch_bucket_flags(64),
         (false, true, true, true)
     );
 }
 
 #[test]
-fn stage_table_exposes_current_pm2_transport_and_output_stages() {
+fn stage_table_exposes_current_dataplane_transport_and_output_stages() {
     assert_eq!(N_STAGES, 69);
 
     for (stage, name) in [
@@ -388,47 +382,32 @@ fn stage_table_exposes_current_pm2_transport_and_output_stages() {
             Stage::TransportRxLoopOwnedWait,
             "transport_rx_loop_owned_wait",
         ),
-        (Stage::PacketMover2AeadOpen, "packet_mover2_aead_open"),
-        (Stage::PacketMover2AeadSeal, "packet_mover2_aead_seal"),
-        (Stage::PacketMover2Retire, "packet_mover2_retire"),
+        (Stage::DataplaneAeadOpen, "dataplane_aead_open"),
+        (Stage::DataplaneAeadSeal, "dataplane_aead_seal"),
+        (Stage::DataplaneRetire, "dataplane_retire"),
+        (Stage::DataplaneFspOwnerSync, "dataplane_fsp_owner_sync"),
+        (Stage::DataplaneLiveTurn, "dataplane_live_turn"),
         (
-            Stage::PacketMover2FspOwnerSync,
-            "packet_mover2_fsp_owner_sync",
+            Stage::DataplaneCompletionDrain,
+            "dataplane_completion_drain",
         ),
-        (Stage::PacketMover2LiveTurn, "packet_mover2_live_turn"),
+        (Stage::DataplaneLiveAdmit, "dataplane_live_admit"),
+        (Stage::DataplaneAeadDispatch, "dataplane_aead_dispatch"),
+        (Stage::DataplaneOutputSink, "dataplane_output_sink"),
+        (Stage::DataplaneTransportSend, "dataplane_transport_send"),
         (
-            Stage::PacketMover2CompletionDrain,
-            "packet_mover2_completion_drain",
+            Stage::DataplaneTransportSendWorker,
+            "dataplane_transport_send_worker",
         ),
-        (Stage::PacketMover2LiveAdmit, "packet_mover2_live_admit"),
+        (Stage::DataplaneOwnerDispatch, "dataplane_owner_dispatch"),
+        (Stage::DataplaneExecutorSubmit, "dataplane_executor_submit"),
         (
-            Stage::PacketMover2AeadDispatch,
-            "packet_mover2_aead_dispatch",
-        ),
-        (Stage::PacketMover2OutputSink, "packet_mover2_output_sink"),
-        (
-            Stage::PacketMover2TransportSend,
-            "packet_mover2_transport_send",
-        ),
-        (
-            Stage::PacketMover2TransportSendWorker,
-            "packet_mover2_transport_send_worker",
+            Stage::DataplaneCompletionQueue,
+            "dataplane_completion_queue",
         ),
         (
-            Stage::PacketMover2OwnerDispatch,
-            "packet_mover2_owner_dispatch",
-        ),
-        (
-            Stage::PacketMover2ExecutorSubmit,
-            "packet_mover2_executor_submit",
-        ),
-        (
-            Stage::PacketMover2CompletionQueue,
-            "packet_mover2_completion_queue",
-        ),
-        (
-            Stage::PacketMover2AeadWorkerQueueWait,
-            "packet_mover2_aead_worker_queue_wait",
+            Stage::DataplaneAeadWorkerQueueWait,
+            "dataplane_aead_worker_queue_wait",
         ),
     ] {
         assert_eq!(stage_from_index(stage as usize).name(), name);
@@ -467,13 +446,13 @@ fn live_event_counters_increment() {
         (Event::UdpSendSendmmsgBatch, 37),
         (Event::UdpSendSendmmsgPackets, 41),
         (Event::UdpSendSendmmsgBatchGe32, 43),
-        (Event::PacketMover2FspPathOpen, 47),
-        (Event::PacketMover2FspPathOpenBulk, 53),
-        (Event::PacketMover2FspOwnerSyncCall, 57),
-        (Event::PacketMover2CryptoOpenBatch, 59),
-        (Event::PacketMover2CryptoSealPackets, 61),
+        (Event::DataplaneFspPathOpen, 47),
+        (Event::DataplaneFspPathOpenBulk, 53),
+        (Event::DataplaneFspOwnerSyncCall, 57),
+        (Event::DataplaneCryptoOpenBatch, 59),
+        (Event::DataplaneCryptoSealPackets, 61),
         (Event::ReservedEvent199, 63),
-        (Event::PacketMover2FspOwnerSyncApplied, 65),
+        (Event::DataplaneFspOwnerSyncApplied, 65),
         (Event::PacketBatchPoolReuse, 67),
         (Event::PacketBufferPoolFresh, 71),
         (Event::UdpKernelDropped, 73),
@@ -481,9 +460,9 @@ fn live_event_counters_increment() {
         (Event::UdpNamespaceRcvbufErrors, 83),
         (Event::TunWriteBulkDropped, 89),
         (Event::TunWriteBulkBacklogHigh, 97),
-        (Event::PacketMover2TransportSendWorkerBackpressure, 101),
-        (Event::PacketMover2TransportSendWorkerDropped, 103),
-        (Event::PacketMover2TransportSendWorkerSendFailed, 107),
+        (Event::DataplaneTransportSendWorkerBackpressure, 101),
+        (Event::DataplaneTransportSendWorkerDropped, 103),
+        (Event::DataplaneTransportSendWorkerSendFailed, 107),
     ];
 
     for (event, count) in samples {

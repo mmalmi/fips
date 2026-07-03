@@ -11,18 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Published the PM2 direct dataplane endpoint APIs used by nvpn's direct TUN
+- Published the dataplane direct dataplane endpoint APIs used by nvpn's direct TUN
   fast path, including app-facing endpoint data, packet run, packet batch, and
   sink types.
 
 ### Fixed
 
-- Delivered direct endpoint packet batches before PM2 transport sends, reducing
+- Delivered direct endpoint packet batches before dataplane transport sends, reducing
   app-facing receive queue residence during bulk nvpn traffic.
-- Deferred PM2 FSP ingress until local routes catch up, avoiding transient
+- Deferred dataplane FSP ingress until local routes catch up, avoiding transient
   route-missing drops during reconnect or route churn.
 - Bumped `fips-endpoint` to 0.3.53 so app-facing consumers pick up the
-  `fips-core` 0.3.78 direct endpoint API and PM2 route-catch-up fixes.
+  `fips-core` 0.3.78 direct endpoint API and dataplane route-catch-up fixes.
 
 ## [0.3.77] - 2026-06-22
 

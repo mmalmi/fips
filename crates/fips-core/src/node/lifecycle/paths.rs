@@ -308,7 +308,7 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
-        self.packet_mover2
+        self.dataplane
             .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
             .is_some_and(|age_ms| age_ms <= fresh_after_ms)
     }
@@ -329,16 +329,16 @@ impl Node {
         let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
         peer.idle_time(now_ms) <= fresh_after_ms
             || self
-                .packet_mover2
+                .dataplane
                 .fmp_link_metrics(peer_node_addr, now)
                 .and_then(|metrics| metrics.srtt_age_ms)
                 .is_some_and(|age_ms| age_ms <= fresh_after_ms)
             || self
-                .packet_mover2
+                .dataplane
                 .min_fsp_rx_age_for_next_hop(peer_node_addr, now_ms)
                 .is_some_and(|age_ms| age_ms <= fresh_after_ms)
             || self
-                .packet_mover2
+                .dataplane
                 .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
                 .is_some_and(|age_ms| age_ms <= fresh_after_ms)
     }
@@ -362,7 +362,7 @@ impl Node {
         };
         let now_ms = Self::now_ms();
         if self
-            .packet_mover2
+            .dataplane
             .any_fsp_recent_outbound_without_inbound_for_next_hop(
                 peer_node_addr,
                 now_ms,
@@ -380,13 +380,13 @@ impl Node {
         let now = std::time::Instant::now();
         let mut inbound_quiet_ms = peer.idle_time(now_ms);
         inbound_quiet_ms = inbound_quiet_ms.min(
-            self.packet_mover2
+            self.dataplane
                 .fmp_link_metrics(peer_node_addr, now)
                 .and_then(|metrics| metrics.last_recv_age_ms)
                 .unwrap_or_else(|| now_ms.saturating_sub(peer.authenticated_at())),
         );
         if let Some(session_age_ms) = self
-            .packet_mover2
+            .dataplane
             .min_fsp_data_rx_age_for_next_hop(peer_node_addr, now_ms)
         {
             inbound_quiet_ms = inbound_quiet_ms.min(session_age_ms);

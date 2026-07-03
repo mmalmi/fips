@@ -177,7 +177,7 @@ async fn test_session_awaiting_msg3_timeout() {
 async fn test_tun_outbound_path_mtu_generates_ptb() {
     // When a session's PathMtuState reports a lower MTU than the local
     // transport (simulating a bottleneck learned via MtuExceeded signals),
-    // PM2 TUN outbound should generate ICMPv6 Packet Too Big for
+    // dataplane TUN outbound should generate ICMPv6 Packet Too Big for
     // oversized packets instead of forwarding them.
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
@@ -218,17 +218,13 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     let reduced_mtu = local_transport_mtu - 200;
     nodes[0]
         .node
-        .apply_packet_mover2_fsp_path_mtu_signal(
-            &node1_addr,
-            reduced_mtu,
-            std::time::Instant::now(),
-        )
-        .expect("PM2 FSP owner should accept path MTU signal");
+        .apply_dataplane_fsp_path_mtu_signal(&node1_addr, reduced_mtu, std::time::Instant::now())
+        .expect("dataplane FSP owner should accept path MTU signal");
     assert_eq!(
         nodes[0]
             .node
             .session_mmp_snapshot(&node1_addr)
-            .expect("session should have PM2 MMP state")
+            .expect("session should have dataplane MMP state")
             .send_mtu,
         reduced_mtu
     );
@@ -251,7 +247,7 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
         "packet must fit local MTU"
     );
 
-    send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet).await;
+    send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet).await;
 
     // Verify ICMPv6 Packet Too Big was generated
     let ptb_messages: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
@@ -297,7 +293,7 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     let fitting_packet = build_ipv6_packet(&src_fips, &dst_fips, &fitting_payload);
     assert!(fitting_packet.len() <= reduced_ipv6_mtu);
 
-    send_tun_packet_via_pm2(&mut nodes, 0, fitting_packet).await;
+    send_tun_packet_via_dataplane(&mut nodes, 0, fitting_packet).await;
 
     // No PTB should be generated for a fitting packet
     let ptb_messages2: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx2.try_recv().ok()).collect();

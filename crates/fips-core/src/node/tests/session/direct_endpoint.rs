@@ -94,7 +94,7 @@ fn test_endpoint_data_flushes_after_session_establishment() {
         let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
         let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
 
-        send_endpoint_data_via_pm2(&mut nodes[0].node, node1_identity, b"ping".to_vec())
+        send_endpoint_data_via_dataplane(&mut nodes[0].node, node1_identity, b"ping".to_vec())
             .await
             .expect("endpoint data should queue behind session establishment");
 
@@ -110,7 +110,7 @@ fn test_endpoint_data_flushes_after_session_establishment() {
         assert_eq!(message.source_peer.npub(), nodes[0].node.npub());
         assert_eq!(message.payload, b"ping");
 
-        send_endpoint_data_via_pm2(&mut nodes[1].node, node0_identity, b"pong".to_vec())
+        send_endpoint_data_via_dataplane(&mut nodes[1].node, node0_identity, b"pong".to_vec())
             .await
             .expect("reply data should send");
 
@@ -212,9 +212,13 @@ fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
         let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
 
-        send_endpoint_data_via_pm2(&mut nodes[0].node, bob_identity, b"alice-to-bob".to_vec())
-            .await
-            .expect("alice endpoint data should send");
+        send_endpoint_data_via_dataplane(
+            &mut nodes[0].node,
+            bob_identity,
+            b"alice-to-bob".to_vec(),
+        )
+        .await
+        .expect("alice endpoint data should send");
 
         let event = recv_endpoint_event_while_draining(
             &mut nodes,
@@ -241,9 +245,13 @@ fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
             "transit node must not receive app endpoint data"
         );
 
-        send_endpoint_data_via_pm2(&mut nodes[2].node, alice_identity, b"bob-to-alice".to_vec())
-            .await
-            .expect("bob endpoint data should send");
+        send_endpoint_data_via_dataplane(
+            &mut nodes[2].node,
+            alice_identity,
+            b"bob-to-alice".to_vec(),
+        )
+        .await
+        .expect("bob endpoint data should send");
 
         let event = recv_endpoint_event_while_draining(
             &mut nodes,
@@ -291,9 +299,13 @@ fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary() {
         let bob_addr = *nodes[2].node.node_addr();
         let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
 
-        send_endpoint_data_via_pm2(&mut nodes[0].node, bob_identity, b"first-contact".to_vec())
-            .await
-            .expect("alice endpoint data should queue and trigger discovery");
+        send_endpoint_data_via_dataplane(
+            &mut nodes[0].node,
+            bob_identity,
+            b"first-contact".to_vec(),
+        )
+        .await
+        .expect("alice endpoint data should queue and trigger discovery");
 
         for _ in 0..120 {
             drain_to_quiescence(&mut nodes).await;

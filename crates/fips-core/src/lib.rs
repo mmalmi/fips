@@ -15,11 +15,11 @@ pub mod host_firewall;
 pub mod identity {
     pub use fips_identity::*;
 }
+#[allow(dead_code)]
+pub(crate) mod dataplane;
 pub mod mmp;
 pub mod node;
 pub mod noise;
-#[allow(dead_code)]
-pub(crate) mod packet_mover2;
 pub mod peer;
 pub(crate) mod perf_profile;
 pub mod protocol;

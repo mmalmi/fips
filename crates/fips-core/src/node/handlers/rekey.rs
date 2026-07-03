@@ -16,7 +16,7 @@ use tracing::{debug, trace, warn};
 
 /// Keep the post-cutover stale-epoch drain window open for this long.
 /// FMP retains its previous link session during this window; FSP keeps only
-/// drain timing/epoch metadata while PM2 owns packet-path stale-epoch handling.
+/// drain timing/epoch metadata while dataplane owns packet-path stale-epoch handling.
 const DRAIN_WINDOW_SECS: u64 = 10;
 
 /// Suppress local rekey initiation for this long after receiving
@@ -532,7 +532,7 @@ impl Node {
 
         // Execute cutover for initiator side
         for node_addr in plan.cutover {
-            // Refresh the packet_mover2 FMP owner with the now-current
+            // Refresh the dataplane FMP owner with the now-current
             // session so owner crypto/replay state follows the cutover.
             if self
                 .peers
@@ -543,7 +543,7 @@ impl Node {
                     "Rekey cutover complete (initiator), K-bit flipped"
                 );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
-                self.sync_packet_mover2_fmp_owner(&node_addr);
+                self.sync_dataplane_fmp_owner(&node_addr);
             }
         }
 
@@ -796,7 +796,7 @@ impl Node {
         let drain_ms = DRAIN_WINDOW_SECS * 1000;
         let dampening_ms = REKEY_DAMPENING_SECS * 1000;
 
-        let packet_mover2 = &self.packet_mover2;
+        let dataplane = &self.dataplane;
         let plan = self.sessions.plan_session_rekey_tick(
             now_ms,
             rekey_after_secs,
@@ -805,7 +805,7 @@ impl Node {
             dampening_ms,
             FSP_CUTOVER_DELAY_MS,
             |addr| {
-                packet_mover2
+                dataplane
                     .fsp_owner_activity(addr)
                     .map_or(0, |activity| activity.send_counter())
             },
@@ -821,7 +821,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP rekey cutover complete (initiator), K-bit flipped"
                 );
-                self.sync_packet_mover2_fsp_owner_from_current_session(&node_addr, 0);
+                self.sync_dataplane_fsp_owner_from_current_session(&node_addr, 0);
             }
         }
 
@@ -834,13 +834,13 @@ impl Node {
                 let epoch = self
                     .sessions
                     .get(&node_addr)
-                    .map(Self::packet_mover2_fsp_owner_epoch);
+                    .map(Self::dataplane_fsp_owner_epoch);
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
                     "FSP drain complete, stale epoch retired"
                 );
                 if let Some((current_k_bit, previous_draining_k_bit)) = epoch {
-                    self.set_packet_mover2_fsp_owner_epoch(
+                    self.set_dataplane_fsp_owner_epoch(
                         &node_addr,
                         current_k_bit,
                         previous_draining_k_bit,

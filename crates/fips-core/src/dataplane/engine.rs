@@ -1,8 +1,8 @@
 #[derive(Debug)]
-pub(crate) struct PacketMover2 {
+pub(crate) struct Dataplane {
     config: AdmissionConfig,
-    shards: Vec<PacketMover2OwnerShard>,
-    retire_workers: Vec<PacketMover2OwnerShardRetireWorker>,
+    shards: Vec<DataplaneOwnerShard>,
+    retire_workers: Vec<DataplaneOwnerShardRetireWorker>,
     admission_lens: LaneLens,
     outbound_admission_lens: LaneLens,
     drops: Vec<PacketDrop>,
@@ -13,14 +13,14 @@ pub(crate) struct PacketMover2 {
     completion_ready_shards: ReadyShardQueue,
 }
 
-impl PacketMover2 {
+impl Dataplane {
     pub(crate) fn new(config: AdmissionConfig) -> Self {
-        let shard_count = packet_mover2_owner_shard_count(config);
+        let shard_count = dataplane_owner_shard_count(config);
         let shards = (0..shard_count)
-            .map(PacketMover2OwnerShard::new)
+            .map(DataplaneOwnerShard::new)
             .collect();
         let retire_workers = (0..shard_count)
-            .map(|_| PacketMover2OwnerShardRetireWorker::new())
+            .map(|_| DataplaneOwnerShardRetireWorker::new())
             .collect();
         Self {
             config,
@@ -68,7 +68,7 @@ impl PacketMover2 {
     pub(crate) fn owner_fsp_activity(
         &self,
         owner: OwnerId,
-    ) -> Option<PacketMover2FspOwnerActivity> {
+    ) -> Option<DataplaneFspOwnerActivity> {
         self.owner_shard(owner).owner_fsp_activity(owner)
     }
 
@@ -84,21 +84,21 @@ impl PacketMover2 {
     pub(crate) fn owner_fsp_mmp_snapshot(
         &self,
         owner: OwnerId,
-    ) -> Option<PacketMover2FspMmpSnapshot> {
+    ) -> Option<DataplaneFspMmpSnapshot> {
         self.owner_shard(owner).owner_fsp_mmp_snapshot(owner)
     }
 
     pub(crate) fn owner_fsp_send_context(
         &self,
         owner: OwnerId,
-    ) -> Option<PacketMover2FspSendContext> {
+    ) -> Option<DataplaneFspSendContext> {
         self.owner_shard(owner).owner_fsp_send_context(owner)
     }
 
     pub(crate) fn owner_fmp_send_context(
         &self,
         owner: OwnerId,
-    ) -> Option<PacketMover2FmpSendContext> {
+    ) -> Option<DataplaneFmpSendContext> {
         self.owner_shard(owner).owner_fmp_send_context(owner)
     }
 
@@ -106,7 +106,7 @@ impl PacketMover2 {
         &self,
         owner: OwnerId,
         now: std::time::Instant,
-    ) -> Option<PacketMover2FmpLinkMetrics> {
+    ) -> Option<DataplaneFmpLinkMetrics> {
         self.owner_shard(owner).owner_fmp_link_metrics(owner, now)
     }
 
@@ -121,8 +121,8 @@ impl PacketMover2 {
     pub(crate) fn collect_fmp_mmp_reports(
         &mut self,
         now: std::time::Instant,
-    ) -> PacketMover2FmpMmpReportBatch {
-        let mut batch = PacketMover2FmpMmpReportBatch::default();
+    ) -> DataplaneFmpMmpReportBatch {
+        let mut batch = DataplaneFmpMmpReportBatch::default();
         for shard in &mut self.shards {
             shard.collect_fmp_mmp_reports(now, &mut batch);
         }
@@ -132,8 +132,8 @@ impl PacketMover2 {
     pub(crate) fn collect_fsp_mmp_reports(
         &mut self,
         now: std::time::Instant,
-    ) -> PacketMover2FspMmpReportBatch {
-        let mut batch = PacketMover2FspMmpReportBatch::default();
+    ) -> DataplaneFspMmpReportBatch {
+        let mut batch = DataplaneFspMmpReportBatch::default();
         for shard in &mut self.shards {
             shard.collect_fsp_mmp_reports(now, &mut batch);
         }
@@ -144,7 +144,7 @@ impl PacketMover2 {
         &mut self,
         owner: OwnerId,
         success: bool,
-    ) -> Option<PacketMover2FspMmpReportingResumed> {
+    ) -> Option<DataplaneFspMmpReportingResumed> {
         self.owner_shard_mut(owner)
             .record_fsp_mmp_send_result(owner, success)
     }
@@ -153,7 +153,7 @@ impl PacketMover2 {
         &mut self,
         owner: OwnerId,
         path_mtu: u16,
-    ) -> Result<(), PacketMover2FspMmpSkip> {
+    ) -> Result<(), DataplaneFspMmpSkip> {
         self.owner_shard_mut(owner)
             .seed_fsp_path_mtu(owner, path_mtu)
     }
@@ -166,7 +166,7 @@ impl PacketMover2 {
         now_ms: u64,
         now: std::time::Instant,
         min_loss_sample: u64,
-    ) -> Result<PacketMover2FspReceiverReportResult, PacketMover2FspMmpSkip> {
+    ) -> Result<DataplaneFspReceiverReportResult, DataplaneFspMmpSkip> {
         self.owner_shard_mut(owner)
             .process_fsp_mmp_receiver_report(
                 owner,
@@ -183,7 +183,7 @@ impl PacketMover2 {
         owner: OwnerId,
         path_mtu: u16,
         now: std::time::Instant,
-    ) -> Result<PacketMover2FspPathMtuApplyResult, PacketMover2FspMmpSkip> {
+    ) -> Result<DataplaneFspPathMtuApplyResult, DataplaneFspMmpSkip> {
         self.owner_shard_mut(owner)
             .apply_fsp_path_mtu_signal(owner, path_mtu, now)
     }
@@ -516,7 +516,7 @@ impl PacketMover2 {
             if ready_shards == 0 {
                 break;
             }
-            let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
+            let shard_limit = dataplane_owner_shard_dispatch_quantum(
                 limit.saturating_sub(retired_count),
                 ready_shards,
             );
@@ -577,7 +577,7 @@ impl PacketMover2 {
         compact_endpoint_data: bool,
     ) -> usize
     where
-        E: PacketMover2CryptoExecutor,
+        E: DataplaneCryptoExecutor,
     {
         retired.clear();
         prepared_work.clear();
@@ -587,7 +587,7 @@ impl PacketMover2 {
         let mut fsp_path_open_bulk = 0u64;
         {
             let _owner_dispatch_timer = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::PacketMover2OwnerDispatch,
+                crate::perf_profile::Stage::DataplaneOwnerDispatch,
             );
             let open_capacity = executor.available_open_capacity();
             let seal_capacity = executor.available_seal_capacity();
@@ -596,7 +596,7 @@ impl PacketMover2 {
             let total_limit = limit.min(executor_capacity);
             if limit > 0 && executor_capacity == 0 {
                 crate::perf_profile::record_event(
-                    crate::perf_profile::Event::PacketMover2DispatchExecutorFull,
+                    crate::perf_profile::Event::DataplaneDispatchExecutorFull,
                 );
             }
             let mut open_priority_capacity =
@@ -693,13 +693,13 @@ impl PacketMover2 {
 
         {
             let _executor_submit_timer = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::PacketMover2ExecutorSubmit,
+                crate::perf_profile::Stage::DataplaneExecutorSubmit,
             );
             execute_prepared_crypto_chunk(executor, prepared_work, completion_work);
         }
         {
             let _completion_queue_timer = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::PacketMover2CompletionQueue,
+                crate::perf_profile::Stage::DataplaneCompletionQueue,
             );
             self.queue_completion_batch(completion_work);
             self.retire_queued_completions_into(limit, retired, compact_endpoint_data);
@@ -714,14 +714,14 @@ impl PacketMover2 {
     }
 
     fn owner_shard_index(&self, owner: OwnerId) -> usize {
-        packet_mover2_owner_shard_index(owner, self.shards.len())
+        dataplane_owner_shard_index(owner, self.shards.len())
     }
 
-    fn owner_shard(&self, owner: OwnerId) -> &PacketMover2OwnerShard {
+    fn owner_shard(&self, owner: OwnerId) -> &DataplaneOwnerShard {
         &self.shards[self.owner_shard_index(owner)]
     }
 
-    fn owner_shard_mut(&mut self, owner: OwnerId) -> &mut PacketMover2OwnerShard {
+    fn owner_shard_mut(&mut self, owner: OwnerId) -> &mut DataplaneOwnerShard {
         let shard = self.owner_shard_index(owner);
         &mut self.shards[shard]
     }
@@ -763,7 +763,7 @@ impl PacketMover2 {
         fsp_path_open_bulk: &mut u64,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
-            crate::perf_profile::record_packet_mover2_crypto_open_batch(0);
+            crate::perf_profile::record_dataplane_crypto_open_batch(0);
             return 0;
         }
 
@@ -775,7 +775,7 @@ impl PacketMover2 {
             if ready_lanes == 0 {
                 break;
             }
-            let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
+            let shard_limit = dataplane_owner_shard_dispatch_quantum(
                 limit.saturating_sub(dispatched),
                 ready_lanes,
             );
@@ -808,7 +808,7 @@ impl PacketMover2 {
                 break;
             }
         }
-        crate::perf_profile::record_packet_mover2_crypto_open_batch(
+        crate::perf_profile::record_dataplane_crypto_open_batch(
             prepared.len().saturating_sub(start_len),
         );
         dispatched
@@ -821,7 +821,7 @@ impl PacketMover2 {
         priority_only: bool,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
-            crate::perf_profile::record_packet_mover2_crypto_seal_batch(0);
+            crate::perf_profile::record_dataplane_crypto_seal_batch(0);
             return 0;
         }
 
@@ -833,7 +833,7 @@ impl PacketMover2 {
             if ready_lanes == 0 {
                 break;
             }
-            let shard_limit = packet_mover2_owner_shard_dispatch_quantum(
+            let shard_limit = dataplane_owner_shard_dispatch_quantum(
                 limit.saturating_sub(dispatched),
                 ready_lanes,
             );
@@ -866,7 +866,7 @@ impl PacketMover2 {
             }
         }
 
-        crate::perf_profile::record_packet_mover2_crypto_seal_batch(
+        crate::perf_profile::record_dataplane_crypto_seal_batch(
             prepared.len().saturating_sub(start_len),
         );
         dispatched.min(limit)
@@ -1027,13 +1027,13 @@ impl ReadyShardQueues {
 fn record_owner_blocked(reason: Option<OwnerReserveBlockReason>) {
     use crate::perf_profile::{record_event, Event};
 
-    record_event(Event::PacketMover2DispatchOwnerBlocked);
+    record_event(Event::DataplaneDispatchOwnerBlocked);
     match reason {
         Some(OwnerReserveBlockReason::TotalInFlight) => {
-            record_event(Event::PacketMover2DispatchOwnerBlockedTotal);
+            record_event(Event::DataplaneDispatchOwnerBlockedTotal);
         }
         Some(OwnerReserveBlockReason::BulkLane) => {
-            record_event(Event::PacketMover2DispatchOwnerBlockedBulkLane);
+            record_event(Event::DataplaneDispatchOwnerBlockedBulkLane);
         }
         None => {}
     }
@@ -1045,13 +1045,13 @@ fn execute_prepared_crypto_chunk<E>(
     completions: &mut Vec<CryptoCompletion>,
 ) -> usize
 where
-    E: PacketMover2CryptoExecutor,
+    E: DataplaneCryptoExecutor,
 {
     let prepared_len = prepared.len();
     let accepted = executor.execute_prepared_chunk(prepared, completions);
     debug_assert_eq!(
         accepted, prepared_len,
-        "PM2 crypto executor must accept an entire owner-reserved prepared chunk"
+        "dataplane crypto executor must accept an entire owner-reserved prepared chunk"
     );
     accepted
 }
@@ -1113,18 +1113,18 @@ fn record_fsp_path_open_dispatch(total: u64, bulk: u64) {
     }
 
     crate::perf_profile::record_event_count(
-        crate::perf_profile::Event::PacketMover2FspPathOpen,
+        crate::perf_profile::Event::DataplaneFspPathOpen,
         total,
     );
     if bulk > 0 {
         crate::perf_profile::record_event_count(
-            crate::perf_profile::Event::PacketMover2FspPathOpenBulk,
+            crate::perf_profile::Event::DataplaneFspPathOpenBulk,
             bulk,
         );
     }
 }
 
-fn packet_mover2_owner_shard_count(config: AdmissionConfig) -> usize {
+fn dataplane_owner_shard_count(config: AdmissionConfig) -> usize {
     std::thread::available_parallelism()
         .map(|count| count.get())
         .unwrap_or(1)
@@ -1134,12 +1134,12 @@ fn packet_mover2_owner_shard_count(config: AdmissionConfig) -> usize {
         .max(1)
 }
 
-fn packet_mover2_owner_shard_dispatch_quantum(remaining: usize, shard_count: usize) -> usize {
+fn dataplane_owner_shard_dispatch_quantum(remaining: usize, shard_count: usize) -> usize {
     let shard_count = shard_count.max(1);
     remaining.saturating_add(shard_count - 1) / shard_count
 }
 
-fn packet_mover2_owner_shard_index(owner: OwnerId, shards: usize) -> usize {
+fn dataplane_owner_shard_index(owner: OwnerId, shards: usize) -> usize {
     use std::hash::{Hash, Hasher};
 
     let shards = shards.max(1);

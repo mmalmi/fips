@@ -50,19 +50,19 @@ impl Node {
     }
 
     pub(crate) fn session_dataplane_counters(&self, addr: &NodeAddr) -> (u64, u64, u64, u64) {
-        self.packet_mover2
+        self.dataplane
             .fsp_owner_activity(addr)
             .map_or((0, 0, 0, 0), |activity| activity.traffic_counters())
     }
 
     pub(crate) fn session_dataplane_activity_ms(&self, addr: &NodeAddr) -> Option<u64> {
-        self.packet_mover2
+        self.dataplane
             .fsp_owner_activity(addr)
             .and_then(|activity| activity.session_idle_activity_ms())
     }
 
     pub(crate) fn session_dataplane_epoch(&self, addr: &NodeAddr) -> Option<(u64, bool, bool)> {
-        let activity = self.packet_mover2.fsp_owner_activity(addr)?;
+        let activity = self.dataplane.fsp_owner_activity(addr)?;
         Some((
             activity.fsp_session_start_ms()?,
             activity.current_k_bit(),
@@ -73,8 +73,8 @@ impl Node {
     pub(crate) fn session_mmp_snapshot(
         &self,
         addr: &NodeAddr,
-    ) -> Option<crate::packet_mover2::PacketMover2FspMmpSnapshot> {
-        self.packet_mover2.fsp_mmp_snapshot(addr)
+    ) -> Option<crate::dataplane::DataplaneFspMmpSnapshot> {
+        self.dataplane.fsp_mmp_snapshot(addr)
     }
 
     // === Identity Cache ===

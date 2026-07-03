@@ -40,16 +40,12 @@ pub(super) fn make_peer_identity() -> PeerIdentity {
     PeerIdentity::from_pubkey(identity.pubkey())
 }
 
-pub(super) fn seed_packet_mover2_fmp_srtt_for_test(
-    node: &mut Node,
-    peer_addr: NodeAddr,
-    srtt_ms: u64,
-) {
+pub(super) fn seed_dataplane_fmp_srtt_for_test(node: &mut Node, peer_addr: NodeAddr, srtt_ms: u64) {
     let peer_session_elapsed_ms = node
         .get_peer(&peer_addr)
-        .expect("PM2 FMP SRTT seed needs an active peer")
+        .expect("dataplane FMP SRTT seed needs an active peer")
         .session_elapsed_ms();
-    assert!(node.sync_packet_mover2_fmp_owner(&peer_addr));
+    assert!(node.sync_dataplane_fmp_owner(&peer_addr));
     let srtt_ms = u32::try_from(srtt_ms).expect("test SRTT fits u32");
     let now_ms = Node::now_ms().saturating_add(u64::from(srtt_ms) + 1);
     let timestamp_echo = peer_session_elapsed_ms.saturating_add(1);
@@ -69,18 +65,14 @@ pub(super) fn seed_packet_mover2_fmp_srtt_for_test(
         interval_packets_recv: 1,
         interval_bytes_recv: 128,
     };
-    node.packet_mover2
+    node.dataplane
         .process_fmp_mmp_receiver_report(&peer_addr, &report, now_ms, std::time::Instant::now())
-        .expect("PM2 FMP receiver report should process");
+        .expect("dataplane FMP receiver report should process");
 }
 
-pub(super) fn seed_packet_mover2_fmp_rx_for_test(
-    node: &mut Node,
-    peer_addr: NodeAddr,
-    age: Duration,
-) {
-    assert!(node.sync_packet_mover2_fmp_owner(&peer_addr));
-    node.packet_mover2
+pub(super) fn seed_dataplane_fmp_rx_for_test(node: &mut Node, peer_addr: NodeAddr, age: Duration) {
+    assert!(node.sync_dataplane_fmp_owner(&peer_addr));
+    node.dataplane
         .record_authenticated_fmp_mmp_receive(
             &peer_addr,
             1,
@@ -90,7 +82,7 @@ pub(super) fn seed_packet_mover2_fmp_rx_for_test(
             false,
             std::time::Instant::now() - age,
         )
-        .expect("PM2 FMP receive bookkeeping should record");
+        .expect("dataplane FMP receive bookkeeping should record");
 }
 
 /// Create a PeerConnection with a completed Noise IK handshake.

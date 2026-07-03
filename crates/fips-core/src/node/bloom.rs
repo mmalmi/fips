@@ -69,7 +69,7 @@ impl Node {
 
         // Send
         if let Err(e) = self
-            .send_packet_mover2_fmp_link_plaintext(peer_addr, &encoded, false)
+            .send_dataplane_fmp_link_plaintext(peer_addr, &encoded, false)
             .await
         {
             self.stats_mut().bloom.send_failed += 1;

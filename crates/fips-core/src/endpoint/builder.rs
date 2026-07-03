@@ -107,11 +107,11 @@ impl FipsEndpointBuilder {
         self.bind_inner(None).await
     }
 
-    /// Bind and start the endpoint with a direct PM2 endpoint-data sink.
+    /// Bind and start the endpoint with a direct dataplane endpoint-data sink.
     ///
-    /// Decrypted PM2 endpoint output is delivered to `sink` synchronously from
-    /// the PM2 output path. Generic endpoint events, including loopback sends
-    /// and non-PM2 delivery, continue to use the regular receive queue.
+    /// Decrypted dataplane endpoint output is delivered to `sink` synchronously from
+    /// the dataplane output path. Generic endpoint events, including loopback sends
+    /// and non-dataplane delivery, continue to use the regular receive queue.
     pub async fn bind_with_direct_sink<S>(self, sink: S) -> Result<FipsEndpoint, FipsEndpointError>
     where
         S: FipsEndpointDirectSink,

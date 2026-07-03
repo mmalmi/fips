@@ -378,10 +378,10 @@ impl SessionEntry {
         self.rekey_msg3_resend_count = 0;
     }
 
-    /// Clear control-plane retransmit payloads after PM2 has authenticated the
-    /// established FSP owner epoch. PM2 owns the packet-path confirmation; the
+    /// Clear control-plane retransmit payloads after dataplane has authenticated the
+    /// established FSP owner epoch. dataplane owns the packet-path confirmation; the
     /// registry only drops stale handshake/rekey scaffolding.
-    pub(crate) fn clear_pm2_confirmed_fsp_retransmits(&mut self) -> bool {
+    pub(crate) fn clear_dataplane_confirmed_fsp_retransmits(&mut self) -> bool {
         if !self.is_established() || self.current_noise_session().is_none() {
             return false;
         }

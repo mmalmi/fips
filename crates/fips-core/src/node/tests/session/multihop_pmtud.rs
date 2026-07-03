@@ -59,7 +59,7 @@ fn test_multihop_pmtud_heterogeneous_mtu() {
         // With coords (~66 extra), the wire could exceed B's recv buffer.
         for _ in 0..5 {
             let small = build_ipv6_packet(&src_fips, &dst_fips, &[0u8; 10]);
-            send_tun_packet_via_pm2(&mut nodes, 0, small).await;
+            send_tun_packet_via_dataplane(&mut nodes, 0, small).await;
         }
         drain_to_quiescence(&mut nodes).await;
 
@@ -79,14 +79,14 @@ fn test_multihop_pmtud_heterogeneous_mtu() {
 
         // Send the oversized packet — B should fail to forward and send
         // MtuExceeded signal back.
-        send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
+        send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
         drain_to_quiescence(&mut nodes).await;
 
         // Verify PathMtuState was updated on A
         let path_mtu = nodes[0]
             .node
             .session_mmp_snapshot(&node2_addr)
-            .expect("session should have PM2 MMP state")
+            .expect("session should have dataplane MMP state")
             .send_mtu;
         assert!(
             path_mtu < 1400,
@@ -108,13 +108,13 @@ fn test_multihop_pmtud_heterogeneous_mtu() {
             lookup_mtu
         );
 
-        // Now send ANOTHER oversized packet — this time PM2 should
+        // Now send ANOTHER oversized packet — this time dataplane should
         // should check PathMtuState and generate ICMPv6 PTB on TUN instead
         // of forwarding.
         let (tun_tx2, tun_rx2) = crate::upper::tun::write_channel();
         nodes[0].node.tun_tx = Some(tun_tx2);
 
-        send_tun_packet_via_pm2(&mut nodes, 0, ipv6_packet.clone()).await;
+        send_tun_packet_via_dataplane(&mut nodes, 0, ipv6_packet.clone()).await;
 
         let ptb_messages: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx2.try_recv().ok()).collect();
         assert_eq!(
@@ -162,7 +162,7 @@ fn test_multihop_pmtud_heterogeneous_mtu() {
         let fitting_packet = build_ipv6_packet(&src_fips, &dst_fips, &fitting_payload);
         assert!(fitting_packet.len() <= expected_ipv6_mtu as usize);
 
-        send_tun_packet_via_pm2(&mut nodes, 0, fitting_packet).await;
+        send_tun_packet_via_dataplane(&mut nodes, 0, fitting_packet).await;
 
         let ptb_messages3: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx3.try_recv().ok()).collect();
         assert_eq!(

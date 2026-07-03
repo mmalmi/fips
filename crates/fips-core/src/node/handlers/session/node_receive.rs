@@ -8,7 +8,7 @@ impl Node {
     /// - Phase 0x2 → SessionAck (handshake msg2)
     /// - Phase 0x3 → SessionMsg3 (XK handshake msg3)
     /// - Phase 0x0 + U flag → plaintext error signal (CoordsRequired/PathBroken)
-    /// - Phase 0x0 + !U → packet_mover2 authenticated receive only
+    /// - Phase 0x0 + !U → dataplane authenticated receive only
     pub(in crate::node) async fn handle_session_payload(
         &mut self,
         delivery: LocalSessionPayload<'_>,
@@ -64,7 +64,7 @@ impl Node {
             FSP_PHASE_ESTABLISHED => {
                 debug!(
                     src = %self.peer_display_name(&src_addr),
-                    "Dropping established FSP payload outside packet_mover2 receive path"
+                    "Dropping established FSP payload outside dataplane receive path"
                 );
                 return;
             }
@@ -74,16 +74,16 @@ impl Node {
         }
     }
 
-    pub(in crate::node) async fn process_packet_mover2_authenticated_sessions(
+    pub(in crate::node) async fn process_dataplane_authenticated_sessions(
         &mut self,
-        ingress_batch: Vec<crate::packet_mover2::PacketMover2FspSessionIngress>,
+        ingress_batch: Vec<crate::dataplane::DataplaneFspSessionIngress>,
     ) -> usize {
         let mut processed = 0usize;
         let mut endpoint_deliveries = Vec::new();
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
 
         for ingress in ingress_batch {
-            let Some(dispatch) = self.packet_mover2_authenticated_session_dispatch(ingress) else {
+            let Some(dispatch) = self.dataplane_authenticated_session_dispatch(ingress) else {
                 continue;
             };
 
@@ -95,7 +95,7 @@ impl Node {
                 continue;
             }
 
-            self.flush_packet_mover2_endpoint_session_batch(
+            self.flush_dataplane_endpoint_session_batch(
                 &mut endpoint_deliveries,
                 &mut endpoint_commit,
             )
@@ -104,33 +104,33 @@ impl Node {
             processed = processed.saturating_add(1);
         }
 
-        self.flush_packet_mover2_endpoint_session_batch(&mut endpoint_deliveries, &mut endpoint_commit)
+        self.flush_dataplane_endpoint_session_batch(&mut endpoint_deliveries, &mut endpoint_commit)
             .await;
         processed
     }
 
-    pub(in crate::node) async fn process_packet_mover2_compact_endpoint_data(
+    pub(in crate::node) async fn process_dataplane_compact_endpoint_data(
         &mut self,
-        endpoint_bulks: Vec<crate::packet_mover2::PacketMover2EndpointDataBulk>,
+        endpoint_bulks: Vec<crate::dataplane::DataplaneEndpointDataBulk>,
     ) -> usize {
         if endpoint_bulks.is_empty() {
             return 0;
         }
         let message_count = endpoint_bulks
             .iter()
-            .map(crate::packet_mover2::PacketMover2EndpointDataBulk::len)
+            .map(crate::dataplane::DataplaneEndpointDataBulk::len)
             .sum::<usize>();
         let direct_packet_runs = endpoint_bulks
             .iter()
-            .map(crate::packet_mover2::PacketMover2EndpointDataBulk::direct_packet_run_count)
+            .map(crate::dataplane::DataplaneEndpointDataBulk::direct_packet_run_count)
             .sum::<usize>();
         let direct_sink = if direct_packet_runs > 0 {
-            match self.packet_mover2_endpoint_direct_sink() {
+            match self.dataplane_endpoint_direct_sink() {
                 Some(sink) => Some(sink),
                 None => {
                     debug!(
                         messages = message_count,
-                        "Dropping PM2 endpoint-data bulk without direct sink"
+                        "Dropping dataplane endpoint-data bulk without direct sink"
                     );
                     return 0;
                 }
@@ -146,7 +146,7 @@ impl Node {
                 let commit = run.commit();
                 let source_addr = commit.source_addr();
                 let previous_hop_addr = commit.previous_hop_addr();
-                if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
+                if self.promote_dataplane_authenticated_pending_fsp_epoch(
                     &source_addr,
                     commit.received_k_bit(),
                 ) {
@@ -154,7 +154,7 @@ impl Node {
                         src = %self.peer_display_name(&source_addr),
                         received_k_bit = commit.received_k_bit(),
                         run_len = run.len(),
-                        "FSP rekey cutover complete after PM2 compact endpoint-data receive commit"
+                        "FSP rekey cutover complete after dataplane compact endpoint-data receive commit"
                     );
                 }
                 self.learn_reverse_route(source_addr, previous_hop_addr);
@@ -192,15 +192,15 @@ impl Node {
         message_count
     }
 
-    fn packet_mover2_endpoint_direct_sink(&self) -> Option<crate::node::EndpointDirectSink> {
+    fn dataplane_endpoint_direct_sink(&self) -> Option<crate::node::EndpointDirectSink> {
         self.endpoint_events
             .sender()
             .and_then(|sender| sender.direct_sink().cloned())
     }
 
-    fn packet_mover2_authenticated_session_dispatch(
+    fn dataplane_authenticated_session_dispatch(
         &mut self,
-        ingress: crate::packet_mover2::PacketMover2FspSessionIngress,
+        ingress: crate::dataplane::DataplaneFspSessionIngress,
     ) -> Option<AuthenticatedSessionDispatch> {
         let received_k_bit = ingress.received_k_bit();
         let (
@@ -230,14 +230,14 @@ impl Node {
             "Dispatching packet mover2 authenticated session"
         );
 
-        if self.promote_packet_mover2_authenticated_pending_fsp_epoch(
+        if self.promote_dataplane_authenticated_pending_fsp_epoch(
             &source_addr,
             received_k_bit,
         ) {
             debug!(
                 src = %self.peer_display_name(&source_addr),
                 received_k_bit,
-                "FSP rekey cutover complete after PM2 authenticated pending epoch"
+                "FSP rekey cutover complete after dataplane authenticated pending epoch"
             );
         }
 
@@ -251,7 +251,7 @@ impl Node {
         ))
     }
 
-    async fn flush_packet_mover2_endpoint_session_batch(
+    async fn flush_dataplane_endpoint_session_batch(
         &mut self,
         endpoint_deliveries: &mut Vec<EndpointDataDelivery>,
         endpoint_commit: &mut SessionReceiveBatchCommit,
@@ -289,7 +289,7 @@ impl Node {
             fmp.packet_timestamp_ms,
         ) && arrived_from_source;
         if path_bookkeeping_allowed {
-            let _ = self.packet_mover2.record_authenticated_fmp_mmp_receive(
+            let _ = self.dataplane.record_authenticated_fmp_mmp_receive(
                 source_addr,
                 fmp.fmp_counter,
                 fmp.inner_timestamp_ms,
@@ -317,12 +317,12 @@ impl Node {
                 self.clear_retry_unless_direct_refresh_needed(source_addr);
             }
             if update.address_changed {
-                self.sync_packet_mover2_fmp_owner(source_addr);
+                self.sync_dataplane_fmp_owner(source_addr);
             }
         }
     }
 
-    pub(in crate::node) async fn handle_packet_mover2_fsp_decrypt_failure(
+    pub(in crate::node) async fn handle_dataplane_fsp_decrypt_failure(
         &mut self,
         source_addr: NodeAddr,
         counter: u64,
@@ -332,7 +332,7 @@ impl Node {
             source_addr,
             counter,
             received_k_bit,
-            "packet_mover2",
+            "dataplane",
         )
         .await
     }
@@ -345,7 +345,7 @@ impl Node {
         source: &'static str,
     ) -> bool {
         let now_ms = Self::now_ms();
-        let owner_activity = self.packet_mover2.fsp_owner_activity(&src_addr);
+        let owner_activity = self.dataplane.fsp_owner_activity(&src_addr);
         let authenticated_inbound_age_ms =
             owner_activity.and_then(|activity| activity.last_rx_age_ms(now_ms));
         if owner_activity.is_some_and(|activity| {
@@ -355,7 +355,7 @@ impl Node {
                 src = %self.peer_display_name(&src_addr),
                 counter,
                 source,
-                "Ignoring FSP AEAD failure from stale previous key epoch during PM2-owned drain"
+                "Ignoring FSP AEAD failure from stale previous key epoch during dataplane-owned drain"
             );
             return true;
         }
@@ -371,12 +371,12 @@ impl Node {
         let entry_can_recover = entry.is_established()
             && !entry.has_rekey_in_progress()
             && entry.pending_new_session().is_none();
-        let Some(consecutive) = self.packet_mover2.record_fsp_decrypt_failure(src_addr) else {
+        let Some(consecutive) = self.dataplane.record_fsp_decrypt_failure(src_addr) else {
             debug!(
                 src = %self.peer_display_name(&src_addr),
                 counter,
                 source,
-                "FSP AEAD failure for missing packet_mover2 owner"
+                "FSP AEAD failure for missing dataplane owner"
             );
             return false;
         };

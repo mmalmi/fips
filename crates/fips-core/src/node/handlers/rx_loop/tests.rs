@@ -103,7 +103,7 @@ async fn drain_control_queries_answers_show_requests() {
 }
 
 #[tokio::test]
-async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
+async fn dataplane_turn_uses_rx_loop_owned_channels() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
@@ -115,9 +115,9 @@ async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
         .expect("endpoint io should attach before start");
 
     let turn = node
-        .drain_packet_mover2_turn_with_firsts(
+        .drain_dataplane_turn_with_firsts(
             &mut packet_rx,
-            crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
+            crate::dataplane::DataplaneLiveTurnFirsts::default(),
             4,
             &mut endpoint_rx,
             4,
@@ -131,7 +131,7 @@ async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
 
     assert_eq!(
         turn.summary(),
-        crate::packet_mover2::PacketMover2RuntimeSummary::default()
+        crate::dataplane::DataplaneRuntimeSummary::default()
     );
     assert!(!turn.has_activity());
     assert!(!turn.has_failures());
@@ -145,7 +145,7 @@ async fn packet_mover2_turn_uses_rx_loop_owned_channels() {
 }
 
 #[tokio::test]
-async fn packet_mover2_turn_reports_raw_ingress_failures() {
+async fn dataplane_turn_reports_raw_ingress_failures() {
     let mut node =
         crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
     let (packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
@@ -166,9 +166,9 @@ async fn packet_mover2_turn_reports_raw_ingress_failures() {
         .expect("malformed packet queued");
 
     let turn = node
-        .drain_packet_mover2_turn_with_firsts(
+        .drain_dataplane_turn_with_firsts(
             &mut packet_rx,
-            crate::packet_mover2::PacketMover2LiveTurnFirsts::default(),
+            crate::dataplane::DataplaneLiveTurnFirsts::default(),
             4,
             &mut endpoint_rx,
             4,
@@ -186,8 +186,8 @@ async fn packet_mover2_turn_reports_raw_ingress_failures() {
     assert_eq!(turn.raw_ingress_drops().len(), 1);
     assert_eq!(
         turn.raw_ingress_drops()[0].reason(),
-        crate::packet_mover2::PacketMover2RawIngressDropReason::Wire(
-            crate::packet_mover2::WirePreflightError::TooShort
+        crate::dataplane::DataplaneRawIngressDropReason::Wire(
+            crate::dataplane::WirePreflightError::TooShort
         )
     );
     assert_eq!(

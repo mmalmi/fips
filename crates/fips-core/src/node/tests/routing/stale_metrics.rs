@@ -48,7 +48,7 @@ async fn test_stale_mmp_receiver_reports_do_not_change_route_choice() {
         "healthy direct should initially hide learned fallback"
     );
     assert_eq!(
-        node.packet_mover2_fmp_link_metrics(&dest_addr, std::time::Instant::now())
+        node.dataplane_fmp_link_metrics(&dest_addr, std::time::Instant::now())
             .and_then(|metrics| metrics.srtt_ms),
         None,
         "counter-only baseline must not install a route-changing RTT"
@@ -110,7 +110,7 @@ async fn test_stale_mmp_receiver_reports_do_not_change_route_choice() {
     );
 
     let direct_mmp = node
-        .packet_mover2_fmp_link_metrics(&dest_addr, std::time::Instant::now())
+        .dataplane_fmp_link_metrics(&dest_addr, std::time::Instant::now())
         .expect("direct mmp");
     assert_eq!(
         direct_mmp.srtt_ms, None,
@@ -125,7 +125,7 @@ async fn test_stale_mmp_receiver_reports_do_not_change_route_choice() {
         "ignored stale reports must not update goodput"
     );
     assert!(
-        (node.packet_mover2_fmp_link_cost(&dest_addr) - 1.0).abs() < f64::EPSILON,
+        (node.dataplane_fmp_link_cost(&dest_addr) - 1.0).abs() < f64::EPSILON,
         "ignored stale reports must leave default direct link cost unchanged"
     );
 }
@@ -151,8 +151,8 @@ fn test_transit_prefers_adjacent_destination_over_learned_route_back_to_previous
     node.add_connection(dest_conn).unwrap();
     node.promote_connection(dest_link, dest_id, 2000).unwrap();
 
-    seed_packet_mover2_fmp_srtt_for_test(&mut node, dest_addr, 90);
-    seed_packet_mover2_fmp_srtt_for_test(&mut node, previous_hop, 5);
+    seed_dataplane_fmp_srtt_for_test(&mut node, dest_addr, 90);
+    seed_dataplane_fmp_srtt_for_test(&mut node, previous_hop, 5);
     node.learn_reverse_route(dest_addr, previous_hop);
 
     let source_route = node.find_next_hop(&dest_addr).expect("source fallback");
