@@ -502,6 +502,10 @@
             .pop()
             .unwrap()
             .with_activity_tick(ActivityTick::new(2_345));
+        let seal_slack = crate::node::session_wire::FSP_HEADER_SIZE
+            + crate::node::session_wire::FSP_INNER_HEADER_SIZE
+            + crate::noise::TAG_SIZE;
+        assert!(packet.payload.capacity().saturating_sub(packet.payload.len()) >= seal_slack);
 
         let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet], 8);
         assert_eq!(turn.summary().outbound_admitted(), 1);
@@ -1739,6 +1743,10 @@
             crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(packet.payload.as_slice())
                 .unwrap();
         assert_eq!(lengths, vec![5, 6, 5]);
+        let seal_slack = crate::node::session_wire::FSP_HEADER_SIZE
+            + crate::node::session_wire::FSP_INNER_HEADER_SIZE
+            + crate::noise::TAG_SIZE;
+        assert!(packet.payload.capacity().saturating_sub(packet.payload.len()) >= seal_slack);
 
         let route_result = route.route_batch(
             (0..=crate::node::session_wire::FSP_ENDPOINT_DATA_BULK_MAX_PACKETS)
