@@ -52,7 +52,7 @@ pub(crate) const UDP_PAYLOAD_MAX_SLICES: usize = 2;
 pub(crate) trait UdpPayloadBatch {
     fn len(&self) -> usize;
     fn payload_len(&self, index: usize) -> usize;
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
     fn contiguous_payload(&self, index: usize) -> Option<&[u8]>;
     fn payload_slices<'a>(
         &'a self,
@@ -60,7 +60,7 @@ pub(crate) trait UdpPayloadBatch {
         out: &mut [Option<&'a [u8]>; UDP_PAYLOAD_MAX_SLICES],
     ) -> usize;
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn copy_payload_into(&self, index: usize, out: &mut Vec<u8>) {
         out.clear();
         let mut slices = [None; UDP_PAYLOAD_MAX_SLICES];
@@ -102,7 +102,7 @@ impl UdpSendSnapshot {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) async fn send_payload_batch_to<B>(
         &self,
         payloads: &B,
@@ -147,7 +147,7 @@ impl UdpSendSnapshot {
         failed
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub(crate) async fn send_payload_batch_to<B>(
         &self,
         payloads: &B,

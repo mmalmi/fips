@@ -36,20 +36,17 @@ mod platform {
     use std::os::unix::io::{AsRawFd, RawFd};
     use tokio::io::unix::AsyncFd;
 
-    /// Maximum number of datagrams a single `sendmmsg` syscall pushes to
-    /// the kernel. Larger than `RECV_BATCH_SIZE` because the rx_loop can
-    /// drain up to 256 outbound commands per scheduler tick and we want
-    /// the trailing-burst flush at the end of that drain to land in one
-    /// syscall instead of `ceil(N/32)` of them. The kernel sendmmsg
-    /// hard cap is 1024; 256 fits the stack budget (each slot is
-    /// `mmsghdr + sockaddr_storage + iovec` ≈ 200 bytes ≈ 50 KiB total).
+    /// Maximum number of datagrams a single send batch pushes to the kernel.
     ///
-    /// The per-packet `sendmmsg` amortised cost was ~2.1 µs at
-    /// SEND_BATCH=32 in FIPS_PERF profiles (≈37% of one core at
-    /// 164 kpps); growing the batch should drop that toward the
-    /// per-call kernel fixed cost / N.
+    /// Linux uses sendmmsg/GSO and keeps this at 256 because the rx_loop can
+    /// drain up to 256 outbound commands per scheduler tick. macOS uses
+    /// Darwin sendmsg_x; 64 matches the macOS TUN read burst so a full tunnel
+    /// burst can leave in one syscall without growing the stack frame as much
+    /// as the Linux path.
     #[cfg(target_os = "linux")]
     const SEND_BATCH_SIZE: usize = 256;
+    #[cfg(target_os = "macos")]
+    const SEND_BATCH_SIZE: usize = 64;
     #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_SEGMENTS: usize = 64;
     #[cfg(target_os = "linux")]
@@ -60,6 +57,33 @@ mod platform {
     #[cfg(target_os = "linux")]
     static UDP_GSO_DISABLED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
+
+    // Adapted from Apple's xnu bsd/sys/socket_private.h layout, also used by
+    // quinn-udp's `fast-apple-datapath` implementation. libc exposes the
+    // syscall number but not this private convenience ABI.
+    #[cfg(target_os = "macos")]
+    #[repr(C)]
+    #[allow(non_camel_case_types)]
+    struct msghdr_x {
+        msg_name: *mut libc::c_void,
+        msg_namelen: libc::socklen_t,
+        msg_iov: *mut libc::iovec,
+        msg_iovlen: libc::c_int,
+        msg_control: *mut libc::c_void,
+        msg_controllen: libc::socklen_t,
+        msg_flags: libc::c_int,
+        msg_datalen: usize,
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        fn sendmsg_x(
+            s: libc::c_int,
+            msgp: *const msghdr_x,
+            cnt: libc::c_uint,
+            flags: libc::c_int,
+        ) -> isize;
+    }
 
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
@@ -721,6 +745,81 @@ mod platform {
             Ok(sent)
         }
 
+        /// Send same-destination payloads through Darwin's UDP batch syscall.
+        #[cfg(target_os = "macos")]
+        pub fn send_batch_to<B>(
+            &self,
+            payloads: &B,
+            offset: usize,
+            dest: SocketAddr,
+        ) -> std::io::Result<usize>
+        where
+            B: crate::transport::udp::UdpPayloadBatch + ?Sized,
+        {
+            let n = payloads.len().saturating_sub(offset).min(SEND_BATCH_SIZE);
+            if n == 0 {
+                return Ok(0);
+            }
+
+            let fd = self.inner.as_raw_fd();
+            let sa: socket2::SockAddr = dest.into();
+            let sa_len = sa.len();
+
+            let mut iovs: [[libc::iovec; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+                SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut msgs: [msghdr_x; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+
+            for i in 0..n {
+                let mut slices = [None; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
+                let payload_index = offset + i;
+                let expected_len = payloads.payload_len(payload_index);
+                let slice_count = payloads.payload_slices(payload_index, &mut slices);
+                if slice_count == 0 || slice_count > crate::transport::udp::UDP_PAYLOAD_MAX_SLICES {
+                    return Err(std::io::Error::other("invalid UDP payload slices"));
+                }
+
+                let mut slice_total = 0usize;
+                for (slice_idx, data) in slices.iter().take(slice_count).flatten().enumerate() {
+                    slice_total = slice_total.saturating_add(data.len());
+                    iovs[i][slice_idx].iov_base = data.as_ptr() as *mut libc::c_void;
+                    iovs[i][slice_idx].iov_len = data.len();
+                }
+                if slice_total != expected_len {
+                    return Err(std::io::Error::other(
+                        "UDP payload slices do not match payload length",
+                    ));
+                }
+
+                msgs[i].msg_name = sa.as_ptr() as *mut libc::c_void;
+                msgs[i].msg_namelen = sa_len;
+                msgs[i].msg_iov = iovs[i].as_mut_ptr();
+                msgs[i].msg_iovlen = slice_count as libc::c_int;
+                msgs[i].msg_control = std::ptr::null_mut();
+                msgs[i].msg_controllen = 0;
+                msgs[i].msg_flags = 0;
+                msgs[i].msg_datalen = expected_len;
+            }
+
+            loop {
+                let sent = unsafe { sendmsg_x(fd, msgs.as_ptr(), n as libc::c_uint, 0) };
+                if sent >= 0 {
+                    let sent = sent as usize;
+                    if sent > n {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "sendmsg_x reported more sent messages than requested",
+                        ));
+                    }
+                    return Ok(sent);
+                }
+
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+        }
+
         #[cfg(target_os = "linux")]
         fn send_gso_batch_to<B>(
             &self,
@@ -987,9 +1086,9 @@ mod platform {
             }
         }
 
-        /// Push same-destination datagrams to the kernel via sendmmsg/GSO
-        /// without building a per-packet address tuple batch first.
-        #[cfg(target_os = "linux")]
+        /// Push same-destination datagrams to the kernel in batches without
+        /// building a per-packet address tuple batch first.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         pub async fn send_batch_to<B>(
             &self,
             payloads: &B,

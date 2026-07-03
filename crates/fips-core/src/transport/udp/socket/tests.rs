@@ -1,12 +1,12 @@
 use super::*;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Debug)]
 struct TestPayloadBatch {
     payloads: Vec<Vec<Vec<u8>>>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TestPayloadBatch {
     fn new(payloads: Vec<Vec<&[u8]>>) -> Self {
         Self {
@@ -18,7 +18,7 @@ impl TestPayloadBatch {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl crate::transport::udp::UdpPayloadBatch for TestPayloadBatch {
     fn len(&self) -> usize {
         self.payloads.len()
@@ -130,6 +130,47 @@ async fn test_async_udp_socket_send_recv() {
     assert_eq!(&buf[..n], payload);
     assert_eq!(src, addr1);
     assert_eq!(gro_segment_size, 0);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn send_batch_to_sends_vectored_payloads() {
+    use crate::transport::udp::UdpPayloadBatch;
+
+    let sock1 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
+        .expect("failed to bind socket 1");
+    let addr1 = sock1.local_addr();
+    let async1 = sock1.into_async().expect("into_async 1");
+
+    let sock2 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
+        .expect("failed to bind socket 2");
+    let addr2 = sock2.local_addr();
+    let async2 = sock2.into_async().expect("into_async 2");
+
+    let payloads = TestPayloadBatch::new(vec![
+        vec![b"DFP1".as_slice(), b"first".as_slice()],
+        vec![b"second".as_slice()],
+        vec![b"DFP1".as_slice(), b"third".as_slice()],
+    ]);
+
+    let sent = async1
+        .send_batch_to(&payloads, 0, addr2)
+        .await
+        .expect("send batch");
+    assert_eq!(sent, payloads.len());
+
+    for expected in [
+        b"DFP1first".as_slice(),
+        b"second".as_slice(),
+        b"DFP1third".as_slice(),
+    ] {
+        let mut buf = [0u8; 1024];
+        let (n, src, _drops, gro_segment_size) =
+            async2.recv_from(&mut buf).await.expect("recv batch packet");
+        assert_eq!(src, addr1);
+        assert_eq!(&buf[..n], expected);
+        assert_eq!(gro_segment_size, 0);
+    }
 }
 
 #[cfg(target_os = "linux")]
