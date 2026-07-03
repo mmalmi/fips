@@ -54,18 +54,6 @@ fn tun_write_channel_returns_pooled_packets_after_write() {
     assert_eq!(reused.as_ptr(), ptr);
 }
 
-#[test]
-fn tun_outbound_packet_reserves_tail_room_for_dataplane_prepend() {
-    let packet = vec![0x42; 1280];
-    let outbound = tun_outbound_packet(&packet);
-
-    assert_eq!(outbound, packet);
-    assert!(
-        outbound.capacity() >= packet.len() + TUN_OUTBOUND_PACKET_TAIL_RESERVE,
-        "TUN outbound packets need spare tail room so IPv6 shim plus AEAD prepend can avoid a second hot-path allocation"
-    );
-}
-
 // Note: TUN device creation tests require elevated privileges
 // and are better suited for integration tests.
 

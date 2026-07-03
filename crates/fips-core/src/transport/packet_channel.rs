@@ -110,7 +110,7 @@ pub struct PacketBuffer {
 }
 
 impl PacketBuffer {
-    fn pooled(data: Vec<u8>, pool: PacketBufferPool) -> Self {
+    pub(crate) fn pooled(data: Vec<u8>, pool: PacketBufferPool) -> Self {
         Self {
             data,
             start: 0,
@@ -167,6 +167,41 @@ impl PacketBuffer {
 
     pub(crate) fn extend_from_slice(&mut self, bytes: &[u8]) {
         self.data.extend_from_slice(bytes);
+    }
+
+    pub(crate) fn replace_prefix(&mut self, prefix_len: usize, replacement: &[u8]) -> bool {
+        let len = self.len();
+        if prefix_len > len {
+            return false;
+        }
+
+        let replacement_len = replacement.len();
+        let start = self.start;
+        if replacement_len == prefix_len {
+            self.data[start..start + prefix_len].copy_from_slice(replacement);
+            return true;
+        }
+
+        if replacement_len < prefix_len {
+            let shrink = prefix_len - replacement_len;
+            self.data[start..start + replacement_len].copy_from_slice(replacement);
+            self.data
+                .copy_within(start + prefix_len.., start + replacement_len);
+            self.data.truncate(self.data.len() - shrink);
+            return true;
+        }
+
+        let grow = replacement_len - prefix_len;
+        if self.data.capacity().saturating_sub(self.data.len()) < grow {
+            return false;
+        }
+
+        let old_len = self.data.len();
+        self.data.resize(old_len + grow, 0);
+        self.data
+            .copy_within(start + prefix_len..old_len, start + replacement_len);
+        self.data[start..start + replacement_len].copy_from_slice(replacement);
+        true
     }
 
     pub(crate) fn try_prepend_slices(&mut self, parts: &[&[u8]], reserve_tail: usize) -> bool {
@@ -404,7 +439,7 @@ struct PacketBatchPool {
 }
 
 #[derive(Clone, Debug)]
-struct PacketBufferPool {
+pub(crate) struct PacketBufferPool {
     inner: Arc<Mutex<Vec<Vec<u8>>>>,
     available: Arc<AtomicUsize>,
 }
@@ -524,7 +559,7 @@ impl PacketQueueItem {
 }
 
 impl PacketBatchPool {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Vec::new())),
         }
@@ -573,7 +608,7 @@ impl PacketBatchPool {
 }
 
 impl PacketBufferPool {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Vec::new())),
             available: Arc::new(AtomicUsize::new(0)),
@@ -598,6 +633,19 @@ impl PacketBufferPool {
 
         crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolFresh);
         fresh_recv_buffer(capacity)
+    }
+
+    pub(crate) fn take_empty(&self, capacity: usize) -> Vec<u8> {
+        let mut buffer = self.take(capacity);
+        buffer.clear();
+        if buffer.capacity() < capacity {
+            buffer.reserve(capacity.saturating_sub(buffer.capacity()));
+        }
+        buffer
+    }
+
+    pub(crate) fn packet_buffer(&self, data: Vec<u8>) -> PacketBuffer {
+        PacketBuffer::pooled(data, self.clone())
     }
 
     fn put(&self, mut buffer: Vec<u8>) {
@@ -771,7 +819,7 @@ impl PacketTx {
 
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     pub(crate) fn packet_buffer(&self, data: Vec<u8>) -> PacketBuffer {
-        PacketBuffer::pooled(data, self.buffer_pool.clone())
+        self.buffer_pool.packet_buffer(data)
     }
 
     pub fn send(

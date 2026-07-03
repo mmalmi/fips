@@ -15,7 +15,7 @@ use std::{
 ///
 /// AEAD keys can be rebuilt for worker threads, but nonce uniqueness must stay
 /// single-owner. This authority is the small clonable object that lets a future
-/// packet mover reserve counters without borrowing the whole `NoiseSession`.
+/// dataplane workers reserve counters without borrowing the whole `NoiseSession`.
 #[derive(Clone, Debug)]
 pub(crate) struct SendCounterAuthority {
     next: Arc<AtomicU64>,
@@ -284,7 +284,7 @@ impl NoiseSession {
         self.send_cipher.cipher_clone()
     }
 
-    /// Clone the send-side counter authority for an owned packet mover.
+    /// Clone the send-side counter authority for an owned dataplane worker.
     pub(crate) fn send_counter_authority(&self) -> SendCounterAuthority {
         self.send_counter.clone()
     }

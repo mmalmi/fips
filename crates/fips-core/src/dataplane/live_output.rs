@@ -3,13 +3,13 @@
 pub(crate) struct DataplaneLiveOutboundFirsts {
     pub(crate) initial_outbound: Option<OutboundPacket>,
     pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
-    pub(crate) tun_packet: Option<Vec<u8>>,
+    pub(crate) tun_packet: Option<PacketBuffer>,
     pub(crate) collect_transport_sent_receipts: bool,
 }
 
 pub(crate) struct DataplaneRouteTableOutboundSource<'a, Routes> {
     first_endpoint_data_batch: Option<NodeEndpointDataBatch>,
-    first_tun_packet: Option<Vec<u8>>,
+    first_tun_packet: Option<PacketBuffer>,
     endpoint_data_rx: &'a mut EndpointDataBatchRx,
     endpoint_limit: usize,
     tun_outbound_rx: &'a mut TunOutboundRx,
@@ -24,7 +24,7 @@ struct DataplaneRouteTableOutboundBuffers {
     endpoint_drops: Vec<DataplaneEndpointDataDrop>,
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
     tun_drops: Vec<DataplaneTunOutboundDrop>,
-    tun_deferred_packets: Vec<Vec<u8>>,
+    tun_deferred_packets: Vec<PacketBuffer>,
 }
 
 impl DataplaneRouteTableOutboundBuffers {

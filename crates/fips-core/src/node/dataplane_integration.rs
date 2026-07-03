@@ -210,7 +210,7 @@ impl Node {
         let turn = self
             .pump_dataplane_pending_outbound_firsts(
                 DataplaneLiveOutboundFirsts {
-                    tun_packet: Some(packet),
+                    tun_packet: Some(packet.into()),
                     ..Default::default()
                 },
                 0,

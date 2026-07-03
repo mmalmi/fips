@@ -140,7 +140,7 @@ pub(crate) struct DataplaneLiveTurnFirsts {
     pub(crate) raw_packet: Option<ReceivedPacket>,
     pub(crate) fast_ingress: Option<DataplaneFastIngressBatch>,
     pub(crate) endpoint_data_batch: Option<NodeEndpointDataBatch>,
-    pub(crate) tun_packet: Option<Vec<u8>>,
+    pub(crate) tun_packet: Option<PacketBuffer>,
     pub(crate) raw_ingress_prefetch: bool,
 }
 
@@ -151,7 +151,7 @@ pub(crate) struct DataplaneLiveNode {
     routes: DataplaneLiveRouteTable,
     fast_ingress_capacity: usize,
     deferred_endpoint_data_batches: Vec<NodeEndpointDataBatch>,
-    deferred_tun_packets: Vec<Vec<u8>>,
+    deferred_tun_packets: Vec<PacketBuffer>,
     deferred_raw_ingress: VecDeque<(DataplaneRawIngress, u8)>,
     empty_raw_ingress: VecDeque<DataplaneRawIngress>,
     direct_fsp_reassembler: DataplaneDirectFspReassembler,
@@ -657,7 +657,7 @@ impl DataplaneLiveNode {
         std::mem::take(&mut self.deferred_endpoint_data_batches)
     }
 
-    pub(crate) fn take_deferred_tun_packets(&mut self) -> Vec<Vec<u8>> {
+    pub(crate) fn take_deferred_tun_packets(&mut self) -> Vec<PacketBuffer> {
         std::mem::take(&mut self.deferred_tun_packets)
     }
 

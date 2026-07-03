@@ -294,7 +294,7 @@ impl SessionEntry {
         }
     }
 
-    /// Snapshot the current established-FSP open/seal keys for packet mover owner state.
+    /// Snapshot the current established-FSP open/seal keys for dataplane owner state.
     pub(crate) fn fsp_crypto_keys(&self) -> Option<(LessSafeKey, LessSafeKey)> {
         let session = self.current_noise_session()?;
         Some((session.recv_cipher_clone()?, session.send_cipher_clone()?))
@@ -323,7 +323,7 @@ impl SessionEntry {
         self.session_start_ms
     }
 
-    /// Clone the established FSP send-counter authority for off-task packet movers.
+    /// Clone the established FSP send-counter authority for off-task dataplane workers.
     pub(crate) fn send_counter_authority(&self) -> Option<crate::noise::SendCounterAuthority> {
         Some(self.current_noise_session()?.send_counter_authority())
     }

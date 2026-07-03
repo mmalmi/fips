@@ -55,8 +55,6 @@ pub(crate) use super::tun_write::{TunWriteErrorKind, TunWriteLane, write_channel
 /// address).
 pub type PathMtuLookup = Arc<RwLock<HashMap<FipsAddress, u16>>>;
 
-const TUN_OUTBOUND_PACKET_TAIL_RESERVE: usize = 128;
-
 /// Compute the effective TCP MSS ceiling for a packet given its peer
 /// address bytes (a 16-byte IPv6 destination on outbound, source on
 /// inbound). Returns `min(global_max_mss, learned_path_max_mss)` when
@@ -727,7 +725,7 @@ fn handle_tun_packet(
         if clamp_tcp_mss(packet, effective_max_mss) {
             trace!(name = %name, max_mss = effective_max_mss, "Clamped TCP MSS in SYN packet");
         }
-        match outbound_tx.admit_from_tun_reader(tun_outbound_packet(packet)) {
+        match outbound_tx.admit_from_tun_reader(packet) {
             Ok(TunOutboundAdmission::Enqueued | TunOutboundAdmission::BulkDropped) => {}
             Err(_) => return false, // Channel closed, shutdown
         }
@@ -744,17 +742,6 @@ fn handle_tun_packet(
         }
     }
     true
-}
-
-#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
-fn tun_outbound_packet(packet: &[u8]) -> Vec<u8> {
-    let mut outbound = Vec::with_capacity(
-        packet
-            .len()
-            .saturating_add(TUN_OUTBOUND_PACKET_TAIL_RESERVE),
-    );
-    outbound.extend_from_slice(packet);
-    outbound
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

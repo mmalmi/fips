@@ -16,6 +16,8 @@
 //! is forced to 6, payload length is computed from the remaining data,
 //! and source/destination addresses are reconstructed from session context.
 
+use crate::transport::PacketBuffer;
+
 /// Compressed format byte for mesh-internal traffic.
 pub const IPV6_SHIM_FORMAT_COMPRESSED: u8 = 0x00;
 
@@ -96,6 +98,28 @@ pub fn compress_ipv6_with_port_header_in_place(
     );
     packet.truncate(compressed_len);
     true
+}
+
+pub(crate) fn compress_ipv6_packet_buffer_with_port_header_in_place(
+    packet: &mut PacketBuffer,
+    src_port: u16,
+    dst_port: u16,
+) -> bool {
+    if packet.len() < IPV6_HEADER_SIZE || packet.as_slice()[0] >> 4 != 6 {
+        return false;
+    }
+
+    let bytes = packet.as_slice();
+    const PORT_HEADER_SIZE: usize = 4;
+    let mut prefix = [0u8; PORT_HEADER_SIZE + 1 + IPV6_SHIM_RESIDUAL_SIZE];
+    prefix[0..2].copy_from_slice(&src_port.to_le_bytes());
+    prefix[2..4].copy_from_slice(&dst_port.to_le_bytes());
+    prefix[4] = IPV6_SHIM_FORMAT_COMPRESSED;
+    prefix[5..9].copy_from_slice(&bytes[0..4]);
+    prefix[9] = bytes[6];
+    prefix[10] = bytes[7];
+
+    packet.replace_prefix(IPV6_HEADER_SIZE, &prefix)
 }
 
 /// Decompress a shim payload back to a full IPv6 packet.
@@ -243,6 +267,29 @@ mod tests {
         ));
 
         assert_eq!(in_place, expected);
+    }
+
+    #[test]
+    fn test_packet_buffer_port_header_compression_matches_vec_path() {
+        let payload = vec![0x5A; 256];
+        let pkt = build_ipv6_packet(0x24, 0x12345, 6, 32, sample_src(), sample_dst(), &payload);
+        let mut expected = pkt.clone();
+        let src_port = 0x0100u16;
+        let dst_port = 0x0200u16;
+        assert!(compress_ipv6_with_port_header_in_place(
+            &mut expected,
+            src_port,
+            dst_port
+        ));
+
+        let mut packet_buffer = PacketBuffer::new(pkt);
+        assert!(compress_ipv6_packet_buffer_with_port_header_in_place(
+            &mut packet_buffer,
+            src_port,
+            dst_port
+        ));
+
+        assert_eq!(packet_buffer.as_slice(), expected.as_slice());
     }
 
     #[test]
