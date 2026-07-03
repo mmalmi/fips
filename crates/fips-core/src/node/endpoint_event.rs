@@ -164,6 +164,18 @@ impl FipsEndpointDirectPacketSegment {
         self.ranges.is_empty()
     }
 
+    fn split_off(&mut self, at: usize) -> Option<Self> {
+        if at >= self.ranges.len() {
+            return None;
+        }
+        let tail_ranges = self.ranges.split_off(at);
+        self.packet_bytes = self.ranges.iter().map(|range| range.len()).sum();
+        Some(Self::from_shared_buffer(
+            Arc::clone(&self.buffer),
+            tail_ranges,
+        ))
+    }
+
     fn push_range_from_shared_buffer(
         &mut self,
         buffer: &Arc<PacketBuffer>,
@@ -252,6 +264,18 @@ impl FipsEndpointDirectPacketStorage {
         }
     }
 
+    fn build(segments: Vec<FipsEndpointDirectPacketSegment>) -> Self {
+        let mut segments: Vec<_> = segments
+            .into_iter()
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        match segments.len() {
+            0 => Self::empty_segmented(),
+            1 => Self::Segmented(segments.pop().expect("one segment must exist")),
+            _ => Self::build_chained(segments),
+        }
+    }
+
     fn packet_count(&self) -> usize {
         match self {
             Self::Segmented(segment) => segment.len(),
@@ -264,6 +288,36 @@ impl FipsEndpointDirectPacketStorage {
             Self::Segmented(segment) => vec![segment],
             Self::Chained { segments, .. } => segments,
         }
+    }
+
+    fn split_off_packets(&mut self, at: usize) -> Option<Self> {
+        if at >= self.packet_count() {
+            return None;
+        }
+
+        let current = std::mem::replace(self, Self::empty_segmented());
+        let mut head = Vec::new();
+        let mut tail = Vec::new();
+        let mut remaining = at;
+        for mut segment in current.into_segments() {
+            if remaining == 0 {
+                tail.push(segment);
+                continue;
+            }
+            if segment.len() <= remaining {
+                remaining -= segment.len();
+                head.push(segment);
+                continue;
+            }
+            if let Some(tail_segment) = segment.split_off(remaining) {
+                head.push(segment);
+                tail.push(tail_segment);
+            }
+            remaining = 0;
+        }
+
+        *self = Self::build(head);
+        Some(Self::build(tail))
     }
 }
 
@@ -565,6 +619,18 @@ impl FipsEndpointDirectPacketRun {
                 *packet_bytes = retained_bytes;
             }
         }
+    }
+
+    /// Split this run at a packet index without copying packet bytes.
+    ///
+    /// The original run keeps packets before `at`; the returned run contains
+    /// packets from `at` onward with the same authenticated source metadata.
+    pub fn split_off_packets(&mut self, at: usize) -> Option<Self> {
+        let storage = self.storage.split_off_packets(at)?;
+        Some(Self {
+            meta: self.meta.clone(),
+            storage,
+        })
     }
 
     /// Visit each packet as mutable bytes while the run owner is borrowed.
