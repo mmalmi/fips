@@ -1018,12 +1018,6 @@ pub(crate) struct PacketMover2FmpPacketRxSource<'a, C = PacketMover2NoDirectFspS
     control_ingress: Vec<PacketMover2FmpControlIngress>,
 }
 
-impl<'a> PacketMover2FmpPacketRxSource<'a, PacketMover2NoDirectFspSources> {
-    pub(crate) fn with_first(rx: &'a mut PacketRx, first: Option<ReceivedPacket>) -> Self {
-        Self::with_first_and_direct_fsp_sources(rx, first, PacketMover2NoDirectFspSources)
-    }
-}
-
 impl<'a, C> PacketMover2FmpPacketRxSource<'a, C>
 where
     C: PacketMover2FspSourceClassifier,
