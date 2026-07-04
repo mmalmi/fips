@@ -1465,6 +1465,7 @@ dependencies = [
  "dirs",
  "fips-core",
  "hex",
+ "nostr-sdk",
  "ratatui",
  "serde_json",
  "tokio",
