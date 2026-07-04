@@ -23,7 +23,7 @@ use tracing::warn;
 /// Maximum number of datagrams a single `recvmmsg` syscall pulls from the
 /// kernel queue. Shared with the higher-level UDP receive loops so all Linux
 /// packet ingress paths use the same batch width.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const RECV_BATCH_SIZE: usize = super::UDP_RECV_BATCH_SIZE;
 
 // ============================================================================
@@ -77,6 +77,13 @@ mod platform {
 
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
+        fn recvmsg_x(
+            s: libc::c_int,
+            msgp: *mut msghdr_x,
+            cnt: libc::c_uint,
+            flags: libc::c_int,
+        ) -> isize;
+
         fn sendmsg_x(
             s: libc::c_int,
             msgp: *const msghdr_x,
@@ -497,7 +504,7 @@ mod platform {
         /// On Linux the production receive path uses `recv_batch` (recvmmsg);
         /// this single-packet variant remains for non-Linux unix targets and
         /// for the local `tests` module.
-        #[cfg_attr(target_os = "linux", allow(dead_code))]
+        #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
         pub fn recv_from(
             &self,
             buf: &mut [u8],
@@ -543,7 +550,7 @@ mod platform {
         }
 
         /// Receive up to `RECV_BATCH_SIZE` datagrams in a single recvmmsg syscall
-        /// (Linux only — macOS falls through to per-packet recvmsg).
+        /// (Linux only — macOS uses `recvmsg_x` below).
         ///
         /// Returns `(count, kernel_drops)`. Caller provides receive buffers
         /// with enough spare capacity for one datagram, plus matching
@@ -653,6 +660,95 @@ mod platform {
             }
 
             Ok((count, drops))
+        }
+
+        /// Receive up to `RECV_BATCH_SIZE` datagrams in a single Darwin
+        /// `recvmsg_x` syscall.
+        ///
+        /// macOS does not expose kernel drop or UDP GRO metadata here, so
+        /// drops and per-slot GRO segment sizes remain zero.
+        #[cfg(target_os = "macos")]
+        pub fn recv_batch(
+            &self,
+            bufs: &mut [Vec<u8>],
+            addrs: &mut [Option<SocketAddr>],
+            gro_segment_sizes: &mut [usize],
+        ) -> std::io::Result<(usize, u32)> {
+            let n = bufs
+                .len()
+                .min(addrs.len())
+                .min(gro_segment_sizes.len())
+                .min(RECV_BATCH_SIZE);
+            if n == 0 {
+                return Ok((0, 0));
+            }
+            let fd = self.inner.as_raw_fd();
+
+            let mut iovs: [libc::iovec; RECV_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; RECV_BATCH_SIZE] =
+                unsafe { std::mem::zeroed() };
+            let mut msgs: [msghdr_x; RECV_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+
+            for i in 0..n {
+                bufs[i].clear();
+                addrs[i] = None;
+                gro_segment_sizes[i] = 0;
+                let spare = bufs[i].spare_capacity_mut();
+                if spare.is_empty() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "UDP receive buffer has no spare capacity",
+                    ));
+                }
+                iovs[i].iov_base = spare.as_mut_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = spare.len();
+                msgs[i].msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
+                msgs[i].msg_namelen =
+                    std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                msgs[i].msg_iov = &mut iovs[i];
+                msgs[i].msg_iovlen = 1;
+                msgs[i].msg_control = std::ptr::null_mut();
+                msgs[i].msg_controllen = 0;
+                msgs[i].msg_flags = 0;
+                msgs[i].msg_datalen = spare.len();
+            }
+
+            let count = loop {
+                let r = unsafe { recvmsg_x(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0) };
+                if r >= 0 {
+                    break r as usize;
+                }
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            };
+            crate::perf_profile::record_udp_recv_recvmsgx_batch(count);
+
+            for i in 0..count {
+                if (msgs[i].msg_flags & libc::MSG_TRUNC) != 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "recvmsg_x reported a truncated UDP datagram",
+                    ));
+                }
+                let len = msgs[i].msg_datalen;
+                if len > bufs[i].capacity() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "recvmsg_x reported a datagram larger than the receive buffer",
+                    ));
+                }
+                // SAFETY: `recvmsg_x` initialized `len` bytes in `bufs[i]`'s
+                // spare capacity through the iovec, and `len <= capacity`
+                // was checked above.
+                unsafe {
+                    bufs[i].set_len(len);
+                }
+                addrs[i] = sockaddr_to_socket_addr(&storages[i]).ok();
+            }
+
+            Ok((count, 0))
         }
 
         /// Send same-destination payloads without first materializing
@@ -1033,7 +1129,7 @@ mod platform {
         /// On Linux the production receive path uses `recv_batch`; this
         /// single-packet variant remains for non-Linux unix targets and for
         /// the local `tests` module.
-        #[cfg_attr(target_os = "linux", allow(dead_code))]
+        #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
         pub async fn recv_from(
             &self,
             buf: &mut [u8],
@@ -1054,10 +1150,10 @@ mod platform {
         }
 
         /// Drain up to `RECV_BATCH_SIZE` datagrams from the kernel via
-        /// `recvmmsg` (Linux). Returns `(count, kernel_drops)`; same
-        /// buffer / addr / GRO segment-size contract as
+        /// `recvmmsg` (Linux) or `recvmsg_x` (macOS). Returns
+        /// `(count, kernel_drops)`; same buffer / addr / GRO segment-size contract as
         /// `UdpRawSocket::recv_batch`.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         pub async fn recv_batch(
             &self,
             bufs: &mut [Vec<u8>],

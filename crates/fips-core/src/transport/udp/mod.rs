@@ -33,7 +33,7 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 /// and the current measured bottleneck is pre-`PacketRx` dequeue backlog, so a
 /// wider receive batch reduces syscall/channel-item churn without changing the
 /// priority/bulk lane contract at the packet channel boundary.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 
 #[cfg(target_os = "linux")]
@@ -716,8 +716,9 @@ impl Drop for UdpTransport {
 /// UDP receive loop - runs as a spawned task.
 ///
 /// On Linux, drains the kernel UDP queue in `UDP_RECV_BATCH_SIZE` bursts via
-/// `recvmmsg` to amortise the per-syscall + per-task-wakeup overhead. macOS /
-/// Windows fall through to single-packet `recv_from`. Either way every
+/// `recvmmsg` to amortise the per-syscall + per-task-wakeup overhead. macOS
+/// uses Darwin `recvmsg_x` for the same batching shape. Windows falls through
+/// to single-packet `recv_from`. Either way every
 /// datagram is forwarded to `packet_tx` in arrival order.
 async fn udp_receive_loop(
     socket: AsyncUdpSocket,
@@ -924,41 +925,58 @@ async fn udp_receive_loop(
 
     #[cfg(target_os = "macos")]
     {
+        const BATCH: usize = UDP_RECV_BATCH_SIZE;
         let buf_size = mtu as usize + 100;
-        let mut buf = packet_tx.recv_buffer(buf_size);
+        let mut backing: Vec<Vec<u8>> = (0..BATCH)
+            .map(|_| packet_tx.recv_buffer(buf_size))
+            .collect();
+        let mut addrs: [Option<std::net::SocketAddr>; BATCH] = std::array::from_fn(|_| None);
+        let mut gro_segment_sizes = [0usize; BATCH];
         let mut addr_cache: Vec<(SocketAddr, TransportAddr)> = Vec::new();
 
         loop {
-            match socket.recv_from(&mut buf).await {
-                Ok((len, remote_addr, kernel_drops, _gro_segment_size)) => {
-                    stats.record_recv(len);
+            match socket
+                .recv_batch(&mut backing, &mut addrs, &mut gro_segment_sizes)
+                .await
+            {
+                Ok((count, kernel_drops)) => {
                     stats.set_kernel_drops(kernel_drops as u64);
+                    let mut packets = packet_tx.packet_batch(count);
+                    for i in 0..count {
+                        let len = backing[i].len();
+                        gro_segment_sizes[i] = 0;
+                        let Some(remote_addr) = addrs[i].take() else {
+                            backing[i].clear();
+                            continue;
+                        };
+                        stats.record_recv(len);
 
-                    if is_punch_packet(&buf[..len]) {
+                        if is_punch_packet(&backing[i][..len]) {
+                            trace!(
+                                transport_id = %transport_id,
+                                remote_addr = %remote_addr,
+                                bytes = len,
+                                "Dropping stray punch probe/ack on UDP transport"
+                            );
+                            backing[i].clear();
+                            continue;
+                        }
+
+                        let data =
+                            std::mem::replace(&mut backing[i], packet_tx.recv_buffer(buf_size));
+                        let addr = cached_transport_addr(&mut addr_cache, remote_addr);
+                        let packet =
+                            ReceivedPacket::new(transport_id, addr, packet_tx.packet_buffer(data));
+
                         trace!(
                             transport_id = %transport_id,
                             remote_addr = %remote_addr,
                             bytes = len,
-                            "Dropping stray punch probe/ack on UDP transport"
+                            "UDP packet received"
                         );
-                        continue;
+
+                        packets.push(packet);
                     }
-
-                    buf.truncate(len);
-                    let data = std::mem::replace(&mut buf, packet_tx.recv_buffer(buf_size));
-                    let addr = cached_transport_addr(&mut addr_cache, remote_addr);
-                    let packet =
-                        ReceivedPacket::new(transport_id, addr, packet_tx.packet_buffer(data));
-
-                    trace!(
-                        transport_id = %transport_id,
-                        remote_addr = %remote_addr,
-                        bytes = len,
-                        "UDP packet received"
-                    );
-
-                    let mut packets = packet_tx.packet_batch(1);
-                    packets.push(packet);
                     packet_tx.try_fast_ingress_packet_batch(&mut packets);
                     if packets.is_empty() {
                         continue;
@@ -972,9 +990,6 @@ async fn udp_receive_loop(
                     }
                 }
                 Err(e) => {
-                    if buf.len() != buf_size {
-                        buf.resize(buf_size, 0);
-                    }
                     stats.record_recv_error();
                     warn!(
                         transport_id = %transport_id,

@@ -325,11 +325,11 @@ pub enum Event {
     UdpSendSendmmsgBatchGe48 = 58,
     UdpSendSendmmsgBatchEq64 = 59,
     UdpSendSendmsgxBatchEq64 = 60,
-    ReservedEvent61 = 61,
-    ReservedEvent62 = 62,
-    ReservedEvent63 = 63,
-    ReservedEvent64 = 64,
-    ReservedEvent65 = 65,
+    UdpRecvRecvmsgxBatch = 61,
+    UdpRecvRecvmsgxPackets = 62,
+    UdpRecvRecvmsgxBatchEq1 = 63,
+    UdpRecvRecvmsgxBatchGe2 = 64,
+    UdpRecvRecvmsgxBatchGe8 = 65,
     ReservedEvent66 = 66,
     ReservedEvent67 = 67,
     ReservedEvent68 = 68,
@@ -575,11 +575,11 @@ impl Event {
             Event::UdpSendSendmmsgBatchGe48 => "udp_send_sendmmsg_batch_ge48",
             Event::UdpSendSendmmsgBatchEq64 => "udp_send_sendmmsg_batch_eq64",
             Event::UdpSendSendmsgxBatchEq64 => "udp_send_sendmsgx_batch_eq64",
-            Event::ReservedEvent61 => "reserved_event_61",
-            Event::ReservedEvent62 => "reserved_event_62",
-            Event::ReservedEvent63 => "reserved_event_63",
-            Event::ReservedEvent64 => "reserved_event_64",
-            Event::ReservedEvent65 => "reserved_event_65",
+            Event::UdpRecvRecvmsgxBatch => "udp_recv_recvmsgx_batch",
+            Event::UdpRecvRecvmsgxPackets => "udp_recv_recvmsgx_packets",
+            Event::UdpRecvRecvmsgxBatchEq1 => "udp_recv_recvmsgx_batch_eq1",
+            Event::UdpRecvRecvmsgxBatchGe2 => "udp_recv_recvmsgx_batch_ge2",
+            Event::UdpRecvRecvmsgxBatchGe8 => "udp_recv_recvmsgx_batch_ge8",
             Event::ReservedEvent66 => "reserved_event_66",
             Event::ReservedEvent67 => "reserved_event_67",
             Event::ReservedEvent68 => "reserved_event_68",
@@ -838,11 +838,11 @@ fn event_from_index(idx: usize) -> Event {
         58 => Event::UdpSendSendmmsgBatchGe48,
         59 => Event::UdpSendSendmmsgBatchEq64,
         60 => Event::UdpSendSendmsgxBatchEq64,
-        61 => Event::ReservedEvent61,
-        62 => Event::ReservedEvent62,
-        63 => Event::ReservedEvent63,
-        64 => Event::ReservedEvent64,
-        65 => Event::ReservedEvent65,
+        61 => Event::UdpRecvRecvmsgxBatch,
+        62 => Event::UdpRecvRecvmsgxPackets,
+        63 => Event::UdpRecvRecvmsgxBatchEq1,
+        64 => Event::UdpRecvRecvmsgxBatchGe2,
+        65 => Event::UdpRecvRecvmsgxBatchGe8,
         66 => Event::ReservedEvent66,
         67 => Event::ReservedEvent67,
         68 => Event::ReservedEvent68,
@@ -1368,6 +1368,26 @@ pub(crate) fn record_udp_send_sendmsgx_batch(packets: usize) {
         Event::UdpSendSendmsgxBatchGe48,
         Event::UdpSendSendmsgxBatchEq64,
     );
+}
+
+/// Record Darwin `recvmsg_x(2)` UDP batches drained by the transport receive side.
+#[inline]
+#[cfg(target_os = "macos")]
+pub(crate) fn record_udp_recv_recvmsgx_batch(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::UdpRecvRecvmsgxBatch, 1);
+    record_event_count_sample(Event::UdpRecvRecvmsgxPackets, packets as u64);
+    if packets == 1 {
+        record_event_count_sample(Event::UdpRecvRecvmsgxBatchEq1, 1);
+    }
+    if packets >= 2 {
+        record_event_count_sample(Event::UdpRecvRecvmsgxBatchGe2, 1);
+    }
+    if packets >= 8 {
+        record_event_count_sample(Event::UdpRecvRecvmsgxBatchGe8, 1);
+    }
 }
 
 #[inline]
