@@ -25,11 +25,13 @@ mod progress;
 mod topology;
 mod traffic;
 mod util;
+mod wot;
 
 use progress::{ProgressReporter, ProgressSession};
 use topology::*;
 use traffic::*;
 use util::*;
+pub use wot::*;
 
 /// Topology generator used by the production simulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

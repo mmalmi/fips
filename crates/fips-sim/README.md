@@ -43,6 +43,18 @@ Run the standard production mesh scenario:
 cargo run -p fips-sim --example production_mesh
 ```
 
+Run the deterministic open-discovery WoT admission scenario:
+
+```sh
+cargo run -p fips-sim --example wot_admission
+```
+
+The WoT admission report models the control-plane rating exchange around open
+discovery: historic rating lookups, local machine-published rating facts after
+successful probes or degradation, integer trust scores, newcomer probe slots,
+and final admission ordering. Production `fips-core` tests cover the matching
+signed kind 7368 rating import and open-discovery enqueue path.
+
 The example prints wall-clock progress to stderr every 10 seconds. Use
 `--progress-interval-ms N` to change the interval, or `--no-progress` for
 machine-only output.
