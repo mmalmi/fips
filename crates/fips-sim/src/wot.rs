@@ -39,6 +39,8 @@ pub struct WotRatingPubsubConfig {
     pub peer_count: usize,
     /// Interested peers that send wants and receive the full event payload.
     pub subscriber_count: usize,
+    /// Untrusted rating spam seen alongside each trusted local rating publish.
+    pub spam_events_per_publish: usize,
     /// Approximate bytes for one inventory notice.
     pub inventory_bytes: usize,
     /// Approximate bytes for one want request.
@@ -52,6 +54,7 @@ impl Default for WotRatingPubsubConfig {
         Self {
             peer_count: 8,
             subscriber_count: 4,
+            spam_events_per_publish: 8,
             inventory_bytes: 96,
             want_bytes: 64,
             payload_bytes: 512,
@@ -193,6 +196,8 @@ pub struct WotRatingExchangeStats {
     pub pubsub_delivered_events: usize,
     pub pubsub_inv_want_bytes: usize,
     pub pubsub_flood_bytes: usize,
+    pub pubsub_spam_events_seen: usize,
+    pub pubsub_spam_events_dropped: usize,
 }
 
 /// Reason a peer was admitted or deferred in a phase.
@@ -353,6 +358,7 @@ impl WotRatingExchange {
         self.stats.local_published_events += 1;
         self.publish_over_pubsub(pubsub);
         self.index(event);
+        self.drop_untrusted_spam(pubsub.spam_events_per_publish);
     }
 
     fn index(&mut self, event: WotRatingFactEvent) {
@@ -387,6 +393,13 @@ impl WotRatingExchange {
             .stats
             .pubsub_flood_bytes
             .saturating_add(inventory_targets.saturating_mul(pubsub.payload_bytes));
+    }
+
+    fn drop_untrusted_spam(&mut self, count: usize) {
+        self.stats.pubsub_spam_events_seen =
+            self.stats.pubsub_spam_events_seen.saturating_add(count);
+        self.stats.pubsub_spam_events_dropped =
+            self.stats.pubsub_spam_events_dropped.saturating_add(count);
     }
 
     fn query_events(&mut self, filter: &WotNostrFilter) -> Vec<WotRatingFactEvent> {
@@ -686,6 +699,30 @@ mod tests {
         assert_eq!(phase(&report, "cold_start").rating_events_seen, 4);
         assert_eq!(phase(&report, "after_newcomer_probe").rating_events_seen, 5);
         assert_eq!(phase(&report, "after_degradation").rating_events_seen, 6);
+    }
+
+    #[test]
+    fn untrusted_rating_spam_is_not_indexed_into_history() {
+        let report = run_default_wot_admission_sim();
+        let spam_per_publish = report.config.rating_pubsub.spam_events_per_publish;
+
+        assert_eq!(
+            report.exchange.pubsub_spam_events_seen,
+            report.exchange.local_published_events * spam_per_publish
+        );
+        assert_eq!(
+            report.exchange.pubsub_spam_events_dropped,
+            report.exchange.pubsub_spam_events_seen
+        );
+        assert_eq!(
+            report.exchange.indexed_events,
+            report.exchange.historic_seed_events + report.exchange.local_published_events
+        );
+        assert_eq!(report.rating_events.len(), report.exchange.indexed_events);
+        assert_eq!(
+            phase(&report, "after_degradation").rating_events_seen,
+            report.exchange.indexed_events
+        );
     }
 
     #[test]
