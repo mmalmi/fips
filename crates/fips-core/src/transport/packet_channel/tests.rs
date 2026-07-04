@@ -27,6 +27,41 @@ fn bulk_packet_len(marker: u8, len: usize) -> Vec<u8> {
     vec![marker; len]
 }
 
+fn established_fmp_packet(payload_len: usize, marker: u8) -> Vec<u8> {
+    let mut packet = vec![0u8; FMP_ESTABLISHED_HEADER_SIZE + payload_len + AEAD_TAG_SIZE];
+    packet[0] = FMP_PHASE_ESTABLISHED;
+    packet[2..4].copy_from_slice(&(payload_len as u16).to_le_bytes());
+    *packet
+        .last_mut()
+        .expect("established FMP packet has a marker byte") = marker;
+    packet
+}
+
+fn established_fmp_packet_with_actual_len(
+    payload_len: usize,
+    actual_len: usize,
+    marker: u8,
+) -> Vec<u8> {
+    let mut packet = vec![0u8; actual_len];
+    packet[0] = FMP_PHASE_ESTABLISHED;
+    packet[2..4].copy_from_slice(&(payload_len as u16).to_le_bytes());
+    *packet
+        .last_mut()
+        .expect("established FMP packet has a marker byte") = marker;
+    packet
+}
+
+fn direct_fsp_packet(payload_len: usize, marker: u8) -> Vec<u8> {
+    let mut packet =
+        vec![0u8; crate::node::session_wire::FSP_HEADER_SIZE + payload_len + AEAD_TAG_SIZE];
+    packet[0] = FMP_PHASE_ESTABLISHED;
+    packet[2..4].copy_from_slice(&(payload_len as u16).to_le_bytes());
+    *packet
+        .last_mut()
+        .expect("direct FSP packet has a marker byte") = marker;
+    packet
+}
+
 fn small_app_packet(marker: u8) -> Vec<u8> {
     vec![marker; 32]
 }
@@ -47,13 +82,47 @@ fn packet_marker(packet: &ReceivedPacket) -> u8 {
 }
 
 #[test]
-fn transport_priority_is_visible_fmp_handshake_only() {
+fn transport_priority_is_visible_fmp_handshake_liveness_and_mmp_only() {
     let addr = TransportAddr::from_string("test");
     let priority_msg1 = ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg1(0x11));
     let priority_msg2 = ReceivedPacket::new(TransportId::new(1), addr.clone(), priority_msg2(0x22));
+    let heartbeat = ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        established_fmp_packet(FMP_HEARTBEAT_PLAINTEXT_SIZE, 0x33),
+    );
+    let sender_report = ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        established_fmp_packet(FMP_MMP_SENDER_REPORT_PLAINTEXT_SIZE, 0x44),
+    );
+    let receiver_report = ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        established_fmp_packet(FMP_MMP_RECEIVER_REPORT_PLAINTEXT_SIZE, 0x55),
+    );
     let small_app = ReceivedPacket::new(TransportId::new(1), addr.clone(), small_app_packet(0x33));
     let malformed_msg1 =
         ReceivedPacket::new(TransportId::new(1), addr.clone(), bulk_packet_len(0x01, 32));
+    let malformed_established = ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        established_fmp_packet_with_actual_len(
+            FMP_HEARTBEAT_PLAINTEXT_SIZE,
+            FMP_ESTABLISHED_HEADER_SIZE + FMP_HEARTBEAT_PLAINTEXT_SIZE + AEAD_TAG_SIZE + 1,
+            0x66,
+        ),
+    );
+    let large_established = ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        established_fmp_packet(1200, 0x77),
+    );
+    let direct_fsp = ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        direct_fsp_packet(FMP_HEARTBEAT_PLAINTEXT_SIZE, 0x88),
+    );
     let wrong_version = ReceivedPacket::new(
         TransportId::new(1),
         addr,
@@ -62,8 +131,14 @@ fn transport_priority_is_visible_fmp_handshake_only() {
 
     assert!(priority_msg1.is_transport_priority());
     assert!(priority_msg2.is_transport_priority());
+    assert!(heartbeat.is_transport_priority());
+    assert!(sender_report.is_transport_priority());
+    assert!(receiver_report.is_transport_priority());
     assert!(!small_app.is_transport_priority());
     assert!(!malformed_msg1.is_transport_priority());
+    assert!(!malformed_established.is_transport_priority());
+    assert!(!large_established.is_transport_priority());
+    assert!(!direct_fsp.is_transport_priority());
     assert!(!wrong_version.is_transport_priority());
 }
 
@@ -156,6 +231,35 @@ async fn packet_channel_reserves_priority_progress_ahead_of_bulk_backlog() {
 
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x11);
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x22);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbb);
+}
+
+#[tokio::test]
+async fn packet_channel_prioritizes_established_liveness_without_promoting_bulk() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        bulk_packet(0xaa),
+    ))
+    .unwrap();
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        established_fmp_packet(FMP_HEARTBEAT_PLAINTEXT_SIZE, 0x11),
+    ))
+    .unwrap();
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        established_fmp_packet(1200, 0xbb),
+    ))
+    .unwrap();
+
+    assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0x11);
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xaa);
     assert_eq!(packet_marker(&rx.recv().await.unwrap()), 0xbb);
 }

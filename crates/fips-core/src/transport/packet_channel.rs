@@ -362,15 +362,21 @@ pub(crate) fn received_timestamp_ms() -> u64 {
 
 /// FMP packet shape that is visible before dataplane authenticates established data.
 ///
-/// App payloads, TCP ACKs, pings, and established FSP/MMP frames are all opaque
-/// phase-0 data at this boundary. Only first-contact/link rekey handshakes get
-/// the unbounded reserve lane before dataplane can classify authenticated contents.
-const FMP_VERSION: u8 = 0;
-const FMP_PHASE_MSG1: u8 = 0x1;
-const FMP_PHASE_MSG2: u8 = 0x2;
-const FMP_COMMON_PREFIX_SIZE: usize = 4;
-const FMP_MSG1_WIRE_SIZE: usize = 114;
-const FMP_MSG2_WIRE_SIZE: usize = 69;
+/// Bulk app data is opaque phase-0 data here, so the transport channel only
+/// promotes exact control-sized frames that can be identified from public wire
+/// length: handshakes, link heartbeats, and fixed-size link MMP reports.
+const FMP_VERSION: u8 = crate::node::wire::FMP_VERSION;
+const FMP_PHASE_ESTABLISHED: u8 = crate::node::wire::PHASE_ESTABLISHED;
+const FMP_PHASE_MSG1: u8 = crate::node::wire::PHASE_MSG1;
+const FMP_PHASE_MSG2: u8 = crate::node::wire::PHASE_MSG2;
+const FMP_COMMON_PREFIX_SIZE: usize = crate::node::wire::COMMON_PREFIX_SIZE;
+const FMP_ESTABLISHED_HEADER_SIZE: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
+const FMP_MSG1_WIRE_SIZE: usize = crate::node::wire::MSG1_WIRE_SIZE;
+const FMP_MSG2_WIRE_SIZE: usize = crate::node::wire::MSG2_WIRE_SIZE;
+const AEAD_TAG_SIZE: usize = crate::noise::TAG_SIZE;
+const FMP_HEARTBEAT_PLAINTEXT_SIZE: usize = 4 + 1;
+const FMP_MMP_SENDER_REPORT_PLAINTEXT_SIZE: usize = crate::mmp::SENDER_REPORT_WIRE_SIZE;
+const FMP_MMP_RECEIVER_REPORT_PLAINTEXT_SIZE: usize = crate::mmp::RECEIVER_REPORT_WIRE_SIZE;
 
 fn is_transport_priority_packet(data: &[u8]) -> bool {
     if data.len() < FMP_COMMON_PREFIX_SIZE {
@@ -383,9 +389,32 @@ fn is_transport_priority_packet(data: &[u8]) -> bool {
         return false;
     }
 
+    match phase {
+        FMP_PHASE_MSG1 => data.len() == FMP_MSG1_WIRE_SIZE,
+        FMP_PHASE_MSG2 => data.len() == FMP_MSG2_WIRE_SIZE,
+        FMP_PHASE_ESTABLISHED => is_fmp_established_priority_packet(data),
+        _ => false,
+    }
+}
+
+fn is_fmp_established_priority_packet(data: &[u8]) -> bool {
+    if data.len() < FMP_ESTABLISHED_HEADER_SIZE.saturating_add(AEAD_TAG_SIZE) {
+        return false;
+    }
+
+    let payload_len = usize::from(u16::from_le_bytes([data[2], data[3]]));
+    let expected_len = FMP_ESTABLISHED_HEADER_SIZE
+        .saturating_add(payload_len)
+        .saturating_add(AEAD_TAG_SIZE);
+    if data.len() != expected_len {
+        return false;
+    }
+
     matches!(
-        (phase, data.len()),
-        (FMP_PHASE_MSG1, FMP_MSG1_WIRE_SIZE) | (FMP_PHASE_MSG2, FMP_MSG2_WIRE_SIZE)
+        payload_len,
+        FMP_HEARTBEAT_PLAINTEXT_SIZE
+            | FMP_MMP_SENDER_REPORT_PLAINTEXT_SIZE
+            | FMP_MMP_RECEIVER_REPORT_PLAINTEXT_SIZE
     )
 }
 
