@@ -1158,12 +1158,23 @@
         let activity = mover.owner_fsp_activity(owner).unwrap();
         assert_eq!(activity.last_rx_age_ms(125), Some(5));
         assert_eq!(activity.last_rx_data_age_ms(125), Some(5));
+        assert_eq!(
+            mover.min_fsp_rx_age_for_next_hop(&next_hop.node_addr(), 125),
+            Some(5),
+            "authenticated FSP via the previous hop must refresh that hop's link liveness"
+        );
+        assert_eq!(
+            mover.min_fsp_data_rx_age_for_next_hop(&next_hop.node_addr(), 125),
+            Some(5),
+            "endpoint data via the previous hop keeps payload trust fresh"
+        );
 
+        let other_previous_hop = test_node_addr(179);
         assert!(mover
             .record_authenticated_fsp_session(
                 owner,
-                test_node_addr(179),
-                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                other_previous_hop,
+                crate::protocol::SessionMessageType::SenderReport.to_byte(),
                 17,
                 sync(3, 17),
                 Some(ActivityTick::new(130)),
@@ -1173,6 +1184,16 @@
         let activity = mover.owner_fsp_activity(owner).unwrap();
         assert_eq!(activity.last_rx_age_ms(135), Some(5));
         assert_eq!(activity.last_rx_data_age_ms(135), Some(15));
+        assert_eq!(
+            mover.min_fsp_rx_age_for_next_hop(&other_previous_hop, 135),
+            Some(5),
+            "control/session FSP activity should still prove previous-hop liveness"
+        );
+        assert_eq!(
+            mover.min_fsp_data_rx_age_for_next_hop(&other_previous_hop, 135),
+            None,
+            "control/session FSP activity must not masquerade as endpoint-data freshness"
+        );
     }
 
     #[test]

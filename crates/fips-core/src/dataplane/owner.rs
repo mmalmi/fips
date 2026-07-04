@@ -465,6 +465,7 @@ pub(crate) struct DataplaneFspOwnerActivity {
     owner: NodeAddr,
     fsp_session_start_ms: Option<u64>,
     last_rx_activity: Option<ActivityTick>,
+    last_rx_previous_hop: Option<NodeAddr>,
     last_rx_data_activity: Option<ActivityTick>,
     last_rx_data_previous_hop: Option<NodeAddr>,
     last_tx_data_activity: Option<ActivityTick>,
@@ -572,12 +573,17 @@ impl DataplaneFspOwnerActivity {
     }
 
     fn tracks_next_hop(self, next_hop: &NodeAddr) -> bool {
-        self.last_outbound_next_hop == Some(*next_hop)
-            || (self.owner == *next_hop && self.last_outbound_next_hop.is_none())
+        self.last_rx_previous_hop == Some(*next_hop) || self.tracks_outbound_next_hop(next_hop)
     }
 
     fn tracks_data_next_hop(self, next_hop: &NodeAddr) -> bool {
-        self.last_rx_data_previous_hop == Some(*next_hop) || self.tracks_next_hop(next_hop)
+        self.last_rx_data_previous_hop == Some(*next_hop)
+            || self.tracks_outbound_next_hop(next_hop)
+    }
+
+    fn tracks_outbound_next_hop(self, next_hop: &NodeAddr) -> bool {
+        self.last_outbound_next_hop == Some(*next_hop)
+            || (self.owner == *next_hop && self.last_outbound_next_hop.is_none())
     }
 
     pub(crate) fn traffic_counters(self) -> (u64, u64, u64, u64) {
@@ -621,6 +627,7 @@ pub(crate) struct OwnerState {
     fsp_lifecycle_confirmed: bool,
     source_peer: Option<crate::PeerIdentity>,
     last_rx_activity: Option<ActivityTick>,
+    last_rx_previous_hop: Option<NodeAddr>,
     last_rx_data_activity: Option<ActivityTick>,
     last_rx_data_previous_hop: Option<NodeAddr>,
     last_tx_activity: Option<ActivityTick>,
@@ -678,6 +685,7 @@ impl OwnerState {
             fsp_lifecycle_confirmed: false,
             source_peer: config.source_peer,
             last_rx_activity: None,
+            last_rx_previous_hop: None,
             last_rx_data_activity: None,
             last_rx_data_previous_hop: None,
             last_tx_activity: None,
@@ -722,6 +730,8 @@ impl OwnerState {
         }
         self.fsp_lifecycle_confirmed = false;
         self.source_peer = None;
+        self.last_rx_activity = None;
+        self.last_rx_previous_hop = None;
         self.last_rx_data_activity = None;
         self.last_rx_data_previous_hop = None;
         self.last_tx_data_activity = None;
@@ -1011,6 +1021,7 @@ impl OwnerState {
             owner: self.owner.node_addr(),
             fsp_session_start_ms: self.fsp_session_start_ms,
             last_rx_activity: self.last_rx_activity,
+            last_rx_previous_hop: self.last_rx_previous_hop,
             last_rx_data_activity: self.last_rx_data_activity,
             last_rx_data_previous_hop: self.last_rx_data_previous_hop,
             last_tx_data_activity: self.last_tx_data_activity,
@@ -1306,8 +1317,10 @@ impl OwnerState {
             let _spin_rtt = mmp.spin_bit.rx_observe(sync.spin_bit, sync.counter, now);
             mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
         }
-        if let Some(tick) = activity_tick {
-            note_activity(&mut self.last_rx_activity, tick);
+        if let Some(tick) = activity_tick
+            && note_activity(&mut self.last_rx_activity, tick)
+        {
+            self.last_rx_previous_hop = Some(previous_hop);
         }
         if dataplane_fsp_message_is_application_data(msg_type)
             && (previous_hop == self.owner.node_addr()
@@ -2023,10 +2036,13 @@ impl OwnerState {
     }
 }
 
-fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) {
+fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) -> bool {
     match slot {
-        Some(current) if *current >= tick => {}
-        _ => *slot = Some(tick),
+        Some(current) if *current >= tick => false,
+        _ => {
+            *slot = Some(tick);
+            true
+        }
     }
 }
 
