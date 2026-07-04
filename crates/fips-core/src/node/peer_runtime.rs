@@ -66,6 +66,7 @@ pub(in crate::node) struct ReplacedActivePeerCurrentSession {
 pub(in crate::node) struct AuthenticatedFmpReceiveBookkeeping {
     pub(in crate::node) address_changed: bool,
     pub(in crate::node) path_bookkeeping_recorded: bool,
+    pub(in crate::node) liveness_bookkeeping_recorded: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

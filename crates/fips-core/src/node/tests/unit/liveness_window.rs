@@ -142,6 +142,91 @@ fn traversal_path_quiet_refresh_uses_heartbeat_and_fast_dead_floor() {
 }
 
 #[tokio::test]
+async fn authenticated_fmp_heartbeat_on_observed_tuple_keeps_idle_direct_link_fresh() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let current_addr = crate::transport::TransportAddr::from_string("203.0.113.9:2121");
+    let observed_addr = crate::transport::TransportAddr::from_string("198.51.100.20:61062");
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config);
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 10;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        current_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.touch(Node::now_ms().saturating_sub(31_000));
+    node.peers.insert(peer_addr, active);
+    super::super::seed_dataplane_fmp_rx_for_test(
+        &mut node,
+        peer_addr,
+        std::time::Duration::from_secs(31),
+    );
+
+    node.record_authenticated_fmp_receive_facts(
+        crate::node::AuthenticatedFmpReceiveFacts::new(
+            peer,
+            TransportId::new(1),
+            &observed_addr,
+            Node::now_ms(),
+            64,
+            2,
+            1_234,
+            0,
+        ),
+        Some(&peer_addr),
+    );
+
+    assert_eq!(
+        node.get_peer(&peer_addr)
+            .and_then(|peer| peer.current_addr()),
+        Some(&current_addr),
+        "liveness-only heartbeat should not bypass path-priority rotation rules"
+    );
+    assert!(
+        node.dataplane_fmp_link_metrics(&peer_addr, std::time::Instant::now())
+            .and_then(|metrics| metrics.last_recv_age_ms)
+            .is_some_and(|age_ms| age_ms < 1_000),
+        "authenticated same-peer heartbeat should refresh FMP receive liveness"
+    );
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.get_peer(&peer_addr).expect("direct peer").is_healthy(),
+        "authenticated same-peer heartbeat should keep an idle direct peer out of link-dead"
+    );
+}
+
+#[tokio::test]
 async fn quiet_recent_endpoint_path_refresh_keeps_direct_payload_without_demoting_peer() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();

@@ -473,7 +473,8 @@ impl Node {
             fmp.remote_addr,
             fmp.packet_timestamp_ms,
         ) && arrived_from_source;
-        if path_bookkeeping_allowed {
+        let liveness_bookkeeping_allowed = arrived_from_source;
+        if liveness_bookkeeping_allowed {
             let _ = self.dataplane.record_authenticated_fmp_mmp_receive(
                 source_addr,
                 fmp.fmp_counter,
@@ -495,10 +496,11 @@ impl Node {
             fmp.fmp_flags & FLAG_CE != 0,
             fmp.fmp_flags & FLAG_SP != 0,
             now,
+            liveness_bookkeeping_allowed,
             path_bookkeeping_allowed,
         );
         if let Some(update) = bookkeeping {
-            if update.path_bookkeeping_recorded {
+            if update.path_bookkeeping_recorded || update.liveness_bookkeeping_recorded {
                 self.clear_retry_unless_direct_refresh_needed(source_addr);
             }
             if update.address_changed {

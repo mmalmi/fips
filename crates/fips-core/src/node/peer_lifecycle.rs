@@ -391,6 +391,7 @@ impl PeerLifecycleRegistry {
         _ce_flag: bool,
         _sp_flag: bool,
         _now: std::time::Instant,
+        liveness_bookkeeping_allowed: bool,
         path_bookkeeping_allowed: bool,
     ) -> Option<AuthenticatedFmpReceiveBookkeeping> {
         let peer = self.active.get_mut(node_addr)?;
@@ -399,10 +400,14 @@ impl PeerLifecycleRegistry {
         let mut result = AuthenticatedFmpReceiveBookkeeping {
             address_changed: false,
             path_bookkeeping_recorded: false,
+            liveness_bookkeeping_recorded: false,
         };
         if path_bookkeeping_allowed {
             result.address_changed = peer.set_current_addr(transport_id, remote_addr);
             result.path_bookkeeping_recorded = true;
+        }
+        if liveness_bookkeeping_allowed {
+            result.liveness_bookkeeping_recorded = true;
             peer.link_stats_mut()
                 .record_recv(packet_len, packet_timestamp_ms);
             peer.touch(packet_timestamp_ms);

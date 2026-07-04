@@ -763,6 +763,7 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
             false,
             now,
             true,
+            true,
         )
         .expect("authenticated receive bookkeeping should find active peer");
 
@@ -799,6 +800,7 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
             true,
             now,
             false,
+            false,
         )
         .expect("disallowed path bookkeeping should still reset decrypt failures");
 
@@ -813,6 +815,40 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_path_bookkeeping() {
     assert_eq!(peer.link_stats().packets_recv, 1);
     assert_eq!(peer.link_stats().bytes_recv, 128);
     assert_eq!(peer.link_stats().last_recv_ms, 2_000);
+
+    registry
+        .get_mut(&peer_addr)
+        .expect("peer should still exist")
+        .increment_decrypt_failures();
+    let liveness_only = registry
+        .record_authenticated_fmp_receive(
+            &peer_addr,
+            new_transport_id,
+            &ignored_addr,
+            4_000,
+            64,
+            9,
+            2_999,
+            false,
+            true,
+            now,
+            true,
+            false,
+        )
+        .expect("same-peer authenticated receive should find active peer");
+
+    assert!(!liveness_only.address_changed);
+    assert!(!liveness_only.path_bookkeeping_recorded);
+    assert!(liveness_only.liveness_bookkeeping_recorded);
+    let peer = registry
+        .get(&peer_addr)
+        .expect("liveness-only receive must keep active peer storage");
+    assert_eq!(peer.consecutive_decrypt_failures(), 0);
+    assert_eq!(peer.current_addr(), Some(&new_addr));
+    assert_eq!(peer.last_seen(), 4_000);
+    assert_eq!(peer.link_stats().packets_recv, 2);
+    assert_eq!(peer.link_stats().bytes_recv, 192);
+    assert_eq!(peer.link_stats().last_recv_ms, 4_000);
 }
 
 #[test]
