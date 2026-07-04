@@ -289,6 +289,9 @@ pub struct Node {
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.
     tun_writer_handle: Option<JoinHandle<()>>,
+    /// Direct endpoint bulk TUN writer thread handle.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    tun_direct_writer_handle: Option<JoinHandle<()>>,
     /// Shutdown pipe: writing to this fd unblocks the TUN reader thread on macOS.
     /// On Linux, deleting the interface via netlink serves the same purpose.
     #[cfg(target_os = "macos")]
