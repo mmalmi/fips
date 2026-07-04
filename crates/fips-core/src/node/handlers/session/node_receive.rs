@@ -159,8 +159,7 @@ impl Node {
         };
 
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
-        let mut direct_packet_batches = Vec::with_capacity(endpoint_batches.len());
-        for batch in endpoint_batches {
+        for batch in &endpoint_batches {
             for run in batch.commit_runs() {
                 let commit = run.commit();
                 let source_addr = commit.source_addr();
@@ -183,20 +182,15 @@ impl Node {
                     direct_path: commit.direct_path(),
                 });
             }
-            if batch.direct_packet_run_count() > 0 {
-                direct_packet_batches.push(batch.into_direct_packet_batch());
-            }
         }
 
         let pending_flush_destinations = endpoint_commit.finish(self);
-        let count = direct_packet_batches
-            .iter()
-            .map(crate::node::FipsEndpointDirectPacketBatch::len)
-            .sum::<usize>();
-        if count > 0 {
+        if direct_packet_runs > 0 {
             let direct_sink = direct_sink.expect("direct sink is required when packet runs remain");
-            for batch in direct_packet_batches {
-                if direct_sink.deliver_direct_packet_batch(batch).is_err() {
+            for batch in endpoint_batches {
+                let packet_batch = batch.into_direct_packet_batch();
+                let count = packet_batch.len();
+                if count > 0 && direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
                     crate::perf_profile::record_event_count(
                         crate::perf_profile::Event::EndpointEventBulkDropped,
                         count as u64,
