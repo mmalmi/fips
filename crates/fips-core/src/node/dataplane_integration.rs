@@ -1125,26 +1125,24 @@ impl Node {
             )
             .with_class(PacketClass::Bulk),
         ));
+        let tun = DataplaneTunOutboundRoute::fsp_ipv6_shim(
+            owner,
+            generation,
+            PacketClass::Bulk,
+            fsp_flags,
+            inner_flags,
+        );
+        routes.push_tun_destination(DataplaneLiveTunRoute::new(
+            *node_addr,
+            DataplaneTunDestinationRoute::new(tun)
+                .with_max_packet_len(self.dataplane_tun_max_packet_len(node_addr)),
+        ));
+
         let mut endpoint =
             DataplaneEndpointDataRoute::fsp(owner, generation, fsp_flags, inner_flags);
         if direct_path_mtu.is_some() {
             endpoint = endpoint.with_direct_transport();
         }
-        let tun = if self.has_dataplane_endpoint_direct_sink() {
-            DataplaneTunDestinationRoute::endpoint_data(endpoint.clone())
-        } else {
-            DataplaneTunDestinationRoute::new(DataplaneTunOutboundRoute::fsp_ipv6_shim(
-                owner,
-                generation,
-                PacketClass::Bulk,
-                fsp_flags,
-                inner_flags,
-            ))
-        };
-        routes.push_tun_destination(DataplaneLiveTunRoute::new(
-            *node_addr,
-            tun.with_max_packet_len(self.dataplane_tun_max_packet_len(node_addr)),
-        ));
         routes.push_endpoint_destination(DataplaneLiveEndpointRoute::new(*node_addr, endpoint));
 
         DataplaneFspOwnerRouteUpdate {
@@ -1154,12 +1152,6 @@ impl Node {
             direct_path_mtu,
             next_hop: Some(next_hop),
         }
-    }
-
-    fn has_dataplane_endpoint_direct_sink(&self) -> bool {
-        self.endpoint_events
-            .sender()
-            .is_some_and(|sender| sender.direct_sink().is_some())
     }
 
     fn dataplane_direct_fsp_path(&self, dest_addr: &NodeAddr) -> Option<(TransportPath, u16)> {

@@ -909,7 +909,7 @@ impl DataplaneTunOutboundRouter for DataplaneLiveRouteTable {
         &mut self,
         packet: &[u8],
         dest: FipsTunDestinationPrefix,
-    ) -> Result<DataplaneTunPacketRoute, DataplaneTunOutboundDropReason> {
+    ) -> Result<DataplaneTunOutboundRoute, DataplaneTunOutboundDropReason> {
         self.tun_outbound
             .get(&dest)
             .ok_or(DataplaneTunOutboundDropReason::NoRoute)?

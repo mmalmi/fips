@@ -104,15 +104,8 @@ impl DataplaneEndpointDataRoute {
         &self,
         bodies: Vec<EndpointDataBulkBody>,
     ) -> DataplaneEndpointDataBatchRoute {
-        self.route_bulk_bodies_with_activity_tick(bodies, ActivityTick::new(crate::time::now_ms()))
-    }
-
-    fn route_bulk_bodies_with_activity_tick(
-        &self,
-        bodies: Vec<EndpointDataBulkBody>,
-        activity_tick: ActivityTick,
-    ) -> DataplaneEndpointDataBatchRoute {
         let mut result = DataplaneEndpointDataBatchRoute::with_capacity(bodies.len());
+        let routed_at_ms = crate::time::now_ms();
         let max_fsp_payload = self.max_fsp_bulk_body_len();
         for body in bodies {
             if body.body_len() > max_fsp_payload {
@@ -128,7 +121,7 @@ impl DataplaneEndpointDataRoute {
                     crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
                     body.into_body(),
                 )
-                .with_activity_tick(activity_tick),
+                .with_activity_tick(ActivityTick::new(routed_at_ms)),
             );
         }
         result

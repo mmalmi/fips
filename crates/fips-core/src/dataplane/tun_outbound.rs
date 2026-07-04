@@ -143,28 +143,15 @@ impl DataplaneTunOutboundRoute {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum DataplaneTunDestinationRouteKind {
-    Session(DataplaneTunOutboundRoute),
-    EndpointData(DataplaneEndpointDataRoute),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DataplaneTunDestinationRoute {
-    route: DataplaneTunDestinationRouteKind,
+    route: DataplaneTunOutboundRoute,
     max_packet_len: Option<usize>,
 }
 
 impl DataplaneTunDestinationRoute {
     pub(crate) fn new(route: DataplaneTunOutboundRoute) -> Self {
         Self {
-            route: DataplaneTunDestinationRouteKind::Session(route),
-            max_packet_len: None,
-        }
-    }
-
-    pub(crate) fn endpoint_data(route: DataplaneEndpointDataRoute) -> Self {
-        Self {
-            route: DataplaneTunDestinationRouteKind::EndpointData(route),
+            route,
             max_packet_len: None,
         }
     }
@@ -175,16 +162,13 @@ impl DataplaneTunDestinationRoute {
     }
 
     fn owner(&self) -> OwnerId {
-        match &self.route {
-            DataplaneTunDestinationRouteKind::Session(route) => route.owner(),
-            DataplaneTunDestinationRouteKind::EndpointData(route) => route.owner(),
-        }
+        self.route.owner()
     }
 
     fn route_packet(
         &self,
         packet: &[u8],
-    ) -> Result<DataplaneTunPacketRoute, DataplaneTunOutboundDropReason> {
+    ) -> Result<DataplaneTunOutboundRoute, DataplaneTunOutboundDropReason> {
         if let Some(max_packet_len) = self.max_packet_len
             && packet.len() > max_packet_len
         {
@@ -192,51 +176,8 @@ impl DataplaneTunDestinationRoute {
                 mtu: max_packet_len as u32,
             });
         }
-        Ok(match &self.route {
-            DataplaneTunDestinationRouteKind::Session(route) => {
-                DataplaneTunPacketRoute::Session(route.clone())
-            }
-            DataplaneTunDestinationRouteKind::EndpointData(route) => {
-                DataplaneTunPacketRoute::EndpointData(route.clone())
-            }
-        })
+        Ok(self.route.clone())
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum DataplaneTunPacketRoute {
-    Session(DataplaneTunOutboundRoute),
-    EndpointData(DataplaneEndpointDataRoute),
-}
-
-impl DataplaneTunPacketRoute {
-    fn into_routed_packet(
-        self,
-        packet: Vec<u8>,
-        activity_tick: ActivityTick,
-    ) -> Result<DataplaneTunRoutedPacket, DataplaneTunOutboundDropReason> {
-        match self {
-            Self::Session(route) => Ok(DataplaneTunRoutedPacket::Session(
-                route.into_outbound_packet(packet)?
-                    .with_activity_tick(activity_tick),
-            )),
-            Self::EndpointData(route) => Ok(DataplaneTunRoutedPacket::EndpointData {
-                route,
-                packet,
-                activity_tick,
-            }),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum DataplaneTunRoutedPacket {
-    Session(OutboundPacket),
-    EndpointData {
-        route: DataplaneEndpointDataRoute,
-        packet: Vec<u8>,
-        activity_tick: ActivityTick,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -289,7 +230,7 @@ pub(crate) trait DataplaneTunOutboundRouter {
         &mut self,
         packet: &[u8],
         dest: FipsTunDestinationPrefix,
-    ) -> Result<DataplaneTunPacketRoute, DataplaneTunOutboundDropReason>;
+    ) -> Result<DataplaneTunOutboundRoute, DataplaneTunOutboundDropReason>;
 }
 
 fn route_tun_outbound_packet_with_router<R, F>(
@@ -301,7 +242,7 @@ fn route_tun_outbound_packet_with_router<R, F>(
     mut push: F,
 ) where
     R: DataplaneTunOutboundRouter,
-    F: FnMut(DataplaneTunRoutedPacket),
+    F: FnMut(OutboundPacket),
 {
     let payload_len = packet.len();
     let dest = match FipsTunDestinationPrefix::from_ipv6_packet(&packet) {
@@ -312,8 +253,8 @@ fn route_tun_outbound_packet_with_router<R, F>(
         }
     };
     match router.route_tun_outbound(&packet, dest) {
-        Ok(route) => match route.into_routed_packet(packet, activity_tick) {
-            Ok(packet) => push(packet),
+        Ok(route) => match route.into_outbound_packet(packet) {
+            Ok(packet) => push(packet.with_activity_tick(activity_tick)),
             Err(reason) => {
                 drops.push(DataplaneTunOutboundDrop::with_payload_len(
                     Vec::new(),
