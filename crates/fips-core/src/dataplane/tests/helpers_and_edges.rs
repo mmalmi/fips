@@ -47,6 +47,9 @@
                     RetiredOutput::EndpointDataBulk(_) => {
                         panic!("test helper did not request endpoint-data bulk")
                     }
+                    RetiredOutput::FspTunPacketBatch(_) => {
+                        panic!("test helper did not request FSP TUN packets")
+                    }
                 }
             }
         }
