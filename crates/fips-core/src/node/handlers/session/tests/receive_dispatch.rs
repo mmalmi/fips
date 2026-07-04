@@ -466,3 +466,85 @@
             "batched dispatch should report, not synchronously drain, pending traffic"
         );
     }
+
+    #[tokio::test]
+    async fn ipv6_shim_batched_dispatch_queues_tun_packets_and_reports_pending_flush() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let previous_hop_addr = node_addr(0x55);
+        let mut node = Node::with_identity(local, crate::config::Config::new()).expect("node");
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        node.tun_tx = Some(tun_tx);
+
+        assert!(
+            !node
+                .pending_session_traffic
+                .push_tun_packet(source_addr, vec![0xaa], 8, 8)
+                .destination_dropped()
+        );
+
+        let mut ipv6 = Vec::new();
+        ipv6.extend_from_slice(&[0x60, 0, 0, 0]);
+        ipv6.extend_from_slice(&4u16.to_be_bytes());
+        ipv6.push(59);
+        ipv6.push(64);
+        ipv6.extend_from_slice(
+            &crate::FipsAddress::from_node_addr(&source_addr)
+                .to_ipv6()
+                .octets(),
+        );
+        ipv6.extend_from_slice(
+            &crate::FipsAddress::from_node_addr(node.node_addr())
+                .to_ipv6()
+                .octets(),
+        );
+        ipv6.extend_from_slice(&[1, 2, 3, 4]);
+        let expected_ipv6 = ipv6.clone();
+        assert!(crate::upper::ipv6_shim::compress_ipv6_with_port_header_in_place(
+            &mut ipv6,
+            crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+            crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+        ));
+
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::DataPacket.to_byte(),
+            0,
+            &ipv6,
+        );
+        let dispatch = AuthenticatedSessionDispatch::new(
+            source_addr,
+            previous_hop_addr,
+            false,
+            AuthenticatedSessionMessage::new(
+                source_peer,
+                plaintext,
+                SessionMessageType::DataPacket.to_byte(),
+                0,
+                0x0102_0304,
+            ),
+        );
+
+        assert!(dispatch.is_ipv6_shim_data_packet());
+        let mut packets = Vec::new();
+        let mut commit = SessionReceiveBatchCommit::default();
+        dispatch.dispatch_ipv6_shim_batched(&mut node, &mut packets, &mut commit);
+        assert_eq!(packets.len(), 1);
+        assert!(!commit.is_empty());
+
+        node.flush_dataplane_tun_session_batch(&mut packets, &mut commit)
+            .await;
+
+        assert!(packets.is_empty());
+        assert!(commit.is_empty());
+        let packet = tun_rx
+            .try_recv_packet()
+            .expect("batched shim packet should be queued to TUN");
+        assert_eq!(packet.as_slice(), expected_ipv6.as_slice());
+        assert!(
+            node.pending_session_traffic.has_traffic_for(&source_addr),
+            "batched TUN dispatch should report pending flush; without a dataplane owner the pending packet remains queued"
+        );
+    }

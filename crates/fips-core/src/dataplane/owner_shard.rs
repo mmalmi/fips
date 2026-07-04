@@ -336,7 +336,7 @@ impl DataplaneOwnerShard {
             let mut items = std::mem::take(&mut run.items).into_iter();
             while let Some(queued) = items.next() {
                 if !owner.can_reserve_class(queued.packet.class) {
-                    record_owner_blocked(owner.reserve_block_reason(queued.packet.class));
+                    record_ingress_owner_blocked(owner.reserve_block_reason(queued.packet.class));
                     remaining.push(queued);
                     remaining.extend(items);
                     break;
@@ -433,7 +433,7 @@ impl DataplaneOwnerShard {
                 let class = queued.packet.class;
                 let ingress_seq = queued.ingress_seq;
                 if !owner.can_reserve_class(class) {
-                    record_owner_blocked(owner.reserve_block_reason(class));
+                    record_outbound_owner_blocked(owner.reserve_block_reason(class));
                     remaining.push(queued);
                     remaining.extend(items);
                     break;

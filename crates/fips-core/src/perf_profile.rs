@@ -330,21 +330,21 @@ pub enum Event {
     UdpRecvRecvmsgxBatchEq1 = 63,
     UdpRecvRecvmsgxBatchGe2 = 64,
     UdpRecvRecvmsgxBatchGe8 = 65,
-    ReservedEvent66 = 66,
-    ReservedEvent67 = 67,
-    ReservedEvent68 = 68,
-    ReservedEvent69 = 69,
-    ReservedEvent70 = 70,
-    ReservedEvent71 = 71,
-    ReservedEvent72 = 72,
-    ReservedEvent73 = 73,
-    ReservedEvent74 = 74,
-    ReservedEvent75 = 75,
-    ReservedEvent76 = 76,
-    ReservedEvent77 = 77,
-    ReservedEvent78 = 78,
-    ReservedEvent79 = 79,
-    ReservedEvent80 = 80,
+    UdpRecvGroBatch = 66,
+    UdpRecvGroPackets = 67,
+    UdpRecvGroBytes = 68,
+    UdpRecvPlainPackets = 69,
+    TunReadPackets = 70,
+    TunReadBytes = 71,
+    TunWritePackets = 72,
+    TunWriteBytes = 73,
+    TunReadFrames = 74,
+    TunReadFrameBytes = 75,
+    TunWriteFrames = 76,
+    TunWriteFrameBytes = 77,
+    TunOutboundAdmissionDropped = 78,
+    PendingTunSessionOldestDropped = 79,
+    PendingTunSessionStaleDropped = 80,
     ReservedEvent81 = 81,
     ReservedEvent82 = 82,
     ReservedEvent83 = 83,
@@ -471,7 +471,7 @@ pub enum Event {
     DataplaneDispatchExecutorFull = 204,
     DataplaneDispatchOwnerBlockedTotal = 205,
     DataplaneDispatchOwnerBlockedBulkLane = 206,
-    ReservedEvent207 = 207,
+    DataplaneDispatchIngressOwnerBlocked = 207,
     DataplaneSealInPlace = 208,
     DataplaneSealAllocated = 209,
     DataplaneTransportSendWorkerBackpressure = 210,
@@ -481,7 +481,7 @@ pub enum Event {
     DataplaneOutboundBatchAdmit = 214,
     DataplaneOutboundBatchPackets = 215,
     DataplaneTransportSendWorkerSendFailed = 216,
-    ReservedEvent217 = 217,
+    DataplaneDispatchOutboundOwnerBlocked = 217,
     ReservedEvent218 = 218,
     ReservedEvent219 = 219,
     ReservedEvent220 = 220,
@@ -580,21 +580,21 @@ impl Event {
             Event::UdpRecvRecvmsgxBatchEq1 => "udp_recv_recvmsgx_batch_eq1",
             Event::UdpRecvRecvmsgxBatchGe2 => "udp_recv_recvmsgx_batch_ge2",
             Event::UdpRecvRecvmsgxBatchGe8 => "udp_recv_recvmsgx_batch_ge8",
-            Event::ReservedEvent66 => "reserved_event_66",
-            Event::ReservedEvent67 => "reserved_event_67",
-            Event::ReservedEvent68 => "reserved_event_68",
-            Event::ReservedEvent69 => "reserved_event_69",
-            Event::ReservedEvent70 => "reserved_event_70",
-            Event::ReservedEvent71 => "reserved_event_71",
-            Event::ReservedEvent72 => "reserved_event_72",
-            Event::ReservedEvent73 => "reserved_event_73",
-            Event::ReservedEvent74 => "reserved_event_74",
-            Event::ReservedEvent75 => "reserved_event_75",
-            Event::ReservedEvent76 => "reserved_event_76",
-            Event::ReservedEvent77 => "reserved_event_77",
-            Event::ReservedEvent78 => "reserved_event_78",
-            Event::ReservedEvent79 => "reserved_event_79",
-            Event::ReservedEvent80 => "reserved_event_80",
+            Event::UdpRecvGroBatch => "udp_recv_gro_batch",
+            Event::UdpRecvGroPackets => "udp_recv_gro_packets",
+            Event::UdpRecvGroBytes => "udp_recv_gro_bytes",
+            Event::UdpRecvPlainPackets => "udp_recv_plain_packets",
+            Event::TunReadPackets => "tun_read_packets",
+            Event::TunReadBytes => "tun_read_bytes",
+            Event::TunWritePackets => "tun_write_packets",
+            Event::TunWriteBytes => "tun_write_bytes",
+            Event::TunReadFrames => "tun_read_frames",
+            Event::TunReadFrameBytes => "tun_read_frame_bytes",
+            Event::TunWriteFrames => "tun_write_frames",
+            Event::TunWriteFrameBytes => "tun_write_frame_bytes",
+            Event::TunOutboundAdmissionDropped => "tun_outbound_admission_dropped",
+            Event::PendingTunSessionOldestDropped => "pending_tun_session_oldest_dropped",
+            Event::PendingTunSessionStaleDropped => "pending_tun_session_stale_dropped",
             Event::ReservedEvent81 => "reserved_event_81",
             Event::ReservedEvent82 => "reserved_event_82",
             Event::ReservedEvent83 => "reserved_event_83",
@@ -723,7 +723,9 @@ impl Event {
             Event::DataplaneDispatchOwnerBlockedBulkLane => {
                 "dataplane_dispatch_owner_blocked_bulk_lane"
             }
-            Event::ReservedEvent207 => "reserved_event_207",
+            Event::DataplaneDispatchIngressOwnerBlocked => {
+                "dataplane_dispatch_ingress_owner_blocked"
+            }
             Event::DataplaneSealInPlace => "dataplane_seal_in_place",
             Event::DataplaneSealAllocated => "dataplane_seal_allocated",
             Event::DataplaneTransportSendWorkerBackpressure => {
@@ -737,7 +739,9 @@ impl Event {
             Event::DataplaneTransportSendWorkerSendFailed => {
                 "dataplane_transport_send_worker_send_failed"
             }
-            Event::ReservedEvent217 => "reserved_event_217",
+            Event::DataplaneDispatchOutboundOwnerBlocked => {
+                "dataplane_dispatch_outbound_owner_blocked"
+            }
             Event::ReservedEvent218 => "reserved_event_218",
             Event::ReservedEvent219 => "reserved_event_219",
             Event::ReservedEvent220 => "reserved_event_220",
@@ -843,21 +847,21 @@ fn event_from_index(idx: usize) -> Event {
         63 => Event::UdpRecvRecvmsgxBatchEq1,
         64 => Event::UdpRecvRecvmsgxBatchGe2,
         65 => Event::UdpRecvRecvmsgxBatchGe8,
-        66 => Event::ReservedEvent66,
-        67 => Event::ReservedEvent67,
-        68 => Event::ReservedEvent68,
-        69 => Event::ReservedEvent69,
-        70 => Event::ReservedEvent70,
-        71 => Event::ReservedEvent71,
-        72 => Event::ReservedEvent72,
-        73 => Event::ReservedEvent73,
-        74 => Event::ReservedEvent74,
-        75 => Event::ReservedEvent75,
-        76 => Event::ReservedEvent76,
-        77 => Event::ReservedEvent77,
-        78 => Event::ReservedEvent78,
-        79 => Event::ReservedEvent79,
-        80 => Event::ReservedEvent80,
+        66 => Event::UdpRecvGroBatch,
+        67 => Event::UdpRecvGroPackets,
+        68 => Event::UdpRecvGroBytes,
+        69 => Event::UdpRecvPlainPackets,
+        70 => Event::TunReadPackets,
+        71 => Event::TunReadBytes,
+        72 => Event::TunWritePackets,
+        73 => Event::TunWriteBytes,
+        74 => Event::TunReadFrames,
+        75 => Event::TunReadFrameBytes,
+        76 => Event::TunWriteFrames,
+        77 => Event::TunWriteFrameBytes,
+        78 => Event::TunOutboundAdmissionDropped,
+        79 => Event::PendingTunSessionOldestDropped,
+        80 => Event::PendingTunSessionStaleDropped,
         81 => Event::ReservedEvent81,
         82 => Event::ReservedEvent82,
         83 => Event::ReservedEvent83,
@@ -984,7 +988,7 @@ fn event_from_index(idx: usize) -> Event {
         204 => Event::DataplaneDispatchExecutorFull,
         205 => Event::DataplaneDispatchOwnerBlockedTotal,
         206 => Event::DataplaneDispatchOwnerBlockedBulkLane,
-        207 => Event::ReservedEvent207,
+        207 => Event::DataplaneDispatchIngressOwnerBlocked,
         208 => Event::DataplaneSealInPlace,
         209 => Event::DataplaneSealAllocated,
         210 => Event::DataplaneTransportSendWorkerBackpressure,
@@ -994,7 +998,7 @@ fn event_from_index(idx: usize) -> Event {
         214 => Event::DataplaneOutboundBatchAdmit,
         215 => Event::DataplaneOutboundBatchPackets,
         216 => Event::DataplaneTransportSendWorkerSendFailed,
-        217 => Event::ReservedEvent217,
+        217 => Event::DataplaneDispatchOutboundOwnerBlocked,
         218 => Event::ReservedEvent218,
         219 => Event::ReservedEvent219,
         220 => Event::ReservedEvent220,
@@ -1196,6 +1200,24 @@ pub fn record_event_count(event: Event, count: u64) {
 }
 
 #[inline]
+pub(crate) fn record_tun_outbound_admission_drop() {
+    record_event(Event::PendingTunPacketDropped);
+    record_event(Event::TunOutboundAdmissionDropped);
+}
+
+#[inline]
+pub(crate) fn record_pending_tun_session_oldest_drop() {
+    record_event(Event::PendingTunPacketDropped);
+    record_event(Event::PendingTunSessionOldestDropped);
+}
+
+#[inline]
+pub(crate) fn record_pending_tun_session_stale_drops(count: u64) {
+    record_event_count(Event::PendingTunPacketDropped, count);
+    record_event_count(Event::PendingTunSessionStaleDropped, count);
+}
+
+#[inline]
 pub(crate) fn record_udp_kernel_drops(drops: u64) {
     record_event_count(Event::UdpKernelDropped, drops);
 }
@@ -1208,6 +1230,44 @@ pub(crate) fn record_udp_socket_kernel_drops(drops: u64) {
 #[inline]
 pub(crate) fn record_udp_namespace_rcvbuf_errors(drops: u64) {
     record_event_count(Event::UdpNamespaceRcvbufErrors, drops);
+}
+
+#[inline]
+pub(crate) fn record_tun_read_packet(bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(Event::TunReadPackets, 1);
+    record_event_count_sample(Event::TunReadBytes, bytes as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_tun_read_frame(bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(Event::TunReadFrames, 1);
+    record_event_count_sample(Event::TunReadFrameBytes, bytes as u64);
+}
+
+#[inline]
+pub(crate) fn record_tun_write_packet(bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(Event::TunWritePackets, 1);
+    record_event_count_sample(Event::TunWriteBytes, bytes as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_tun_write_frame(bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(Event::TunWriteFrames, 1);
+    record_event_count_sample(Event::TunWriteFrameBytes, bytes as u64);
 }
 
 /// Record the prepared dataplane open chunk width before inline AEAD execution.
@@ -1421,6 +1481,25 @@ fn record_udp_send_batch_tail_buckets(
     if eq64 {
         record_event_count_sample(eq64_event, 1);
     }
+}
+
+/// Record Linux UDP_GRO receives split back into FIPS datagrams by userspace.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_recv_gro_split(segments: usize, bytes: usize) {
+    if !enabled() || segments == 0 || bytes == 0 {
+        return;
+    }
+    record_event_count_sample(Event::UdpRecvGroBatch, 1);
+    record_event_count_sample(Event::UdpRecvGroPackets, segments as u64);
+    record_event_count_sample(Event::UdpRecvGroBytes, bytes as u64);
+}
+
+/// Record ordinary Linux UDP receives that do not need userspace GRO splitting.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_recv_plain_packet() {
+    record_event(Event::UdpRecvPlainPackets);
 }
 
 #[inline]

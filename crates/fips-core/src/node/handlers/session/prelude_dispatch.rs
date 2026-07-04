@@ -225,6 +225,13 @@ impl SessionDispatchFinish {
 }
 
 impl SessionReceiveBatchCommit {
+    fn is_empty(&self) -> bool {
+        self.previous_hops.is_empty()
+            && self.direct_sources.is_empty()
+            && self.retry_peers.is_empty()
+            && self.pending_flush_sources.is_empty()
+    }
+
     fn push_unique(list: &mut Vec<NodeAddr>, addr: NodeAddr) {
         if !list.contains(&addr) {
             list.push(addr);
@@ -323,6 +330,17 @@ impl AuthenticatedSessionDispatch {
     fn is_endpoint_data(&self) -> bool {
         self.msg_type() == SessionMessageType::EndpointData.to_byte()
             || self.msg_type() == SessionMessageType::EndpointDataBulk.to_byte()
+    }
+
+    fn is_ipv6_shim_data_packet(&self) -> bool {
+        if self.msg_type() != SessionMessageType::DataPacket.to_byte() {
+            return false;
+        }
+        let rest = self.body();
+        if rest.len() < FSP_PORT_HEADER_SIZE {
+            return false;
+        }
+        u16::from_le_bytes([rest[2], rest[3]]) == FSP_PORT_IPV6_SHIM
     }
 
     fn body(&self) -> &[u8] {
@@ -491,6 +509,54 @@ impl AuthenticatedSessionDispatch {
         node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
         commit.push_dispatch(&self);
         self.into_endpoint_data_deliveries()
+    }
+
+    fn dispatch_ipv6_shim_batched(
+        self,
+        node: &mut Node,
+        packets: &mut Vec<PacketBuffer>,
+        commit: &mut SessionReceiveBatchCommit,
+    ) {
+        debug_assert!(self.is_ipv6_shim_data_packet());
+
+        node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
+        commit.push_dispatch(&self);
+
+        let source_addr = *self.source_addr();
+        let service_payload_len = self.body().len().saturating_sub(FSP_PORT_HEADER_SIZE);
+        let ce_flag = self.ce_flag();
+        let src_ipv6 = crate::FipsAddress::from_node_addr(&source_addr)
+            .to_ipv6()
+            .octets();
+        let dst_ipv6 = crate::FipsAddress::from_node_addr(node.node_addr())
+            .to_ipv6()
+            .octets();
+
+        match self.into_ipv6_shim_packet(src_ipv6, dst_ipv6) {
+            Some(mut packet) => {
+                if ce_flag {
+                    mark_ipv6_ecn_ce(packet.as_mut_slice());
+                    node.stats_mut().congestion.record_ce_received();
+                }
+                if node.external_packet_tx.is_some() {
+                    node.deliver_external_ipv6_packet(&source_addr, packet.into_vec());
+                } else if node.tun_tx.is_some() {
+                    packets.push(packet);
+                } else {
+                    trace!(
+                        src = %node.peer_display_name(&source_addr),
+                        "IPv6 shim packet decompressed (no TUN interface)"
+                    );
+                }
+            }
+            None => {
+                debug!(
+                    src = %node.peer_display_name(&source_addr),
+                    len = service_payload_len,
+                    "IPv6 shim decompression failed"
+                );
+            }
+        }
     }
 }
 

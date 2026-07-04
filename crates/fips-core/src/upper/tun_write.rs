@@ -279,7 +279,7 @@ impl TunRx {
         self.try_recv_packet().map(TunWritePacket::into_vec)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, target_os = "linux"))]
     pub(crate) fn try_recv_packet(&self) -> Result<TunWritePacket, mpsc::TryRecvError> {
         let mut state = self.queue.lock();
         if let Some(packet) = state.priority.pop_front() {

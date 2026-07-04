@@ -81,6 +81,8 @@ impl Node {
         let mut processed = 0usize;
         let mut endpoint_deliveries = Vec::new();
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
+        let mut tun_packets = Vec::new();
+        let mut tun_commit = SessionReceiveBatchCommit::default();
 
         for ingress in ingress_batch {
             let Some(dispatch) = self.dataplane_authenticated_session_dispatch(ingress) else {
@@ -88,10 +90,23 @@ impl Node {
             };
 
             if dispatch.is_endpoint_data() {
+                self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
+                    .await;
                 let deliveries =
                     dispatch.dispatch_endpoint_data_batched(self, &mut endpoint_commit);
                 processed = processed.saturating_add(deliveries.len());
                 endpoint_deliveries.extend(deliveries);
+                continue;
+            }
+
+            if dispatch.is_ipv6_shim_data_packet() {
+                self.flush_dataplane_endpoint_session_batch(
+                    &mut endpoint_deliveries,
+                    &mut endpoint_commit,
+                )
+                .await;
+                dispatch.dispatch_ipv6_shim_batched(self, &mut tun_packets, &mut tun_commit);
+                processed = processed.saturating_add(1);
                 continue;
             }
 
@@ -100,11 +115,15 @@ impl Node {
                 &mut endpoint_commit,
             )
             .await;
+            self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
+                .await;
             dispatch.dispatch(self).await;
             processed = processed.saturating_add(1);
         }
 
         self.flush_dataplane_endpoint_session_batch(&mut endpoint_deliveries, &mut endpoint_commit)
+            .await;
+        self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
             .await;
         processed
     }
@@ -198,6 +217,40 @@ impl Node {
             .and_then(|sender| sender.direct_sink().cloned())
     }
 
+    async fn flush_dataplane_tun_session_batch(
+        &mut self,
+        packets: &mut Vec<crate::transport::PacketBuffer>,
+        commit: &mut SessionReceiveBatchCommit,
+    ) {
+        if packets.is_empty() && commit.is_empty() {
+            return;
+        }
+
+        if let Some(tun_tx) = &self.tun_tx {
+            if !packets.is_empty() {
+                let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::TunWrite);
+                let failures = tun_tx.send_batch_with_lanes(
+                    packets
+                        .drain(..)
+                        .map(|packet| (packet, crate::upper::tun::TunWriteLane::Priority)),
+                );
+                if !failures.is_empty() {
+                    debug!(
+                        dropped = failures.len(),
+                        "Failed to deliver decompressed IPv6 packet batch to TUN"
+                    );
+                }
+            }
+        } else {
+            packets.clear();
+        }
+
+        let pending_flush_destinations = std::mem::take(commit).finish(self);
+        for dest_addr in pending_flush_destinations {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+    }
+
     fn dataplane_authenticated_session_dispatch(
         &mut self,
         ingress: crate::dataplane::DataplaneFspSessionIngress,
@@ -256,12 +309,7 @@ impl Node {
         endpoint_deliveries: &mut Vec<EndpointDataDelivery>,
         endpoint_commit: &mut SessionReceiveBatchCommit,
     ) {
-        if endpoint_deliveries.is_empty()
-            && endpoint_commit.previous_hops.is_empty()
-            && endpoint_commit.direct_sources.is_empty()
-            && endpoint_commit.retry_peers.is_empty()
-            && endpoint_commit.pending_flush_sources.is_empty()
-        {
+        if endpoint_deliveries.is_empty() && endpoint_commit.is_empty() {
             return;
         }
 

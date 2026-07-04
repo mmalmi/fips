@@ -30,6 +30,7 @@ x-fips-common: &fips-common
     # task short-circuits at startup; zero overhead in normal runs.
     - FIPS_PERF=${FIPS_PERF:-0}
     - FIPS_PERF_INTERVAL_SECS=${FIPS_PERF_INTERVAL_SECS:-5}
+    - FIPS_LINUX_TUN_VNET=${FIPS_LINUX_TUN_VNET:-1}
 
 services:
   # ── Mesh topology ──────────────────────────────────────────────

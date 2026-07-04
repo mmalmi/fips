@@ -1024,10 +1024,28 @@ impl ReadyShardQueues {
     }
 }
 
-fn record_owner_blocked(reason: Option<OwnerReserveBlockReason>) {
+fn record_ingress_owner_blocked(reason: Option<OwnerReserveBlockReason>) {
+    record_owner_blocked(
+        crate::perf_profile::Event::DataplaneDispatchIngressOwnerBlocked,
+        reason,
+    );
+}
+
+fn record_outbound_owner_blocked(reason: Option<OwnerReserveBlockReason>) {
+    record_owner_blocked(
+        crate::perf_profile::Event::DataplaneDispatchOutboundOwnerBlocked,
+        reason,
+    );
+}
+
+fn record_owner_blocked(
+    source_event: crate::perf_profile::Event,
+    reason: Option<OwnerReserveBlockReason>,
+) {
     use crate::perf_profile::{record_event, Event};
 
     record_event(Event::DataplaneDispatchOwnerBlocked);
+    record_event(source_event);
     match reason {
         Some(OwnerReserveBlockReason::TotalInFlight) => {
             record_event(Event::DataplaneDispatchOwnerBlockedTotal);

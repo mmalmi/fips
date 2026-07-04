@@ -844,6 +844,7 @@ async fn udp_receive_loop(
                         let addr = cached_transport_addr(&mut addr_cache, remote_addr);
                         let gro_segment_count = udp_gro_segment_count(len, gro_segment_size);
                         if gro_segment_count > 1 {
+                            crate::perf_profile::record_udp_recv_gro_split(gro_segment_count, len);
                             let source = &backing[i][..len];
                             let mut start = 0usize;
                             while start < source.len() {
@@ -871,6 +872,7 @@ async fn udp_receive_loop(
                             continue;
                         }
 
+                        crate::perf_profile::record_udp_recv_plain_packet();
                         let data = if recv_buf_size == packet_buf_size {
                             // Move the filled buffer out of the slot and
                             // refill with a fresh one. `mem::replace`
