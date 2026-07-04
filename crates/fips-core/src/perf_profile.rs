@@ -1371,6 +1371,7 @@ pub(crate) fn record_udp_send_sendmsgx_batch(packets: usize) {
 }
 
 #[inline]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn record_udp_send_batch(batch_event: Event, packet_event: Event, packets: usize) {
     if !enabled() || packets == 0 {
         return;
@@ -1380,6 +1381,7 @@ fn record_udp_send_batch(batch_event: Event, packet_event: Event, packets: usize
 }
 
 #[inline]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn record_udp_send_batch_tail_buckets(
     packets: usize,
     ge32_event: Event,
@@ -1402,6 +1404,7 @@ fn record_udp_send_batch_tail_buckets(
 }
 
 #[inline]
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn udp_send_batch_tail_bucket_flags(packets: usize) -> (bool, bool, bool) {
     (packets >= 32, packets >= 48, packets >= 64)
 }

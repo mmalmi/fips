@@ -55,6 +55,7 @@ pub(crate) use super::tun_write::{TunWriteErrorKind, TunWriteLane, write_channel
 /// address).
 pub type PathMtuLookup = Arc<RwLock<HashMap<FipsAddress, u16>>>;
 
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 const TUN_OUTBOUND_PACKET_TAIL_RESERVE: usize = 128;
 
 /// Compute the effective TCP MSS ceiling for a packet given its peer
