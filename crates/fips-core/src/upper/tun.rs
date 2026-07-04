@@ -256,6 +256,17 @@ impl LinuxTunDevice {
         }
     }
 
+    fn read_vnet_packets_into(
+        &mut self,
+        buf: &mut [u8],
+        packets: &mut Vec<Vec<u8>>,
+    ) -> Result<usize, std::io::Error> {
+        match self {
+            Self::Plain(_) => unreachable!("Linux vnet packet batching requires a vnet TUN"),
+            Self::Vnet(device) => device.read_packets_into(buf, packets),
+        }
+    }
+
     fn read_buffer_len(&self, mtu: u16) -> usize {
         match self {
             Self::Plain(_) => default_tun_read_buffer_len(mtu),
@@ -389,6 +400,15 @@ impl TunDevice {
 
         #[cfg(target_os = "macos")]
         self.device.read(buf)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_vnet_packets_into(
+        &mut self,
+        buf: &mut [u8],
+        packets: &mut Vec<Vec<u8>>,
+    ) -> Result<usize, std::io::Error> {
+        self.device.read_vnet_packets_into(buf, packets)
     }
 
     #[cfg(target_os = "linux")]
@@ -553,6 +573,7 @@ impl TunWriter {
         debug!(name = %self.name, max_mss = self.max_mss, "Linux vnet TUN writer starting");
 
         let mut batch = Vec::with_capacity(LINUX_VNET_TUN_WRITE_BATCH_CAP);
+        let mut write_preparer = linux_vnet::LinuxVnetWritePreparer::new();
 
         while let Some(mut packet) = self.rx.recv() {
             self.clamp_inbound_packet(&mut packet);
@@ -571,7 +592,11 @@ impl TunWriter {
             let write_result = {
                 let packet_slices: Vec<&[u8]> =
                     batch.iter().map(|packet| packet.as_slice()).collect();
-                linux_vnet::write_packet_slices_to_tun(&mut self.file, &packet_slices)
+                linux_vnet::write_packet_slices_to_tun(
+                    &mut self.file,
+                    &packet_slices,
+                    &mut write_preparer,
+                )
             };
 
             if let Err(e) = write_result {
@@ -684,6 +709,20 @@ pub fn run_tun_reader(
     transport_mtu: u16,
     path_mtu_lookup: PathMtuLookup,
 ) {
+    #[cfg(target_os = "linux")]
+    if device.vnet_hdr() {
+        run_linux_vnet_tun_reader(
+            device,
+            mtu,
+            our_addr,
+            tun_tx,
+            outbound_tx,
+            transport_mtu,
+            path_mtu_lookup,
+        );
+        return;
+    }
+
     let read_buffer_len = device.read_buffer_len(mtu);
     let (name, mut buf, max_mss) =
         tun_reader_setup_with_buffer_len(device.name(), mtu, transport_mtu, read_buffer_len);
@@ -709,6 +748,52 @@ pub fn run_tun_reader(
                 // EFAULT ("Bad address") is expected during shutdown when the interface is deleted
                 if e.raw_os_error() != Some(libc::EFAULT) {
                     error!(name = %name, error = %e, "TUN read error");
+                }
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_vnet_tun_reader(
+    mut device: TunDevice,
+    mtu: u16,
+    our_addr: FipsAddress,
+    tun_tx: TunTx,
+    outbound_tx: TunOutboundTx,
+    transport_mtu: u16,
+    path_mtu_lookup: PathMtuLookup,
+) {
+    let read_buffer_len = device.read_buffer_len(mtu);
+    let (name, mut buf, max_mss) =
+        tun_reader_setup_with_buffer_len(device.name(), mtu, transport_mtu, read_buffer_len);
+    let mut packets = Vec::with_capacity(64);
+
+    loop {
+        packets.clear();
+        match device.read_vnet_packets_into(&mut buf, &mut packets) {
+            Ok(n) if n > 0 => {
+                debug_assert_eq!(n, packets.len());
+                for packet in packets.drain(..) {
+                    crate::perf_profile::record_tun_read_packet(packet.len());
+                    if !handle_tun_packet_owned(
+                        packet,
+                        max_mss,
+                        &name,
+                        our_addr,
+                        &tun_tx,
+                        &outbound_tx,
+                        &path_mtu_lookup,
+                    ) {
+                        return;
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                if e.raw_os_error() != Some(libc::EFAULT) {
+                    error!(name = %name, error = %e, "Linux vnet TUN read error");
                 }
                 break;
             }
@@ -887,41 +972,91 @@ fn handle_tun_packet(
     outbound_tx: &TunOutboundTx,
     path_mtu_lookup: &PathMtuLookup,
 ) -> bool {
+    match prepare_tun_packet(packet, max_mss, name, our_addr, path_mtu_lookup) {
+        TunPacketAction::Forward => {
+            match outbound_tx.admit_from_tun_reader(tun_outbound_packet(packet)) {
+                Ok(TunOutboundAdmission::Enqueued | TunOutboundAdmission::BulkDropped) => {}
+                Err(_) => return false, // Channel closed, shutdown
+            }
+        }
+        TunPacketAction::Icmp(response) => {
+            if tun_tx.send(response).is_err() {
+                return false;
+            }
+        }
+        TunPacketAction::Ignore => {}
+    }
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn handle_tun_packet_owned(
+    mut packet: Vec<u8>,
+    max_mss: u16,
+    name: &str,
+    our_addr: FipsAddress,
+    tun_tx: &TunTx,
+    outbound_tx: &TunOutboundTx,
+    path_mtu_lookup: &PathMtuLookup,
+) -> bool {
+    match prepare_tun_packet(&mut packet, max_mss, name, our_addr, path_mtu_lookup) {
+        TunPacketAction::Forward => {
+            match outbound_tx.admit_from_tun_reader(tun_outbound_packet_owned(packet)) {
+                Ok(TunOutboundAdmission::Enqueued | TunOutboundAdmission::BulkDropped) => {}
+                Err(_) => return false,
+            }
+        }
+        TunPacketAction::Icmp(response) => {
+            if tun_tx.send(response).is_err() {
+                return false;
+            }
+        }
+        TunPacketAction::Ignore => {}
+    }
+    true
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+enum TunPacketAction {
+    Forward,
+    Icmp(Vec<u8>),
+    Ignore,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn prepare_tun_packet(
+    packet: &mut [u8],
+    max_mss: u16,
+    name: &str,
+    our_addr: FipsAddress,
+    path_mtu_lookup: &PathMtuLookup,
+) -> TunPacketAction {
     use super::icmp::{DestUnreachableCode, build_dest_unreachable, should_send_icmp_error};
     use super::tcp_mss::clamp_tcp_mss;
 
     log_ipv6_packet(packet);
 
-    // Must be a valid IPv6 packet
     if packet.len() < 40 || packet[0] >> 4 != 6 {
-        return true;
+        return TunPacketAction::Ignore;
     }
 
-    // Check if destination is a FIPS address (fd::/8 prefix)
     if packet[24] == crate::identity::FIPS_ADDRESS_PREFIX {
-        // Per-destination clamp: if discovery has learned a smaller path
-        // MTU for this destination, tighten the ceiling for this flow.
         let effective_max_mss = per_flow_max_mss(path_mtu_lookup, &packet[24..40], max_mss);
         if clamp_tcp_mss(packet, effective_max_mss) {
             trace!(name = %name, max_mss = effective_max_mss, "Clamped TCP MSS in SYN packet");
         }
-        match outbound_tx.admit_from_tun_reader(tun_outbound_packet(packet)) {
-            Ok(TunOutboundAdmission::Enqueued | TunOutboundAdmission::BulkDropped) => {}
-            Err(_) => return false, // Channel closed, shutdown
-        }
-    } else {
-        // Non-FIPS destination: send ICMPv6 Destination Unreachable
-        if should_send_icmp_error(packet)
-            && let Some(response) =
-                build_dest_unreachable(packet, DestUnreachableCode::NoRoute, our_addr.to_ipv6())
-        {
-            trace!(name = %name, len = response.len(), "Sending ICMPv6 Destination Unreachable (non-FIPS destination)");
-            if tun_tx.send(response).is_err() {
-                return false;
-            }
-        }
+        return TunPacketAction::Forward;
     }
-    true
+
+    if should_send_icmp_error(packet)
+        && let Some(response) =
+            build_dest_unreachable(packet, DestUnreachableCode::NoRoute, our_addr.to_ipv6())
+    {
+        trace!(name = %name, len = response.len(), "Sending ICMPv6 Destination Unreachable (non-FIPS destination)");
+        return TunPacketAction::Icmp(response);
+    }
+
+    TunPacketAction::Ignore
 }
 
 #[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
@@ -933,6 +1068,17 @@ fn tun_outbound_packet(packet: &[u8]) -> Vec<u8> {
     );
     outbound.extend_from_slice(packet);
     outbound
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn tun_outbound_packet_owned(mut packet: Vec<u8>) -> Vec<u8> {
+    let needed = packet
+        .len()
+        .saturating_add(TUN_OUTBOUND_PACKET_TAIL_RESERVE);
+    if packet.capacity() < needed {
+        packet.reserve(needed - packet.capacity());
+    }
+    packet
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

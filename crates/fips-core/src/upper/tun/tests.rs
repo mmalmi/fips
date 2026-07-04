@@ -66,6 +66,22 @@ fn tun_outbound_packet_reserves_tail_room_for_dataplane_prepend() {
     );
 }
 
+#[test]
+fn tun_outbound_owned_packet_reserves_tail_room_without_copying_when_possible() {
+    let mut packet = Vec::with_capacity(1280 + TUN_OUTBOUND_PACKET_TAIL_RESERVE);
+    packet.extend_from_slice(&[0x42; 1280]);
+    let ptr = packet.as_ptr();
+
+    let outbound = tun_outbound_packet_owned(packet);
+
+    assert_eq!(outbound, vec![0x42; 1280]);
+    assert_eq!(outbound.as_ptr(), ptr);
+    assert!(
+        outbound.capacity() >= outbound.len() + TUN_OUTBOUND_PACKET_TAIL_RESERVE,
+        "owned TUN outbound packets should keep spare tail room for dataplane prepend"
+    );
+}
+
 // Note: TUN device creation tests require elevated privileges
 // and are better suited for integration tests.
 

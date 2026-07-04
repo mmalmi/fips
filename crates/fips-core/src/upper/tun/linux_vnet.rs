@@ -104,6 +104,41 @@ impl LinuxVnetTun {
             Ok(0)
         }
     }
+
+    pub(super) fn read_packets_into(
+        &mut self,
+        buf: &mut [u8],
+        packets: &mut Vec<Vec<u8>>,
+    ) -> io::Result<usize> {
+        let before_len = packets.len();
+        while let Some(packet) = self.pending.pop_front() {
+            packets.push(packet);
+        }
+        if packets.len() != before_len {
+            return Ok(packets.len() - before_len);
+        }
+
+        let read_len = unsafe {
+            libc::read(
+                self.file.as_raw_fd(),
+                buf.as_mut_ptr().cast::<libc::c_void>(),
+                buf.len(),
+            )
+        };
+        if read_len < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if read_len == 0 {
+            return Ok(0);
+        }
+
+        crate::perf_profile::record_tun_read_frame(read_len as usize);
+        collect_linux_vnet_packets(&mut buf[..read_len as usize], &mut self.pending)?;
+        while let Some(packet) = self.pending.pop_front() {
+            packets.push(packet);
+        }
+        Ok(packets.len() - before_len)
+    }
 }
 
 impl AsRawFd for LinuxVnetTun {
@@ -166,6 +201,12 @@ fn copy_packet_to_read_buffer(packet: Vec<u8>, buf: &mut [u8]) -> io::Result<usi
     Ok(len)
 }
 
+fn owned_tun_packet_with_tail_room(packet: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(packet.len() + super::TUN_OUTBOUND_PACKET_TAIL_RESERVE);
+    out.extend_from_slice(packet);
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LinuxVirtioNetHdr {
     flags: u8,
@@ -213,7 +254,7 @@ fn collect_linux_vnet_packets(frame: &mut [u8], pending: &mut VecDeque<Vec<u8>>)
         if hdr.flags & LINUX_VIRTIO_NET_HDR_F_NEEDS_CSUM != 0 {
             linux_vnet_gso_none_checksum(packet, hdr.csum_start, hdr.csum_offset)?;
         }
-        pending.push_back(packet.to_vec());
+        pending.push_back(owned_tun_packet_with_tail_room(packet));
         return Ok(());
     }
 
@@ -334,7 +375,7 @@ fn linux_vnet_tcpv6_gso_split(
             ));
         }
 
-        let mut out = Vec::with_capacity(total_len);
+        let mut out = Vec::with_capacity(total_len + super::TUN_OUTBOUND_PACKET_TAIL_RESERVE);
         out.extend_from_slice(&packet[..hdr_len]);
         out.extend_from_slice(&packet[next_segment_data_at..next_segment_end]);
         out[4..6].copy_from_slice(&((total_len - ip_header_len) as u16).to_be_bytes());
@@ -476,7 +517,7 @@ struct LinuxVnetTcp6GroCandidate {
     flow: LinuxVnetTcp6GroFlow,
 }
 
-struct LinuxVnetWritePreparer {
+pub(super) struct LinuxVnetWritePreparer {
     frames: Vec<LinuxVnetPreparedWriteFrame>,
     vectored_frames: Vec<LinuxVnetWriteFrame>,
     vectored_frame_count: usize,
@@ -490,7 +531,7 @@ struct LinuxVnetWritePreparer {
 unsafe impl Send for LinuxVnetWritePreparer {}
 
 impl LinuxVnetWritePreparer {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             frames: Vec::new(),
             vectored_frames: Vec::new(),
@@ -585,8 +626,11 @@ impl LinuxVnetWritePreparer {
     }
 }
 
-pub(super) fn write_packet_slices_to_tun(file: &mut File, packets: &[&[u8]]) -> io::Result<()> {
-    let mut preparer = LinuxVnetWritePreparer::new();
+pub(super) fn write_packet_slices_to_tun(
+    file: &mut File,
+    packets: &[&[u8]],
+    preparer: &mut LinuxVnetWritePreparer,
+) -> io::Result<()> {
     preparer.prepare(packets);
 
     let frame_count = preparer.frames.len();
@@ -895,7 +939,12 @@ mod tests {
         let mut pending = VecDeque::new();
         collect_linux_vnet_packets(&mut frame, &mut pending).expect("plain vnet frame");
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending.pop_front().unwrap(), packet);
+        let collected = pending.pop_front().unwrap();
+        assert_eq!(collected, packet);
+        assert!(
+            collected.capacity()
+                >= collected.len() + super::super::TUN_OUTBOUND_PACKET_TAIL_RESERVE
+        );
     }
 
     #[test]
@@ -921,6 +970,8 @@ mod tests {
 
         assert_eq!(first.len(), 40 + 20 + 1200);
         assert_eq!(second.len(), 40 + 20 + 1200);
+        assert!(first.capacity() >= first.len() + super::super::TUN_OUTBOUND_PACKET_TAIL_RESERVE);
+        assert!(second.capacity() >= second.len() + super::super::TUN_OUTBOUND_PACKET_TAIL_RESERVE);
         assert_eq!(u16::from_be_bytes([first[4], first[5]]), 20 + 1200);
         assert_eq!(u16::from_be_bytes([second[4], second[5]]), 20 + 1200);
         assert_eq!(
