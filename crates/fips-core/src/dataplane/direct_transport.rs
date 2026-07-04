@@ -168,16 +168,17 @@ impl DataplaneDirectFspReassembler {
         if !valid_direct_fsp_transport_fragment_header(header) {
             return DataplaneDirectFspReassemblyResult::Dropped;
         }
-        self.prune(packet.timestamp_ms);
-        if self.entries.len() >= DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS {
-            self.remove_oldest();
-        }
-
         let key = DataplaneDirectFspFragmentKey {
             transport_id: packet.transport_id,
             remote_addr: packet.remote_addr.clone(),
             record_id: header.record_id,
         };
+        self.prune(packet.timestamp_ms);
+        if !self.entries.contains_key(&key)
+            && self.entries.len() >= DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS
+        {
+            self.remove_oldest();
+        }
         let fragment_payload_len = packet
             .data
             .len()
