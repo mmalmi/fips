@@ -52,8 +52,11 @@ cargo run -p fips-sim --example wot_admission
 The WoT admission report models the control-plane rating exchange around open
 discovery: historic rating lookups, local machine-published rating facts after
 successful probes or degradation, integer trust scores, newcomer probe slots,
-and final admission ordering. Production `fips-core` tests cover the matching
-signed kind 7368 rating import and open-discovery enqueue path.
+and final admission ordering. Historic lookup is represented as a normal Nostr
+filter over signed rating facts, including kind `7368` and `#i=["fips.peer"]`,
+matching the hashtree stored-index query surface. Production `fips-core` tests
+cover the matching signed kind 7368 rating import and open-discovery enqueue
+path.
 
 The example prints wall-clock progress to stderr every 10 seconds. Use
 `--progress-interval-ms N` to change the interval, or `--no-progress` for

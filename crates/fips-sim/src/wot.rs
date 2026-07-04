@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 const DEFAULT_SCOPE: &str = "fips.peer";
 const LOCAL_RATER: &str = "fips-sim:local";
+const RATING_FACT_KIND: u16 = 7368;
 
 /// Configuration for the deterministic open-discovery WoT admission scenario.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +61,7 @@ pub enum WotRatingEventSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WotRatingFactEvent {
     pub id: String,
+    pub kind: u16,
     pub rater: String,
     pub subject: String,
     pub scope: String,
@@ -82,6 +84,7 @@ impl WotRatingFactEvent {
     ) -> Self {
         Self {
             id: id.into(),
+            kind: RATING_FACT_KIND,
             rater: rater.into(),
             subject: subject.into(),
             scope: scope.into(),
@@ -109,8 +112,40 @@ impl WotRatingFactEvent {
         ]
     }
 
+    pub fn indexed_i_values(&self) -> Vec<String> {
+        self.nostr_fact_tags()
+            .into_iter()
+            .filter_map(|tag| {
+                if tag.first().is_some_and(|key| key == "i") {
+                    tag.get(1).cloned()
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn normalized_score(&self) -> Option<i64> {
         normalize_rating_score(self.rating, self.min_rating, self.max_rating)
+    }
+}
+
+/// Normal Nostr filter shape used for historic rating lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WotNostrFilter {
+    pub kinds: Vec<u16>,
+    #[serde(rename = "#i")]
+    pub i_tags: Vec<String>,
+    pub limit: usize,
+}
+
+impl WotNostrFilter {
+    pub fn rating_scope(scope: &str, limit: usize) -> Self {
+        Self {
+            kinds: vec![RATING_FACT_KIND],
+            i_tags: vec![scope.trim().to_lowercase()],
+            limit,
+        }
     }
 }
 
@@ -151,6 +186,7 @@ pub struct WotPeerAdmissionDecision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WotAdmissionPhaseReport {
     pub label: String,
+    pub history_filter: WotNostrFilter,
     pub selected_peers: Vec<String>,
     pub decisions: Vec<WotPeerAdmissionDecision>,
     pub rating_events_seen: usize,
@@ -207,9 +243,11 @@ impl WotAdmissionSimulation {
     }
 
     fn admission_phase(&mut self, label: impl Into<String>) -> WotAdmissionPhaseReport {
-        let events = self
-            .exchange
-            .lookup_scope(&self.config.rating_scope, self.config.history_lookup_limit);
+        let history_filter = WotNostrFilter::rating_scope(
+            &self.config.rating_scope,
+            self.config.history_lookup_limit,
+        );
+        let events = self.exchange.query_events(&history_filter);
         let trust_scores = latest_trust_scores(&events);
         let decisions = order_admission_decisions(
             &self.peers,
@@ -225,6 +263,7 @@ impl WotAdmissionSimulation {
 
         WotAdmissionPhaseReport {
             label: label.into(),
+            history_filter,
             selected_peers,
             decisions,
             rating_events_seen: events.len(),
@@ -278,12 +317,12 @@ impl WotRatingExchange {
         self.events.push(event);
     }
 
-    fn lookup_scope(&mut self, scope: &str, limit: usize) -> Vec<WotRatingFactEvent> {
+    fn query_events(&mut self, filter: &WotNostrFilter) -> Vec<WotRatingFactEvent> {
         self.stats.history_queries += 1;
         let mut events = self
             .events
             .iter()
-            .filter(|event| event.scope == scope)
+            .filter(|event| matches_nostr_filter(event, filter))
             .cloned()
             .collect::<Vec<_>>();
         events.sort_by(|left, right| {
@@ -292,10 +331,24 @@ impl WotRatingExchange {
                 .cmp(&left.created_at)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        events.truncate(limit);
+        events.truncate(filter.limit);
         self.stats.history_events_returned += events.len();
         events
     }
+}
+
+fn matches_nostr_filter(event: &WotRatingFactEvent, filter: &WotNostrFilter) -> bool {
+    if !filter.kinds.is_empty() && !filter.kinds.contains(&event.kind) {
+        return false;
+    }
+    if filter.i_tags.is_empty() {
+        return true;
+    }
+    let indexed = event.indexed_i_values();
+    filter
+        .i_tags
+        .iter()
+        .any(|wanted| indexed.iter().any(|value| value == wanted))
 }
 
 fn default_peers() -> Vec<WotPeerSpec> {
@@ -548,6 +601,57 @@ mod tests {
                 .iter()
                 .any(|tag| tag.first().is_some_and(|key| key == "context"))
         );
+
+        let filter = WotNostrFilter::rating_scope("fips.peer", 64);
+        assert_eq!(filter.kinds, vec![RATING_FACT_KIND]);
+        assert_eq!(filter.i_tags, vec!["fips.peer"]);
+        assert_eq!(
+            serde_json::to_value(&filter).unwrap(),
+            serde_json::json!({
+                "kinds": [7368],
+                "#i": ["fips.peer"],
+                "limit": 64,
+            })
+        );
+    }
+
+    #[test]
+    fn history_lookup_uses_normal_nostr_filter_kind_and_i_tag() {
+        let mut exchange = WotRatingExchange::default();
+        exchange.seed_historic(WotRatingFactEvent::new(
+            "rating-good",
+            "fips-sim:rater",
+            "fips-sim:good",
+            "fips.peer",
+            90,
+            100,
+            WotRatingEventSource::HistoricIndex,
+        ));
+        exchange.seed_historic(WotRatingFactEvent::new(
+            "rating-other-scope",
+            "fips-sim:rater",
+            "fips-sim:other-scope",
+            "other.scope",
+            90,
+            101,
+            WotRatingEventSource::HistoricIndex,
+        ));
+        let mut wrong_kind = WotRatingFactEvent::new(
+            "rating-wrong-kind",
+            "fips-sim:rater",
+            "fips-sim:wrong-kind",
+            "fips.peer",
+            90,
+            102,
+            WotRatingEventSource::HistoricIndex,
+        );
+        wrong_kind.kind = 1;
+        exchange.seed_historic(wrong_kind);
+
+        let events = exchange.query_events(&WotNostrFilter::rating_scope("fips.peer", 64));
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "rating-good");
     }
 
     fn phase<'a>(report: &'a WotAdmissionSimReport, label: &str) -> &'a WotAdmissionPhaseReport {
