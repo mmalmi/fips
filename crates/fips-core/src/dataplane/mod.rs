@@ -22,13 +22,12 @@
 //! keep reserved progress outside bulk pressure.
 
 #[cfg(test)]
-use crate::node::EndpointDataBulkBodyBuilder;
-#[cfg(test)]
 use crate::node::endpoint_data_batch_channel;
 use crate::node::{
-    EndpointDataBatchRx, EndpointDataBulkBody, EndpointDataDelivery, EndpointDirectSink,
-    EndpointEventSender, FipsEndpointDirectPacketBatch, FipsEndpointDirectPacketRun,
-    FipsEndpointDirectPacketRunMeta, NodeEndpointDataBatch, NodeEndpointEvent,
+    EndpointDataBatchRx, EndpointDataBulkBody, EndpointDataBulkBodyBuilder, EndpointDataDelivery,
+    EndpointDirectSink, EndpointEventSender, FipsEndpointDirectPacketBatch,
+    FipsEndpointDirectPacketRun, FipsEndpointDirectPacketRunMeta, NodeEndpointDataBatch,
+    NodeEndpointEvent,
 };
 use crate::transport::{
     PacketBuffer, PacketFastIngressSink, PacketRx, PacketTx, ReceivedPacket, TransportAddr,

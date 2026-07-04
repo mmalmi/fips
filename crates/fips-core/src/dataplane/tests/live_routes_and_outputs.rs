@@ -111,6 +111,80 @@
     }
 
     #[test]
+    fn tun_endpoint_data_route_coalesces_packets_into_one_bulk_body() {
+        let dest = NodeAddr::from_bytes([0x43; 16]);
+        let owner = OwnerId::fsp_node(dest);
+        let packets = [
+            tun_ipv6_packet(dest, 80),
+            tun_ipv6_packet(dest, 96),
+            tun_ipv6_packet(dest, 112),
+        ];
+        let mut routes = DataplaneLiveRouteTable::default();
+        routes.register_tun_destination(
+            dest,
+            DataplaneTunDestinationRoute::endpoint_data(DataplaneEndpointDataRoute::fsp(
+                owner, 3, 0x05, 0x06,
+            )),
+        );
+
+        let (_endpoint_data_tx, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (tun_outbound_tx, mut tun_outbound_rx) =
+            crate::upper::tun::tun_outbound_channel(8);
+        for packet in &packets {
+            tun_outbound_tx
+                .try_send(packet.clone())
+                .expect("enqueue TUN packet");
+        }
+
+        let mut buffers = DataplaneRouteTableOutboundBuffers::default();
+        let mut outbound = DataplaneRouteTableOutboundSource::new(
+            &mut endpoint_data_rx,
+            0,
+            &mut tun_outbound_rx,
+            8,
+            &mut routes,
+            &mut buffers,
+        );
+        let mut routed = Vec::new();
+        assert_eq!(
+            outbound.drain_tun_batched(8, |source, output| {
+                assert_eq!(source, DataplaneOutboundSource::Tun);
+                routed.push(output);
+            }),
+            packets.len()
+        );
+
+        assert!(buffers.tun_drops.is_empty());
+        assert!(buffers.tun_deferred_packets.is_empty());
+        assert_eq!(routed.len(), 1);
+        let routed_packets = match routed.pop().expect("routed output") {
+            DataplaneRoutedOutbound::Packet(packet) => vec![packet],
+            DataplaneRoutedOutbound::Batch(packets) => packets,
+        };
+        assert_eq!(routed_packets.len(), 1);
+        let packet = &routed_packets[0];
+        assert_eq!(packet.owner, owner);
+        assert_eq!(packet.generation, 3);
+        assert_eq!(packet.class, PacketClass::Bulk);
+        assert_eq!(packet.wire, OutboundWire::Fsp { flags: 0x05 });
+        assert_eq!(
+            packet.payload_transform,
+            OutboundPayloadTransform::FspInnerHeader {
+                msg_type: crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
+                inner_flags: 0x06,
+            }
+        );
+
+        let ranges =
+            crate::node::session_wire::decode_fsp_endpoint_data_bulk_ranges(&packet.payload)
+                .expect("endpoint bulk ranges");
+        assert_eq!(ranges.len(), packets.len());
+        for (range, expected) in ranges.into_iter().zip(packets) {
+            assert_eq!(&packet.payload.as_slice()[range], expected.as_slice());
+        }
+    }
+
+    #[test]
     fn packet_rx_source_classifies_flagged_direct_fsp_with_source_context() {
         let source = NodeAddr::from_bytes([0x44; 16]);
         let transport_id = TransportId::new(44);

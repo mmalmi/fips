@@ -1,5 +1,36 @@
 use super::*;
 
+#[derive(Clone)]
+struct SystemTunEndpointDirectSink {
+    tun_tx: crate::upper::tun::TunTx,
+}
+
+impl crate::node::FipsEndpointDirectSink for SystemTunEndpointDirectSink {
+    fn deliver_endpoint_packet_batch(
+        &self,
+        batch: crate::node::FipsEndpointDirectPacketBatch,
+    ) -> Result<(), crate::node::FipsEndpointDirectDeliveryError> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::TunWrite);
+        let mut packets = Vec::with_capacity(batch.len());
+        for run in batch.into_packet_runs() {
+            packets.extend(
+                run.packet_slices()
+                    .map(|packet| (packet.to_vec(), crate::upper::tun::TunWriteLane::Priority)),
+            );
+        }
+
+        if self.tun_tx.send_batch_with_lanes(packets).is_empty() {
+            Ok(())
+        } else {
+            Err(crate::node::FipsEndpointDirectDeliveryError::Unavailable)
+        }
+    }
+}
+
 impl Node {
     // === State Transitions ===
 
@@ -185,6 +216,8 @@ impl Node {
                     // per-destination path MTU learned via discovery.
                     let (writer, tun_tx) =
                         device.create_writer(max_mss, self.path_mtu_lookup.clone())?;
+                    let tun_channel_size = self.config.node.buffers.tun_channel;
+                    self.attach_system_tun_endpoint_direct_sink(tun_tx.clone(), tun_channel_size);
 
                     // Spawn writer thread
                     let writer_handle = thread::spawn(move || {
@@ -195,7 +228,6 @@ impl Node {
                     let reader_tun_tx = tun_tx.clone();
 
                     // Create outbound channel for TUN reader → Node
-                    let tun_channel_size = self.config.node.buffers.tun_channel;
                     let (outbound_tx, outbound_rx) =
                         crate::upper::tun::tun_outbound_channel(tun_channel_size);
 
@@ -329,6 +361,25 @@ impl Node {
         info!("  transports: {}", self.transports.len());
         info!(" connections: {}", self.peers.connection_len());
         Ok(())
+    }
+
+    fn attach_system_tun_endpoint_direct_sink(
+        &mut self,
+        tun_tx: crate::upper::tun::TunTx,
+        capacity: usize,
+    ) {
+        let already_attached = self
+            .endpoint_events
+            .sender()
+            .is_some_and(|sender| sender.direct_sink().is_some());
+        if already_attached {
+            return;
+        }
+        let direct_sink =
+            crate::node::EndpointDirectSink::new(SystemTunEndpointDirectSink { tun_tx });
+        let (event_tx, _event_rx) =
+            crate::node::EndpointEventSender::channel_with_direct_sink(capacity, Some(direct_sink));
+        self.endpoint_events.attach(event_tx);
     }
 
     /// Bind a UDP socket for the DNS responder.

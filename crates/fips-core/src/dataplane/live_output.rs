@@ -150,8 +150,8 @@ where
         F: FnMut(DataplaneOutboundSource, DataplaneRoutedOutbound),
     {
         let mut drained = 0usize;
-        let mut first_routed = None;
-        let mut routed_batch = Vec::new();
+        let mut routed_packets = TunRoutedPacketCollector::default();
+        let mut routed_drops = Vec::new();
         let activity_tick = ActivityTick::new(crate::time::now_ms());
         self.cache_first_tun_packet();
         if drained < limit {
@@ -162,7 +162,7 @@ where
                     activity_tick,
                     &mut self.buffers.tun_drops,
                     &mut self.buffers.tun_deferred_packets,
-                    |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
+                    |packet| routed_packets.collect(packet, &mut routed_drops),
                 );
                 drained += 1;
             }
@@ -177,13 +177,14 @@ where
                 activity_tick,
                 &mut self.buffers.tun_drops,
                 &mut self.buffers.tun_deferred_packets,
-                |packet| collect_tun_routed_packet(packet, &mut first_routed, &mut routed_batch),
+                |packet| routed_packets.collect(packet, &mut routed_drops),
             );
             drained += 1;
         }
-        flush_tun_routed_packets(first_routed, routed_batch, &mut |routed| {
+        routed_packets.flush(&mut routed_drops, &mut |routed| {
             push(DataplaneOutboundSource::Tun, routed);
         });
+        self.buffers.tun_drops.append(&mut routed_drops);
         drained
     }
 
@@ -205,7 +206,132 @@ where
     }
 }
 
-fn collect_tun_routed_packet(
+#[derive(Default)]
+struct TunRoutedPacketCollector {
+    first_session_packet: Option<OutboundPacket>,
+    session_batch: Vec<OutboundPacket>,
+    endpoint: Option<TunEndpointDataCollector>,
+}
+
+struct TunEndpointDataCollector {
+    route: DataplaneEndpointDataRoute,
+    activity_tick: ActivityTick,
+    builder: EndpointDataBulkBodyBuilder,
+}
+
+impl TunRoutedPacketCollector {
+    fn collect(
+        &mut self,
+        packet: DataplaneTunRoutedPacket,
+        drops: &mut Vec<DataplaneTunOutboundDrop>,
+    ) {
+        match packet {
+            DataplaneTunRoutedPacket::Session(packet) => {
+                self.flush_endpoint(drops);
+                self.collect_session(packet);
+            }
+            DataplaneTunRoutedPacket::EndpointData {
+                route,
+                packet,
+                activity_tick,
+            } => self.collect_endpoint(route, packet, activity_tick, drops),
+        }
+    }
+
+    fn collect_endpoint(
+        &mut self,
+        route: DataplaneEndpointDataRoute,
+        packet: Vec<u8>,
+        activity_tick: ActivityTick,
+        drops: &mut Vec<DataplaneTunOutboundDrop>,
+    ) {
+        let route_changed = self
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.route != route || endpoint.activity_tick != activity_tick);
+        if route_changed {
+            self.flush_endpoint(drops);
+        }
+
+        if self.endpoint.is_none() {
+            self.endpoint = Some(TunEndpointDataCollector {
+                route: route.clone(),
+                activity_tick,
+                builder: EndpointDataBulkBodyBuilder::new(),
+            });
+        }
+
+        let payload_len = packet.len();
+        let should_flush = self
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| !endpoint.builder.can_push_packet(&packet));
+        if should_flush {
+            self.flush_endpoint(drops);
+            self.endpoint = Some(TunEndpointDataCollector {
+                route: route.clone(),
+                activity_tick,
+                builder: EndpointDataBulkBodyBuilder::new(),
+            });
+        }
+
+        let endpoint = self
+            .endpoint
+            .as_mut()
+            .expect("endpoint collector should exist");
+        if !endpoint.builder.push_packet(&packet) {
+            drops.push(DataplaneTunOutboundDrop::with_payload_len(
+                Vec::new(),
+                payload_len,
+                DataplaneTunOutboundDropReason::InvalidPacket,
+            ));
+        }
+    }
+
+    fn collect_session(&mut self, packet: OutboundPacket) {
+        collect_tun_session_packet(
+            packet,
+            &mut self.first_session_packet,
+            &mut self.session_batch,
+        );
+    }
+
+    fn flush_endpoint(&mut self, drops: &mut Vec<DataplaneTunOutboundDrop>) {
+        let Some(endpoint) = self.endpoint.take() else {
+            return;
+        };
+        let Some(body) = endpoint.builder.finish() else {
+            return;
+        };
+        let routed = endpoint
+            .route
+            .route_bulk_bodies_with_activity_tick(vec![body], endpoint.activity_tick);
+        for packet in routed.routed {
+            self.collect_session(packet);
+        }
+        for (payload_len, reason) in routed.dropped {
+            drops.push(DataplaneTunOutboundDrop::with_payload_len(
+                Vec::new(),
+                payload_len,
+                tun_drop_reason_for_endpoint_data_drop(reason),
+            ));
+        }
+    }
+
+    fn flush<F>(&mut self, drops: &mut Vec<DataplaneTunOutboundDrop>, push: &mut F)
+    where
+        F: FnMut(DataplaneRoutedOutbound),
+    {
+        self.flush_endpoint(drops);
+        flush_tun_session_packets(
+            self.first_session_packet.take(),
+            std::mem::take(&mut self.session_batch),
+            push,
+        );
+    }
+}
+
+fn collect_tun_session_packet(
     packet: OutboundPacket,
     first: &mut Option<OutboundPacket>,
     batch: &mut Vec<OutboundPacket>,
@@ -222,7 +348,7 @@ fn collect_tun_routed_packet(
     batch.push(packet);
 }
 
-fn flush_tun_routed_packets<F>(
+fn flush_tun_session_packets<F>(
     first: Option<OutboundPacket>,
     batch: Vec<OutboundPacket>,
     push: &mut F,
@@ -235,6 +361,20 @@ fn flush_tun_routed_packets<F>(
         }
     } else {
         push(DataplaneRoutedOutbound::Batch(batch));
+    }
+}
+
+fn tun_drop_reason_for_endpoint_data_drop(
+    reason: DataplaneEndpointDataDropReason,
+) -> DataplaneTunOutboundDropReason {
+    match reason {
+        DataplaneEndpointDataDropReason::InvalidPayload => {
+            DataplaneTunOutboundDropReason::InvalidPacket
+        }
+        DataplaneEndpointDataDropReason::NoRoute => DataplaneTunOutboundDropReason::NoRoute,
+        DataplaneEndpointDataDropReason::StaleQueuedBatch => {
+            DataplaneTunOutboundDropReason::NoRoute
+        }
     }
 }
 
