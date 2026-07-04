@@ -370,7 +370,7 @@ impl FipsEndpoint {
         let payloads = endpoint_data_payloads_from_vecs(payloads)?;
         if *remote.node_addr() == self.node_addr {
             for payload in payloads {
-                self.send_loopback(payload.into_body().into_vec())?;
+                self.send_loopback(payload)?;
             }
             return Ok(());
         }
@@ -446,14 +446,13 @@ impl FipsEndpoint {
         Ok(remote)
     }
 
-    fn send_loopback(&self, data: Vec<u8>) -> Result<(), FipsEndpointError> {
+    fn send_loopback(&self, payload: EndpointDataPayload) -> Result<(), FipsEndpointError> {
         self.inbound_endpoint_tx
             .send(NodeEndpointEvent {
-                messages: vec![crate::node::EndpointDataDelivery {
-                    source_peer: self.identity,
-                    payload: data.into(),
-                    enqueued_at_ms: crate::time::now_ms(),
-                }],
+                messages: vec![crate::node::EndpointDataDelivery::new(
+                    self.identity,
+                    payload.into_body(),
+                )],
                 queued_at: crate::perf_profile::stamp(),
             })
             .map_err(|_| FipsEndpointError::Closed)
