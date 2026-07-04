@@ -44,7 +44,7 @@ mod tasks;
 mod traversal;
 mod verified_event;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "sim-transport"))]
 mod test_support;
 #[cfg(test)]
 mod tests;

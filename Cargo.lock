@@ -1540,6 +1540,7 @@ version = "0.3.0-dev"
 dependencies = [
  "fips-core",
  "hex",
+ "nostr",
  "rand 0.10.1",
  "serde",
  "serde_json",

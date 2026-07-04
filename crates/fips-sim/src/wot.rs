@@ -1,9 +1,17 @@
+use fips_core::config::NostrDiscoveryConfig;
+use fips_core::discovery::nostr::NostrDiscovery;
+use nostr::nips::nip19::ToBech32;
+use nostr::prelude::{
+    Alphabet, Event, EventBuilder, Filter, Kind, SingleLetterTag, Tag, Timestamp,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const DEFAULT_SCOPE: &str = "fips.peer";
-const LOCAL_RATER: &str = "fips-sim:local";
 const RATING_FACT_KIND: u16 = 7368;
+const TRUSTED_RATING_SIGNER_SEED: u64 = 1;
+const LOCAL_RATER_SEED: u64 = 2;
+const HISTORIC_RATER_SEED: u64 = 3;
 
 /// Configuration for the deterministic open-discovery WoT admission scenario.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +24,8 @@ pub struct WotAdmissionSimConfig {
     pub rating_scope: String,
     /// Maximum historic rating events returned by each simulated index lookup.
     pub history_lookup_limit: usize,
+    /// Event signer identities trusted to publish rating facts.
+    pub trusted_rating_authors: Vec<String>,
     /// Decentralized pubsub fanout used when local machine ratings are published.
     pub rating_pubsub: WotRatingPubsubConfig,
 }
@@ -27,6 +37,7 @@ impl Default for WotAdmissionSimConfig {
             newcomer_probe_slots: 1,
             rating_scope: DEFAULT_SCOPE.to_string(),
             history_lookup_limit: 64,
+            trusted_rating_authors: vec![trusted_rating_signer_npub()],
             rating_pubsub: WotRatingPubsubConfig::default(),
         }
     }
@@ -88,78 +99,88 @@ pub enum WotRatingEventSource {
     HistoricIndex,
     LocalProbe,
     LocalDegradation,
+    UntrustedSpam,
 }
 
-/// Fact-like rating event shared by pubsub and historic lookup.
+/// Real signed Nostr rating event plus simulation-only provenance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WotRatingFactEvent {
-    pub id: String,
-    pub kind: u16,
-    pub rater: String,
-    pub subject: String,
-    pub scope: String,
-    pub rating: i64,
-    pub min_rating: i64,
-    pub max_rating: i64,
-    pub created_at: u64,
     pub source: WotRatingEventSource,
+    pub event: Event,
 }
 
 impl WotRatingFactEvent {
-    pub fn new(
-        id: impl Into<String>,
-        rater: impl Into<String>,
-        subject: impl Into<String>,
-        scope: impl Into<String>,
+    pub fn signed_by(
+        keys: &nostr::Keys,
+        rater: &str,
+        subject: &str,
+        scope: &str,
         rating: i64,
         created_at: u64,
         source: WotRatingEventSource,
     ) -> Self {
-        Self {
-            id: id.into(),
-            kind: RATING_FACT_KIND,
-            rater: rater.into(),
-            subject: subject.into(),
-            scope: scope.into(),
+        signed_rating_fact_event(
+            keys,
+            rater,
+            subject,
+            scope,
             rating,
-            min_rating: 0,
-            max_rating: 100,
             created_at,
             source,
-        }
+            Kind::Custom(RATING_FACT_KIND),
+        )
     }
 
-    /// Nostr fact-event tags used by the real FIPS rating importer.
+    pub fn id(&self) -> String {
+        self.event.id.to_hex()
+    }
+
+    pub fn kind(&self) -> u16 {
+        self.event.kind.as_u16()
+    }
+
+    pub fn signer(&self) -> String {
+        self.event.pubkey.to_bech32().expect("sim signer npub")
+    }
+
+    /// Nostr fact-event tags consumed by the real FIPS rating importer.
     pub fn nostr_fact_tags(&self) -> Vec<Vec<String>> {
-        vec![
-            vec!["i".to_string(), self.scope.to_lowercase()],
-            vec!["type".to_string(), "rating".to_string()],
-            vec!["schema".to_string(), "1".to_string()],
-            vec!["created_at".to_string(), self.created_at.to_string()],
-            vec!["rater".to_string(), self.rater.clone()],
-            vec!["subject".to_string(), self.subject.clone()],
-            vec!["scope".to_string(), self.scope.clone()],
-            vec!["rating".to_string(), self.rating.to_string()],
-            vec!["min_rating".to_string(), self.min_rating.to_string()],
-            vec!["max_rating".to_string(), self.max_rating.to_string()],
-        ]
+        event_tag_rows(&self.event)
     }
 
     pub fn indexed_i_values(&self) -> Vec<String> {
-        self.nostr_fact_tags()
-            .into_iter()
-            .filter_map(|tag| {
-                if tag.first().is_some_and(|key| key == "i") {
-                    tag.get(1).cloned()
-                } else {
-                    None
-                }
-            })
-            .collect()
+        event_tag_values(&self.event, "i")
+    }
+
+    pub fn rater(&self) -> Option<String> {
+        event_tag_value(&self.event, "rater")
+    }
+
+    pub fn subject(&self) -> Option<String> {
+        event_tag_value(&self.event, "subject")
+    }
+
+    pub fn scope(&self) -> Option<String> {
+        event_tag_value(&self.event, "scope")
+    }
+
+    pub fn created_at(&self) -> u64 {
+        event_tag_value(&self.event, "created_at")
+            .and_then(|created_at| created_at.parse::<u64>().ok())
+            .unwrap_or_else(|| self.event.created_at.as_secs())
     }
 
     pub fn normalized_score(&self) -> Option<i64> {
-        normalize_rating_score(self.rating, self.min_rating, self.max_rating)
+        let rating = event_tag_value(&self.event, "rating")?
+            .parse::<i64>()
+            .ok()?;
+        let min_rating = event_tag_value(&self.event, "min_rating")?
+            .parse::<i64>()
+            .ok()?;
+        let max_rating = event_tag_value(&self.event, "max_rating")?
+            .parse::<i64>()
+            .ok()?;
+        normalize_rating_score(rating, min_rating, max_rating)
     }
 }
 
@@ -179,6 +200,17 @@ impl WotNostrFilter {
             i_tags: vec![scope.trim().to_lowercase()],
             limit,
         }
+    }
+
+    pub fn to_nostr_filter(&self) -> Filter {
+        let mut filter = Filter::new().limit(self.limit);
+        for kind in &self.kinds {
+            filter = filter.kind(Kind::Custom(*kind));
+        }
+        for i_tag in &self.i_tags {
+            filter = filter.custom_tag(SingleLetterTag::lowercase(Alphabet::I), i_tag.clone());
+        }
+        filter
     }
 }
 
@@ -239,13 +271,16 @@ pub struct WotAdmissionSimReport {
     pub config: WotAdmissionSimConfig,
     pub peers: Vec<WotPeerSpec>,
     pub phases: Vec<WotAdmissionPhaseReport>,
+    pub trusted_rating_author_count: usize,
     pub rating_events: Vec<WotRatingFactEvent>,
     pub exchange: WotRatingExchangeStats,
 }
 
 /// Run the default deterministic WoT admission scenario.
-pub fn run_default_wot_admission_sim() -> WotAdmissionSimReport {
-    WotAdmissionSimulation::new(WotAdmissionSimConfig::default()).run()
+pub async fn run_default_wot_admission_sim() -> WotAdmissionSimReport {
+    WotAdmissionSimulation::new(WotAdmissionSimConfig::default())
+        .run()
+        .await
 }
 
 /// Deterministic control-plane simulation for open-discovery trust admission.
@@ -258,8 +293,7 @@ pub struct WotAdmissionSimulation {
 impl WotAdmissionSimulation {
     pub fn new(config: WotAdmissionSimConfig) -> Self {
         let peers = default_peers();
-        let mut exchange = WotRatingExchange::default();
-        seed_historic_ratings(&config, &mut exchange);
+        let exchange = WotRatingExchange::new(&config);
         Self {
             config,
             peers,
@@ -267,29 +301,35 @@ impl WotAdmissionSimulation {
         }
     }
 
-    pub fn run(mut self) -> WotAdmissionSimReport {
-        let cold_start = self.admission_phase("cold_start");
-        self.publish_local_probe_rating("fips-sim:newcomer", 85, 200);
-        let after_newcomer_probe = self.admission_phase("after_newcomer_probe");
-        self.publish_degradation_rating("fips-sim:degrading", 0, 300);
-        let after_degradation = self.admission_phase("after_degradation");
+    pub async fn run(mut self) -> WotAdmissionSimReport {
+        seed_historic_ratings(&self.config, &mut self.exchange).await;
+
+        let cold_start = self.admission_phase("cold_start").await;
+        let newcomer = self.peer_id(WotPeerProfile::Newcomer);
+        self.publish_local_probe_rating(&newcomer, 85, 200).await;
+        let after_newcomer_probe = self.admission_phase("after_newcomer_probe").await;
+        let degrading = self.peer_id(WotPeerProfile::Degrading);
+        self.publish_degradation_rating(&degrading, 0, 300).await;
+        let after_degradation = self.admission_phase("after_degradation").await;
 
         WotAdmissionSimReport {
             config: self.config,
             peers: self.peers,
             phases: vec![cold_start, after_newcomer_probe, after_degradation],
+            trusted_rating_author_count: self.exchange.trusted_rating_author_count(),
             rating_events: self.exchange.events,
             exchange: self.exchange.stats,
         }
     }
 
-    fn admission_phase(&mut self, label: impl Into<String>) -> WotAdmissionPhaseReport {
+    async fn admission_phase(&mut self, label: impl Into<String>) -> WotAdmissionPhaseReport {
         let history_filter = WotNostrFilter::rating_scope(
             &self.config.rating_scope,
             self.config.history_lookup_limit,
         );
         let events = self.exchange.query_events(&history_filter);
-        let trust_scores = latest_trust_scores(&events);
+        self.exchange.import_history_results(&events).await;
+        let trust_scores = self.exchange.trust_scores_for_peers(&self.peers).await;
         let decisions = order_admission_decisions(
             &self.peers,
             &trust_scores,
@@ -311,59 +351,131 @@ impl WotAdmissionSimulation {
         }
     }
 
-    fn publish_local_probe_rating(&mut self, subject: &str, rating: i64, created_at: u64) {
-        self.exchange.publish_local(
-            &self.config.rating_pubsub,
-            WotRatingFactEvent::new(
-                "fips-sim-rating-newcomer-probe",
-                LOCAL_RATER,
-                subject,
-                self.config.rating_scope.clone(),
-                rating,
-                created_at,
-                WotRatingEventSource::LocalProbe,
-            ),
-        );
+    async fn publish_local_probe_rating(&mut self, subject: &str, rating: i64, created_at: u64) {
+        self.exchange
+            .publish_local(
+                &self.config.rating_pubsub,
+                WotRatingFactEvent::signed_by(
+                    &trusted_rating_signer_keys(),
+                    &local_rater_npub(),
+                    subject,
+                    &self.config.rating_scope,
+                    rating,
+                    created_at,
+                    WotRatingEventSource::LocalProbe,
+                ),
+            )
+            .await;
     }
 
-    fn publish_degradation_rating(&mut self, subject: &str, rating: i64, created_at: u64) {
-        self.exchange.publish_local(
-            &self.config.rating_pubsub,
-            WotRatingFactEvent::new(
-                "fips-sim-rating-degradation",
-                LOCAL_RATER,
-                subject,
-                self.config.rating_scope.clone(),
-                rating,
-                created_at,
-                WotRatingEventSource::LocalDegradation,
-            ),
-        );
+    async fn publish_degradation_rating(&mut self, subject: &str, rating: i64, created_at: u64) {
+        self.exchange
+            .publish_local(
+                &self.config.rating_pubsub,
+                WotRatingFactEvent::signed_by(
+                    &trusted_rating_signer_keys(),
+                    &local_rater_npub(),
+                    subject,
+                    &self.config.rating_scope,
+                    rating,
+                    created_at,
+                    WotRatingEventSource::LocalDegradation,
+                ),
+            )
+            .await;
+    }
+
+    fn peer_id(&self, profile: WotPeerProfile) -> String {
+        self.peers
+            .iter()
+            .find(|peer| peer.profile == profile)
+            .map(|peer| peer.id.clone())
+            .expect("default peer exists")
     }
 }
 
-#[derive(Debug, Clone, Default)]
 struct WotRatingExchange {
     events: Vec<WotRatingFactEvent>,
     stats: WotRatingExchangeStats,
+    discovery: NostrDiscovery,
+}
+
+impl Default for WotRatingExchange {
+    fn default() -> Self {
+        Self::new(&WotAdmissionSimConfig::default())
+    }
 }
 
 impl WotRatingExchange {
-    fn seed_historic(&mut self, event: WotRatingFactEvent) {
-        self.stats.historic_seed_events += 1;
-        self.index(event);
+    fn new(config: &WotAdmissionSimConfig) -> Self {
+        let discovery = NostrDiscovery::new_for_sim_with_config(NostrDiscoveryConfig {
+            open_discovery_trust_ratings_enabled: true,
+            open_discovery_trusted_rating_authors: config.trusted_rating_authors.clone(),
+            open_discovery_rating_scope: config.rating_scope.clone(),
+            ..Default::default()
+        });
+        Self {
+            events: Vec::new(),
+            stats: WotRatingExchangeStats::default(),
+            discovery,
+        }
     }
 
-    fn publish_local(&mut self, pubsub: &WotRatingPubsubConfig, event: WotRatingFactEvent) {
+    fn trusted_rating_author_count(&self) -> usize {
+        self.discovery.trusted_rating_author_count()
+    }
+
+    async fn seed_historic(&mut self, event: WotRatingFactEvent) {
+        self.stats.historic_seed_events += 1;
+        self.ingest(event).await;
+    }
+
+    async fn publish_local(&mut self, pubsub: &WotRatingPubsubConfig, event: WotRatingFactEvent) {
         self.stats.local_published_events += 1;
         self.publish_over_pubsub(pubsub);
-        self.index(event);
-        self.drop_untrusted_spam(pubsub.spam_events_per_publish);
+        let scope = event.scope().unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        self.ingest(event).await;
+        self.drop_untrusted_spam(&scope, pubsub.spam_events_per_publish)
+            .await;
     }
 
-    fn index(&mut self, event: WotRatingFactEvent) {
-        self.stats.indexed_events += 1;
-        self.events.push(event);
+    async fn ingest(&mut self, event: WotRatingFactEvent) -> bool {
+        if self
+            .discovery
+            .process_rating_fact_event_for_sim(&event.event)
+            .await
+        {
+            self.stats.indexed_events += 1;
+            self.events.push(event);
+            return true;
+        }
+
+        self.stats.pubsub_spam_events_seen = self.stats.pubsub_spam_events_seen.saturating_add(1);
+        self.stats.pubsub_spam_events_dropped =
+            self.stats.pubsub_spam_events_dropped.saturating_add(1);
+        false
+    }
+
+    async fn import_history_results(&self, events: &[WotRatingFactEvent]) {
+        for event in events {
+            let _ = self
+                .discovery
+                .process_rating_fact_event_for_sim(&event.event)
+                .await;
+        }
+    }
+
+    async fn trust_scores_for_peers(&self, peers: &[WotPeerSpec]) -> BTreeMap<String, i64> {
+        let npubs = peers.iter().map(|peer| peer.id.clone()).collect::<Vec<_>>();
+        self.trust_scores_for_npubs(&npubs).await
+    }
+
+    async fn trust_scores_for_npubs(&self, npubs: &[String]) -> BTreeMap<String, i64> {
+        self.discovery
+            .trust_scores_for_npubs_for_sim(npubs)
+            .await
+            .into_iter()
+            .collect()
     }
 
     fn publish_over_pubsub(&mut self, pubsub: &WotRatingPubsubConfig) {
@@ -395,11 +507,22 @@ impl WotRatingExchange {
             .saturating_add(inventory_targets.saturating_mul(pubsub.payload_bytes));
     }
 
-    fn drop_untrusted_spam(&mut self, count: usize) {
-        self.stats.pubsub_spam_events_seen =
-            self.stats.pubsub_spam_events_seen.saturating_add(count);
-        self.stats.pubsub_spam_events_dropped =
-            self.stats.pubsub_spam_events_dropped.saturating_add(count);
+    async fn drop_untrusted_spam(&mut self, scope: &str, count: usize) {
+        for index in 0..count {
+            let seed = 1_000 + u64::try_from(index).unwrap_or(u64::MAX);
+            let spam_keys = sim_keys(seed);
+            let spam_subject = sim_npub(seed + 10_000);
+            let spam_event = WotRatingFactEvent::signed_by(
+                &spam_keys,
+                &spam_keys.public_key().to_bech32().expect("spam rater npub"),
+                &spam_subject,
+                scope,
+                100,
+                1_000 + u64::try_from(index).unwrap_or(u64::MAX),
+                WotRatingEventSource::UntrustedSpam,
+            );
+            self.ingest(spam_event).await;
+        }
     }
 
     fn query_events(&mut self, filter: &WotNostrFilter) -> Vec<WotRatingFactEvent> {
@@ -412,9 +535,9 @@ impl WotRatingExchange {
             .collect::<Vec<_>>();
         events.sort_by(|left, right| {
             right
-                .created_at
-                .cmp(&left.created_at)
-                .then_with(|| left.id.cmp(&right.id))
+                .created_at()
+                .cmp(&left.created_at())
+                .then_with(|| left.id().cmp(&right.id()))
         });
         events.truncate(filter.limit);
         self.stats.history_events_returned += events.len();
@@ -423,7 +546,7 @@ impl WotRatingExchange {
 }
 
 fn matches_nostr_filter(event: &WotRatingFactEvent, filter: &WotNostrFilter) -> bool {
-    if !filter.kinds.is_empty() && !filter.kinds.contains(&event.kind) {
+    if !filter.kinds.is_empty() && !filter.kinds.contains(&event.kind()) {
         return false;
     }
     if filter.i_tags.is_empty() {
@@ -438,63 +561,59 @@ fn matches_nostr_filter(event: &WotRatingFactEvent, filter: &WotNostrFilter) -> 
 
 fn default_peers() -> Vec<WotPeerSpec> {
     vec![
-        peer("fips-sim:good", WotPeerProfile::Reliable, 120),
-        peer("fips-sim:backup", WotPeerProfile::BackupReliable, 110),
-        peer("fips-sim:newcomer", WotPeerProfile::Newcomer, 140),
-        peer("fips-sim:degrading", WotPeerProfile::Degrading, 130),
-        peer("fips-sim:bad", WotPeerProfile::Bad, 150),
+        peer(
+            peer_npub(WotPeerProfile::Reliable),
+            WotPeerProfile::Reliable,
+            120,
+        ),
+        peer(
+            peer_npub(WotPeerProfile::BackupReliable),
+            WotPeerProfile::BackupReliable,
+            110,
+        ),
+        peer(
+            peer_npub(WotPeerProfile::Newcomer),
+            WotPeerProfile::Newcomer,
+            140,
+        ),
+        peer(
+            peer_npub(WotPeerProfile::Degrading),
+            WotPeerProfile::Degrading,
+            130,
+        ),
+        peer(peer_npub(WotPeerProfile::Bad), WotPeerProfile::Bad, 150),
     ]
 }
 
-fn peer(id: &str, profile: WotPeerProfile, advertised_at: u64) -> WotPeerSpec {
+fn peer(id: String, profile: WotPeerProfile, advertised_at: u64) -> WotPeerSpec {
     WotPeerSpec {
-        id: id.to_string(),
+        id,
         profile,
         advertised_at,
     }
 }
 
-fn seed_historic_ratings(config: &WotAdmissionSimConfig, exchange: &mut WotRatingExchange) {
-    for (id, subject, rating, created_at) in [
-        ("fips-sim-rating-good", "fips-sim:good", 90, 100),
-        ("fips-sim-rating-backup", "fips-sim:backup", 70, 100),
-        (
-            "fips-sim-rating-degrading-good",
-            "fips-sim:degrading",
-            95,
-            100,
-        ),
-        ("fips-sim-rating-bad", "fips-sim:bad", 0, 100),
+async fn seed_historic_ratings(config: &WotAdmissionSimConfig, exchange: &mut WotRatingExchange) {
+    let signer = trusted_rating_signer_keys();
+    let rater = historic_rater_npub();
+    for (profile, rating, created_at) in [
+        (WotPeerProfile::Reliable, 90, 100),
+        (WotPeerProfile::BackupReliable, 70, 100),
+        (WotPeerProfile::Degrading, 95, 100),
+        (WotPeerProfile::Bad, 0, 100),
     ] {
-        exchange.seed_historic(WotRatingFactEvent::new(
-            id,
-            "fips-sim:historic-crawler",
-            subject,
-            config.rating_scope.clone(),
-            rating,
-            created_at,
-            WotRatingEventSource::HistoricIndex,
-        ));
+        exchange
+            .seed_historic(WotRatingFactEvent::signed_by(
+                &signer,
+                &rater,
+                &peer_npub(profile),
+                &config.rating_scope,
+                rating,
+                created_at,
+                WotRatingEventSource::HistoricIndex,
+            ))
+            .await;
     }
-}
-
-fn latest_trust_scores(events: &[WotRatingFactEvent]) -> BTreeMap<String, i64> {
-    let mut latest = BTreeMap::<String, (u64, i64)>::new();
-    for event in events {
-        let Some(score) = event.normalized_score() else {
-            continue;
-        };
-        let entry = latest
-            .entry(event.subject.clone())
-            .or_insert((event.created_at, score));
-        if event.created_at >= entry.0 {
-            *entry = (event.created_at, score);
-        }
-    }
-    latest
-        .into_iter()
-        .map(|(subject, (_, score))| (subject, score))
-        .collect()
 }
 
 fn order_admission_decisions(
@@ -595,28 +714,153 @@ fn normalize_rating_score(rating: i64, min_rating: i64, max_rating: i64) -> Opti
     Some(((centered.saturating_mul(100)) / (max - min)) as i64)
 }
 
+fn signed_rating_fact_event(
+    keys: &nostr::Keys,
+    rater_npub: &str,
+    subject_npub: &str,
+    scope: &str,
+    rating: i64,
+    created_at: u64,
+    source: WotRatingEventSource,
+    kind: Kind,
+) -> WotRatingFactEvent {
+    let created_at_string = created_at.to_string();
+    let rating_string = rating.to_string();
+    let rater_index = rater_npub.to_lowercase();
+    let subject_index = subject_npub.to_lowercase();
+    let scope_index = scope.to_lowercase();
+    let fact_id = format!("rating:{scope_index}:{subject_index}:{created_at}");
+    let tags = vec![
+        rating_fact_tag(["i", &fact_id, "subject"]),
+        rating_fact_tag(["i", &rater_index]),
+        rating_fact_tag(["i", &subject_index]),
+        rating_fact_tag(["i", &scope_index]),
+        rating_fact_tag(["type", "rating"]),
+        rating_fact_tag(["schema", "1"]),
+        rating_fact_tag(["created_at", &created_at_string]),
+        rating_fact_tag(["rater", rater_npub]),
+        rating_fact_tag(["subject", subject_npub]),
+        rating_fact_tag(["scope", scope]),
+        rating_fact_tag(["rating", &rating_string]),
+        rating_fact_tag(["min_rating", "0"]),
+        rating_fact_tag(["max_rating", "100"]),
+    ];
+    let event = EventBuilder::new(kind, "")
+        .tags(tags)
+        .custom_created_at(Timestamp::from(created_at))
+        .sign_with_keys(keys)
+        .expect("sim rating event signs");
+    WotRatingFactEvent { source, event }
+}
+
+fn rating_fact_tag<const N: usize>(parts: [&str; N]) -> Tag {
+    Tag::parse(parts).expect("valid rating fact tag")
+}
+
+fn event_tag_rows(event: &Event) -> Vec<Vec<String>> {
+    let Ok(value) = serde_json::to_value(event) else {
+        return Vec::new();
+    };
+    value
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tag| {
+            let parts = tag.as_array()?;
+            Some(
+                parts
+                    .iter()
+                    .filter_map(|part| part.as_str().map(ToOwned::to_owned))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn event_tag_values(event: &Event, key: &str) -> Vec<String> {
+    event_tag_rows(event)
+        .into_iter()
+        .filter_map(|tag| {
+            if tag.first().is_some_and(|tag_key| tag_key == key) {
+                tag.get(1).cloned()
+            } else {
+                None
+            }
+        })
+        .filter(|value| !value.trim().is_empty())
+        .collect()
+}
+
+fn event_tag_value(event: &Event, key: &str) -> Option<String> {
+    event_tag_values(event, key).into_iter().next()
+}
+
+fn trusted_rating_signer_keys() -> nostr::Keys {
+    sim_keys(TRUSTED_RATING_SIGNER_SEED)
+}
+
+fn trusted_rating_signer_npub() -> String {
+    sim_npub(TRUSTED_RATING_SIGNER_SEED)
+}
+
+fn local_rater_npub() -> String {
+    sim_npub(LOCAL_RATER_SEED)
+}
+
+fn historic_rater_npub() -> String {
+    sim_npub(HISTORIC_RATER_SEED)
+}
+
+fn peer_npub(profile: WotPeerProfile) -> String {
+    sim_npub(match profile {
+        WotPeerProfile::Reliable => 11,
+        WotPeerProfile::BackupReliable => 12,
+        WotPeerProfile::Newcomer => 13,
+        WotPeerProfile::Degrading => 14,
+        WotPeerProfile::Bad => 15,
+    })
+}
+
+fn sim_npub(seed: u64) -> String {
+    sim_keys(seed).public_key().to_bech32().expect("sim npub")
+}
+
+fn sim_keys(seed: u64) -> nostr::Keys {
+    let mut bytes = [0u8; 32];
+    bytes[24..].copy_from_slice(&seed.max(1).to_be_bytes());
+    nostr::Keys::parse(&hex::encode(bytes)).expect("valid deterministic sim key")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn wot_admission_prioritizes_good_probes_newcomer_and_penalizes_degraded() {
-        let report = run_default_wot_admission_sim();
-        let cold_start = phase(&report, "cold_start");
+    #[tokio::test]
+    async fn wot_admission_prioritizes_good_probes_newcomer_and_penalizes_degraded() {
+        let report = run_default_wot_admission_sim().await;
+        assert_eq!(report.trusted_rating_author_count, 1);
+
         assert_eq!(
-            cold_start.selected_peers,
-            vec!["fips-sim:degrading", "fips-sim:good", "fips-sim:newcomer"]
+            selected_profiles(&report, "cold_start"),
+            vec![
+                WotPeerProfile::Degrading,
+                WotPeerProfile::Reliable,
+                WotPeerProfile::Newcomer,
+            ]
         );
+        let newcomer = peer_id(&report, WotPeerProfile::Newcomer);
+        let bad = peer_id(&report, WotPeerProfile::Bad);
         assert_decision(
-            cold_start,
-            "fips-sim:newcomer",
+            phase(&report, "cold_start"),
+            &newcomer,
             true,
             None,
             WotAdmissionReason::NewcomerProbe,
         );
         assert_decision(
-            cold_start,
-            "fips-sim:bad",
+            phase(&report, "cold_start"),
+            &bad,
             false,
             Some(-100),
             WotAdmissionReason::DeferredNegative,
@@ -625,34 +869,39 @@ mod tests {
         let after_probe = phase(&report, "after_newcomer_probe");
         assert_decision(
             after_probe,
-            "fips-sim:newcomer",
+            &newcomer,
             true,
             Some(70),
             WotAdmissionReason::TrustedRating,
         );
         assert_decision(
             after_probe,
-            "fips-sim:bad",
+            &bad,
             false,
             Some(-100),
             WotAdmissionReason::DeferredNegative,
         );
 
-        let after_degradation = phase(&report, "after_degradation");
         assert_eq!(
-            after_degradation.selected_peers,
-            vec!["fips-sim:good", "fips-sim:newcomer", "fips-sim:backup"]
+            selected_profiles(&report, "after_degradation"),
+            vec![
+                WotPeerProfile::Reliable,
+                WotPeerProfile::Newcomer,
+                WotPeerProfile::BackupReliable,
+            ]
         );
+        let degrading = peer_id(&report, WotPeerProfile::Degrading);
+        let backup = peer_id(&report, WotPeerProfile::BackupReliable);
         assert_decision(
-            after_degradation,
-            "fips-sim:degrading",
+            phase(&report, "after_degradation"),
+            &degrading,
             false,
             Some(-100),
             WotAdmissionReason::DeferredNegative,
         );
         assert_decision(
-            after_degradation,
-            "fips-sim:backup",
+            phase(&report, "after_degradation"),
+            &backup,
             true,
             Some(40),
             WotAdmissionReason::TrustedRating,
@@ -663,11 +912,23 @@ mod tests {
         assert_eq!(report.exchange.indexed_events, 6);
         assert_eq!(report.exchange.history_queries, 3);
         assert_eq!(report.rating_events.len(), 6);
+        assert!(
+            report
+                .rating_events
+                .iter()
+                .all(|event| event.event.verify().is_ok())
+        );
+        assert!(
+            report
+                .rating_events
+                .iter()
+                .all(|event| event.signer() == trusted_rating_signer_npub())
+        );
     }
 
-    #[test]
-    fn local_rating_publish_uses_inv_want_pubsub_before_history_lookup() {
-        let report = run_default_wot_admission_sim();
+    #[tokio::test]
+    async fn local_rating_publish_uses_inv_want_pubsub_before_history_lookup() {
+        let report = run_default_wot_admission_sim().await;
         let subscriber_count = report
             .config
             .rating_pubsub
@@ -701,9 +962,9 @@ mod tests {
         assert_eq!(phase(&report, "after_degradation").rating_events_seen, 6);
     }
 
-    #[test]
-    fn untrusted_rating_spam_is_not_indexed_into_history() {
-        let report = run_default_wot_admission_sim();
+    #[tokio::test]
+    async fn untrusted_rating_spam_is_not_indexed_into_history() {
+        let report = run_default_wot_admission_sim().await;
         let spam_per_publish = report.config.rating_pubsub.spam_events_per_publish;
 
         assert_eq!(
@@ -723,14 +984,68 @@ mod tests {
             phase(&report, "after_degradation").rating_events_seen,
             report.exchange.indexed_events
         );
+        assert!(
+            report
+                .rating_events
+                .iter()
+                .all(|event| event.source != WotRatingEventSource::UntrustedSpam)
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_rating_signer_can_differ_from_rater_fact() {
+        let mut exchange = WotRatingExchange::default();
+        let signer = trusted_rating_signer_keys();
+        let external_rater = sim_npub(30);
+        let subject = sim_npub(31);
+        let spam_subject = sim_npub(32);
+        let trusted = WotRatingFactEvent::signed_by(
+            &signer,
+            &external_rater,
+            &subject,
+            "fips.peer",
+            90,
+            10,
+            WotRatingEventSource::HistoricIndex,
+        );
+        let spam = WotRatingFactEvent::signed_by(
+            &sim_keys(90),
+            &trusted_rating_signer_npub(),
+            &spam_subject,
+            "fips.peer",
+            100,
+            11,
+            WotRatingEventSource::HistoricIndex,
+        );
+
+        exchange.seed_historic(spam).await;
+        exchange.seed_historic(trusted).await;
+
+        let events = exchange.query_events(&WotNostrFilter::rating_scope("fips.peer", 64));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].signer(), trusted_rating_signer_npub());
+        assert_eq!(events[0].rater().as_deref(), Some(external_rater.as_str()));
+        assert_eq!(events[0].subject().as_deref(), Some(subject.as_str()));
+        assert_eq!(events[0].normalized_score(), Some(80));
+        assert_eq!(
+            exchange
+                .trust_scores_for_npubs(std::slice::from_ref(&subject))
+                .await
+                .get(&subject),
+            Some(&80)
+        );
+        assert_eq!(exchange.stats.pubsub_spam_events_seen, 1);
+        assert_eq!(exchange.stats.pubsub_spam_events_dropped, 1);
+        assert_eq!(exchange.stats.indexed_events, 1);
     }
 
     #[test]
     fn rating_fact_tags_use_scope_for_pubsub_and_history_lookup() {
-        let event = WotRatingFactEvent::new(
-            "rating-1",
-            "fips-sim:rater",
-            "fips-sim:subject",
+        let subject = sim_npub(40);
+        let event = WotRatingFactEvent::signed_by(
+            &trusted_rating_signer_keys(),
+            &local_rater_npub(),
+            &subject,
             "fips.peer",
             80,
             42,
@@ -738,6 +1053,9 @@ mod tests {
         );
         let tags = event.nostr_fact_tags();
 
+        assert!(event.event.verify().is_ok());
+        assert_eq!(event.kind(), RATING_FACT_KIND);
+        assert_eq!(event.signer(), trusted_rating_signer_npub());
         assert!(tags.contains(&tag("i", "fips.peer")));
         assert!(tags.contains(&tag("scope", "fips.peer")));
         assert!(tags.contains(&tag("type", "rating")));
@@ -758,45 +1076,52 @@ mod tests {
                 "limit": 64,
             })
         );
+        let nostr_filter = serde_json::to_value(filter.to_nostr_filter()).unwrap();
+        assert_eq!(nostr_filter["kinds"], serde_json::json!([7368]));
+        assert_eq!(nostr_filter["#i"], serde_json::json!(["fips.peer"]));
+        assert_eq!(nostr_filter["limit"], 64);
     }
 
     #[test]
     fn history_lookup_uses_normal_nostr_filter_kind_and_i_tag() {
+        let signer = trusted_rating_signer_keys();
         let mut exchange = WotRatingExchange::default();
-        exchange.seed_historic(WotRatingFactEvent::new(
-            "rating-good",
-            "fips-sim:rater",
-            "fips-sim:good",
+        let good_subject = sim_npub(50);
+        let other_scope_subject = sim_npub(51);
+        let wrong_kind_subject = sim_npub(52);
+        exchange.events.push(WotRatingFactEvent::signed_by(
+            &signer,
+            &local_rater_npub(),
+            &good_subject,
             "fips.peer",
             90,
             100,
             WotRatingEventSource::HistoricIndex,
         ));
-        exchange.seed_historic(WotRatingFactEvent::new(
-            "rating-other-scope",
-            "fips-sim:rater",
-            "fips-sim:other-scope",
+        exchange.events.push(WotRatingFactEvent::signed_by(
+            &signer,
+            &local_rater_npub(),
+            &other_scope_subject,
             "other.scope",
             90,
             101,
             WotRatingEventSource::HistoricIndex,
         ));
-        let mut wrong_kind = WotRatingFactEvent::new(
-            "rating-wrong-kind",
-            "fips-sim:rater",
-            "fips-sim:wrong-kind",
+        exchange.events.push(signed_rating_fact_event(
+            &signer,
+            &local_rater_npub(),
+            &wrong_kind_subject,
             "fips.peer",
             90,
             102,
             WotRatingEventSource::HistoricIndex,
-        );
-        wrong_kind.kind = 1;
-        exchange.seed_historic(wrong_kind);
+            Kind::Custom(1),
+        ));
 
         let events = exchange.query_events(&WotNostrFilter::rating_scope("fips.peer", 64));
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].id, "rating-good");
+        assert_eq!(events[0].subject().as_deref(), Some(good_subject.as_str()));
     }
 
     fn phase<'a>(report: &'a WotAdmissionSimReport, label: &str) -> &'a WotAdmissionPhaseReport {
@@ -805,6 +1130,32 @@ mod tests {
             .iter()
             .find(|phase| phase.label == label)
             .expect("phase exists")
+    }
+
+    fn selected_profiles(report: &WotAdmissionSimReport, label: &str) -> Vec<WotPeerProfile> {
+        phase(report, label)
+            .selected_peers
+            .iter()
+            .map(|peer_id| profile(report, peer_id))
+            .collect()
+    }
+
+    fn profile(report: &WotAdmissionSimReport, peer_id: &str) -> WotPeerProfile {
+        report
+            .peers
+            .iter()
+            .find(|peer| peer.id == peer_id)
+            .map(|peer| peer.profile)
+            .expect("peer exists")
+    }
+
+    fn peer_id(report: &WotAdmissionSimReport, profile: WotPeerProfile) -> String {
+        report
+            .peers
+            .iter()
+            .find(|peer| peer.profile == profile)
+            .map(|peer| peer.id.clone())
+            .expect("peer exists")
     }
 
     fn assert_decision(
@@ -822,6 +1173,7 @@ mod tests {
         assert_eq!(decision.selected, selected);
         assert_eq!(decision.trust_score, trust_score);
         assert_eq!(decision.reason, reason);
+        assert_eq!(decision.admission_order.is_some(), selected);
     }
 
     fn tag(key: &str, value: &str) -> Vec<String> {

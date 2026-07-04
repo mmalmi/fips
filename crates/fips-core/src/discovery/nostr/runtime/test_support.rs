@@ -5,11 +5,23 @@ impl NostrDiscovery {
     /// connected and no background tasks are spawned; only the in-memory
     /// `advert_cache` and `npub` are usable. Intended for cache-injection
     /// tests of consumers (e.g. `Node::run_open_discovery_sweep`).
+    #[cfg(test)]
     pub(crate) fn new_for_test() -> Self {
         Self::new_for_test_with_config(NostrDiscoveryConfig::default())
     }
 
+    #[cfg(test)]
     pub(crate) fn new_for_test_with_config(config: NostrDiscoveryConfig) -> Self {
+        Self::new_unstarted_with_config(config)
+    }
+
+    #[cfg(feature = "sim-transport")]
+    pub fn new_for_sim_with_config(config: NostrDiscoveryConfig) -> Self {
+        Self::new_unstarted_with_config(config)
+    }
+
+    #[cfg(any(test, feature = "sim-transport"))]
+    fn new_unstarted_with_config(config: NostrDiscoveryConfig) -> Self {
         let keys = nostr::Keys::generate();
         let pubkey = keys.public_key();
         let npub = pubkey.to_bech32().expect("bech32 encode");
@@ -59,8 +71,19 @@ impl NostrDiscovery {
         }
     }
 
+    #[cfg(feature = "sim-transport")]
+    pub async fn process_rating_fact_event_for_sim(&self, event: &nostr::Event) -> bool {
+        self.process_rating_fact_event(event).await
+    }
+
+    #[cfg(feature = "sim-transport")]
+    pub async fn trust_scores_for_npubs_for_sim(&self, npubs: &[String]) -> HashMap<String, i64> {
+        self.trust_scores_for_npubs(npubs).await
+    }
+
     /// Build a `CachedOverlayAdvert` for tests with a single endpoint and
     /// a generous validity window (one hour from `now_ms()`).
+    #[cfg(test)]
     pub(crate) fn cached_advert_for_test(
         author_npub: String,
         endpoint: OverlayEndpointAdvert,
@@ -82,6 +105,7 @@ impl NostrDiscovery {
 
     /// Insert a cached advert directly into the in-memory cache. Used by
     /// unit tests to set up consumer-side state without needing live relays.
+    #[cfg(test)]
     pub(crate) async fn insert_advert_for_test(&self, npub: String, advert: CachedOverlayAdvert) {
         let mut cache = self.advert_cache.write().await;
         cache.insert(NostrPeerKey::parse(&npub).expect("valid test npub"), advert);
@@ -89,14 +113,17 @@ impl NostrDiscovery {
 
     /// Queue a bootstrap event directly for lifecycle tests without live relays
     /// or a running traversal task.
+    #[cfg(test)]
     pub(crate) fn push_event_for_test(&self, event: BootstrapEvent) {
         let _ = self.event_tx.try_send(event);
     }
 
+    #[cfg(test)]
     pub(crate) fn push_mesh_signal_for_test(&self, signal: MeshTraversalSignal) {
         let _ = self.mesh_signal_tx.try_send(signal);
     }
 
+    #[cfg(test)]
     pub(crate) async fn active_initiator_count_for_test(&self) -> usize {
         self.active_initiators.lock().await.len()
     }
