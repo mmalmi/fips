@@ -74,6 +74,16 @@ impl NostrDiscovery {
                         continue;
                     }
 
+                    if event.kind == Kind::Custom(RATING_FACT_KIND) {
+                        if self.process_rating_fact_event(event.as_ref()).await {
+                            trace!(
+                                event = %short_id(&event.id.to_string()),
+                                "rating fact accepted for open-discovery trust cache"
+                            );
+                        }
+                        continue;
+                    }
+
                     if event.kind != Kind::Custom(SIGNAL_KIND) {
                         continue;
                     }

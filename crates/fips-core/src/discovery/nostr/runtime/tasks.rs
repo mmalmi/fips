@@ -182,6 +182,19 @@ impl NostrDiscovery {
             );
         }
 
+        if self.should_subscribe_rating_facts() {
+            self.client
+                .subscribe_to(
+                    relay_config.advert_relays.clone(),
+                    self.rating_fact_filter(),
+                    None,
+                )
+                .await
+                .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        } else {
+            debug!("skipping Nostr rating fact subscription");
+        }
+
         Ok(())
     }
 

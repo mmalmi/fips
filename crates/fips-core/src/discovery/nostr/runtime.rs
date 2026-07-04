@@ -38,6 +38,7 @@ use crate::{NodeAddr, PeerIdentity};
 mod advert;
 mod events;
 mod notifications;
+mod ratings;
 mod signals;
 mod tasks;
 mod traversal;
@@ -48,6 +49,7 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 
+pub(in crate::discovery::nostr) use ratings::RATING_FACT_KIND;
 pub(in crate::discovery::nostr) use verified_event::VerifiedEvent;
 
 const ADVERT_CACHE_STALE_GRACE_MULTIPLIER: u64 = 2;

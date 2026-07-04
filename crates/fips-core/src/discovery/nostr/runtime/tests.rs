@@ -123,6 +123,87 @@ fn ambient_advert_subscription_is_open_policy_only() {
     assert!(!disabled.should_subscribe_ambient_adverts());
 }
 
+#[test]
+fn rating_fact_subscription_is_enabled_by_trust_config() {
+    let discovery = NostrDiscovery::new_for_test();
+    assert!(!discovery.should_subscribe_rating_facts());
+
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        open_discovery_trust_ratings_enabled: true,
+        ..Default::default()
+    });
+    assert!(discovery.should_subscribe_rating_facts());
+
+    let filter = serde_json::to_value(discovery.rating_fact_filter()).unwrap();
+    assert_eq!(
+        filter["kinds"],
+        serde_json::json!([ratings::RATING_FACT_KIND])
+    );
+    assert_eq!(filter["limit"], 500);
+    assert!(filter["since"].as_u64().is_some());
+}
+
+#[tokio::test]
+async fn trusted_rating_fact_updates_peer_trust_score() {
+    let author = nostr::Keys::generate();
+    let author_npub = author.public_key().to_bech32().expect("author npub");
+    let subject = nostr::Keys::generate();
+    let subject_npub = subject.public_key().to_bech32().expect("subject npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        open_discovery_trust_ratings_enabled: true,
+        open_discovery_trusted_rating_authors: vec![author_npub],
+        ..Default::default()
+    });
+    let event = signed_rating_fact_event(&author, &subject_npub, "fips.peer", 80, 42);
+
+    assert!(discovery.process_rating_fact_event(&event).await);
+
+    let scores = discovery
+        .trust_scores_for_npubs(std::slice::from_ref(&subject_npub))
+        .await;
+    assert_eq!(scores.get(&subject_npub), Some(&60));
+}
+
+#[tokio::test]
+async fn untrusted_rating_fact_is_ignored() {
+    let author = nostr::Keys::generate();
+    let subject = nostr::Keys::generate();
+    let subject_npub = subject.public_key().to_bech32().expect("subject npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        open_discovery_trust_ratings_enabled: true,
+        ..Default::default()
+    });
+    let event = signed_rating_fact_event(&author, &subject_npub, "fips.peer", 80, 42);
+
+    assert!(!discovery.process_rating_fact_event(&event).await);
+
+    let scores = discovery
+        .trust_scores_for_npubs(std::slice::from_ref(&subject_npub))
+        .await;
+    assert!(!scores.contains_key(&subject_npub));
+}
+
+#[tokio::test]
+async fn rating_fact_scope_must_match_configured_scope() {
+    let author = nostr::Keys::generate();
+    let author_npub = author.public_key().to_bech32().expect("author npub");
+    let subject = nostr::Keys::generate();
+    let subject_npub = subject.public_key().to_bech32().expect("subject npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        open_discovery_trust_ratings_enabled: true,
+        open_discovery_trusted_rating_authors: vec![author_npub],
+        ..Default::default()
+    });
+    let event = signed_rating_fact_event(&author, &subject_npub, "other.scope", 80, 42);
+
+    assert!(!discovery.process_rating_fact_event(&event).await);
+
+    let scores = discovery
+        .trust_scores_for_npubs(std::slice::from_ref(&subject_npub))
+        .await;
+    assert!(!scores.contains_key(&subject_npub));
+}
+
 #[tokio::test]
 async fn duplicate_connect_request_reports_already_active() {
     let discovery = Arc::new(NostrDiscovery::new_for_test());
@@ -145,6 +226,39 @@ async fn duplicate_connect_request_reports_already_active() {
         "second request for the same peer should be deduped"
     );
     assert_eq!(discovery.active_initiator_count_for_test().await, 1);
+}
+
+fn signed_rating_fact_event(
+    keys: &nostr::Keys,
+    subject_npub: &str,
+    scope: &str,
+    rating: i64,
+    created_at: u64,
+) -> Event {
+    let created_at_string = created_at.to_string();
+    let rating_string = rating.to_string();
+    let rater_npub = keys.public_key().to_bech32().expect("rater npub");
+    let tags = vec![
+        rating_fact_tag(["i", "550e8400-e29b-41d4-a716-446655440000", "subject"]),
+        rating_fact_tag(["type", "rating"]),
+        rating_fact_tag(["schema", "1"]),
+        rating_fact_tag(["created_at", &created_at_string]),
+        rating_fact_tag(["rater", &rater_npub]),
+        rating_fact_tag(["subject", subject_npub]),
+        rating_fact_tag(["scope", scope]),
+        rating_fact_tag(["rating", &rating_string]),
+        rating_fact_tag(["min_rating", "0"]),
+        rating_fact_tag(["max_rating", "100"]),
+    ];
+    EventBuilder::new(Kind::Custom(ratings::RATING_FACT_KIND), "")
+        .tags(tags)
+        .custom_created_at(Timestamp::from(created_at))
+        .sign_with_keys(keys)
+        .unwrap()
+}
+
+fn rating_fact_tag<const N: usize>(parts: [&str; N]) -> Tag {
+    Tag::parse(parts).unwrap()
 }
 
 #[tokio::test]

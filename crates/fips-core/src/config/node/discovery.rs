@@ -163,6 +163,18 @@ pub struct NostrDiscoveryConfig {
     /// peers when trust sorting is enabled.
     #[serde(default = "NostrDiscoveryConfig::default_open_discovery_newcomer_probe_slots")]
     pub open_discovery_newcomer_probe_slots: usize,
+    /// Rating fact scope accepted by the open-discovery trust cache.
+    #[serde(default = "NostrDiscoveryConfig::default_open_discovery_rating_scope")]
+    pub open_discovery_rating_scope: String,
+    /// Historical rating fact lookback window for the relay subscription.
+    /// A value of 0 subscribes without a `since` bound.
+    #[serde(default = "NostrDiscoveryConfig::default_open_discovery_rating_lookback_secs")]
+    pub open_discovery_rating_lookback_secs: u64,
+    /// Signed rating fact authors accepted by the open-discovery trust cache.
+    /// The local node identity is always trusted; this list is for peers or
+    /// crawlers the operator explicitly trusts.
+    #[serde(default)]
+    pub open_discovery_trusted_rating_authors: Vec<String>,
     /// Max concurrent inbound traversal offers processed at once.
     /// Acts as a rate limit against offer spam from relays.
     #[serde(default = "NostrDiscoveryConfig::default_max_concurrent_incoming_offers")]
@@ -245,6 +257,8 @@ impl Default for NostrDiscoveryConfig {
     fn default() -> Self {
         let open_discovery_newcomer_probe_slots =
             Self::default_open_discovery_newcomer_probe_slots();
+        let open_discovery_rating_lookback_secs =
+            Self::default_open_discovery_rating_lookback_secs();
         Self {
             enabled: false,
             advertise: Self::default_advertise(),
@@ -258,6 +272,9 @@ impl Default for NostrDiscoveryConfig {
             open_discovery_max_pending: Self::default_open_discovery_max_pending(),
             open_discovery_trust_ratings_enabled: false,
             open_discovery_newcomer_probe_slots,
+            open_discovery_rating_scope: Self::default_open_discovery_rating_scope(),
+            open_discovery_rating_lookback_secs,
+            open_discovery_trusted_rating_authors: Vec::new(),
             max_concurrent_incoming_offers: Self::default_max_concurrent_incoming_offers(),
             advert_cache_max_entries: Self::default_advert_cache_max_entries(),
             seen_sessions_max_entries: Self::default_seen_sessions_max_entries(),
@@ -324,6 +341,14 @@ impl NostrDiscoveryConfig {
 
     fn default_open_discovery_newcomer_probe_slots() -> usize {
         1
+    }
+
+    fn default_open_discovery_rating_scope() -> String {
+        "fips.peer".to_string()
+    }
+
+    fn default_open_discovery_rating_lookback_secs() -> u64 {
+        604_800
     }
 
     fn default_max_concurrent_incoming_offers() -> usize {

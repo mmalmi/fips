@@ -70,6 +70,9 @@ fn test_nostr_discovery_startup_sweep_defaults() {
     assert_eq!(c.startup_sweep_max_age_secs, 3_600);
     assert!(!c.open_discovery_trust_ratings_enabled);
     assert_eq!(c.open_discovery_newcomer_probe_slots, 1);
+    assert_eq!(c.open_discovery_rating_scope, "fips.peer");
+    assert_eq!(c.open_discovery_rating_lookback_secs, 604_800);
+    assert!(c.open_discovery_trusted_rating_authors.is_empty());
 }
 
 #[test]
@@ -93,11 +96,17 @@ fn test_nostr_discovery_startup_sweep_partial_yaml_uses_defaults() {
 
 #[test]
 fn test_nostr_discovery_trust_rating_yaml_override() {
-    let yaml = "enabled: true\npolicy: open\nopen_discovery_trust_ratings_enabled: true\nopen_discovery_newcomer_probe_slots: 2\n";
+    let yaml = "enabled: true\npolicy: open\nopen_discovery_trust_ratings_enabled: true\nopen_discovery_newcomer_probe_slots: 2\nopen_discovery_rating_scope: fips.peer.test\nopen_discovery_rating_lookback_secs: 3600\nopen_discovery_trusted_rating_authors:\n  - npub1trusted\n";
     let c: NostrDiscoveryConfig = serde_yaml::from_str(yaml).unwrap();
 
     assert!(c.open_discovery_trust_ratings_enabled);
     assert_eq!(c.open_discovery_newcomer_probe_slots, 2);
+    assert_eq!(c.open_discovery_rating_scope, "fips.peer.test");
+    assert_eq!(c.open_discovery_rating_lookback_secs, 3_600);
+    assert_eq!(
+        c.open_discovery_trusted_rating_authors,
+        vec!["npub1trusted".to_string()]
+    );
 }
 
 #[test]
