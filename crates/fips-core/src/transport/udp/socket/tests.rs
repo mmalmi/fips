@@ -173,7 +173,7 @@ async fn send_batch_to_sends_vectored_payloads() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 async fn recv_batch_writes_into_vec_spare_capacity() {
     let sock1 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
