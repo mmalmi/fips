@@ -14,7 +14,8 @@ use fips::{Identity, encode_nsec};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 /// FIPS control client
 #[derive(Parser, Debug)]
@@ -76,6 +77,11 @@ enum Commands {
         #[command(subcommand)]
         what: StatsCommands,
     },
+    /// Export local machine-generated peer ratings
+    Ratings {
+        #[command(subcommand)]
+        what: RatingsCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -102,6 +108,19 @@ enum StatsCommands {
         /// Render a Unicode block sparkline instead of JSON
         #[arg(long)]
         plot: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum RatingsCommands {
+    /// Export current peer health as social-graph rating JSON
+    Export {
+        /// Rating context to write into each record
+        #[arg(long, default_value = "fips.peer")]
+        context: String,
+        /// Output file. Defaults to stdout.
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -290,6 +309,276 @@ fn print_response(value: &serde_json::Value) {
     println!("{}", output.unwrap_or_else(|_| format!("{value}")));
 }
 
+fn export_peer_ratings(
+    socket_path: &Path,
+    context: &str,
+    output: Option<&Path>,
+) -> Result<(), String> {
+    let context = context.trim();
+    if context.is_empty() {
+        return Err("rating context cannot be empty".to_string());
+    }
+
+    let status_response = send_request(socket_path, &build_query("show_status"))?;
+    let status = control_response_data(&status_response, "show_status")?;
+    let peers_response = send_request(socket_path, &build_query("show_peers"))?;
+    let peers = control_response_data(&peers_response, "show_peers")?;
+    let export = build_peer_rating_export(status, peers, context, now_unix_secs())?;
+    let rendered =
+        serde_json::to_string_pretty(&export).map_err(|e| format!("failed to encode JSON: {e}"))?;
+
+    if let Some(path) = output {
+        std::fs::write(path, rendered)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    } else {
+        println!("{rendered}");
+    }
+    Ok(())
+}
+
+fn control_response_data<'a>(
+    response: &'a serde_json::Value,
+    command: &str,
+) -> Result<&'a serde_json::Value, String> {
+    let status = response
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if status == "error" {
+        let msg = response
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("{command} failed: {msg}"));
+    }
+    response
+        .get("data")
+        .ok_or_else(|| format!("{command} response did not include data"))
+}
+
+fn build_peer_rating_export(
+    status: &serde_json::Value,
+    peers: &serde_json::Value,
+    context: &str,
+    now: u64,
+) -> Result<serde_json::Value, String> {
+    let rater = json_string_field(status, "npub")
+        .filter(|npub| !npub.trim().is_empty())
+        .ok_or_else(|| "show_status response did not include local npub".to_string())?;
+    let peers = peers
+        .get("peers")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "show_peers response did not include peers array".to_string())?;
+    let ratings = peers
+        .iter()
+        .filter_map(|peer| peer_rating_record(&rater, peer, context, now))
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "schema": 1,
+        "type": "fips_peer_rating_export",
+        "context": context,
+        "rater": rater,
+        "generated_at": now,
+        "ratings": ratings,
+    }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PeerRatingHealth {
+    score: i64,
+    sample_count: u64,
+    reason: String,
+}
+
+fn peer_rating_record(
+    rater: &str,
+    peer: &serde_json::Value,
+    context: &str,
+    now: u64,
+) -> Option<serde_json::Value> {
+    let subject = peer_rating_subject(peer)?;
+    let health = compute_peer_rating(peer)?;
+    Some(serde_json::json!({
+        "id": Uuid::new_v4().to_string(),
+        "rater": rater,
+        "subject": subject,
+        "context": context,
+        "rating": health.score,
+        "min_rating": 0,
+        "max_rating": 100,
+        "sample_count": health.sample_count,
+        "window_end": now,
+        "reason": health.reason,
+        "tags": ["fips", "peer"],
+        "created_at": now,
+    }))
+}
+
+fn peer_rating_subject(peer: &serde_json::Value) -> Option<String> {
+    json_string_field(peer, "npub")
+        .filter(|npub| !npub.trim().is_empty())
+        .or_else(|| json_string_field(peer, "node_addr").map(|addr| format!("fips-node:{addr}")))
+}
+
+fn compute_peer_rating(peer: &serde_json::Value) -> Option<PeerRatingHealth> {
+    let mut score = 50_i64;
+    let mut signals = 0_usize;
+    let mut reasons = Vec::new();
+
+    if let Some(mmp) = peer.get("mmp").and_then(|value| value.as_object()) {
+        if let Some(loss) = json_f64_prefer(mmp, &["smoothed_loss", "loss_rate"]) {
+            let loss = loss.clamp(0.0, 1.0);
+            signals += 1;
+            if loss <= 0.005 {
+                score += 10;
+            } else if loss <= 0.02 {
+                score += 4;
+            } else {
+                score -= ((loss * 100.0).round() as i64).clamp(4, 45);
+            }
+            reasons.push(format!("loss={loss:.3}"));
+        }
+
+        if let Some(delivery) = average_delivery_ratio(mmp) {
+            let delivery = delivery.clamp(0.0, 1.0);
+            signals += 1;
+            if delivery >= 0.995 {
+                score += 15;
+            } else if delivery >= 0.98 {
+                score += 8;
+            } else if delivery < 0.80 {
+                score -= 35;
+            } else if delivery < 0.90 {
+                score -= 25;
+            } else if delivery < 0.97 {
+                score -= 12;
+            }
+            reasons.push(format!("delivery={delivery:.3}"));
+        }
+
+        if let Some(etx) = json_f64_prefer(mmp, &["smoothed_etx", "etx"]) {
+            let etx = etx.max(1.0);
+            signals += 1;
+            if etx <= 1.05 {
+                score += 12;
+            } else if etx <= 1.20 {
+                score += 6;
+            } else if etx >= 3.0 {
+                score -= 35;
+            } else if etx >= 2.0 {
+                score -= 25;
+            } else if etx >= 1.5 {
+                score -= 15;
+            }
+            reasons.push(format!("etx={etx:.2}"));
+        }
+
+        if let Some(srtt_ms) = json_f64_prefer(mmp, &["srtt_ms"]) {
+            signals += 1;
+            if srtt_ms <= 50.0 {
+                score += 8;
+            } else if srtt_ms <= 150.0 {
+                score += 3;
+            } else if srtt_ms >= 1_000.0 {
+                score -= 25;
+            } else if srtt_ms >= 300.0 {
+                score -= 15;
+            }
+            reasons.push(format!("srtt_ms={srtt_ms:.0}"));
+        }
+
+        if let Some(goodput_bps) = json_f64_prefer(mmp, &["goodput_bps"]) {
+            signals += 1;
+            if goodput_bps >= 5_000_000.0 {
+                score += 8;
+            } else if goodput_bps >= 1_000_000.0 {
+                score += 4;
+            }
+            reasons.push(format!("goodput_bps={goodput_bps:.0}"));
+        }
+    }
+
+    let decrypt_failures = json_u64_field(peer, "consecutive_decrypt_failures").unwrap_or(0);
+    if decrypt_failures > 0 {
+        signals += 1;
+        score -= i64::try_from(decrypt_failures.saturating_mul(20).min(70)).unwrap_or(70);
+        reasons.push(format!("decrypt_failures={decrypt_failures}"));
+    }
+
+    let replay_suppressed = json_u64_field(peer, "replay_suppressed").unwrap_or(0);
+    if replay_suppressed > 0 {
+        signals += 1;
+        score -= i64::try_from(replay_suppressed.saturating_mul(5).min(30)).unwrap_or(30);
+        reasons.push(format!("replay_suppressed={replay_suppressed}"));
+    }
+
+    if signals == 0 {
+        return None;
+    }
+
+    let sample_count = peer_sample_count(peer).max(signals as u64);
+    Some(PeerRatingHealth {
+        score: score.clamp(0, 100),
+        sample_count,
+        reason: reasons.join(" "),
+    })
+}
+
+fn average_delivery_ratio(mmp: &serde_json::Map<String, serde_json::Value>) -> Option<f64> {
+    let forward = json_f64_prefer(mmp, &["delivery_ratio_forward"]);
+    let reverse = json_f64_prefer(mmp, &["delivery_ratio_reverse"]);
+    match (forward, reverse) {
+        (Some(forward), Some(reverse)) => Some((forward + reverse) / 2.0),
+        (Some(forward), None) => Some(forward),
+        (None, Some(reverse)) => Some(reverse),
+        (None, None) => None,
+    }
+}
+
+fn peer_sample_count(peer: &serde_json::Value) -> u64 {
+    ["packets_sent", "packets_recv"]
+        .into_iter()
+        .filter_map(|key| nested_u64_field(peer, "stats", key))
+        .fold(0_u64, u64::saturating_add)
+}
+
+fn json_string_field(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn json_u64_field(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(|value| value.as_u64())
+}
+
+fn nested_u64_field(value: &serde_json::Value, object_key: &str, key: &str) -> Option<u64> {
+    value
+        .get(object_key)
+        .and_then(|object| object.get(key))
+        .and_then(|value| value.as_u64())
+}
+
+fn json_f64_prefer(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<f64> {
+    keys.iter()
+        .filter_map(|key| object.get(*key).and_then(|value| value.as_f64()))
+        .find(|value| value.is_finite())
+}
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Default directory for keygen output.
 fn default_key_dir() -> PathBuf {
     #[cfg(unix)]
@@ -420,6 +709,17 @@ fn main() {
 
     let socket_path = cli.socket.unwrap_or_else(default_socket_path);
 
+    if let Commands::Ratings {
+        what: RatingsCommands::Export { context, output },
+    } = &cli.command
+    {
+        if let Err(e) = export_peer_ratings(&socket_path, context, output.as_deref()) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let request = match &cli.command {
         Commands::Show { what } => build_query(what.command_name()),
         Commands::Acl { what } => build_query(what.command_name()),
@@ -469,6 +769,7 @@ fn main() {
             }
         },
         Commands::Keygen { .. } => unreachable!(),
+        Commands::Ratings { .. } => unreachable!(),
     };
 
     // For plot output we need to post-process the JSON response rather
@@ -619,6 +920,113 @@ mod tests {
                 what: AclCommands::Show
             }
         ));
+    }
+
+    #[test]
+    fn test_cli_parses_ratings_export() {
+        let cli = Cli::try_parse_from([
+            "fipsctl",
+            "ratings",
+            "export",
+            "--context",
+            "fips.peer",
+            "-o",
+            "ratings.json",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Commands::Ratings {
+                what: RatingsCommands::Export { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn healthy_peer_rating_promotes() {
+        let peer = serde_json::json!({
+            "npub": "npub1good",
+            "stats": {"packets_sent": 100, "packets_recv": 120},
+            "mmp": {
+                "smoothed_loss": 0.001,
+                "smoothed_etx": 1.01,
+                "delivery_ratio_forward": 0.999,
+                "delivery_ratio_reverse": 0.998,
+                "srtt_ms": 20.0,
+                "goodput_bps": 8_000_000.0
+            },
+            "replay_suppressed": 0,
+            "consecutive_decrypt_failures": 0
+        });
+
+        let health = compute_peer_rating(&peer).expect("health rating");
+
+        assert!(health.score > 50, "{health:?}");
+        assert_eq!(health.sample_count, 220);
+    }
+
+    #[test]
+    fn degraded_peer_rating_downranks() {
+        let peer = serde_json::json!({
+            "npub": "npub1bad",
+            "stats": {"packets_sent": 100, "packets_recv": 120},
+            "mmp": {
+                "smoothed_loss": 0.25,
+                "smoothed_etx": 3.2,
+                "delivery_ratio_forward": 0.73,
+                "delivery_ratio_reverse": 0.81,
+                "srtt_ms": 1200.0,
+                "goodput_bps": 50_000.0
+            },
+            "replay_suppressed": 2,
+            "consecutive_decrypt_failures": 2
+        });
+
+        let health = compute_peer_rating(&peer).expect("health rating");
+
+        assert!(health.score < 50, "{health:?}");
+    }
+
+    #[test]
+    fn peer_rating_export_uses_shared_rating_shape() {
+        let status = serde_json::json!({"npub": "npub1local"});
+        let peers = serde_json::json!({
+            "peers": [{
+                "npub": "npub1peer",
+                "stats": {"packets_sent": 10, "packets_recv": 20},
+                "mmp": {
+                    "loss_rate": 0.0,
+                    "etx": 1.0,
+                    "delivery_ratio_forward": 1.0,
+                    "delivery_ratio_reverse": 1.0
+                }
+            }]
+        });
+
+        let export = build_peer_rating_export(&status, &peers, "fips.peer", 1234).unwrap();
+        let rating = &export["ratings"][0];
+
+        Uuid::parse_str(rating["id"].as_str().unwrap()).unwrap();
+        assert_eq!(rating["rater"], "npub1local");
+        assert_eq!(rating["subject"], "npub1peer");
+        assert_eq!(rating["context"], "fips.peer");
+        assert_eq!(rating["min_rating"], 0);
+        assert_eq!(rating["max_rating"], 100);
+        assert_eq!(rating["created_at"], 1234);
+        assert!(rating["rating"].as_i64().unwrap() > 50);
+    }
+
+    #[test]
+    fn peer_without_health_signal_is_skipped() {
+        let peer = serde_json::json!({
+            "npub": "npub1unknown",
+            "stats": {"packets_sent": 0, "packets_recv": 0},
+            "replay_suppressed": 0,
+            "consecutive_decrypt_failures": 0
+        });
+
+        assert!(compute_peer_rating(&peer).is_none());
     }
 
     #[test]
