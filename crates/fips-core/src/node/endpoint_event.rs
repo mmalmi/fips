@@ -1150,10 +1150,6 @@ impl EndpointEventRuntime {
         self.sender = Some(sender);
     }
 
-    pub(in crate::node) fn detach(&mut self) -> Option<EndpointEventSender> {
-        self.sender.take()
-    }
-
     pub(in crate::node) fn is_attached(&self) -> bool {
         self.sender.is_some()
     }

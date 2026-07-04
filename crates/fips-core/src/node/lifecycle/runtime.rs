@@ -1,11 +1,8 @@
 use super::*;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use tracing::error;
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct SystemTunEndpointDirectSink {
-    tx: std::sync::mpsc::SyncSender<crate::node::FipsEndpointDirectPacketBatch>,
+    writer: crate::upper::tun::TunDirectWriter,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -18,22 +15,6 @@ impl crate::node::FipsEndpointDirectSink for SystemTunEndpointDirectSink {
             return Ok(());
         }
 
-        self.tx
-            .try_send(batch)
-            .map_err(|_| crate::node::FipsEndpointDirectDeliveryError::Unavailable)
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn run_system_tun_endpoint_direct_writer(
-    writer: crate::upper::tun::TunDirectWriter,
-    rx: std::sync::mpsc::Receiver<crate::node::FipsEndpointDirectPacketBatch>,
-) {
-    while let Ok(batch) = rx.recv() {
-        if batch.is_empty() {
-            continue;
-        }
-
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::TunWrite);
         let packet_count = batch.len();
         let runs = batch.into_packet_runs();
@@ -42,12 +23,10 @@ fn run_system_tun_endpoint_direct_writer(
             packet_slices.extend(run.packet_slices());
         }
 
-        if let Err(error) = writer.write_packet_slices(&packet_slices) {
-            if error.to_string().contains("Bad address") {
-                break;
-            }
-            error!(error = %error, "System TUN direct endpoint write error");
-        }
+        self.writer
+            .write_packet_slices(&packet_slices)
+            .map(|_| ())
+            .map_err(|_| crate::node::FipsEndpointDirectDeliveryError::Unavailable)
     }
 }
 
@@ -404,15 +383,11 @@ impl Node {
         if already_attached {
             return;
         }
-        let (tx, rx) = std::sync::mpsc::sync_channel(capacity.max(1));
-        let direct_writer_handle = thread::spawn(move || {
-            run_system_tun_endpoint_direct_writer(writer, rx);
-        });
-        let direct_sink = crate::node::EndpointDirectSink::new(SystemTunEndpointDirectSink { tx });
+        let direct_sink =
+            crate::node::EndpointDirectSink::new(SystemTunEndpointDirectSink { writer });
         let (event_tx, _event_rx) =
             crate::node::EndpointEventSender::channel_with_direct_sink(capacity, Some(direct_sink));
         self.endpoint_events.attach(event_tx);
-        self.tun_direct_writer_handle = Some(direct_writer_handle);
     }
 
     /// Bind a UDP socket for the DNS responder.
@@ -564,10 +539,6 @@ impl Node {
 
             // Drop the tun_tx to signal the writer to stop
             self.tun_tx.take();
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            if self.tun_direct_writer_handle.is_some() {
-                self.endpoint_events.detach();
-            }
 
             // Delete the interface (on Linux, causes reader to get EFAULT)
             if let Err(e) = shutdown_tun_interface(&name).await {
@@ -589,10 +560,6 @@ impl Node {
                 let _ = handle.join();
             }
             if let Some(handle) = self.tun_writer_handle.take() {
-                let _ = handle.join();
-            }
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            if let Some(handle) = self.tun_direct_writer_handle.take() {
                 let _ = handle.join();
             }
 

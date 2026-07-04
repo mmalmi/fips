@@ -108,8 +108,6 @@ impl Node {
             endpoint_events: EndpointEventRuntime::default(),
             tun_reader_handle: None,
             tun_writer_handle: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            tun_direct_writer_handle: None,
             #[cfg(target_os = "macos")]
             tun_shutdown_fd: None,
             dns_identity_rx: None,
@@ -250,8 +248,6 @@ impl Node {
             endpoint_events: EndpointEventRuntime::default(),
             tun_reader_handle: None,
             tun_writer_handle: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            tun_direct_writer_handle: None,
             #[cfg(target_os = "macos")]
             tun_shutdown_fd: None,
             dns_identity_rx: None,
