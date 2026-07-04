@@ -115,9 +115,9 @@ enum StatsCommands {
 enum RatingsCommands {
     /// Export current peer health as social-graph rating JSON
     Export {
-        /// Rating context to write into each record
-        #[arg(long, default_value = "fips.peer")]
-        context: String,
+        /// Rating scope to write into each record
+        #[arg(long, alias = "context", default_value = "fips.peer")]
+        scope: String,
         /// Output file. Defaults to stdout.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
@@ -311,19 +311,19 @@ fn print_response(value: &serde_json::Value) {
 
 fn export_peer_ratings(
     socket_path: &Path,
-    context: &str,
+    scope: &str,
     output: Option<&Path>,
 ) -> Result<(), String> {
-    let context = context.trim();
-    if context.is_empty() {
-        return Err("rating context cannot be empty".to_string());
+    let scope = scope.trim();
+    if scope.is_empty() {
+        return Err("rating scope cannot be empty".to_string());
     }
 
     let status_response = send_request(socket_path, &build_query("show_status"))?;
     let status = control_response_data(&status_response, "show_status")?;
     let peers_response = send_request(socket_path, &build_query("show_peers"))?;
     let peers = control_response_data(&peers_response, "show_peers")?;
-    let export = build_peer_rating_export(status, peers, context, now_unix_secs())?;
+    let export = build_peer_rating_export(status, peers, scope, now_unix_secs())?;
     let rendered =
         serde_json::to_string_pretty(&export).map_err(|e| format!("failed to encode JSON: {e}"))?;
 
@@ -359,7 +359,7 @@ fn control_response_data<'a>(
 fn build_peer_rating_export(
     status: &serde_json::Value,
     peers: &serde_json::Value,
-    context: &str,
+    scope: &str,
     now: u64,
 ) -> Result<serde_json::Value, String> {
     let rater = json_string_field(status, "npub")
@@ -371,13 +371,13 @@ fn build_peer_rating_export(
         .ok_or_else(|| "show_peers response did not include peers array".to_string())?;
     let ratings = peers
         .iter()
-        .filter_map(|peer| peer_rating_record(&rater, peer, context, now))
+        .filter_map(|peer| peer_rating_record(&rater, peer, scope, now))
         .collect::<Vec<_>>();
 
     Ok(serde_json::json!({
         "schema": 1,
         "type": "fips_peer_rating_export",
-        "context": context,
+        "scope": scope,
         "rater": rater,
         "generated_at": now,
         "ratings": ratings,
@@ -394,7 +394,7 @@ struct PeerRatingHealth {
 fn peer_rating_record(
     rater: &str,
     peer: &serde_json::Value,
-    context: &str,
+    scope: &str,
     now: u64,
 ) -> Option<serde_json::Value> {
     let subject = peer_rating_subject(peer)?;
@@ -403,7 +403,7 @@ fn peer_rating_record(
         "id": Uuid::new_v4().to_string(),
         "rater": rater,
         "subject": subject,
-        "context": context,
+        "scope": scope,
         "rating": health.score,
         "min_rating": 0,
         "max_rating": 100,
@@ -710,10 +710,10 @@ fn main() {
     let socket_path = cli.socket.unwrap_or_else(default_socket_path);
 
     if let Commands::Ratings {
-        what: RatingsCommands::Export { context, output },
+        what: RatingsCommands::Export { scope, output },
     } = &cli.command
     {
-        if let Err(e) = export_peer_ratings(&socket_path, context, output.as_deref()) {
+        if let Err(e) = export_peer_ratings(&socket_path, scope, output.as_deref()) {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
@@ -928,12 +928,25 @@ mod tests {
             "fipsctl",
             "ratings",
             "export",
-            "--context",
+            "--scope",
             "fips.peer",
             "-o",
             "ratings.json",
         ])
         .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Commands::Ratings {
+                what: RatingsCommands::Export { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn test_cli_accepts_legacy_ratings_context_alias() {
+        let cli = Cli::try_parse_from(["fipsctl", "ratings", "export", "--context", "fips.peer"])
+            .unwrap();
 
         assert!(matches!(
             cli.command,
@@ -1010,7 +1023,8 @@ mod tests {
         Uuid::parse_str(rating["id"].as_str().unwrap()).unwrap();
         assert_eq!(rating["rater"], "npub1local");
         assert_eq!(rating["subject"], "npub1peer");
-        assert_eq!(rating["context"], "fips.peer");
+        assert_eq!(export["scope"], "fips.peer");
+        assert_eq!(rating["scope"], "fips.peer");
         assert_eq!(rating["min_rating"], 0);
         assert_eq!(rating["max_rating"], 100);
         assert_eq!(rating["created_at"], 1234);
