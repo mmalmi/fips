@@ -166,6 +166,108 @@ async fn test_open_discovery_sweep_prioritizes_trusted_and_probes_newcomer() {
     assert_eq!(node.retry_pending.len(), 2);
 }
 
+#[tokio::test]
+async fn test_open_discovery_sweep_downranks_peer_after_signed_rating_downgrade() {
+    use crate::config::{NostrDiscoveryConfig, NostrDiscoveryPolicy};
+    use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
+    use nostr::ToBech32;
+    use std::sync::Arc;
+
+    let rating_author = nostr::Keys::generate();
+    let rating_author_npub = rating_author.public_key().to_bech32().unwrap();
+
+    let degrading_identity = crate::Identity::generate();
+    let degrading_npub = crate::encode_npub(&degrading_identity.pubkey());
+    let degrading_node_addr = *degrading_identity.node_addr();
+    let backup_identity = crate::Identity::generate();
+    let backup_npub = crate::encode_npub(&backup_identity.pubkey());
+    let backup_node_addr = *backup_identity.node_addr();
+    let newcomer_identity = crate::Identity::generate();
+    let newcomer_npub = crate::encode_npub(&newcomer_identity.pubkey());
+    let newcomer_node_addr = *newcomer_identity.node_addr();
+
+    let mut config = crate::Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    config.node.discovery.nostr.open_discovery_max_pending = 2;
+    config
+        .node
+        .discovery
+        .nostr
+        .open_discovery_trust_ratings_enabled = true;
+    config
+        .node
+        .discovery
+        .nostr
+        .open_discovery_newcomer_probe_slots = 1;
+    config
+        .node
+        .discovery
+        .nostr
+        .open_discovery_trusted_rating_authors = vec![rating_author_npub];
+    let discovery_config: NostrDiscoveryConfig = config.node.discovery.nostr.clone();
+    let mut node = crate::Node::new(config).unwrap();
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test_with_config(discovery_config));
+    let endpoint = OverlayEndpointAdvert {
+        transport: OverlayTransportKind::Udp,
+        addr: "203.0.113.7:2121".to_string(),
+    };
+    let now_secs = open_sweep_now_secs();
+    for npub in [&degrading_npub, &backup_npub, &newcomer_npub] {
+        let advert =
+            NostrDiscovery::cached_advert_for_test(npub.clone(), endpoint.clone(), now_secs);
+        bootstrap.insert_advert_for_test(npub.clone(), advert).await;
+    }
+
+    let initial_good =
+        signed_open_discovery_rating_fact_event(&rating_author, &degrading_npub, 90, now_secs);
+    let backup_good =
+        signed_open_discovery_rating_fact_event(&rating_author, &backup_npub, 70, now_secs);
+    assert!(bootstrap.process_rating_fact_event(&initial_good).await);
+    assert!(bootstrap.process_rating_fact_event(&backup_good).await);
+
+    node.run_open_discovery_sweep(&bootstrap, Some(3_600), "test")
+        .await;
+
+    assert!(
+        node.retry_pending.contains_key(&degrading_node_addr),
+        "higher-rated peer should win the trusted slot before degradation"
+    );
+    assert!(
+        node.retry_pending.contains_key(&newcomer_node_addr),
+        "unknown peer should keep the reserved newcomer slot"
+    );
+    assert!(
+        !node.retry_pending.contains_key(&backup_node_addr),
+        "lower-rated trusted peer should wait when the trusted slot is full"
+    );
+
+    node.retry_pending.remove(&degrading_node_addr);
+    node.retry_pending.remove(&newcomer_node_addr);
+
+    let downgrade =
+        signed_open_discovery_rating_fact_event(&rating_author, &degrading_npub, 0, now_secs + 1);
+    assert!(bootstrap.process_rating_fact_event(&downgrade).await);
+
+    node.run_open_discovery_sweep(&bootstrap, Some(3_600), "test")
+        .await;
+
+    assert!(
+        node.retry_pending.contains_key(&backup_node_addr),
+        "still-good peer should take the trusted slot after downgrade"
+    );
+    assert!(
+        node.retry_pending.contains_key(&newcomer_node_addr),
+        "newcomer slot should remain available while bad peers are deferred"
+    );
+    assert!(
+        !node.retry_pending.contains_key(&degrading_node_addr),
+        "downgraded peer should be deferred behind good and unknown peers"
+    );
+    assert_eq!(node.retry_pending.len(), 2);
+}
+
 /// Pin the cold-start expedite path: when an open-discovery sweep sees a
 /// fresh advert for a CONFIGURED peer whose retry is sitting on a future
 /// exponential-backoff slot, the sweep must pull the retry forward to "now"
@@ -259,6 +361,47 @@ async fn test_open_discovery_sweep_expedites_configured_peer_retry() {
     // it must not mutate the configured peer's address list or alias.
     assert_eq!(state.peer_config.npub, configured_npub);
     assert_eq!(state.peer_config.alias.as_deref(), Some("test-peer"));
+}
+
+fn open_sweep_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn signed_open_discovery_rating_fact_event(
+    keys: &nostr::Keys,
+    subject_npub: &str,
+    rating: i64,
+    created_at: u64,
+) -> nostr::Event {
+    use nostr::ToBech32;
+
+    let created_at_string = created_at.to_string();
+    let rating_string = rating.to_string();
+    let rater_npub = keys.public_key().to_bech32().unwrap();
+    let tags = vec![
+        open_sweep_rating_fact_tag(["i", "550e8400-e29b-41d4-a716-446655440000", "subject"]),
+        open_sweep_rating_fact_tag(["type", "rating"]),
+        open_sweep_rating_fact_tag(["schema", "1"]),
+        open_sweep_rating_fact_tag(["created_at", &created_at_string]),
+        open_sweep_rating_fact_tag(["rater", &rater_npub]),
+        open_sweep_rating_fact_tag(["subject", subject_npub]),
+        open_sweep_rating_fact_tag(["scope", "fips.peer"]),
+        open_sweep_rating_fact_tag(["rating", &rating_string]),
+        open_sweep_rating_fact_tag(["min_rating", "0"]),
+        open_sweep_rating_fact_tag(["max_rating", "100"]),
+    ];
+    nostr::EventBuilder::new(nostr::Kind::Custom(7368), "")
+        .tags(tags)
+        .custom_created_at(nostr::Timestamp::from(created_at))
+        .sign_with_keys(keys)
+        .unwrap()
+}
+
+fn open_sweep_rating_fact_tag<const N: usize>(parts: [&str; N]) -> nostr::Tag {
+    nostr::Tag::parse(parts).unwrap()
 }
 
 // ============================================================================
