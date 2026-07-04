@@ -259,38 +259,6 @@
     }
 
     #[test]
-    fn authenticated_session_message_expands_endpoint_bulk_delivery() {
-        let peer = Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-        let endpoint_bulk = crate::node::session_wire::encode_fsp_endpoint_data_bulk_payload(vec![
-            b"first".to_vec(),
-            b"second".to_vec(),
-        ])
-        .unwrap();
-        let plaintext = fsp_prepend_inner_header(
-            0x0102_0304,
-            SessionMessageType::EndpointDataBulk.to_byte(),
-            0,
-            &endpoint_bulk,
-        );
-
-        let message = AuthenticatedSessionMessage::new(
-            source_peer,
-            plaintext,
-            SessionMessageType::EndpointDataBulk.to_byte(),
-            0,
-            0x0102_0304,
-        );
-
-        let deliveries = message.into_endpoint_data_deliveries();
-        assert_eq!(deliveries.len(), 2);
-        assert_eq!(deliveries[0].source_peer, source_peer);
-        assert_eq!(deliveries[0].payload.as_slice(), b"first");
-        assert_eq!(deliveries[1].source_peer, source_peer);
-        assert_eq!(deliveries[1].payload.as_slice(), b"second");
-    }
-
-    #[test]
     fn authenticated_session_dispatch_owns_route_ce_and_completion_facts() {
         let peer = Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());

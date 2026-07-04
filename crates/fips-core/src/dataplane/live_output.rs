@@ -129,7 +129,7 @@ where
         );
         if drop_count > 0 {
             crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::EndpointDataBulkDropped,
+                crate::perf_profile::Event::EndpointDataBatchDropped,
                 drop_count as u64,
             );
             drop_stale_endpoint_data_batch(batch, &mut self.buffers.endpoint_drops);

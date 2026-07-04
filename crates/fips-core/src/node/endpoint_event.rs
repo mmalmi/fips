@@ -323,11 +323,11 @@ impl FipsEndpointDirectPacketStorage {
 
 /// Consecutive direct endpoint packets from one authenticated FIPS source.
 ///
-/// Unlike [`FipsEndpointDirectSourceRun`], this can preserve an opened
-/// EndpointDataBulk buffer and expose packet slices by range. That is the
-/// canonical direct dataplane endpoint payload contract for high-throughput embedders:
-/// FIPS owns authentication and ordering, while the embedder can still apply
-/// live routing policy before borrowing packet bytes for TUN writes.
+/// Unlike [`FipsEndpointDirectSourceRun`], this can chain opened EndpointData
+/// buffers and expose packet slices by range. That is the canonical direct
+/// dataplane endpoint payload contract for high-throughput embedders: FIPS owns
+/// authentication and ordering, while the embedder can still apply live routing
+/// policy before borrowing packet bytes for TUN writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointDirectPacketRun {
     meta: FipsEndpointDirectPacketRunMeta,

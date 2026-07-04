@@ -61,7 +61,10 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             Event::EndpointEventBulkBacklogHigh,
             "endpoint_event_bulk_backlog_high",
         ),
-        (Event::EndpointDataBulkDropped, "endpoint_data_bulk_dropped"),
+        (
+            Event::EndpointDataBatchDropped,
+            "endpoint_data_batch_dropped",
+        ),
         (
             Event::TransportChannelBacklogHigh,
             "transport_channel_backlog_high",
@@ -468,7 +471,7 @@ fn live_event_counters_increment() {
         (Event::EndpointEventBacklogHigh, 7),
         (Event::EndpointEventBulkBacklogHigh, 11),
         (Event::EndpointEventBulkDropped, 13),
-        (Event::EndpointDataBulkDropped, 17),
+        (Event::EndpointDataBatchDropped, 17),
         (Event::TransportChannelBacklogHigh, 19),
         (Event::TransportBulkDropped, 23),
         (Event::PendingTunPacketDropped, 29),

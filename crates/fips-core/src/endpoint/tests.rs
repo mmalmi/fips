@@ -176,7 +176,7 @@ fn endpoint_data_batch_owns_payload_bytes_and_queue_stamp() {
     assert_eq!(owned_remote, remote);
     let owned_payloads = owned_payloads
         .into_iter()
-        .flat_map(EndpointDataBulkBody::into_packet_payloads)
+        .map(|payload| payload.into_body().into_vec())
         .collect::<Vec<_>>();
     assert_eq!(owned_payloads, vec![payload]);
     assert_eq!(owned_queued_at, queued_at);

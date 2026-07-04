@@ -921,12 +921,12 @@ impl DataplaneEndpointDataRouter for DataplaneLiveRouteTable {
     fn route_endpoint_data_batch(
         &mut self,
         remote: PeerIdentity,
-        payloads: Vec<EndpointDataBulkBody>,
+        payloads: Vec<EndpointDataPayload>,
     ) -> DataplaneEndpointDataBatchRoute {
         let Some(route) = self.endpoint.get(remote.node_addr()) else {
             return DataplaneEndpointDataBatchRoute::deferred(payloads);
         };
-        route.route_bulk_bodies(payloads)
+        route.route_payloads(payloads)
     }
 }
 

@@ -130,18 +130,18 @@ impl Node {
 
     pub(in crate::node) async fn process_dataplane_compact_endpoint_data(
         &mut self,
-        endpoint_bulks: Vec<crate::dataplane::DataplaneEndpointDataBulk>,
+        endpoint_batches: Vec<crate::dataplane::DataplaneEndpointDataBatch>,
     ) -> usize {
-        if endpoint_bulks.is_empty() {
+        if endpoint_batches.is_empty() {
             return 0;
         }
-        let message_count = endpoint_bulks
+        let message_count = endpoint_batches
             .iter()
-            .map(crate::dataplane::DataplaneEndpointDataBulk::len)
+            .map(crate::dataplane::DataplaneEndpointDataBatch::len)
             .sum::<usize>();
-        let direct_packet_runs = endpoint_bulks
+        let direct_packet_runs = endpoint_batches
             .iter()
-            .map(crate::dataplane::DataplaneEndpointDataBulk::direct_packet_run_count)
+            .map(crate::dataplane::DataplaneEndpointDataBatch::direct_packet_run_count)
             .sum::<usize>();
         let direct_sink = if direct_packet_runs > 0 {
             match self.dataplane_endpoint_direct_sink() {
@@ -149,7 +149,7 @@ impl Node {
                 None => {
                     debug!(
                         messages = message_count,
-                        "Dropping dataplane endpoint-data bulk without direct sink"
+                        "Dropping dataplane endpoint-data batch without direct sink"
                     );
                     return 0;
                 }
@@ -159,9 +159,9 @@ impl Node {
         };
 
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
-        let mut direct_packet_batches = Vec::with_capacity(endpoint_bulks.len());
-        for bulk in endpoint_bulks {
-            for run in bulk.commit_runs() {
+        let mut direct_packet_batches = Vec::with_capacity(endpoint_batches.len());
+        for batch in endpoint_batches {
+            for run in batch.commit_runs() {
                 let commit = run.commit();
                 let source_addr = commit.source_addr();
                 let previous_hop_addr = commit.previous_hop_addr();
@@ -183,8 +183,8 @@ impl Node {
                     direct_path: commit.direct_path(),
                 });
             }
-            if bulk.direct_packet_run_count() > 0 {
-                direct_packet_batches.push(bulk.into_direct_packet_batch());
+            if batch.direct_packet_run_count() > 0 {
+                direct_packet_batches.push(batch.into_direct_packet_batch());
             }
         }
 
@@ -278,8 +278,7 @@ impl Node {
             msg_kind = ?SessionMessageType::from_byte(msg_type),
             plaintext_len = plaintext.len(),
             body_len,
-            endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte()
-                || msg_type == SessionMessageType::EndpointDataBulk.to_byte(),
+            endpoint_data = msg_type == SessionMessageType::EndpointData.to_byte(),
             "Dispatching dataplane authenticated session"
         );
 

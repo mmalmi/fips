@@ -7,8 +7,8 @@ use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, Ud
 #[cfg(test)]
 use crate::node::ENDPOINT_EVENT_TEST_PAYLOAD_LEN;
 use crate::node::{
-    EndpointDataBatchTx, EndpointDataBulkBody, EndpointDataBulkBodyBuilder, EndpointDirectSink,
-    EndpointEventSender, NodeEndpointControlCommand, NodeEndpointDataBatch, NodeEndpointEvent,
+    EndpointDataBatchTx, EndpointDirectSink, EndpointEventSender, NodeEndpointControlCommand,
+    NodeEndpointDataBatch, NodeEndpointEvent,
 };
 use crate::upper::tun::TunOutboundTx;
 use crate::{
@@ -43,104 +43,6 @@ pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
 /// This is the same pooled packet owner used by the transport/dataplane, so
 /// embedders can forward endpoint data without forcing another hot-path copy.
 pub type FipsEndpointData = crate::transport::PacketBuffer;
-
-/// Already-encoded `EndpointDataBulk` body owned by FIPS' endpoint send API.
-///
-/// Hot dataplane embedders can build this once from borrowed packet slices and
-/// hand it to FIPS without first materializing a `Vec<Vec<u8>>` batch for FIPS
-/// to repack into the same bulk wire body.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FipsEndpointBulkData(EndpointDataBulkBody);
-
-impl FipsEndpointBulkData {
-    /// Build a validated bulk body from an already encoded `EndpointDataBulk` body.
-    pub fn from_encoded_body(body: Vec<u8>) -> Option<Self> {
-        EndpointDataBulkBody::from_encoded_body(body).map(Self)
-    }
-
-    /// Build one bulk body from borrowed packet slices.
-    pub fn from_packet_slices<'a, I>(packets: I) -> Option<Self>
-    where
-        I: IntoIterator<Item = &'a [u8]>,
-    {
-        let mut builder = FipsEndpointBulkDataBuilder::new();
-        for packet in packets {
-            if !builder.push_packet(packet) {
-                return None;
-            }
-        }
-        builder.finish()
-    }
-
-    /// Encoded body length, including bulk packet-count and per-packet length fields.
-    pub fn body_len(&self) -> usize {
-        self.0.body_len()
-    }
-
-    /// Number of endpoint packets encoded in this body.
-    pub fn packet_count(&self) -> usize {
-        self.0.packet_count()
-    }
-
-    /// Sum of packet payload bytes, excluding bulk metadata.
-    pub fn packet_bytes(&self) -> usize {
-        self.0.packet_bytes()
-    }
-
-    fn into_node_body(self) -> EndpointDataBulkBody {
-        self.0
-    }
-
-    fn into_packet_payloads(self) -> Vec<Vec<u8>> {
-        self.0.into_packet_payloads()
-    }
-}
-
-/// Builder for one `EndpointDataBulk` body from borrowed packet slices.
-#[derive(Debug, Default)]
-pub struct FipsEndpointBulkDataBuilder(EndpointDataBulkBodyBuilder);
-
-impl FipsEndpointBulkDataBuilder {
-    /// Start an empty bulk body.
-    pub fn new() -> Self {
-        Self(EndpointDataBulkBodyBuilder::new())
-    }
-
-    /// Whether no packets have been added yet.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Number of endpoint packets currently encoded.
-    pub fn packet_count(&self) -> usize {
-        self.0.packet_count()
-    }
-
-    /// Sum of packet payload bytes currently encoded.
-    pub fn packet_bytes(&self) -> usize {
-        self.0.packet_bytes()
-    }
-
-    /// Encoded body length so far, including bulk metadata.
-    pub fn body_len(&self) -> usize {
-        self.0.body_len()
-    }
-
-    /// Whether `packet` fits in this body without exceeding FSP bulk limits.
-    pub fn can_push_packet(&self, packet: &[u8]) -> bool {
-        self.0.can_push_packet(packet)
-    }
-
-    /// Append one packet to this body.
-    pub fn push_packet(&mut self, packet: &[u8]) -> bool {
-        self.0.push_packet(packet)
-    }
-
-    /// Finish the body, returning `None` if no packets were added.
-    pub fn finish(self) -> Option<FipsEndpointBulkData> {
-        self.0.finish().map(FipsEndpointBulkData)
-    }
-}
 
 #[cfg(debug_assertions)]
 fn endpoint_debug_log(message: impl AsRef<str>) {
@@ -468,19 +370,6 @@ impl FipsEndpoint {
         Ok(())
     }
 
-    /// Send prebuilt endpoint bulk bodies to one resolved peer.
-    ///
-    /// This keeps FIPS as the owner of the endpoint-data queue and dataplane send
-    /// policy while letting a hot embedder build the canonical bulk body from
-    /// borrowed packet slices before crossing the FIPS boundary.
-    pub async fn send_endpoint_bulk_data_batch_to_peer(
-        &self,
-        remote: PeerIdentity,
-        bulk_bodies: Vec<FipsEndpointBulkData>,
-    ) -> Result<(), FipsEndpointError> {
-        self.send_endpoint_bulk_data_batch(remote, bulk_bodies)
-    }
-
     fn send_endpoint_data_batch(
         &self,
         remote: PeerIdentity,
@@ -496,63 +385,6 @@ impl FipsEndpoint {
             let queued_at = crate::perf_profile::stamp();
             let Some(batch) = NodeEndpointDataBatch::batch(remote, payload_batch, queued_at) else {
                 continue;
-            };
-            self.endpoint_data_batches
-                .send_or_drop(batch)
-                .map_err(|_| FipsEndpointError::Closed)?;
-        }
-        Ok(())
-    }
-
-    fn send_endpoint_bulk_data_batch(
-        &self,
-        remote: PeerIdentity,
-        bulk_bodies: Vec<FipsEndpointBulkData>,
-    ) -> Result<(), FipsEndpointError> {
-        if bulk_bodies.is_empty() {
-            return Ok(());
-        }
-
-        if *remote.node_addr() == self.node_addr {
-            for body in bulk_bodies {
-                for payload in body.into_packet_payloads() {
-                    self.send_loopback(payload)?;
-                }
-            }
-            return Ok(());
-        }
-
-        let mut batch_bodies = Vec::new();
-        let mut batch_packets = 0usize;
-        for body in bulk_bodies {
-            let body = body.into_node_body();
-            let body_packets = body.packet_count();
-            if !batch_bodies.is_empty()
-                && batch_packets.saturating_add(body_packets) > ENDPOINT_DATA_BATCH_MAX
-            {
-                let queued_at = crate::perf_profile::stamp();
-                let Some(batch) =
-                    NodeEndpointDataBatch::bulk_bodies(remote, batch_bodies, queued_at)
-                else {
-                    batch_bodies = Vec::new();
-                    batch_packets = 0;
-                    continue;
-                };
-                self.endpoint_data_batches
-                    .send_or_drop(batch)
-                    .map_err(|_| FipsEndpointError::Closed)?;
-                batch_bodies = Vec::new();
-                batch_packets = 0;
-            }
-            batch_packets = batch_packets.saturating_add(body_packets);
-            batch_bodies.push(body);
-        }
-
-        if !batch_bodies.is_empty() {
-            let queued_at = crate::perf_profile::stamp();
-            let Some(batch) = NodeEndpointDataBatch::bulk_bodies(remote, batch_bodies, queued_at)
-            else {
-                return Ok(());
             };
             self.endpoint_data_batches
                 .send_or_drop(batch)
@@ -722,15 +554,6 @@ impl FipsEndpoint {
             return Ok(());
         }
         self.send_endpoint_data_batch(remote, payloads)
-    }
-
-    /// Synchronous blocking send of prebuilt endpoint bulk bodies to one resolved peer.
-    pub fn blocking_send_endpoint_bulk_data_batch_to_peer(
-        &self,
-        remote: PeerIdentity,
-        bulk_bodies: Vec<FipsEndpointBulkData>,
-    ) -> Result<(), FipsEndpointError> {
-        self.send_endpoint_bulk_data_batch(remote, bulk_bodies)
     }
 
     /// Synchronous blocking receive — parks the calling **OS thread**

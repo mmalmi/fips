@@ -57,7 +57,6 @@ impl PacketClass {
 pub(crate) fn dataplane_fsp_message_is_application_data(msg_type: u8) -> bool {
     msg_type == crate::protocol::SessionMessageType::DataPacket.to_byte()
         || msg_type == crate::protocol::SessionMessageType::EndpointData.to_byte()
-        || msg_type == crate::protocol::SessionMessageType::EndpointDataBulk.to_byte()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

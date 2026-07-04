@@ -1844,7 +1844,7 @@ impl OwnerState {
             return Err(batch);
         }
 
-        let mut endpoint_data_bulk = None;
+        let mut endpoint_data_batch = None;
         let mut endpoint_packets = 0usize;
         for completion in batch.into_completions() {
             debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
@@ -1855,7 +1855,7 @@ impl OwnerState {
             }
 
             if completion.reservation.generation != self.generation {
-                flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+                flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
                 retired.push_drop(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::StaleCompletionGeneration,
@@ -1874,21 +1874,21 @@ impl OwnerState {
                 Ok(ingress) => {
                     self.record_retired_endpoint_data_ingress(&ingress);
                     endpoint_packets = endpoint_packets.saturating_add(ingress.len());
-                    match &mut endpoint_data_bulk {
+                    match &mut endpoint_data_batch {
                         Some(bulk) => bulk.push(ingress),
                         None => {
-                            endpoint_data_bulk =
-                                Some(DataplaneEndpointDataBulk::from_ingress(ingress));
+                            endpoint_data_batch =
+                                Some(DataplaneEndpointDataBatch::from_ingress(ingress));
                         }
                     }
                 }
                 Err(output) => {
-                    flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+                    flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
                     retired.push_output(output);
                 }
             }
         }
-        flush_retired_endpoint_data_bulk(retired, &mut endpoint_data_bulk);
+        flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
         crate::perf_profile::record_dataplane_established_fsp_data_retire_run(
             endpoint_packets,
         );
@@ -1946,7 +1946,7 @@ impl OwnerState {
             match DataplaneFspEndpointDataIngress::from_output(output) {
                 Ok(ingress) => {
                     self.record_retired_endpoint_data_ingress(&ingress);
-                    retired.push_endpoint_data_bulk(ingress);
+                    retired.push_endpoint_data_batch(ingress);
                 }
                 Err(output) => retired.push_output(output),
             }
@@ -1989,12 +1989,12 @@ fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) {
     }
 }
 
-fn flush_retired_endpoint_data_bulk(
+fn flush_retired_endpoint_data_batch(
     retired: &mut RetiredOutputs,
-    endpoint_data_bulk: &mut Option<DataplaneEndpointDataBulk>,
+    endpoint_data_batch: &mut Option<DataplaneEndpointDataBatch>,
 ) {
-    if let Some(bulk) = endpoint_data_bulk.take() {
-        retired.push_endpoint_data_bulk_batch(bulk);
+    if let Some(batch) = endpoint_data_batch.take() {
+        retired.append_endpoint_data_batch(batch);
     }
 }
 

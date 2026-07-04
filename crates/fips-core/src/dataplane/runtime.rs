@@ -19,7 +19,7 @@ pub(crate) struct DataplaneTurnDriver {
     fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
     fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
-    endpoint_data_bulk: Vec<DataplaneEndpointDataBulk>,
+    endpoint_data_batch: Vec<DataplaneEndpointDataBatch>,
     fsp_session_ingress: Vec<DataplaneFspSessionIngress>,
 }
 
@@ -59,7 +59,7 @@ impl DataplaneTurnDriver {
             fmp_link_ingress: Vec::new(),
             fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
-            endpoint_data_bulk: Vec::new(),
+            endpoint_data_batch: Vec::new(),
             fsp_session_ingress: Vec::new(),
         }
     }
@@ -359,7 +359,7 @@ impl DataplaneTurnDriver {
             .summary
             .outputs_dropped
             .saturating_add(report.transport_dropped);
-        report.endpoint_data_bulk = std::mem::take(&mut self.endpoint_data_bulk);
+        report.endpoint_data_batch = std::mem::take(&mut self.endpoint_data_batch);
         self.transport_output = transport_output;
         report
     }
@@ -545,7 +545,7 @@ impl DataplaneTurnDriver {
             && summary.outputs_sent == 0
             && summary.outputs_dropped == 0
             && summary.drops == 0
-            && !self.endpoint_data_bulk.is_empty()
+            && !self.endpoint_data_batch.is_empty()
             && self.outputs.is_empty()
             && self.raw_ingress_drops.is_empty()
             && self.output_drops.is_empty()
@@ -800,7 +800,7 @@ impl DataplaneTurnDriver {
         self.fmp_link_ingress.clear();
         self.fsp_coord_warmups.clear();
         self.fsp_local_session_ingress.clear();
-        self.endpoint_data_bulk.clear();
+        self.endpoint_data_batch.clear();
         self.fsp_session_ingress.clear();
     }
 
@@ -1231,7 +1231,7 @@ impl DataplaneTurnDriver {
                         outbound_packets.push(packet);
                     }
                     RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
-                    RetiredOutput::EndpointDataBulk(bulk) => self.push_endpoint_data_bulk(bulk),
+                    RetiredOutput::EndpointDataBatch(bulk) => self.push_endpoint_data_batch(bulk),
                 }
             }
         }
@@ -1243,11 +1243,11 @@ impl DataplaneTurnDriver {
         summary
     }
 
-    fn push_endpoint_data_bulk(&mut self, bulk: DataplaneEndpointDataBulk) {
-        if let Some(last) = self.endpoint_data_bulk.last_mut() {
+    fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {
+        if let Some(last) = self.endpoint_data_batch.last_mut() {
             last.extend(bulk);
         } else {
-            self.endpoint_data_bulk.push(bulk);
+            self.endpoint_data_batch.push(bulk);
         }
     }
 
@@ -1258,7 +1258,7 @@ impl DataplaneTurnDriver {
 
         let mut dropped = 0usize;
         let mut sink_failed = false;
-        for bulk in &mut self.endpoint_data_bulk {
+        for bulk in &mut self.endpoint_data_batch {
             let packet_batch = bulk.take_direct_packet_batch();
             let count = packet_batch.len();
             if count == 0 {

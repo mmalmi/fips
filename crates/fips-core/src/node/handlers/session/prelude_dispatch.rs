@@ -8,7 +8,7 @@ use crate::node::session_wire::{
 };
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
-    EndpointDataBulkBody, EndpointDataDelivery, LocalSessionPayload, Node, NodeEndpointControlCommand,
+    EndpointDataDelivery, LocalSessionPayload, Node, NodeEndpointControlCommand,
     NodeEndpointDataBatch, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
     SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
@@ -137,33 +137,9 @@ impl AuthenticatedSessionMessage {
     pub(in crate::node) fn is_application_data(&self) -> bool {
         self.msg_type == SessionMessageType::DataPacket.to_byte()
             || self.msg_type == SessionMessageType::EndpointData.to_byte()
-            || self.msg_type == SessionMessageType::EndpointDataBulk.to_byte()
     }
 
     pub(in crate::node) fn into_endpoint_data_deliveries(mut self) -> Vec<EndpointDataDelivery> {
-        if self.msg_type == SessionMessageType::EndpointDataBulk.to_byte() {
-            let Some(lengths) =
-                crate::node::session_wire::decode_fsp_endpoint_data_bulk_lengths(self.body())
-            else {
-                return Vec::new();
-            };
-            let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
-            let body_len = self.body_len();
-            if body_offset > 0 {
-                assert!(self.buffer.trim_front(body_offset));
-            }
-            self.buffer.truncate(body_len);
-            let source_peer = self.source_peer;
-            let buffer = self.buffer;
-            return crate::node::session_wire::split_fsp_endpoint_data_bulk_payload(
-                buffer,
-                &lengths,
-            )
-            .into_iter()
-            .map(|payload| EndpointDataDelivery::new(source_peer, payload))
-            .collect();
-        }
-
         debug_assert_eq!(self.msg_type, SessionMessageType::EndpointData.to_byte());
         // Keep the receive hot path allocation-free after AEAD open by making
         // the endpoint body the visible packet window in the existing buffer.
@@ -329,7 +305,6 @@ impl AuthenticatedSessionDispatch {
 
     fn is_endpoint_data(&self) -> bool {
         self.msg_type() == SessionMessageType::EndpointData.to_byte()
-            || self.msg_type() == SessionMessageType::EndpointDataBulk.to_byte()
     }
 
     fn is_ipv6_shim_data_packet(&self) -> bool {
@@ -456,9 +431,6 @@ impl AuthenticatedSessionDispatch {
                 }
             }
             Some(SessionMessageType::EndpointData) => {
-                node.deliver_endpoint_data_batch(self.into_endpoint_data_deliveries());
-            }
-            Some(SessionMessageType::EndpointDataBulk) => {
                 node.deliver_endpoint_data_batch(self.into_endpoint_data_deliveries());
             }
             Some(SessionMessageType::TraversalOffer) => {

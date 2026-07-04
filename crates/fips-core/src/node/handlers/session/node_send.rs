@@ -68,7 +68,7 @@ impl Node {
             remote,
             payloads
                 .into_iter()
-                .flat_map(EndpointDataBulkBody::into_packet_payloads)
+                .map(|payload| payload.into_body().into_vec())
                 .collect(),
             enqueued_at_ms,
         )

@@ -2,7 +2,7 @@
 pub(crate) struct DataplaneEndpointDataBatchRoute {
     routed: Vec<OutboundPacket>,
     dropped: Vec<(usize, DataplaneEndpointDataDropReason)>,
-    deferred_payloads: Option<Vec<EndpointDataBulkBody>>,
+    deferred_payloads: Option<Vec<EndpointDataPayload>>,
 }
 
 impl DataplaneEndpointDataBatchRoute {
@@ -13,7 +13,7 @@ impl DataplaneEndpointDataBatchRoute {
         }
     }
 
-    fn deferred(payloads: Vec<EndpointDataBulkBody>) -> Self {
+    fn deferred(payloads: Vec<EndpointDataPayload>) -> Self {
         Self {
             deferred_payloads: (!payloads.is_empty()).then_some(payloads),
             ..Default::default()
@@ -25,7 +25,7 @@ impl DataplaneEndpointDataBatchRoute {
         remote: PeerIdentity,
         drops: &mut Vec<DataplaneEndpointDataDrop>,
         mut push: F,
-    ) -> Option<Vec<EndpointDataBulkBody>>
+    ) -> Option<Vec<EndpointDataPayload>>
     where
         F: FnMut(Vec<OutboundPacket>),
     {
@@ -71,55 +71,45 @@ impl DataplaneEndpointDataRoute {
         self
     }
 
-    fn owner(&self) -> OwnerId {
-        self.owner
-    }
-
     #[cfg(test)]
     fn route_batch(&self, payloads: Vec<Vec<u8>>) -> DataplaneEndpointDataBatchRoute {
-        let mut bodies = Vec::new();
+        let mut routed_payloads = Vec::new();
         let mut dropped = Vec::new();
-        let mut builder = EndpointDataBulkBodyBuilder::new();
         for payload in payloads {
-            if !builder.can_push_packet(&payload) {
-                if let Some(body) = builder.finish() {
-                    bodies.push(body);
-                }
-                builder = EndpointDataBulkBodyBuilder::new();
+            let payload_len = payload.len();
+            match EndpointDataPayload::from_packet_payload(payload) {
+                Some(payload) => routed_payloads.push(payload),
+                None => dropped.push((payload_len, DataplaneEndpointDataDropReason::InvalidPayload)),
             }
-            if !builder.push_packet(&payload) {
-                dropped.push((payload.len(), DataplaneEndpointDataDropReason::InvalidPayload));
-                continue;
-            };
         }
-        if let Some(body) = builder.finish() {
-            bodies.push(body);
-        }
-        let mut result = self.route_bulk_bodies(bodies);
+        let mut result = self.route_payloads(routed_payloads);
         result.dropped.extend(dropped);
         result
     }
 
-    fn route_bulk_bodies(
+    fn owner(&self) -> OwnerId {
+        self.owner
+    }
+
+    fn route_payloads(
         &self,
-        bodies: Vec<EndpointDataBulkBody>,
+        payloads: Vec<EndpointDataPayload>,
     ) -> DataplaneEndpointDataBatchRoute {
-        let mut result = DataplaneEndpointDataBatchRoute::with_capacity(bodies.len());
+        let mut result = DataplaneEndpointDataBatchRoute::with_capacity(payloads.len());
         let routed_at_ms = crate::time::now_ms();
-        let max_fsp_payload = self.max_fsp_bulk_body_len();
-        for body in bodies {
-            if body.body_len() > max_fsp_payload {
-                for packet_len in body.packet_lengths() {
-                    result
-                        .dropped
-                        .push((packet_len, DataplaneEndpointDataDropReason::InvalidPayload));
-                }
+        let max_fsp_payload = self.max_fsp_body_len();
+        for payload in payloads {
+            let payload_len = payload.body_len();
+            if payload_len > max_fsp_payload {
+                result
+                    .dropped
+                    .push((payload_len, DataplaneEndpointDataDropReason::InvalidPayload));
                 continue;
             }
             result.routed.push(
-                self.build_bulk_packet(
-                    crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
-                    body.into_body(),
+                self.build_packet(
+                    crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                    payload.into_body(),
                 )
                 .with_activity_tick(ActivityTick::new(routed_at_ms)),
             );
@@ -127,11 +117,11 @@ impl DataplaneEndpointDataRoute {
         result
     }
 
-    fn max_fsp_bulk_body_len(&self) -> usize {
+    fn max_fsp_body_len(&self) -> usize {
         crate::node::session_wire::fsp_endpoint_data_max_body_len()
     }
 
-    fn build_bulk_packet(
+    fn build_packet(
         &self,
         msg_type: u8,
         payload: crate::transport::PacketBuffer,
@@ -196,7 +186,7 @@ pub(crate) trait DataplaneEndpointDataRouter {
     fn route_endpoint_data_batch(
         &mut self,
         remote: PeerIdentity,
-        payloads: Vec<EndpointDataBulkBody>,
+        payloads: Vec<EndpointDataPayload>,
     ) -> DataplaneEndpointDataBatchRoute;
 }
 
@@ -227,9 +217,12 @@ fn route_endpoint_data_batch_with_router<R, F>(
     let route = router.route_endpoint_data_batch(remote, payloads);
     let deferred_payloads = route.finish_batch(remote, drops, &mut push);
     if let Some(payloads) = deferred_payloads {
-        let batch = NodeEndpointDataBatch::bulk_bodies_with_enqueued_at_ms(
+        let batch = NodeEndpointDataBatch::batch_with_enqueued_at_ms(
             remote,
-            payloads,
+            payloads
+                .into_iter()
+                .map(|payload| payload.into_body().into_vec())
+                .collect(),
             queued_at,
             enqueued_at_ms,
         )
@@ -254,15 +247,13 @@ fn drop_stale_endpoint_data_batch(
     batch: NodeEndpointDataBatch,
     drops: &mut Vec<DataplaneEndpointDataDrop>,
 ) {
-    let (remote, bodies, _, _) = batch.into_parts();
-    for body in bodies {
-        for payload_len in body.packet_lengths() {
-            push_endpoint_data_drop(
-                remote,
-                payload_len,
-                DataplaneEndpointDataDropReason::StaleQueuedBatch,
-                drops,
-            );
-        }
+    let (remote, payloads, _, _) = batch.into_parts();
+    for payload in payloads {
+        push_endpoint_data_drop(
+            remote,
+            payload.body_len(),
+            DataplaneEndpointDataDropReason::StaleQueuedBatch,
+            drops,
+        );
     }
 }

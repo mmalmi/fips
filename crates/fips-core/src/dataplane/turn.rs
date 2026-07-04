@@ -599,7 +599,7 @@ impl DataplaneFspEndpointDataIngress {
         };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
-        let (timestamp_ms, inner_flags, plaintext_len, body_len, ranges) = {
+        let (timestamp_ms, inner_flags, plaintext_len, body_len) = {
             let Some(plaintext) = output.opened_payload() else {
                 return Err(output);
             };
@@ -608,15 +608,10 @@ impl DataplaneFspEndpointDataIngress {
             else {
                 return Err(output);
             };
-            if msg_type != crate::protocol::SessionMessageType::EndpointDataBulk.to_byte()
-            {
+            if msg_type != crate::protocol::SessionMessageType::EndpointData.to_byte() {
                 return Err(output);
             }
-            let Some(ranges) = crate::node::session_wire::decode_fsp_endpoint_data_bulk_ranges(body)
-            else {
-                return Err(output);
-            };
-            (timestamp_ms, inner_flags, plaintext.len(), body.len(), ranges)
+            (timestamp_ms, inner_flags, plaintext.len(), body.len())
         };
         let receive_sync = FspReceiveSync {
             counter: output.counter(),
@@ -630,6 +625,7 @@ impl DataplaneFspEndpointDataIngress {
         let mut payload = output.into_opened_payload()?;
         assert!(payload.trim_front(FSP_INNER_HEADER_SIZE));
         payload.truncate(body_len);
+        let ranges = std::iter::once(0..body_len).collect();
         let packet_run = FipsEndpointDirectPacketRun::from_segmented_payload(
             FipsEndpointDirectPacketRunMeta::new(
                 source_peer,
@@ -649,7 +645,7 @@ impl DataplaneFspEndpointDataIngress {
                 received_k_bit: receive_sync.received_k_bit,
                 direct_path: previous_hop_addr == source_addr,
             },
-            msg_type: crate::protocol::SessionMessageType::EndpointDataBulk.to_byte(),
+            msg_type: crate::protocol::SessionMessageType::EndpointData.to_byte(),
             body_len,
             receive_sync,
             activity_tick,
@@ -671,13 +667,13 @@ impl DataplaneFspEndpointDataIngress {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct DataplaneEndpointDataBulk {
+pub(crate) struct DataplaneEndpointDataBatch {
     commit_runs: Vec<DataplaneFspEndpointDataCommitRun>,
     packet_runs: Vec<FipsEndpointDirectPacketRun>,
     len: usize,
 }
 
-impl DataplaneEndpointDataBulk {
+impl DataplaneEndpointDataBatch {
     pub(crate) fn from_ingress(ingress: DataplaneFspEndpointDataIngress) -> Self {
         let len = ingress.len();
         let commit = ingress.commit();
@@ -759,7 +755,7 @@ pub(crate) struct DataplaneLiveNodeTurn {
     fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
     fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
-    endpoint_data_bulk: Vec<DataplaneEndpointDataBulk>,
+    endpoint_data_batch: Vec<DataplaneEndpointDataBatch>,
     fsp_session_ingress: Vec<DataplaneFspSessionIngress>,
     raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
     tun_outbound_drops: Vec<DataplaneTunOutboundDrop>,
@@ -837,18 +833,18 @@ impl DataplaneLiveNodeTurn {
         std::mem::take(&mut self.fsp_local_session_ingress)
     }
 
-    pub(crate) fn take_endpoint_data_bulk(&mut self) -> Vec<DataplaneEndpointDataBulk> {
-        std::mem::take(&mut self.endpoint_data_bulk)
+    pub(crate) fn take_endpoint_data_batch(&mut self) -> Vec<DataplaneEndpointDataBatch> {
+        std::mem::take(&mut self.endpoint_data_batch)
     }
 
-    pub(crate) fn endpoint_data_bulk(&self) -> &[DataplaneEndpointDataBulk] {
-        &self.endpoint_data_bulk
+    pub(crate) fn endpoint_data_batch(&self) -> &[DataplaneEndpointDataBatch] {
+        &self.endpoint_data_batch
     }
 
-    pub(crate) fn endpoint_data_bulk_count(&self) -> usize {
-        self.endpoint_data_bulk
+    pub(crate) fn endpoint_data_batch_count(&self) -> usize {
+        self.endpoint_data_batch
             .iter()
-            .map(DataplaneEndpointDataBulk::len)
+            .map(DataplaneEndpointDataBatch::len)
             .sum()
     }
 
@@ -915,7 +911,7 @@ impl DataplaneLiveNodeTurn {
             || !self.fmp_link_ingress.is_empty()
             || !self.fsp_coord_warmups.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
-            || !self.endpoint_data_bulk.is_empty()
+            || !self.endpoint_data_batch.is_empty()
             || !self.fsp_session_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
@@ -952,8 +948,8 @@ impl DataplaneLiveNodeTurn {
         self.fsp_coord_warmups.append(&mut other.fsp_coord_warmups);
         self.fsp_local_session_ingress
             .append(&mut other.fsp_local_session_ingress);
-        self.endpoint_data_bulk
-            .append(&mut other.endpoint_data_bulk);
+        self.endpoint_data_batch
+            .append(&mut other.endpoint_data_batch);
         self.fsp_session_ingress
             .append(&mut other.fsp_session_ingress);
         self.raw_ingress_drops.append(&mut other.raw_ingress_drops);

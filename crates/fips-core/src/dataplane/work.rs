@@ -361,7 +361,7 @@ pub(crate) struct RetiredOutputs {
 #[derive(Clone, Debug)]
 pub(crate) enum RetiredOutput {
     Packet(RetiredPacket),
-    EndpointDataBulk(DataplaneEndpointDataBulk),
+    EndpointDataBatch(DataplaneEndpointDataBatch),
 }
 
 impl RetiredOutputs {
@@ -391,22 +391,22 @@ impl RetiredOutputs {
         self.push_packet(RetiredPacket::Drop(drop));
     }
 
-    pub(crate) fn push_endpoint_data_bulk(
+    pub(crate) fn push_endpoint_data_batch(
         &mut self,
         ingress: DataplaneFspEndpointDataIngress,
     ) {
         match self.items.last_mut() {
-            Some(RetiredOutput::EndpointDataBulk(bulk)) => bulk.push(ingress),
-            _ => self.items.push(RetiredOutput::EndpointDataBulk(
-                DataplaneEndpointDataBulk::from_ingress(ingress),
+            Some(RetiredOutput::EndpointDataBatch(batch)) => batch.push(ingress),
+            _ => self.items.push(RetiredOutput::EndpointDataBatch(
+                DataplaneEndpointDataBatch::from_ingress(ingress),
             )),
         }
     }
 
-    pub(crate) fn push_endpoint_data_bulk_batch(&mut self, bulk: DataplaneEndpointDataBulk) {
+    pub(crate) fn append_endpoint_data_batch(&mut self, batch: DataplaneEndpointDataBatch) {
         match self.items.last_mut() {
-            Some(RetiredOutput::EndpointDataBulk(last)) => last.extend(bulk),
-            _ => self.items.push(RetiredOutput::EndpointDataBulk(bulk)),
+            Some(RetiredOutput::EndpointDataBatch(last)) => last.extend(batch),
+            _ => self.items.push(RetiredOutput::EndpointDataBatch(batch)),
         }
     }
 

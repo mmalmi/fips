@@ -22,8 +22,7 @@
 //!
 //! Port 256 (0x100) = IPv6 shim with header compression.
 //!
-//! App-owned endpoint data uses EndpointData/EndpointDataBulk directly, without
-//! DataPacket port dispatch.
+//! App-owned endpoint data uses EndpointData directly, without DataPacket port dispatch.
 //!
 //! ## Message Classes
 //!
@@ -36,9 +35,7 @@
 //! | 0x3   | -      | Handshake msg3   | SessionMsg3 (Noise XK msg3)       |
 
 use crate::protocol::{ProtocolError, decode_optional_coords};
-use crate::transport::PacketBuffer;
 use crate::tree::TreeCoordinate;
-use std::ops::Range;
 
 // ============================================================================
 // Constants
@@ -76,16 +73,6 @@ pub const FSP_PORT_HEADER_SIZE: usize = 4;
 /// FSP port: IPv6 shim service.
 pub const FSP_PORT_IPV6_SHIM: u16 = 256;
 
-/// Maximum endpoint payloads carried by one authenticated endpoint-data bulk record.
-///
-/// The u16 FSP body length can hold about 48 nvpn MTU-sized packets. Keeping
-/// that whole Linux vnet/GRO-sized run in one direct-FSP record avoids
-/// splitting a natural TUN batch into multiple AEAD records on the hot path.
-pub const FSP_ENDPOINT_DATA_BULK_MAX_PACKETS: usize = 48;
-
-const FSP_ENDPOINT_DATA_BULK_COUNT_SIZE: usize = 2;
-pub(crate) const FSP_ENDPOINT_DATA_BULK_LEN_SIZE: usize = 2;
-
 // Cleartext flag bit constants (byte 1 of common prefix, phase 0x0 only).
 
 /// Coords Present — source and destination coordinates follow the header.
@@ -110,100 +97,6 @@ pub const FSP_INNER_FLAG_SP: u8 = 0x01;
 /// Maximum endpoint-data body bytes that fit under the FSP u16 payload length.
 pub const fn fsp_endpoint_data_max_body_len() -> usize {
     u16::MAX as usize - FSP_INNER_HEADER_SIZE
-}
-
-/// Encoded body bytes added by one packet in an endpoint-data bulk record.
-pub const fn fsp_endpoint_data_bulk_packet_wire_len(packet_len: usize) -> Option<usize> {
-    if packet_len > u16::MAX as usize {
-        return None;
-    }
-    Some(FSP_ENDPOINT_DATA_BULK_LEN_SIZE + packet_len)
-}
-
-/// Initial encoded body length for an endpoint-data bulk record before packet entries.
-pub const fn fsp_endpoint_data_bulk_base_wire_len() -> usize {
-    FSP_ENDPOINT_DATA_BULK_COUNT_SIZE
-}
-
-/// Encode packet boundaries and bytes for `SessionMessageType::EndpointDataBulk`.
-#[cfg(test)]
-pub(crate) fn encode_fsp_endpoint_data_bulk_payload(mut packets: Vec<Vec<u8>>) -> Option<Vec<u8>> {
-    if packets.is_empty() || packets.len() > FSP_ENDPOINT_DATA_BULK_MAX_PACKETS {
-        return None;
-    }
-
-    let mut wire_len = fsp_endpoint_data_bulk_base_wire_len();
-    for packet in &packets {
-        wire_len = wire_len.checked_add(fsp_endpoint_data_bulk_packet_wire_len(packet.len())?)?;
-    }
-    if wire_len > fsp_endpoint_data_max_body_len() {
-        return None;
-    }
-
-    let mut encoded = Vec::with_capacity(wire_len);
-    encoded.extend_from_slice(&(packets.len() as u16).to_le_bytes());
-    for packet in &mut packets {
-        encoded.extend_from_slice(&(packet.len() as u16).to_le_bytes());
-        encoded.append(packet);
-    }
-    Some(encoded)
-}
-
-/// Decode packet lengths from an endpoint-data bulk body.
-pub fn decode_fsp_endpoint_data_bulk_lengths(payload: &[u8]) -> Option<Vec<usize>> {
-    Some(
-        decode_fsp_endpoint_data_bulk_ranges(payload)?
-            .into_iter()
-            .map(|range| range.len())
-            .collect(),
-    )
-}
-
-/// Decode packet byte ranges from an endpoint-data bulk body.
-///
-/// The returned ranges point into `payload`; they skip the bulk count and each
-/// per-packet length field. Keeping ranges instead of splitting immediately lets
-/// endpoint embedders borrow packet slices from one opened AEAD buffer.
-pub fn decode_fsp_endpoint_data_bulk_ranges(payload: &[u8]) -> Option<Vec<Range<usize>>> {
-    if payload.len() < FSP_ENDPOINT_DATA_BULK_COUNT_SIZE {
-        return None;
-    }
-    let count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
-    if count == 0 || count > FSP_ENDPOINT_DATA_BULK_MAX_PACKETS {
-        return None;
-    }
-
-    let mut lengths = Vec::with_capacity(count);
-    let mut offset = FSP_ENDPOINT_DATA_BULK_COUNT_SIZE;
-    for _ in 0..count {
-        let len_end = offset.checked_add(FSP_ENDPOINT_DATA_BULK_LEN_SIZE)?;
-        let len_bytes = payload.get(offset..len_end)?;
-        let packet_len = u16::from_le_bytes([len_bytes[0], len_bytes[1]]) as usize;
-        offset = len_end;
-        let packet_end = offset.checked_add(packet_len)?;
-        payload.get(offset..packet_end)?;
-        lengths.push(offset..packet_end);
-        offset = packet_end;
-    }
-
-    (offset == payload.len()).then_some(lengths)
-}
-
-/// Split an owned endpoint-data bulk body into owned packet buffers.
-pub fn split_fsp_endpoint_data_bulk_payload(
-    payload: PacketBuffer,
-    lengths: &[usize],
-) -> Vec<PacketBuffer> {
-    let body = payload.as_slice();
-    let mut packets = Vec::with_capacity(lengths.len());
-    let mut offset = FSP_ENDPOINT_DATA_BULK_COUNT_SIZE;
-    for packet_len in lengths {
-        offset += FSP_ENDPOINT_DATA_BULK_LEN_SIZE;
-        let packet_end = offset + packet_len;
-        packets.push(body[offset..packet_end].to_vec().into());
-        offset = packet_end;
-    }
-    packets
 }
 
 // ============================================================================
@@ -524,48 +417,6 @@ mod tests {
     fn test_inner_header_too_short() {
         assert!(fsp_strip_inner_header(&[0, 0, 0, 0, 0]).is_none()); // needs 6 bytes
         assert!(fsp_strip_inner_header(&[]).is_none());
-    }
-
-    #[test]
-    fn endpoint_data_bulk_payload_roundtrips_packet_boundaries() {
-        let encoded = encode_fsp_endpoint_data_bulk_payload(vec![
-            b"first".to_vec(),
-            b"second-packet".to_vec(),
-            b"third".to_vec(),
-        ])
-        .unwrap();
-
-        let lengths = decode_fsp_endpoint_data_bulk_lengths(&encoded).unwrap();
-        assert_eq!(lengths, vec![5, 13, 5]);
-
-        let packets = split_fsp_endpoint_data_bulk_payload(encoded.into(), &lengths);
-        assert_eq!(packets.len(), 3);
-        assert_eq!(packets[0].as_slice(), b"first");
-        assert_eq!(packets[1].as_slice(), b"second-packet");
-        assert_eq!(packets[2].as_slice(), b"third");
-    }
-
-    #[test]
-    fn endpoint_data_bulk_payload_rejects_malformed_records() {
-        assert!(encode_fsp_endpoint_data_bulk_payload(Vec::new()).is_none());
-        assert!(decode_fsp_endpoint_data_bulk_lengths(&[]).is_none());
-        assert!(decode_fsp_endpoint_data_bulk_lengths(&[0, 0]).is_none());
-        assert!(decode_fsp_endpoint_data_bulk_lengths(&[1, 0, 5, 0, b'a']).is_none());
-
-        let too_many = vec![Vec::new(); FSP_ENDPOINT_DATA_BULK_MAX_PACKETS + 1];
-        assert!(encode_fsp_endpoint_data_bulk_payload(too_many).is_none());
-    }
-
-    #[test]
-    fn endpoint_data_bulk_payload_preserves_vnet_sized_run() {
-        let mtu_sized_packets = vec![vec![0x42; 1342]; FSP_ENDPOINT_DATA_BULK_MAX_PACKETS];
-        let encoded =
-            encode_fsp_endpoint_data_bulk_payload(mtu_sized_packets).expect("48 MTU packets fit");
-        let lengths = decode_fsp_endpoint_data_bulk_lengths(&encoded).unwrap();
-        assert_eq!(lengths, vec![1342; FSP_ENDPOINT_DATA_BULK_MAX_PACKETS]);
-
-        let one_too_many = vec![vec![0x42; 1342]; FSP_ENDPOINT_DATA_BULK_MAX_PACKETS + 1];
-        assert!(encode_fsp_endpoint_data_bulk_payload(one_too_many).is_none());
     }
 
     // ===== Flag Constants Tests =====
