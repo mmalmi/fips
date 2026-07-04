@@ -139,6 +139,7 @@ fn rating_fact_subscription_is_enabled_by_trust_config() {
         filter["kinds"],
         serde_json::json!([ratings::RATING_FACT_KIND])
     );
+    assert_eq!(filter["#i"], serde_json::json!(["fips.peer"]));
     assert_eq!(filter["limit"], 500);
     assert!(filter["since"].as_u64().is_some());
 }

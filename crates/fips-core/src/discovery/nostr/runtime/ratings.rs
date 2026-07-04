@@ -15,6 +15,13 @@ impl NostrDiscovery {
         let mut filter = Filter::new()
             .kind(Kind::Custom(RATING_FACT_KIND))
             .limit(RATING_FACT_LOOKUP_LIMIT);
+        let scope = self.config.open_discovery_rating_scope.trim();
+        if !scope.is_empty() {
+            filter = filter.custom_tag(
+                SingleLetterTag::lowercase(Alphabet::I),
+                scope.to_lowercase(),
+            );
+        }
         let lookback_secs = self.config.open_discovery_rating_lookback_secs;
         if lookback_secs > 0 {
             let since = now_ms().saturating_div(1_000).saturating_sub(lookback_secs);
