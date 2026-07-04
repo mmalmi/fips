@@ -590,11 +590,9 @@ impl TunWriter {
             }
 
             let write_result = {
-                let packet_slices: Vec<&[u8]> =
-                    batch.iter().map(|packet| packet.as_slice()).collect();
                 linux_vnet::write_packet_slices_to_tun(
                     &mut self.file,
-                    &packet_slices,
+                    batch.iter().map(|packet| packet.as_slice()),
                     &mut write_preparer,
                 )
             };

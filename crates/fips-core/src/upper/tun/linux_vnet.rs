@@ -542,13 +542,16 @@ impl LinuxVnetWritePreparer {
         }
     }
 
-    fn prepare(&mut self, packets: &[&[u8]]) {
+    fn prepare<'a, I>(&mut self, packets: I)
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
         self.frames.clear();
         self.open_tcp6_flows.clear();
         self.vectored_frame_count = 0;
         self.packet_refs.clear();
         self.packet_refs
-            .extend(packets.iter().map(|packet| LinuxVnetPacketRef::new(packet)));
+            .extend(packets.into_iter().map(LinuxVnetPacketRef::new));
 
         self.frames.reserve(self.packet_refs.len());
         self.open_tcp6_flows.reserve(self.packet_refs.len());
@@ -626,9 +629,9 @@ impl LinuxVnetWritePreparer {
     }
 }
 
-pub(super) fn write_packet_slices_to_tun(
+pub(super) fn write_packet_slices_to_tun<'a>(
     file: &mut File,
-    packets: &[&[u8]],
+    packets: impl IntoIterator<Item = &'a [u8]>,
     preparer: &mut LinuxVnetWritePreparer,
 ) -> io::Result<()> {
     preparer.prepare(packets);
@@ -1025,7 +1028,7 @@ mod tests {
     fn prepared_write_frame_bytes(packets: &[Vec<u8>]) -> Vec<Vec<u8>> {
         let packet_slices: Vec<&[u8]> = packets.iter().map(Vec::as_slice).collect();
         let mut preparer = LinuxVnetWritePreparer::new();
-        preparer.prepare(&packet_slices);
+        preparer.prepare(packet_slices.iter().copied());
         preparer
             .frames
             .iter()
