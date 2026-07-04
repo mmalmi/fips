@@ -68,6 +68,8 @@ fn test_nostr_discovery_startup_sweep_defaults() {
     let c = NostrDiscoveryConfig::default();
     assert_eq!(c.startup_sweep_delay_secs, 5);
     assert_eq!(c.startup_sweep_max_age_secs, 3_600);
+    assert!(!c.open_discovery_trust_ratings_enabled);
+    assert_eq!(c.open_discovery_newcomer_probe_slots, 1);
 }
 
 #[test]
@@ -87,6 +89,15 @@ fn test_nostr_discovery_startup_sweep_partial_yaml_uses_defaults() {
     let c: NostrDiscoveryConfig = serde_yaml::from_str(yaml).unwrap();
     assert_eq!(c.startup_sweep_delay_secs, 30);
     assert_eq!(c.startup_sweep_max_age_secs, 3_600);
+}
+
+#[test]
+fn test_nostr_discovery_trust_rating_yaml_override() {
+    let yaml = "enabled: true\npolicy: open\nopen_discovery_trust_ratings_enabled: true\nopen_discovery_newcomer_probe_slots: 2\n";
+    let c: NostrDiscoveryConfig = serde_yaml::from_str(yaml).unwrap();
+
+    assert!(c.open_discovery_trust_ratings_enabled);
+    assert_eq!(c.open_discovery_newcomer_probe_slots, 2);
 }
 
 #[test]

@@ -34,6 +34,7 @@ impl NostrDiscovery {
             relay_config: RwLock::new(NostrRelayConfig::from(&config)),
             config,
             advert_cache: RwLock::new(HashMap::new()),
+            peer_trust_scores: RwLock::new(HashMap::new()),
             local_advert: RwLock::new(None),
             current_advert_event_id: RwLock::new(None),
             pending_answers: Mutex::new(HashMap::new()),

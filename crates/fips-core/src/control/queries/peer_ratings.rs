@@ -79,7 +79,7 @@ pub fn show_peer_ratings(node: &Node, params: Option<&Value>) -> super::super::p
 impl PeerRatingQuery {
     fn parse(params: Option<&Value>) -> Result<Self, String> {
         let scope = params
-            .and_then(|params| params.get("scope").or_else(|| params.get("context")))
+            .and_then(|params| params.get("scope"))
             .and_then(Value::as_str)
             .unwrap_or(DEFAULT_RATING_SCOPE)
             .trim()
