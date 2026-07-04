@@ -378,6 +378,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::identity::Identity;
+    use nostr::ToBech32;
 
     const TEST_SEED: [u8; 32] = [0xAB; 32];
 
@@ -476,6 +477,73 @@ mod tests {
             tags.iter()
                 .any(|tag| tag == &json!(["subject", "npub1peer"]))
         );
+    }
+
+    #[tokio::test]
+    async fn machine_rating_fact_event_updates_discovery_trust_and_downgrades() {
+        let node = build_test_node();
+        let subject = nostr::Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("subject npub");
+        let discovery = crate::discovery::nostr::NostrDiscovery::new_for_test_with_config(
+            crate::config::NostrDiscoveryConfig {
+                open_discovery_trust_ratings_enabled: true,
+                open_discovery_trusted_rating_authors: vec![node.npub()],
+                ..Default::default()
+            },
+        );
+        let healthy_peer = json!({
+            "npub": subject,
+            "stats": {"packets_sent": 100, "packets_recv": 120},
+            "mmp": {
+                "smoothed_loss": 0.001,
+                "smoothed_etx": 1.01,
+                "delivery_ratio_forward": 0.999,
+                "delivery_ratio_reverse": 0.998,
+                "srtt_ms": 20.0,
+                "goodput_bps": 8_000_000.0
+            },
+            "replay_suppressed": 0,
+            "consecutive_decrypt_failures": 0
+        });
+        let degraded_peer = json!({
+            "npub": subject,
+            "stats": {"packets_sent": 100, "packets_recv": 120},
+            "mmp": {
+                "smoothed_loss": 0.25,
+                "smoothed_etx": 3.2,
+                "delivery_ratio_forward": 0.73,
+                "delivery_ratio_reverse": 0.81,
+                "srtt_ms": 1200.0,
+                "goodput_bps": 50_000.0
+            },
+            "replay_suppressed": 2,
+            "consecutive_decrypt_failures": 2
+        });
+        let keys = nostr_keys_for_node(&node).expect("node nostr keys");
+        let healthy = peer_rating_record(&node.npub(), &healthy_peer, "fips.peer", 1_000)
+            .expect("healthy machine rating")
+            .to_fact_event(&keys)
+            .expect("healthy rating event");
+        let degraded = peer_rating_record(&node.npub(), &degraded_peer, "fips.peer", 1_001)
+            .expect("degraded machine rating")
+            .to_fact_event(&keys)
+            .expect("degraded rating event");
+
+        healthy.verify().expect("healthy event verifies");
+        assert!(discovery.process_rating_fact_event(&healthy).await);
+        let scores = discovery
+            .trust_scores_for_npubs(std::slice::from_ref(&subject))
+            .await;
+        assert_eq!(scores.get(&subject), Some(&100));
+
+        degraded.verify().expect("degraded event verifies");
+        assert!(discovery.process_rating_fact_event(&degraded).await);
+        let scores = discovery
+            .trust_scores_for_npubs(std::slice::from_ref(&subject))
+            .await;
+        assert_eq!(scores.get(&subject), Some(&-100));
     }
 
     #[test]
