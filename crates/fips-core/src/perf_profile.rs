@@ -471,7 +471,7 @@ pub enum Event {
     DataplaneDispatchExecutorFull = 204,
     DataplaneDispatchOwnerBlockedTotal = 205,
     DataplaneDispatchOwnerBlockedBulkLane = 206,
-    ReservedEvent207 = 207,
+    DataplaneDispatchIngressOwnerBlocked = 207,
     DataplaneSealInPlace = 208,
     DataplaneSealAllocated = 209,
     DataplaneTransportSendWorkerBackpressure = 210,
@@ -481,7 +481,7 @@ pub enum Event {
     DataplaneOutboundBatchAdmit = 214,
     DataplaneOutboundBatchPackets = 215,
     DataplaneTransportSendWorkerSendFailed = 216,
-    ReservedEvent217 = 217,
+    DataplaneDispatchOutboundOwnerBlocked = 217,
     ReservedEvent218 = 218,
     ReservedEvent219 = 219,
     ReservedEvent220 = 220,
@@ -723,7 +723,9 @@ impl Event {
             Event::DataplaneDispatchOwnerBlockedBulkLane => {
                 "dataplane_dispatch_owner_blocked_bulk_lane"
             }
-            Event::ReservedEvent207 => "reserved_event_207",
+            Event::DataplaneDispatchIngressOwnerBlocked => {
+                "dataplane_dispatch_ingress_owner_blocked"
+            }
             Event::DataplaneSealInPlace => "dataplane_seal_in_place",
             Event::DataplaneSealAllocated => "dataplane_seal_allocated",
             Event::DataplaneTransportSendWorkerBackpressure => {
@@ -737,7 +739,9 @@ impl Event {
             Event::DataplaneTransportSendWorkerSendFailed => {
                 "dataplane_transport_send_worker_send_failed"
             }
-            Event::ReservedEvent217 => "reserved_event_217",
+            Event::DataplaneDispatchOutboundOwnerBlocked => {
+                "dataplane_dispatch_outbound_owner_blocked"
+            }
             Event::ReservedEvent218 => "reserved_event_218",
             Event::ReservedEvent219 => "reserved_event_219",
             Event::ReservedEvent220 => "reserved_event_220",
@@ -984,7 +988,7 @@ fn event_from_index(idx: usize) -> Event {
         204 => Event::DataplaneDispatchExecutorFull,
         205 => Event::DataplaneDispatchOwnerBlockedTotal,
         206 => Event::DataplaneDispatchOwnerBlockedBulkLane,
-        207 => Event::ReservedEvent207,
+        207 => Event::DataplaneDispatchIngressOwnerBlocked,
         208 => Event::DataplaneSealInPlace,
         209 => Event::DataplaneSealAllocated,
         210 => Event::DataplaneTransportSendWorkerBackpressure,
@@ -994,7 +998,7 @@ fn event_from_index(idx: usize) -> Event {
         214 => Event::DataplaneOutboundBatchAdmit,
         215 => Event::DataplaneOutboundBatchPackets,
         216 => Event::DataplaneTransportSendWorkerSendFailed,
-        217 => Event::ReservedEvent217,
+        217 => Event::DataplaneDispatchOutboundOwnerBlocked,
         218 => Event::ReservedEvent218,
         219 => Event::ReservedEvent219,
         220 => Event::ReservedEvent220,

@@ -209,6 +209,14 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
             "dataplane_dispatch_owner_blocked_bulk_lane",
         ),
         (
+            Event::DataplaneDispatchIngressOwnerBlocked,
+            "dataplane_dispatch_ingress_owner_blocked",
+        ),
+        (
+            Event::DataplaneDispatchOutboundOwnerBlocked,
+            "dataplane_dispatch_outbound_owner_blocked",
+        ),
+        (
             Event::DataplaneTransportSendWorkerBackpressure,
             "dataplane_transport_send_worker_backpressure",
         ),
