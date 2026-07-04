@@ -79,6 +79,9 @@ pub enum FipsEndpointError {
 
     #[error("invalid remote npub '{npub}': {reason}")]
     InvalidRemoteNpub { npub: String, reason: String },
+
+    #[error("endpoint data payload is too large: {len} bytes exceeds max {max} bytes")]
+    EndpointDataTooLarge { len: usize, max: usize },
 }
 
 /// Source-attributed endpoint data delivered to an embedded application.
@@ -218,6 +221,21 @@ fn endpoint_ethernet_instance_name(interface: &str) -> String {
     }
 }
 
+fn validate_endpoint_data_payload_len(len: usize) -> Result<(), FipsEndpointError> {
+    let max = crate::node::session_wire::fsp_endpoint_data_max_body_len();
+    if len > max {
+        return Err(FipsEndpointError::EndpointDataTooLarge { len, max });
+    }
+    Ok(())
+}
+
+fn validate_endpoint_data_payloads(payloads: &[Vec<u8>]) -> Result<(), FipsEndpointError> {
+    for payload in payloads {
+        validate_endpoint_data_payload_len(payload.len())?;
+    }
+    Ok(())
+}
+
 fn spawn_node_task(
     mut node: Node,
     shutdown_rx: oneshot::Receiver<()>,
@@ -313,6 +331,7 @@ impl FipsEndpoint {
     ) -> Result<(), FipsEndpointError> {
         let remote_npub = remote_npub.into();
         let data = data.into();
+        validate_endpoint_data_payload_len(data.len())?;
         if remote_npub == self.npub {
             return self.send_loopback(data);
         }
@@ -333,6 +352,7 @@ impl FipsEndpoint {
         data: impl Into<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
         let data = data.into();
+        validate_endpoint_data_payload_len(data.len())?;
         if *remote.node_addr() == self.node_addr {
             return self.send_loopback(data);
         }
@@ -356,6 +376,7 @@ impl FipsEndpoint {
         remote: PeerIdentity,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
+        validate_endpoint_data_payloads(&payloads)?;
         if *remote.node_addr() == self.node_addr {
             for payload in payloads {
                 self.send_loopback(payload)?;
@@ -503,6 +524,7 @@ impl FipsEndpoint {
     ) -> Result<(), FipsEndpointError> {
         let remote_npub = remote_npub.into();
         let data = data.into();
+        validate_endpoint_data_payload_len(data.len())?;
         if remote_npub == self.npub {
             return self.send_loopback(data);
         }
@@ -520,6 +542,7 @@ impl FipsEndpoint {
         data: impl Into<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
         let data = data.into();
+        validate_endpoint_data_payload_len(data.len())?;
         if *remote.node_addr() == self.node_addr {
             return self.send_loopback(data);
         }
@@ -543,6 +566,7 @@ impl FipsEndpoint {
         remote: PeerIdentity,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
+        validate_endpoint_data_payloads(&payloads)?;
         if *remote.node_addr() == self.node_addr {
             for payload in payloads {
                 self.send_loopback(payload)?;

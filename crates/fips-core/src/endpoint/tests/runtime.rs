@@ -105,6 +105,29 @@ async fn send_batch_to_peer_loopback_endpoint_data_roundtrips() {
 }
 
 #[tokio::test]
+async fn endpoint_send_batch_rejects_oversize_payload() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+
+    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+    let max = crate::node::session_wire::fsp_endpoint_data_max_body_len();
+    let error = endpoint
+        .send_batch_to_peer(local, vec![b"ok".to_vec(), vec![0; max + 1]])
+        .await
+        .expect_err("oversize endpoint payload should fail explicitly");
+    assert!(matches!(
+        error,
+        FipsEndpointError::EndpointDataTooLarge { len, max: error_max }
+            if len == max + 1 && error_max == max
+    ));
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn recv_batch_drains_ready_loopback_endpoint_data() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()
