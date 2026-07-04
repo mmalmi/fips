@@ -11,6 +11,7 @@ use fips::config::{write_key_file, write_pub_file};
 use fips::upper::hosts::HostMap;
 use fips::version;
 use fips::{Identity, encode_nsec};
+use nostr_sdk::prelude::{Client, Event, Keys};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv6Addr, SocketAddrV6};
 use std::path::{Path, PathBuf};
@@ -115,7 +116,7 @@ enum RatingsCommands {
     /// Export current peer health as social-graph rating JSON
     Export {
         /// Rating scope to write into each record
-        #[arg(long, alias = "context", default_value = "fips.peer")]
+        #[arg(long, default_value = "fips.peer")]
         scope: String,
         /// Export records or signed Nostr fact events
         #[arg(long, value_enum, default_value_t = RatingExportFormat::Records)]
@@ -123,6 +124,18 @@ enum RatingsCommands {
         /// Output file. Defaults to stdout.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
+    },
+    /// Publish signed local peer-rating fact events to Nostr relays
+    Publish {
+        /// Rating scope to publish
+        #[arg(long, default_value = "fips.peer")]
+        scope: String,
+        /// Relay URL to publish to. Can be supplied more than once.
+        #[arg(long = "relay", required = true)]
+        relays: Vec<String>,
+        /// Print machine-readable publish results.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -332,6 +345,24 @@ fn export_peer_ratings(
     format: RatingExportFormat,
     output: Option<&Path>,
 ) -> Result<(), String> {
+    let export = fetch_peer_rating_export(socket_path, scope, format)?;
+    let rendered =
+        serde_json::to_string_pretty(&export).map_err(|e| format!("failed to encode JSON: {e}"))?;
+
+    if let Some(path) = output {
+        std::fs::write(path, rendered)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    } else {
+        println!("{rendered}");
+    }
+    Ok(())
+}
+
+fn fetch_peer_rating_export(
+    socket_path: &Path,
+    scope: &str,
+    format: RatingExportFormat,
+) -> Result<serde_json::Value, String> {
     let scope = scope.trim();
     if scope.is_empty() {
         return Err("rating scope cannot be empty".to_string());
@@ -347,17 +378,124 @@ fn export_peer_ratings(
             }),
         ),
     )?;
-    let export = control_response_data(&response, "show_peer_ratings")?;
-    let rendered =
-        serde_json::to_string_pretty(export).map_err(|e| format!("failed to encode JSON: {e}"))?;
+    control_response_data(&response, "show_peer_ratings").cloned()
+}
 
-    if let Some(path) = output {
-        std::fs::write(path, rendered)
-            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+fn publish_peer_ratings(
+    socket_path: &Path,
+    scope: &str,
+    relays: &[String],
+    json_output: bool,
+) -> Result<(), String> {
+    if relays.is_empty() {
+        return Err("at least one relay is required".to_string());
+    }
+    let export = fetch_peer_rating_export(socket_path, scope, RatingExportFormat::Events)?;
+    let events = peer_rating_events_from_export(&export)?;
+    let report = publish_peer_rating_events_to_relays(&events, relays)?;
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .map_err(|e| format!("failed to encode publish report: {e}"))?
+        );
     } else {
-        println!("{rendered}");
+        println!("rating_events: {}", events.len());
+        println!("relays: {}", relays.join(", "));
+        for event in report
+            .get("events")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let event_id = event
+                .get("event_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let success = event
+                .get("success_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default();
+            let failed = event
+                .get("failed_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default();
+            println!("event: {event_id} published={success} failed={failed}");
+        }
     }
     Ok(())
+}
+
+fn peer_rating_events_from_export(export: &serde_json::Value) -> Result<Vec<Event>, String> {
+    let events = export
+        .get("events")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "peer rating export did not include events array".to_string())?;
+    events
+        .iter()
+        .map(|value| {
+            let event: Event = serde_json::from_value(value.clone())
+                .map_err(|e| format!("failed to decode rating event: {e}"))?;
+            event
+                .verify()
+                .map_err(|e| format!("rating event signature verification failed: {e}"))?;
+            Ok(event)
+        })
+        .collect()
+}
+
+fn publish_peer_rating_events_to_relays(
+    events: &[Event],
+    relays: &[String],
+) -> Result<serde_json::Value, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to start async runtime: {e}"))?;
+
+    runtime.block_on(async {
+        let client = Client::new(Keys::generate());
+        for relay in relays {
+            client
+                .add_relay(relay)
+                .await
+                .map_err(|e| format!("failed to add relay {relay}: {e}"))?;
+        }
+        client.connect().await;
+        let mut published = Vec::with_capacity(events.len());
+        for event in events {
+            let output = client
+                .send_event_to(relays.to_vec(), event)
+                .await
+                .map_err(|e| format!("failed to publish rating event {}: {e}", event.id))?;
+            let failed = output
+                .failed
+                .iter()
+                .map(|(relay, error)| {
+                    serde_json::json!({
+                        "relay": relay.to_string(),
+                        "error": error,
+                    })
+                })
+                .collect::<Vec<_>>();
+            published.push(serde_json::json!({
+                "event_id": output.val.to_string(),
+                "success_count": output.success.len(),
+                "failed_count": output.failed.len(),
+                "success_relays": output.success.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "failed_relays": failed,
+            }));
+        }
+        client.disconnect().await;
+        Ok(serde_json::json!({
+            "type": "fips_peer_rating_publish",
+            "event_count": events.len(),
+            "relay_count": relays.len(),
+            "relays": relays,
+            "events": published,
+        }))
+    })
 }
 
 fn control_response_data<'a>(
@@ -510,18 +648,29 @@ fn main() {
 
     let socket_path = cli.socket.unwrap_or_else(default_socket_path);
 
-    if let Commands::Ratings {
-        what:
+    if let Commands::Ratings { what } = &cli.command {
+        match what {
             RatingsCommands::Export {
                 scope,
                 format,
                 output,
-            },
-    } = &cli.command
-    {
-        if let Err(e) = export_peer_ratings(&socket_path, scope, *format, output.as_deref()) {
-            eprintln!("error: {e}");
-            std::process::exit(1);
+            } => {
+                if let Err(e) = export_peer_ratings(&socket_path, scope, *format, output.as_deref())
+                {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            RatingsCommands::Publish {
+                scope,
+                relays,
+                json,
+            } => {
+                if let Err(e) = publish_peer_ratings(&socket_path, scope, relays, *json) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         return;
     }
@@ -755,16 +904,34 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_accepts_legacy_ratings_context_alias() {
-        let cli = Cli::try_parse_from(["fipsctl", "ratings", "export", "--context", "fips.peer"])
-            .unwrap();
+    fn test_cli_parses_ratings_publish() {
+        let cli = Cli::try_parse_from([
+            "fipsctl",
+            "ratings",
+            "publish",
+            "--scope",
+            "fips.peer",
+            "--relay",
+            "wss://relay.example",
+            "--json",
+        ])
+        .unwrap();
 
-        assert!(matches!(
-            cli.command,
+        match cli.command {
             Commands::Ratings {
-                what: RatingsCommands::Export { .. }
+                what:
+                    RatingsCommands::Publish {
+                        scope,
+                        relays,
+                        json,
+                    },
+            } => {
+                assert_eq!(scope, "fips.peer");
+                assert_eq!(relays, vec!["wss://relay.example".to_string()]);
+                assert!(json);
             }
-        ));
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]
