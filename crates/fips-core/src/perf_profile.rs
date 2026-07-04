@@ -1200,6 +1200,7 @@ pub fn record_event_count(event: Event, count: u64) {
 }
 
 #[inline]
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn record_tun_outbound_admission_drop() {
     record_event(Event::PendingTunPacketDropped);
     record_event(Event::TunOutboundAdmissionDropped);
@@ -1233,6 +1234,7 @@ pub(crate) fn record_udp_namespace_rcvbuf_errors(drops: u64) {
 }
 
 #[inline]
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn record_tun_read_packet(bytes: usize) {
     if !enabled() {
         return;
@@ -1252,6 +1254,7 @@ pub(crate) fn record_tun_read_frame(bytes: usize) {
 }
 
 #[inline]
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn record_tun_write_packet(bytes: usize) {
     if !enabled() {
         return;
