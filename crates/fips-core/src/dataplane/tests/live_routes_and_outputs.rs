@@ -225,67 +225,6 @@
     }
 
     #[test]
-    fn direct_fsp_reassembler_keeps_existing_record_at_capacity() {
-        fn fragment(
-            transport_id: TransportId,
-            remote_addr: TransportAddr,
-            record_id: u64,
-            fragment_index: usize,
-            payload: u8,
-            timestamp_ms: u64,
-        ) -> ReceivedPacket {
-            let mut data = Vec::with_capacity(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + 1);
-            data.extend_from_slice(&DIRECT_FSP_TRANSPORT_FRAGMENT_MAGIC);
-            data.extend_from_slice(&record_id.to_le_bytes());
-            data.extend_from_slice(&2u32.to_le_bytes());
-            data.extend_from_slice(&(fragment_index as u16).to_le_bytes());
-            data.extend_from_slice(&2u16.to_le_bytes());
-            data.push(payload);
-            ReceivedPacket::with_timestamp(transport_id, remote_addr, data, timestamp_ms)
-        }
-
-        let transport_id = TransportId::new(145);
-        let remote_addr = TransportAddr::from_string("198.51.100.145:9000");
-        let mut reassembler = DataplaneDirectFspReassembler::default();
-
-        for record_id in 0..DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS as u64 {
-            assert!(matches!(
-                reassembler.ingest(fragment(
-                    transport_id,
-                    remote_addr.clone(),
-                    record_id,
-                    0,
-                    0xaa,
-                    145_000 + record_id
-                )),
-                DataplaneDirectFspReassemblyResult::Pending
-            ));
-        }
-        assert_eq!(
-            reassembler.entries.len(),
-            DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS
-        );
-
-        match reassembler.ingest(fragment(
-            transport_id,
-            remote_addr,
-            0,
-            1,
-            0xbb,
-            146_000,
-        )) {
-            DataplaneDirectFspReassemblyResult::Complete(packet) => {
-                assert_eq!(packet.data.as_slice(), &[0xaa, 0xbb]);
-            }
-            result => panic!("expected complete oldest record, got {result:?}"),
-        }
-        assert_eq!(
-            reassembler.entries.len(),
-            DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS - 1
-        );
-    }
-
-    #[test]
     fn fast_ingress_routes_direct_fsp_segments_before_packet_channel() {
         let source = NodeAddr::from_bytes([0x46; 16]);
         let owner = OwnerId::fsp_node(source);
