@@ -466,6 +466,7 @@ pub(crate) struct DataplaneFspOwnerActivity {
     fsp_session_start_ms: Option<u64>,
     last_rx_activity: Option<ActivityTick>,
     last_rx_data_activity: Option<ActivityTick>,
+    last_rx_data_previous_hop: Option<NodeAddr>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
     current_k_bit: bool,
@@ -575,6 +576,10 @@ impl DataplaneFspOwnerActivity {
             || (self.owner == *next_hop && self.last_outbound_next_hop.is_none())
     }
 
+    fn tracks_data_next_hop(self, next_hop: &NodeAddr) -> bool {
+        self.last_rx_data_previous_hop == Some(*next_hop) || self.tracks_next_hop(next_hop)
+    }
+
     pub(crate) fn traffic_counters(self) -> (u64, u64, u64, u64) {
         (
             self.data_packets_sent,
@@ -617,6 +622,7 @@ pub(crate) struct OwnerState {
     source_peer: Option<crate::PeerIdentity>,
     last_rx_activity: Option<ActivityTick>,
     last_rx_data_activity: Option<ActivityTick>,
+    last_rx_data_previous_hop: Option<NodeAddr>,
     last_tx_activity: Option<ActivityTick>,
     last_tx_data_activity: Option<ActivityTick>,
     last_outbound_next_hop: Option<NodeAddr>,
@@ -673,6 +679,7 @@ impl OwnerState {
             source_peer: config.source_peer,
             last_rx_activity: None,
             last_rx_data_activity: None,
+            last_rx_data_previous_hop: None,
             last_tx_activity: None,
             last_tx_data_activity: None,
             last_outbound_next_hop: None,
@@ -716,6 +723,7 @@ impl OwnerState {
         self.fsp_lifecycle_confirmed = false;
         self.source_peer = None;
         self.last_rx_data_activity = None;
+        self.last_rx_data_previous_hop = None;
         self.last_tx_data_activity = None;
         self.last_outbound_next_hop = None;
         self.data_packets_sent = 0;
@@ -1004,6 +1012,7 @@ impl OwnerState {
             fsp_session_start_ms: self.fsp_session_start_ms,
             last_rx_activity: self.last_rx_activity,
             last_rx_data_activity: self.last_rx_data_activity,
+            last_rx_data_previous_hop: self.last_rx_data_previous_hop,
             last_tx_data_activity: self.last_tx_data_activity,
             last_outbound_next_hop: self.last_outbound_next_hop,
             current_k_bit: self.fsp_current_k_bit,
@@ -1307,6 +1316,7 @@ impl OwnerState {
             if let Some(tick) = activity_tick {
                 note_activity(&mut self.last_rx_data_activity, tick);
             }
+            self.last_rx_data_previous_hop = Some(previous_hop);
             self.data_packets_recv = self.data_packets_recv.saturating_add(1);
             self.data_bytes_recv = self.data_bytes_recv.saturating_add(body_len as u64);
         }
