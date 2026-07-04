@@ -225,6 +225,85 @@
     }
 
     #[test]
+    fn direct_fsp_reassembly_keeps_existing_record_at_capacity() {
+        let source = NodeAddr::from_bytes([0x49; 16]);
+        let owner = OwnerId::fsp_node(source);
+        let transport_id = TransportId::new(49);
+        let remote_addr = TransportAddr::from_string("198.51.100.49:9000");
+        let make_segments = |counter: u64, ingress_seq: u64| {
+            let mut wire = fsp_wire(
+                counter,
+                crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+            );
+            wire.extend((0..700).map(|idx| (idx % 251) as u8));
+            let mut output = transport_output(
+                owner,
+                counter,
+                ingress_seq,
+                transport_id,
+                remote_addr.clone(),
+                wire.clone(),
+            );
+            output.path_mtu = 220;
+            let segments = match dataplane_direct_fsp_transport_output(output).unwrap() {
+                DataplaneDirectFspTransportOutput::Segments(segments) => {
+                    materialize_direct_fsp_segments(&segments)
+                }
+                DataplaneDirectFspTransportOutput::Whole(_) => panic!("expected segmented output"),
+            };
+            assert!(segments.len() > 1);
+            (wire, segments)
+        };
+
+        let (target_wire, target_segments) = make_segments(49_000, 0);
+        let mut reassembler = DataplaneDirectFspReassembler::default();
+        assert!(matches!(
+            reassembler.ingest(ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                target_segments[0].payload.clone(),
+                49_000,
+            )),
+            DataplaneDirectFspReassemblyResult::Pending
+        ));
+
+        for idx in 0..DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS - 1 {
+            let (_wire, segments) = make_segments(50_000 + idx as u64, idx as u64 + 1);
+            assert!(matches!(
+                reassembler.ingest(ReceivedPacket::with_timestamp(
+                    transport_id,
+                    remote_addr.clone(),
+                    segments[0].payload.clone(),
+                    49_001 + idx as u64,
+                )),
+                DataplaneDirectFspReassemblyResult::Pending
+            ));
+        }
+        assert_eq!(
+            reassembler.entries.len(),
+            DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS
+        );
+
+        let mut complete = None;
+        for (idx, segment) in target_segments.iter().enumerate().skip(1) {
+            match reassembler.ingest(ReceivedPacket::with_timestamp(
+                transport_id,
+                remote_addr.clone(),
+                segment.payload.clone(),
+                49_700 + idx as u64,
+            )) {
+                DataplaneDirectFspReassemblyResult::Pending => {}
+                DataplaneDirectFspReassemblyResult::Complete(packet) => {
+                    complete = Some(packet);
+                }
+                other => panic!("unexpected reassembly result: {other:?}"),
+            }
+        }
+        let packet = complete.expect("capacity should not evict a live matching record");
+        assert_eq!(packet.data.as_slice(), target_wire.as_slice());
+    }
+
+    #[test]
     fn fast_ingress_routes_direct_fsp_segments_before_packet_channel() {
         let source = NodeAddr::from_bytes([0x46; 16]);
         let owner = OwnerId::fsp_node(source);

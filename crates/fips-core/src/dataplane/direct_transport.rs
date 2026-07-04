@@ -1,6 +1,8 @@
 const DIRECT_FSP_TRANSPORT_FRAGMENT_MAGIC: [u8; 4] = *b"DFP1";
 const DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN: usize = 20;
 const DIRECT_FSP_TRANSPORT_REASSEMBLY_TTL_MS: u64 = 2_000;
+const DIRECT_FSP_TRANSPORT_REASSEMBLY_PRUNE_INTERVAL_MS: u64 =
+    DIRECT_FSP_TRANSPORT_REASSEMBLY_TTL_MS / 4;
 const DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS: usize = 512;
 const DIRECT_FSP_TRANSPORT_MAX_REASSEMBLED_LEN: usize = 72 * 1024;
 const DIRECT_FSP_TRANSPORT_MAX_FRAGMENTS: usize = 128;
@@ -142,6 +144,7 @@ impl DataplaneDirectFspReassembly {
 #[derive(Debug, Default)]
 pub(crate) struct DataplaneDirectFspReassembler {
     entries: HashMap<DataplaneDirectFspFragmentKey, DataplaneDirectFspReassembly>,
+    next_prune_at_ms: u64,
 }
 
 #[derive(Debug)]
@@ -168,16 +171,14 @@ impl DataplaneDirectFspReassembler {
         if !valid_direct_fsp_transport_fragment_header(header) {
             return DataplaneDirectFspReassemblyResult::Dropped;
         }
-        self.prune(packet.timestamp_ms);
-        if self.entries.len() >= DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS {
-            self.remove_oldest();
-        }
-
         let key = DataplaneDirectFspFragmentKey {
             transport_id: packet.transport_id,
             remote_addr: packet.remote_addr.clone(),
             record_id: header.record_id,
         };
+        self.prune_expired_if_due(packet.timestamp_ms);
+        self.remove_expired_entry(&key, packet.timestamp_ms);
+
         let fragment_payload_len = packet
             .data
             .len()
@@ -190,6 +191,9 @@ impl DataplaneDirectFspReassembler {
             Some(payload) => payload,
             None => return DataplaneDirectFspReassemblyResult::Dropped,
         };
+        if !self.entries.contains_key(&key) {
+            self.reserve_capacity_for_new_record(packet.timestamp_ms);
+        }
         let entry = self.entries.entry(key.clone()).or_insert_with(|| {
             DataplaneDirectFspReassembly::new(
                 header.total_len,
@@ -222,10 +226,51 @@ impl DataplaneDirectFspReassembler {
         DataplaneDirectFspReassemblyResult::Complete(packet)
     }
 
-    fn prune(&mut self, now_ms: u64) {
-        self.entries.retain(|_, entry| {
-            now_ms.saturating_sub(entry.created_at_ms) <= DIRECT_FSP_TRANSPORT_REASSEMBLY_TTL_MS
-        });
+    fn prune_expired_if_due(&mut self, now_ms: u64) {
+        if self.entries.is_empty() {
+            self.schedule_next_prune(now_ms);
+            return;
+        }
+        if now_ms < self.next_prune_at_ms {
+            return;
+        }
+        self.prune_expired(now_ms);
+        self.schedule_next_prune(now_ms);
+    }
+
+    fn reserve_capacity_for_new_record(&mut self, now_ms: u64) {
+        if self.entries.len() < DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS {
+            return;
+        }
+        self.prune_expired(now_ms);
+        self.schedule_next_prune(now_ms);
+        if self.entries.len() >= DIRECT_FSP_TRANSPORT_MAX_REASSEMBLY_RECORDS {
+            self.remove_oldest();
+        }
+    }
+
+    fn remove_expired_entry(&mut self, key: &DataplaneDirectFspFragmentKey, now_ms: u64) {
+        if self
+            .entries
+            .get(key)
+            .is_some_and(|entry| Self::entry_is_expired(entry, now_ms))
+        {
+            self.entries.remove(key);
+        }
+    }
+
+    fn prune_expired(&mut self, now_ms: u64) {
+        self.entries
+            .retain(|_, entry| !Self::entry_is_expired(entry, now_ms));
+    }
+
+    fn entry_is_expired(entry: &DataplaneDirectFspReassembly, now_ms: u64) -> bool {
+        now_ms.saturating_sub(entry.created_at_ms) > DIRECT_FSP_TRANSPORT_REASSEMBLY_TTL_MS
+    }
+
+    fn schedule_next_prune(&mut self, now_ms: u64) {
+        self.next_prune_at_ms =
+            now_ms.saturating_add(DIRECT_FSP_TRANSPORT_REASSEMBLY_PRUNE_INTERVAL_MS);
     }
 
     fn remove_oldest(&mut self) {
