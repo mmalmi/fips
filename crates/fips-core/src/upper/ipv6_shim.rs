@@ -16,6 +16,8 @@
 //! is forced to 6, payload length is computed from the remaining data,
 //! and source/destination addresses are reconstructed from session context.
 
+use crate::transport::PacketBuffer;
+
 /// Compressed format byte for mesh-internal traffic.
 pub const IPV6_SHIM_FORMAT_COMPRESSED: u8 = 0x00;
 
@@ -151,6 +153,45 @@ pub fn decompress_ipv6(
     Some(ipv6)
 }
 
+/// Decompress a shim payload inside an existing packet buffer.
+///
+/// `shim_offset` is relative to the buffer's visible window and points at the
+/// shim format byte. On success the visible buffer becomes a full IPv6 packet.
+pub(crate) fn decompress_ipv6_packet_buffer(
+    packet: &mut PacketBuffer,
+    shim_offset: usize,
+    src_ipv6: [u8; 16],
+    dst_ipv6: [u8; 16],
+) -> bool {
+    let Some(prefix_len) = shim_offset.checked_add(1 + IPV6_SHIM_RESIDUAL_SIZE) else {
+        return false;
+    };
+    if packet.len() < prefix_len {
+        return false;
+    }
+
+    let visible = packet.as_slice();
+    if visible[shim_offset] != IPV6_SHIM_FORMAT_COMPRESSED {
+        return false;
+    }
+    let residual = &visible[shim_offset + 1..prefix_len];
+    let upper_len = visible.len() - prefix_len;
+    let Ok(upper_len) = u16::try_from(upper_len) else {
+        return false;
+    };
+
+    let mut ipv6_header = [0u8; IPV6_HEADER_SIZE];
+    ipv6_header[0] = (residual[0] & 0x0F) | 0x60;
+    ipv6_header[1..4].copy_from_slice(&residual[1..4]);
+    ipv6_header[4..6].copy_from_slice(&upper_len.to_be_bytes());
+    ipv6_header[6] = residual[4];
+    ipv6_header[7] = residual[5];
+    ipv6_header[8..24].copy_from_slice(&src_ipv6);
+    ipv6_header[24..40].copy_from_slice(&dst_ipv6);
+
+    packet.replace_visible_prefix(prefix_len, &ipv6_header)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +284,33 @@ mod tests {
         ));
 
         assert_eq!(in_place, expected);
+    }
+
+    #[test]
+    fn test_packet_buffer_decompression_matches_allocating_path() {
+        let payload = vec![0x5A; 256];
+        let pkt = build_ipv6_packet(0x24, 0x12345, 6, 32, sample_src(), sample_dst(), &payload);
+        let compressed = compress_ipv6(&pkt).unwrap();
+
+        const HEADROOM: usize = 23;
+        const INNER_HEADER_LEN: usize = 6;
+        const PORT_HEADER_LEN: usize = 4;
+        let mut stored = vec![0xEE; HEADROOM];
+        stored.extend_from_slice(&[0, 0, 0, 0, 0x10, 0]);
+        stored.extend_from_slice(&0x0100u16.to_le_bytes());
+        stored.extend_from_slice(&0x0100u16.to_le_bytes());
+        stored.extend_from_slice(&compressed);
+        let mut packet = PacketBuffer::new(stored);
+        assert!(packet.trim_front(HEADROOM));
+
+        assert!(decompress_ipv6_packet_buffer(
+            &mut packet,
+            INNER_HEADER_LEN + PORT_HEADER_LEN,
+            sample_src(),
+            sample_dst()
+        ));
+
+        assert_eq!(packet.as_slice(), pkt.as_slice());
     }
 
     #[test]

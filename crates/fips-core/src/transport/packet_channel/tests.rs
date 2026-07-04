@@ -31,6 +31,17 @@ fn small_app_packet(marker: u8) -> Vec<u8> {
     vec![marker; 32]
 }
 
+#[test]
+fn packet_buffer_replace_visible_prefix_can_expand_into_headroom() {
+    let mut buffer = PacketBuffer::new(vec![0xaa, 0xbb, 1, 2, 3, 4, 5]);
+    assert!(buffer.trim_front(2));
+
+    assert!(buffer.replace_visible_prefix(2, &[9, 8, 7, 6]));
+
+    assert_eq!(buffer.start, 0);
+    assert_eq!(buffer.as_slice(), &[9, 8, 7, 6, 3, 4, 5]);
+}
+
 fn packet_marker(packet: &ReceivedPacket) -> u8 {
     *packet.data.last().expect("test packet carries a marker")
 }

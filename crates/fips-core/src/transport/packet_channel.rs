@@ -212,6 +212,51 @@ impl PacketBuffer {
         }
         true
     }
+
+    pub(crate) fn replace_visible_prefix(&mut self, remove_len: usize, prefix: &[u8]) -> bool {
+        if remove_len > self.len() {
+            return false;
+        }
+
+        let prefix_len = prefix.len();
+        let tail_len = self.len() - remove_len;
+        if prefix_len >= remove_len {
+            let grow = prefix_len - remove_len;
+            if grow > 0 && self.start >= grow {
+                let new_start = self.start - grow;
+                self.data[new_start..new_start + prefix_len].copy_from_slice(prefix);
+                self.start = new_start;
+                return true;
+            }
+
+            let len = self.data.len();
+            if grow > 0 {
+                self.data.reserve(grow);
+                unsafe {
+                    let ptr = self.data.as_mut_ptr();
+                    std::ptr::copy(
+                        ptr.add(self.start + remove_len),
+                        ptr.add(self.start + prefix_len),
+                        tail_len,
+                    );
+                    self.data.set_len(len + grow);
+                }
+            }
+            self.data[self.start..self.start + prefix_len].copy_from_slice(prefix);
+            return true;
+        }
+
+        let shrink = remove_len - prefix_len;
+        if tail_len > 0 {
+            self.data.copy_within(
+                self.start + remove_len..self.start + remove_len + tail_len,
+                self.start + prefix_len,
+            );
+        }
+        self.data.truncate(self.data.len() - shrink);
+        self.data[self.start..self.start + prefix_len].copy_from_slice(prefix);
+        true
+    }
 }
 
 impl Clone for PacketBuffer {
