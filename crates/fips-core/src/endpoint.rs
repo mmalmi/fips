@@ -221,21 +221,6 @@ fn endpoint_ethernet_instance_name(interface: &str) -> String {
     }
 }
 
-fn validate_endpoint_data_payload_len(len: usize) -> Result<(), FipsEndpointError> {
-    let max = crate::node::session_wire::fsp_endpoint_data_max_body_len();
-    if len > max {
-        return Err(FipsEndpointError::EndpointDataTooLarge { len, max });
-    }
-    Ok(())
-}
-
-fn validate_endpoint_data_payloads(payloads: &[Vec<u8>]) -> Result<(), FipsEndpointError> {
-    for payload in payloads {
-        validate_endpoint_data_payload_len(payload.len())?;
-    }
-    Ok(())
-}
-
 fn endpoint_data_payloads_from_vecs(
     payloads: Vec<Vec<u8>>,
 ) -> Result<Vec<EndpointDataPayload>, FipsEndpointError> {
@@ -382,15 +367,14 @@ impl FipsEndpoint {
         remote: PeerIdentity,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
+        let payloads = endpoint_data_payloads_from_vecs(payloads)?;
         if *remote.node_addr() == self.node_addr {
-            validate_endpoint_data_payloads(&payloads)?;
             for payload in payloads {
-                self.send_loopback(payload)?;
+                self.send_loopback(payload.into_body().into_vec())?;
             }
             return Ok(());
         }
 
-        let payloads = endpoint_data_payloads_from_vecs(payloads)?;
         self.send_endpoint_data_batch(remote, payloads)
     }
 
