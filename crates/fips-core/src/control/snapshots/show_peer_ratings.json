@@ -1,0 +1,12 @@
+{
+  "data": {
+    "format": "records",
+    "generated_at": "<redacted>",
+    "rater": "npub1sx42mj99aql52aklsg70y2jmr95u7uz2p40k769aw46ppjv302kqkhmu5r",
+    "ratings": [],
+    "schema": 1,
+    "scope": "fips.peer",
+    "type": "fips_peer_rating_export"
+  },
+  "status": "ok"
+}
