@@ -7,6 +7,26 @@
         Dataplane::new(AdmissionConfig::new(4, 8))
     }
 
+    fn endpoint_payloads(payloads: Vec<Vec<u8>>) -> Vec<EndpointDataPayload> {
+        payloads
+            .into_iter()
+            .map(|payload| {
+                EndpointDataPayload::from_packet_payload(payload)
+                    .expect("test endpoint payload should fit FSP endpoint data")
+            })
+            .collect()
+    }
+
+    fn route_endpoint_payloads(
+        route: &DataplaneEndpointDataRoute,
+        payloads: Vec<Vec<u8>>,
+    ) -> DataplaneEndpointDataBatchRoute {
+        route.route_payloads(
+            endpoint_payloads(payloads),
+            ActivityTick::new(crate::time::now_ms()),
+        )
+    }
+
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     struct DataplaneTurn {
         dispatched: usize,

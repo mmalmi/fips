@@ -523,7 +523,7 @@
         driver.owner_mut(owner).unwrap().set_active_path(path.clone());
 
         let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0);
-        let mut routed = route.route_batch(vec![b"direct-one".to_vec()]);
+        let mut routed = route_endpoint_payloads(&route, vec![b"direct-one".to_vec()]);
         assert!(routed.dropped.is_empty());
         assert_eq!(routed.routed.len(), 1);
         let packet = routed
@@ -1750,7 +1750,7 @@
             b"second".to_vec(),
             b"third".to_vec(),
         ];
-        let route_result = route.route_batch(payloads.clone());
+        let route_result = route_endpoint_payloads(&route, payloads.clone());
 
         assert!(route_result.dropped.is_empty());
         assert_eq!(route_result.routed.len(), payloads.len());
@@ -1765,7 +1765,8 @@
             assert_eq!(packet.payload.as_slice(), payload.as_slice());
         }
 
-        let route_result = route.route_batch((0..49).map(|idx| vec![idx as u8]).collect());
+        let route_result =
+            route_endpoint_payloads(&route, (0..49).map(|idx| vec![idx as u8]).collect());
         assert_eq!(route_result.routed.len(), 49);
         assert!(route_result.dropped.is_empty());
     }
@@ -1778,7 +1779,8 @@
         let third = vec![0x33; 100];
         let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0).with_direct_transport();
 
-        let route_result = route.route_batch(vec![first.clone(), small.clone(), third.clone()]);
+        let route_result =
+            route_endpoint_payloads(&route, vec![first.clone(), small.clone(), third.clone()]);
 
         assert!(route_result.dropped.is_empty());
         assert_eq!(route_result.routed.len(), 3);

@@ -71,23 +71,6 @@ impl DataplaneEndpointDataRoute {
         self
     }
 
-    #[cfg(test)]
-    fn route_batch(&self, payloads: Vec<Vec<u8>>) -> DataplaneEndpointDataBatchRoute {
-        let mut routed_payloads = Vec::new();
-        let mut dropped = Vec::new();
-        for payload in payloads {
-            let payload_len = payload.len();
-            match EndpointDataPayload::from_packet_payload(payload) {
-                Some(payload) => routed_payloads.push(payload),
-                None => dropped.push((payload_len, DataplaneEndpointDataDropReason::InvalidPayload)),
-            }
-        }
-        let activity_tick = ActivityTick::new(crate::time::now_ms());
-        let mut result = self.route_payloads(routed_payloads, activity_tick);
-        result.dropped.extend(dropped);
-        result
-    }
-
     fn owner(&self) -> OwnerId {
         self.owner
     }
@@ -98,15 +81,7 @@ impl DataplaneEndpointDataRoute {
         activity_tick: ActivityTick,
     ) -> DataplaneEndpointDataBatchRoute {
         let mut result = DataplaneEndpointDataBatchRoute::with_capacity(payloads.len());
-        let max_fsp_payload = self.max_fsp_body_len();
         for payload in payloads {
-            let payload_len = payload.body_len();
-            if payload_len > max_fsp_payload {
-                result
-                    .dropped
-                    .push((payload_len, DataplaneEndpointDataDropReason::InvalidPayload));
-                continue;
-            }
             result.routed.push(
                 self.build_packet(
                     crate::protocol::SessionMessageType::EndpointData.to_byte(),
@@ -116,10 +91,6 @@ impl DataplaneEndpointDataRoute {
             );
         }
         result
-    }
-
-    fn max_fsp_body_len(&self) -> usize {
-        crate::node::session_wire::fsp_endpoint_data_max_body_len()
     }
 
     fn build_packet(
@@ -145,7 +116,6 @@ impl DataplaneEndpointDataRoute {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DataplaneEndpointDataDropReason {
-    InvalidPayload,
     NoRoute,
     StaleQueuedBatch,
 }
