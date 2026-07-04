@@ -240,7 +240,7 @@ impl DataplaneOwnerShard {
         self.owners
             .values()
             .filter_map(OwnerState::fsp_activity)
-            .filter(|activity| activity.tracks_next_hop(next_hop))
+            .filter(|activity| activity.tracks_data_next_hop(next_hop))
             .filter_map(|activity| activity.last_rx_data_age_ms(now_ms))
             .min()
     }
