@@ -16,6 +16,8 @@ pub struct WotAdmissionSimConfig {
     pub rating_scope: String,
     /// Maximum historic rating events returned by each simulated index lookup.
     pub history_lookup_limit: usize,
+    /// Decentralized pubsub fanout used when local machine ratings are published.
+    pub rating_pubsub: WotRatingPubsubConfig,
 }
 
 impl Default for WotAdmissionSimConfig {
@@ -25,6 +27,34 @@ impl Default for WotAdmissionSimConfig {
             newcomer_probe_slots: 1,
             rating_scope: DEFAULT_SCOPE.to_string(),
             history_lookup_limit: 64,
+            rating_pubsub: WotRatingPubsubConfig::default(),
+        }
+    }
+}
+
+/// Small inv/want-style accounting model for local rating fact publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WotRatingPubsubConfig {
+    /// Nodes that hear inventory for each locally published rating fact.
+    pub peer_count: usize,
+    /// Interested peers that send wants and receive the full event payload.
+    pub subscriber_count: usize,
+    /// Approximate bytes for one inventory notice.
+    pub inventory_bytes: usize,
+    /// Approximate bytes for one want request.
+    pub want_bytes: usize,
+    /// Approximate bytes for one signed rating fact event payload.
+    pub payload_bytes: usize,
+}
+
+impl Default for WotRatingPubsubConfig {
+    fn default() -> Self {
+        Self {
+            peer_count: 8,
+            subscriber_count: 4,
+            inventory_bytes: 96,
+            want_bytes: 64,
+            payload_bytes: 512,
         }
     }
 }
@@ -157,6 +187,12 @@ pub struct WotRatingExchangeStats {
     pub indexed_events: usize,
     pub history_queries: usize,
     pub history_events_returned: usize,
+    pub pubsub_published_events: usize,
+    pub pubsub_inventory_messages: usize,
+    pub pubsub_want_messages: usize,
+    pub pubsub_delivered_events: usize,
+    pub pubsub_inv_want_bytes: usize,
+    pub pubsub_flood_bytes: usize,
 }
 
 /// Reason a peer was admitted or deferred in a phase.
@@ -271,27 +307,33 @@ impl WotAdmissionSimulation {
     }
 
     fn publish_local_probe_rating(&mut self, subject: &str, rating: i64, created_at: u64) {
-        self.exchange.publish_local(WotRatingFactEvent::new(
-            "fips-sim-rating-newcomer-probe",
-            LOCAL_RATER,
-            subject,
-            self.config.rating_scope.clone(),
-            rating,
-            created_at,
-            WotRatingEventSource::LocalProbe,
-        ));
+        self.exchange.publish_local(
+            &self.config.rating_pubsub,
+            WotRatingFactEvent::new(
+                "fips-sim-rating-newcomer-probe",
+                LOCAL_RATER,
+                subject,
+                self.config.rating_scope.clone(),
+                rating,
+                created_at,
+                WotRatingEventSource::LocalProbe,
+            ),
+        );
     }
 
     fn publish_degradation_rating(&mut self, subject: &str, rating: i64, created_at: u64) {
-        self.exchange.publish_local(WotRatingFactEvent::new(
-            "fips-sim-rating-degradation",
-            LOCAL_RATER,
-            subject,
-            self.config.rating_scope.clone(),
-            rating,
-            created_at,
-            WotRatingEventSource::LocalDegradation,
-        ));
+        self.exchange.publish_local(
+            &self.config.rating_pubsub,
+            WotRatingFactEvent::new(
+                "fips-sim-rating-degradation",
+                LOCAL_RATER,
+                subject,
+                self.config.rating_scope.clone(),
+                rating,
+                created_at,
+                WotRatingEventSource::LocalDegradation,
+            ),
+        );
     }
 }
 
@@ -307,14 +349,44 @@ impl WotRatingExchange {
         self.index(event);
     }
 
-    fn publish_local(&mut self, event: WotRatingFactEvent) {
+    fn publish_local(&mut self, pubsub: &WotRatingPubsubConfig, event: WotRatingFactEvent) {
         self.stats.local_published_events += 1;
+        self.publish_over_pubsub(pubsub);
         self.index(event);
     }
 
     fn index(&mut self, event: WotRatingFactEvent) {
         self.stats.indexed_events += 1;
         self.events.push(event);
+    }
+
+    fn publish_over_pubsub(&mut self, pubsub: &WotRatingPubsubConfig) {
+        self.stats.pubsub_published_events += 1;
+        let inventory_targets = pubsub.peer_count.saturating_sub(1);
+        let subscribers = pubsub.subscriber_count.min(inventory_targets);
+
+        self.stats.pubsub_inventory_messages = self
+            .stats
+            .pubsub_inventory_messages
+            .saturating_add(inventory_targets);
+        self.stats.pubsub_want_messages =
+            self.stats.pubsub_want_messages.saturating_add(subscribers);
+        self.stats.pubsub_delivered_events = self
+            .stats
+            .pubsub_delivered_events
+            .saturating_add(subscribers);
+        self.stats.pubsub_inv_want_bytes = self.stats.pubsub_inv_want_bytes.saturating_add(
+            inventory_targets
+                .saturating_mul(pubsub.inventory_bytes)
+                .saturating_add(
+                    subscribers
+                        .saturating_mul(pubsub.want_bytes.saturating_add(pubsub.payload_bytes)),
+                ),
+        );
+        self.stats.pubsub_flood_bytes = self
+            .stats
+            .pubsub_flood_bytes
+            .saturating_add(inventory_targets.saturating_mul(pubsub.payload_bytes));
     }
 
     fn query_events(&mut self, filter: &WotNostrFilter) -> Vec<WotRatingFactEvent> {
@@ -578,6 +650,42 @@ mod tests {
         assert_eq!(report.exchange.indexed_events, 6);
         assert_eq!(report.exchange.history_queries, 3);
         assert_eq!(report.rating_events.len(), 6);
+    }
+
+    #[test]
+    fn local_rating_publish_uses_inv_want_pubsub_before_history_lookup() {
+        let report = run_default_wot_admission_sim();
+        let subscriber_count = report
+            .config
+            .rating_pubsub
+            .subscriber_count
+            .min(report.config.rating_pubsub.peer_count.saturating_sub(1));
+
+        assert_eq!(
+            report.exchange.pubsub_published_events,
+            report.exchange.local_published_events
+        );
+        assert_eq!(
+            report.exchange.pubsub_delivered_events,
+            report.exchange.local_published_events * subscriber_count
+        );
+        assert_eq!(
+            report.exchange.pubsub_inventory_messages,
+            report.exchange.local_published_events
+                * report.config.rating_pubsub.peer_count.saturating_sub(1)
+        );
+        assert_eq!(
+            report.exchange.pubsub_want_messages,
+            report.exchange.pubsub_delivered_events
+        );
+        assert!(
+            report.exchange.pubsub_inv_want_bytes < report.exchange.pubsub_flood_bytes,
+            "inv/want publish accounting should be cheaper than full-payload flooding"
+        );
+
+        assert_eq!(phase(&report, "cold_start").rating_events_seen, 4);
+        assert_eq!(phase(&report, "after_newcomer_probe").rating_events_seen, 5);
+        assert_eq!(phase(&report, "after_degradation").rating_events_seen, 6);
     }
 
     #[test]
