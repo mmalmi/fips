@@ -8,8 +8,10 @@ use crate::node::Node;
 use crate::node::stats_history::Metric;
 use serde_json::{Value, json};
 
+mod peer_ratings;
 mod stats;
 
+pub use peer_ratings::show_peer_ratings;
 pub use stats::{
     show_stats_all_history, show_stats_history, show_stats_history_all_peers, show_stats_list,
     show_stats_peers,
@@ -828,6 +830,7 @@ pub fn dispatch(node: &Node, command: &str, params: Option<&Value>) -> super::pr
         "show_sessions" => super::protocol::Response::ok(show_sessions(node)),
         "show_bloom" => super::protocol::Response::ok(show_bloom(node)),
         "show_mmp" => super::protocol::Response::ok(show_mmp(node)),
+        "show_peer_ratings" => show_peer_ratings(node, params),
         "show_cache" => super::protocol::Response::ok(show_cache(node)),
         "show_connections" => super::protocol::Response::ok(show_connections(node)),
         "show_transports" => super::protocol::Response::ok(show_transports(node)),

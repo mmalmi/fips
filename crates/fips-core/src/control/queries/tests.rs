@@ -1,5 +1,4 @@
-//! Schema-stability snapshot tests for all 18 control-socket query
-//! handlers.
+//! Schema-stability snapshot tests for control-socket query handlers.
 //!
 //! Each handler is invoked against a deterministically-constructed
 //! `Node` (fixed identity seed, empty peer/link/transport/cache
@@ -80,6 +79,7 @@ const VOLATILE_KEYS: &[&str] = &[
     "idle_ms",
     "first_seen_secs_ago",
     "last_contact_secs_ago",
+    "generated_at",
 ];
 
 /// Build a Node with a fixed identity, default config, and empty
@@ -244,6 +244,15 @@ fn snapshot_show_mmp() {
 }
 
 #[test]
+fn snapshot_show_peer_ratings() {
+    let node = build_test_node();
+    assert_snapshot(
+        "show_peer_ratings",
+        &render_response(show_peer_ratings(&node, None)),
+    );
+}
+
+#[test]
 fn snapshot_show_cache() {
     let node = build_test_node();
     assert_snapshot("show_cache", &render(show_cache(&node)));
@@ -338,6 +347,7 @@ fn dispatch_covers_all_snapshotted_handlers() {
         "show_sessions",
         "show_bloom",
         "show_mmp",
+        "show_peer_ratings",
         "show_cache",
         "show_connections",
         "show_transports",
@@ -350,7 +360,7 @@ fn dispatch_covers_all_snapshotted_handlers() {
         "show_stats_peers",
         "show_stats_history_all_peers",
     ];
-    assert_eq!(expected.len(), 19, "expected exactly 19 query handlers");
+    assert_eq!(expected.len(), 20, "expected exactly 20 query handlers");
     let node = build_test_node();
     for cmd in expected {
         // Each must dispatch successfully (status == "ok") with
