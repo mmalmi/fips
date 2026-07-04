@@ -16,8 +16,6 @@ use crate::FipsAddress;
     not(any(target_os = "linux", target_os = "macos", windows))
 ))]
 use crate::TunConfig;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::File;
@@ -29,8 +27,6 @@ use std::io::Write;
 use std::net::Ipv6Addr;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::io::{AsRawFd, FromRawFd};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -156,34 +152,6 @@ pub(crate) fn per_flow_max_mss(
         "per_flow_max_mss: per-destination clamp applied"
     );
     result
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn clamp_inbound_packet_slice(
-    packet: &mut [u8],
-    path_mtu_lookup: &PathMtuLookup,
-    max_mss: u16,
-) -> bool {
-    use super::tcp_mss::clamp_tcp_mss;
-
-    let effective_max_mss = if packet.len() >= 24 {
-        per_flow_max_mss(path_mtu_lookup, &packet[8..24], max_mss)
-    } else {
-        max_mss
-    };
-    clamp_tcp_mss(packet, effective_max_mss)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn inbound_packet_may_need_mss_clamp(packet: &[u8]) -> bool {
-    const IPV6_HEADER_LEN: usize = 40;
-    const TCP_FLAGS_OFFSET: usize = 13;
-    const TCP_FLAG_SYN: u8 = 0x02;
-
-    packet.len() >= IPV6_HEADER_LEN + TCP_FLAGS_OFFSET + 1
-        && packet[0] >> 4 == 6
-        && packet[6] == 6
-        && (packet[IPV6_HEADER_LEN + TCP_FLAGS_OFFSET] & TCP_FLAG_SYN) != 0
 }
 
 /// Errors that can occur with TUN operations.
@@ -515,32 +483,6 @@ impl TunDevice {
             tx,
         ))
     }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(crate) fn create_direct_writer(
-        &self,
-        max_mss: u16,
-        path_mtu_lookup: PathMtuLookup,
-    ) -> Result<TunDirectWriter, TunError> {
-        let fd = self.as_raw_fd();
-        let write_fd = unsafe { libc::dup(fd) };
-        if write_fd < 0 {
-            return Err(TunError::Configure(format!(
-                "failed to dup fd: {}",
-                std::io::Error::last_os_error()
-            )));
-        }
-
-        let file = unsafe { File::from_raw_fd(write_fd) };
-        Ok(TunDirectWriter::new(
-            file,
-            self.name.clone(),
-            max_mss,
-            path_mtu_lookup,
-            #[cfg(target_os = "linux")]
-            self.vnet_hdr(),
-        ))
-    }
 }
 
 /// macOS utun protocol family value for IPv6 (matches `<sys/socket.h>`
@@ -596,149 +538,27 @@ pub struct TunWriter {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) struct TunDirectWriter {
-    inner: Mutex<TunDirectWriterInner>,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-struct TunDirectWriterInner {
-    file: File,
-    name: String,
-    max_mss: u16,
-    path_mtu_lookup: PathMtuLookup,
-    #[cfg(target_os = "linux")]
-    vnet_hdr: bool,
-    #[cfg(target_os = "linux")]
-    write_preparer: linux_vnet::LinuxVnetWritePreparer,
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl TunDirectWriter {
-    fn new(
-        file: File,
-        name: String,
-        max_mss: u16,
-        path_mtu_lookup: PathMtuLookup,
-        #[cfg(target_os = "linux")] vnet_hdr: bool,
-    ) -> Self {
-        Self {
-            inner: Mutex::new(TunDirectWriterInner {
-                file,
-                name,
-                max_mss,
-                path_mtu_lookup,
-                #[cfg(target_os = "linux")]
-                vnet_hdr,
-                #[cfg(target_os = "linux")]
-                write_preparer: linux_vnet::LinuxVnetWritePreparer::new(),
-            }),
-        }
-    }
-
-    pub(crate) fn write_packet_slices(&self, packets: &[&[u8]]) -> std::io::Result<usize> {
-        if packets.is_empty() {
-            return Ok(0);
-        }
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| std::io::Error::other("TUN direct writer lock poisoned"))?;
-        inner.write_packet_slices(packets)
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-impl TunDirectWriterInner {
-    fn write_packet_slices(&mut self, packets: &[&[u8]]) -> std::io::Result<usize> {
-        let prepared = self.prepare_packet_slices(packets);
-        let packet_slices: Vec<&[u8]> = prepared.iter().map(|packet| packet.as_ref()).collect();
-
-        #[cfg(target_os = "linux")]
-        if self.vnet_hdr {
-            linux_vnet::write_packet_slices_to_tun(
-                &mut self.file,
-                &packet_slices,
-                &mut self.write_preparer,
-            )?;
-            self.record_written_packets(&packet_slices);
-            return Ok(packet_slices.len());
-        }
-
-        for packet in &packet_slices {
-            self.write_plain_packet(packet)?;
-            crate::perf_profile::record_tun_write_packet(packet.len());
-        }
-        Ok(packet_slices.len())
-    }
-
-    fn prepare_packet_slices<'a>(&self, packets: &'a [&'a [u8]]) -> Vec<Cow<'a, [u8]>> {
-        packets
-            .iter()
-            .map(|packet| {
-                if !inbound_packet_may_need_mss_clamp(packet) {
-                    return Cow::Borrowed(*packet);
-                }
-                let mut owned = packet.to_vec();
-                if clamp_inbound_packet_slice(&mut owned, &self.path_mtu_lookup, self.max_mss) {
-                    trace!(
-                        name = %self.name,
-                        max_mss = self.max_mss,
-                        "Clamped TCP MSS in direct inbound TUN packet"
-                    );
-                }
-                Cow::Owned(owned)
-            })
-            .collect()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn record_written_packets(&self, packets: &[&[u8]]) {
-        for packet in packets {
-            crate::perf_profile::record_tun_write_packet(packet.len());
-        }
-    }
-
-    fn write_plain_packet(&mut self, packet: &[u8]) -> std::io::Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            let af_header = utun_af_inet6_header();
-            let iov = [
-                libc::iovec {
-                    iov_base: af_header.as_ptr() as *mut libc::c_void,
-                    iov_len: af_header.len(),
-                },
-                libc::iovec {
-                    iov_base: packet.as_ptr() as *mut libc::c_void,
-                    iov_len: packet.len(),
-                },
-            ];
-            let ret = unsafe { libc::writev(self.file.as_raw_fd(), iov.as_ptr(), 2) };
-            if ret < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            let expected = af_header.len() + packet.len();
-            if (ret as usize) != expected {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    format!("short writev: {} of {} bytes", ret, expected),
-                ));
-            }
-            Ok(())
-        }
-        #[cfg(target_os = "linux")]
-        {
-            self.file.write_all(packet)
-        }
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TunWriter {
     fn clamp_inbound_packet(&self, packet: &mut super::tun_write::TunWritePacket) {
-        if clamp_inbound_packet_slice(packet.as_mut_slice(), &self.path_mtu_lookup, self.max_mss) {
+        use super::tcp_mss::clamp_tcp_mss;
+
+        // Per-destination clamp: peer IPv6 source address (bytes 8..24)
+        // identifies the flow's remote end. If discovery has learned a
+        // smaller path MTU for that peer, tighten the ceiling.
+        let effective_max_mss = if packet.len() >= 24 {
+            per_flow_max_mss(
+                &self.path_mtu_lookup,
+                &packet.as_slice()[8..24],
+                self.max_mss,
+            )
+        } else {
+            self.max_mss
+        };
+        // Clamp TCP MSS on inbound SYN-ACK packets
+        if clamp_tcp_mss(packet.as_mut_slice(), effective_max_mss) {
             trace!(
                 name = %self.name,
-                max_mss = self.max_mss,
+                max_mss = effective_max_mss,
                 "Clamped TCP MSS in inbound SYN-ACK packet"
             );
         }
