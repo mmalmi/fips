@@ -316,7 +316,7 @@ impl Node {
             return;
         }
         if admission.dropped_oldest() {
-            crate::perf_profile::record_event(crate::perf_profile::Event::PendingTunPacketDropped);
+            crate::perf_profile::record_pending_tun_session_oldest_drop();
         }
     }
 
@@ -367,10 +367,7 @@ impl Node {
                 Self::PENDING_TUN_PACKET_FLUSH_MAX_AGE_MS,
             );
             if stale_count > 0 {
-                crate::perf_profile::record_event_count(
-                    crate::perf_profile::Event::PendingTunPacketDropped,
-                    stale_count as u64,
-                );
+                crate::perf_profile::record_pending_tun_session_stale_drops(stale_count as u64);
                 debug!(
                     dest = %self.peer_display_name(dest_addr),
                     dropped = stale_count,

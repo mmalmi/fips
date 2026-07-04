@@ -95,9 +95,7 @@ impl TunOutboundTx {
         match self.bulk.try_send(queued) {
             Ok(()) => Ok(TunOutboundAdmission::Enqueued),
             Err(mpsc::error::TrySendError::Full(queued)) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::PendingTunPacketDropped,
-                );
+                crate::perf_profile::record_tun_outbound_admission_drop();
                 tracing::debug!(
                     len = queued.packet.len(),
                     "Dropping TUN outbound packet because admission queue is full"

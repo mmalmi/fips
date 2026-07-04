@@ -337,9 +337,9 @@ pub enum Event {
     TunReadFrameBytes = 70,
     TunWriteFrames = 71,
     TunWriteFrameBytes = 72,
-    ReservedEvent73 = 73,
-    ReservedEvent74 = 74,
-    ReservedEvent75 = 75,
+    TunOutboundAdmissionDropped = 73,
+    PendingTunSessionOldestDropped = 74,
+    PendingTunSessionStaleDropped = 75,
     ReservedEvent76 = 76,
     ReservedEvent77 = 77,
     ReservedEvent78 = 78,
@@ -587,9 +587,9 @@ impl Event {
             Event::TunReadFrameBytes => "tun_read_frame_bytes",
             Event::TunWriteFrames => "tun_write_frames",
             Event::TunWriteFrameBytes => "tun_write_frame_bytes",
-            Event::ReservedEvent73 => "reserved_event_73",
-            Event::ReservedEvent74 => "reserved_event_74",
-            Event::ReservedEvent75 => "reserved_event_75",
+            Event::TunOutboundAdmissionDropped => "tun_outbound_admission_dropped",
+            Event::PendingTunSessionOldestDropped => "pending_tun_session_oldest_dropped",
+            Event::PendingTunSessionStaleDropped => "pending_tun_session_stale_dropped",
             Event::ReservedEvent76 => "reserved_event_76",
             Event::ReservedEvent77 => "reserved_event_77",
             Event::ReservedEvent78 => "reserved_event_78",
@@ -850,9 +850,9 @@ fn event_from_index(idx: usize) -> Event {
         70 => Event::TunReadFrameBytes,
         71 => Event::TunWriteFrames,
         72 => Event::TunWriteFrameBytes,
-        73 => Event::ReservedEvent73,
-        74 => Event::ReservedEvent74,
-        75 => Event::ReservedEvent75,
+        73 => Event::TunOutboundAdmissionDropped,
+        74 => Event::PendingTunSessionOldestDropped,
+        75 => Event::PendingTunSessionStaleDropped,
         76 => Event::ReservedEvent76,
         77 => Event::ReservedEvent77,
         78 => Event::ReservedEvent78,
@@ -1193,6 +1193,24 @@ pub fn record_event_count(event: Event, count: u64) {
         return;
     }
     record_event_count_sample(event, count);
+}
+
+#[inline]
+pub(crate) fn record_tun_outbound_admission_drop() {
+    record_event(Event::PendingTunPacketDropped);
+    record_event(Event::TunOutboundAdmissionDropped);
+}
+
+#[inline]
+pub(crate) fn record_pending_tun_session_oldest_drop() {
+    record_event(Event::PendingTunPacketDropped);
+    record_event(Event::PendingTunSessionOldestDropped);
+}
+
+#[inline]
+pub(crate) fn record_pending_tun_session_stale_drops(count: u64) {
+    record_event_count(Event::PendingTunPacketDropped, count);
+    record_event_count(Event::PendingTunSessionStaleDropped, count);
 }
 
 #[inline]
