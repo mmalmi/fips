@@ -1,46 +1,18 @@
 use super::FipsEndpointMessage;
-use crate::PeerIdentity;
 use crate::node::{EndpointDataDelivery, EndpointEventReceiver, NodeEndpointEvent};
-use crate::transport::PacketBuffer;
 use std::collections::VecDeque;
 
-struct EndpointQueuedMessage {
-    source_peer: PeerIdentity,
-    payload: PacketBuffer,
-    enqueued_at_ms: u64,
-}
-
-impl EndpointQueuedMessage {
-    pub(super) fn new(
-        source_peer: PeerIdentity,
-        payload: PacketBuffer,
-        enqueued_at_ms: u64,
-    ) -> Self {
-        Self {
-            source_peer,
-            payload,
-            enqueued_at_ms,
-        }
-    }
-
-    fn into_public(self) -> FipsEndpointMessage {
-        FipsEndpointMessage {
-            source_peer: self.source_peer,
-            data: self.payload,
-            enqueued_at_ms: self.enqueued_at_ms,
-        }
-    }
-}
-
-impl From<EndpointDataDelivery> for EndpointQueuedMessage {
-    fn from(message: EndpointDataDelivery) -> Self {
-        Self::new(message.source_peer, message.payload, message.enqueued_at_ms)
+fn endpoint_delivery_into_public(message: EndpointDataDelivery) -> FipsEndpointMessage {
+    FipsEndpointMessage {
+        source_peer: message.source_peer,
+        data: message.payload,
+        enqueued_at_ms: message.enqueued_at_ms,
     }
 }
 
 pub(super) struct EndpointReceiveState {
     pub(super) rx: EndpointEventReceiver,
-    pending: VecDeque<EndpointQueuedMessage>,
+    pending: VecDeque<EndpointDataDelivery>,
 }
 
 impl EndpointReceiveState {
@@ -54,7 +26,7 @@ impl EndpointReceiveState {
     pub(super) fn pop_pending(&mut self) -> Option<FipsEndpointMessage> {
         let message = self.pending.pop_front()?;
         self.rx.release_messages(1);
-        Some(message.into_public())
+        Some(endpoint_delivery_into_public(message))
     }
 
     pub(super) fn drain_pending_into(&mut self, out: &mut Vec<FipsEndpointMessage>, limit: usize) {
@@ -63,7 +35,7 @@ impl EndpointReceiveState {
             let Some(message) = self.pending.pop_front() else {
                 break;
             };
-            out.push(message.into_public());
+            out.push(endpoint_delivery_into_public(message));
             released += 1;
         }
         self.rx.release_messages(released);
@@ -98,10 +70,10 @@ impl EndpointReceiveState {
                 let mut released = 0usize;
                 for message in messages {
                     if out.len() < limit {
-                        out.push(EndpointQueuedMessage::from(message).into_public());
+                        out.push(endpoint_delivery_into_public(message));
                         released += 1;
                     } else {
-                        self.push_pending(message.into());
+                        self.push_pending(message);
                     }
                 }
                 self.rx.release_messages(released);
@@ -109,7 +81,7 @@ impl EndpointReceiveState {
         }
     }
 
-    fn push_pending(&mut self, message: EndpointQueuedMessage) {
+    fn push_pending(&mut self, message: EndpointDataDelivery) {
         self.pending.push_back(message);
     }
 
@@ -124,10 +96,9 @@ impl EndpointReceiveState {
             NodeEndpointEvent { messages, .. } => {
                 let mut iter = messages.into_iter();
                 while let Some(message) = iter.next() {
-                    let queued = EndpointQueuedMessage::from(message);
-                    if !self.push_queued_for_each(queued, drained, limit, handle_message) {
+                    if !self.push_queued_for_each(message, drained, limit, handle_message) {
                         for message in iter {
-                            self.push_pending(message.into());
+                            self.push_pending(message);
                         }
                         return false;
                     }
@@ -139,14 +110,14 @@ impl EndpointReceiveState {
 
     fn push_queued_for_each(
         &mut self,
-        message: EndpointQueuedMessage,
+        message: EndpointDataDelivery,
         drained: &mut usize,
         limit: usize,
         handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
     ) -> bool {
         if *drained < limit {
             *drained += 1;
-            let message = message.into_public();
+            let message = endpoint_delivery_into_public(message);
             self.rx.release_messages(1);
             handle_message(message)
         } else {
@@ -164,10 +135,10 @@ impl EndpointReceiveState {
                 let mut iter = messages.into_iter();
                 let first = iter.next()?;
                 for message in iter {
-                    self.push_pending(message.into());
+                    self.push_pending(message);
                 }
                 self.rx.release_messages(1);
-                Some(EndpointQueuedMessage::from(first).into_public())
+                Some(endpoint_delivery_into_public(first))
             }
         }
     }
