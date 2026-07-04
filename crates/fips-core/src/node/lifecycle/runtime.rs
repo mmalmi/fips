@@ -1,10 +1,11 @@
 use super::*;
 
-#[derive(Clone)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct SystemTunEndpointDirectSink {
-    tun_tx: crate::upper::tun::TunTx,
+    writer: crate::upper::tun::TunDirectWriter,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl crate::node::FipsEndpointDirectSink for SystemTunEndpointDirectSink {
     fn deliver_endpoint_packet_batch(
         &self,
@@ -15,19 +16,17 @@ impl crate::node::FipsEndpointDirectSink for SystemTunEndpointDirectSink {
         }
 
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::TunWrite);
-        let mut packets = Vec::with_capacity(batch.len());
-        for run in batch.into_packet_runs() {
-            packets.extend(
-                run.packet_slices()
-                    .map(|packet| (packet.to_vec(), crate::upper::tun::TunWriteLane::Priority)),
-            );
+        let packet_count = batch.len();
+        let runs = batch.into_packet_runs();
+        let mut packet_slices = Vec::with_capacity(packet_count);
+        for run in &runs {
+            packet_slices.extend(run.packet_slices());
         }
 
-        if self.tun_tx.send_batch_with_lanes(packets).is_empty() {
-            Ok(())
-        } else {
-            Err(crate::node::FipsEndpointDirectDeliveryError::Unavailable)
-        }
+        self.writer
+            .write_packet_slices(&packet_slices)
+            .map(|_| ())
+            .map_err(|_| crate::node::FipsEndpointDirectDeliveryError::Unavailable)
     }
 }
 
@@ -217,7 +216,15 @@ impl Node {
                     let (writer, tun_tx) =
                         device.create_writer(max_mss, self.path_mtu_lookup.clone())?;
                     let tun_channel_size = self.config.node.buffers.tun_channel;
-                    self.attach_system_tun_endpoint_direct_sink(tun_tx.clone(), tun_channel_size);
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        let direct_writer =
+                            device.create_direct_writer(max_mss, self.path_mtu_lookup.clone())?;
+                        self.attach_system_tun_endpoint_direct_sink(
+                            direct_writer,
+                            tun_channel_size,
+                        );
+                    }
 
                     // Spawn writer thread
                     let writer_handle = thread::spawn(move || {
@@ -363,9 +370,10 @@ impl Node {
         Ok(())
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn attach_system_tun_endpoint_direct_sink(
         &mut self,
-        tun_tx: crate::upper::tun::TunTx,
+        writer: crate::upper::tun::TunDirectWriter,
         capacity: usize,
     ) {
         let already_attached = self
@@ -376,7 +384,7 @@ impl Node {
             return;
         }
         let direct_sink =
-            crate::node::EndpointDirectSink::new(SystemTunEndpointDirectSink { tun_tx });
+            crate::node::EndpointDirectSink::new(SystemTunEndpointDirectSink { writer });
         let (event_tx, _event_rx) =
             crate::node::EndpointEventSender::channel_with_direct_sink(capacity, Some(direct_sink));
         self.endpoint_events.attach(event_tx);
