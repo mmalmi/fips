@@ -19,7 +19,7 @@ pub(crate) struct DataplaneTurnDriver {
     fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
     fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
-    endpoint_data_batch: Vec<DataplaneEndpointDataBatch>,
+    endpoint_data_batch: Option<DataplaneEndpointDataBatch>,
     fsp_session_ingress: Vec<DataplaneFspSessionIngress>,
 }
 
@@ -59,7 +59,7 @@ impl DataplaneTurnDriver {
             fmp_link_ingress: Vec::new(),
             fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
-            endpoint_data_batch: Vec::new(),
+            endpoint_data_batch: None,
             fsp_session_ingress: Vec::new(),
         }
     }
@@ -359,7 +359,7 @@ impl DataplaneTurnDriver {
             .summary
             .outputs_dropped
             .saturating_add(report.transport_dropped);
-        report.endpoint_data_batch = std::mem::take(&mut self.endpoint_data_batch);
+        report.endpoint_data_batch = self.endpoint_data_batch.take().into_iter().collect();
         self.transport_output = transport_output;
         report
     }
@@ -545,7 +545,7 @@ impl DataplaneTurnDriver {
             && summary.outputs_sent == 0
             && summary.outputs_dropped == 0
             && summary.drops == 0
-            && !self.endpoint_data_batch.is_empty()
+            && self.endpoint_data_batch.is_some()
             && self.outputs.is_empty()
             && self.raw_ingress_drops.is_empty()
             && self.output_drops.is_empty()
@@ -800,7 +800,7 @@ impl DataplaneTurnDriver {
         self.fmp_link_ingress.clear();
         self.fsp_coord_warmups.clear();
         self.fsp_local_session_ingress.clear();
-        self.endpoint_data_batch.clear();
+        self.endpoint_data_batch = None;
         self.fsp_session_ingress.clear();
     }
 
@@ -1244,10 +1244,10 @@ impl DataplaneTurnDriver {
     }
 
     fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {
-        if let Some(last) = self.endpoint_data_batch.last_mut() {
+        if let Some(last) = self.endpoint_data_batch.as_mut() {
             last.extend(bulk);
         } else {
-            self.endpoint_data_batch.push(bulk);
+            self.endpoint_data_batch = Some(bulk);
         }
     }
 
@@ -1256,28 +1256,15 @@ impl DataplaneTurnDriver {
             return;
         };
 
-        let mut dropped = 0usize;
-        let mut sink_failed = false;
-        for bulk in &mut self.endpoint_data_batch {
-            let packet_batch = bulk.take_direct_packet_batch();
-            let count = packet_batch.len();
-            if count == 0 {
-                continue;
-            }
-            if sink_failed {
-                dropped = dropped.saturating_add(count);
-                continue;
-            }
-            if direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
-                dropped = dropped.saturating_add(count);
-                sink_failed = true;
-            }
-        }
-
-        if dropped > 0 {
+        let Some(bulk) = self.endpoint_data_batch.as_mut() else {
+            return;
+        };
+        let packet_batch = bulk.take_direct_packet_batch();
+        let count = packet_batch.len();
+        if count > 0 && direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::EndpointEventBulkDropped,
-                dropped as u64,
+                count as u64,
             );
         }
     }

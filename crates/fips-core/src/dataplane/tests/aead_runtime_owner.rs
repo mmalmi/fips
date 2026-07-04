@@ -1840,18 +1840,16 @@
         let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
         assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
-        assert_eq!(driver.endpoint_data_batch.len(), 1);
-        assert_eq!(
-            driver
-                .endpoint_data_batch
-                .iter()
-                .map(DataplaneEndpointDataBatch::len)
-                .sum::<usize>(),
-            3
-        );
-        assert_eq!(driver.endpoint_data_batch[0].commit_runs().len(), 1);
-        assert_eq!(driver.endpoint_data_batch[0].commit_runs()[0].len(), 3);
-        let mut batches = std::mem::take(&mut driver.endpoint_data_batch)
+        let batch = driver
+            .endpoint_data_batch
+            .as_ref()
+            .expect("endpoint data batch");
+        assert_eq!(batch.len(), 3);
+        assert_eq!(batch.commit_runs().len(), 1);
+        assert_eq!(batch.commit_runs()[0].len(), 3);
+        let mut batches = driver
+            .endpoint_data_batch
+            .take()
             .into_iter()
             .map(DataplaneEndpointDataBatch::into_direct_packet_batch)
             .collect::<Vec<_>>();
@@ -1947,9 +1945,12 @@
         let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
         assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
-        assert_eq!(driver.endpoint_data_batch.len(), 1);
-        assert_eq!(driver.endpoint_data_batch[0].len(), 2);
-        assert_eq!(driver.endpoint_data_batch[0].direct_packet_run_count(), 1);
+        let batch = driver
+            .endpoint_data_batch
+            .as_ref()
+            .expect("endpoint data batch");
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.direct_packet_run_count(), 1);
 
         let delivered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = std::sync::Arc::clone(&delivered);
@@ -1969,15 +1970,18 @@
             delivered.lock().expect("direct batches lock").as_slice(),
             &[vec![b"batch-one".to_vec(), b"batch-two".to_vec()]]
         );
-        assert_eq!(driver.endpoint_data_batch.len(), 1);
-        assert_eq!(driver.endpoint_data_batch[0].len(), 2);
-        assert_eq!(driver.endpoint_data_batch[0].commit_runs().len(), 1);
-        assert_eq!(driver.endpoint_data_batch[0].commit_runs()[0].len(), 2);
-        assert_eq!(driver.endpoint_data_batch[0].direct_packet_run_count(), 0);
+        let batch = driver
+            .endpoint_data_batch
+            .as_ref()
+            .expect("endpoint data batch");
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.commit_runs().len(), 1);
+        assert_eq!(batch.commit_runs()[0].len(), 2);
+        assert_eq!(batch.direct_packet_run_count(), 0);
         assert_eq!(
             driver
                 .endpoint_data_batch
-                .pop()
+                .take()
                 .expect("commit batch")
                 .into_direct_packet_batch()
                 .len(),
@@ -2035,14 +2039,19 @@
         assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
         assert_eq!(summary.completions(), 5);
         assert_eq!(summary.outputs(), 0);
-        assert_eq!(driver.endpoint_data_batch.len(), 1);
-        assert_eq!(driver.endpoint_data_batch[0].len(), 5);
-        assert_eq!(driver.endpoint_data_batch[0].commit_runs().len(), 1);
-        assert_eq!(driver.endpoint_data_batch[0].commit_runs()[0].len(), 5);
-        assert_eq!(driver.endpoint_data_batch[0].direct_packet_run_count(), 1);
+        let batch = driver
+            .endpoint_data_batch
+            .as_ref()
+            .expect("endpoint data batch");
+        assert_eq!(batch.len(), 5);
+        assert_eq!(batch.commit_runs().len(), 1);
+        assert_eq!(batch.commit_runs()[0].len(), 5);
+        assert_eq!(batch.direct_packet_run_count(), 1);
         assert!(driver.outputs.is_empty());
 
-        let mut batches = std::mem::take(&mut driver.endpoint_data_batch)
+        let mut batches = driver
+            .endpoint_data_batch
+            .take()
             .into_iter()
             .map(DataplaneEndpointDataBatch::into_direct_packet_batch)
             .collect::<Vec<_>>();
