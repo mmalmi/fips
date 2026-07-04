@@ -331,13 +331,12 @@ impl FipsEndpoint {
     ) -> Result<(), FipsEndpointError> {
         let remote_npub = remote_npub.into();
         let data = data.into();
-        validate_endpoint_data_payload_len(data.len())?;
-        if remote_npub == self.npub {
-            return self.send_loopback(data);
-        }
-
-        let remote = self.resolve_peer_identity(&remote_npub)?;
-        self.send_to_peer(remote, data).await
+        let remote = if remote_npub == self.npub {
+            self.identity
+        } else {
+            self.resolve_peer_identity(&remote_npub)?
+        };
+        self.send_payloads_to_peer(remote, vec![data])
     }
 
     /// Send application-owned endpoint data to a resolved remote identity.
@@ -351,27 +350,19 @@ impl FipsEndpoint {
         remote: PeerIdentity,
         data: impl Into<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
-        let data = data.into();
-        validate_endpoint_data_payload_len(data.len())?;
-        if *remote.node_addr() == self.node_addr {
-            return self.send_loopback(data);
-        }
-        // Fire-and-forget: caller already drops the result, so skip
-        // the per-packet `oneshot::channel()` allocation entirely.
-        // Endpoint data now enters the dataplane bulk lane directly, without a
-        // per-packet oneshot or control-command hop.
-        if let Some(batch) =
-            NodeEndpointDataBatch::batch(remote, vec![data], crate::perf_profile::stamp())
-        {
-            self.endpoint_data_batches
-                .send_or_drop(batch)
-                .map_err(|_| FipsEndpointError::Closed)?;
-        }
-        Ok(())
+        self.send_payloads_to_peer(remote, vec![data.into()])
     }
 
     /// Send a burst of application-owned endpoint payloads to one resolved peer.
     pub async fn send_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        self.send_payloads_to_peer(remote, payloads)
+    }
+
+    fn send_payloads_to_peer(
         &self,
         remote: PeerIdentity,
         payloads: Vec<Vec<u8>>,
@@ -384,29 +375,46 @@ impl FipsEndpoint {
             return Ok(());
         }
 
-        if payloads.is_empty() {
-            return Ok(());
-        }
-        self.send_endpoint_data_batch(remote, payloads)?;
-        Ok(())
+        self.send_endpoint_data_batch(remote, payloads)
     }
 
     fn send_endpoint_data_batch(
         &self,
         remote: PeerIdentity,
-        mut payloads: Vec<Vec<u8>>,
+        payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
-        while !payloads.is_empty() {
-            let tail = if payloads.len() > ENDPOINT_DATA_BATCH_MAX {
-                payloads.split_off(ENDPOINT_DATA_BATCH_MAX)
-            } else {
-                Vec::new()
-            };
-            let payload_batch = std::mem::replace(&mut payloads, tail);
-            let queued_at = crate::perf_profile::stamp();
-            let Some(batch) = NodeEndpointDataBatch::batch(remote, payload_batch, queued_at) else {
-                continue;
-            };
+        if payloads.is_empty() {
+            return Ok(());
+        }
+
+        if payloads.len() <= ENDPOINT_DATA_BATCH_MAX {
+            self.enqueue_endpoint_data_batch(remote, payloads)?;
+            return Ok(());
+        }
+
+        let mut payloads = payloads.into_iter();
+        loop {
+            let payload_batch: Vec<_> = payloads.by_ref().take(ENDPOINT_DATA_BATCH_MAX).collect();
+            if payload_batch.is_empty() {
+                break;
+            }
+            self.enqueue_endpoint_data_batch(remote, payload_batch)?;
+        }
+        Ok(())
+    }
+
+    fn enqueue_endpoint_data_batch(
+        &self,
+        remote: PeerIdentity,
+        payload_batch: Vec<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        // Fire-and-forget: caller already drops the result, so skip
+        // the per-packet `oneshot::channel()` allocation entirely.
+        // Endpoint data now enters the dataplane bulk lane directly, without a
+        // per-packet oneshot or control-command hop.
+        if let Some(batch) =
+            NodeEndpointDataBatch::batch(remote, payload_batch, crate::perf_profile::stamp())
+        {
             self.endpoint_data_batches
                 .send_or_drop(batch)
                 .map_err(|_| FipsEndpointError::Closed)?;
@@ -524,12 +532,12 @@ impl FipsEndpoint {
     ) -> Result<(), FipsEndpointError> {
         let remote_npub = remote_npub.into();
         let data = data.into();
-        validate_endpoint_data_payload_len(data.len())?;
-        if remote_npub == self.npub {
-            return self.send_loopback(data);
-        }
-        let remote = self.resolve_peer_identity(&remote_npub)?;
-        self.blocking_send_to_peer(remote, data)
+        let remote = if remote_npub == self.npub {
+            self.identity
+        } else {
+            self.resolve_peer_identity(&remote_npub)?
+        };
+        self.send_payloads_to_peer(remote, vec![data])
     }
 
     /// Synchronous blocking send to a resolved remote identity.
@@ -541,19 +549,7 @@ impl FipsEndpoint {
         remote: PeerIdentity,
         data: impl Into<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
-        let data = data.into();
-        validate_endpoint_data_payload_len(data.len())?;
-        if *remote.node_addr() == self.node_addr {
-            return self.send_loopback(data);
-        }
-        if let Some(batch) =
-            NodeEndpointDataBatch::batch(remote, vec![data], crate::perf_profile::stamp())
-        {
-            self.endpoint_data_batches
-                .send_or_drop(batch)
-                .map_err(|_| FipsEndpointError::Closed)?;
-        }
-        Ok(())
+        self.send_payloads_to_peer(remote, vec![data.into()])
     }
 
     /// Synchronous blocking batch send to one resolved remote identity.
@@ -566,18 +562,7 @@ impl FipsEndpoint {
         remote: PeerIdentity,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
-        validate_endpoint_data_payloads(&payloads)?;
-        if *remote.node_addr() == self.node_addr {
-            for payload in payloads {
-                self.send_loopback(payload)?;
-            }
-            return Ok(());
-        }
-
-        if payloads.is_empty() {
-            return Ok(());
-        }
-        self.send_endpoint_data_batch(remote, payloads)
+        self.send_payloads_to_peer(remote, payloads)
     }
 
     /// Synchronous blocking receive — parks the calling **OS thread**
