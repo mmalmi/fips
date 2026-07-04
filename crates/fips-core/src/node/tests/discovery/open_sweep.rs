@@ -93,6 +93,79 @@ async fn test_open_discovery_sweep_queues_eligible_skips_filtered() {
     assert_eq!(node.retry_pending.len(), 1);
 }
 
+#[tokio::test]
+async fn test_open_discovery_sweep_prioritizes_trusted_and_probes_newcomer() {
+    use crate::config::NostrDiscoveryPolicy;
+    use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
+    use std::sync::Arc;
+
+    let good_identity = crate::Identity::generate();
+    let good_npub = crate::encode_npub(&good_identity.pubkey());
+    let good_node_addr = *good_identity.node_addr();
+    let newcomer_identity = crate::Identity::generate();
+    let newcomer_npub = crate::encode_npub(&newcomer_identity.pubkey());
+    let newcomer_node_addr = *newcomer_identity.node_addr();
+    let bad_identity = crate::Identity::generate();
+    let bad_npub = crate::encode_npub(&bad_identity.pubkey());
+    let bad_node_addr = *bad_identity.node_addr();
+
+    let mut config = crate::Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    config.node.discovery.nostr.open_discovery_max_pending = 2;
+    config
+        .node
+        .discovery
+        .nostr
+        .open_discovery_trust_ratings_enabled = true;
+    config
+        .node
+        .discovery
+        .nostr
+        .open_discovery_newcomer_probe_slots = 1;
+    let mut node = crate::Node::new(config).unwrap();
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let endpoint = OverlayEndpointAdvert {
+        transport: OverlayTransportKind::Udp,
+        addr: "203.0.113.7:2121".to_string(),
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for npub in [&bad_npub, &newcomer_npub, &good_npub] {
+        let advert =
+            NostrDiscovery::cached_advert_for_test(npub.clone(), endpoint.clone(), now_secs);
+        bootstrap.insert_advert_for_test(npub.clone(), advert).await;
+    }
+    bootstrap
+        .record_peer_trust_score(&good_npub, 80, now_secs)
+        .await
+        .unwrap();
+    bootstrap
+        .record_peer_trust_score(&bad_npub, -80, now_secs)
+        .await
+        .unwrap();
+
+    node.run_open_discovery_sweep(&bootstrap, Some(3_600), "test")
+        .await;
+
+    assert!(
+        node.retry_pending.contains_key(&good_node_addr),
+        "trusted advert should consume one scarce open-discovery slot"
+    );
+    assert!(
+        node.retry_pending.contains_key(&newcomer_node_addr),
+        "unknown advert should get the reserved newcomer probe slot"
+    );
+    assert!(
+        !node.retry_pending.contains_key(&bad_node_addr),
+        "negatively rated advert should be deferred behind trusted and unknown peers"
+    );
+    assert_eq!(node.retry_pending.len(), 2);
+}
+
 /// Pin the cold-start expedite path: when an open-discovery sweep sees a
 /// fresh advert for a CONFIGURED peer whose retry is sitting on a future
 /// exponential-backoff slot, the sweep must pull the retry forward to "now"

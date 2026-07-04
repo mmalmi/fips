@@ -152,6 +152,17 @@ pub struct NostrDiscoveryConfig {
     /// at once. Prevents unbounded queue growth from ambient advert traffic.
     #[serde(default = "NostrDiscoveryConfig::default_open_discovery_max_pending")]
     pub open_discovery_max_pending: usize,
+    /// Sort open-discovery adverts by externally supplied peer trust scores.
+    ///
+    /// Off by default. When enabled, positive-rated peers are tried first,
+    /// unknown peers get reserved probe slots, and negatively rated peers are
+    /// deferred behind trusted and unknown peers.
+    #[serde(default)]
+    pub open_discovery_trust_ratings_enabled: bool,
+    /// Number of scarce open-discovery enqueue slots reserved for unknown
+    /// peers when trust sorting is enabled.
+    #[serde(default = "NostrDiscoveryConfig::default_open_discovery_newcomer_probe_slots")]
+    pub open_discovery_newcomer_probe_slots: usize,
     /// Max concurrent inbound traversal offers processed at once.
     /// Acts as a rate limit against offer spam from relays.
     #[serde(default = "NostrDiscoveryConfig::default_max_concurrent_incoming_offers")]
@@ -232,6 +243,8 @@ pub struct NostrDiscoveryConfig {
 
 impl Default for NostrDiscoveryConfig {
     fn default() -> Self {
+        let open_discovery_newcomer_probe_slots =
+            Self::default_open_discovery_newcomer_probe_slots();
         Self {
             enabled: false,
             advertise: Self::default_advertise(),
@@ -243,6 +256,8 @@ impl Default for NostrDiscoveryConfig {
             signal_ttl_secs: Self::default_signal_ttl_secs(),
             policy: NostrDiscoveryPolicy::default(),
             open_discovery_max_pending: Self::default_open_discovery_max_pending(),
+            open_discovery_trust_ratings_enabled: false,
+            open_discovery_newcomer_probe_slots,
             max_concurrent_incoming_offers: Self::default_max_concurrent_incoming_offers(),
             advert_cache_max_entries: Self::default_advert_cache_max_entries(),
             seen_sessions_max_entries: Self::default_seen_sessions_max_entries(),
@@ -305,6 +320,10 @@ impl NostrDiscoveryConfig {
 
     fn default_open_discovery_max_pending() -> usize {
         64
+    }
+
+    fn default_open_discovery_newcomer_probe_slots() -> usize {
+        1
     }
 
     fn default_max_concurrent_incoming_offers() -> usize {

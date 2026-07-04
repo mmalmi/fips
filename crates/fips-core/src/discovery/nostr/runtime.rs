@@ -264,6 +264,7 @@ pub struct NostrDiscovery {
     config: NostrDiscoveryConfig,
     relay_config: RwLock<NostrRelayConfig>,
     advert_cache: RwLock<HashMap<NostrPeerKey, CachedOverlayAdvert>>,
+    peer_trust_scores: RwLock<HashMap<NostrPeerKey, NostrPeerTrustScore>>,
     local_advert: RwLock<Option<OverlayAdvert>>,
     current_advert_event_id: RwLock<Option<EventId>>,
     pending_answers: Mutex<HashMap<String, oneshot::Sender<SignalEnvelope<TraversalAnswer>>>>,
@@ -293,6 +294,12 @@ pub struct NostrDiscovery {
     /// peer. This bypasses the peer-slot cap while still honoring
     /// connection/link caps.
     direct_refresh_admission: AtomicBool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NostrPeerTrustScore {
+    score: i64,
+    updated_at_secs: u64,
 }
 
 impl NostrDiscovery {
@@ -359,6 +366,7 @@ impl NostrDiscovery {
             relay_config: RwLock::new(NostrRelayConfig::from(&config)),
             config,
             advert_cache: RwLock::new(HashMap::new()),
+            peer_trust_scores: RwLock::new(HashMap::new()),
             local_advert: RwLock::new(None),
             current_advert_event_id: RwLock::new(None),
             pending_answers: Mutex::new(HashMap::new()),
@@ -403,6 +411,43 @@ impl NostrDiscovery {
 
     pub fn set_outbound_admission(&self, allow: bool) {
         self.outbound_admission.store(allow, Ordering::Relaxed);
+    }
+
+    pub async fn record_peer_trust_score(
+        &self,
+        peer: &str,
+        score: i64,
+        updated_at_secs: u64,
+    ) -> Result<(), String> {
+        let key =
+            NostrPeerKey::parse(peer).map_err(|error| format!("invalid peer key: {error}"))?;
+        let incoming = NostrPeerTrustScore {
+            score: score.clamp(-100, 100),
+            updated_at_secs,
+        };
+        self.peer_trust_scores
+            .write()
+            .await
+            .entry(key)
+            .and_modify(|existing| {
+                if incoming.updated_at_secs >= existing.updated_at_secs {
+                    *existing = incoming;
+                }
+            })
+            .or_insert(incoming);
+        Ok(())
+    }
+
+    pub(crate) async fn trust_scores_for_npubs(&self, npubs: &[String]) -> HashMap<String, i64> {
+        let scores = self.peer_trust_scores.read().await;
+        npubs
+            .iter()
+            .filter_map(|npub| {
+                let key = NostrPeerKey::parse(npub).ok()?;
+                let score = scores.get(&key)?.score;
+                Some((npub.clone(), score))
+            })
+            .collect()
     }
 
     pub(crate) fn outbound_admission_allowed(&self) -> bool {
