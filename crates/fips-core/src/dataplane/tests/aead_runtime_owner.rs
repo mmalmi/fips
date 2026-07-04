@@ -1795,6 +1795,103 @@
     }
 
     #[test]
+    fn compact_ipv6_shim_completion_can_join_admission_finish() {
+        let source_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let previous_hop = test_node_addr(914);
+        let local_addr = test_node_addr(915);
+        let key = 0x90;
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
+        );
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let payload = b"compact-ipv6-shim";
+        let mut expected_ipv6 = Vec::new();
+        expected_ipv6.extend_from_slice(&[0x60, 0, 0, 0]);
+        expected_ipv6.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        expected_ipv6.push(17);
+        expected_ipv6.push(64);
+        expected_ipv6.extend_from_slice(
+            &crate::FipsAddress::from_node_addr(&source_addr)
+                .to_ipv6()
+                .octets(),
+        );
+        expected_ipv6.extend_from_slice(
+            &crate::FipsAddress::from_node_addr(&local_addr)
+                .to_ipv6()
+                .octets(),
+        );
+        expected_ipv6.extend_from_slice(payload);
+
+        let mut shim_payload = expected_ipv6.clone();
+        assert!(crate::upper::ipv6_shim::compress_ipv6_with_port_header_in_place(
+            &mut shim_payload,
+            crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+            crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+        ));
+        let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            914_001,
+            crate::protocol::SessionMessageType::DataPacket.to_byte(),
+            0,
+            &shim_payload,
+        );
+        driver
+            .mover
+            .submit_socket_packet(
+                SocketPacket::new(
+                    owner,
+                    1,
+                    914,
+                    PacketClass::Bulk,
+                    OutputTarget::SessionPayload { local_addr },
+                    fsp_encrypted_wire(914, 0, &fsp_inner, key),
+                )
+                .with_previous_hop(previous_hop)
+                .with_activity_tick(ActivityTick::new(914_010)),
+            )
+            .unwrap();
+
+        let mut prepared = capture_prepared_work(&mut driver.mover, 8);
+        assert_eq!(prepared.len(), 1);
+        let mut completions = VecDeque::from([prepared.pop().unwrap().execute()]);
+        let summary = driver.start_aead_completion_turn(&mut completions, 8, false);
+
+        assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
+        assert_eq!(summary.completions(), 1);
+        assert_eq!(summary.outputs(), 0);
+        assert!(driver.outputs.is_empty());
+        assert!(driver.endpoint_data_batch.is_empty());
+        assert!(driver.fsp_session_ingress.is_empty());
+        assert_eq!(driver.fsp_tun_packets.len(), 1);
+        assert_eq!(driver.fsp_tun_packets[0].len(), 1);
+        assert_eq!(driver.fsp_tun_packets[0].packet_count(), 1);
+        assert_eq!(driver.fsp_tun_packets[0].commit_runs().len(), 1);
+        let commit = driver.fsp_tun_packets[0].commit_runs()[0].commit();
+        assert_eq!(commit.source_addr(), source_addr);
+        assert_eq!(commit.previous_hop_addr(), previous_hop);
+        assert!(!commit.direct_path());
+
+        let packets = driver
+            .fsp_tun_packets
+            .pop()
+            .unwrap()
+            .into_packets()
+            .into_iter()
+            .map(DataplaneFspTunPacket::into_packet)
+            .collect::<Vec<_>>();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].as_slice(), expected_ipv6.as_slice());
+    }
+
+    #[test]
     fn compact_endpoint_data_completion_can_join_admission_finish() {
         let source_peer =
             PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());

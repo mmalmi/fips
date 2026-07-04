@@ -205,6 +205,76 @@ impl Node {
         message_count
     }
 
+    pub(in crate::node) async fn process_dataplane_compact_tun_packets(
+        &mut self,
+        tun_batches: Vec<crate::dataplane::DataplaneFspTunPacketBatch>,
+    ) -> usize {
+        if tun_batches.is_empty() {
+            return 0;
+        }
+
+        let message_count = tun_batches
+            .iter()
+            .map(crate::dataplane::DataplaneFspTunPacketBatch::len)
+            .sum::<usize>();
+        let mut tun_packets = Vec::with_capacity(
+            tun_batches
+                .iter()
+                .map(crate::dataplane::DataplaneFspTunPacketBatch::packet_count)
+                .sum(),
+        );
+        let mut tun_commit = SessionReceiveBatchCommit::default();
+
+        for batch in tun_batches {
+            for run in batch.commit_runs() {
+                let commit = run.commit();
+                let source_addr = commit.source_addr();
+                let previous_hop_addr = commit.previous_hop_addr();
+                if self.promote_dataplane_authenticated_pending_fsp_epoch(
+                    &source_addr,
+                    commit.received_k_bit(),
+                ) {
+                    debug!(
+                        src = %self.peer_display_name(&source_addr),
+                        received_k_bit = commit.received_k_bit(),
+                        run_len = run.len(),
+                        "FSP rekey cutover complete after dataplane compact IPv6-shim receive commit"
+                    );
+                }
+                self.learn_reverse_route(source_addr, previous_hop_addr);
+                tun_commit.push_receive_completion(SessionReceiveCompletion {
+                    source_addr,
+                    previous_hop_addr,
+                    direct_path: commit.direct_path(),
+                });
+            }
+
+            for packet in batch.into_packets() {
+                let source_addr = packet.source_addr();
+                let ce_flag = packet.ce_flag();
+                let mut packet = packet.into_packet();
+                if ce_flag {
+                    mark_ipv6_ecn_ce(packet.as_mut_slice());
+                    self.stats_mut().congestion.record_ce_received();
+                }
+                if self.external_packet_tx.is_some() {
+                    self.deliver_external_ipv6_packet(&source_addr, packet.into_vec());
+                } else if self.tun_tx.is_some() {
+                    tun_packets.push(packet);
+                } else {
+                    trace!(
+                        src = %self.peer_display_name(&source_addr),
+                        "IPv6 shim packet decompressed (no TUN interface)"
+                    );
+                }
+            }
+        }
+
+        self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
+            .await;
+        message_count
+    }
+
     fn dataplane_endpoint_direct_sink(&self) -> Option<crate::node::EndpointDirectSink> {
         self.endpoint_events
             .sender()

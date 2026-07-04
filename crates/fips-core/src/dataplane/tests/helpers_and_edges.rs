@@ -67,6 +67,9 @@
                     RetiredOutput::EndpointDataBatch(_) => {
                         panic!("test helper did not request endpoint-data batch")
                     }
+                    RetiredOutput::FspTunPacketBatch(_) => {
+                        panic!("test helper did not request FSP TUN packets")
+                    }
                 }
             }
         }

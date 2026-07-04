@@ -20,6 +20,7 @@ pub(crate) struct DataplaneTurnDriver {
     fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
     endpoint_data_batch: Option<DataplaneEndpointDataBatch>,
+    fsp_tun_packets: Vec<DataplaneFspTunPacketBatch>,
     fsp_session_ingress: Vec<DataplaneFspSessionIngress>,
 }
 
@@ -60,6 +61,7 @@ impl DataplaneTurnDriver {
             fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
             endpoint_data_batch: None,
+            fsp_tun_packets: Vec::new(),
             fsp_session_ingress: Vec::new(),
         }
     }
@@ -324,6 +326,7 @@ impl DataplaneTurnDriver {
         report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
         report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
         report.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
+        report.fsp_tun_packets = std::mem::take(&mut self.fsp_tun_packets);
         report.fsp_session_ingress = std::mem::take(&mut self.fsp_session_ingress);
         report.transport_planned = transport_output.planned_packets();
         let dropped_before = report.output_drops.len();
@@ -546,6 +549,7 @@ impl DataplaneTurnDriver {
             && summary.outputs_dropped == 0
             && summary.drops == 0
             && self.endpoint_data_batch.is_some()
+            && (self.endpoint_data_batch.is_some() || !self.fsp_tun_packets.is_empty())
             && self.outputs.is_empty()
             && self.raw_ingress_drops.is_empty()
             && self.output_drops.is_empty()
@@ -801,6 +805,7 @@ impl DataplaneTurnDriver {
         self.fsp_coord_warmups.clear();
         self.fsp_local_session_ingress.clear();
         self.endpoint_data_batch = None;
+        self.fsp_tun_packets.clear();
         self.fsp_session_ingress.clear();
     }
 
@@ -1232,6 +1237,9 @@ impl DataplaneTurnDriver {
                     }
                     RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
                     RetiredOutput::EndpointDataBatch(bulk) => self.push_endpoint_data_batch(bulk),
+                    RetiredOutput::FspTunPacketBatch(batch) => {
+                        self.push_fsp_tun_packet_batch(batch)
+                    }
                 }
             }
         }
@@ -1248,6 +1256,14 @@ impl DataplaneTurnDriver {
             last.extend(bulk);
         } else {
             self.endpoint_data_batch = Some(bulk);
+        }
+    }
+
+    fn push_fsp_tun_packet_batch(&mut self, batch: DataplaneFspTunPacketBatch) {
+        if let Some(last) = self.fsp_tun_packets.last_mut() {
+            last.extend(batch);
+        } else {
+            self.fsp_tun_packets.push(batch);
         }
     }
 
