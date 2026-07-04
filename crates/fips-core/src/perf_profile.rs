@@ -325,10 +325,10 @@ pub enum Event {
     UdpSendSendmmsgBatchGe48 = 58,
     UdpSendSendmmsgBatchEq64 = 59,
     UdpSendSendmsgxBatchEq64 = 60,
-    ReservedEvent61 = 61,
-    ReservedEvent62 = 62,
-    ReservedEvent63 = 63,
-    ReservedEvent64 = 64,
+    UdpRecvGroBatch = 61,
+    UdpRecvGroPackets = 62,
+    UdpRecvGroBytes = 63,
+    UdpRecvPlainPackets = 64,
     ReservedEvent65 = 65,
     ReservedEvent66 = 66,
     ReservedEvent67 = 67,
@@ -575,10 +575,10 @@ impl Event {
             Event::UdpSendSendmmsgBatchGe48 => "udp_send_sendmmsg_batch_ge48",
             Event::UdpSendSendmmsgBatchEq64 => "udp_send_sendmmsg_batch_eq64",
             Event::UdpSendSendmsgxBatchEq64 => "udp_send_sendmsgx_batch_eq64",
-            Event::ReservedEvent61 => "reserved_event_61",
-            Event::ReservedEvent62 => "reserved_event_62",
-            Event::ReservedEvent63 => "reserved_event_63",
-            Event::ReservedEvent64 => "reserved_event_64",
+            Event::UdpRecvGroBatch => "udp_recv_gro_batch",
+            Event::UdpRecvGroPackets => "udp_recv_gro_packets",
+            Event::UdpRecvGroBytes => "udp_recv_gro_bytes",
+            Event::UdpRecvPlainPackets => "udp_recv_plain_packets",
             Event::ReservedEvent65 => "reserved_event_65",
             Event::ReservedEvent66 => "reserved_event_66",
             Event::ReservedEvent67 => "reserved_event_67",
@@ -838,10 +838,10 @@ fn event_from_index(idx: usize) -> Event {
         58 => Event::UdpSendSendmmsgBatchGe48,
         59 => Event::UdpSendSendmmsgBatchEq64,
         60 => Event::UdpSendSendmsgxBatchEq64,
-        61 => Event::ReservedEvent61,
-        62 => Event::ReservedEvent62,
-        63 => Event::ReservedEvent63,
-        64 => Event::ReservedEvent64,
+        61 => Event::UdpRecvGroBatch,
+        62 => Event::UdpRecvGroPackets,
+        63 => Event::UdpRecvGroBytes,
+        64 => Event::UdpRecvPlainPackets,
         65 => Event::ReservedEvent65,
         66 => Event::ReservedEvent66,
         67 => Event::ReservedEvent67,
@@ -1399,6 +1399,25 @@ fn record_udp_send_batch_tail_buckets(
     if eq64 {
         record_event_count_sample(eq64_event, 1);
     }
+}
+
+/// Record Linux UDP_GRO receives split back into FIPS datagrams by userspace.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_recv_gro_split(segments: usize, bytes: usize) {
+    if !enabled() || segments == 0 || bytes == 0 {
+        return;
+    }
+    record_event_count_sample(Event::UdpRecvGroBatch, 1);
+    record_event_count_sample(Event::UdpRecvGroPackets, segments as u64);
+    record_event_count_sample(Event::UdpRecvGroBytes, bytes as u64);
+}
+
+/// Record ordinary Linux UDP receives that do not need userspace GRO splitting.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_recv_plain_packet() {
+    record_event(Event::UdpRecvPlainPackets);
 }
 
 #[inline]
