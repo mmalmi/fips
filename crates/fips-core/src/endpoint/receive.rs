@@ -1,6 +1,6 @@
 use super::FipsEndpointMessage;
 use crate::PeerIdentity;
-use crate::node::{EndpointEventReceiver, NodeEndpointEvent};
+use crate::node::{EndpointDataDelivery, EndpointEventReceiver, NodeEndpointEvent};
 use crate::transport::PacketBuffer;
 use std::collections::VecDeque;
 
@@ -29,6 +29,12 @@ impl EndpointQueuedMessage {
             data: self.payload,
             enqueued_at_ms: self.enqueued_at_ms,
         }
+    }
+}
+
+impl From<EndpointDataDelivery> for EndpointQueuedMessage {
+    fn from(message: EndpointDataDelivery) -> Self {
+        Self::new(message.source_peer, message.payload, message.enqueued_at_ms)
     }
 }
 
@@ -87,15 +93,7 @@ impl EndpointReceiveState {
         match event {
             NodeEndpointEvent { messages, .. } => {
                 for message in messages {
-                    self.push_queued_into(
-                        EndpointQueuedMessage::new(
-                            message.source_peer,
-                            message.payload,
-                            message.enqueued_at_ms,
-                        ),
-                        out,
-                        limit,
-                    );
+                    self.push_queued_into(message.into(), out, limit);
                 }
             }
         }
@@ -130,18 +128,10 @@ impl EndpointReceiveState {
             NodeEndpointEvent { messages, .. } => {
                 let mut iter = messages.into_iter();
                 while let Some(message) = iter.next() {
-                    let queued = EndpointQueuedMessage::new(
-                        message.source_peer,
-                        message.payload,
-                        message.enqueued_at_ms,
-                    );
+                    let queued = EndpointQueuedMessage::from(message);
                     if !self.push_queued_for_each(queued, drained, limit, handle_message) {
                         for message in iter {
-                            self.push_pending(EndpointQueuedMessage::new(
-                                message.source_peer,
-                                message.payload,
-                                message.enqueued_at_ms,
-                            ));
+                            self.push_pending(message.into());
                         }
                         return false;
                     }
@@ -173,8 +163,16 @@ impl EndpointReceiveState {
         &mut self,
         event: NodeEndpointEvent,
     ) -> Option<FipsEndpointMessage> {
-        let mut messages = Vec::with_capacity(1);
-        self.push_event_into(event, &mut messages, 1);
-        messages.pop()
+        match event {
+            NodeEndpointEvent { messages, .. } => {
+                let mut iter = messages.into_iter();
+                let first = iter.next()?;
+                for message in iter {
+                    self.push_pending(message.into());
+                }
+                self.rx.release_messages(1);
+                Some(EndpointQueuedMessage::from(first).into_public())
+            }
+        }
     }
 }
