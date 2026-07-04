@@ -82,7 +82,8 @@ impl DataplaneEndpointDataRoute {
                 None => dropped.push((payload_len, DataplaneEndpointDataDropReason::InvalidPayload)),
             }
         }
-        let mut result = self.route_payloads(routed_payloads);
+        let activity_tick = ActivityTick::new(crate::time::now_ms());
+        let mut result = self.route_payloads(routed_payloads, activity_tick);
         result.dropped.extend(dropped);
         result
     }
@@ -94,9 +95,9 @@ impl DataplaneEndpointDataRoute {
     fn route_payloads(
         &self,
         payloads: Vec<EndpointDataPayload>,
+        activity_tick: ActivityTick,
     ) -> DataplaneEndpointDataBatchRoute {
         let mut result = DataplaneEndpointDataBatchRoute::with_capacity(payloads.len());
-        let routed_at_ms = crate::time::now_ms();
         let max_fsp_payload = self.max_fsp_body_len();
         for payload in payloads {
             let payload_len = payload.body_len();
@@ -111,7 +112,7 @@ impl DataplaneEndpointDataRoute {
                     crate::protocol::SessionMessageType::EndpointData.to_byte(),
                     payload.into_body(),
                 )
-                .with_activity_tick(ActivityTick::new(routed_at_ms)),
+                .with_activity_tick(activity_tick),
             );
         }
         result
@@ -187,6 +188,7 @@ pub(crate) trait DataplaneEndpointDataRouter {
         &mut self,
         remote: PeerIdentity,
         payloads: Vec<EndpointDataPayload>,
+        activity_tick: ActivityTick,
     ) -> DataplaneEndpointDataBatchRoute;
 }
 
@@ -208,13 +210,14 @@ fn route_endpoint_data_batch_with_router<R, F>(
     router: &mut R,
     drops: &mut Vec<DataplaneEndpointDataDrop>,
     deferred_batches: &mut Vec<NodeEndpointDataBatch>,
+    activity_tick: ActivityTick,
     mut push: F,
 ) where
     R: DataplaneEndpointDataRouter,
     F: FnMut(Vec<OutboundPacket>),
 {
     let (remote, payloads, queued_at, enqueued_at_ms) = batch.into_parts();
-    let route = router.route_endpoint_data_batch(remote, payloads);
+    let route = router.route_endpoint_data_batch(remote, payloads, activity_tick);
     let deferred_payloads = route.finish_batch(remote, drops, &mut push);
     if let Some(payloads) = deferred_payloads {
         let batch = NodeEndpointDataBatch::batch_with_enqueued_at_ms(

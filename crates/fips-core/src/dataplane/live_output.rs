@@ -99,10 +99,12 @@ where
         F: FnMut(DataplaneOutboundSource, DataplaneRoutedOutbound),
     {
         let mut drained_cost = 0usize;
+        let mut timing = None;
         if drained_cost < limit {
             if let Some(batch) = self.first_endpoint_data_batch.take() {
                 drained_cost = drained_cost.saturating_add(batch.drain_cost());
-                self.route_or_drop_endpoint_data_batch(batch, &mut push);
+                let (now_ms, activity_tick) = endpoint_drain_timing(&mut timing);
+                self.route_or_drop_endpoint_data_batch(batch, now_ms, activity_tick, &mut push);
             }
         }
         while drained_cost < limit {
@@ -110,7 +112,8 @@ where
                 break;
             };
             drained_cost = drained_cost.saturating_add(batch.drain_cost());
-            self.route_or_drop_endpoint_data_batch(batch, &mut push);
+            let (now_ms, activity_tick) = endpoint_drain_timing(&mut timing);
+            self.route_or_drop_endpoint_data_batch(batch, now_ms, activity_tick, &mut push);
         }
         drained_cost
     }
@@ -118,13 +121,15 @@ where
     fn route_or_drop_endpoint_data_batch<F>(
         &mut self,
         batch: NodeEndpointDataBatch,
+        now_ms: u64,
+        activity_tick: ActivityTick,
         mut push: F,
     ) where
         F: FnMut(DataplaneOutboundSource, DataplaneRoutedOutbound),
     {
         let drop_count = stale_endpoint_data_drop_count(
             &batch,
-            crate::time::now_ms(),
+            now_ms,
             self.endpoint_stale_data_drop_ms,
         );
         if drop_count > 0 {
@@ -141,6 +146,7 @@ where
             self.routes,
             &mut self.buffers.endpoint_drops,
             &mut self.buffers.deferred_endpoint_data_batches,
+            activity_tick,
             |packets| push(DataplaneOutboundSource::Endpoint, DataplaneRoutedOutbound::Batch(packets)),
         );
     }
@@ -203,6 +209,13 @@ where
             tun_drained,
         )
     }
+}
+
+fn endpoint_drain_timing(timing: &mut Option<(u64, ActivityTick)>) -> (u64, ActivityTick) {
+    *timing.get_or_insert_with(|| {
+        let now_ms = crate::time::now_ms();
+        (now_ms, ActivityTick::new(now_ms))
+    })
 }
 
 fn collect_tun_routed_packet(
