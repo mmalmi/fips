@@ -501,6 +501,7 @@ impl TunWriter {
                 }
                 error!(name = %self.name, error = %e, "TUN write error");
             } else {
+                crate::perf_profile::record_tun_write_packet(packet.len());
                 trace!(name = %self.name, len = packet.len(), "TUN packet written");
             }
         }
@@ -535,6 +536,7 @@ pub fn run_tun_reader(
     loop {
         match device.read_packet(&mut buf) {
             Ok(n) if n > 0 => {
+                crate::perf_profile::record_tun_read_packet(n);
                 if !handle_tun_packet(
                     &mut buf[..n],
                     max_mss,
@@ -642,6 +644,7 @@ pub fn run_tun_reader(
         loop {
             match device.read_packet(&mut buf) {
                 Ok(n) if n > 0 => {
+                    crate::perf_profile::record_tun_read_packet(n);
                     if !handle_tun_packet(
                         &mut buf[..n],
                         max_mss,

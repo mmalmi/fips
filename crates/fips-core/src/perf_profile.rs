@@ -329,10 +329,10 @@ pub enum Event {
     UdpRecvGroPackets = 62,
     UdpRecvGroBytes = 63,
     UdpRecvPlainPackets = 64,
-    ReservedEvent65 = 65,
-    ReservedEvent66 = 66,
-    ReservedEvent67 = 67,
-    ReservedEvent68 = 68,
+    TunReadPackets = 65,
+    TunReadBytes = 66,
+    TunWritePackets = 67,
+    TunWriteBytes = 68,
     ReservedEvent69 = 69,
     ReservedEvent70 = 70,
     ReservedEvent71 = 71,
@@ -579,10 +579,10 @@ impl Event {
             Event::UdpRecvGroPackets => "udp_recv_gro_packets",
             Event::UdpRecvGroBytes => "udp_recv_gro_bytes",
             Event::UdpRecvPlainPackets => "udp_recv_plain_packets",
-            Event::ReservedEvent65 => "reserved_event_65",
-            Event::ReservedEvent66 => "reserved_event_66",
-            Event::ReservedEvent67 => "reserved_event_67",
-            Event::ReservedEvent68 => "reserved_event_68",
+            Event::TunReadPackets => "tun_read_packets",
+            Event::TunReadBytes => "tun_read_bytes",
+            Event::TunWritePackets => "tun_write_packets",
+            Event::TunWriteBytes => "tun_write_bytes",
             Event::ReservedEvent69 => "reserved_event_69",
             Event::ReservedEvent70 => "reserved_event_70",
             Event::ReservedEvent71 => "reserved_event_71",
@@ -842,10 +842,10 @@ fn event_from_index(idx: usize) -> Event {
         62 => Event::UdpRecvGroPackets,
         63 => Event::UdpRecvGroBytes,
         64 => Event::UdpRecvPlainPackets,
-        65 => Event::ReservedEvent65,
-        66 => Event::ReservedEvent66,
-        67 => Event::ReservedEvent67,
-        68 => Event::ReservedEvent68,
+        65 => Event::TunReadPackets,
+        66 => Event::TunReadBytes,
+        67 => Event::TunWritePackets,
+        68 => Event::TunWriteBytes,
         69 => Event::ReservedEvent69,
         70 => Event::ReservedEvent70,
         71 => Event::ReservedEvent71,
@@ -1208,6 +1208,24 @@ pub(crate) fn record_udp_socket_kernel_drops(drops: u64) {
 #[inline]
 pub(crate) fn record_udp_namespace_rcvbuf_errors(drops: u64) {
     record_event_count(Event::UdpNamespaceRcvbufErrors, drops);
+}
+
+#[inline]
+pub(crate) fn record_tun_read_packet(bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(Event::TunReadPackets, 1);
+    record_event_count_sample(Event::TunReadBytes, bytes as u64);
+}
+
+#[inline]
+pub(crate) fn record_tun_write_packet(bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(Event::TunWritePackets, 1);
+    record_event_count_sample(Event::TunWriteBytes, bytes as u64);
 }
 
 /// Record the prepared dataplane open chunk width before inline AEAD execution.
