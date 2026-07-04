@@ -810,6 +810,7 @@ mod platform {
                             "sendmsg_x reported more sent messages than requested",
                         ));
                     }
+                    crate::perf_profile::record_udp_send_sendmsgx_batch(sent);
                     return Ok(sent);
                 }
 

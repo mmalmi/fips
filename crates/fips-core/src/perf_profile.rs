@@ -317,14 +317,14 @@ pub enum Event {
     UdpSendGsoBatchGe32 = 50,
     UdpSendGsoBatchGe48 = 51,
     UdpSendGsoBatchEq64 = 52,
-    ReservedEvent53 = 53,
-    ReservedEvent54 = 54,
-    ReservedEvent55 = 55,
-    ReservedEvent56 = 56,
+    UdpSendSendmsgxBatch = 53,
+    UdpSendSendmsgxPackets = 54,
+    UdpSendSendmsgxBatchGe32 = 55,
+    UdpSendSendmsgxBatchGe48 = 56,
     UdpSendSendmmsgBatchGe32 = 57,
     UdpSendSendmmsgBatchGe48 = 58,
     UdpSendSendmmsgBatchEq64 = 59,
-    ReservedEvent60 = 60,
+    UdpSendSendmsgxBatchEq64 = 60,
     ReservedEvent61 = 61,
     ReservedEvent62 = 62,
     ReservedEvent63 = 63,
@@ -567,14 +567,14 @@ impl Event {
             Event::UdpSendGsoBatchGe32 => "udp_send_gso_batch_ge32",
             Event::UdpSendGsoBatchGe48 => "udp_send_gso_batch_ge48",
             Event::UdpSendGsoBatchEq64 => "udp_send_gso_batch_eq64",
-            Event::ReservedEvent53 => "reserved_event_53",
-            Event::ReservedEvent54 => "reserved_event_54",
-            Event::ReservedEvent55 => "reserved_event_55",
-            Event::ReservedEvent56 => "reserved_event_56",
+            Event::UdpSendSendmsgxBatch => "udp_send_sendmsgx_batch",
+            Event::UdpSendSendmsgxPackets => "udp_send_sendmsgx_packets",
+            Event::UdpSendSendmsgxBatchGe32 => "udp_send_sendmsgx_batch_ge32",
+            Event::UdpSendSendmsgxBatchGe48 => "udp_send_sendmsgx_batch_ge48",
             Event::UdpSendSendmmsgBatchGe32 => "udp_send_sendmmsg_batch_ge32",
             Event::UdpSendSendmmsgBatchGe48 => "udp_send_sendmmsg_batch_ge48",
             Event::UdpSendSendmmsgBatchEq64 => "udp_send_sendmmsg_batch_eq64",
-            Event::ReservedEvent60 => "reserved_event_60",
+            Event::UdpSendSendmsgxBatchEq64 => "udp_send_sendmsgx_batch_eq64",
             Event::ReservedEvent61 => "reserved_event_61",
             Event::ReservedEvent62 => "reserved_event_62",
             Event::ReservedEvent63 => "reserved_event_63",
@@ -830,14 +830,14 @@ fn event_from_index(idx: usize) -> Event {
         50 => Event::UdpSendGsoBatchGe32,
         51 => Event::UdpSendGsoBatchGe48,
         52 => Event::UdpSendGsoBatchEq64,
-        53 => Event::ReservedEvent53,
-        54 => Event::ReservedEvent54,
-        55 => Event::ReservedEvent55,
-        56 => Event::ReservedEvent56,
+        53 => Event::UdpSendSendmsgxBatch,
+        54 => Event::UdpSendSendmsgxPackets,
+        55 => Event::UdpSendSendmsgxBatchGe32,
+        56 => Event::UdpSendSendmsgxBatchGe48,
         57 => Event::UdpSendSendmmsgBatchGe32,
         58 => Event::UdpSendSendmmsgBatchGe48,
         59 => Event::UdpSendSendmmsgBatchEq64,
-        60 => Event::ReservedEvent60,
+        60 => Event::UdpSendSendmsgxBatchEq64,
         61 => Event::ReservedEvent61,
         62 => Event::ReservedEvent62,
         63 => Event::ReservedEvent63,
@@ -1353,8 +1353,24 @@ pub(crate) fn record_udp_send_gso_batch(packets: usize) {
     );
 }
 
+/// Record Darwin `sendmsg_x(2)` UDP batches submitted by the dataplane send side.
 #[inline]
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+pub(crate) fn record_udp_send_sendmsgx_batch(packets: usize) {
+    record_udp_send_batch(
+        Event::UdpSendSendmsgxBatch,
+        Event::UdpSendSendmsgxPackets,
+        packets,
+    );
+    record_udp_send_batch_tail_buckets(
+        packets,
+        Event::UdpSendSendmsgxBatchGe32,
+        Event::UdpSendSendmsgxBatchGe48,
+        Event::UdpSendSendmsgxBatchEq64,
+    );
+}
+
+#[inline]
 fn record_udp_send_batch(batch_event: Event, packet_event: Event, packets: usize) {
     if !enabled() || packets == 0 {
         return;
@@ -1364,7 +1380,6 @@ fn record_udp_send_batch(batch_event: Event, packet_event: Event, packets: usize
 }
 
 #[inline]
-#[cfg(target_os = "linux")]
 fn record_udp_send_batch_tail_buckets(
     packets: usize,
     ge32_event: Event,
@@ -1387,7 +1402,6 @@ fn record_udp_send_batch_tail_buckets(
 }
 
 #[inline]
-#[cfg(target_os = "linux")]
 fn udp_send_batch_tail_bucket_flags(packets: usize) -> (bool, bool, bool) {
     (packets >= 32, packets >= 48, packets >= 64)
 }

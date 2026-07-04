@@ -1,6 +1,8 @@
 const TRANSPORT_SEND_WORKER_COALESCE_PACKETS: usize = 64;
 const TRANSPORT_SEND_WORKER_DEFAULT_MAX_PACKETS: usize = 4096;
 const TRANSPORT_SEND_WORKER_PRIORITY_RESERVE_PACKETS: usize = 64;
+#[cfg(target_os = "macos")]
+const TRANSPORT_SEND_WORKER_MACOS_BULK_COALESCE_MIN_PAYLOAD: usize = 1024;
 
 #[derive(Debug)]
 struct DataplaneTransportSendJob {
@@ -162,6 +164,21 @@ impl Drop for DataplaneTransportSendWorkerPool {
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn maybe_wait_for_large_bulk_transport_coalesce(job: &DataplaneTransportSendJob) {
+    if job.lane == Lane::Bulk
+        && job
+            .records
+            .iter()
+            .any(|record| record.payload_len() >= TRANSPORT_SEND_WORKER_MACOS_BULK_COALESCE_MIN_PAYLOAD)
+    {
+        tokio::time::sleep(std::time::Duration::from_micros(50)).await;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn maybe_wait_for_large_bulk_transport_coalesce(_job: &DataplaneTransportSendJob) {}
+
 async fn dataplane_transport_send_worker_loop(
     _worker_idx: usize,
     mut rx: tokio::sync::mpsc::Receiver<DataplaneTransportSendJob>,
@@ -178,6 +195,7 @@ async fn dataplane_transport_send_worker_loop(
                 None => break,
             }
         };
+        maybe_wait_for_large_bulk_transport_coalesce(&job).await;
         while job.records.len() < TRANSPORT_SEND_WORKER_COALESCE_PACKETS {
             let Ok(next) = rx.try_recv() else {
                 break;
