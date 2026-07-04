@@ -333,10 +333,10 @@ pub enum Event {
     TunReadBytes = 66,
     TunWritePackets = 67,
     TunWriteBytes = 68,
-    ReservedEvent69 = 69,
-    ReservedEvent70 = 70,
-    ReservedEvent71 = 71,
-    ReservedEvent72 = 72,
+    TunReadFrames = 69,
+    TunReadFrameBytes = 70,
+    TunWriteFrames = 71,
+    TunWriteFrameBytes = 72,
     ReservedEvent73 = 73,
     ReservedEvent74 = 74,
     ReservedEvent75 = 75,
@@ -583,10 +583,10 @@ impl Event {
             Event::TunReadBytes => "tun_read_bytes",
             Event::TunWritePackets => "tun_write_packets",
             Event::TunWriteBytes => "tun_write_bytes",
-            Event::ReservedEvent69 => "reserved_event_69",
-            Event::ReservedEvent70 => "reserved_event_70",
-            Event::ReservedEvent71 => "reserved_event_71",
-            Event::ReservedEvent72 => "reserved_event_72",
+            Event::TunReadFrames => "tun_read_frames",
+            Event::TunReadFrameBytes => "tun_read_frame_bytes",
+            Event::TunWriteFrames => "tun_write_frames",
+            Event::TunWriteFrameBytes => "tun_write_frame_bytes",
             Event::ReservedEvent73 => "reserved_event_73",
             Event::ReservedEvent74 => "reserved_event_74",
             Event::ReservedEvent75 => "reserved_event_75",
@@ -846,10 +846,10 @@ fn event_from_index(idx: usize) -> Event {
         66 => Event::TunReadBytes,
         67 => Event::TunWritePackets,
         68 => Event::TunWriteBytes,
-        69 => Event::ReservedEvent69,
-        70 => Event::ReservedEvent70,
-        71 => Event::ReservedEvent71,
-        72 => Event::ReservedEvent72,
+        69 => Event::TunReadFrames,
+        70 => Event::TunReadFrameBytes,
+        71 => Event::TunWriteFrames,
+        72 => Event::TunWriteFrameBytes,
         73 => Event::ReservedEvent73,
         74 => Event::ReservedEvent74,
         75 => Event::ReservedEvent75,
@@ -1220,12 +1220,32 @@ pub(crate) fn record_tun_read_packet(bytes: usize) {
 }
 
 #[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_tun_read_frame(bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(Event::TunReadFrames, 1);
+    record_event_count_sample(Event::TunReadFrameBytes, bytes as u64);
+}
+
+#[inline]
 pub(crate) fn record_tun_write_packet(bytes: usize) {
     if !enabled() {
         return;
     }
     record_event_count_sample(Event::TunWritePackets, 1);
     record_event_count_sample(Event::TunWriteBytes, bytes as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_tun_write_frame(bytes: usize) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(Event::TunWriteFrames, 1);
+    record_event_count_sample(Event::TunWriteFrameBytes, bytes as u64);
 }
 
 /// Record the prepared dataplane open chunk width before inline AEAD execution.
