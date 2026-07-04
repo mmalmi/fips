@@ -200,6 +200,44 @@ async fn configured_rating_fact_file_updates_peer_trust_score() {
 }
 
 #[tokio::test]
+async fn hashtree_query_output_rating_file_updates_peer_trust_score() {
+    let author = nostr::Keys::generate();
+    let author_npub = author.public_key().to_bech32().expect("author npub");
+    let subject = nostr::Keys::generate();
+    let subject_npub = subject.public_key().to_bech32().expect("subject npub");
+    let event = signed_rating_fact_event(&author, &subject_npub, "fips.peer", 95, 44);
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let path = tempdir.path().join("hashtree-query.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "root": "nhash1testfixture",
+            "count": 1,
+            "events": [event],
+        }))
+        .expect("encode hashtree query output"),
+    )
+    .expect("write rating event file");
+
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        open_discovery_trust_ratings_enabled: true,
+        open_discovery_trusted_rating_authors: vec![author_npub],
+        open_discovery_rating_event_files: vec![path],
+        ..Default::default()
+    });
+
+    let report = discovery.load_rating_fact_events_from_files().await;
+
+    assert_eq!(report.files, 1);
+    assert_eq!(report.events, 1);
+    assert_eq!(report.accepted, 1);
+    let scores = discovery
+        .trust_scores_for_npubs(std::slice::from_ref(&subject_npub))
+        .await;
+    assert_eq!(scores.get(&subject_npub), Some(&90));
+}
+
+#[tokio::test]
 async fn untrusted_rating_fact_is_ignored() {
     let author = nostr::Keys::generate();
     let subject = nostr::Keys::generate();
@@ -273,8 +311,14 @@ fn signed_rating_fact_event(
     let created_at_string = created_at.to_string();
     let rating_string = rating.to_string();
     let rater_npub = keys.public_key().to_bech32().expect("rater npub");
+    let rater_index = rater_npub.to_lowercase();
+    let subject_index = subject_npub.to_lowercase();
+    let scope_index = scope.to_lowercase();
     let tags = vec![
         rating_fact_tag(["i", "550e8400-e29b-41d4-a716-446655440000", "subject"]),
+        rating_fact_tag(["i", &rater_index]),
+        rating_fact_tag(["i", &subject_index]),
+        rating_fact_tag(["i", &scope_index]),
         rating_fact_tag(["type", "rating"]),
         rating_fact_tag(["schema", "1"]),
         rating_fact_tag(["created_at", &created_at_string]),
