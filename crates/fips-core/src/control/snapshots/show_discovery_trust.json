@@ -1,0 +1,11 @@
+{
+  "data": {
+    "nostr_discovery_enabled": false,
+    "scope": null,
+    "score_count": 0,
+    "scores": [],
+    "trust_ratings_enabled": false,
+    "trusted_rating_author_count": 0
+  },
+  "status": "ok"
+}

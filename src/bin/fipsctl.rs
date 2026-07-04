@@ -173,6 +173,8 @@ enum ShowCommands {
     Bloom,
     /// MMP metrics summary
     Mmp,
+    /// Accepted Nostr WoT trust scores used by open discovery
+    DiscoveryTrust,
     /// Coordinate cache stats
     Cache,
     /// Pending handshake connections
@@ -201,6 +203,7 @@ impl ShowCommands {
             ShowCommands::Sessions => "show_sessions",
             ShowCommands::Bloom => "show_bloom",
             ShowCommands::Mmp => "show_mmp",
+            ShowCommands::DiscoveryTrust => "show_discovery_trust",
             ShowCommands::Cache => "show_cache",
             ShowCommands::Connections => "show_connections",
             ShowCommands::Transports => "show_transports",
@@ -889,6 +892,14 @@ mod tests {
     }
 
     #[test]
+    fn test_show_discovery_trust_command_name() {
+        assert_eq!(
+            ShowCommands::DiscoveryTrust.command_name(),
+            "show_discovery_trust"
+        );
+    }
+
+    #[test]
     fn test_cli_parses_acl_show() {
         let cli = Cli::try_parse_from(["fipsctl", "acl", "show"]).unwrap();
 
@@ -896,6 +907,18 @@ mod tests {
             cli.command,
             Commands::Acl {
                 what: AclCommands::Show
+            }
+        ));
+    }
+
+    #[test]
+    fn test_cli_parses_show_discovery_trust() {
+        let cli = Cli::try_parse_from(["fipsctl", "show", "discovery-trust"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Commands::Show {
+                what: ShowCommands::DiscoveryTrust
             }
         ));
     }

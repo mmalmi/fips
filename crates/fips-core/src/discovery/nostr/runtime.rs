@@ -304,6 +304,13 @@ struct NostrPeerTrustScore {
     updated_at_secs: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NostrPeerTrustScoreView {
+    pub npub: String,
+    pub score: i64,
+    pub updated_at_secs: u64,
+}
+
 impl NostrDiscovery {
     fn empty_failure_decision() -> NostrFailureDecision {
         NostrFailureDecision {
@@ -451,6 +458,41 @@ impl NostrDiscovery {
                 Some((npub.clone(), score))
             })
             .collect()
+    }
+
+    pub fn trust_ratings_enabled(&self) -> bool {
+        self.config.open_discovery_trust_ratings_enabled
+    }
+
+    pub fn trust_rating_scope(&self) -> &str {
+        self.config.open_discovery_rating_scope.as_str()
+    }
+
+    pub fn trusted_rating_author_count(&self) -> usize {
+        self.config.open_discovery_trusted_rating_authors.len()
+    }
+
+    pub fn peer_trust_score_snapshot(&self) -> Result<Vec<NostrPeerTrustScoreView>, &'static str> {
+        let scores = self
+            .peer_trust_scores
+            .try_read()
+            .map_err(|_| "peer trust score cache is busy")?;
+        let mut rows = scores
+            .iter()
+            .map(|(peer, score)| NostrPeerTrustScoreView {
+                npub: peer.npub(),
+                score: score.score,
+                updated_at_secs: score.updated_at_secs,
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| right.updated_at_secs.cmp(&left.updated_at_secs))
+                .then_with(|| left.npub.cmp(&right.npub))
+        });
+        Ok(rows)
     }
 
     pub(crate) fn outbound_admission_allowed(&self) -> bool {

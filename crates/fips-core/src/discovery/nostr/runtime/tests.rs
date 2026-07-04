@@ -166,6 +166,61 @@ async fn trusted_rating_fact_updates_peer_trust_score() {
 }
 
 #[tokio::test]
+async fn peer_trust_snapshot_uses_newest_rating_per_peer() {
+    let author = nostr::Keys::generate();
+    let author_npub = author.public_key().to_bech32().expect("author npub");
+    let subject = nostr::Keys::generate();
+    let subject_npub = subject.public_key().to_bech32().expect("subject npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        open_discovery_trust_ratings_enabled: true,
+        open_discovery_trusted_rating_authors: vec![author_npub],
+        ..Default::default()
+    });
+
+    assert!(
+        discovery
+            .process_rating_fact_event(&signed_rating_fact_event(
+                &author,
+                &subject_npub,
+                "fips.peer",
+                80,
+                42,
+            ))
+            .await
+    );
+    assert!(
+        discovery
+            .process_rating_fact_event(&signed_rating_fact_event(
+                &author,
+                &subject_npub,
+                "fips.peer",
+                0,
+                41,
+            ))
+            .await
+    );
+    assert!(
+        discovery
+            .process_rating_fact_event(&signed_rating_fact_event(
+                &author,
+                &subject_npub,
+                "fips.peer",
+                100,
+                43,
+            ))
+            .await
+    );
+
+    let snapshot = discovery
+        .peer_trust_score_snapshot()
+        .expect("trust cache snapshot");
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].npub, subject_npub);
+    assert_eq!(snapshot[0].score, 100);
+    assert_eq!(snapshot[0].updated_at_secs, 43);
+}
+
+#[tokio::test]
 async fn configured_rating_fact_file_updates_peer_trust_score() {
     let author = nostr::Keys::generate();
     let author_npub = author.public_key().to_bech32().expect("author npub");

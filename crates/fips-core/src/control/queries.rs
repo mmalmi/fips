@@ -134,6 +134,44 @@ pub fn show_acl(node: &Node) -> Value {
     })
 }
 
+/// `show_discovery_trust` — accepted Nostr WoT trust scores used by open discovery.
+pub fn show_discovery_trust(node: &Node) -> super::protocol::Response {
+    let Some(discovery) = node.nostr_discovery_handle() else {
+        return super::protocol::Response::ok(json!({
+            "nostr_discovery_enabled": false,
+            "trust_ratings_enabled": false,
+            "scope": Value::Null,
+            "trusted_rating_author_count": 0,
+            "score_count": 0,
+            "scores": [],
+        }));
+    };
+
+    let scores = match discovery.peer_trust_score_snapshot() {
+        Ok(scores) => scores,
+        Err(error) => return super::protocol::Response::error(error),
+    };
+    let rows = scores
+        .iter()
+        .map(|row| {
+            json!({
+                "npub": &row.npub,
+                "score": row.score,
+                "updated_at_secs": row.updated_at_secs,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    super::protocol::Response::ok(json!({
+        "nostr_discovery_enabled": true,
+        "trust_ratings_enabled": discovery.trust_ratings_enabled(),
+        "scope": discovery.trust_rating_scope(),
+        "trusted_rating_author_count": discovery.trusted_rating_author_count(),
+        "score_count": rows.len(),
+        "scores": rows,
+    }))
+}
+
 /// `show_peers` — Authenticated peers.
 pub fn show_peers(node: &Node) -> Value {
     let tree = node.tree_state();
@@ -831,6 +869,7 @@ pub fn dispatch(node: &Node, command: &str, params: Option<&Value>) -> super::pr
         "show_bloom" => super::protocol::Response::ok(show_bloom(node)),
         "show_mmp" => super::protocol::Response::ok(show_mmp(node)),
         "show_peer_ratings" => show_peer_ratings(node, params),
+        "show_discovery_trust" => show_discovery_trust(node),
         "show_cache" => super::protocol::Response::ok(show_cache(node)),
         "show_connections" => super::protocol::Response::ok(show_connections(node)),
         "show_transports" => super::protocol::Response::ok(show_transports(node)),
