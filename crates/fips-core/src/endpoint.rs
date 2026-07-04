@@ -601,11 +601,25 @@ impl FipsEndpoint {
         messages: &mut Vec<FipsEndpointMessage>,
         max: usize,
     ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
         messages.clear();
-        self.blocking_recv_batch_for_each(max, |message| {
-            messages.push(message);
-            true
-        })
+
+        let mut state = self.inbound_endpoint_rx.blocking_lock();
+        state.drain_pending_into(messages, max);
+
+        while messages.len() < max {
+            let event = if messages.is_empty() {
+                state.rx.blocking_recv()?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            state.push_event_into(event, messages, max);
+        }
+
+        Some(messages.len())
     }
 
     /// Synchronous blocking batch receive that invokes a callback for each

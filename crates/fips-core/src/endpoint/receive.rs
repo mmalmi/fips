@@ -58,12 +58,15 @@ impl EndpointReceiveState {
     }
 
     pub(super) fn drain_pending_into(&mut self, out: &mut Vec<FipsEndpointMessage>, limit: usize) {
+        let mut released = 0usize;
         while out.len() < limit {
-            let Some(message) = self.pop_pending() else {
+            let Some(message) = self.pending.pop_front() else {
                 break;
             };
-            out.push(message);
+            out.push(message.into_public());
+            released += 1;
         }
+        self.rx.release_messages(released);
     }
 
     pub(super) fn drain_pending_for_each(
@@ -92,24 +95,17 @@ impl EndpointReceiveState {
     ) {
         match event {
             NodeEndpointEvent { messages, .. } => {
+                let mut released = 0usize;
                 for message in messages {
-                    self.push_queued_into(message.into(), out, limit);
+                    if out.len() < limit {
+                        out.push(EndpointQueuedMessage::from(message).into_public());
+                        released += 1;
+                    } else {
+                        self.push_pending(message.into());
+                    }
                 }
+                self.rx.release_messages(released);
             }
-        }
-    }
-
-    fn push_queued_into(
-        &mut self,
-        message: EndpointQueuedMessage,
-        out: &mut Vec<FipsEndpointMessage>,
-        limit: usize,
-    ) {
-        if out.len() < limit {
-            self.rx.release_messages(1);
-            out.push(message.into_public());
-        } else {
-            self.pending.push_back(message);
         }
     }
 
