@@ -166,6 +166,37 @@ async fn trusted_rating_fact_updates_peer_trust_score() {
 }
 
 #[tokio::test]
+async fn trusted_rating_fact_signer_can_differ_from_rater() {
+    let crawler = nostr::Keys::generate();
+    let crawler_npub = crawler.public_key().to_bech32().expect("crawler npub");
+    let rater = nostr::Keys::generate();
+    let rater_npub = rater.public_key().to_bech32().expect("rater npub");
+    let subject = nostr::Keys::generate();
+    let subject_npub = subject.public_key().to_bech32().expect("subject npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        open_discovery_trust_ratings_enabled: true,
+        open_discovery_trusted_rating_authors: vec![crawler_npub],
+        ..Default::default()
+    });
+    let event = signed_rating_fact_event_with_rater(
+        &crawler,
+        &rater_npub,
+        &subject_npub,
+        "fips.peer",
+        75,
+        43,
+    );
+
+    assert_ne!(event.pubkey, rater.public_key());
+    assert!(discovery.process_rating_fact_event(&event).await);
+
+    let scores = discovery
+        .trust_scores_for_npubs(std::slice::from_ref(&subject_npub))
+        .await;
+    assert_eq!(scores.get(&subject_npub), Some(&50));
+}
+
+#[tokio::test]
 async fn peer_trust_snapshot_uses_newest_rating_per_peer() {
     let author = nostr::Keys::generate();
     let author_npub = author.public_key().to_bech32().expect("author npub");
@@ -363,9 +394,20 @@ fn signed_rating_fact_event(
     rating: i64,
     created_at: u64,
 ) -> Event {
+    let rater_npub = keys.public_key().to_bech32().expect("rater npub");
+    signed_rating_fact_event_with_rater(keys, &rater_npub, subject_npub, scope, rating, created_at)
+}
+
+fn signed_rating_fact_event_with_rater(
+    keys: &nostr::Keys,
+    rater_npub: &str,
+    subject_npub: &str,
+    scope: &str,
+    rating: i64,
+    created_at: u64,
+) -> Event {
     let created_at_string = created_at.to_string();
     let rating_string = rating.to_string();
-    let rater_npub = keys.public_key().to_bech32().expect("rater npub");
     let rater_index = rater_npub.to_lowercase();
     let subject_index = subject_npub.to_lowercase();
     let scope_index = scope.to_lowercase();
