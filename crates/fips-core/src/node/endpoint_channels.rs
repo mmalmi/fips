@@ -176,6 +176,22 @@ impl NodeEndpointDataBatch {
         })
     }
 
+    pub(crate) fn from_payloads(
+        remote: PeerIdentity,
+        payloads: Vec<EndpointDataPayload>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> Option<Self> {
+        if payloads.is_empty() {
+            return None;
+        }
+        Some(Self {
+            remote,
+            payloads,
+            queued_at,
+            enqueued_at_ms: crate::time::now_ms(),
+        })
+    }
+
     pub(crate) fn drain_cost(&self) -> usize {
         endpoint_data_batch_drain_cost(self.packet_count())
     }

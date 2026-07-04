@@ -7,8 +7,8 @@ use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, Ud
 #[cfg(test)]
 use crate::node::ENDPOINT_EVENT_TEST_PAYLOAD_LEN;
 use crate::node::{
-    EndpointDataBatchTx, EndpointDirectSink, EndpointEventSender, NodeEndpointControlCommand,
-    NodeEndpointDataBatch, NodeEndpointEvent,
+    EndpointDataBatchTx, EndpointDataPayload, EndpointDirectSink, EndpointEventSender,
+    NodeEndpointControlCommand, NodeEndpointDataBatch, NodeEndpointEvent,
 };
 use crate::upper::tun::TunOutboundTx;
 use crate::{
@@ -236,6 +236,21 @@ fn validate_endpoint_data_payloads(payloads: &[Vec<u8>]) -> Result<(), FipsEndpo
     Ok(())
 }
 
+fn endpoint_data_payloads_from_vecs(
+    payloads: Vec<Vec<u8>>,
+) -> Result<Vec<EndpointDataPayload>, FipsEndpointError> {
+    let mut converted = Vec::with_capacity(payloads.len());
+    for payload in payloads {
+        let len = payload.len();
+        let Some(payload) = EndpointDataPayload::from_packet_payload(payload) else {
+            let max = crate::node::session_wire::fsp_endpoint_data_max_body_len();
+            return Err(FipsEndpointError::EndpointDataTooLarge { len, max });
+        };
+        converted.push(payload);
+    }
+    Ok(converted)
+}
+
 fn spawn_node_task(
     mut node: Node,
     shutdown_rx: oneshot::Receiver<()>,
@@ -367,21 +382,22 @@ impl FipsEndpoint {
         remote: PeerIdentity,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
-        validate_endpoint_data_payloads(&payloads)?;
         if *remote.node_addr() == self.node_addr {
+            validate_endpoint_data_payloads(&payloads)?;
             for payload in payloads {
                 self.send_loopback(payload)?;
             }
             return Ok(());
         }
 
+        let payloads = endpoint_data_payloads_from_vecs(payloads)?;
         self.send_endpoint_data_batch(remote, payloads)
     }
 
     fn send_endpoint_data_batch(
         &self,
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataPayload>,
     ) -> Result<(), FipsEndpointError> {
         if payloads.is_empty() {
             return Ok(());
@@ -406,15 +422,17 @@ impl FipsEndpoint {
     fn enqueue_endpoint_data_batch(
         &self,
         remote: PeerIdentity,
-        payload_batch: Vec<Vec<u8>>,
+        payload_batch: Vec<EndpointDataPayload>,
     ) -> Result<(), FipsEndpointError> {
         // Fire-and-forget: caller already drops the result, so skip
         // the per-packet `oneshot::channel()` allocation entirely.
         // Endpoint data now enters the dataplane bulk lane directly, without a
         // per-packet oneshot or control-command hop.
-        if let Some(batch) =
-            NodeEndpointDataBatch::batch(remote, payload_batch, crate::perf_profile::stamp())
-        {
+        if let Some(batch) = NodeEndpointDataBatch::from_payloads(
+            remote,
+            payload_batch,
+            crate::perf_profile::stamp(),
+        ) {
             self.endpoint_data_batches
                 .send_or_drop(batch)
                 .map_err(|_| FipsEndpointError::Closed)?;
