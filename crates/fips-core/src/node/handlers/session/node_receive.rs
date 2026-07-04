@@ -128,6 +128,80 @@ impl Node {
         processed
     }
 
+    pub(in crate::node) async fn process_dataplane_authenticated_ingress(
+        &mut self,
+        ingress_batch: Vec<crate::dataplane::DataplaneFspAuthenticatedIngress>,
+    ) -> usize {
+        let mut processed = 0usize;
+        let mut endpoint_batches = Vec::new();
+        let mut tun_batches = Vec::new();
+        let mut session_ingress = Vec::new();
+
+        for ingress in ingress_batch {
+            match ingress {
+                crate::dataplane::DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk) => {
+                    processed = processed.saturating_add(
+                        self.process_dataplane_compact_tun_packets(std::mem::take(
+                            &mut tun_batches,
+                        ))
+                        .await,
+                    );
+                    processed = processed.saturating_add(
+                        self.process_dataplane_authenticated_sessions(std::mem::take(
+                            &mut session_ingress,
+                        ))
+                        .await,
+                    );
+                    endpoint_batches.push(bulk);
+                }
+                crate::dataplane::DataplaneFspAuthenticatedIngress::TunPacketBatch(batch) => {
+                    processed = processed.saturating_add(
+                        self.process_dataplane_compact_endpoint_data(std::mem::take(
+                            &mut endpoint_batches,
+                        ))
+                        .await,
+                    );
+                    processed = processed.saturating_add(
+                        self.process_dataplane_authenticated_sessions(std::mem::take(
+                            &mut session_ingress,
+                        ))
+                        .await,
+                    );
+                    tun_batches.push(batch);
+                }
+                crate::dataplane::DataplaneFspAuthenticatedIngress::Session(ingress) => {
+                    processed = processed.saturating_add(
+                        self.process_dataplane_compact_endpoint_data(std::mem::take(
+                            &mut endpoint_batches,
+                        ))
+                        .await,
+                    );
+                    processed = processed.saturating_add(
+                        self.process_dataplane_compact_tun_packets(std::mem::take(
+                            &mut tun_batches,
+                        ))
+                        .await,
+                    );
+                    session_ingress.push(ingress);
+                }
+            }
+        }
+
+        processed = processed.saturating_add(
+            self.process_dataplane_compact_endpoint_data(endpoint_batches)
+                .await,
+        );
+        processed = processed.saturating_add(
+            self.process_dataplane_compact_tun_packets(tun_batches)
+                .await,
+        );
+        processed = processed.saturating_add(
+            self.process_dataplane_authenticated_sessions(session_ingress)
+                .await,
+        );
+        processed
+    }
+
     pub(in crate::node) async fn process_dataplane_compact_endpoint_data(
         &mut self,
         endpoint_batches: Vec<crate::dataplane::DataplaneEndpointDataBatch>,

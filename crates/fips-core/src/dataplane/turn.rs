@@ -610,7 +610,7 @@ impl DataplaneFspEndpointDataIngress {
             };
             if msg_type != crate::protocol::SessionMessageType::EndpointData.to_byte() {
                 return Err(output);
-            }
+            };
             (timestamp_ms, inner_flags, plaintext.len(), body.len())
         };
         let receive_sync = FspReceiveSync {
@@ -1015,6 +1015,37 @@ impl DataplaneFspTunPacketBatch {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum DataplaneFspAuthenticatedIngress {
+    EndpointDataBatch(DataplaneEndpointDataBatch),
+    TunPacketBatch(DataplaneFspTunPacketBatch),
+    Session(DataplaneFspSessionIngress),
+}
+
+impl DataplaneFspAuthenticatedIngress {
+    pub(crate) fn endpoint_data_len(&self) -> usize {
+        match self {
+            Self::EndpointDataBatch(bulk) => bulk.len(),
+            Self::TunPacketBatch(_) | Self::Session(_) => 0,
+        }
+    }
+
+    pub(crate) fn fsp_tun_packet_len(&self) -> usize {
+        match self {
+            Self::TunPacketBatch(batch) => batch.len(),
+            Self::EndpointDataBatch(_) | Self::Session(_) => 0,
+        }
+    }
+
+    pub(crate) fn is_endpoint_data_batch(&self) -> bool {
+        matches!(self, Self::EndpointDataBatch(_))
+    }
+
+    pub(crate) fn is_fsp_session(&self) -> bool {
+        matches!(self, Self::Session(_))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DataplaneLiveNodeTurn {
     summary: DataplaneRuntimeSummary,
@@ -1023,9 +1054,7 @@ pub(crate) struct DataplaneLiveNodeTurn {
     fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
     fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
-    endpoint_data_batch: Vec<DataplaneEndpointDataBatch>,
-    fsp_tun_packets: Vec<DataplaneFspTunPacketBatch>,
-    fsp_session_ingress: Vec<DataplaneFspSessionIngress>,
+    fsp_authenticated_ingress: Vec<DataplaneFspAuthenticatedIngress>,
     raw_ingress_drops: Vec<DataplaneRawIngressDrop>,
     tun_outbound_drops: Vec<DataplaneTunOutboundDrop>,
     endpoint_data_drops: Vec<DataplaneEndpointDataDrop>,
@@ -1102,38 +1131,50 @@ impl DataplaneLiveNodeTurn {
         std::mem::take(&mut self.fsp_local_session_ingress)
     }
 
-    pub(crate) fn take_endpoint_data_batch(&mut self) -> Vec<DataplaneEndpointDataBatch> {
-        std::mem::take(&mut self.endpoint_data_batch)
-    }
-
-    pub(crate) fn endpoint_data_batch(&self) -> &[DataplaneEndpointDataBatch] {
-        &self.endpoint_data_batch
+    pub(crate) fn take_fsp_authenticated_ingress(
+        &mut self,
+    ) -> Vec<DataplaneFspAuthenticatedIngress> {
+        std::mem::take(&mut self.fsp_authenticated_ingress)
     }
 
     pub(crate) fn endpoint_data_batch_count(&self) -> usize {
-        self.endpoint_data_batch
+        self.fsp_authenticated_ingress
             .iter()
-            .map(DataplaneEndpointDataBatch::len)
+            .map(DataplaneFspAuthenticatedIngress::endpoint_data_len)
             .sum()
     }
 
-    pub(crate) fn take_fsp_tun_packets(&mut self) -> Vec<DataplaneFspTunPacketBatch> {
-        std::mem::take(&mut self.fsp_tun_packets)
+    pub(crate) fn endpoint_data_batch_batch_count(&self) -> usize {
+        self.fsp_authenticated_ingress
+            .iter()
+            .filter(|item| item.is_endpoint_data_batch())
+            .count()
     }
 
     pub(crate) fn fsp_tun_packet_count(&self) -> usize {
-        self.fsp_tun_packets
+        self.fsp_authenticated_ingress
             .iter()
-            .map(DataplaneFspTunPacketBatch::len)
+            .map(DataplaneFspAuthenticatedIngress::fsp_tun_packet_len)
             .sum()
     }
 
-    pub(crate) fn fsp_session_ingress(&self) -> &[DataplaneFspSessionIngress] {
-        &self.fsp_session_ingress
+    pub(crate) fn fsp_session_ingress_count(&self) -> usize {
+        self.fsp_authenticated_ingress
+            .iter()
+            .filter(|item| item.is_fsp_session())
+            .count()
     }
 
-    pub(crate) fn take_fsp_session_ingress(&mut self) -> Vec<DataplaneFspSessionIngress> {
-        std::mem::take(&mut self.fsp_session_ingress)
+    pub(crate) fn fsp_session_ingress(
+        &self,
+    ) -> impl Iterator<Item = &DataplaneFspSessionIngress> {
+        self.fsp_authenticated_ingress.iter().filter_map(|item| {
+            if let DataplaneFspAuthenticatedIngress::Session(ingress) = item {
+                Some(ingress)
+            } else {
+                None
+            }
+        })
     }
 
     pub(crate) fn tun_outbound_drops(&self) -> &[DataplaneTunOutboundDrop] {
@@ -1191,9 +1232,7 @@ impl DataplaneLiveNodeTurn {
             || !self.fmp_link_ingress.is_empty()
             || !self.fsp_coord_warmups.is_empty()
             || !self.fsp_local_session_ingress.is_empty()
-            || !self.endpoint_data_batch.is_empty()
-            || !self.fsp_tun_packets.is_empty()
-            || !self.fsp_session_ingress.is_empty()
+            || !self.fsp_authenticated_ingress.is_empty()
             || !self.raw_ingress_drops.is_empty()
             || !self.tun_outbound_drops.is_empty()
             || !self.endpoint_data_drops.is_empty()
@@ -1229,11 +1268,8 @@ impl DataplaneLiveNodeTurn {
         self.fsp_coord_warmups.append(&mut other.fsp_coord_warmups);
         self.fsp_local_session_ingress
             .append(&mut other.fsp_local_session_ingress);
-        self.endpoint_data_batch
-            .append(&mut other.endpoint_data_batch);
-        self.fsp_tun_packets.append(&mut other.fsp_tun_packets);
-        self.fsp_session_ingress
-            .append(&mut other.fsp_session_ingress);
+        self.fsp_authenticated_ingress
+            .append(&mut other.fsp_authenticated_ingress);
         self.raw_ingress_drops.append(&mut other.raw_ingress_drops);
         self.tun_outbound_drops
             .append(&mut other.tun_outbound_drops);

@@ -208,8 +208,11 @@
             .owner_fsp_activity(fsp_owner)
             .unwrap()
             .current_epoch_confirmed());
-        assert_eq!(turn.fsp_session_ingress().len(), 1);
-        let session_ingress = &turn.fsp_session_ingress()[0];
+        assert_eq!(turn.fsp_session_ingress_count(), 1);
+        let session_ingress = turn
+            .fsp_session_ingress()
+            .next()
+            .expect("session ingress");
         assert_eq!(session_ingress.source_addr(), source_addr);
         assert_eq!(session_ingress.previous_hop_addr(), next_hop);
         assert!(session_ingress.ce_flag());
@@ -320,7 +323,7 @@
             .apply_to(&mut coord_cache, 10);
         assert_eq!(coord_cache.get(&source_addr, 10), Some(&source_coords));
         assert_eq!(coord_cache.get(&local_addr, 10), Some(&local_coords));
-        assert_eq!(turn.fsp_session_ingress().len(), 1);
+        assert_eq!(turn.fsp_session_ingress_count(), 1);
         assert!(turn.fsp_local_session_ingress().is_empty());
         assert!(turn.fmp_link_ingress().is_empty());
         let activity = driver.owner_fsp_activity(fsp_owner).unwrap();
@@ -391,7 +394,7 @@
         assert_eq!(turn.summary().outputs_dropped(), 0);
         assert_eq!(turn.fmp_ingress_receipts().len(), 1);
         assert!(turn.fmp_link_ingress().is_empty());
-        assert!(turn.fsp_session_ingress().is_empty());
+        assert_eq!(turn.fsp_session_ingress_count(), 0);
         assert_eq!(turn.fsp_local_session_ingress().len(), 1);
         assert_fmp_receipt(
             &turn.fmp_ingress_receipts()[0],

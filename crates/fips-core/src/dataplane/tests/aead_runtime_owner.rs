@@ -36,38 +36,6 @@
         }
     }
 
-    fn submit_endpoint_data_payload(
-        mover: &mut Dataplane,
-        owner: OwnerId,
-        counter: u64,
-        timestamp: u32,
-        key: u8,
-        previous_hop: NodeAddr,
-        local_addr: NodeAddr,
-        payload: &[u8],
-    ) {
-        let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
-            timestamp,
-            crate::protocol::SessionMessageType::EndpointData.to_byte(),
-            0,
-            payload,
-        );
-        mover
-            .submit_socket_packet(
-                SocketPacket::new(
-                    owner,
-                    1,
-                    counter,
-                    PacketClass::Bulk,
-                    OutputTarget::SessionPayload { local_addr },
-                    fsp_encrypted_wire(counter, 0, &fsp_inner, key),
-                )
-                .with_previous_hop(previous_hop)
-                .with_activity_tick(ActivityTick::new(timestamp as u64)),
-            )
-            .unwrap();
-    }
-
     fn run_with_executor<E>(
         mover: &mut Dataplane,
         executor: &mut E,
@@ -100,6 +68,68 @@
             false,
         );
         (dispatched, flatten_retired_outputs(retired), drops)
+    }
+
+    fn driver_endpoint_batches(
+        driver: &DataplaneTurnDriver,
+    ) -> Vec<&DataplaneEndpointDataBatch> {
+        driver
+            .fsp_authenticated_ingress
+            .iter()
+            .filter_map(|ingress| {
+                if let DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk) = ingress {
+                    Some(bulk)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn driver_tun_batches(
+        driver: &DataplaneTurnDriver,
+    ) -> Vec<&DataplaneFspTunPacketBatch> {
+        driver
+            .fsp_authenticated_ingress
+            .iter()
+            .filter_map(|ingress| {
+                if let DataplaneFspAuthenticatedIngress::TunPacketBatch(batch) = ingress {
+                    Some(batch)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn take_driver_endpoint_batches(
+        driver: &mut DataplaneTurnDriver,
+    ) -> Vec<DataplaneEndpointDataBatch> {
+        std::mem::take(&mut driver.fsp_authenticated_ingress)
+            .into_iter()
+            .filter_map(|ingress| {
+                if let DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk) = ingress {
+                    Some(bulk)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn take_driver_tun_batch(driver: &mut DataplaneTurnDriver) -> DataplaneFspTunPacketBatch {
+        let mut batches = std::mem::take(&mut driver.fsp_authenticated_ingress)
+            .into_iter()
+            .filter_map(|ingress| {
+                if let DataplaneFspAuthenticatedIngress::TunPacketBatch(batch) = ingress {
+                    Some(batch)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(batches.len(), 1);
+        batches.pop().unwrap()
     }
 
     fn drain_worker_pool_completions(
@@ -505,7 +535,7 @@
     }
 
     #[test]
-    fn direct_fsp_endpoint_data_seals_once_to_transport() {
+    fn direct_fsp_endpoint_data_seals_payloads_to_transport() {
         let owner = fsp_owner(320);
         let key = 32;
         let path = live_path(3200);
@@ -523,42 +553,55 @@
         driver.owner_mut(owner).unwrap().set_active_path(path.clone());
 
         let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0);
-        let mut routed = route_endpoint_payloads(&route, vec![b"direct-one".to_vec()]);
+        let mut routed = route.route_batch(vec![
+            b"direct-one".to_vec(),
+            b"direct-two".to_vec(),
+        ]);
         assert!(routed.dropped.is_empty());
-        assert_eq!(routed.routed.len(), 1);
-        let packet = routed
+        assert_eq!(routed.routed.len(), 2);
+        let routed_packets = routed
             .routed
-            .pop()
-            .unwrap()
-            .with_activity_tick(ActivityTick::new(2_345));
+            .into_iter()
+            .map(|packet| packet.with_activity_tick(ActivityTick::new(2_345)))
+            .collect::<Vec<_>>();
 
-        let turn = run_aead_classified_turn(&mut driver, std::iter::empty(), [packet], 8);
-        assert_eq!(turn.summary().outbound_admitted(), 1);
-        assert_eq!(turn.summary().dispatched(), 1);
-        assert_eq!(turn.summary().outputs(), 1);
+        let turn = run_aead_classified_turn(
+            &mut driver,
+            std::iter::empty(),
+            routed_packets,
+            8,
+        );
+        assert_eq!(turn.summary().outbound_admitted(), 2);
+        assert_eq!(turn.summary().dispatched(), 2);
+        assert_eq!(turn.summary().outputs(), 2);
         assert!(turn.drops().is_empty());
 
-        let output = &turn.outputs()[0];
-        assert_eq!(output.owner(), owner);
-        assert_eq!(output.counter(), 90);
-        assert_eq!(output.target(), OutputTarget::Transport);
-        assert_eq!(output.path(), Some(path));
-        assert!(output.fsp_send_receipt.is_none());
+        for (idx, expected) in [b"direct-one".as_slice(), b"direct-two".as_slice()]
+            .into_iter()
+            .enumerate()
+        {
+            let output = &turn.outputs()[idx];
+            assert_eq!(output.owner(), owner);
+            assert_eq!(output.counter(), 90 + idx as u64);
+            assert_eq!(output.target(), OutputTarget::Transport);
+            assert_eq!(output.path(), Some(path.clone()));
+            assert!(output.fsp_send_receipt.is_none());
 
-        let header = FspWireHeader::parse(output.payload()).unwrap();
-        assert_eq!(header.counter(), 90);
-        assert_eq!(
-            header.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
-            crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT
-        );
-        let plaintext = open_sealed_output(output, key);
-        let (_timestamp, msg_type, _inner_flags, body) =
-            crate::node::session_wire::fsp_strip_inner_header(&plaintext).unwrap();
-        assert_eq!(
-            msg_type,
-            crate::protocol::SessionMessageType::EndpointData.to_byte()
-        );
-        assert_eq!(body, b"direct-one");
+            let header = FspWireHeader::parse(output.payload()).unwrap();
+            assert_eq!(header.counter(), 90 + idx as u64);
+            assert_eq!(
+                header.flags() & crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+                crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT
+            );
+            let plaintext = open_sealed_output(output, key);
+            let (_timestamp, msg_type, _inner_flags, body) =
+                crate::node::session_wire::fsp_strip_inner_header(&plaintext).unwrap();
+            assert_eq!(
+                msg_type,
+                crate::protocol::SessionMessageType::EndpointData.to_byte()
+            );
+            assert_eq!(body, expected);
+        }
     }
 
     #[test]
@@ -1742,19 +1785,22 @@
     }
 
     #[test]
-    fn endpoint_data_route_emits_normal_endpoint_data_records() {
+    fn endpoint_data_route_builds_endpoint_data_records() {
         let owner = fsp_owner(914);
         let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0);
-        let payloads = vec![
+        let route_result = route.route_batch(vec![
             b"first".to_vec(),
             b"second".to_vec(),
             b"third".to_vec(),
-        ];
-        let route_result = route_endpoint_payloads(&route, payloads.clone());
+        ]);
 
         assert!(route_result.dropped.is_empty());
-        assert_eq!(route_result.routed.len(), payloads.len());
-        for (packet, payload) in route_result.routed.iter().zip(payloads) {
+        assert_eq!(route_result.routed.len(), 3);
+        for (packet, expected) in route_result.routed.iter().zip([
+            b"first".as_slice(),
+            b"second".as_slice(),
+            b"third".as_slice(),
+        ]) {
             assert!(matches!(
                 packet.payload_transform,
                 OutboundPayloadTransform::FspInnerHeader {
@@ -1762,17 +1808,15 @@
                     ..
                 } if msg_type == crate::protocol::SessionMessageType::EndpointData.to_byte()
             ));
-            assert_eq!(packet.payload.as_slice(), payload.as_slice());
+            assert_eq!(packet.payload.as_slice(), expected);
         }
-
-        let route_result =
-            route_endpoint_payloads(&route, (0..49).map(|idx| vec![idx as u8]).collect());
+        let route_result = route.route_batch((0..49).map(|idx| vec![idx as u8]).collect());
         assert_eq!(route_result.routed.len(), 49);
         assert!(route_result.dropped.is_empty());
     }
 
     #[test]
-    fn direct_endpoint_data_route_keeps_direct_transport_on_each_record() {
+    fn direct_endpoint_data_route_keeps_direct_transport_records() {
         let owner = fsp_owner(913);
         let first = vec![0x11; 100];
         let small = vec![0x22; 10];
@@ -1784,12 +1828,12 @@
 
         assert!(route_result.dropped.is_empty());
         assert_eq!(route_result.routed.len(), 3);
-        for (packet, payload) in route_result
+        for (packet, expected) in route_result
             .routed
             .iter()
             .zip([first.as_slice(), small.as_slice(), third.as_slice()])
         {
-            assert_eq!(packet.payload.as_slice(), payload);
+            assert_eq!(packet.payload.as_slice(), expected);
             assert!(!packet.fsp_auto_coords_warmup);
         }
     }
@@ -1868,27 +1912,127 @@
         assert_eq!(summary.completions(), 1);
         assert_eq!(summary.outputs(), 0);
         assert!(driver.outputs.is_empty());
-        assert!(driver.endpoint_data_batch.is_empty());
-        assert!(driver.fsp_session_ingress.is_empty());
-        assert_eq!(driver.fsp_tun_packets.len(), 1);
-        assert_eq!(driver.fsp_tun_packets[0].len(), 1);
-        assert_eq!(driver.fsp_tun_packets[0].packet_count(), 1);
-        assert_eq!(driver.fsp_tun_packets[0].commit_runs().len(), 1);
-        let commit = driver.fsp_tun_packets[0].commit_runs()[0].commit();
+        assert_eq!(driver_endpoint_batches(&driver).len(), 0);
+        assert_eq!(driver_tun_batches(&driver).len(), 1);
+        assert_eq!(driver_tun_batches(&driver)[0].len(), 1);
+        assert_eq!(driver_tun_batches(&driver)[0].packet_count(), 1);
+        assert_eq!(driver_tun_batches(&driver)[0].commit_runs().len(), 1);
+        let commit = driver_tun_batches(&driver)[0].commit_runs()[0].commit();
         assert_eq!(commit.source_addr(), source_addr);
         assert_eq!(commit.previous_hop_addr(), previous_hop);
         assert!(!commit.direct_path());
 
-        let packets = driver
-            .fsp_tun_packets
-            .pop()
-            .unwrap()
+        let packets = take_driver_tun_batch(&mut driver)
             .into_packets()
             .into_iter()
             .map(DataplaneFspTunPacket::into_packet)
             .collect::<Vec<_>>();
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].as_slice(), expected_ipv6.as_slice());
+    }
+
+    #[test]
+    fn compact_authenticated_ingress_preserves_retirement_order() {
+        let source_peer =
+            PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let source_addr = *source_peer.node_addr();
+        let owner = OwnerId::fsp_node(source_addr);
+        let previous_hop = test_node_addr(917);
+        let local_addr = test_node_addr(918);
+        let key = 0x93;
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(
+            owner,
+            OwnerConfig::new(1, 8).with_source_peer(source_peer),
+        );
+        driver
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
+
+        let endpoint_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            917_001,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"ordered-endpoint",
+        );
+
+        let mut ipv6 = Vec::new();
+        ipv6.extend_from_slice(&[0x60, 0, 0, 0]);
+        ipv6.extend_from_slice(&4u16.to_be_bytes());
+        ipv6.push(17);
+        ipv6.push(64);
+        ipv6.extend_from_slice(
+            &crate::FipsAddress::from_node_addr(&source_addr)
+                .to_ipv6()
+                .octets(),
+        );
+        ipv6.extend_from_slice(
+            &crate::FipsAddress::from_node_addr(&local_addr)
+                .to_ipv6()
+                .octets(),
+        );
+        ipv6.extend_from_slice(&[1, 2, 3, 4]);
+        assert!(crate::upper::ipv6_shim::compress_ipv6_with_port_header_in_place(
+            &mut ipv6,
+            crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+            crate::node::session_wire::FSP_PORT_IPV6_SHIM,
+        ));
+        let tun_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            917_002,
+            crate::protocol::SessionMessageType::DataPacket.to_byte(),
+            0,
+            &ipv6,
+        );
+        let report_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            917_003,
+            crate::protocol::SessionMessageType::SenderReport.to_byte(),
+            0,
+            b"report",
+        );
+
+        for (idx, inner) in [endpoint_inner, tun_inner, report_inner].into_iter().enumerate() {
+            driver
+                .mover
+                .submit_socket_packet(
+                    SocketPacket::new(
+                        owner,
+                        1,
+                        917 + idx as u64,
+                        PacketClass::Bulk,
+                        OutputTarget::SessionPayload { local_addr },
+                        fsp_encrypted_wire(917 + idx as u64, 0, inner.as_slice(), key),
+                    )
+                    .with_previous_hop(previous_hop)
+                    .with_activity_tick(ActivityTick::new(917_010 + idx as u64)),
+                )
+                .unwrap();
+        }
+
+        let mut executor = InlineDataplaneCryptoExecutor;
+        let mut router = NullIngressRouter;
+        let summary = driver.collect_live_session_outputs_with_executor(
+            DataplaneRuntimeSummary::default(),
+            &mut router,
+            8,
+            &mut executor,
+            true,
+        );
+
+        assert_eq!(summary.outputs(), 0);
+        assert_eq!(driver.fsp_authenticated_ingress.len(), 3);
+        assert!(matches!(
+            driver.fsp_authenticated_ingress[0],
+            DataplaneFspAuthenticatedIngress::EndpointDataBatch(_)
+        ));
+        assert!(matches!(
+            driver.fsp_authenticated_ingress[1],
+            DataplaneFspAuthenticatedIngress::TunPacketBatch(_)
+        ));
+        assert!(matches!(
+            driver.fsp_authenticated_ingress[2],
+            DataplaneFspAuthenticatedIngress::Session(_)
+        ));
     }
 
     #[test]
@@ -1911,11 +2055,11 @@
             .set_crypto_keys(OwnerCryptoKeys::new(test_key(key), test_key(key)));
 
         let endpoint_payloads = [
-            b"compact-one".to_vec(),
-            b"compact-two".to_vec(),
-            b"compact-three".to_vec(),
+            b"compact-one".as_slice(),
+            b"compact-two".as_slice(),
+            b"compact-three".as_slice(),
         ];
-        for (offset, payload) in endpoint_payloads.iter().enumerate() {
+        for (offset, payload) in endpoint_payloads.into_iter().enumerate() {
             submit_endpoint_data_payload(
                 &mut driver.mover,
                 owner,
@@ -1937,16 +2081,18 @@
         let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
         assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
-        let batch = driver
-            .endpoint_data_batch
-            .as_ref()
-            .expect("endpoint data batch");
-        assert_eq!(batch.len(), 3);
-        assert_eq!(batch.commit_runs().len(), 1);
-        assert_eq!(batch.commit_runs()[0].len(), 3);
-        let mut batches = driver
-            .endpoint_data_batch
-            .take()
+        let endpoint_batches = driver_endpoint_batches(&driver);
+        assert_eq!(endpoint_batches.len(), 1);
+        assert_eq!(
+            endpoint_batches
+                .iter()
+                .map(|bulk| bulk.len())
+                .sum::<usize>(),
+            3
+        );
+        assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
+        assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 3);
+        let mut batches = take_driver_endpoint_batches(&mut driver)
             .into_iter()
             .map(DataplaneEndpointDataBatch::into_direct_packet_batch)
             .collect::<Vec<_>>();
@@ -2042,12 +2188,10 @@
         let summary = driver.start_aead_completion_turn(&mut completions, 8, true);
 
         assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
-        let batch = driver
-            .endpoint_data_batch
-            .as_ref()
-            .expect("endpoint data batch");
-        assert_eq!(batch.len(), 2);
-        assert_eq!(batch.direct_packet_run_count(), 1);
+        let endpoint_batches = driver_endpoint_batches(&driver);
+        assert_eq!(endpoint_batches.len(), 1);
+        assert_eq!(endpoint_batches[0].len(), 2);
+        assert_eq!(endpoint_batches[0].direct_packet_run_count(), 1);
 
         let delivered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = std::sync::Arc::clone(&delivered);
@@ -2067,18 +2211,15 @@
             delivered.lock().expect("direct batches lock").as_slice(),
             &[vec![b"batch-one".to_vec(), b"batch-two".to_vec()]]
         );
-        let batch = driver
-            .endpoint_data_batch
-            .as_ref()
-            .expect("endpoint data batch");
-        assert_eq!(batch.len(), 2);
-        assert_eq!(batch.commit_runs().len(), 1);
-        assert_eq!(batch.commit_runs()[0].len(), 2);
-        assert_eq!(batch.direct_packet_run_count(), 0);
+        let endpoint_batches = driver_endpoint_batches(&driver);
+        assert_eq!(endpoint_batches.len(), 1);
+        assert_eq!(endpoint_batches[0].len(), 2);
+        assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
+        assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 2);
+        assert_eq!(endpoint_batches[0].direct_packet_run_count(), 0);
         assert_eq!(
-            driver
-                .endpoint_data_batch
-                .take()
+            take_driver_endpoint_batches(&mut driver)
+                .pop()
                 .expect("commit batch")
                 .into_direct_packet_batch()
                 .len(),
@@ -2136,19 +2277,15 @@
         assert!(driver.completion_activity_is_compact_endpoint_data_only(summary));
         assert_eq!(summary.completions(), 5);
         assert_eq!(summary.outputs(), 0);
-        let batch = driver
-            .endpoint_data_batch
-            .as_ref()
-            .expect("endpoint data batch");
-        assert_eq!(batch.len(), 5);
-        assert_eq!(batch.commit_runs().len(), 1);
-        assert_eq!(batch.commit_runs()[0].len(), 5);
-        assert_eq!(batch.direct_packet_run_count(), 1);
+        let endpoint_batches = driver_endpoint_batches(&driver);
+        assert_eq!(endpoint_batches.len(), 1);
+        assert_eq!(endpoint_batches[0].len(), 5);
+        assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
+        assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 5);
+        assert_eq!(endpoint_batches[0].direct_packet_run_count(), 1);
         assert!(driver.outputs.is_empty());
 
-        let mut batches = driver
-            .endpoint_data_batch
-            .take()
+        let mut batches = take_driver_endpoint_batches(&mut driver)
             .into_iter()
             .map(DataplaneEndpointDataBatch::into_direct_packet_batch)
             .collect::<Vec<_>>();

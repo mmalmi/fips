@@ -125,15 +125,7 @@ impl Node {
             }
         }
         processed = processed.saturating_add(
-            self.process_dataplane_compact_endpoint_data(turn.take_endpoint_data_batch())
-                .await,
-        );
-        processed = processed.saturating_add(
-            self.process_dataplane_compact_tun_packets(turn.take_fsp_tun_packets())
-                .await,
-        );
-        processed = processed.saturating_add(
-            self.process_dataplane_authenticated_sessions(turn.take_fsp_session_ingress())
+            self.process_dataplane_authenticated_ingress(turn.take_fsp_authenticated_ingress())
                 .await,
         );
         for control in turn.take_fmp_control_ingress() {
@@ -378,7 +370,7 @@ impl Node {
             .saturating_add(turn.fsp_local_session_ingress().len())
             .saturating_add(turn.endpoint_data_batch_count())
             .saturating_add(turn.fsp_tun_packet_count())
-            .saturating_add(turn.fsp_session_ingress().len())
+            .saturating_add(turn.fsp_session_ingress_count())
             .saturating_add(turn.deferred_endpoint_data_batches_count())
             .saturating_add(turn.tun_deferred_packets())
     }
@@ -420,9 +412,9 @@ impl Node {
                 fsp_coord_warmups = turn.fsp_coord_warmups().len(),
                 fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
                 endpoint_data_batch = turn.endpoint_data_batch_count(),
-                endpoint_data_batches = turn.endpoint_data_batch().len(),
+                endpoint_data_batch_batches = turn.endpoint_data_batch_batch_count(),
                 fsp_tun_packets = turn.fsp_tun_packet_count(),
-                fsp_session_ingress = turn.fsp_session_ingress().len(),
+                fsp_session_ingress = turn.fsp_session_ingress_count(),
                 raw_ingress_drops = turn.raw_ingress_drops().len(),
                 tun_outbound_drops = turn.tun_outbound_drops().len(),
                 endpoint_data_drops = turn.endpoint_data_drops().len(),
@@ -464,9 +456,9 @@ impl Node {
             fsp_coord_warmups = turn.fsp_coord_warmups().len(),
             fsp_local_session_ingress = turn.fsp_local_session_ingress().len(),
             endpoint_data_batch = turn.endpoint_data_batch_count(),
-            endpoint_data_batches = turn.endpoint_data_batch().len(),
+            endpoint_data_batch_batches = turn.endpoint_data_batch_batch_count(),
             fsp_tun_packets = turn.fsp_tun_packet_count(),
-            fsp_session_ingress = turn.fsp_session_ingress().len(),
+            fsp_session_ingress = turn.fsp_session_ingress_count(),
             "dataplane turn completed"
         );
     }

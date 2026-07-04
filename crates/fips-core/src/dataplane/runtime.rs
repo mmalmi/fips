@@ -19,9 +19,7 @@ pub(crate) struct DataplaneTurnDriver {
     fmp_link_ingress: Vec<DataplaneFmpLinkIngress>,
     fsp_coord_warmups: Vec<DataplaneFspCoordWarmup>,
     fsp_local_session_ingress: Vec<DataplaneFspLocalSessionIngress>,
-    endpoint_data_batch: Option<DataplaneEndpointDataBatch>,
-    fsp_tun_packets: Vec<DataplaneFspTunPacketBatch>,
-    fsp_session_ingress: Vec<DataplaneFspSessionIngress>,
+    fsp_authenticated_ingress: Vec<DataplaneFspAuthenticatedIngress>,
 }
 
 struct DataplaneLiveAdmissionResult {
@@ -60,9 +58,7 @@ impl DataplaneTurnDriver {
             fmp_link_ingress: Vec::new(),
             fsp_coord_warmups: Vec::new(),
             fsp_local_session_ingress: Vec::new(),
-            endpoint_data_batch: None,
-            fsp_tun_packets: Vec::new(),
-            fsp_session_ingress: Vec::new(),
+            fsp_authenticated_ingress: Vec::new(),
         }
     }
 
@@ -326,8 +322,6 @@ impl DataplaneTurnDriver {
         report.fmp_link_ingress = std::mem::take(&mut self.fmp_link_ingress);
         report.fsp_coord_warmups = std::mem::take(&mut self.fsp_coord_warmups);
         report.fsp_local_session_ingress = std::mem::take(&mut self.fsp_local_session_ingress);
-        report.fsp_tun_packets = std::mem::take(&mut self.fsp_tun_packets);
-        report.fsp_session_ingress = std::mem::take(&mut self.fsp_session_ingress);
         report.transport_planned = transport_output.planned_packets();
         let dropped_before = report.output_drops.len();
         let mut transport_sent_receipts = if collect_transport_sent_receipts {
@@ -362,7 +356,7 @@ impl DataplaneTurnDriver {
             .summary
             .outputs_dropped
             .saturating_add(report.transport_dropped);
-        report.endpoint_data_batch = self.endpoint_data_batch.take().into_iter().collect();
+        report.fsp_authenticated_ingress = std::mem::take(&mut self.fsp_authenticated_ingress);
         self.transport_output = transport_output;
         report
     }
@@ -548,8 +542,16 @@ impl DataplaneTurnDriver {
             && summary.outputs_sent == 0
             && summary.outputs_dropped == 0
             && summary.drops == 0
-            && self.endpoint_data_batch.is_some()
-            && (self.endpoint_data_batch.is_some() || !self.fsp_tun_packets.is_empty())
+            && self
+                .fsp_authenticated_ingress
+                .iter()
+                .any(|item| {
+                    matches!(
+                        item,
+                        DataplaneFspAuthenticatedIngress::EndpointDataBatch(_)
+                            | DataplaneFspAuthenticatedIngress::TunPacketBatch(_)
+                    )
+                })
             && self.outputs.is_empty()
             && self.raw_ingress_drops.is_empty()
             && self.output_drops.is_empty()
@@ -558,7 +560,10 @@ impl DataplaneTurnDriver {
             && self.fmp_link_ingress.is_empty()
             && self.fsp_coord_warmups.is_empty()
             && self.fsp_local_session_ingress.is_empty()
-            && self.fsp_session_ingress.is_empty()
+            && !self
+                .fsp_authenticated_ingress
+                .iter()
+                .any(|item| matches!(item, DataplaneFspAuthenticatedIngress::Session(_)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -804,9 +809,7 @@ impl DataplaneTurnDriver {
         self.fmp_link_ingress.clear();
         self.fsp_coord_warmups.clear();
         self.fsp_local_session_ingress.clear();
-        self.endpoint_data_batch = None;
-        self.fsp_tun_packets.clear();
-        self.fsp_session_ingress.clear();
+        self.fsp_authenticated_ingress.clear();
     }
 
     fn raw_ingress_socket_packet<R>(
@@ -1094,7 +1097,8 @@ impl DataplaneTurnDriver {
                     match DataplaneFspSessionIngress::from_output(output) {
                         Ok(ingress) => {
                             self.record_fsp_session_ingress_activity(&ingress);
-                            self.fsp_session_ingress.push(ingress);
+                            self.fsp_authenticated_ingress
+                                .push(DataplaneFspAuthenticatedIngress::Session(ingress));
                         }
                         Err(output) => {
                             self.output_drops.push(DataplaneOutputDrop::from_output(
@@ -1252,18 +1256,20 @@ impl DataplaneTurnDriver {
     }
 
     fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {
-        if let Some(last) = self.endpoint_data_batch.as_mut() {
-            last.extend(bulk);
-        } else {
-            self.endpoint_data_batch = Some(bulk);
+        match self.fsp_authenticated_ingress.last_mut() {
+            Some(DataplaneFspAuthenticatedIngress::EndpointDataBatch(last)) => last.extend(bulk),
+            _ => self
+                .fsp_authenticated_ingress
+                .push(DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk)),
         }
     }
 
     fn push_fsp_tun_packet_batch(&mut self, batch: DataplaneFspTunPacketBatch) {
-        if let Some(last) = self.fsp_tun_packets.last_mut() {
-            last.extend(batch);
-        } else {
-            self.fsp_tun_packets.push(batch);
+        match self.fsp_authenticated_ingress.last_mut() {
+            Some(DataplaneFspAuthenticatedIngress::TunPacketBatch(last)) => last.extend(batch),
+            _ => self
+                .fsp_authenticated_ingress
+                .push(DataplaneFspAuthenticatedIngress::TunPacketBatch(batch)),
         }
     }
 
@@ -1272,15 +1278,30 @@ impl DataplaneTurnDriver {
             return;
         };
 
-        let Some(bulk) = self.endpoint_data_batch.as_mut() else {
-            return;
-        };
-        let packet_batch = bulk.take_direct_packet_batch();
-        let count = packet_batch.len();
-        if count > 0 && direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
+        let mut dropped = 0usize;
+        let mut sink_failed = false;
+        for item in &mut self.fsp_authenticated_ingress {
+            if let DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk) = item {
+                let packet_batch = bulk.take_direct_packet_batch();
+                let count = packet_batch.len();
+                if count == 0 {
+                    continue;
+                }
+                if sink_failed {
+                    dropped = dropped.saturating_add(count);
+                    continue;
+                }
+                if direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
+                    dropped = dropped.saturating_add(count);
+                    sink_failed = true;
+                }
+            }
+        }
+
+        if dropped > 0 {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::EndpointEventBulkDropped,
-                count as u64,
+                dropped as u64,
             );
         }
     }
