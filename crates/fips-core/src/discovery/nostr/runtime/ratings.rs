@@ -6,9 +6,77 @@ const RATING_FACT_TYPE: &str = "rating";
 const RATING_FACT_SCHEMA: &str = "1";
 const RATING_FACT_LOOKUP_LIMIT: usize = 500;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RatingFactFileLoadReport {
+    pub(crate) files: usize,
+    pub(crate) events: usize,
+    pub(crate) accepted: usize,
+}
+
 impl NostrDiscovery {
     pub(super) fn should_subscribe_rating_facts(&self) -> bool {
         self.config.open_discovery_trust_ratings_enabled
+    }
+
+    pub(crate) async fn load_rating_fact_events_from_files(&self) -> RatingFactFileLoadReport {
+        let mut report = RatingFactFileLoadReport::default();
+        if !self.config.open_discovery_trust_ratings_enabled {
+            return report;
+        }
+
+        for path in &self.config.open_discovery_rating_event_files {
+            report.files += 1;
+            let bytes = match std::fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "failed to read local Nostr rating fact event file"
+                    );
+                    continue;
+                }
+            };
+            let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "failed to parse local Nostr rating fact event file"
+                    );
+                    continue;
+                }
+            };
+            let events = match rating_fact_events_from_json(&value) {
+                Ok(events) => events,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "local Nostr rating fact event file has unsupported shape"
+                    );
+                    continue;
+                }
+            };
+
+            for event in events {
+                report.events += 1;
+                if self.process_rating_fact_event(&event).await {
+                    report.accepted += 1;
+                }
+            }
+        }
+
+        if report.files > 0 {
+            info!(
+                files = report.files,
+                events = report.events,
+                accepted = report.accepted,
+                "loaded local Nostr rating fact events"
+            );
+        }
+        report
     }
 
     pub(super) fn rating_fact_filter(&self) -> Filter {
@@ -138,5 +206,27 @@ fn rating_fact_values(event_value: &serde_json::Value, key: &str) -> Vec<String>
         })
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn rating_fact_events_from_json(value: &serde_json::Value) -> Result<Vec<Event>, String> {
+    let events = if let Some(events) = value.get("events").and_then(serde_json::Value::as_array) {
+        events
+    } else if let Some(data) = value.get("data") {
+        data.get("events")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "expected an events array".to_string())?
+    } else {
+        value
+            .as_array()
+            .ok_or_else(|| "expected an event array or object with events array".to_string())?
+    };
+
+    events
+        .iter()
+        .map(|value| {
+            serde_json::from_value(value.clone())
+                .map_err(|error| format!("failed to decode Nostr event: {error}"))
+        })
         .collect()
 }

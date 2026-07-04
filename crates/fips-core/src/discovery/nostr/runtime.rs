@@ -402,6 +402,7 @@ impl NostrDiscovery {
         // `advert_refresh_secs` interval (default 30 min) for non-configured
         // peers to re-publish before discovering them.
         let notifications = runtime.client.notifications();
+        runtime.load_rating_fact_events_from_files().await;
         *runtime.publish_task.lock().await = Some(runtime.clone().spawn_publish_loop());
         *runtime.connect_task.lock().await = Some(runtime.clone().spawn_connect_loop());
         *runtime.relay_startup_task.lock().await = Some(runtime.clone().spawn_relay_startup_loop());

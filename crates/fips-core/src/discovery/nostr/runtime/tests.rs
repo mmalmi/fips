@@ -166,6 +166,40 @@ async fn trusted_rating_fact_updates_peer_trust_score() {
 }
 
 #[tokio::test]
+async fn configured_rating_fact_file_updates_peer_trust_score() {
+    let author = nostr::Keys::generate();
+    let author_npub = author.public_key().to_bech32().expect("author npub");
+    let subject = nostr::Keys::generate();
+    let subject_npub = subject.public_key().to_bech32().expect("subject npub");
+    let event = signed_rating_fact_event(&author, &subject_npub, "fips.peer", 90, 43);
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let path = tempdir.path().join("ratings.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&serde_json::json!({ "events": [event] }))
+            .expect("encode rating events"),
+    )
+    .expect("write rating event file");
+
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        open_discovery_trust_ratings_enabled: true,
+        open_discovery_trusted_rating_authors: vec![author_npub],
+        open_discovery_rating_event_files: vec![path],
+        ..Default::default()
+    });
+
+    let report = discovery.load_rating_fact_events_from_files().await;
+
+    assert_eq!(report.files, 1);
+    assert_eq!(report.events, 1);
+    assert_eq!(report.accepted, 1);
+    let scores = discovery
+        .trust_scores_for_npubs(std::slice::from_ref(&subject_npub))
+        .await;
+    assert_eq!(scores.get(&subject_npub), Some(&80));
+}
+
+#[tokio::test]
 async fn untrusted_rating_fact_is_ignored() {
     let author = nostr::Keys::generate();
     let subject = nostr::Keys::generate();

@@ -175,6 +175,12 @@ pub struct NostrDiscoveryConfig {
     /// crawlers the operator explicitly trusts.
     #[serde(default)]
     pub open_discovery_trusted_rating_authors: Vec<String>,
+    /// Local JSON files containing signed rating fact events to load into the
+    /// open-discovery trust cache at startup. Files may be raw event arrays or
+    /// objects with an `events` array, such as `fipsctl ratings export --format
+    /// events` or `htree nostr-index query` output.
+    #[serde(default)]
+    pub open_discovery_rating_event_files: Vec<std::path::PathBuf>,
     /// Max concurrent inbound traversal offers processed at once.
     /// Acts as a rate limit against offer spam from relays.
     #[serde(default = "NostrDiscoveryConfig::default_max_concurrent_incoming_offers")]
@@ -275,6 +281,7 @@ impl Default for NostrDiscoveryConfig {
             open_discovery_rating_scope: Self::default_open_discovery_rating_scope(),
             open_discovery_rating_lookback_secs,
             open_discovery_trusted_rating_authors: Vec::new(),
+            open_discovery_rating_event_files: Vec::new(),
             max_concurrent_incoming_offers: Self::default_max_concurrent_incoming_offers(),
             advert_cache_max_entries: Self::default_advert_cache_max_entries(),
             seen_sessions_max_entries: Self::default_seen_sessions_max_entries(),
