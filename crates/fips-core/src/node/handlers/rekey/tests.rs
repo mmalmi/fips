@@ -117,9 +117,13 @@ fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
 
 #[test]
 fn fsp_cutover_delay_covers_msg3_retransmit_burst() {
-    let default_resend_interval_ms =
-        crate::config::RateLimitConfig::default().handshake_resend_interval_ms;
-    let resend_budget = default_resend_interval_ms * 7;
+    let rate_limit = crate::config::RateLimitConfig::default();
+    let resend_budget = (0..rate_limit.handshake_max_resends)
+        .map(|resend| {
+            (rate_limit.handshake_resend_interval_ms as f64
+                * rate_limit.handshake_resend_backoff.powi(resend as i32)) as u64
+        })
+        .sum::<u64>();
 
     assert!(
         FSP_CUTOVER_DELAY_MS >= resend_budget,
@@ -631,7 +635,7 @@ fn session_registry_owns_rekey_tick_selection() {
 
     let now_ms = 20_000_000;
     let rekey_after_secs = 10_000;
-    let drain_ms = DRAIN_WINDOW_SECS * 1000;
+    let drain_ms = FSP_DRAIN_WINDOW_SECS * 1000;
     let dampening_ms = REKEY_DAMPENING_SECS * 1000;
 
     let mut cutover = established_entry(&local, &cutover_peer, 1_000);
@@ -650,9 +654,10 @@ fn session_registry_owns_rekey_tick_selection() {
         now_ms - FSP_CUTOVER_DELAY_MS + 500,
     );
 
-    let mut drain = established_entry(&local, &drain_peer, now_ms - 11_000);
-    arm_completed_initiator_rekey(&mut drain, &local, &drain_peer, now_ms - 11_000);
-    assert!(drain.cutover_to_new_session(now_ms - 11_000));
+    let drain_cutover_ms = now_ms - drain_ms - 1_000;
+    let mut drain = established_entry(&local, &drain_peer, drain_cutover_ms);
+    arm_completed_initiator_rekey(&mut drain, &local, &drain_peer, drain_cutover_ms);
+    assert!(drain.cutover_to_new_session(drain_cutover_ms));
 
     let mut drain_and_rekey = established_entry(&local, &drain_and_rekey_peer, 1_000);
     arm_completed_initiator_rekey(&mut drain_and_rekey, &local, &drain_and_rekey_peer, 1_000);
@@ -711,8 +716,8 @@ fn session_registry_owns_rekey_tick_cutover_and_drain_mutation() {
     let drain_peer = Identity::generate();
     let early_drain_peer = Identity::generate();
 
-    let now_ms = 20_000;
-    let drain_ms = DRAIN_WINDOW_SECS * 1000;
+    let now_ms = FSP_CUTOVER_DELAY_MS + 20_000;
+    let drain_ms = FSP_DRAIN_WINDOW_SECS * 1000;
 
     let mut cutover = established_entry(&local, &cutover_peer, 1_000);
     arm_completed_initiator_rekey(
@@ -897,9 +902,11 @@ fn session_registry_owns_exhausted_rekey_msg3_cleanup() {
     let pending = sessions
         .get(pending_peer.node_addr())
         .expect("pending session should remain");
-    assert!(pending.pending_new_session().is_none());
+    assert!(pending.pending_new_session().is_some());
     assert!(pending.rekey_msg3_payload().is_none());
-    assert_eq!(pending.rekey_completed_ms(), 0);
+    assert_eq!(pending.rekey_msg3_resend_count(), 0);
+    assert_eq!(pending.rekey_msg3_next_resend_ms(), 0);
+    assert_eq!(pending.rekey_completed_ms(), 1_000);
 
     let future_exhausted = sessions
         .get(future_exhausted_peer.node_addr())

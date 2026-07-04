@@ -36,6 +36,38 @@
         }
     }
 
+    fn submit_endpoint_data_payload(
+        mover: &mut Dataplane,
+        owner: OwnerId,
+        counter: u64,
+        timestamp: u32,
+        key: u8,
+        previous_hop: NodeAddr,
+        local_addr: NodeAddr,
+        payload: &[u8],
+    ) {
+        let fsp_inner = crate::node::session_wire::fsp_prepend_inner_header(
+            timestamp,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            payload,
+        );
+        mover
+            .submit_socket_packet(
+                SocketPacket::new(
+                    owner,
+                    1,
+                    counter,
+                    PacketClass::Bulk,
+                    OutputTarget::SessionPayload { local_addr },
+                    fsp_encrypted_wire(counter, 0, &fsp_inner, key),
+                )
+                .with_previous_hop(previous_hop)
+                .with_activity_tick(ActivityTick::new(timestamp as u64)),
+            )
+            .unwrap();
+    }
+
     fn run_with_executor<E>(
         mover: &mut Dataplane,
         executor: &mut E,
@@ -553,7 +585,7 @@
         driver.owner_mut(owner).unwrap().set_active_path(path.clone());
 
         let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0);
-        let mut routed = route.route_batch(vec![
+        let routed = route_endpoint_payloads(&route, vec![
             b"direct-one".to_vec(),
             b"direct-two".to_vec(),
         ]);
@@ -1486,6 +1518,79 @@
     }
 
     #[test]
+    fn fmp_owner_authenticates_pending_receive_epoch_before_cutover() {
+        let owner = fmp_owner(96);
+        let old_key = 96;
+        let new_key = 97;
+        let receiver_idx = 0x96;
+        let mut mover = mover();
+        mover.register_owner(
+            owner,
+            OwnerConfig::new(1, 8)
+                .with_fmp_session_start_ms(1_000)
+                .with_fmp_send_headers(receiver_idx, 0)
+                .with_fmp_epoch(false, None),
+        );
+        mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(old_key), test_key(old_key)));
+        assert!(mover
+            .owner_mut(owner)
+            .unwrap()
+            .install_fmp_pending_receive_epoch(true, test_key(new_key)));
+
+        let pending_flags = crate::node::wire::FLAG_KEY_EPOCH;
+        mover
+            .submit_socket_packet(
+                fmp_socket_packet(
+                    owner,
+                    1,
+                    OutputTarget::Tun,
+                    fmp_encrypted_wire(
+                        receiver_idx,
+                        1,
+                        pending_flags,
+                        b"pending-new",
+                        new_key,
+                    ),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let turn = run_aead_available(&mut mover, 8);
+        assert!(turn.drops().is_empty(), "{:?}", turn.drops());
+        assert_eq!(
+            &turn.outputs()[0].payload[FMP_ESTABLISHED_HEADER_SIZE..],
+            b"pending-new"
+        );
+
+        assert!(mover.owner_mut(owner).unwrap().install_fmp_session(
+            OwnerConfig::new(2, 8)
+                .with_fmp_session_start_ms(2_000)
+                .with_fmp_send_headers(receiver_idx, pending_flags)
+                .with_fmp_epoch(true, Some(false)),
+            OwnerCryptoKeys::new(test_key(new_key), test_key(new_key)),
+        ));
+        mover
+            .submit_socket_packet(
+                fmp_socket_packet(
+                    owner,
+                    2,
+                    OutputTarget::Tun,
+                    fmp_encrypted_wire(receiver_idx, 1, pending_flags, b"replay", new_key),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let turn = run_aead_available(&mut mover, 8);
+        assert!(turn
+            .drops()
+            .iter()
+            .any(|drop| drop.reason == PacketDropReason::Replay && drop.counter == Some(1)));
+    }
+
+    #[test]
     fn fsp_owner_owns_session_receiver_reports_and_path_mtu_signals() {
         let owner = fsp_owner(81);
         let mut mover = mover();
@@ -1809,7 +1914,7 @@
     fn endpoint_data_route_builds_endpoint_data_records() {
         let owner = fsp_owner(914);
         let route = DataplaneEndpointDataRoute::fsp(owner, 1, 0, 0);
-        let route_result = route.route_batch(vec![
+        let route_result = route_endpoint_payloads(&route, vec![
             b"first".to_vec(),
             b"second".to_vec(),
             b"third".to_vec(),
@@ -1831,7 +1936,8 @@
             ));
             assert_eq!(packet.payload.as_slice(), expected);
         }
-        let route_result = route.route_batch((0..49).map(|idx| vec![idx as u8]).collect());
+        let route_result =
+            route_endpoint_payloads(&route, (0..49).map(|idx| vec![idx as u8]).collect());
         assert_eq!(route_result.routed.len(), 49);
         assert!(route_result.dropped.is_empty());
     }
@@ -2846,6 +2952,100 @@
             );
         }
 
+        assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 0);
+        assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 0);
+    }
+
+    #[test]
+    fn wrapped_fsp_completion_refreshes_fmp_send_context_after_rekey() {
+        let source = NodeAddr::from_bytes([0x90; 16]);
+        let dest = NodeAddr::from_bytes([0x91; 16]);
+        let next_hop = NodeAddr::from_bytes([0x92; 16]);
+        let fsp_owner = OwnerId::fsp_node(dest);
+        let fmp_owner = OwnerId::fmp_node(next_hop);
+        let fsp_key = 91;
+        let old_fmp_key = 92;
+        let new_fmp_key = 93;
+        let fmp_path = live_path(9200);
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 8));
+        driver.register_owner(fsp_owner, OwnerConfig::new(1, 8).with_next_send_counter(50));
+        driver.register_owner(
+            fmp_owner,
+            OwnerConfig::new(1, 8)
+                .with_next_send_counter(70)
+                .with_fmp_send_headers(8282, 0),
+        );
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(fsp_key), test_key(fsp_key)));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(
+                test_key(old_fmp_key),
+                test_key(old_fmp_key),
+            ));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_active_path(fmp_path.clone());
+
+        let wrap = DataplaneFspWrapRoute::new(fmp_owner, 1, 8282, source, dest)
+            .with_ttl(42)
+            .with_path_mtu(1280);
+        driver
+            .owner_mut(fsp_owner)
+            .unwrap()
+            .set_fsp_wrap_route(Some(wrap));
+        let packet = OutboundPacket::fsp(
+            fsp_owner,
+            1,
+            PacketClass::Liveness,
+            0x03,
+            b"wake-wrap".to_vec(),
+        )
+        .with_fsp_cleartext_prefix(empty_fsp_coords_prefix());
+
+        driver.mover.submit_outbound_packet(packet).unwrap();
+        let mut seal_work = dispatch_outbound_available(&mut driver.mover, 1);
+        assert_eq!(seal_work.len(), 1);
+
+        let completion =
+            PreparedCryptoWork::seal(seal_work.pop().unwrap(), test_key(fsp_key)).execute();
+
+        assert!(driver.owner_mut(fmp_owner).unwrap().install_fmp_session(
+            OwnerConfig::new(2, 8)
+                .with_next_send_counter(90)
+                .with_fmp_send_headers(9292, crate::node::wire::FLAG_KEY_EPOCH),
+            OwnerCryptoKeys::new(test_key(new_fmp_key), test_key(new_fmp_key)),
+        ));
+        driver
+            .owner_mut(fmp_owner)
+            .unwrap()
+            .set_active_path(fmp_path.clone());
+
+        let turn = run_aead_completion_turn(&mut driver, [completion], 1);
+        assert_eq!(turn.summary().outbound_admitted(), 1);
+        assert_eq!(turn.summary().dispatched(), 1);
+        assert_eq!(turn.summary().outputs(), 1);
+        assert!(turn.drops().is_empty());
+
+        let output = &turn.outputs()[0];
+        assert_eq!(output.owner(), fmp_owner);
+        assert_eq!(output.counter(), 0);
+        assert_eq!(output.path(), Some(fmp_path));
+        let header = FmpWireHeader::parse(output.payload()).unwrap();
+        assert_eq!(header.receiver_idx(), 9292);
+        assert_eq!(header.flags(), crate::node::wire::FLAG_KEY_EPOCH);
+
+        let fmp_plaintext = open_sealed_output(output, new_fmp_key);
+        let datagram = crate::protocol::SessionDatagramRef::decode(&fmp_plaintext[1..])
+            .expect("wrapped session datagram");
+        assert_eq!(
+            open_fsp_wire_payload(datagram.payload, fsp_key),
+            b"wake-wrap"
+        );
         assert_eq!(driver.owner_mut(fsp_owner).unwrap().in_flight, 0);
         assert_eq!(driver.owner_mut(fmp_owner).unwrap().in_flight, 0);
     }

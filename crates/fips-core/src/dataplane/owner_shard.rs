@@ -128,6 +128,15 @@ impl DataplaneOwnerShard {
             .is_some_and(|owner| owner.has_fsp_pending_receive_epoch(received_k_bit))
     }
 
+    fn owner_has_fmp_pending_receive_epoch(
+        &self,
+        owner: OwnerId,
+        received_k_bit: bool,
+    ) -> bool {
+        self.owner(owner)
+            .is_some_and(|owner| owner.has_fmp_pending_receive_epoch(received_k_bit))
+    }
+
     fn owner_fsp_mmp_snapshot(&self, owner: OwnerId) -> Option<DataplaneFspMmpSnapshot> {
         self.owner(owner).and_then(OwnerState::fsp_mmp_snapshot)
     }

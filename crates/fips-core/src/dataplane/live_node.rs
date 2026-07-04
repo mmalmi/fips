@@ -243,6 +243,28 @@ impl DataplaneLiveNode {
         Ok(())
     }
 
+    pub(crate) fn install_owner_fmp_session_routes(
+        &mut self,
+        owner: OwnerId,
+        config: OwnerConfig,
+        keys: OwnerCryptoKeys,
+        path: TransportPath,
+        routes: DataplaneLiveOwnerRoutes,
+    ) -> Result<(), DataplaneLiveOwnerError> {
+        if routes.has_owner_mismatch(owner) {
+            return Err(DataplaneLiveOwnerError::OwnerMismatch);
+        }
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(DataplaneLiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.install_fmp_session(config, keys) {
+            return Err(DataplaneLiveOwnerError::OwnerMismatch);
+        }
+        owner_state.set_active_path(path);
+        self.replace_registered_owner_routes(owner, routes);
+        Ok(())
+    }
+
     pub(crate) fn install_owner_fsp_session_routes(
         &mut self,
         owner: OwnerId,
@@ -315,6 +337,21 @@ impl DataplaneLiveNode {
         Ok(())
     }
 
+    pub(crate) fn install_owner_fmp_pending_receive_epoch(
+        &mut self,
+        owner: OwnerId,
+        pending_k_bit: bool,
+        open: AeadKey,
+    ) -> Result<(), DataplaneLiveOwnerError> {
+        let Some(owner_state) = self.driver.owner_mut(owner) else {
+            return Err(DataplaneLiveOwnerError::UnknownOwner);
+        };
+        if !owner_state.install_fmp_pending_receive_epoch(pending_k_bit, open) {
+            return Err(DataplaneLiveOwnerError::OwnerMismatch);
+        }
+        Ok(())
+    }
+
     pub(crate) fn install_owner_fsp_pending_receive_epoch(
         &mut self,
         owner: OwnerId,
@@ -367,6 +404,17 @@ impl DataplaneLiveNode {
     ) -> bool {
         self.driver.owner_has_fsp_pending_receive_epoch(
             OwnerId::fsp_node(*node_addr),
+            received_k_bit,
+        )
+    }
+
+    pub(crate) fn fmp_owner_has_pending_receive_epoch(
+        &self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> bool {
+        self.driver.owner_has_fmp_pending_receive_epoch(
+            OwnerId::fmp_node(*node_addr),
             received_k_bit,
         )
     }

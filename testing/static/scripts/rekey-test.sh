@@ -154,14 +154,14 @@ trap 'echo ""; echo "Test interrupted"; exit 130' INT
 
 # Wait times derived from rekey timer
 BASELINE_CONVERGENCE_TIMEOUT=60
-REKEY_SETTLE=12        # > DRAIN_WINDOW_SECS (10) so post-rekey samples are off the old session
+REKEY_SETTLE=12        # > FMP drain window so post-rekey link samples are off the old session
 # First FMP rekey should follow shortly after the configured interval once the mesh is
 # fully converged. Keep this bounded to preserve a meaningful scheduling check
 # while still allowing for log visibility at the timeout edge.
 FIRST_REKEY_TIMEOUT=$((REKEY_AFTER_SECS + 15))
 SECOND_REKEY_WAIT=40   # wait for second cycle
 LOG_EVENT_POLL_INTERVAL=1
-FMP_REKEY_PATTERN="Peer K-bit flip detected"
+FMP_REKEY_PATTERN="Rekey cutover complete (initiator), K-bit flipped"
 FSP_REKEY_PATTERN="FSP rekey: completed XK\|FSP rekey cutover complete"
 
 TIMEOUT=5
@@ -414,7 +414,7 @@ assert_zero_count "MMP link teardown" "Spurious link teardowns"
 assert_zero_count "Excessive decrypt failures" \
     "Excessive decrypt failure removals"
 assert_zero_count "Rekey msg2 processing failed" "Rekey msg2 failures"
-assert_zero_count "Session AEAD decryption failed" \
+assert_zero_count "Session AEAD decryption failed\|FSP AEAD decryption failed" \
     "FSP decryption failures during rekey"
 
 # Variant-specific: when one or more nodes have udp.accept_connections=false,

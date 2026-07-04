@@ -378,6 +378,16 @@ impl SessionEntry {
         self.rekey_msg3_resend_count = 0;
     }
 
+    /// Stop retransmitting the final rekey msg3 without discarding the
+    /// completed pending epoch. The peer may already have received msg3, and
+    /// destroying `pending_new_session` here can split the two FSP epochs.
+    pub(crate) fn stop_rekey_msg3_retransmit(&mut self) {
+        self.clear_rekey_msg3_payload();
+        if self.pending_new_session.is_none() {
+            self.rekey_completed_ms = 0;
+        }
+    }
+
     /// Clear control-plane retransmit payloads after dataplane has authenticated the
     /// established FSP owner epoch. dataplane owns the packet-path confirmation; the
     /// registry only drops stale handshake/rekey scaffolding.

@@ -102,6 +102,15 @@ impl DataplaneTurnDriver {
             .owner_has_fsp_pending_receive_epoch(owner, received_k_bit)
     }
 
+    pub(crate) fn owner_has_fmp_pending_receive_epoch(
+        &self,
+        owner: OwnerId,
+        received_k_bit: bool,
+    ) -> bool {
+        self.mover
+            .owner_has_fmp_pending_receive_epoch(owner, received_k_bit)
+    }
+
     pub(crate) fn owner_fsp_mmp_snapshot(
         &self,
         owner: OwnerId,
@@ -1236,7 +1245,8 @@ impl DataplaneTurnDriver {
                     RetiredOutput::Packet(RetiredPacket::Output(output)) => {
                         self.outputs.push(output);
                     }
-                    RetiredOutput::Packet(RetiredPacket::Outbound(packet)) => {
+                    RetiredOutput::Packet(RetiredPacket::Outbound(mut packet)) => {
+                        self.refresh_wrapped_fsp_outbound_context(&mut packet);
                         outbound_packets.push(packet);
                     }
                     RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
@@ -1253,6 +1263,20 @@ impl DataplaneTurnDriver {
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
         summary
+    }
+
+    fn refresh_wrapped_fsp_outbound_context(&self, packet: &mut OutboundPacket) {
+        if !packet.has_fsp_send_receipt() || packet.owner().protocol() != PacketProtocol::Fmp {
+            return;
+        }
+        let Some(context) = self.owner_fmp_send_context(packet.owner()) else {
+            return;
+        };
+        packet.refresh_fmp_send_context(
+            context.generation(),
+            context.receiver_idx(),
+            context.flags(),
+        );
     }
 
     fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {

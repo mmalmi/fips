@@ -12,7 +12,7 @@ use crate::dataplane::{
 use crate::protocol::SessionMessageType;
 use std::collections::HashMap;
 
-const DATAPLANE_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 2;
+const DATAPLANE_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 8;
 const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
 struct DataplaneFmpOwnerSeed {
@@ -490,6 +490,7 @@ impl Node {
         mut turn: DataplaneLiveNodeTurn,
         collect_transport_sent_receipts: bool,
     ) -> Result<DataplaneLiveNodeTurn, DataplanePendingOutboundFailure> {
+        let mut awaiting_admitted_output = false;
         for continuation in 0..=DATAPLANE_PENDING_OUTBOUND_CONTINUATION_TURNS {
             let summary = turn.summary();
             let sent = Self::dataplane_pending_outbound_sent(&turn);
@@ -504,7 +505,10 @@ impl Node {
             if sent {
                 return Ok(turn);
             }
-            if deferred || !needs_continuation {
+            if needs_continuation {
+                awaiting_admitted_output = true;
+            }
+            if deferred || (!needs_continuation && !awaiting_admitted_output) {
                 let reason = if deferred {
                     "deferred without transport output"
                 } else {
@@ -516,7 +520,7 @@ impl Node {
                 return Err(DataplanePendingOutboundFailure::Exhausted(turn));
             }
 
-            if needs_continuation && summary.outputs() == 0 {
+            if (needs_continuation || awaiting_admitted_output) && summary.outputs() == 0 {
                 self.wait_for_dataplane_completion().await;
             }
             turn = self
@@ -645,20 +649,14 @@ impl Node {
             .register_owner_if_missing(seed.owner, seed.config.clone());
         let synced = self
             .dataplane
-            .apply_owner_live_config(seed.owner, seed.config)
-            .is_ok()
-            && self
-                .dataplane
-                .set_owner_crypto_keys(seed.owner, seed.keys)
-                .is_ok()
-            && self
-                .dataplane
-                .set_owner_active_path(seed.owner, seed.path)
-                .is_ok()
-            && self
-                .dataplane
-                .replace_owner_routes(seed.owner, seed.routes)
-                .is_ok();
+            .install_owner_fmp_session_routes(
+                seed.owner,
+                seed.config,
+                seed.keys,
+                seed.path,
+                seed.routes,
+            )
+            .is_ok();
         if synced {
             self.refresh_dataplane_fsp_owner_routes_after_fmp_owner_update(node_addr);
         }
@@ -792,6 +790,47 @@ impl Node {
                 std::sync::Arc::new(open),
             )
             .is_ok()
+    }
+
+    pub(in crate::node) fn install_dataplane_fmp_pending_receive_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        pending_k_bit: bool,
+        open: ring::aead::LessSafeKey,
+    ) -> bool {
+        self.dataplane
+            .install_owner_fmp_pending_receive_epoch(
+                OwnerId::fmp_node(*node_addr),
+                pending_k_bit,
+                std::sync::Arc::new(open),
+            )
+            .is_ok()
+    }
+
+    pub(in crate::node) fn promote_dataplane_authenticated_pending_fmp_epoch(
+        &mut self,
+        node_addr: &NodeAddr,
+        received_k_bit: bool,
+    ) -> bool {
+        if !self
+            .dataplane
+            .fmp_owner_has_pending_receive_epoch(node_addr, received_k_bit)
+        {
+            return false;
+        }
+        let Some(previous_index) = self
+            .peers
+            .get_mut(node_addr)
+            .and_then(|peer| peer.handle_peer_kbit_flip())
+        else {
+            return false;
+        };
+        let _ = previous_index;
+        self.ensure_current_session_index_registered(
+            node_addr,
+            "responder authenticated FMP rekey cutover",
+        );
+        self.sync_dataplane_fmp_owner(node_addr)
     }
 
     pub(in crate::node) fn promote_dataplane_authenticated_pending_fsp_epoch(
@@ -949,6 +988,16 @@ impl Node {
         let transport_id = peer.transport_id()?;
         let remote_addr = peer.current_addr()?.clone();
         let receiver_idx = peer.our_index()?.as_u32();
+        let mut receive_indices = vec![receiver_idx];
+        for index in [peer.pending_our_index(), peer.previous_our_index()]
+            .into_iter()
+            .flatten()
+            .map(|index| index.as_u32())
+        {
+            if !receive_indices.contains(&index) {
+                receive_indices.push(index);
+            }
+        }
         let fmp_send_headers = peer.their_index().map(|their_index| {
             let mut flags = 0;
             if peer.current_k_bit() {
@@ -960,26 +1009,31 @@ impl Node {
         let generation = peer.session_generation();
         let session_start_ms = Self::now_ms().wrapping_sub(u64::from(peer.session_elapsed_ms()));
         let source_peer = *peer.identity();
+        let current_k_bit = peer.current_k_bit();
+        let previous_draining_k_bit = peer.is_draining().then_some(!current_k_bit);
         let open = Arc::new(session.recv_cipher_clone()?);
         let seal = Arc::new(session.send_cipher_clone()?);
         let counter_authority = session.send_counter_authority();
         let mut routes = DataplaneLiveOwnerRoutes::new();
-        routes.push_fmp_ingress(DataplaneLiveFmpIngressRoute::new(
-            transport_id,
-            receiver_idx,
-            DataplaneIngressRoute::new(
-                OwnerId::fmp_node(*node_addr),
-                generation,
-                OutputTarget::SessionIngress {
-                    local_addr: *self.node_addr(),
-                },
-            )
-            .with_class(PacketClass::Bulk),
-        ));
+        for receiver_idx in receive_indices {
+            routes.push_fmp_ingress(DataplaneLiveFmpIngressRoute::new(
+                transport_id,
+                receiver_idx,
+                DataplaneIngressRoute::new(
+                    OwnerId::fmp_node(*node_addr),
+                    generation,
+                    OutputTarget::SessionIngress {
+                        local_addr: *self.node_addr(),
+                    },
+                )
+                .with_class(PacketClass::Bulk),
+            ));
+        }
         let mut config = self
             .dataplane_owner_config(generation)
             .with_send_counter_authority(counter_authority)
             .with_fmp_session_start_ms(session_start_ms)
+            .with_fmp_epoch(current_k_bit, previous_draining_k_bit)
             .with_source_peer(source_peer);
         if let Some((receiver_idx, flags)) = fmp_send_headers {
             config = config.with_fmp_send_headers(receiver_idx, flags);
@@ -1281,5 +1335,154 @@ fn dataplane_fsp_control_class(msg_type: u8) -> PacketClass {
             | SessionMessageType::PathMtuNotification,
         ) => PacketClass::Mmp,
         _ => PacketClass::Control,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataplane::{
+        DataplaneLiveOutboundFirsts, DataplaneRawIngress, DataplaneRawIngressDropReason,
+        PacketProtocol,
+    };
+    use crate::peer::ActivePeer;
+    use crate::transport::{LinkStats, ReceivedPacket};
+    use crate::utils::index::SessionIndex;
+    use std::collections::VecDeque;
+
+    fn test_fmp_session(
+        local: &Identity,
+        peer: &Identity,
+        local_epoch: [u8; 8],
+        peer_epoch: [u8; 8],
+    ) -> crate::noise::NoiseSession {
+        let mut initiator =
+            crate::noise::HandshakeState::new_initiator(local.keypair(), peer.pubkey_full());
+        let mut responder = crate::noise::HandshakeState::new_responder(peer.keypair());
+        initiator.set_local_epoch(local_epoch);
+        responder.set_local_epoch(peer_epoch);
+        let msg1 = initiator.write_message_1().unwrap();
+        responder.read_message_1(&msg1).unwrap();
+        let msg2 = responder.write_message_2().unwrap();
+        initiator.read_message_2(&msg2).unwrap();
+        initiator.into_session().unwrap()
+    }
+
+    fn invalid_fmp_frame(receiver_idx: SessionIndex, counter: u64, flags: u8) -> Vec<u8> {
+        let mut frame =
+            Vec::with_capacity(crate::node::wire::ESTABLISHED_HEADER_SIZE + crate::noise::TAG_SIZE);
+        frame.push(0);
+        frame.push(flags);
+        frame.extend_from_slice(&0u16.to_le_bytes());
+        frame.extend_from_slice(&receiver_idx.to_le_bytes());
+        frame.extend_from_slice(&counter.to_le_bytes());
+        frame.extend_from_slice(&[0; crate::noise::TAG_SIZE]);
+        frame
+    }
+
+    #[tokio::test]
+    async fn fmp_owner_sync_routes_current_pending_and_previous_receive_indices() {
+        let mut node = Node::new(Config::new()).unwrap();
+        let peer_identity_full = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+        let peer_addr = *peer_identity.node_addr();
+        let transport_id = TransportId::new(77);
+        let remote_addr = TransportAddr::from_string("127.0.0.1:7777");
+        let previous_index = SessionIndex::new(10);
+        let current_index = SessionIndex::new(11);
+        let pending_index = SessionIndex::new(12);
+
+        let current_session =
+            test_fmp_session(&node.identity, &peer_identity_full, [0x01; 8], [0x02; 8]);
+        let mut peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(77),
+            1_000,
+            current_session,
+            previous_index,
+            SessionIndex::new(20),
+            transport_id,
+            remote_addr.clone(),
+            LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            Some([0x02; 8]),
+        );
+        let first_pending =
+            test_fmp_session(&node.identity, &peer_identity_full, [0x03; 8], [0x04; 8]);
+        peer.set_pending_session(first_pending, current_index, SessionIndex::new(21), false);
+        assert_eq!(peer.handle_peer_kbit_flip(), Some(previous_index));
+        let second_pending =
+            test_fmp_session(&node.identity, &peer_identity_full, [0x05; 8], [0x06; 8]);
+        peer.set_pending_session(second_pending, pending_index, SessionIndex::new(22), false);
+        assert_eq!(peer.our_index(), Some(current_index));
+        assert_eq!(peer.previous_our_index(), Some(previous_index));
+        assert_eq!(peer.pending_our_index(), Some(pending_index));
+        node.peers.insert(peer_addr, peer);
+
+        assert!(node.sync_dataplane_fmp_owner(&peer_addr));
+
+        let mut raw = VecDeque::from([
+            DataplaneRawIngress::from_received(
+                PacketProtocol::Fmp,
+                TransportPath::live(transport_id, remote_addr.clone()),
+                ReceivedPacket::new(
+                    transport_id,
+                    remote_addr.clone(),
+                    invalid_fmp_frame(current_index, 1, crate::node::wire::FLAG_KEY_EPOCH),
+                ),
+            ),
+            DataplaneRawIngress::from_received(
+                PacketProtocol::Fmp,
+                TransportPath::live(transport_id, remote_addr.clone()),
+                ReceivedPacket::new(
+                    transport_id,
+                    remote_addr.clone(),
+                    invalid_fmp_frame(previous_index, 2, 0),
+                ),
+            ),
+            DataplaneRawIngress::from_received(
+                PacketProtocol::Fmp,
+                TransportPath::live(transport_id, remote_addr.clone()),
+                ReceivedPacket::new(
+                    transport_id,
+                    remote_addr,
+                    invalid_fmp_frame(pending_index, 3, 0),
+                ),
+            ),
+        ]);
+        let (tun_tx, tun_rx) = crate::upper::tun::write_channel();
+        drop(tun_rx);
+        let (endpoint_tx, endpoint_rx) = EndpointEventSender::channel(1);
+        drop(endpoint_rx);
+        let (_, mut endpoint_data_rx) = endpoint_data_batch_channel(1);
+        let (_, mut tun_outbound_rx) = crate::upper::tun::tun_outbound_channel(1);
+        let turn = node
+            .dataplane
+            .pump_turn_with_firsts_and_transport_worker(
+                None,
+                &mut raw,
+                3,
+                DataplaneLiveOutboundFirsts::default(),
+                &mut endpoint_data_rx,
+                0,
+                &mut tun_outbound_rx,
+                0,
+                &tun_tx,
+                &endpoint_tx,
+                &node.transports,
+                3,
+                &mut node.dataplane_transport_send_worker,
+            )
+            .await;
+
+        assert_eq!(turn.summary().inbound_admitted(), 3);
+        assert!(turn.raw_ingress_drops().is_empty());
+        assert!(
+            !turn
+                .raw_ingress_drops()
+                .iter()
+                .any(|drop| drop.reason() == DataplaneRawIngressDropReason::Unrouted)
+        );
     }
 }

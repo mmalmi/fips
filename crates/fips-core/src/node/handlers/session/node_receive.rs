@@ -474,6 +474,8 @@ impl Node {
             fmp.packet_timestamp_ms,
         ) && arrived_from_source;
         let liveness_bookkeeping_allowed = arrived_from_source;
+        let received_k_bit = fmp.fmp_flags & crate::node::wire::FLAG_KEY_EPOCH != 0;
+        let _ = self.promote_dataplane_authenticated_pending_fmp_epoch(source_addr, received_k_bit);
         if liveness_bookkeeping_allowed {
             let _ = self.dataplane.record_authenticated_fmp_mmp_receive(
                 source_addr,

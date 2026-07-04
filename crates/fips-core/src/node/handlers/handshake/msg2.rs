@@ -75,7 +75,16 @@ impl Node {
                                 (peer.remote_epoch(), remote_epoch),
                                 (Some(old), Some(new)) if old != new
                             );
-                            Some((session, remote_epoch, our_index, remote_epoch_changed))
+                            let pending_fmp_k_bit = !peer.current_k_bit();
+                            let pending_fmp_open = session.recv_cipher_clone();
+                            Some((
+                                session,
+                                remote_epoch,
+                                our_index,
+                                remote_epoch_changed,
+                                pending_fmp_k_bit,
+                                pending_fmp_open,
+                            ))
                         }
                         Err(e) => {
                             warn!(
@@ -103,8 +112,14 @@ impl Node {
                     let _ = self.index_allocator.free(idx);
                 }
 
-                if let Some((session, remote_epoch, our_index, remote_epoch_changed)) =
-                    completed_rekey
+                if let Some((
+                    session,
+                    remote_epoch,
+                    our_index,
+                    remote_epoch_changed,
+                    pending_fmp_k_bit,
+                    pending_fmp_open,
+                )) = completed_rekey
                 {
                     if let Some(registered) = self.peers.install_pending_rekey_session_and_index(
                         &peer_node_addr,
@@ -119,6 +134,14 @@ impl Node {
                             &registered,
                             "initiator_pending_rekey",
                         );
+                        let _ = self.sync_dataplane_fmp_owner(&peer_node_addr);
+                        if let Some(open) = pending_fmp_open {
+                            let _ = self.install_dataplane_fmp_pending_receive_epoch(
+                                &peer_node_addr,
+                                pending_fmp_k_bit,
+                                open,
+                            );
+                        }
 
                         if remote_epoch_changed {
                             self.remove_dataplane_fsp_owner(&peer_node_addr);

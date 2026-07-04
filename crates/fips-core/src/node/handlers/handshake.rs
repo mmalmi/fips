@@ -302,6 +302,7 @@ impl Node {
                                 self.msg1_rate_limiter.complete_handshake();
                                 return;
                             }
+                            let pending_fmp_k_bit = !existing_peer.current_k_bit();
 
                             // Dual-initiation detection: both sides sent msg1
                             // simultaneously. Apply tie-breaker — smaller NodeAddr
@@ -358,6 +359,7 @@ impl Node {
                                     return;
                                 }
                             };
+                            let pending_fmp_open = noise_session.recv_cipher_clone();
 
                             // Send msg2 response using the new handshake
                             let wire_msg2 =
@@ -409,6 +411,14 @@ impl Node {
                                 &registered,
                                 "responder_pending_rekey",
                             );
+                            let _ = self.sync_dataplane_fmp_owner(&peer_node_addr);
+                            if let Some(open) = pending_fmp_open {
+                                let _ = self.install_dataplane_fmp_pending_receive_epoch(
+                                    &peer_node_addr,
+                                    pending_fmp_k_bit,
+                                    open,
+                                );
+                            }
 
                             // Clean up any temporary connection/link state from this path.
                             // The active peer's link registry entry must keep recognizing

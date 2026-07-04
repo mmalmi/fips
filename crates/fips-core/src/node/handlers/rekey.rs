@@ -14,10 +14,12 @@ use secp256k1::PublicKey;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
 
-/// Keep the post-cutover stale-epoch drain window open for this long.
-/// FMP retains its previous link session during this window; FSP keeps only
-/// drain timing/epoch metadata while dataplane owns packet-path stale-epoch handling.
-const DRAIN_WINDOW_SECS: u64 = 10;
+/// Keep the post-cutover stale-epoch FMP drain window open for this long.
+const FMP_DRAIN_WINDOW_SECS: u64 = 10;
+
+/// Keep the post-cutover stale-epoch FSP drain window open long enough for
+/// delayed direct-lane packet bursts to clear after explicit rekey tests.
+const FSP_DRAIN_WINDOW_SECS: u64 = 45;
 
 /// Suppress local rekey initiation for this long after receiving
 /// a peer's rekey msg1.
@@ -28,9 +30,9 @@ const REKEY_DAMPENING_SECS: u64 = 30;
 const FMP_CUTOVER_DELAY_MS: u64 = 250;
 
 /// Delay FSP initiator cutover after handshake completion to allow the initial
-/// XK msg3 plus several retransmits to reach the responder before
+/// XK msg3 plus the exponential resend burst to reach the responder before
 /// K-bit-flipped data arrives.
-const FSP_CUTOVER_DELAY_MS: u64 = 10_000;
+const FSP_CUTOVER_DELAY_MS: u64 = 35_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionRekeyMsg3Resend {
@@ -438,7 +440,7 @@ impl crate::node::SessionRegistry {
             .into_iter()
             .filter_map(|dest_addr| {
                 let entry = self.get_mut(&dest_addr)?;
-                entry.abandon_rekey();
+                entry.stop_rekey_msg3_retransmit();
                 Some(ExhaustedSessionRekeyMsg3 { dest_addr })
             })
             .collect()
@@ -526,7 +528,7 @@ impl Node {
             rekey_after_secs,
             rekey_after_messages,
             Duration::from_millis(FMP_CUTOVER_DELAY_MS),
-            DRAIN_WINDOW_SECS,
+            FMP_DRAIN_WINDOW_SECS,
             REKEY_DAMPENING_SECS,
         );
 
@@ -551,7 +553,7 @@ impl Node {
         for node_addr in plan.drain {
             let drained = self
                 .peers
-                .complete_due_fmp_rekey_drain(&node_addr, DRAIN_WINDOW_SECS);
+                .complete_due_fmp_rekey_drain(&node_addr, FMP_DRAIN_WINDOW_SECS);
             if let Some(drained) = drained {
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
@@ -742,7 +744,7 @@ impl Node {
         {
             debug!(
                 peer = %self.peer_display_name(&exhausted.dest_addr),
-                "FSP rekey aborted: msg3 unconfirmed after max retransmissions"
+                "FSP rekey msg3 retransmit stopped after max retransmissions"
             );
         }
 
@@ -793,7 +795,7 @@ impl Node {
         let rekey_after_secs = self.config.node.rekey.after_secs;
         let rekey_after_messages = self.config.node.rekey.after_messages;
         let now_ms = Self::now_ms();
-        let drain_ms = DRAIN_WINDOW_SECS * 1000;
+        let drain_ms = FSP_DRAIN_WINDOW_SECS * 1000;
         let dampening_ms = REKEY_DAMPENING_SECS * 1000;
 
         let dataplane = &self.dataplane;

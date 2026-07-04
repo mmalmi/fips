@@ -271,6 +271,27 @@ impl OutboundPacket {
         self
     }
 
+    pub(crate) fn has_fsp_send_receipt(&self) -> bool {
+        self.fsp_send_receipt.is_some()
+    }
+
+    pub(crate) fn refresh_fmp_send_context(
+        &mut self,
+        generation: u64,
+        receiver_idx: u32,
+        flags: u8,
+    ) -> bool {
+        if self.owner.protocol() != PacketProtocol::Fmp {
+            return false;
+        }
+        self.generation = generation;
+        self.wire = OutboundWire::Fmp {
+            receiver_idx,
+            flags,
+        };
+        true
+    }
+
     fn crypto_plaintext_prefix(
         &mut self,
         fmp_timestamp_ms: Option<u32>,
