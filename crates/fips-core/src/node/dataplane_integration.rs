@@ -262,7 +262,7 @@ impl Node {
     pub(in crate::node) async fn send_dataplane_cached_endpoint_payloads(
         &mut self,
         dest_addr: &NodeAddr,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataPayload>,
         _pending_enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
         if payloads.is_empty() {
@@ -286,7 +286,7 @@ impl Node {
         // route recovery completed. Start the dataplane endpoint queue age when the
         // batch enters dataplane so session establishment latency does not trip the
         // live endpoint stale-bulk guard.
-        let batch = NodeEndpointDataBatch::batch(remote, payloads, None)
+        let batch = NodeEndpointDataBatch::from_payloads(remote, payloads, None)
             .expect("checked pending endpoint payload batch");
         let firsts = DataplaneLiveOutboundFirsts {
             endpoint_data_batch: Some(batch),

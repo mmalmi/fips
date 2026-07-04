@@ -121,17 +121,6 @@ pub(crate) struct EndpointDataPayload {
 }
 
 impl EndpointDataPayload {
-    fn from_packet_payloads(payloads: Vec<Vec<u8>>) -> Option<Vec<Self>> {
-        if payloads.is_empty() {
-            return None;
-        }
-        let payloads: Vec<_> = payloads
-            .into_iter()
-            .filter_map(Self::from_packet_payload)
-            .collect();
-        (!payloads.is_empty()).then_some(payloads)
-    }
-
     pub(crate) fn from_packet_payload(payload: Vec<u8>) -> Option<Self> {
         (payload.len() <= crate::node::session_wire::fsp_endpoint_data_max_body_len()).then_some(
             Self {
@@ -150,21 +139,20 @@ impl EndpointDataPayload {
 }
 
 impl NodeEndpointDataBatch {
-    pub(crate) fn batch(
+    pub(crate) fn from_payloads(
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataPayload>,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Option<Self> {
-        Self::batch_with_enqueued_at_ms(remote, payloads, queued_at, crate::time::now_ms())
+        Self::from_payloads_with_enqueued_at_ms(remote, payloads, queued_at, crate::time::now_ms())
     }
 
-    pub(crate) fn batch_with_enqueued_at_ms(
+    pub(crate) fn from_payloads_with_enqueued_at_ms(
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataPayload>,
         queued_at: Option<crate::perf_profile::TraceStamp>,
         enqueued_at_ms: u64,
     ) -> Option<Self> {
-        let payloads = EndpointDataPayload::from_packet_payloads(payloads)?;
         if payloads.is_empty() {
             return None;
         }
@@ -173,22 +161,6 @@ impl NodeEndpointDataBatch {
             payloads,
             queued_at,
             enqueued_at_ms,
-        })
-    }
-
-    pub(crate) fn from_payloads(
-        remote: PeerIdentity,
-        payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-    ) -> Option<Self> {
-        if payloads.is_empty() {
-            return None;
-        }
-        Some(Self {
-            remote,
-            payloads,
-            queued_at,
-            enqueued_at_ms: crate::time::now_ms(),
         })
     }
 

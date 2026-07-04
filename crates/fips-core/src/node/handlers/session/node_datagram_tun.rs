@@ -323,7 +323,7 @@ impl Node {
     fn queue_pending_endpoint_data_batch_with_enqueued_at_ms(
         &mut self,
         dest_addr: NodeAddr,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataPayload>,
         enqueued_at_ms: u64,
     ) {
         let admission = self

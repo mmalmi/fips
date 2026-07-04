@@ -8,7 +8,7 @@ use crate::node::session_wire::{
 };
 use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
-    EndpointDataDelivery, LocalSessionPayload, Node, NodeEndpointControlCommand,
+    EndpointDataDelivery, EndpointDataPayload, LocalSessionPayload, Node, NodeEndpointControlCommand,
     NodeEndpointDataBatch, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
     SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,

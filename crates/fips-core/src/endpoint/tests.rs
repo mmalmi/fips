@@ -1,5 +1,7 @@
 use super::*;
-use crate::node::{EndpointDataDelivery, NodeEndpointDataBatch, NodeEndpointPeer};
+use crate::node::{
+    EndpointDataDelivery, EndpointDataPayload, NodeEndpointDataBatch, NodeEndpointPeer,
+};
 
 fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
     let tcp_len = 20 + tcp_payload_len;
@@ -10,6 +12,20 @@ fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
     packet[40 + 12] = 5 << 4;
     packet[40 + 13] = flags;
     packet
+}
+
+fn endpoint_payload(payload: Vec<u8>) -> EndpointDataPayload {
+    EndpointDataPayload::from_packet_payload(payload)
+        .expect("test endpoint payload should fit FSP endpoint data")
+}
+
+fn endpoint_payloads(payloads: Vec<Vec<u8>>) -> Vec<EndpointDataPayload> {
+    payloads.into_iter().map(endpoint_payload).collect()
+}
+
+fn endpoint_batch(remote: PeerIdentity, payloads: Vec<Vec<u8>>) -> NodeEndpointDataBatch {
+    NodeEndpointDataBatch::from_payloads(remote, endpoint_payloads(payloads), None)
+        .expect("non-empty endpoint data batch")
 }
 
 #[test]
@@ -60,24 +76,19 @@ fn endpoint_data_batches_charge_drain_budget_by_small_packet_groups() {
     let bulk_payload = || ipv6_tcp_packet(0x18, 512);
     let payloads = |count: usize| (0..count).map(|_| bulk_payload()).collect::<Vec<_>>();
 
-    let single = NodeEndpointDataBatch::batch(remote, vec![ipv6_tcp_packet(0x18, 512)], None)
-        .expect("one-packet endpoint data batch");
+    let single = endpoint_batch(remote, vec![ipv6_tcp_packet(0x18, 512)]);
     assert_eq!(single.drain_cost(), 1);
 
-    let batch_1 =
-        NodeEndpointDataBatch::batch(remote, payloads(1), None).expect("one-packet batch");
+    let batch_1 = endpoint_batch(remote, payloads(1));
     assert_eq!(batch_1.drain_cost(), 1);
 
-    let batch_8 =
-        NodeEndpointDataBatch::batch(remote, payloads(8), None).expect("eight-packet batch");
+    let batch_8 = endpoint_batch(remote, payloads(8));
     assert_eq!(batch_8.drain_cost(), 1);
 
-    let batch_9 =
-        NodeEndpointDataBatch::batch(remote, payloads(9), None).expect("nine-packet batch");
+    let batch_9 = endpoint_batch(remote, payloads(9));
     assert_eq!(batch_9.drain_cost(), 2);
 
-    let full_batch = NodeEndpointDataBatch::batch(remote, payloads(ENDPOINT_DATA_BATCH_MAX), None)
-        .expect("full endpoint batch");
+    let full_batch = endpoint_batch(remote, payloads(ENDPOINT_DATA_BATCH_MAX));
     assert_eq!(ENDPOINT_DATA_BATCH_MAX, 128);
     assert_eq!(full_batch.drain_cost(), 16);
 }
@@ -89,8 +100,7 @@ fn endpoint_data_drop_accounting_counts_packets_not_drain_quanta() {
     let payloads = (0..ENDPOINT_DATA_BATCH_MAX)
         .map(|_| discardable_payload())
         .collect::<Vec<_>>();
-    let full_batch = NodeEndpointDataBatch::batch(remote, payloads, None)
-        .expect("full discardable endpoint batch");
+    let full_batch = endpoint_batch(remote, payloads);
 
     assert_eq!(full_batch.drain_cost(), 16);
     assert_eq!(full_batch.packet_count(), ENDPOINT_DATA_BATCH_MAX);
@@ -101,15 +111,13 @@ async fn endpoint_data_batch_enqueue_drops_when_full() {
     let (batch_tx, mut batch_rx) = crate::node::endpoint_data_batch_channel(1);
     let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
 
-    let queued_data = NodeEndpointDataBatch::batch(remote, vec![vec![0, 1, 2, 3]], None)
-        .expect("one-packet endpoint data batch");
+    let queued_data = endpoint_batch(remote, vec![vec![0, 1, 2, 3]]);
     batch_tx
         .send_or_drop(queued_data)
         .map_err(|_| FipsEndpointError::Closed)
         .expect("first endpoint data batch should enqueue");
 
-    let dropped_tcp = NodeEndpointDataBatch::batch(remote, vec![ipv6_tcp_packet(0x18, 512)], None)
-        .expect("one-packet endpoint data batch");
+    let dropped_tcp = endpoint_batch(remote, vec![ipv6_tcp_packet(0x18, 512)]);
     batch_tx
         .send_or_drop(dropped_tcp)
         .map_err(|_| FipsEndpointError::Closed)
@@ -132,7 +140,7 @@ async fn endpoint_data_batch_lane_charges_batches_by_drain_cost() {
     let payloads = (0..9)
         .map(|_| ipv6_tcp_packet(0x18, 512))
         .collect::<Vec<_>>();
-    let batch = NodeEndpointDataBatch::batch(remote, payloads, None).expect("non-empty batch");
+    let batch = endpoint_batch(remote, payloads);
     assert_eq!(batch.drain_cost(), 2);
 
     batch_tx
@@ -140,10 +148,7 @@ async fn endpoint_data_batch_lane_charges_batches_by_drain_cost() {
         .map_err(|_| FipsEndpointError::Closed)
         .expect("nine-packet batch should fill the two-quanta lane");
     batch_tx
-        .send_or_drop(
-            NodeEndpointDataBatch::batch(remote, vec![vec![8, 9, 10, 11]], None)
-                .expect("one-packet endpoint data batch"),
-        )
+        .send_or_drop(endpoint_batch(remote, vec![vec![8, 9, 10, 11]]))
         .map_err(|_| FipsEndpointError::Closed)
         .expect("overflowing endpoint data batch should be accepted as dropped");
 
@@ -164,9 +169,9 @@ fn endpoint_data_batch_owns_payload_bytes_and_queue_stamp() {
     let queued_at = Some(crate::perf_profile::test_stamp());
     let enqueued_at_ms = 1_234;
 
-    let batch = crate::node::NodeEndpointDataBatch::batch_with_enqueued_at_ms(
+    let batch = crate::node::NodeEndpointDataBatch::from_payloads_with_enqueued_at_ms(
         remote,
-        vec![payload.clone()],
+        vec![endpoint_payload(payload.clone())],
         queued_at,
         enqueued_at_ms,
     )

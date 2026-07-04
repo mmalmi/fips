@@ -66,10 +66,7 @@ impl Node {
         let (remote, payloads, _, enqueued_at_ms) = batch.into_parts();
         self.queue_dataplane_unrouted_endpoint_batch(
             remote,
-            payloads
-                .into_iter()
-                .map(|payload| payload.into_body().into_vec())
-                .collect(),
+            payloads,
             enqueued_at_ms,
         )
         .await;

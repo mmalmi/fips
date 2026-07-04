@@ -1903,7 +1903,10 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
     node.pending_session_traffic
         .push_endpoint_data_batch_with_enqueued_at_ms(
             peer_addr,
-            vec![vec![4, 5, 6]],
+            vec![
+                crate::node::EndpointDataPayload::from_packet_payload(vec![4, 5, 6])
+                    .expect("test endpoint payload"),
+            ],
             usize::MAX,
             usize::MAX,
             crate::time::now_ms(),

@@ -2,7 +2,7 @@ impl Node {
     async fn queue_dataplane_unrouted_endpoint_batch(
         &mut self,
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataPayload>,
         enqueued_at_ms: u64,
     ) {
         let dest_addr = *remote.node_addr();
@@ -22,7 +22,7 @@ impl Node {
         &mut self,
         dest_addr: NodeAddr,
         dest_pubkey: secp256k1::PublicKey,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataPayload>,
         enqueued_at_ms: u64,
     ) -> Result<(), NodeError> {
         if payloads.is_empty() {

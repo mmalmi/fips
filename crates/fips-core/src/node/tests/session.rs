@@ -222,8 +222,15 @@ async fn send_endpoint_data_via_dataplane(
 ) -> Result<(), NodeError> {
     let dest_addr = *remote.node_addr();
     node.handle_endpoint_data_batch_no_established_flush(
-        crate::node::NodeEndpointDataBatch::batch(remote, vec![payload], None)
-            .expect("one-packet endpoint data batch"),
+        crate::node::NodeEndpointDataBatch::from_payloads(
+            remote,
+            vec![
+                crate::node::EndpointDataPayload::from_packet_payload(payload)
+                    .expect("test endpoint payload"),
+            ],
+            None,
+        )
+        .expect("one-packet endpoint data batch"),
     )
     .await;
     if node

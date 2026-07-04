@@ -18,12 +18,15 @@ pub(in crate::node) fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) 
 /// Per-destination endpoint data batch waiting for session establishment.
 #[derive(Debug)]
 pub(crate) struct PendingEndpointData {
-    payloads: Vec<Vec<u8>>,
+    payloads: Vec<EndpointDataPayload>,
     enqueued_at_ms: u64,
 }
 
 impl PendingEndpointData {
-    pub(crate) fn new_batch(payloads: Vec<Vec<u8>>, enqueued_at_ms: u64) -> Option<Self> {
+    pub(crate) fn new_batch(
+        payloads: Vec<EndpointDataPayload>,
+        enqueued_at_ms: u64,
+    ) -> Option<Self> {
         if payloads.is_empty() {
             return None;
         }
@@ -41,7 +44,7 @@ impl PendingEndpointData {
         self.enqueued_at_ms
     }
 
-    pub(crate) fn into_payloads(self) -> Vec<Vec<u8>> {
+    pub(crate) fn into_payloads(self) -> Vec<EndpointDataPayload> {
         self.payloads
     }
 }
@@ -56,7 +59,7 @@ pub(crate) struct PendingEndpointDataQueue {
 impl PendingEndpointDataQueue {
     pub(crate) fn push_batch_bounded(
         &mut self,
-        mut payloads: Vec<Vec<u8>>,
+        mut payloads: Vec<EndpointDataPayload>,
         enqueued_at_ms: u64,
         capacity: usize,
     ) -> bool {
@@ -284,7 +287,7 @@ impl PendingSessionTrafficQueues {
     pub(crate) fn push_endpoint_data_batch_with_enqueued_at_ms(
         &mut self,
         dest_addr: NodeAddr,
-        payloads: Vec<Vec<u8>>,
+        payloads: Vec<EndpointDataPayload>,
         max_destinations: usize,
         packets_per_dest: usize,
         enqueued_at_ms: u64,

@@ -220,12 +220,9 @@ fn route_endpoint_data_batch_with_router<R, F>(
     let route = router.route_endpoint_data_batch(remote, payloads, activity_tick);
     let deferred_payloads = route.finish_batch(remote, drops, &mut push);
     if let Some(payloads) = deferred_payloads {
-        let batch = NodeEndpointDataBatch::batch_with_enqueued_at_ms(
+        let batch = NodeEndpointDataBatch::from_payloads_with_enqueued_at_ms(
             remote,
-            payloads
-                .into_iter()
-                .map(|payload| payload.into_body().into_vec())
-                .collect(),
+            payloads,
             queued_at,
             enqueued_at_ms,
         )
