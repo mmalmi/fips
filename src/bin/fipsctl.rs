@@ -133,6 +133,9 @@ enum RatingsCommands {
         /// Relay URL to publish to. Can be supplied more than once.
         #[arg(long = "relay", required = true)]
         relays: Vec<String>,
+        /// Repeat publishing every N seconds until interrupted. Defaults to one-shot.
+        #[arg(long = "interval-secs", value_parser = clap::value_parser!(u64).range(1..))]
+        interval_secs: Option<u64>,
         /// Print machine-readable publish results.
         #[arg(long)]
         json: bool,
@@ -382,6 +385,23 @@ fn fetch_peer_rating_export(
 }
 
 fn publish_peer_ratings(
+    socket_path: &Path,
+    scope: &str,
+    relays: &[String],
+    interval_secs: Option<u64>,
+    json_output: bool,
+) -> Result<(), String> {
+    if let Some(interval_secs) = interval_secs {
+        loop {
+            publish_peer_ratings_once(socket_path, scope, relays, json_output)?;
+            std::thread::sleep(Duration::from_secs(interval_secs));
+        }
+    }
+
+    publish_peer_ratings_once(socket_path, scope, relays, json_output)
+}
+
+fn publish_peer_ratings_once(
     socket_path: &Path,
     scope: &str,
     relays: &[String],
@@ -664,9 +684,12 @@ fn main() {
             RatingsCommands::Publish {
                 scope,
                 relays,
+                interval_secs,
                 json,
             } => {
-                if let Err(e) = publish_peer_ratings(&socket_path, scope, relays, *json) {
+                if let Err(e) =
+                    publish_peer_ratings(&socket_path, scope, relays, *interval_secs, *json)
+                {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
@@ -923,15 +946,62 @@ mod tests {
                     RatingsCommands::Publish {
                         scope,
                         relays,
+                        interval_secs,
                         json,
                     },
             } => {
                 assert_eq!(scope, "fips.peer");
                 assert_eq!(relays, vec!["wss://relay.example".to_string()]);
+                assert_eq!(interval_secs, None);
                 assert!(json);
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_cli_parses_ratings_publish_interval() {
+        let cli = Cli::try_parse_from([
+            "fipsctl",
+            "ratings",
+            "publish",
+            "--relay",
+            "wss://relay.example",
+            "--interval-secs",
+            "300",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Ratings {
+                what:
+                    RatingsCommands::Publish {
+                        interval_secs,
+                        relays,
+                        ..
+                    },
+            } => {
+                assert_eq!(relays, vec!["wss://relay.example".to_string()]);
+                assert_eq!(interval_secs, Some(300));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_rejects_zero_ratings_publish_interval() {
+        assert!(
+            Cli::try_parse_from([
+                "fipsctl",
+                "ratings",
+                "publish",
+                "--relay",
+                "wss://relay.example",
+                "--interval-secs",
+                "0",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
