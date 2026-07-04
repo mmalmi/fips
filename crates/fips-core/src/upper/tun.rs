@@ -547,7 +547,7 @@ impl TunWriter {
     fn run_linux_vnet(mut self) {
         use std::sync::mpsc::TryRecvError;
 
-        const LINUX_VNET_TUN_WRITE_BATCH_CAP: usize = 64;
+        const LINUX_VNET_TUN_WRITE_BATCH_CAP: usize = 256;
 
         debug!(name = %self.name, max_mss = self.max_mss, "Linux vnet TUN writer starting");
 
