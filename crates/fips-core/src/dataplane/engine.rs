@@ -494,6 +494,7 @@ impl Dataplane {
             return;
         }
         let shard = batch.owner_shard();
+        #[cfg(debug_assertions)]
         let expected_shard = self.owner_shard_index(batch.owner());
         let Some(retire_worker) = self.retire_workers.get_mut(shard) else {
             for completion in batch.into_completions() {
@@ -503,6 +504,7 @@ impl Dataplane {
             }
             return;
         };
+        #[cfg(debug_assertions)]
         debug_assert_eq!(shard, expected_shard);
         if retire_worker.queue_completion_batch(batch) {
             self.completion_ready_shards.mark(shard);
