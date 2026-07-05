@@ -33,44 +33,7 @@ impl NostrDiscovery {
                 }
                 if let RelayPoolNotification::Event { event, .. } = notification {
                     if event.kind == Kind::Custom(ADVERT_KIND) {
-                        if !Self::advert_event_targets_app(event.as_ref(), &self.config.app) {
-                            continue;
-                        }
-                        let Ok(verified_event) = VerifiedEvent::try_from(event.as_ref()) else {
-                            continue;
-                        };
-                        let author_key = NostrPeerKey::from_public_key_ref(verified_event.pubkey());
-                        let author_npub = verified_event.pubkey().to_bech32().expect("infallible");
-                        if let Some(valid_until_ms) = self.event_valid_until_ms(&event)
-                            && let Ok(advert) =
-                                Self::parse_overlay_advert_event(verified_event, &self.config.app)
-                        {
-                            let mut cache = self.advert_cache.write().await;
-                            let should_replace = cache
-                                .get(&author_key)
-                                .map(|existing| existing.created_at <= event.created_at.as_secs())
-                                .unwrap_or(true);
-                            if should_replace && author_key != self.self_peer_key() {
-                                debug!(
-                                    peer = %short_npub(&author_npub),
-                                    endpoints = %endpoint_summary(&advert.endpoints),
-                                    event = %short_id(&event.id.to_string()),
-                                    "advert: peer cached"
-                                );
-                            }
-                            if should_replace {
-                                cache.insert(
-                                    author_key,
-                                    CachedOverlayAdvert {
-                                        author_npub,
-                                        advert,
-                                        created_at: event.created_at.as_secs(),
-                                        valid_until_ms,
-                                    },
-                                );
-                            }
-                        }
-                        self.prune_advert_cache().await;
+                        let _ = self.ingest_advert_event(event.as_ref()).await;
                         continue;
                     }
 

@@ -168,9 +168,7 @@ impl NostrDiscovery {
             self.client
                 .subscribe_to(
                     relay_config.advert_relays.clone(),
-                    Filter::new()
-                        .kind(Kind::Custom(ADVERT_KIND))
-                        .identifier(advert_d_tag(&self.config.app)),
+                    self.ambient_advert_filter(),
                     None,
                 )
                 .await

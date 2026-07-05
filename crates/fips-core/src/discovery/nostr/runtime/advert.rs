@@ -17,6 +17,73 @@ impl NostrDiscovery {
                 .is_some_and(|protocol| protocol == expected_app)
     }
 
+    pub fn ambient_advert_filter(&self) -> Filter {
+        Filter::new()
+            .kind(Kind::Custom(ADVERT_KIND))
+            .identifier(advert_d_tag(&self.config.app))
+    }
+
+    pub fn peer_advert_filter(&self, target_pubkey: PublicKey) -> Filter {
+        self.ambient_advert_filter().author(target_pubkey)
+    }
+
+    /// Ingest a normal signed Nostr advert event from any peerfinding source.
+    ///
+    /// This is the adapter boundary for FIPS-carried pubsub, hashtree-backed
+    /// history, and relay subscriptions: every source feeds ordinary kind
+    /// 37195 events through the same signature, app, freshness, and schema
+    /// checks before the advert becomes a cache candidate. Direct relay query
+    /// remains only the fallback used when this cache has no usable entry.
+    pub async fn ingest_advert_event(&self, event: &Event) -> NostrAdvertIngestOutcome {
+        if !Self::advert_event_targets_app(event, &self.config.app) {
+            return NostrAdvertIngestOutcome::Rejected;
+        }
+        let Some(valid_until_ms) = self.event_valid_until_ms(event) else {
+            return NostrAdvertIngestOutcome::Rejected;
+        };
+        let Ok(verified_event) = VerifiedEvent::try_from(event) else {
+            return NostrAdvertIngestOutcome::Rejected;
+        };
+        let author_key = NostrPeerKey::from_public_key_ref(verified_event.pubkey());
+        let author_npub = verified_event.pubkey().to_bech32().expect("infallible");
+        let Ok(advert) = Self::parse_overlay_advert_event(verified_event, &self.config.app) else {
+            return NostrAdvertIngestOutcome::Rejected;
+        };
+
+        let created_at = event.created_at.as_secs();
+        let mut cache = self.advert_cache.write().await;
+        let existing_created_at = cache.get(&author_key).map(|existing| existing.created_at);
+        if existing_created_at.is_some_and(|existing| existing > created_at) {
+            return NostrAdvertIngestOutcome::Stale;
+        }
+
+        let outcome = if existing_created_at.is_some() {
+            NostrAdvertIngestOutcome::Replaced
+        } else {
+            NostrAdvertIngestOutcome::Cached
+        };
+        if author_key != self.self_peer_key() {
+            debug!(
+                peer = %short_npub(&author_npub),
+                endpoints = %endpoint_summary(&advert.endpoints),
+                event = %short_id(&event.id.to_string()),
+                "advert: peer cached"
+            );
+        }
+        cache.insert(
+            author_key,
+            CachedOverlayAdvert {
+                author_npub,
+                advert,
+                created_at,
+                valid_until_ms,
+            },
+        );
+        drop(cache);
+        self.prune_advert_cache().await;
+        outcome
+    }
+
     /// Discover (or return cached) the public-Internet address for an
     /// advert-eligible UDP transport bound to a wildcard. Used by
     /// `build_overlay_advert` to avoid emitting `udp:0.0.0.0:port`,
@@ -141,10 +208,7 @@ impl NostrDiscovery {
             .client
             .fetch_events_from(
                 relay_config.advert_relays.clone(),
-                Filter::new()
-                    .author(target_pubkey)
-                    .kind(Kind::Custom(ADVERT_KIND))
-                    .identifier(advert_d_tag(&self.config.app)),
+                self.peer_advert_filter(target_pubkey),
                 Duration::from_secs(2),
             )
             .await
@@ -433,14 +497,14 @@ impl NostrDiscovery {
         }
 
         let relay_config = self.relay_config.read().await.clone();
+        if relay_config.advert_relays.is_empty() {
+            return Err(BootstrapError::MissingAdvert(peer_npub.to_string()));
+        }
         let events = self
             .client
             .fetch_events_from(
                 relay_config.advert_relays.clone(),
-                Filter::new()
-                    .author(target_pubkey)
-                    .kind(Kind::Custom(ADVERT_KIND))
-                    .identifier(advert_d_tag(&self.config.app)),
+                self.peer_advert_filter(target_pubkey),
                 Duration::from_secs(2),
             )
             .await
@@ -478,7 +542,7 @@ impl NostrDiscovery {
         let cached = best.ok_or_else(|| BootstrapError::MissingAdvert(peer_npub.to_string()))?;
         debug!(
             peer = %short_npub(peer_npub),
-            source = "relay-fetch",
+            source = "relay-fetch-fallback",
             endpoints = %endpoint_summary(&cached.advert.endpoints),
             "advert: resolved"
         );

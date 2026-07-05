@@ -26,10 +26,10 @@ use super::stun::{ADVERT_STUN_TIMEOUT, TRAVERSAL_STUN_TIMEOUT, observe_traversal
 use super::traversal::{nonce, now_ms, planned_remote_endpoints, run_punch_attempt};
 use super::types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,
-    CachedOverlayAdvert, MeshTraversalSignal, NostrFailureDecision, NostrPeerFailureView,
-    NostrRefetchOutcome, NostrRelayStatus, OverlayAdvert, OverlayEndpointAdvert,
-    OverlayTransportKind, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND, TraversalAnswer,
-    TraversalOffer, advert_d_tag,
+    CachedOverlayAdvert, MeshTraversalSignal, NostrAdvertIngestOutcome, NostrFailureDecision,
+    NostrPeerFailureView, NostrRefetchOutcome, NostrRelayStatus, OverlayAdvert,
+    OverlayEndpointAdvert, OverlayTransportKind, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND,
+    TraversalAnswer, TraversalOffer, advert_d_tag,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;

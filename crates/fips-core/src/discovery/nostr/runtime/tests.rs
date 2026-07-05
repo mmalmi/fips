@@ -1,5 +1,5 @@
 use super::*;
-use crate::discovery::nostr::{OverlayTransportKind, TraversalAddress};
+use crate::discovery::nostr::{NostrAdvertIngestOutcome, OverlayTransportKind, TraversalAddress};
 
 #[test]
 fn event_channel_capacity_tracks_open_and_inbound_limits() {
@@ -477,6 +477,157 @@ async fn advert_cache_lookup_canonicalizes_hex_and_npub() {
         discovery.cached_advert_endpoints_for_peer(&peer_hex).await,
         Some(vec![endpoint])
     );
+}
+
+#[test]
+fn ambient_advert_filter_targets_normal_nostr_adverts_for_app() {
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        app: "fips-test".to_string(),
+        ..Default::default()
+    });
+
+    let filter = serde_json::to_value(discovery.ambient_advert_filter()).unwrap();
+
+    assert_eq!(filter["kinds"], serde_json::json!([ADVERT_KIND]));
+    assert_eq!(filter["#d"], serde_json::json!(["fips-test"]));
+}
+
+#[tokio::test]
+async fn pubsub_advert_ingest_populates_peer_cache() {
+    let peer = nostr::Keys::generate();
+    let peer_npub = peer.public_key().to_bech32().expect("peer npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        app: "fips-test".to_string(),
+        ..Default::default()
+    });
+    let event = signed_runtime_overlay_advert_event(
+        &peer,
+        "fips-test",
+        OverlayTransportKind::Tcp,
+        "8.8.8.8:443",
+        Timestamp::now().as_secs(),
+    );
+
+    assert_eq!(
+        discovery.ingest_advert_event(&event).await,
+        NostrAdvertIngestOutcome::Cached
+    );
+
+    let endpoints = discovery
+        .cached_advert_endpoints_for_peer(&peer_npub)
+        .await
+        .expect("pubsub advert should populate cache");
+    assert_eq!(
+        endpoints,
+        vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Tcp,
+            addr: "8.8.8.8:443".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn pubsub_cache_resolves_before_relay_fallback() {
+    let peer = nostr::Keys::generate();
+    let peer_npub = peer.public_key().to_bech32().expect("peer npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        app: "fips-test".to_string(),
+        advert_relays: Vec::new(),
+        ..Default::default()
+    });
+    let event = signed_runtime_overlay_advert_event(
+        &peer,
+        "fips-test",
+        OverlayTransportKind::Tcp,
+        "8.8.4.4:443",
+        Timestamp::now().as_secs(),
+    );
+    assert!(discovery.ingest_advert_event(&event).await.cached());
+
+    let endpoints = discovery
+        .advert_endpoints_for_peer(&peer_npub)
+        .await
+        .expect("cache should resolve before relay fallback");
+
+    assert_eq!(
+        endpoints,
+        vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Tcp,
+            addr: "8.8.4.4:443".to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn stale_pubsub_advert_does_not_replace_newer_cache_entry() {
+    let peer = nostr::Keys::generate();
+    let peer_npub = peer.public_key().to_bech32().expect("peer npub");
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        app: "fips-test".to_string(),
+        ..Default::default()
+    });
+    let now_secs = Timestamp::now().as_secs();
+    let newer = signed_runtime_overlay_advert_event(
+        &peer,
+        "fips-test",
+        OverlayTransportKind::Tcp,
+        "8.8.8.8:443",
+        now_secs,
+    );
+    let older = signed_runtime_overlay_advert_event(
+        &peer,
+        "fips-test",
+        OverlayTransportKind::Tcp,
+        "8.8.4.4:443",
+        now_secs.saturating_sub(1),
+    );
+
+    assert_eq!(
+        discovery.ingest_advert_event(&newer).await,
+        NostrAdvertIngestOutcome::Cached
+    );
+    assert_eq!(
+        discovery.ingest_advert_event(&older).await,
+        NostrAdvertIngestOutcome::Stale
+    );
+
+    let endpoints = discovery
+        .cached_advert_endpoints_for_peer(&peer_npub)
+        .await
+        .expect("newer advert should remain cached");
+    assert_eq!(endpoints[0].addr, "8.8.8.8:443");
+}
+
+fn signed_runtime_overlay_advert_event(
+    keys: &nostr::Keys,
+    app: &str,
+    transport: OverlayTransportKind,
+    addr: &str,
+    created_at_secs: u64,
+) -> Event {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport,
+            addr: addr.to_string(),
+        }],
+        signal_relays: None,
+        stun_servers: None,
+    };
+    EventBuilder::new(
+        Kind::Custom(ADVERT_KIND),
+        serde_json::to_string(&advert).unwrap(),
+    )
+    .tags([
+        Tag::identifier(app),
+        Tag::custom(TagKind::custom("protocol"), [app.to_string()]),
+        Tag::custom(TagKind::custom("version"), [PROTOCOL_VERSION.to_string()]),
+        Tag::expiration(Timestamp::from(created_at_secs.saturating_add(3_600))),
+    ])
+    .custom_created_at(Timestamp::from(created_at_secs))
+    .sign_with_keys(keys)
+    .unwrap()
 }
 
 #[tokio::test]

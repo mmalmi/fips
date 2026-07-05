@@ -143,6 +143,20 @@ pub struct CachedOverlayAdvert {
     pub valid_until_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NostrAdvertIngestOutcome {
+    Cached,
+    Replaced,
+    Stale,
+    Rejected,
+}
+
+impl NostrAdvertIngestOutcome {
+    pub fn cached(self) -> bool {
+        matches!(self, Self::Cached | Self::Replaced)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraversalOffer {
     #[serde(rename = "type")]
