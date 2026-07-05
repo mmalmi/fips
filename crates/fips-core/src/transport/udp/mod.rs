@@ -2,7 +2,7 @@
 //!
 //! Provides UDP-based transport for FIPS peer communication.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::received_timestamp_ms;
 use super::{
     DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
@@ -943,6 +943,8 @@ async fn udp_receive_loop(
             {
                 Ok((count, kernel_drops)) => {
                     stats.set_kernel_drops(kernel_drops as u64);
+                    let timestamp_ms = received_timestamp_ms();
+                    let trace_enqueued_at = crate::perf_profile::stamp();
                     let mut packets = packet_tx.packet_batch(count);
                     for i in 0..count {
                         let len = backing[i].len();
@@ -967,8 +969,13 @@ async fn udp_receive_loop(
                         let data =
                             std::mem::replace(&mut backing[i], packet_tx.recv_buffer(buf_size));
                         let addr = cached_transport_addr(&mut addr_cache, remote_addr);
-                        let packet =
-                            ReceivedPacket::new(transport_id, addr, packet_tx.packet_buffer(data));
+                        let packet = ReceivedPacket::with_trace_timestamp(
+                            transport_id,
+                            addr,
+                            packet_tx.packet_buffer(data),
+                            timestamp_ms,
+                            trace_enqueued_at,
+                        );
 
                         trace!(
                             transport_id = %transport_id,
@@ -979,7 +986,6 @@ async fn udp_receive_loop(
 
                         packets.push(packet);
                     }
-                    packet_tx.try_fast_ingress_packet_batch(&mut packets);
                     if packets.is_empty() {
                         continue;
                     }
