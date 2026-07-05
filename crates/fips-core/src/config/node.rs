@@ -514,7 +514,7 @@ impl ControlConfig {
     }
 }
 
-const DEFAULT_PACKET_CHANNEL_CAPACITY: usize = 4096;
+const DEFAULT_PACKET_CHANNEL_CAPACITY: usize = 16_384;
 
 /// Internal buffers (`node.buffers.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]

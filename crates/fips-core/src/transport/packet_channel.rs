@@ -433,7 +433,7 @@ const PACKET_BUFFER_MAX_RETAINED_CAPACITY: usize = 16 * 1024;
 /// batched item is dequeued into `PacketRx`'s pending iterator, it no longer
 /// contributes to this counter; those packets are already inside the rx-loop
 /// owner's drain budget rather than waiting behind the transport channel.
-const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
+const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 16_384;
 
 /// Channel sender for received packets.
 ///
