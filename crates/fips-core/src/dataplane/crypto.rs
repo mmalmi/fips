@@ -512,13 +512,6 @@ impl DataplaneAeadWorkerPool {
         }
     }
 
-    fn direction_worker_count(&self, direction: DataplaneAeadDirection) -> usize {
-        match direction {
-            DataplaneAeadDirection::Open => self.open_workers.len(),
-            DataplaneAeadDirection::Seal => self.seal_workers.len(),
-        }
-    }
-
     fn direction_capacity(&self, direction: DataplaneAeadDirection) -> usize {
         if !self.direction_has_sender(direction) {
             return 0;
