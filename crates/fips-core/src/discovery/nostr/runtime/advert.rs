@@ -1,4 +1,5 @@
 use super::*;
+use nostr_pubsub::{EventRetentionPolicy, VerifiedEvent as PubsubVerifiedEvent};
 
 impl NostrDiscovery {
     pub(in crate::discovery::nostr) fn advert_event_targets_app(
@@ -25,6 +26,20 @@ impl NostrDiscovery {
 
     pub fn peer_advert_filter(&self, target_pubkey: PublicKey) -> Filter {
         self.ambient_advert_filter().author(target_pubkey)
+    }
+
+    pub fn advert_retention_policy(&self) -> EventRetentionPolicy {
+        EventRetentionPolicy::new(
+            self.config.advert_cache_max_entries,
+            vec![self.ambient_advert_filter()],
+        )
+    }
+
+    pub async fn ingest_pubsub_advert_event(
+        &self,
+        event: PubsubVerifiedEvent,
+    ) -> NostrAdvertIngestOutcome {
+        self.ingest_advert_event(event.as_event()).await
     }
 
     /// Ingest a normal signed Nostr advert event from any peerfinding source.

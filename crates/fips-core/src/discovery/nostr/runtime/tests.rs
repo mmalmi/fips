@@ -492,6 +492,40 @@ fn ambient_advert_filter_targets_normal_nostr_adverts_for_app() {
     assert_eq!(filter["#d"], serde_json::json!(["fips-test"]));
 }
 
+#[test]
+fn advert_retention_policy_matches_app_scoped_pubsub_adverts() {
+    let discovery = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        app: "fips-test".to_string(),
+        advert_cache_max_entries: 17,
+        ..Default::default()
+    });
+    let peer = nostr::Keys::generate();
+    let created_at_secs = Timestamp::now().as_secs();
+    let matching = signed_runtime_overlay_advert_event(
+        &peer,
+        "fips-test",
+        OverlayTransportKind::Tcp,
+        "8.8.8.8:443",
+        created_at_secs,
+    );
+    let other_app = signed_runtime_overlay_advert_event(
+        &peer,
+        "other-app",
+        OverlayTransportKind::Tcp,
+        "8.8.4.4:443",
+        created_at_secs,
+    );
+    let policy = discovery.advert_retention_policy();
+
+    assert_eq!(policy.max_events, 17);
+    assert!(policy.accepts(
+        &nostr_pubsub::VerifiedEvent::try_from(matching).expect("matching pubsub advert")
+    ));
+    assert!(!policy.accepts(
+        &nostr_pubsub::VerifiedEvent::try_from(other_app).expect("other app pubsub advert")
+    ));
+}
+
 #[tokio::test]
 async fn pubsub_advert_ingest_populates_peer_cache() {
     let peer = nostr::Keys::generate();
@@ -509,7 +543,11 @@ async fn pubsub_advert_ingest_populates_peer_cache() {
     );
 
     assert_eq!(
-        discovery.ingest_advert_event(&event).await,
+        discovery
+            .ingest_pubsub_advert_event(
+                nostr_pubsub::VerifiedEvent::try_from(event).expect("verified pubsub advert"),
+            )
+            .await,
         NostrAdvertIngestOutcome::Cached
     );
 

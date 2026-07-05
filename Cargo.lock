@@ -1490,6 +1490,7 @@ dependencies = [
  "libc",
  "mdns-sd",
  "nostr",
+ "nostr-pubsub",
  "nostr-sdk",
  "portable-atomic",
  "procfs",
@@ -2443,9 +2444,9 @@ dependencies = [
 
 [[package]]
 name = "nostr"
-version = "0.44.2"
+version = "0.44.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aa5e3b6a278ed061835fe1ee293b71641e6bf8b401cfe4e1834bbf4ef0a34e1"
+checksum = "98cf5d15d70d1f8f4059e5f79923ac15891eb691d2843d01191e0585fb064d70"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -2483,6 +2484,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ade30de16869618919c6b5efc8258f47b654a98b51541eb77f85e8ec5e3c83a6"
 dependencies = [
  "nostr",
+]
+
+[[package]]
+name = "nostr-pubsub"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nostr",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
