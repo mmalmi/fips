@@ -32,7 +32,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 69;
-const N_EVENTS: usize = 245;
+const N_EVENTS: usize = 255;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -509,6 +509,16 @@ pub enum Event {
     DataplaneFastIngressOwnerRunPackets = 242,
     DataplaneEstablishedFspDataRetireRuns = 243,
     DataplaneEstablishedFspDataRetirePackets = 244,
+    DataplaneAeadCompletionSendJobs = 245,
+    DataplaneAeadCompletionMessages = 246,
+    DataplaneAeadCompletionMessageBatches = 247,
+    DataplaneAeadCompletionMessagePackets = 248,
+    DataplaneAeadCompletionSplitBatches = 249,
+    DataplaneAeadCompletionSplitPackets = 250,
+    DataplaneAeadCompletionEmptyPolls = 251,
+    DataplaneAeadCompletionRxQueuedMessages = 252,
+    DataplaneAeadCompletionPendingBatches = 253,
+    DataplaneAeadCompletionPendingPackets = 254,
 }
 
 impl Event {
@@ -775,6 +785,26 @@ impl Event {
             Event::DataplaneEstablishedFspDataRetirePackets => {
                 "dataplane_established_fsp_data_retire_packets"
             }
+            Event::DataplaneAeadCompletionSendJobs => "dataplane_aead_completion_send_jobs",
+            Event::DataplaneAeadCompletionMessages => "dataplane_aead_completion_messages",
+            Event::DataplaneAeadCompletionMessageBatches => {
+                "dataplane_aead_completion_message_batches"
+            }
+            Event::DataplaneAeadCompletionMessagePackets => {
+                "dataplane_aead_completion_message_packets"
+            }
+            Event::DataplaneAeadCompletionSplitBatches => "dataplane_aead_completion_split_batches",
+            Event::DataplaneAeadCompletionSplitPackets => "dataplane_aead_completion_split_packets",
+            Event::DataplaneAeadCompletionEmptyPolls => "dataplane_aead_completion_empty_polls",
+            Event::DataplaneAeadCompletionRxQueuedMessages => {
+                "dataplane_aead_completion_rx_queued_messages"
+            }
+            Event::DataplaneAeadCompletionPendingBatches => {
+                "dataplane_aead_completion_pending_batches"
+            }
+            Event::DataplaneAeadCompletionPendingPackets => {
+                "dataplane_aead_completion_pending_packets"
+            }
         }
     }
 }
@@ -1026,6 +1056,16 @@ fn event_from_index(idx: usize) -> Event {
         242 => Event::DataplaneFastIngressOwnerRunPackets,
         243 => Event::DataplaneEstablishedFspDataRetireRuns,
         244 => Event::DataplaneEstablishedFspDataRetirePackets,
+        245 => Event::DataplaneAeadCompletionSendJobs,
+        246 => Event::DataplaneAeadCompletionMessages,
+        247 => Event::DataplaneAeadCompletionMessageBatches,
+        248 => Event::DataplaneAeadCompletionMessagePackets,
+        249 => Event::DataplaneAeadCompletionSplitBatches,
+        250 => Event::DataplaneAeadCompletionSplitPackets,
+        251 => Event::DataplaneAeadCompletionEmptyPolls,
+        252 => Event::DataplaneAeadCompletionRxQueuedMessages,
+        253 => Event::DataplaneAeadCompletionPendingBatches,
+        254 => Event::DataplaneAeadCompletionPendingPackets,
         _ => unreachable!(),
     }
 }
@@ -1331,6 +1371,58 @@ pub(crate) fn record_dataplane_aead_completion_batch(packets: usize) {
     }
     record_event_count_sample(Event::DataplaneAeadCompletionBatch, 1);
     record_event_count_sample(Event::DataplaneAeadCompletionBatchPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_dataplane_aead_completion_send(
+    messages: usize,
+    batches: usize,
+    packets: usize,
+) {
+    if !enabled() || messages == 0 {
+        return;
+    }
+    record_event_count_sample(Event::DataplaneAeadCompletionSendJobs, 1);
+    record_event_count_sample(Event::DataplaneAeadCompletionMessages, messages as u64);
+    record_event_count_sample(Event::DataplaneAeadCompletionMessageBatches, batches as u64);
+    record_event_count_sample(Event::DataplaneAeadCompletionMessagePackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_dataplane_aead_completion_split(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::DataplaneAeadCompletionSplitBatches, 1);
+    record_event_count_sample(Event::DataplaneAeadCompletionSplitPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_dataplane_aead_completion_empty_polls(count: usize) {
+    record_event_count(Event::DataplaneAeadCompletionEmptyPolls, count as u64);
+}
+
+#[inline]
+pub(crate) fn record_dataplane_aead_completion_backlog(
+    rx_queued_messages: usize,
+    pending_batches: usize,
+    pending_packets: usize,
+) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(
+        Event::DataplaneAeadCompletionRxQueuedMessages,
+        rx_queued_messages as u64,
+    );
+    record_event_count_sample(
+        Event::DataplaneAeadCompletionPendingBatches,
+        pending_batches as u64,
+    );
+    record_event_count_sample(
+        Event::DataplaneAeadCompletionPendingPackets,
+        pending_packets as u64,
+    );
 }
 
 #[inline]

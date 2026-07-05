@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_current_dataplane_and_queue_events() {
-    assert_eq!(N_EVENTS, 245);
+    assert_eq!(N_EVENTS, 255);
     assert!(
-        (Event::DataplaneEstablishedFspDataRetirePackets as usize) < N_EVENTS,
+        (Event::DataplaneAeadCompletionPendingPackets as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
 
@@ -326,6 +326,46 @@ fn event_table_exposes_current_dataplane_and_queue_events() {
         (
             Event::DataplaneEstablishedFspDataRetirePackets,
             "dataplane_established_fsp_data_retire_packets",
+        ),
+        (
+            Event::DataplaneAeadCompletionSendJobs,
+            "dataplane_aead_completion_send_jobs",
+        ),
+        (
+            Event::DataplaneAeadCompletionMessages,
+            "dataplane_aead_completion_messages",
+        ),
+        (
+            Event::DataplaneAeadCompletionMessageBatches,
+            "dataplane_aead_completion_message_batches",
+        ),
+        (
+            Event::DataplaneAeadCompletionMessagePackets,
+            "dataplane_aead_completion_message_packets",
+        ),
+        (
+            Event::DataplaneAeadCompletionSplitBatches,
+            "dataplane_aead_completion_split_batches",
+        ),
+        (
+            Event::DataplaneAeadCompletionSplitPackets,
+            "dataplane_aead_completion_split_packets",
+        ),
+        (
+            Event::DataplaneAeadCompletionEmptyPolls,
+            "dataplane_aead_completion_empty_polls",
+        ),
+        (
+            Event::DataplaneAeadCompletionRxQueuedMessages,
+            "dataplane_aead_completion_rx_queued_messages",
+        ),
+        (
+            Event::DataplaneAeadCompletionPendingBatches,
+            "dataplane_aead_completion_pending_batches",
+        ),
+        (
+            Event::DataplaneAeadCompletionPendingPackets,
+            "dataplane_aead_completion_pending_packets",
         ),
     ];
     for (event, name) in live_events {

@@ -432,11 +432,17 @@ impl DataplaneAeadWorkerPool {
             .iter()
             .map(CryptoCompletionBatch::len)
             .sum::<usize>();
-        let completion_depth =
-            pending_completion_depth.saturating_add(self.completion_rxs.iter().map(|rx| rx.len()).sum::<usize>());
+        let pending_completion_batches = self.pending_completion_batches.len();
+        let rx_queued_messages = self.completion_rxs.iter().map(|rx| rx.len()).sum::<usize>();
+        let completion_depth = pending_completion_depth.saturating_add(rx_queued_messages);
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadCompletionQueueDepth,
             completion_depth as u64,
+        );
+        crate::perf_profile::record_dataplane_aead_completion_backlog(
+            rx_queued_messages,
+            pending_completion_batches,
+            pending_completion_depth,
         );
         crate::perf_profile::record_event_count(
             crate::perf_profile::Event::DataplaneAeadOpenQueueDepth,
@@ -473,7 +479,9 @@ impl DataplaneAeadWorkerPool {
             return (0, Some(batch));
         }
         let pending = if drained < batch.len() {
-            Some(batch.split_off(drained))
+            let pending = batch.split_off(drained);
+            crate::perf_profile::record_dataplane_aead_completion_split(pending.len());
+            Some(pending)
         } else {
             None
         };
@@ -688,6 +696,7 @@ impl DataplaneCompletionSource for DataplaneAeadWorkerPool {
         completion_batches: &mut Vec<CryptoCompletionBatch>,
     ) -> usize {
         let mut drained = 0usize;
+        let mut empty_polls = 0usize;
         while drained < limit {
             if let Some(batch) = self.pending_completion_batches.pop_front() {
                 let (got, pending) = self.drain_completion_batch(
@@ -738,14 +747,17 @@ impl DataplaneCompletionSource for DataplaneAeadWorkerPool {
                             }
                         }
                     }
-                    Err(crossbeam_channel::TryRecvError::Empty)
-                    | Err(crossbeam_channel::TryRecvError::Disconnected) => {}
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        empty_polls = empty_polls.saturating_add(1);
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {}
                 }
             }
             if !made_progress {
                 break;
             }
         }
+        crate::perf_profile::record_dataplane_aead_completion_empty_polls(empty_polls);
         drained
     }
 }
@@ -831,7 +843,11 @@ fn send_completion_batches_to_shards(
     }
 
     let mut grouped: Vec<(usize, Vec<CryptoCompletionBatch>)> = Vec::new();
+    let mut completion_batch_count = 0usize;
+    let mut completion_packet_count = 0usize;
     for batch in batches {
+        completion_batch_count = completion_batch_count.saturating_add(1);
+        completion_packet_count = completion_packet_count.saturating_add(batch.len());
         let rx_idx = batch.owner_shard() % completion_txs.len();
         if let Some((last_rx_idx, last_batches)) = grouped.last_mut()
             && *last_rx_idx == rx_idx
@@ -842,6 +858,11 @@ fn send_completion_batches_to_shards(
         grouped.push((rx_idx, vec![batch]));
     }
 
+    crate::perf_profile::record_dataplane_aead_completion_send(
+        grouped.len(),
+        completion_batch_count,
+        completion_packet_count,
+    );
     for (rx_idx, batches) in grouped {
         completion_txs[rx_idx].send(batches).map_err(|_| ())?;
     }
