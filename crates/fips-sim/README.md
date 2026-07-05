@@ -51,14 +51,14 @@ cargo run -p fips-sim --example wot_admission
 
 The WoT admission report models the control-plane exchange around open
 discovery: a 100+ node decentralized inv/want pubsub graph, local bootstrap from
-1-3 known FIPS entry nodes, signed peer-advert discovery, historic rating
-lookups, local rating publication after successful probes or degradation,
-untrusted rating-spam rejection, integer trust scores, newcomer probe slots, and
-final admission ordering. Historic lookup is represented as a normal Nostr
-filter over signed rating facts, including kind `7368` and `#i=["fips.peer"]`,
-matching the hashtree stored-index query surface. Production `fips-core` tests
-cover the matching signed kind 7368 rating import and open-discovery enqueue
-path.
+1-3 known FIPS entry nodes, signed peer-advert discovery, an initially empty
+rating history, local rating publication only after peers prove good or bad in
+probe/degradation observations, untrusted rating-spam rejection, integer trust
+scores, newcomer probe slots, and final admission ordering. Historic lookup is
+represented as a normal Nostr filter over signed rating facts, including kind
+`7368` and `#i=["fips.peer"]`, matching the hashtree stored-index query surface.
+Production `fips-core` tests cover the matching signed kind 7368 rating import
+and open-discovery enqueue path.
 
 The example prints wall-clock progress to stderr every 10 seconds. Use
 `--progress-interval-ms N` to change the interval, or `--no-progress` for

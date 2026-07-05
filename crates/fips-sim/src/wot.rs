@@ -14,7 +14,6 @@ const DEFAULT_SCOPE: &str = "fips.peer";
 const RATING_FACT_KIND: u16 = 7368;
 const TRUSTED_RATING_SIGNER_SEED: u64 = 1;
 const LOCAL_RATER_SEED: u64 = 2;
-const HISTORIC_RATER_SEED: u64 = 3;
 const LOCAL_PUBSUB_NODE: usize = 0;
 const FIRST_REMOTE_PUBSUB_NODE: usize = 1;
 const DEFAULT_PUBSUB_NODE_COUNT: usize = 128;
@@ -569,6 +568,7 @@ pub struct WotAdmissionSimulation {
     config: WotAdmissionSimConfig,
     peers: Vec<WotPeerSpec>,
     exchange: WotRatingExchange,
+    observed_peer_ratings: BTreeMap<String, i64>,
 }
 
 impl WotAdmissionSimulation {
@@ -579,29 +579,29 @@ impl WotAdmissionSimulation {
             config,
             peers,
             exchange,
+            observed_peer_ratings: BTreeMap::new(),
         }
     }
 
     pub async fn run(mut self) -> WotAdmissionSimReport {
-        seed_historic_ratings(&self.config, &mut self.exchange).await;
         let peer_discovery = self
             .exchange
             .run_peer_discovery_pubsub(&self.config.rating_pubsub, &self.peers)
             .await;
 
         let cold_start = self.admission_phase("cold_start").await;
-        let newcomer = self.peer_id(WotPeerProfile::Newcomer);
-        self.publish_local_probe_rating(&newcomer, 85, 200).await;
-        let after_newcomer_probe = self.admission_phase("after_newcomer_probe").await;
-        let degrading = self.peer_id(WotPeerProfile::Degrading);
-        self.publish_degradation_rating(&degrading, 0, 300).await;
+        self.publish_probe_observations(&cold_start.selected_peers, 100, false)
+            .await;
+        let after_initial_probe = self.admission_phase("after_initial_probe").await;
+        self.publish_probe_observations(&after_initial_probe.selected_peers, 200, true)
+            .await;
         let after_degradation = self.admission_phase("after_degradation").await;
 
         WotAdmissionSimReport {
             config: self.config,
             peers: self.peers,
             peer_discovery,
-            phases: vec![cold_start, after_newcomer_probe, after_degradation],
+            phases: vec![cold_start, after_initial_probe, after_degradation],
             trusted_rating_author_count: self.exchange.trusted_rating_author_count(),
             rating_events: self.exchange.events,
             exchange: self.exchange.stats,
@@ -641,46 +641,44 @@ impl WotAdmissionSimulation {
         }
     }
 
-    async fn publish_local_probe_rating(&mut self, subject: &str, rating: i64, created_at: u64) {
-        self.exchange
-            .publish_local(
-                &self.config.rating_pubsub,
-                WotRatingFactEvent::signed_by(
-                    &trusted_rating_signer_keys(),
-                    &local_rater_npub(),
-                    subject,
-                    &self.config.rating_scope,
-                    rating,
-                    created_at,
-                    WotRatingEventSource::LocalProbe,
-                ),
-            )
-            .await;
+    async fn publish_probe_observations(
+        &mut self,
+        selected_peers: &[String],
+        created_at: u64,
+        degradation_seen: bool,
+    ) {
+        for peer_id in selected_peers {
+            let Some(peer) = self.peer_by_id(peer_id) else {
+                continue;
+            };
+            let (rating, source) = observed_rating_for_profile(peer.profile, degradation_seen);
+            if self
+                .observed_peer_ratings
+                .get(peer_id)
+                .is_some_and(|previous| *previous == rating)
+            {
+                continue;
+            }
+            self.observed_peer_ratings.insert(peer_id.clone(), rating);
+            self.exchange
+                .publish_local(
+                    &self.config.rating_pubsub,
+                    WotRatingFactEvent::signed_by(
+                        &trusted_rating_signer_keys(),
+                        &local_rater_npub(),
+                        peer_id,
+                        &self.config.rating_scope,
+                        rating,
+                        created_at,
+                        source,
+                    ),
+                )
+                .await;
+        }
     }
 
-    async fn publish_degradation_rating(&mut self, subject: &str, rating: i64, created_at: u64) {
-        self.exchange
-            .publish_local(
-                &self.config.rating_pubsub,
-                WotRatingFactEvent::signed_by(
-                    &trusted_rating_signer_keys(),
-                    &local_rater_npub(),
-                    subject,
-                    &self.config.rating_scope,
-                    rating,
-                    created_at,
-                    WotRatingEventSource::LocalDegradation,
-                ),
-            )
-            .await;
-    }
-
-    fn peer_id(&self, profile: WotPeerProfile) -> String {
-        self.peers
-            .iter()
-            .find(|peer| peer.profile == profile)
-            .map(|peer| peer.id.clone())
-            .expect("default peer exists")
+    fn peer_by_id(&self, peer_id: &str) -> Option<&WotPeerSpec> {
+        self.peers.iter().find(|peer| peer.id == peer_id)
     }
 }
 
@@ -723,6 +721,7 @@ impl WotRatingExchange {
         self.discovery.trusted_rating_author_count()
     }
 
+    #[cfg(test)]
     async fn seed_historic(&mut self, event: WotRatingFactEvent) {
         self.stats.historic_seed_events += 1;
         self.ingest(event).await;
@@ -1023,26 +1022,19 @@ fn peer(id: String, profile: WotPeerProfile, advertised_at: u64) -> WotPeerSpec 
     }
 }
 
-async fn seed_historic_ratings(config: &WotAdmissionSimConfig, exchange: &mut WotRatingExchange) {
-    let signer = trusted_rating_signer_keys();
-    let rater = historic_rater_npub();
-    for (profile, rating, created_at) in [
-        (WotPeerProfile::Reliable, 90, 100),
-        (WotPeerProfile::BackupReliable, 70, 100),
-        (WotPeerProfile::Degrading, 95, 100),
-        (WotPeerProfile::Bad, 0, 100),
-    ] {
-        exchange
-            .seed_historic(WotRatingFactEvent::signed_by(
-                &signer,
-                &rater,
-                &peer_npub(profile),
-                &config.rating_scope,
-                rating,
-                created_at,
-                WotRatingEventSource::HistoricIndex,
-            ))
-            .await;
+fn observed_rating_for_profile(
+    profile: WotPeerProfile,
+    degradation_seen: bool,
+) -> (i64, WotRatingEventSource) {
+    match profile {
+        WotPeerProfile::Reliable => (90, WotRatingEventSource::LocalProbe),
+        WotPeerProfile::BackupReliable => (70, WotRatingEventSource::LocalProbe),
+        WotPeerProfile::Newcomer => (85, WotRatingEventSource::LocalProbe),
+        WotPeerProfile::Degrading if degradation_seen => {
+            (0, WotRatingEventSource::LocalDegradation)
+        }
+        WotPeerProfile::Degrading => (95, WotRatingEventSource::LocalProbe),
+        WotPeerProfile::Bad => (0, WotRatingEventSource::LocalProbe),
     }
 }
 
@@ -1279,10 +1271,6 @@ fn local_rater_npub() -> String {
     sim_npub(LOCAL_RATER_SEED)
 }
 
-fn historic_rater_npub() -> String {
-    sim_npub(HISTORIC_RATER_SEED)
-}
-
 fn keys_for_peer_profile(profile: WotPeerProfile) -> nostr::Keys {
     sim_keys(match profile {
         WotPeerProfile::Reliable => 11,
@@ -1341,9 +1329,9 @@ mod tests {
         assert_eq!(
             selected_profiles(&report, "cold_start"),
             vec![
-                WotPeerProfile::Degrading,
-                WotPeerProfile::Reliable,
+                WotPeerProfile::Bad,
                 WotPeerProfile::Newcomer,
+                WotPeerProfile::Degrading,
             ]
         );
         let newcomer = peer_id(&report, WotPeerProfile::Newcomer);
@@ -1358,18 +1346,34 @@ mod tests {
         assert_decision(
             phase(&report, "cold_start"),
             &bad,
-            false,
-            Some(-100),
-            WotAdmissionReason::DeferredNegative,
+            true,
+            None,
+            WotAdmissionReason::NewcomerProbe,
         );
 
-        let after_probe = phase(&report, "after_newcomer_probe");
+        let after_probe = phase(&report, "after_initial_probe");
+        let reliable = peer_id(&report, WotPeerProfile::Reliable);
+        let degrading = peer_id(&report, WotPeerProfile::Degrading);
+        assert_decision(
+            after_probe,
+            &degrading,
+            true,
+            Some(90),
+            WotAdmissionReason::TrustedRating,
+        );
         assert_decision(
             after_probe,
             &newcomer,
             true,
             Some(70),
             WotAdmissionReason::TrustedRating,
+        );
+        assert_decision(
+            after_probe,
+            &reliable,
+            true,
+            None,
+            WotAdmissionReason::NewcomerProbe,
         );
         assert_decision(
             after_probe,
@@ -1387,7 +1391,6 @@ mod tests {
                 WotPeerProfile::BackupReliable,
             ]
         );
-        let degrading = peer_id(&report, WotPeerProfile::Degrading);
         let backup = peer_id(&report, WotPeerProfile::BackupReliable);
         assert_decision(
             phase(&report, "after_degradation"),
@@ -1400,15 +1403,15 @@ mod tests {
             phase(&report, "after_degradation"),
             &backup,
             true,
-            Some(40),
-            WotAdmissionReason::TrustedRating,
+            None,
+            WotAdmissionReason::NewcomerProbe,
         );
 
-        assert_eq!(report.exchange.historic_seed_events, 4);
-        assert_eq!(report.exchange.local_published_events, 2);
-        assert_eq!(report.exchange.indexed_events, 6);
+        assert_eq!(report.exchange.historic_seed_events, 0);
+        assert_eq!(report.exchange.local_published_events, 5);
+        assert_eq!(report.exchange.indexed_events, 5);
         assert_eq!(report.exchange.history_queries, 3);
-        assert_eq!(report.rating_events.len(), 6);
+        assert_eq!(report.rating_events.len(), 5);
         assert!(
             report
                 .rating_events
@@ -1420,6 +1423,12 @@ mod tests {
                 .rating_events
                 .iter()
                 .all(|event| event.signer() == trusted_rating_signer_npub())
+        );
+        assert!(
+            report
+                .rating_events
+                .iter()
+                .all(|event| event.source != WotRatingEventSource::HistoricIndex)
         );
     }
 
@@ -1457,9 +1466,9 @@ mod tests {
             "inv/want publish accounting should be cheaper than full-payload flooding"
         );
 
-        assert_eq!(phase(&report, "cold_start").rating_events_seen, 4);
-        assert_eq!(phase(&report, "after_newcomer_probe").rating_events_seen, 5);
-        assert_eq!(phase(&report, "after_degradation").rating_events_seen, 6);
+        assert_eq!(phase(&report, "cold_start").rating_events_seen, 0);
+        assert_eq!(phase(&report, "after_initial_probe").rating_events_seen, 3);
+        assert_eq!(phase(&report, "after_degradation").rating_events_seen, 5);
     }
 
     #[tokio::test]
