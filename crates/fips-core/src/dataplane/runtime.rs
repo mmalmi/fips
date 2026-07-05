@@ -558,7 +558,6 @@ impl DataplaneTurnDriver {
                     matches!(
                         item,
                         DataplaneFspAuthenticatedIngress::EndpointDataBatch(_)
-                            | DataplaneFspAuthenticatedIngress::TunPacketBatch(_)
                     )
                 })
             && self.outputs.is_empty()
@@ -1251,9 +1250,6 @@ impl DataplaneTurnDriver {
                     }
                     RetiredOutput::Packet(RetiredPacket::Drop(_)) => {}
                     RetiredOutput::EndpointDataBatch(bulk) => self.push_endpoint_data_batch(bulk),
-                    RetiredOutput::FspTunPacketBatch(batch) => {
-                        self.push_fsp_tun_packet_batch(batch)
-                    }
                 }
             }
         }
@@ -1285,15 +1281,6 @@ impl DataplaneTurnDriver {
             _ => self
                 .fsp_authenticated_ingress
                 .push(DataplaneFspAuthenticatedIngress::EndpointDataBatch(bulk)),
-        }
-    }
-
-    fn push_fsp_tun_packet_batch(&mut self, batch: DataplaneFspTunPacketBatch) {
-        match self.fsp_authenticated_ingress.last_mut() {
-            Some(DataplaneFspAuthenticatedIngress::TunPacketBatch(last)) => last.extend(batch),
-            _ => self
-                .fsp_authenticated_ingress
-                .push(DataplaneFspAuthenticatedIngress::TunPacketBatch(batch)),
         }
     }
 
