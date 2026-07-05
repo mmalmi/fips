@@ -5,8 +5,7 @@ pub(crate) enum PreparedCryptoWork {
 }
 
 const DATAPLANE_AEAD_WORKER_JOB_PACKETS: usize = 8;
-const DATAPLANE_AEAD_WORKER_BATCH_PACKETS: usize =
-    DATAPLANE_AEAD_WORKER_JOB_PACKETS * 4;
+const DATAPLANE_AEAD_WORKER_BATCH_PACKETS: usize = 128;
 
 impl PreparedCryptoWork {
     pub(crate) fn open(work: CryptoWork, cipher: AeadKey) -> Self {
@@ -647,14 +646,8 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
                 PreparedCryptoWork::Seal { .. } => (open, seal.saturating_add(1)),
                 PreparedCryptoWork::Completed(_) => (open, seal),
             });
-        let open_job_packets = dataplane_aead_open_worker_job_packets(
-            open_count,
-            self.direction_worker_count(DataplaneAeadDirection::Open),
-        );
-        let seal_job_packets = dataplane_aead_worker_job_packets(
-            seal_count,
-            self.direction_worker_count(DataplaneAeadDirection::Seal),
-        );
+        let open_job_packets = dataplane_aead_worker_job_packets(open_count);
+        let seal_job_packets = dataplane_aead_worker_job_packets(seal_count);
         let mut open_jobs = PreparedOpenRunJobBuilder::new(open_job_packets);
         let mut seal_jobs = PreparedCryptoJobBuilder::new(seal_job_packets);
         for work in prepared.drain(..) {
@@ -906,19 +899,8 @@ fn dataplane_aead_worker_priority_reserve(max_in_flight: usize) -> usize {
         .min(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
 }
 
-fn dataplane_aead_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
-    let _ = worker_count;
+fn dataplane_aead_worker_job_packets(work_count: usize) -> usize {
     work_count.max(1).min(DATAPLANE_AEAD_WORKER_BATCH_PACKETS)
-}
-
-fn dataplane_aead_open_worker_job_packets(work_count: usize, worker_count: usize) -> usize {
-    let work_count = work_count.max(1);
-    work_count.min(
-        work_count
-            .div_ceil(worker_count.max(1))
-            .max(DATAPLANE_AEAD_WORKER_JOB_PACKETS)
-            .min(DATAPLANE_AEAD_WORKER_BATCH_PACKETS),
-    )
 }
 
 impl Drop for DataplaneAeadWorkerPool {
