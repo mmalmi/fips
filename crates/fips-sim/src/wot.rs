@@ -1,15 +1,21 @@
-use fips_core::config::NostrDiscoveryConfig;
+use fips_core::config::{NostrDiscoveryConfig, PeerConfig, SimTransportConfig, TransportInstances};
 use fips_core::discovery::nostr::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, NostrDiscovery, OverlayAdvert,
     OverlayEndpointAdvert, OverlayTransportKind, PROTOCOL_VERSION,
 };
 use fips_core::peer_rating::compute_peer_rating;
+use fips_core::{
+    Config, FipsEndpoint, Identity, IdentityConfig, SimLink, SimNetwork, SimNetworkStats,
+    register_sim_network, unregister_sim_network,
+};
 use nostr::nips::nip19::ToBech32;
 use nostr::prelude::{
     Alphabet, Event, EventBuilder, Filter, JsonUtil, Kind, SingleLetterTag, Tag, TagKind, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::Duration;
+use tokio::time::Instant;
 
 const DEFAULT_SCOPE: &str = "fips.peer";
 const RATING_FACT_KIND: u16 = 7368;
@@ -20,6 +26,10 @@ const FIRST_REMOTE_PUBSUB_NODE: usize = 1;
 const DEFAULT_PUBSUB_NODE_COUNT: usize = 128;
 const DEFAULT_DISCOVERY_APP: &str = "fips-overlay-v1";
 const WOT_NOSTR_EVENT_STREAM: &str = "nostr.events.v1";
+const WOT_PROBE_NETWORK_SEED: u64 = 0x66_69_70_73_77_6f_74;
+const WOT_PROBE_LOCAL_ADDR: &str = "wot-probe-local";
+const WOT_PROBE_CONVERGENCE_MS: u64 = 800;
+const WOT_PROBE_TIMEOUT_MS: u64 = 2_000;
 
 /// Configuration for the deterministic open-discovery WoT admission scenario.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,9 +255,14 @@ pub struct WotRatingExchangeStats {
     pub probe_requests: usize,
     pub probe_valid_payloads: usize,
     pub probe_invalid_payloads: usize,
+    pub probe_timeouts: usize,
     pub probe_useful_bytes: usize,
     pub probe_junk_bytes: usize,
     pub probe_low_throughput_valid_payloads: usize,
+    pub probe_network_packets_sent: u64,
+    pub probe_network_packets_delivered: u64,
+    pub probe_network_bytes_sent: u64,
+    pub probe_network_bytes_delivered: u64,
     pub pubsub_published_events: usize,
     pub pubsub_inventory_messages: usize,
     pub pubsub_want_messages: usize,
@@ -595,14 +610,26 @@ impl WotAdmissionSimulation {
             .exchange
             .run_peer_discovery_pubsub(&self.config.rating_pubsub, &self.peers)
             .await;
+        let mut probe_runtime = WotProbeRuntime::start(&self.peers)
+            .await
+            .expect("start real FIPS WoT probe runtime");
 
         let cold_start = self.admission_phase("cold_start").await;
-        self.publish_probe_observations(&cold_start.selected_peers, 100, false)
+        self.publish_probe_observations(&mut probe_runtime, &cold_start.selected_peers, 100, false)
             .await;
         let after_initial_probe = self.admission_phase("after_initial_probe").await;
-        self.publish_probe_observations(&after_initial_probe.selected_peers, 200, true)
-            .await;
+        self.publish_probe_observations(
+            &mut probe_runtime,
+            &after_initial_probe.selected_peers,
+            200,
+            true,
+        )
+        .await;
         let after_degradation = self.admission_phase("after_degradation").await;
+        probe_runtime
+            .shutdown()
+            .await
+            .expect("shutdown real FIPS WoT probe runtime");
 
         WotAdmissionSimReport {
             config: self.config,
@@ -650,6 +677,7 @@ impl WotAdmissionSimulation {
 
     async fn publish_probe_observations(
         &mut self,
+        probe_runtime: &mut WotProbeRuntime,
         selected_peers: &[String],
         created_at: u64,
         degradation_seen: bool,
@@ -658,8 +686,30 @@ impl WotAdmissionSimulation {
             let Some(peer) = self.peer_by_id(peer_id).cloned() else {
                 continue;
             };
-            let observation = observed_rating_for_probe(&peer, degradation_seen, created_at);
+            let observation = probe_runtime
+                .observed_rating_for_probe(&peer, degradation_seen, created_at)
+                .await;
             self.exchange.stats.probe_requests += 1;
+            self.exchange.stats.probe_network_packets_sent = self
+                .exchange
+                .stats
+                .probe_network_packets_sent
+                .saturating_add(observation.network_delta.packets_sent);
+            self.exchange.stats.probe_network_packets_delivered = self
+                .exchange
+                .stats
+                .probe_network_packets_delivered
+                .saturating_add(observation.network_delta.packets_delivered);
+            self.exchange.stats.probe_network_bytes_sent = self
+                .exchange
+                .stats
+                .probe_network_bytes_sent
+                .saturating_add(observation.network_delta.bytes_sent);
+            self.exchange.stats.probe_network_bytes_delivered = self
+                .exchange
+                .stats
+                .probe_network_bytes_delivered
+                .saturating_add(observation.network_delta.bytes_delivered);
             if observation.valid_payload {
                 self.exchange.stats.probe_valid_payloads += 1;
                 self.exchange.stats.probe_useful_bytes = self
@@ -667,6 +717,8 @@ impl WotAdmissionSimulation {
                     .stats
                     .probe_useful_bytes
                     .saturating_add(observation.useful_bytes);
+            } else if observation.timed_out {
+                self.exchange.stats.probe_timeouts += 1;
             } else {
                 self.exchange.stats.probe_invalid_payloads += 1;
                 self.exchange.stats.probe_junk_bytes = self
@@ -1056,9 +1108,11 @@ struct WotProbeObservation {
     rating: Option<i64>,
     source: WotRatingEventSource,
     valid_payload: bool,
+    timed_out: bool,
     useful_bytes: usize,
     junk_bytes: usize,
     low_throughput_valid_payload: bool,
+    network_delta: SimNetworkStats,
 }
 
 #[derive(Debug, Clone)]
@@ -1073,36 +1127,225 @@ struct WotProbeTransfer {
     replay_suppressed: u64,
 }
 
-fn observed_rating_for_probe(
-    peer: &WotPeerSpec,
-    degradation_seen: bool,
-    created_at: u64,
-) -> WotProbeObservation {
-    let expected_payload = expected_probe_payload(peer, created_at);
-    let transfer = probe_transfer(peer.profile, degradation_seen, &expected_payload);
-    let valid_payload = transfer.received_payload == expected_payload;
-    let useful_bytes = valid_payload
-        .then_some(transfer.received_payload.len())
-        .unwrap_or_default();
-    let junk_bytes = (!valid_payload)
-        .then_some(transfer.received_payload.len())
-        .unwrap_or_default();
-    let low_throughput_valid_payload = valid_payload && transfer.goodput_bps < 1_000_000.0;
-    let rating_peer = rating_peer_value(peer, &transfer, valid_payload);
-    let rating = compute_peer_rating(&rating_peer).map(|health| health.score);
-    let source = if peer.profile == WotPeerProfile::Degrading && degradation_seen && !valid_payload
-    {
-        WotRatingEventSource::LocalDegradation
-    } else {
-        WotRatingEventSource::LocalProbe
-    };
-    WotProbeObservation {
-        rating,
-        source,
-        valid_payload,
-        useful_bytes,
-        junk_bytes,
-        low_throughput_valid_payload,
+#[derive(Debug, Clone, Copy)]
+struct WotProbeMetrics {
+    srtt_ms: f64,
+    goodput_bps: f64,
+    smoothed_loss: f64,
+    smoothed_etx: f64,
+    delivery_ratio: f64,
+}
+
+struct WotProbeRuntime {
+    network_id: String,
+    network: SimNetwork,
+    local: WotProbeEndpoint,
+    peers: BTreeMap<String, WotProbeEndpoint>,
+}
+
+struct WotProbeEndpoint {
+    npub: String,
+    endpoint: FipsEndpoint,
+}
+
+#[derive(Debug, Clone)]
+struct WotProbeNodeSpec {
+    npub: String,
+    secret_hex: String,
+    sim_addr: String,
+    alias: String,
+}
+
+impl WotProbeRuntime {
+    async fn start(peers: &[WotPeerSpec]) -> Result<Self, String> {
+        let network_id = format!(
+            "fips-wot-probe-{WOT_PROBE_NETWORK_SEED:x}-{}",
+            rand::random::<u64>()
+        );
+        let network = SimNetwork::new(WOT_PROBE_NETWORK_SEED);
+        let local_node =
+            wot_probe_node_for_seed(LOCAL_RATER_SEED, WOT_PROBE_LOCAL_ADDR, "local-rater");
+        let peer_nodes = peers
+            .iter()
+            .map(wot_probe_node_for_peer)
+            .collect::<Vec<_>>();
+
+        for (peer, node) in peers.iter().zip(peer_nodes.iter()) {
+            network.set_link(
+                local_node.sim_addr.clone(),
+                node.sim_addr.clone(),
+                probe_link_for_profile(peer.profile),
+            );
+        }
+        register_sim_network(network_id.clone(), network.clone());
+
+        let local_peer_configs = peer_nodes
+            .iter()
+            .map(peer_config_for_probe_node)
+            .collect::<Vec<_>>();
+        let local_endpoint = match bind_wot_probe_endpoint(wot_probe_endpoint_config(
+            &network_id,
+            &local_node,
+            local_peer_configs,
+        ))
+        .await
+        {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                unregister_sim_network(&network_id);
+                return Err(error);
+            }
+        };
+
+        let mut peer_endpoints: BTreeMap<String, WotProbeEndpoint> = BTreeMap::new();
+        for (peer, node) in peers.iter().zip(peer_nodes.iter()) {
+            let config = wot_probe_endpoint_config(
+                &network_id,
+                node,
+                vec![peer_config_for_probe_node(&local_node)],
+            );
+            let endpoint = match bind_wot_probe_endpoint(config).await {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    for (_, endpoint) in peer_endpoints {
+                        let _ = endpoint.endpoint.shutdown().await;
+                    }
+                    let _ = local_endpoint.shutdown().await;
+                    unregister_sim_network(&network_id);
+                    return Err(error);
+                }
+            };
+            peer_endpoints.insert(
+                peer.id.clone(),
+                WotProbeEndpoint {
+                    npub: node.npub.clone(),
+                    endpoint,
+                },
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(WOT_PROBE_CONVERGENCE_MS)).await;
+        Ok(Self {
+            network_id,
+            network,
+            local: WotProbeEndpoint {
+                npub: local_node.npub,
+                endpoint: local_endpoint,
+            },
+            peers: peer_endpoints,
+        })
+    }
+
+    async fn observed_rating_for_probe(
+        &mut self,
+        peer: &WotPeerSpec,
+        degradation_seen: bool,
+        created_at: u64,
+    ) -> WotProbeObservation {
+        let expected_payload = expected_probe_payload(peer, created_at);
+        let before = self.network.stats();
+        let received_payload = self
+            .run_probe_transfer(peer, degradation_seen, &expected_payload)
+            .await;
+        let network_delta = self.network.stats().delta_since(&before);
+        let timed_out = received_payload.is_empty();
+        let valid_payload = !timed_out && received_payload == expected_payload;
+        let useful_bytes = valid_payload
+            .then_some(received_payload.len())
+            .unwrap_or_default();
+        let junk_bytes = (!valid_payload && !timed_out)
+            .then_some(received_payload.len())
+            .unwrap_or_default();
+        let metrics = probe_metrics_for_profile(peer.profile);
+        let transfer = WotProbeTransfer {
+            received_payload,
+            srtt_ms: metrics.srtt_ms,
+            goodput_bps: metrics.goodput_bps,
+            smoothed_loss: metrics.smoothed_loss,
+            smoothed_etx: metrics.smoothed_etx,
+            delivery_ratio: metrics.delivery_ratio,
+            decrypt_failures: if valid_payload || timed_out { 0 } else { 4 },
+            replay_suppressed: if valid_payload || timed_out { 0 } else { 6 },
+        };
+        let low_throughput_valid_payload = valid_payload && transfer.goodput_bps < 1_000_000.0;
+        let rating = (!timed_out)
+            .then(|| rating_peer_value(peer, &transfer, valid_payload))
+            .and_then(|rating_peer| compute_peer_rating(&rating_peer).map(|health| health.score));
+        let source =
+            if peer.profile == WotPeerProfile::Degrading && degradation_seen && !valid_payload {
+                WotRatingEventSource::LocalDegradation
+            } else {
+                WotRatingEventSource::LocalProbe
+            };
+        WotProbeObservation {
+            rating,
+            source,
+            valid_payload,
+            timed_out,
+            useful_bytes,
+            junk_bytes,
+            low_throughput_valid_payload,
+            network_delta,
+        }
+    }
+
+    async fn run_probe_transfer(
+        &self,
+        peer: &WotPeerSpec,
+        degradation_seen: bool,
+        expected_payload: &[u8],
+    ) -> Vec<u8> {
+        let Some(remote) = self.peers.get(&peer.id) else {
+            return Vec::new();
+        };
+        let timeout = Duration::from_millis(WOT_PROBE_TIMEOUT_MS);
+        if self
+            .local
+            .endpoint
+            .send(peer.id.clone(), expected_payload.to_vec())
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        if !recv_probe_exact(&remote.endpoint, expected_payload, timeout).await {
+            return Vec::new();
+        }
+
+        let response = if profile_returns_junk(peer.profile, degradation_seen) {
+            junk_probe_payload(expected_payload)
+        } else {
+            expected_payload.to_vec()
+        };
+        if remote
+            .endpoint
+            .send(self.local.npub.clone(), response)
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        recv_probe_payload(&self.local.endpoint, timeout)
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn shutdown(self) -> Result<(), String> {
+        let mut shutdown_error = None;
+        for (_, endpoint) in self.peers {
+            if let Err(error) = endpoint.endpoint.shutdown().await {
+                shutdown_error = Some(error.to_string());
+            }
+        }
+        if let Err(error) = self.local.endpoint.shutdown().await {
+            shutdown_error = Some(error.to_string());
+        }
+        unregister_sim_network(&self.network_id);
+        if let Some(error) = shutdown_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1111,49 +1354,154 @@ fn expected_probe_payload(peer: &WotPeerSpec, created_at: u64) -> Vec<u8> {
     super::fixed_payload(prefix.as_bytes(), 1024)
 }
 
-fn probe_transfer(
-    profile: WotPeerProfile,
-    degradation_seen: bool,
-    expected_payload: &[u8],
-) -> WotProbeTransfer {
-    match profile {
-        WotPeerProfile::Reliable => valid_probe_transfer(expected_payload, 24.0, 8_000_000.0),
-        WotPeerProfile::BackupReliable => valid_probe_transfer(expected_payload, 95.0, 120_000.0),
-        WotPeerProfile::Newcomer => valid_probe_transfer(expected_payload, 80.0, 80_000.0),
-        WotPeerProfile::Degrading if degradation_seen => invalid_probe_transfer(expected_payload),
-        WotPeerProfile::Degrading => valid_probe_transfer(expected_payload, 30.0, 6_000_000.0),
-        WotPeerProfile::Bad => invalid_probe_transfer(expected_payload),
+async fn bind_wot_probe_endpoint(config: Config) -> Result<FipsEndpoint, String> {
+    FipsEndpoint::builder()
+        .config(config)
+        .without_system_tun()
+        .packet_channel_capacity(8192)
+        .bind()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn wot_probe_endpoint_config(
+    network_id: &str,
+    node: &WotProbeNodeSpec,
+    peers: Vec<PeerConfig>,
+) -> Config {
+    let mut config = Config::new();
+    config.node.identity = IdentityConfig {
+        nsec: Some(node.secret_hex.clone()),
+        persistent: false,
+    };
+    config.node.limits.max_connections = 64;
+    config.node.limits.max_peers = 64;
+    config.node.limits.max_links = 64;
+    config.node.limits.max_pending_inbound = 256;
+    config.node.rate_limit.handshake_burst = 10_000;
+    config.node.rate_limit.handshake_rate = 10_000.0;
+    config.node.rate_limit.handshake_timeout_secs = 8;
+    config.node.rate_limit.handshake_resend_interval_ms = 100;
+    config.node.rate_limit.handshake_max_resends = 20;
+    config.node.retry.base_interval_secs = 1;
+    config.node.retry.max_retries = 20;
+    config.node.retry.max_backoff_secs = 4;
+    config.node.discovery.attempt_timeouts_secs = vec![1, 1, 2];
+    config.node.discovery.forward_min_interval_secs = 0;
+    config.node.tree.announce_min_interval_ms = 25;
+    config.node.tree.parent_hysteresis = 0.0;
+    config.node.tree.hold_down_secs = 0;
+    config.node.tree.reeval_interval_secs = 1;
+    config.node.heartbeat_interval_secs = 1;
+    config.node.link_dead_timeout_secs = 4;
+    config.tun.enabled = false;
+    config.dns.enabled = false;
+    config.transports.sim = TransportInstances::Single(SimTransportConfig {
+        network: Some(network_id.to_string()),
+        addr: Some(node.sim_addr.clone()),
+        mtu: Some(1280),
+        auto_connect: Some(false),
+        accept_connections: Some(true),
+    });
+    config.peers = peers;
+    config
+}
+
+fn peer_config_for_probe_node(node: &WotProbeNodeSpec) -> PeerConfig {
+    PeerConfig::new(node.npub.clone(), "sim", node.sim_addr.clone()).with_alias(node.alias.clone())
+}
+
+fn wot_probe_node_for_peer(peer: &WotPeerSpec) -> WotProbeNodeSpec {
+    let seed = seed_for_peer_profile(peer.profile);
+    let node = wot_probe_node_for_seed(seed, probe_addr_for_profile(peer.profile), "tracked-peer");
+    debug_assert_eq!(node.npub, peer.id);
+    node
+}
+
+fn wot_probe_node_for_seed(
+    seed: u64,
+    sim_addr: impl Into<String>,
+    alias: impl Into<String>,
+) -> WotProbeNodeSpec {
+    let (identity, secret_hex) = sim_identity(seed);
+    WotProbeNodeSpec {
+        npub: identity.npub(),
+        secret_hex,
+        sim_addr: sim_addr.into(),
+        alias: alias.into(),
     }
 }
 
-fn valid_probe_transfer(
-    expected_payload: &[u8],
-    srtt_ms: f64,
-    goodput_bps: f64,
-) -> WotProbeTransfer {
-    WotProbeTransfer {
-        received_payload: expected_payload.to_vec(),
+fn probe_addr_for_profile(profile: WotPeerProfile) -> String {
+    format!("wot-probe-peer-{}", seed_for_peer_profile(profile))
+}
+
+fn probe_link_for_profile(profile: WotPeerProfile) -> SimLink {
+    let (latency_ms, throughput_mbps) = match profile {
+        WotPeerProfile::Reliable => (6, 25.0),
+        WotPeerProfile::BackupReliable => (35, 8.0),
+        WotPeerProfile::Newcomer => (25, 6.0),
+        WotPeerProfile::Degrading => (10, 15.0),
+        WotPeerProfile::Bad => (10, 15.0),
+    };
+    SimLink {
+        latency_ms,
+        throughput_mbps,
+        loss_probability: 0.0,
+        up: true,
+    }
+}
+
+fn probe_metrics_for_profile(profile: WotPeerProfile) -> WotProbeMetrics {
+    let (srtt_ms, goodput_bps) = match profile {
+        WotPeerProfile::Reliable => (24.0, 8_000_000.0),
+        WotPeerProfile::BackupReliable => (95.0, 120_000.0),
+        WotPeerProfile::Newcomer => (80.0, 80_000.0),
+        WotPeerProfile::Degrading => (30.0, 6_000_000.0),
+        WotPeerProfile::Bad => (0.0, 0.0),
+    };
+    WotProbeMetrics {
         srtt_ms,
         goodput_bps,
-        smoothed_loss: 0.001,
+        smoothed_loss: if matches!(profile, WotPeerProfile::Bad) {
+            0.0
+        } else {
+            0.001
+        },
         smoothed_etx: if srtt_ms <= 50.0 { 1.01 } else { 1.10 },
-        delivery_ratio: 0.999,
-        decrypt_failures: 0,
-        replay_suppressed: 0,
+        delivery_ratio: if matches!(profile, WotPeerProfile::Bad) {
+            0.0
+        } else {
+            0.999
+        },
     }
 }
 
-fn invalid_probe_transfer(expected_payload: &[u8]) -> WotProbeTransfer {
-    WotProbeTransfer {
-        received_payload: junk_probe_payload(expected_payload),
-        srtt_ms: 0.0,
-        goodput_bps: 0.0,
-        smoothed_loss: 0.0,
-        smoothed_etx: 1.0,
-        delivery_ratio: 0.0,
-        decrypt_failures: 4,
-        replay_suppressed: 6,
+fn profile_returns_junk(profile: WotPeerProfile, degradation_seen: bool) -> bool {
+    matches!(profile, WotPeerProfile::Bad)
+        || (profile == WotPeerProfile::Degrading && degradation_seen)
+}
+
+async fn recv_probe_exact(endpoint: &FipsEndpoint, expected: &[u8], timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        match tokio::time::timeout(remaining, endpoint.recv()).await {
+            Ok(Some(message)) if message.data.as_slice() == expected => return true,
+            Ok(Some(_)) => continue,
+            _ => return false,
+        }
     }
+}
+
+async fn recv_probe_payload(endpoint: &FipsEndpoint, timeout: Duration) -> Option<Vec<u8>> {
+    tokio::time::timeout(timeout, endpoint.recv())
+        .await
+        .ok()
+        .flatten()
+        .map(|message| message.data.as_slice().to_vec())
 }
 
 fn junk_probe_payload(expected_payload: &[u8]) -> Vec<u8> {
@@ -1429,13 +1777,17 @@ fn local_rater_npub() -> String {
 }
 
 fn keys_for_peer_profile(profile: WotPeerProfile) -> nostr::Keys {
-    sim_keys(match profile {
+    sim_keys(seed_for_peer_profile(profile))
+}
+
+fn seed_for_peer_profile(profile: WotPeerProfile) -> u64 {
+    match profile {
         WotPeerProfile::Reliable => 11,
         WotPeerProfile::BackupReliable => 12,
         WotPeerProfile::Newcomer => 13,
         WotPeerProfile::Degrading => 14,
         WotPeerProfile::Bad => 15,
-    })
+    }
 }
 
 fn peer_npub(profile: WotPeerProfile) -> String {
@@ -1449,10 +1801,22 @@ fn sim_npub(seed: u64) -> String {
     sim_keys(seed).public_key().to_bech32().expect("sim npub")
 }
 
+fn sim_identity(seed: u64) -> (Identity, String) {
+    let bytes = sim_secret_bytes(seed);
+    (
+        Identity::from_secret_bytes(&bytes).expect("valid deterministic FIPS sim identity"),
+        hex::encode(bytes),
+    )
+}
+
 fn sim_keys(seed: u64) -> nostr::Keys {
+    nostr::Keys::parse(&hex::encode(sim_secret_bytes(seed))).expect("valid deterministic sim key")
+}
+
+fn sim_secret_bytes(seed: u64) -> [u8; 32] {
     let mut bytes = [0u8; 32];
     bytes[24..].copy_from_slice(&seed.max(1).to_be_bytes());
-    nostr::Keys::parse(&hex::encode(bytes)).expect("valid deterministic sim key")
+    bytes
 }
 
 #[cfg(test)]
@@ -1571,9 +1935,17 @@ mod tests {
         assert_eq!(report.exchange.probe_requests, 6);
         assert_eq!(report.exchange.probe_valid_payloads, 4);
         assert_eq!(report.exchange.probe_invalid_payloads, 2);
+        assert_eq!(report.exchange.probe_timeouts, 0);
         assert_eq!(report.exchange.probe_useful_bytes, 4 * 1024);
         assert_eq!(report.exchange.probe_junk_bytes, 2 * 1024);
         assert_eq!(report.exchange.probe_low_throughput_valid_payloads, 2);
+        assert!(report.exchange.probe_network_packets_sent > 0);
+        assert!(report.exchange.probe_network_packets_delivered > 0);
+        assert!(report.exchange.probe_network_bytes_sent > 0);
+        assert!(
+            report.exchange.probe_network_bytes_delivered
+                >= (report.exchange.probe_useful_bytes + report.exchange.probe_junk_bytes) as u64
+        );
         assert_eq!(report.rating_events.len(), 5);
         assert!(
             report
@@ -1664,17 +2036,29 @@ mod tests {
         );
     }
 
-    #[test]
-    fn low_throughput_valid_probe_is_not_downvoted() {
+    #[tokio::test]
+    async fn low_throughput_valid_probe_is_not_downvoted() {
         let peer = peer(
             peer_npub(WotPeerProfile::Newcomer),
             WotPeerProfile::Newcomer,
             100,
         );
-        let observation = observed_rating_for_probe(&peer, false, 123);
+        let mut probe_runtime = WotProbeRuntime::start(std::slice::from_ref(&peer))
+            .await
+            .expect("start probe runtime");
+        let observation = probe_runtime
+            .observed_rating_for_probe(&peer, false, 123)
+            .await;
+        probe_runtime
+            .shutdown()
+            .await
+            .expect("shutdown probe runtime");
 
         assert!(observation.valid_payload);
+        assert!(!observation.timed_out);
         assert!(observation.low_throughput_valid_payload);
+        assert!(observation.network_delta.packets_sent > 0);
+        assert!(observation.network_delta.packets_delivered > 0);
         assert_eq!(observation.rating, Some(84));
         assert_eq!(normalize_rating_score(84, 0, 100), Some(68));
     }
