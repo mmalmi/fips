@@ -50,9 +50,6 @@ mod platform {
     #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_SEGMENTS: usize = 64;
     #[cfg(target_os = "linux")]
-    const UDP_GSO_MAX_IOV: usize =
-        UDP_GSO_MAX_SEGMENTS * crate::transport::udp::UDP_PAYLOAD_MAX_SLICES;
-    #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_PAYLOAD: usize = u16::MAX as usize - 8;
     #[cfg(target_os = "linux")]
     static UDP_GSO_DISABLED: std::sync::atomic::AtomicBool =
@@ -946,8 +943,15 @@ mod platform {
                 );
             }
 
-            let mut iovs: [libc::iovec; UDP_GSO_MAX_IOV] = unsafe { std::mem::zeroed() };
-            let mut iov_count = 0usize;
+            let total_len = (0..n)
+                .map(|i| payloads.payload_len(offset + i))
+                .try_fold(0usize, |total, len| {
+                    total
+                        .checked_add(len)
+                        .filter(|value| *value <= UDP_GSO_MAX_PAYLOAD)
+                })
+                .ok_or_else(|| std::io::Error::other("UDP GSO payload exceeds maximum size"))?;
+            let mut coalesced = Vec::with_capacity(total_len);
             for i in 0..n {
                 let payload_index = offset + i;
                 let payload_len = payloads.payload_len(payload_index);
@@ -958,19 +962,14 @@ mod platform {
                 }
                 let mut slices = [None; crate::transport::udp::UDP_PAYLOAD_MAX_SLICES];
                 let slice_count = payloads.payload_slices(payload_index, &mut slices);
-                if slice_count == 0
-                    || slice_count > crate::transport::udp::UDP_PAYLOAD_MAX_SLICES
-                    || iov_count.saturating_add(slice_count) > iovs.len()
-                {
+                if slice_count == 0 || slice_count > crate::transport::udp::UDP_PAYLOAD_MAX_SLICES {
                     return Err(std::io::Error::other("invalid UDP GSO payload slices"));
                 }
 
                 let mut slice_total = 0usize;
                 for data in slices.iter().take(slice_count).flatten() {
                     slice_total = slice_total.saturating_add(data.len());
-                    iovs[iov_count].iov_base = data.as_ptr() as *mut libc::c_void;
-                    iovs[iov_count].iov_len = data.len();
-                    iov_count += 1;
+                    coalesced.extend_from_slice(data);
                 }
                 if slice_total != payload_len {
                     return Err(std::io::Error::other(
@@ -978,6 +977,11 @@ mod platform {
                     ));
                 }
             }
+            debug_assert_eq!(coalesced.len(), total_len);
+            let mut iov = libc::iovec {
+                iov_base: coalesced.as_mut_ptr() as *mut libc::c_void,
+                iov_len: coalesced.len(),
+            };
 
             let cmsg_space =
                 unsafe { libc::CMSG_SPACE(std::mem::size_of::<u16>() as u32) as usize };
@@ -987,8 +991,8 @@ mod platform {
             let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
             msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
             msg.msg_namelen = sa_len;
-            msg.msg_iov = iovs.as_mut_ptr();
-            msg.msg_iovlen = iov_count as _;
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
             msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
             msg.msg_controllen = cmsg_space as _;
 
