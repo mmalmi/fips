@@ -21,7 +21,8 @@ struct DataplaneDirectFspTransportSegmentation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DataplaneDirectFspTransportSegment {
-    payload: PacketBuffer,
+    header: [u8; DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN],
+    payload_range: std::ops::Range<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,7 +37,8 @@ impl DataplaneDirectFspTransportSegments {
     }
 
     fn payload_len(&self, index: usize) -> usize {
-        self.segments[index].payload.len()
+        let segment = &self.segments[index];
+        DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + segment.payload_range.len()
     }
 
     fn payload_slices<'a>(
@@ -46,8 +48,9 @@ impl DataplaneDirectFspTransportSegments {
     ) -> usize {
         out.fill(None);
         let segment = &self.segments[index];
-        out[0] = Some(segment.payload.as_slice());
-        1
+        out[0] = Some(segment.header.as_slice());
+        out[1] = Some(&self.output.payload()[segment.payload_range.clone()]);
+        2
     }
 }
 
@@ -345,12 +348,9 @@ fn dataplane_direct_fsp_transport_output(
         segment_header[12..16].copy_from_slice(&(output.payload_len() as u32).to_le_bytes());
         segment_header[16..18].copy_from_slice(&(fragment_index as u16).to_le_bytes());
         segment_header[18..20].copy_from_slice(&(segmentation.fragment_count as u16).to_le_bytes());
-        let mut segment_payload =
-            Vec::with_capacity(DIRECT_FSP_TRANSPORT_FRAGMENT_HEADER_LEN + end - start);
-        segment_payload.extend_from_slice(&segment_header);
-        segment_payload.extend_from_slice(&output.payload()[start..end]);
         segments.push(DataplaneDirectFspTransportSegment {
-            payload: segment_payload.into(),
+            header: segment_header,
+            payload_range: start..end,
         });
     }
     Ok(DataplaneDirectFspTransportOutput::Segments(
