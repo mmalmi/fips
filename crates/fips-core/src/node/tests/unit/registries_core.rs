@@ -588,6 +588,7 @@ fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() 
             new_link_id,
             new_transport_id,
             &new_addr,
+            true,
             Some([0x04; 8]),
             2_000,
         )

@@ -66,6 +66,16 @@ impl Node {
             let outbound_alternate_path = is_outbound
                 && (existing_peer.transport_id() != Some(transport_id)
                     || existing_peer.current_addr() != Some(&current_addr));
+            let late_inbound_refresh_for_active_outbound = !is_outbound
+                && existing_peer.fmp_mmp_is_initiator()
+                && existing_peer.handshake_msg2().is_none()
+                && ((existing_peer.transport_id() == Some(transport_id)
+                    && existing_peer.current_addr() == Some(&current_addr))
+                    || self.alternate_path_priority_allows_replace(
+                        &peer_node_addr,
+                        transport_id,
+                        &current_addr,
+                    ));
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
             let existing_path_unusable = existing_path_unusable
@@ -99,6 +109,7 @@ impl Node {
             // at least as preferred as the current healthy path.
             let this_wins = remote_epoch_changed
                 || existing_path_unusable
+                || late_inbound_refresh_for_active_outbound
                 || if outbound_alternate_path {
                     outbound_alternate_path_wins
                 } else {

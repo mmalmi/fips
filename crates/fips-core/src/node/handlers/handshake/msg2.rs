@@ -418,6 +418,7 @@ impl Node {
                     link_id,
                     outbound_transport_id,
                     &outbound_addr,
+                    true,
                     outbound_remote_epoch,
                     packet.timestamp_ms,
                 ) {
@@ -531,6 +532,7 @@ impl Node {
                     link_id,
                     outbound_transport_id,
                     &outbound_addr,
+                    true,
                     None,
                     packet.timestamp_ms,
                 ) {

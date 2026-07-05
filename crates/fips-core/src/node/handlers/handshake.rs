@@ -430,7 +430,13 @@ impl Node {
                             return;
                         }
 
-                        // Not a rekey — duplicate msg1. Resend stored msg2.
+                        // Not a rekey. If this active peer was established
+                        // as a responder, we can replay the original msg2 for
+                        // a true duplicate msg1. If it was established as our
+                        // outbound initiator, there is no responder msg2 to
+                        // replay; the peer's msg1 is a late cross-connection
+                        // or direct-refresh attempt and needs a fresh msg2 so
+                        // their pending outbound can complete.
                         if let Some(msg2) = existing_peer.handshake_msg2().map(|m| m.to_vec())
                             && let Some(transport) = self.transports.get(&packet.transport_id)
                         {
@@ -445,9 +451,13 @@ impl Node {
                                     "Failed to resend msg2"
                                 ),
                             }
+                            self.msg1_rate_limiter.complete_handshake();
+                            return;
                         }
-                        self.msg1_rate_limiter.complete_handshake();
-                        return;
+                        debug!(
+                            peer = %self.peer_display_name(&peer_node_addr),
+                            "Same-epoch msg1 from active peer has no stored msg2; processing as late cross-connection"
+                        );
                     }
                 }
             }

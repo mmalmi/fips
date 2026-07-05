@@ -291,6 +291,7 @@ impl PeerLifecycleRegistry {
         new_link_id: LinkId,
         new_transport_id: TransportId,
         new_addr: &TransportAddr,
+        new_is_initiator: bool,
         new_remote_epoch: Option<[u8; 8]>,
         connected_at_ms: u64,
     ) -> Option<ReplacedActivePeerCurrentSession> {
@@ -312,6 +313,7 @@ impl PeerLifecycleRegistry {
             );
             peer.set_link_id(new_link_id);
             peer.set_current_addr(new_transport_id, new_addr);
+            peer.set_fmp_mmp_is_initiator(new_is_initiator);
             if new_remote_epoch.is_some() {
                 peer.set_remote_epoch(new_remote_epoch);
             }

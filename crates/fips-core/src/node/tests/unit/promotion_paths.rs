@@ -854,8 +854,8 @@ async fn authenticated_packet_rotates_configured_static_path_to_observed_source(
     );
     assert_eq!(
         active.idle_time(2_500),
-        1_500,
-        "suppressed alternate-path bookkeeping must not refresh direct-path liveness"
+        500,
+        "suppressed alternate-path rotation should still refresh authenticated same-peer liveness"
     );
 
     node.mark_session_direct_path_degraded(peer_node_addr, 3_000);

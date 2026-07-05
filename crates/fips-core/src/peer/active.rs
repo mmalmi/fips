@@ -621,6 +621,10 @@ impl ActivePeer {
         self.fmp_mmp_is_initiator
     }
 
+    pub(crate) fn set_fmp_mmp_is_initiator(&mut self, is_initiator: bool) {
+        self.fmp_mmp_is_initiator = is_initiator;
+    }
+
     /// When this peer was authenticated.
     pub fn authenticated_at(&self) -> u64 {
         self.authenticated_at
