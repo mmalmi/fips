@@ -1,6 +1,57 @@
 use super::*;
+use crate::transport::{TransportAddr, TransportId};
 
 impl Node {
+    fn source_addr_for_outbound_msg2(
+        &self,
+        link_id: &LinkId,
+        received_transport_id: TransportId,
+        observed_addr: &TransportAddr,
+    ) -> TransportAddr {
+        let Some(conn) = self.peers.get_connection(link_id) else {
+            return observed_addr.clone();
+        };
+        let Some(dial_addr) = conn.source_addr() else {
+            return observed_addr.clone();
+        };
+        if dial_addr == observed_addr {
+            return observed_addr.clone();
+        }
+        let Some(peer_identity) = conn.expected_identity() else {
+            return observed_addr.clone();
+        };
+        let dial_transport_id = conn.transport_id().unwrap_or(received_transport_id);
+        let Some(transport) = self.transports.get(&dial_transport_id) else {
+            return observed_addr.clone();
+        };
+        if transport.transport_type().name != "udp" {
+            return observed_addr.clone();
+        }
+
+        let peer_node_addr = *peer_identity.node_addr();
+        if self
+            .configured_static_udp_path_for_peer(&peer_node_addr, dial_transport_id)
+            .as_ref()
+            != Some(dial_addr)
+        {
+            return observed_addr.clone();
+        }
+
+        let Some(dial_priority) =
+            self.configured_path_priority(&peer_node_addr, dial_transport_id, dial_addr)
+        else {
+            return observed_addr.clone();
+        };
+        let observed_priority =
+            self.configured_path_priority(&peer_node_addr, received_transport_id, observed_addr);
+
+        if observed_priority.map_or(true, |priority| dial_priority <= priority) {
+            dial_addr.clone()
+        } else {
+            observed_addr.clone()
+        }
+    }
+
     /// Handle handshake message 2 (phase 0x2).
     ///
     /// This completes an outbound handshake we initiated.
@@ -189,6 +240,9 @@ impl Node {
             return;
         }
 
+        let msg2_source_addr =
+            self.source_addr_for_outbound_msg2(&link_id, packet.transport_id, &packet.remote_addr);
+
         let (peer_identity, our_index) = {
             let conn = self.peers.get_connection_mut(&link_id).unwrap();
 
@@ -204,7 +258,7 @@ impl Node {
             }
 
             conn.set_their_index(header.sender_idx);
-            conn.set_source_addr(packet.remote_addr.clone());
+            conn.set_source_addr(msg2_source_addr);
 
             let peer_identity = match conn.expected_identity() {
                 Some(id) => *id,
