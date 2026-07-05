@@ -48,7 +48,7 @@ mod platform {
     #[cfg(target_os = "macos")]
     const SEND_BATCH_SIZE: usize = 64;
     #[cfg(target_os = "linux")]
-    const UDP_GSO_MAX_SEGMENTS: usize = 64;
+    const UDP_GSO_MAX_SEGMENTS: usize = 16;
     #[cfg(target_os = "linux")]
     const UDP_GSO_MAX_IOV: usize =
         UDP_GSO_MAX_SEGMENTS * crate::transport::udp::UDP_PAYLOAD_MAX_SLICES;
