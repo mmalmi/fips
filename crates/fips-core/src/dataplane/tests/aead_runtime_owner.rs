@@ -243,7 +243,7 @@
     }
 
     #[test]
-    fn aead_worker_pool_splits_large_open_owner_run_into_completion_batches() {
+    fn aead_worker_pool_keeps_large_open_owner_run_in_one_completion_batch() {
         let owner = fmp_owner(714);
         let open_key = 25;
         let mut mover = Dataplane::new(AdmissionConfig::new(4, 32));
@@ -274,7 +274,7 @@
         batch_runs.sort_by_key(|(order, _)| *order);
         assert_eq!(
             batch_runs,
-            vec![(Some(OrderToken(0)), 8), (Some(OrderToken(8)), 8)]
+            vec![(Some(OrderToken(0)), 16)]
         );
 
         let mut retired = Vec::new();

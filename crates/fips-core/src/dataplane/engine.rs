@@ -1182,10 +1182,9 @@ fn dataplane_ingress_owner_shard_dispatch_limit(
 }
 
 fn dataplane_owner_shard_index(owner: OwnerId, shards: usize) -> usize {
-    use std::hash::{Hash, Hasher};
-
     let shards = shards.max(1);
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    owner.node_addr().hash(&mut hasher);
-    (hasher.finish() as usize) % shards
+    // NodeAddr is SHA-256-derived, so its bytes are already suitable for sharding.
+    let node = u128::from_le_bytes(*owner.node_addr().as_bytes());
+    let mixed = node ^ (node >> 64);
+    (mixed as usize) % shards
 }
