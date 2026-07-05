@@ -869,3 +869,68 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
     assert_eq!(active.our_index(), Some(our_index));
     assert_eq!(active.their_index(), Some(their_index));
 }
+
+#[tokio::test]
+async fn handle_msg2_keeps_outbound_static_destination_when_reply_source_differs() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(11);
+    let configured_addr = TransportAddr::from_string("192.0.2.5:52528");
+    let observed_reply_addr = TransportAddr::from_string("198.51.100.91:51830");
+    node.config.peers = vec![auto_connect_peer(
+        peer_identity.npub().to_string(),
+        configured_addr.as_str().unwrap(),
+    )];
+
+    let mut conn = PeerConnection::outbound(link_id, peer_identity, 2_000);
+    let msg1 = conn
+        .start_handshake(node.identity.keypair(), node.startup_epoch, 2_000)
+        .unwrap();
+    let our_index = node.index_allocator.allocate().unwrap();
+    conn.set_our_index(our_index);
+    conn.set_transport_id(transport_id);
+    conn.set_source_addr(configured_addr.clone());
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            configured_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.peers.insert_connection(link_id, conn);
+    node.pending_outbound
+        .insert((transport_id, our_index.as_u32()), link_id);
+
+    let mut responder = PeerConnection::inbound(LinkId::new(99), 2_000);
+    let noise_msg2 = responder
+        .receive_handshake_init(peer_full.keypair(), [0x11; 8], &msg1, 2_000)
+        .unwrap();
+    let their_index = SessionIndex::new(77);
+    let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
+    let packet =
+        ReceivedPacket::with_timestamp(transport_id, observed_reply_addr.clone(), wire_msg2, 2_100);
+
+    node.handle_msg2(packet).await;
+
+    assert_eq!(node.connection_count(), 0);
+    assert!(node.pending_outbound.is_empty());
+
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), link_id);
+    assert_eq!(active.transport_id(), Some(transport_id));
+    assert_eq!(
+        active.current_addr(),
+        Some(&configured_addr),
+        "an authenticated asymmetric reply source must not replace the outbound static destination"
+    );
+    assert_ne!(active.current_addr(), Some(&observed_reply_addr));
+    assert_eq!(active.our_index(), Some(our_index));
+    assert_eq!(active.their_index(), Some(their_index));
+}
