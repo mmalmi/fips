@@ -362,6 +362,7 @@ pub(crate) struct RetiredOutputs {
 pub(crate) enum RetiredOutput {
     Packet(RetiredPacket),
     EndpointDataBatch(DataplaneEndpointDataBatch),
+    FspTunPacketBatch(DataplaneFspTunPacketBatch),
 }
 
 impl RetiredOutputs {
@@ -407,6 +408,22 @@ impl RetiredOutputs {
         match self.items.last_mut() {
             Some(RetiredOutput::EndpointDataBatch(last)) => last.extend(batch),
             _ => self.items.push(RetiredOutput::EndpointDataBatch(batch)),
+        }
+    }
+
+    pub(crate) fn push_fsp_tun_packet(&mut self, ingress: DataplaneFspTunPacketIngress) {
+        match self.items.last_mut() {
+            Some(RetiredOutput::FspTunPacketBatch(batch)) => batch.push(ingress),
+            _ => self.items.push(RetiredOutput::FspTunPacketBatch(
+                DataplaneFspTunPacketBatch::from_ingress(ingress),
+            )),
+        }
+    }
+
+    pub(crate) fn push_fsp_tun_packet_batch(&mut self, batch: DataplaneFspTunPacketBatch) {
+        match self.items.last_mut() {
+            Some(RetiredOutput::FspTunPacketBatch(last)) => last.extend(batch),
+            _ => self.items.push(RetiredOutput::FspTunPacketBatch(batch)),
         }
     }
 
