@@ -828,6 +828,10 @@ fn send_completion_batches_to_shards(
     if completion_txs.is_empty() {
         return Err(());
     }
+    if batches.len() == 1 {
+        let rx_idx = batches[0].owner_shard() % completion_txs.len();
+        return completion_txs[rx_idx].send(batches).map_err(|_| ());
+    }
 
     let mut grouped: Vec<(usize, Vec<CryptoCompletionBatch>)> = Vec::new();
     for batch in batches {
@@ -877,13 +881,19 @@ fn execute_open_run_job(work: Vec<CryptoWork>, cipher: AeadKey) -> Vec<CryptoCom
     }
     let _timer =
         crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen);
-    let mut completions = Vec::with_capacity(work.len());
+    let mut work = work.into_iter();
+    let first = work.next().expect("open run work is non-empty");
+    let mut batch = CryptoCompletionBatch::from_completion(execute_open_crypto_work(
+        first,
+        &cipher,
+    ));
+    batch.completions.reserve(work.size_hint().0);
     for work in work {
-        completions.push(execute_open_crypto_work(work, &cipher));
+        let completion = execute_open_crypto_work(work, &cipher);
+        debug_assert!(batch.matches(&completion));
+        batch.completions.push(completion);
     }
-    CryptoCompletionBatch::from_completion_run(completions)
-        .into_iter()
-        .collect()
+    vec![batch]
 }
 
 fn dataplane_open_run_bulk_count(work: &[CryptoWork]) -> usize {
