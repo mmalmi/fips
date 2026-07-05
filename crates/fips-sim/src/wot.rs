@@ -3,6 +3,7 @@ use fips_core::discovery::nostr::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, NostrDiscovery, OverlayAdvert,
     OverlayEndpointAdvert, OverlayTransportKind, PROTOCOL_VERSION,
 };
+use fips_core::peer_rating::compute_peer_rating;
 use nostr::nips::nip19::ToBech32;
 use nostr::prelude::{
     Alphabet, Event, EventBuilder, Filter, JsonUtil, Kind, SingleLetterTag, Tag, TagKind, Timestamp,
@@ -241,6 +242,12 @@ pub struct WotRatingExchangeStats {
     pub indexed_events: usize,
     pub history_queries: usize,
     pub history_events_returned: usize,
+    pub probe_requests: usize,
+    pub probe_valid_payloads: usize,
+    pub probe_invalid_payloads: usize,
+    pub probe_useful_bytes: usize,
+    pub probe_junk_bytes: usize,
+    pub probe_low_throughput_valid_payloads: usize,
     pub pubsub_published_events: usize,
     pub pubsub_inventory_messages: usize,
     pub pubsub_want_messages: usize,
@@ -648,10 +655,32 @@ impl WotAdmissionSimulation {
         degradation_seen: bool,
     ) {
         for peer_id in selected_peers {
-            let Some(peer) = self.peer_by_id(peer_id) else {
+            let Some(peer) = self.peer_by_id(peer_id).cloned() else {
                 continue;
             };
-            let (rating, source) = observed_rating_for_profile(peer.profile, degradation_seen);
+            let observation = observed_rating_for_probe(&peer, degradation_seen, created_at);
+            self.exchange.stats.probe_requests += 1;
+            if observation.valid_payload {
+                self.exchange.stats.probe_valid_payloads += 1;
+                self.exchange.stats.probe_useful_bytes = self
+                    .exchange
+                    .stats
+                    .probe_useful_bytes
+                    .saturating_add(observation.useful_bytes);
+            } else {
+                self.exchange.stats.probe_invalid_payloads += 1;
+                self.exchange.stats.probe_junk_bytes = self
+                    .exchange
+                    .stats
+                    .probe_junk_bytes
+                    .saturating_add(observation.junk_bytes);
+            }
+            if observation.low_throughput_valid_payload {
+                self.exchange.stats.probe_low_throughput_valid_payloads += 1;
+            }
+            let Some(rating) = observation.rating else {
+                continue;
+            };
             if self
                 .observed_peer_ratings
                 .get(peer_id)
@@ -670,7 +699,7 @@ impl WotAdmissionSimulation {
                         &self.config.rating_scope,
                         rating,
                         created_at,
-                        source,
+                        observation.source,
                     ),
                 )
                 .await;
@@ -1022,19 +1051,147 @@ fn peer(id: String, profile: WotPeerProfile, advertised_at: u64) -> WotPeerSpec 
     }
 }
 
-fn observed_rating_for_profile(
+#[derive(Debug, Clone)]
+struct WotProbeObservation {
+    rating: Option<i64>,
+    source: WotRatingEventSource,
+    valid_payload: bool,
+    useful_bytes: usize,
+    junk_bytes: usize,
+    low_throughput_valid_payload: bool,
+}
+
+#[derive(Debug, Clone)]
+struct WotProbeTransfer {
+    received_payload: Vec<u8>,
+    srtt_ms: f64,
+    goodput_bps: f64,
+    smoothed_loss: f64,
+    smoothed_etx: f64,
+    delivery_ratio: f64,
+    decrypt_failures: u64,
+    replay_suppressed: u64,
+}
+
+fn observed_rating_for_probe(
+    peer: &WotPeerSpec,
+    degradation_seen: bool,
+    created_at: u64,
+) -> WotProbeObservation {
+    let expected_payload = expected_probe_payload(peer, created_at);
+    let transfer = probe_transfer(peer.profile, degradation_seen, &expected_payload);
+    let valid_payload = transfer.received_payload == expected_payload;
+    let useful_bytes = valid_payload
+        .then_some(transfer.received_payload.len())
+        .unwrap_or_default();
+    let junk_bytes = (!valid_payload)
+        .then_some(transfer.received_payload.len())
+        .unwrap_or_default();
+    let low_throughput_valid_payload = valid_payload && transfer.goodput_bps < 1_000_000.0;
+    let rating_peer = rating_peer_value(peer, &transfer, valid_payload);
+    let rating = compute_peer_rating(&rating_peer).map(|health| health.score);
+    let source = if peer.profile == WotPeerProfile::Degrading && degradation_seen && !valid_payload
+    {
+        WotRatingEventSource::LocalDegradation
+    } else {
+        WotRatingEventSource::LocalProbe
+    };
+    WotProbeObservation {
+        rating,
+        source,
+        valid_payload,
+        useful_bytes,
+        junk_bytes,
+        low_throughput_valid_payload,
+    }
+}
+
+fn expected_probe_payload(peer: &WotPeerSpec, created_at: u64) -> Vec<u8> {
+    let prefix = format!("fips-wot-probe|{}|{created_at}|", peer.id);
+    super::fixed_payload(prefix.as_bytes(), 1024)
+}
+
+fn probe_transfer(
     profile: WotPeerProfile,
     degradation_seen: bool,
-) -> (i64, WotRatingEventSource) {
+    expected_payload: &[u8],
+) -> WotProbeTransfer {
     match profile {
-        WotPeerProfile::Reliable => (90, WotRatingEventSource::LocalProbe),
-        WotPeerProfile::BackupReliable => (70, WotRatingEventSource::LocalProbe),
-        WotPeerProfile::Newcomer => (85, WotRatingEventSource::LocalProbe),
-        WotPeerProfile::Degrading if degradation_seen => {
-            (0, WotRatingEventSource::LocalDegradation)
-        }
-        WotPeerProfile::Degrading => (95, WotRatingEventSource::LocalProbe),
-        WotPeerProfile::Bad => (0, WotRatingEventSource::LocalProbe),
+        WotPeerProfile::Reliable => valid_probe_transfer(expected_payload, 24.0, 8_000_000.0),
+        WotPeerProfile::BackupReliable => valid_probe_transfer(expected_payload, 95.0, 120_000.0),
+        WotPeerProfile::Newcomer => valid_probe_transfer(expected_payload, 80.0, 80_000.0),
+        WotPeerProfile::Degrading if degradation_seen => invalid_probe_transfer(expected_payload),
+        WotPeerProfile::Degrading => valid_probe_transfer(expected_payload, 30.0, 6_000_000.0),
+        WotPeerProfile::Bad => invalid_probe_transfer(expected_payload),
+    }
+}
+
+fn valid_probe_transfer(
+    expected_payload: &[u8],
+    srtt_ms: f64,
+    goodput_bps: f64,
+) -> WotProbeTransfer {
+    WotProbeTransfer {
+        received_payload: expected_payload.to_vec(),
+        srtt_ms,
+        goodput_bps,
+        smoothed_loss: 0.001,
+        smoothed_etx: if srtt_ms <= 50.0 { 1.01 } else { 1.10 },
+        delivery_ratio: 0.999,
+        decrypt_failures: 0,
+        replay_suppressed: 0,
+    }
+}
+
+fn invalid_probe_transfer(expected_payload: &[u8]) -> WotProbeTransfer {
+    WotProbeTransfer {
+        received_payload: junk_probe_payload(expected_payload),
+        srtt_ms: 0.0,
+        goodput_bps: 0.0,
+        smoothed_loss: 0.0,
+        smoothed_etx: 1.0,
+        delivery_ratio: 0.0,
+        decrypt_failures: 4,
+        replay_suppressed: 6,
+    }
+}
+
+fn junk_probe_payload(expected_payload: &[u8]) -> Vec<u8> {
+    expected_payload.iter().map(|byte| byte ^ 0xA5).collect()
+}
+
+fn rating_peer_value(
+    peer: &WotPeerSpec,
+    transfer: &WotProbeTransfer,
+    valid_payload: bool,
+) -> serde_json::Value {
+    let packet_count = if transfer.received_payload.is_empty() {
+        0
+    } else {
+        1
+    };
+    if valid_payload {
+        serde_json::json!({
+            "npub": peer.id,
+            "stats": {"packets_sent": 1, "packets_recv": packet_count},
+            "mmp": {
+                "smoothed_loss": transfer.smoothed_loss,
+                "smoothed_etx": transfer.smoothed_etx,
+                "delivery_ratio_forward": transfer.delivery_ratio,
+                "delivery_ratio_reverse": transfer.delivery_ratio,
+                "srtt_ms": transfer.srtt_ms,
+                "goodput_bps": transfer.goodput_bps
+            },
+            "replay_suppressed": transfer.replay_suppressed,
+            "consecutive_decrypt_failures": transfer.decrypt_failures
+        })
+    } else {
+        serde_json::json!({
+            "npub": peer.id,
+            "stats": {"packets_sent": 1, "packets_recv": packet_count},
+            "replay_suppressed": transfer.replay_suppressed,
+            "consecutive_decrypt_failures": transfer.decrypt_failures
+        })
     }
 }
 
@@ -1358,14 +1515,14 @@ mod tests {
             after_probe,
             &degrading,
             true,
-            Some(90),
+            Some(100),
             WotAdmissionReason::TrustedRating,
         );
         assert_decision(
             after_probe,
             &newcomer,
             true,
-            Some(70),
+            Some(68),
             WotAdmissionReason::TrustedRating,
         );
         assert_decision(
@@ -1411,6 +1568,12 @@ mod tests {
         assert_eq!(report.exchange.local_published_events, 5);
         assert_eq!(report.exchange.indexed_events, 5);
         assert_eq!(report.exchange.history_queries, 3);
+        assert_eq!(report.exchange.probe_requests, 6);
+        assert_eq!(report.exchange.probe_valid_payloads, 4);
+        assert_eq!(report.exchange.probe_invalid_payloads, 2);
+        assert_eq!(report.exchange.probe_useful_bytes, 4 * 1024);
+        assert_eq!(report.exchange.probe_junk_bytes, 2 * 1024);
+        assert_eq!(report.exchange.probe_low_throughput_valid_payloads, 2);
         assert_eq!(report.rating_events.len(), 5);
         assert!(
             report
@@ -1499,6 +1662,21 @@ mod tests {
                 .iter()
                 .all(|event| event.source != WotRatingEventSource::UntrustedSpam)
         );
+    }
+
+    #[test]
+    fn low_throughput_valid_probe_is_not_downvoted() {
+        let peer = peer(
+            peer_npub(WotPeerProfile::Newcomer),
+            WotPeerProfile::Newcomer,
+            100,
+        );
+        let observation = observed_rating_for_probe(&peer, false, 123);
+
+        assert!(observation.valid_payload);
+        assert!(observation.low_throughput_valid_payload);
+        assert_eq!(observation.rating, Some(84));
+        assert_eq!(normalize_rating_score(84, 0, 100), Some(68));
     }
 
     #[tokio::test]

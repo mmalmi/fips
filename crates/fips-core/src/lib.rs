@@ -21,6 +21,7 @@ pub mod mmp;
 pub mod node;
 pub mod noise;
 pub mod peer;
+pub mod peer_rating;
 pub(crate) mod perf_profile;
 pub mod protocol;
 pub(crate) mod time;
