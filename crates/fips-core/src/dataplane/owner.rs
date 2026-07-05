@@ -2139,11 +2139,24 @@ impl OwnerState {
         retired: &mut RetiredOutputs,
         compact_endpoint_data: bool,
     ) {
-        if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
+        let output = if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
             match DataplaneFspEndpointDataIngress::from_output(output) {
                 Ok(ingress) => {
                     self.record_retired_endpoint_data_ingress(&ingress);
                     retired.push_endpoint_data_batch(ingress);
+                    return;
+                }
+                Err(output) => output,
+            }
+        } else {
+            output
+        };
+
+        if matches!(output.target(), OutputTarget::SessionPayload { .. }) {
+            match DataplaneFspTunPacketIngress::from_output(output) {
+                Ok(ingress) => {
+                    self.record_retired_fsp_tun_packet_ingress(&ingress);
+                    retired.push_fsp_tun_packet(ingress);
                 }
                 Err(output) => retired.push_output(output),
             }
