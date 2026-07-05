@@ -2017,7 +2017,6 @@ impl OwnerState {
         }
 
         let mut endpoint_data_batch = None;
-        let mut tun_packet_batch = None;
         let mut endpoint_packets = 0usize;
         for completion in batch.into_completions() {
             debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
@@ -2029,7 +2028,6 @@ impl OwnerState {
 
             if completion.reservation.generation != self.generation {
                 flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
-                flush_retired_fsp_tun_packet_batch(retired, &mut tun_packet_batch);
                 retired.push_drop(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::StaleCompletionGeneration,
@@ -2047,7 +2045,6 @@ impl OwnerState {
             let output = if compact_endpoint_data {
                 match DataplaneFspEndpointDataIngress::from_output(output) {
                     Ok(ingress) => {
-                        flush_retired_fsp_tun_packet_batch(retired, &mut tun_packet_batch);
                         self.record_retired_endpoint_data_ingress(&ingress);
                         endpoint_packets = endpoint_packets.saturating_add(ingress.len());
                         match &mut endpoint_data_batch {
@@ -2065,27 +2062,10 @@ impl OwnerState {
                 output
             };
 
-            match DataplaneFspTunPacketIngress::from_output(output) {
-                Ok(ingress) => {
-                    flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
-                    self.record_retired_fsp_tun_packet_ingress(&ingress);
-                    match &mut tun_packet_batch {
-                        Some(batch) => batch.push(ingress),
-                        None => {
-                            tun_packet_batch =
-                                Some(DataplaneFspTunPacketBatch::from_ingress(ingress));
-                        }
-                    }
-                }
-                Err(output) => {
-                    flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
-                    flush_retired_fsp_tun_packet_batch(retired, &mut tun_packet_batch);
-                    retired.push_output(output);
-                }
-            }
+            flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
+            retired.push_output(output);
         }
         flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
-        flush_retired_fsp_tun_packet_batch(retired, &mut tun_packet_batch);
         crate::perf_profile::record_dataplane_established_fsp_data_retire_run(
             endpoint_packets,
         );
@@ -2171,21 +2151,6 @@ impl OwnerState {
         );
     }
 
-    fn record_retired_fsp_tun_packet_ingress(&mut self, ingress: &DataplaneFspTunPacketIngress) {
-        let commit = ingress.commit();
-        if self.owner != OwnerId::fsp_node(commit.source_addr()) {
-            return;
-        }
-        let _ = self.record_authenticated_fsp_session(
-            commit.previous_hop_addr(),
-            ingress.msg_type,
-            ingress.body_len,
-            ingress.receive_sync,
-            ingress.activity_tick,
-            std::time::Instant::now(),
-        );
-    }
-
     fn reserve_class(&mut self, class: PacketClass) {
         self.in_flight = self.in_flight.saturating_add(1);
         if class.lane() == Lane::Bulk {
@@ -2210,15 +2175,6 @@ fn flush_retired_endpoint_data_batch(
 ) {
     if let Some(batch) = endpoint_data_batch.take() {
         retired.append_endpoint_data_batch(batch);
-    }
-}
-
-fn flush_retired_fsp_tun_packet_batch(
-    retired: &mut RetiredOutputs,
-    tun_packet_batch: &mut Option<DataplaneFspTunPacketBatch>,
-) {
-    if let Some(batch) = tun_packet_batch.take() {
-        retired.push_fsp_tun_packet_batch(batch);
     }
 }
 
