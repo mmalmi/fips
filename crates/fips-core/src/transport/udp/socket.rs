@@ -56,7 +56,7 @@ mod platform {
     const UDP_GSO_MAX_PAYLOAD: usize = u16::MAX as usize - 8;
     #[cfg(target_os = "linux")]
     static UDP_GSO_DISABLED: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
+        std::sync::atomic::AtomicBool::new(true);
 
     // Adapted from Apple's xnu bsd/sys/socket_private.h layout, also used by
     // quinn-udp's `fast-apple-datapath` implementation. libc exposes the
