@@ -524,12 +524,18 @@ async fn flush_dataplane_udp_send_batch(
     if packets.is_empty() {
         return;
     }
+    #[cfg(target_os = "linux")]
+    let packet_count = packets.len();
     let _timer = crate::perf_profile::Timer::start(
         crate::perf_profile::Stage::DataplaneTransportSendWorker,
     );
     let failed = snapshot.send_payload_batch_to(packets, socket_addr).await;
     record_dataplane_udp_send_failed(failed);
     packets.clear();
+    #[cfg(target_os = "linux")]
+    if packet_count >= TRANSPORT_SEND_BATCH_PACKETS {
+        tokio::task::yield_now().await;
+    }
 }
 
 fn drop_transport_plan_group(
