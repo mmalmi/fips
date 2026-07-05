@@ -1,17 +1,25 @@
 use fips_core::config::NostrDiscoveryConfig;
-use fips_core::discovery::nostr::NostrDiscovery;
+use fips_core::discovery::nostr::{
+    ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, NostrDiscovery, OverlayAdvert,
+    OverlayEndpointAdvert, OverlayTransportKind, PROTOCOL_VERSION,
+};
 use nostr::nips::nip19::ToBech32;
 use nostr::prelude::{
-    Alphabet, Event, EventBuilder, Filter, Kind, SingleLetterTag, Tag, Timestamp,
+    Alphabet, Event, EventBuilder, Filter, JsonUtil, Kind, SingleLetterTag, Tag, TagKind, Timestamp,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const DEFAULT_SCOPE: &str = "fips.peer";
 const RATING_FACT_KIND: u16 = 7368;
 const TRUSTED_RATING_SIGNER_SEED: u64 = 1;
 const LOCAL_RATER_SEED: u64 = 2;
 const HISTORIC_RATER_SEED: u64 = 3;
+const LOCAL_PUBSUB_NODE: usize = 0;
+const FIRST_REMOTE_PUBSUB_NODE: usize = 1;
+const DEFAULT_PUBSUB_NODE_COUNT: usize = 128;
+const DEFAULT_DISCOVERY_APP: &str = "fips-overlay-v1";
+const WOT_NOSTR_EVENT_STREAM: &str = "nostr.events.v1";
 
 /// Configuration for the deterministic open-discovery WoT admission scenario.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,28 +51,40 @@ impl Default for WotAdmissionSimConfig {
     }
 }
 
-/// Small inv/want-style accounting model for local rating fact publication.
+/// Small in-process inv/want pubsub model for local rating facts and peer ads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WotRatingPubsubConfig {
-    /// Nodes that hear inventory for each locally published rating fact.
+    /// Nodes in the decentralized pubsub graph, including the local node.
     pub peer_count: usize,
-    /// Interested peers that send wants and receive the full event payload.
+    /// Interested non-origin peers that send wants and receive event payloads.
     pub subscriber_count: usize,
+    /// FIPS entry nodes known by the local node before decentralized discovery.
+    pub known_entry_nodes: usize,
+    /// Deterministic overlay degree used by remote pubsub nodes.
+    pub gossip_degree: usize,
+    /// Maximum inventory messages processed during one virtual-clock tick.
+    pub max_messages_per_tick: usize,
+    /// Virtual milliseconds represented by one pubsub scheduler tick.
+    pub virtual_tick_ms: u64,
     /// Untrusted rating spam seen alongside each trusted local rating publish.
     pub spam_events_per_publish: usize,
     /// Approximate bytes for one inventory notice.
     pub inventory_bytes: usize,
     /// Approximate bytes for one want request.
     pub want_bytes: usize,
-    /// Approximate bytes for one signed rating fact event payload.
+    /// Fallback estimate retained for reports; signed event JSON length is used on publish.
     pub payload_bytes: usize,
 }
 
 impl Default for WotRatingPubsubConfig {
     fn default() -> Self {
         Self {
-            peer_count: 8,
-            subscriber_count: 4,
+            peer_count: DEFAULT_PUBSUB_NODE_COUNT,
+            subscriber_count: DEFAULT_PUBSUB_NODE_COUNT - 1,
+            known_entry_nodes: 2,
+            gossip_degree: 8,
+            max_messages_per_tick: 256,
+            virtual_tick_ms: 25,
             spam_events_per_publish: 8,
             inventory_bytes: 96,
             want_bytes: 64,
@@ -226,10 +246,270 @@ pub struct WotRatingExchangeStats {
     pub pubsub_inventory_messages: usize,
     pub pubsub_want_messages: usize,
     pub pubsub_delivered_events: usize,
+    pub pubsub_local_delivered_events: usize,
     pub pubsub_inv_want_bytes: usize,
     pub pubsub_flood_bytes: usize,
+    pub pubsub_payload_bytes: usize,
+    pub pubsub_payload_events_decoded: usize,
+    pub pubsub_payload_decode_failures: usize,
+    pub pubsub_duplicate_inventories: usize,
+    pub pubsub_virtual_ticks: u64,
+    pub pubsub_virtual_time_ms: u64,
     pub pubsub_spam_events_seen: usize,
     pub pubsub_spam_events_dropped: usize,
+    pub pubsub_peer_advert_events_published: usize,
+    pub pubsub_peer_advert_events_cached: usize,
+    pub pubsub_peer_advert_events_rejected: usize,
+}
+
+/// Peer-advert discovery result from the decentralized pubsub phase.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WotPeerDiscoveryPubsubReport {
+    pub node_count: usize,
+    pub known_entry_nodes: usize,
+    pub tracked_peer_count: usize,
+    pub advert_events_published: usize,
+    pub advert_events_delivered_to_local: usize,
+    pub advert_events_cached: usize,
+    pub cached_open_discovery_candidates: usize,
+    pub tracked_candidates_cached: usize,
+    pub virtual_ticks: u64,
+    pub virtual_time_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WotPubsubEventSource {
+    Rating(WotRatingEventSource),
+    PeerAdvert,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WotPubsubDelivery {
+    stream_id: String,
+    seq: u64,
+    origin_node: usize,
+    subscriber_node: usize,
+    delivered_at_tick: u64,
+    source: WotPubsubEventSource,
+    payload: Vec<u8>,
+}
+
+impl WotPubsubDelivery {
+    fn rating_source(&self) -> WotRatingEventSource {
+        match self.source {
+            WotPubsubEventSource::Rating(source) => source,
+            WotPubsubEventSource::PeerAdvert => WotRatingEventSource::UntrustedSpam,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WotPubsubInventory {
+    from: usize,
+    to: usize,
+    tick: u64,
+}
+
+#[derive(Debug, Clone)]
+struct WotDecentralizedPubsub {
+    adjacency: Vec<Vec<usize>>,
+    next_seq: u64,
+    clock_tick: u64,
+    known_entry_nodes: usize,
+}
+
+impl WotDecentralizedPubsub {
+    fn new(config: WotRatingPubsubConfig) -> Self {
+        let node_count = config.peer_count.max(2);
+        let remote_count = node_count - 1;
+        let known_entry_nodes = config.known_entry_nodes.clamp(1, remote_count.min(3));
+        let gossip_degree = config
+            .gossip_degree
+            .clamp(2, remote_count.saturating_sub(1).max(2));
+        let mut edges = BTreeSet::new();
+
+        for entry in FIRST_REMOTE_PUBSUB_NODE..=known_entry_nodes {
+            insert_pubsub_edge(&mut edges, LOCAL_PUBSUB_NODE, entry);
+        }
+
+        let ring_fanout = (gossip_degree / 2).max(1);
+        for node in FIRST_REMOTE_PUBSUB_NODE..node_count {
+            for offset in 1..=ring_fanout {
+                let peer = FIRST_REMOTE_PUBSUB_NODE
+                    + ((node - FIRST_REMOTE_PUBSUB_NODE + offset) % remote_count);
+                insert_pubsub_edge(&mut edges, node, peer);
+            }
+            let chord = FIRST_REMOTE_PUBSUB_NODE + ((node * 7 + 3) % remote_count);
+            insert_pubsub_edge(&mut edges, node, chord);
+        }
+
+        let mut adjacency = vec![Vec::new(); node_count];
+        for (left, right) in edges {
+            adjacency[left].push(right);
+            adjacency[right].push(left);
+        }
+        for peers in &mut adjacency {
+            peers.sort_unstable();
+        }
+
+        Self {
+            adjacency,
+            next_seq: 1,
+            clock_tick: 0,
+            known_entry_nodes,
+        }
+    }
+
+    fn remote_node_count(&self) -> usize {
+        self.adjacency.len().saturating_sub(1)
+    }
+
+    fn known_entry_nodes(&self) -> usize {
+        self.known_entry_nodes
+    }
+
+    fn publish_event(
+        &mut self,
+        config: &WotRatingPubsubConfig,
+        origin_node: usize,
+        event: &Event,
+        source: WotPubsubEventSource,
+        stats: &mut WotRatingExchangeStats,
+    ) -> Vec<WotPubsubDelivery> {
+        let node_count = self.adjacency.len().max(2);
+        let origin_node = origin_node.min(node_count - 1);
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+        stats.pubsub_published_events = stats.pubsub_published_events.saturating_add(1);
+
+        let payload = event.as_json().into_bytes();
+        let payload_len = payload.len().max(1);
+        let mut deliveries = Vec::new();
+        let mut seen = BTreeSet::from([origin_node]);
+        let mut queue = VecDeque::new();
+        let mut tick_load = BTreeMap::new();
+
+        if origin_node == LOCAL_PUBSUB_NODE {
+            stats.pubsub_local_delivered_events =
+                stats.pubsub_local_delivered_events.saturating_add(1);
+            deliveries.push(WotPubsubDelivery {
+                stream_id: WOT_NOSTR_EVENT_STREAM.to_string(),
+                seq,
+                origin_node,
+                subscriber_node: LOCAL_PUBSUB_NODE,
+                delivered_at_tick: self.clock_tick,
+                source,
+                payload: payload.clone(),
+            });
+        }
+
+        for peer in self.adjacency[origin_node].clone() {
+            schedule_pubsub_inventory(
+                &mut queue,
+                &mut tick_load,
+                config.max_messages_per_tick,
+                WotPubsubInventory {
+                    from: origin_node,
+                    to: peer,
+                    tick: self.clock_tick.saturating_add(1),
+                },
+            );
+        }
+
+        let subscriber_limit = config.subscriber_count.min(node_count.saturating_sub(1));
+        while let Some(inventory) = queue.pop_front() {
+            self.clock_tick = self.clock_tick.max(inventory.tick);
+            stats.pubsub_inventory_messages = stats.pubsub_inventory_messages.saturating_add(1);
+            stats.pubsub_inv_want_bytes = stats
+                .pubsub_inv_want_bytes
+                .saturating_add(config.inventory_bytes);
+            stats.pubsub_flood_bytes = stats.pubsub_flood_bytes.saturating_add(payload_len);
+
+            if !seen.insert(inventory.to) {
+                stats.pubsub_duplicate_inventories =
+                    stats.pubsub_duplicate_inventories.saturating_add(1);
+                continue;
+            }
+
+            let interested_receivers = seen.len().saturating_sub(1);
+            if interested_receivers > subscriber_limit && inventory.to != LOCAL_PUBSUB_NODE {
+                continue;
+            }
+
+            stats.pubsub_want_messages = stats.pubsub_want_messages.saturating_add(1);
+            stats.pubsub_delivered_events = stats.pubsub_delivered_events.saturating_add(1);
+            stats.pubsub_payload_bytes = stats.pubsub_payload_bytes.saturating_add(payload_len);
+            stats.pubsub_inv_want_bytes = stats
+                .pubsub_inv_want_bytes
+                .saturating_add(config.want_bytes.saturating_add(payload_len));
+
+            if inventory.to == LOCAL_PUBSUB_NODE {
+                stats.pubsub_local_delivered_events =
+                    stats.pubsub_local_delivered_events.saturating_add(1);
+                deliveries.push(WotPubsubDelivery {
+                    stream_id: WOT_NOSTR_EVENT_STREAM.to_string(),
+                    seq,
+                    origin_node,
+                    subscriber_node: LOCAL_PUBSUB_NODE,
+                    delivered_at_tick: self.clock_tick,
+                    source,
+                    payload: payload.clone(),
+                });
+            }
+
+            for peer in self.adjacency[inventory.to].clone() {
+                if peer == inventory.from {
+                    continue;
+                }
+                schedule_pubsub_inventory(
+                    &mut queue,
+                    &mut tick_load,
+                    config.max_messages_per_tick,
+                    WotPubsubInventory {
+                        from: inventory.to,
+                        to: peer,
+                        tick: self.clock_tick.saturating_add(1),
+                    },
+                );
+            }
+        }
+
+        stats.pubsub_virtual_ticks = stats.pubsub_virtual_ticks.max(self.clock_tick);
+        stats.pubsub_virtual_time_ms = stats
+            .pubsub_virtual_ticks
+            .saturating_mul(config.virtual_tick_ms);
+        deliveries
+    }
+}
+
+fn insert_pubsub_edge(edges: &mut BTreeSet<(usize, usize)>, left: usize, right: usize) {
+    if left == right {
+        return;
+    }
+    let edge = if left < right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    edges.insert(edge);
+}
+
+fn schedule_pubsub_inventory(
+    queue: &mut VecDeque<WotPubsubInventory>,
+    tick_load: &mut BTreeMap<u64, usize>,
+    max_messages_per_tick: usize,
+    mut inventory: WotPubsubInventory,
+) {
+    let capacity = max_messages_per_tick.max(1);
+    loop {
+        let load = tick_load.entry(inventory.tick).or_default();
+        if *load < capacity {
+            *load += 1;
+            queue.push_back(inventory);
+            return;
+        }
+        inventory.tick = inventory.tick.saturating_add(1);
+    }
 }
 
 /// Reason a peer was admitted or deferred in a phase.
@@ -270,6 +550,7 @@ pub struct WotAdmissionPhaseReport {
 pub struct WotAdmissionSimReport {
     pub config: WotAdmissionSimConfig,
     pub peers: Vec<WotPeerSpec>,
+    pub peer_discovery: WotPeerDiscoveryPubsubReport,
     pub phases: Vec<WotAdmissionPhaseReport>,
     pub trusted_rating_author_count: usize,
     pub rating_events: Vec<WotRatingFactEvent>,
@@ -303,6 +584,10 @@ impl WotAdmissionSimulation {
 
     pub async fn run(mut self) -> WotAdmissionSimReport {
         seed_historic_ratings(&self.config, &mut self.exchange).await;
+        let peer_discovery = self
+            .exchange
+            .run_peer_discovery_pubsub(&self.config.rating_pubsub, &self.peers)
+            .await;
 
         let cold_start = self.admission_phase("cold_start").await;
         let newcomer = self.peer_id(WotPeerProfile::Newcomer);
@@ -315,6 +600,7 @@ impl WotAdmissionSimulation {
         WotAdmissionSimReport {
             config: self.config,
             peers: self.peers,
+            peer_discovery,
             phases: vec![cold_start, after_newcomer_probe, after_degradation],
             trusted_rating_author_count: self.exchange.trusted_rating_author_count(),
             rating_events: self.exchange.events,
@@ -329,9 +615,13 @@ impl WotAdmissionSimulation {
         );
         let events = self.exchange.query_events(&history_filter);
         self.exchange.import_history_results(&events).await;
-        let trust_scores = self.exchange.trust_scores_for_peers(&self.peers).await;
+        let advertised_peers = self.exchange.advertised_tracked_peers(&self.peers).await;
+        let trust_scores = self
+            .exchange
+            .trust_scores_for_peers(&advertised_peers)
+            .await;
         let decisions = order_admission_decisions(
-            &self.peers,
+            &advertised_peers,
             &trust_scores,
             self.config.max_pending,
             self.config.newcomer_probe_slots,
@@ -398,6 +688,10 @@ struct WotRatingExchange {
     events: Vec<WotRatingFactEvent>,
     stats: WotRatingExchangeStats,
     discovery: NostrDiscovery,
+    pubsub: WotDecentralizedPubsub,
+    indexed_event_ids: BTreeSet<String>,
+    dropped_spam_event_ids: BTreeSet<String>,
+    cached_advert_event_ids: BTreeSet<String>,
 }
 
 impl Default for WotRatingExchange {
@@ -418,6 +712,10 @@ impl WotRatingExchange {
             events: Vec::new(),
             stats: WotRatingExchangeStats::default(),
             discovery,
+            pubsub: WotDecentralizedPubsub::new(config.rating_pubsub),
+            indexed_event_ids: BTreeSet::new(),
+            dropped_spam_event_ids: BTreeSet::new(),
+            cached_advert_event_ids: BTreeSet::new(),
         }
     }
 
@@ -432,28 +730,90 @@ impl WotRatingExchange {
 
     async fn publish_local(&mut self, pubsub: &WotRatingPubsubConfig, event: WotRatingFactEvent) {
         self.stats.local_published_events += 1;
-        self.publish_over_pubsub(pubsub);
         let scope = event.scope().unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        self.ingest(event).await;
-        self.drop_untrusted_spam(&scope, pubsub.spam_events_per_publish)
+        let source = WotPubsubEventSource::Rating(event.source);
+        let deliveries = self.pubsub.publish_event(
+            pubsub,
+            LOCAL_PUBSUB_NODE,
+            &event.event,
+            source,
+            &mut self.stats,
+        );
+        self.ingest_pubsub_deliveries(deliveries).await;
+        self.publish_untrusted_spam(pubsub, &scope, pubsub.spam_events_per_publish)
             .await;
     }
 
     async fn ingest(&mut self, event: WotRatingFactEvent) -> bool {
+        let event_id = event.id();
         if self
             .discovery
             .process_rating_fact_event_for_sim(&event.event)
             .await
         {
-            self.stats.indexed_events += 1;
-            self.events.push(event);
+            if self.indexed_event_ids.insert(event_id) {
+                self.stats.indexed_events += 1;
+                self.events.push(event);
+            }
             return true;
         }
 
-        self.stats.pubsub_spam_events_seen = self.stats.pubsub_spam_events_seen.saturating_add(1);
-        self.stats.pubsub_spam_events_dropped =
-            self.stats.pubsub_spam_events_dropped.saturating_add(1);
+        if self.dropped_spam_event_ids.insert(event_id) {
+            self.stats.pubsub_spam_events_seen =
+                self.stats.pubsub_spam_events_seen.saturating_add(1);
+            self.stats.pubsub_spam_events_dropped =
+                self.stats.pubsub_spam_events_dropped.saturating_add(1);
+        }
         false
+    }
+
+    async fn ingest_pubsub_deliveries(&mut self, deliveries: Vec<WotPubsubDelivery>) {
+        for delivery in deliveries {
+            if delivery.stream_id != WOT_NOSTR_EVENT_STREAM {
+                self.stats.pubsub_payload_decode_failures =
+                    self.stats.pubsub_payload_decode_failures.saturating_add(1);
+                continue;
+            }
+            let Ok(payload) = std::str::from_utf8(&delivery.payload) else {
+                self.stats.pubsub_payload_decode_failures =
+                    self.stats.pubsub_payload_decode_failures.saturating_add(1);
+                continue;
+            };
+            let Ok(event) = Event::from_json(payload) else {
+                self.stats.pubsub_payload_decode_failures =
+                    self.stats.pubsub_payload_decode_failures.saturating_add(1);
+                continue;
+            };
+            self.stats.pubsub_payload_events_decoded =
+                self.stats.pubsub_payload_events_decoded.saturating_add(1);
+
+            match event.kind {
+                Kind::Custom(RATING_FACT_KIND) => {
+                    let source = delivery.rating_source();
+                    self.ingest(WotRatingFactEvent { source, event }).await;
+                }
+                Kind::Custom(ADVERT_KIND) => {
+                    let event_id = event.id.to_hex();
+                    if self.discovery.process_advert_event_for_sim(&event).await {
+                        if self.cached_advert_event_ids.insert(event_id) {
+                            self.stats.pubsub_peer_advert_events_cached = self
+                                .stats
+                                .pubsub_peer_advert_events_cached
+                                .saturating_add(1);
+                        }
+                    } else {
+                        self.stats.pubsub_peer_advert_events_rejected = self
+                            .stats
+                            .pubsub_peer_advert_events_rejected
+                            .saturating_add(1);
+                    }
+                }
+                _ => {
+                    self.stats.pubsub_payload_decode_failures =
+                        self.stats.pubsub_payload_decode_failures.saturating_add(1);
+                }
+            }
+        }
     }
 
     async fn import_history_results(&self, events: &[WotRatingFactEvent]) {
@@ -478,38 +838,16 @@ impl WotRatingExchange {
             .collect()
     }
 
-    fn publish_over_pubsub(&mut self, pubsub: &WotRatingPubsubConfig) {
-        self.stats.pubsub_published_events += 1;
-        let inventory_targets = pubsub.peer_count.saturating_sub(1);
-        let subscribers = pubsub.subscriber_count.min(inventory_targets);
-
-        self.stats.pubsub_inventory_messages = self
-            .stats
-            .pubsub_inventory_messages
-            .saturating_add(inventory_targets);
-        self.stats.pubsub_want_messages =
-            self.stats.pubsub_want_messages.saturating_add(subscribers);
-        self.stats.pubsub_delivered_events = self
-            .stats
-            .pubsub_delivered_events
-            .saturating_add(subscribers);
-        self.stats.pubsub_inv_want_bytes = self.stats.pubsub_inv_want_bytes.saturating_add(
-            inventory_targets
-                .saturating_mul(pubsub.inventory_bytes)
-                .saturating_add(
-                    subscribers
-                        .saturating_mul(pubsub.want_bytes.saturating_add(pubsub.payload_bytes)),
-                ),
-        );
-        self.stats.pubsub_flood_bytes = self
-            .stats
-            .pubsub_flood_bytes
-            .saturating_add(inventory_targets.saturating_mul(pubsub.payload_bytes));
-    }
-
-    async fn drop_untrusted_spam(&mut self, scope: &str, count: usize) {
+    async fn publish_untrusted_spam(
+        &mut self,
+        pubsub: &WotRatingPubsubConfig,
+        scope: &str,
+        count: usize,
+    ) {
+        let base_index = self.stats.pubsub_spam_events_seen;
         for index in 0..count {
-            let seed = 1_000 + u64::try_from(index).unwrap_or(u64::MAX);
+            let spam_index = base_index.saturating_add(index);
+            let seed = 1_000 + u64::try_from(spam_index).unwrap_or(u64::MAX);
             let spam_keys = sim_keys(seed);
             let spam_subject = sim_npub(seed + 10_000);
             let spam_event = WotRatingFactEvent::signed_by(
@@ -518,11 +856,103 @@ impl WotRatingExchange {
                 &spam_subject,
                 scope,
                 100,
-                1_000 + u64::try_from(index).unwrap_or(u64::MAX),
+                1_000 + u64::try_from(spam_index).unwrap_or(u64::MAX),
                 WotRatingEventSource::UntrustedSpam,
             );
-            self.ingest(spam_event).await;
+            let deliveries = self.pubsub.publish_event(
+                pubsub,
+                FIRST_REMOTE_PUBSUB_NODE + (index % self.pubsub.remote_node_count().max(1)),
+                &spam_event.event,
+                WotPubsubEventSource::Rating(WotRatingEventSource::UntrustedSpam),
+                &mut self.stats,
+            );
+            self.ingest_pubsub_deliveries(deliveries).await;
         }
+    }
+
+    async fn run_peer_discovery_pubsub(
+        &mut self,
+        pubsub: &WotRatingPubsubConfig,
+        tracked_peers: &[WotPeerSpec],
+    ) -> WotPeerDiscoveryPubsubReport {
+        self.pubsub = WotDecentralizedPubsub::new(*pubsub);
+        let remote_nodes = self.pubsub.remote_node_count();
+        let tracked_by_origin = tracked_peers
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, peer)| (FIRST_REMOTE_PUBSUB_NODE + index, peer))
+            .collect::<BTreeMap<_, _>>();
+
+        for origin in FIRST_REMOTE_PUBSUB_NODE..=remote_nodes {
+            let event = if let Some(peer) = tracked_by_origin.get(&origin) {
+                signed_peer_advert_event(
+                    &keys_for_peer_profile(peer.profile),
+                    origin,
+                    DEFAULT_DISCOVERY_APP,
+                )
+            } else {
+                signed_peer_advert_event(
+                    &sim_keys(20_000 + origin as u64),
+                    origin,
+                    DEFAULT_DISCOVERY_APP,
+                )
+            };
+            self.stats.pubsub_peer_advert_events_published = self
+                .stats
+                .pubsub_peer_advert_events_published
+                .saturating_add(1);
+            let deliveries = self.pubsub.publish_event(
+                pubsub,
+                origin,
+                &event,
+                WotPubsubEventSource::PeerAdvert,
+                &mut self.stats,
+            );
+            self.ingest_pubsub_deliveries(deliveries).await;
+        }
+
+        let candidates = self
+            .discovery
+            .cached_open_discovery_candidates(pubsub.peer_count)
+            .await;
+        let candidate_ids = candidates
+            .iter()
+            .map(|(npub, _, _)| npub.clone())
+            .collect::<BTreeSet<_>>();
+        let tracked_candidates_cached = tracked_peers
+            .iter()
+            .filter(|peer| candidate_ids.contains(&peer.id))
+            .count();
+
+        WotPeerDiscoveryPubsubReport {
+            node_count: pubsub.peer_count,
+            known_entry_nodes: self.pubsub.known_entry_nodes(),
+            tracked_peer_count: tracked_peers.len(),
+            advert_events_published: remote_nodes,
+            advert_events_delivered_to_local: self.stats.pubsub_peer_advert_events_cached
+                + self.stats.pubsub_peer_advert_events_rejected,
+            advert_events_cached: self.stats.pubsub_peer_advert_events_cached,
+            cached_open_discovery_candidates: candidates.len(),
+            tracked_candidates_cached,
+            virtual_ticks: self.stats.pubsub_virtual_ticks,
+            virtual_time_ms: self.stats.pubsub_virtual_time_ms,
+        }
+    }
+
+    async fn advertised_tracked_peers(&self, peers: &[WotPeerSpec]) -> Vec<WotPeerSpec> {
+        let candidates = self
+            .discovery
+            .cached_open_discovery_candidates(self.pubsub.remote_node_count().max(peers.len()))
+            .await
+            .into_iter()
+            .map(|(npub, _, _)| npub)
+            .collect::<BTreeSet<_>>();
+        peers
+            .iter()
+            .filter(|peer| candidates.contains(&peer.id))
+            .cloned()
+            .collect()
     }
 
     fn query_events(&mut self, filter: &WotNostrFilter) -> Vec<WotRatingFactEvent> {
@@ -714,6 +1144,38 @@ fn normalize_rating_score(rating: i64, min_rating: i64, max_rating: i64) -> Opti
     Some(((centered.saturating_mul(100)) / (max - min)) as i64)
 }
 
+fn signed_peer_advert_event(keys: &nostr::Keys, node_index: usize, app: &str) -> Event {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Tcp,
+            addr: format!("node-{node_index}.fips.test:{}", 20_000 + node_index),
+        }],
+        signal_relays: None,
+        stun_servers: None,
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after unix epoch")
+        .as_secs();
+    let expires_at = now_secs.saturating_add(3_600);
+    let tags = vec![
+        Tag::identifier(advert_d_tag_for_sim(app)),
+        Tag::custom(TagKind::custom("protocol"), [app.to_string()]),
+        Tag::custom(TagKind::custom("version"), [PROTOCOL_VERSION.to_string()]),
+        Tag::expiration(Timestamp::from(expires_at)),
+    ];
+    EventBuilder::new(
+        Kind::Custom(ADVERT_KIND),
+        serde_json::to_string(&advert).expect("sim advert serializes"),
+    )
+    .tags(tags)
+    .custom_created_at(Timestamp::from(now_secs))
+    .sign_with_keys(keys)
+    .expect("sim advert event signs")
+}
+
 fn signed_rating_fact_event(
     keys: &nostr::Keys,
     rater_npub: &str,
@@ -755,6 +1217,15 @@ fn signed_rating_fact_event(
 
 fn rating_fact_tag<const N: usize>(parts: [&str; N]) -> Tag {
     Tag::parse(parts).expect("valid rating fact tag")
+}
+
+fn advert_d_tag_for_sim(app: &str) -> String {
+    let app = app.trim();
+    if app.is_empty() {
+        ADVERT_IDENTIFIER.to_string()
+    } else {
+        app.to_string()
+    }
 }
 
 fn event_tag_rows(event: &Event) -> Vec<Vec<String>> {
@@ -812,14 +1283,21 @@ fn historic_rater_npub() -> String {
     sim_npub(HISTORIC_RATER_SEED)
 }
 
-fn peer_npub(profile: WotPeerProfile) -> String {
-    sim_npub(match profile {
+fn keys_for_peer_profile(profile: WotPeerProfile) -> nostr::Keys {
+    sim_keys(match profile {
         WotPeerProfile::Reliable => 11,
         WotPeerProfile::BackupReliable => 12,
         WotPeerProfile::Newcomer => 13,
         WotPeerProfile::Degrading => 14,
         WotPeerProfile::Bad => 15,
     })
+}
+
+fn peer_npub(profile: WotPeerProfile) -> String {
+    keys_for_peer_profile(profile)
+        .public_key()
+        .to_bech32()
+        .expect("sim npub")
 }
 
 fn sim_npub(seed: u64) -> String {
@@ -840,6 +1318,25 @@ mod tests {
     async fn wot_admission_prioritizes_good_probes_newcomer_and_penalizes_degraded() {
         let report = run_default_wot_admission_sim().await;
         assert_eq!(report.trusted_rating_author_count, 1);
+        assert!(report.peer_discovery.node_count >= 100);
+        assert!((1..=3).contains(&report.peer_discovery.known_entry_nodes));
+        assert_eq!(
+            report.peer_discovery.tracked_candidates_cached,
+            report.peer_discovery.tracked_peer_count
+        );
+        assert!(
+            report.peer_discovery.cached_open_discovery_candidates
+                >= report.peer_discovery.tracked_peer_count
+        );
+        assert_eq!(
+            report.peer_discovery.advert_events_published,
+            report.config.rating_pubsub.peer_count.saturating_sub(1)
+        );
+        assert_eq!(
+            report.peer_discovery.advert_events_cached,
+            report.peer_discovery.advert_events_published
+        );
+        assert!(report.peer_discovery.virtual_ticks > 0);
 
         assert_eq!(
             selected_profiles(&report, "cold_start"),
@@ -929,29 +1426,32 @@ mod tests {
     #[tokio::test]
     async fn local_rating_publish_uses_inv_want_pubsub_before_history_lookup() {
         let report = run_default_wot_admission_sim().await;
-        let subscriber_count = report
-            .config
-            .rating_pubsub
-            .subscriber_count
-            .min(report.config.rating_pubsub.peer_count.saturating_sub(1));
+        let spam_publish_count = report.exchange.local_published_events
+            * report.config.rating_pubsub.spam_events_per_publish;
+        let expected_pubsub_published = report.peer_discovery.advert_events_published
+            + report.exchange.local_published_events
+            + spam_publish_count;
 
         assert_eq!(
             report.exchange.pubsub_published_events,
-            report.exchange.local_published_events
+            expected_pubsub_published
         );
-        assert_eq!(
-            report.exchange.pubsub_delivered_events,
-            report.exchange.local_published_events * subscriber_count
-        );
-        assert_eq!(
-            report.exchange.pubsub_inventory_messages,
-            report.exchange.local_published_events
-                * report.config.rating_pubsub.peer_count.saturating_sub(1)
+        assert!(report.exchange.pubsub_delivered_events > expected_pubsub_published);
+        assert!(
+            report.exchange.pubsub_inventory_messages > report.exchange.pubsub_delivered_events
         );
         assert_eq!(
             report.exchange.pubsub_want_messages,
             report.exchange.pubsub_delivered_events
         );
+        assert_eq!(
+            report.exchange.pubsub_payload_events_decoded,
+            report.exchange.pubsub_local_delivered_events
+        );
+        assert_eq!(report.exchange.pubsub_payload_decode_failures, 0);
+        assert!(report.exchange.pubsub_payload_bytes > 0);
+        assert!(report.exchange.pubsub_duplicate_inventories > 0);
+        assert!(report.exchange.pubsub_virtual_ticks > 0);
         assert!(
             report.exchange.pubsub_inv_want_bytes < report.exchange.pubsub_flood_bytes,
             "inv/want publish accounting should be cheaper than full-payload flooding"

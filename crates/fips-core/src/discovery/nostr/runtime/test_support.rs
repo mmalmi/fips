@@ -77,6 +77,44 @@ impl NostrDiscovery {
     }
 
     #[cfg(feature = "sim-transport")]
+    pub async fn process_advert_event_for_sim(&self, event: &nostr::Event) -> bool {
+        if !Self::advert_event_targets_app(event, &self.config.app) {
+            return false;
+        }
+        let Some(valid_until_ms) = self.event_valid_until_ms(event) else {
+            return false;
+        };
+        let Ok(verified_event) = VerifiedEvent::try_from(event) else {
+            return false;
+        };
+        let author_key = NostrPeerKey::from_public_key_ref(verified_event.pubkey());
+        let author_npub = verified_event.pubkey().to_bech32().expect("infallible");
+        let Ok(advert) = Self::parse_overlay_advert_event(verified_event, &self.config.app) else {
+            return false;
+        };
+
+        let mut cache = self.advert_cache.write().await;
+        let should_replace = cache
+            .get(&author_key)
+            .map(|existing| existing.created_at <= event.created_at.as_secs())
+            .unwrap_or(true);
+        if should_replace {
+            cache.insert(
+                author_key,
+                CachedOverlayAdvert {
+                    author_npub,
+                    advert,
+                    created_at: event.created_at.as_secs(),
+                    valid_until_ms,
+                },
+            );
+        }
+        drop(cache);
+        self.prune_advert_cache().await;
+        should_replace
+    }
+
+    #[cfg(feature = "sim-transport")]
     pub async fn trust_scores_for_npubs_for_sim(&self, npubs: &[String]) -> HashMap<String, i64> {
         self.trust_scores_for_npubs(npubs).await
     }
