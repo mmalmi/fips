@@ -510,7 +510,7 @@ impl Node {
                 .unwrap_or(true)
     }
 
-    pub(in crate::node) fn configured_path_priority(
+    pub(super) fn configured_path_priority(
         &self,
         peer_node_addr: &NodeAddr,
         transport_id: TransportId,
