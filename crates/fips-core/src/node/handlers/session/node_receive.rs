@@ -90,10 +90,8 @@ impl Node {
             };
 
             if dispatch.is_endpoint_data() {
-                if !tun_packets.is_empty() || !tun_commit.is_empty() {
-                    self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
-                        .await;
-                }
+                self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
+                    .await;
                 let deliveries =
                     dispatch.dispatch_endpoint_data_batched(self, &mut endpoint_commit);
                 processed = processed.saturating_add(deliveries.len());
@@ -102,44 +100,31 @@ impl Node {
             }
 
             if dispatch.is_ipv6_shim_data_packet() {
-                if !endpoint_deliveries.is_empty() || !endpoint_commit.is_empty() {
-                    self.flush_dataplane_endpoint_session_batch(
-                        &mut endpoint_deliveries,
-                        &mut endpoint_commit,
-                    )
-                    .await;
-                }
-                dispatch.dispatch_ipv6_shim_batched(self, &mut tun_packets, &mut tun_commit);
-                processed = processed.saturating_add(1);
-                continue;
-            }
-
-            if !endpoint_deliveries.is_empty() || !endpoint_commit.is_empty() {
                 self.flush_dataplane_endpoint_session_batch(
                     &mut endpoint_deliveries,
                     &mut endpoint_commit,
                 )
                 .await;
+                dispatch.dispatch_ipv6_shim_batched(self, &mut tun_packets, &mut tun_commit);
+                processed = processed.saturating_add(1);
+                continue;
             }
-            if !tun_packets.is_empty() || !tun_commit.is_empty() {
-                self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
-                    .await;
-            }
-            dispatch.dispatch(self).await;
-            processed = processed.saturating_add(1);
-        }
 
-        if !endpoint_deliveries.is_empty() || !endpoint_commit.is_empty() {
             self.flush_dataplane_endpoint_session_batch(
                 &mut endpoint_deliveries,
                 &mut endpoint_commit,
             )
             .await;
-        }
-        if !tun_packets.is_empty() || !tun_commit.is_empty() {
             self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
                 .await;
+            dispatch.dispatch(self).await;
+            processed = processed.saturating_add(1);
         }
+
+        self.flush_dataplane_endpoint_session_batch(&mut endpoint_deliveries, &mut endpoint_commit)
+            .await;
+        self.flush_dataplane_tun_session_batch(&mut tun_packets, &mut tun_commit)
+            .await;
         processed
     }
 
