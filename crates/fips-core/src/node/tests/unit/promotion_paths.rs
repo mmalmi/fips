@@ -871,7 +871,7 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
 }
 
 #[tokio::test]
-async fn handle_msg2_keeps_outbound_static_destination_when_reply_source_differs() {
+async fn handle_msg2_uses_authenticated_reply_source_when_static_destination_differs() {
     let mut node = make_node();
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
@@ -927,10 +927,10 @@ async fn handle_msg2_keeps_outbound_static_destination_when_reply_source_differs
     assert_eq!(active.transport_id(), Some(transport_id));
     assert_eq!(
         active.current_addr(),
-        Some(&configured_addr),
-        "an authenticated asymmetric reply source must not replace the outbound static destination"
+        Some(&observed_reply_addr),
+        "the authenticated msg2 source is the live send path even when the dial target came from static config"
     );
-    assert_ne!(active.current_addr(), Some(&observed_reply_addr));
+    assert_ne!(active.current_addr(), Some(&configured_addr));
     assert_eq!(active.our_index(), Some(our_index));
     assert_eq!(active.their_index(), Some(their_index));
 }

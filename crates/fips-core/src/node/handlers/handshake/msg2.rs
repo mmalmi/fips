@@ -204,6 +204,7 @@ impl Node {
             }
 
             conn.set_their_index(header.sender_idx);
+            conn.set_source_addr(packet.remote_addr.clone());
 
             let peer_identity = match conn.expected_identity() {
                 Some(id) => *id,
