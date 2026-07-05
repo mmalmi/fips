@@ -989,6 +989,10 @@ async fn udp_receive_loop(
                     if packets.is_empty() {
                         continue;
                     }
+                    packet_tx.try_fast_ingress_packet_batch(&mut packets);
+                    if packets.is_empty() {
+                        continue;
+                    }
                     if packet_tx.send_packet_batch(packets).is_err() {
                         debug!(
                             transport_id = %transport_id,
