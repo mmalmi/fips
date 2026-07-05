@@ -784,9 +784,10 @@ impl Dataplane {
             if ready_lanes == 0 {
                 break;
             }
-            let shard_limit = dataplane_owner_shard_dispatch_quantum(
+            let shard_limit = dataplane_ingress_owner_shard_dispatch_limit(
                 limit.saturating_sub(dispatched),
                 ready_lanes,
+                priority_only,
             );
             let mut pass_dispatched = 0usize;
             for _ in 0..ready_lanes {
@@ -1164,6 +1165,18 @@ fn dataplane_owner_shard_count(config: AdmissionConfig) -> usize {
 fn dataplane_owner_shard_dispatch_quantum(remaining: usize, shard_count: usize) -> usize {
     let shard_count = shard_count.max(1);
     remaining.saturating_add(shard_count - 1) / shard_count
+}
+
+fn dataplane_ingress_owner_shard_dispatch_limit(
+    remaining: usize,
+    ready_lanes: usize,
+    priority_only: bool,
+) -> usize {
+    if priority_only {
+        dataplane_owner_shard_dispatch_quantum(remaining, ready_lanes)
+    } else {
+        remaining
+    }
 }
 
 fn dataplane_owner_shard_index(owner: OwnerId, shards: usize) -> usize {
