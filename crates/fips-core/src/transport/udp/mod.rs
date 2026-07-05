@@ -986,7 +986,6 @@ async fn udp_receive_loop(
 
                         packets.push(packet);
                     }
-                    packet_tx.try_fast_ingress_packet_batch(&mut packets);
                     if packets.is_empty() {
                         continue;
                     }
