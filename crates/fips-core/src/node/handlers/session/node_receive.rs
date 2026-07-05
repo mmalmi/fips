@@ -81,7 +81,7 @@ impl Node {
         let mut processed = 0usize;
         let mut endpoint_deliveries = Vec::new();
         let mut endpoint_commit = SessionReceiveBatchCommit::default();
-        let mut tun_packets = Vec::new();
+        let mut tun_packets = Vec::with_capacity(ingress_batch.len());
         let mut tun_commit = SessionReceiveBatchCommit::default();
 
         for ingress in ingress_batch {
@@ -133,8 +133,8 @@ impl Node {
         ingress_batch: Vec<crate::dataplane::DataplaneFspAuthenticatedIngress>,
     ) -> usize {
         let mut processed = 0usize;
-        let mut endpoint_batches = Vec::new();
-        let mut session_ingress = Vec::new();
+        let mut endpoint_batches = Vec::with_capacity(ingress_batch.len());
+        let mut session_ingress = Vec::with_capacity(ingress_batch.len());
 
         for ingress in ingress_batch {
             match ingress {
