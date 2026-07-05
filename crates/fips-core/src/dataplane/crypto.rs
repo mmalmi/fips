@@ -215,7 +215,8 @@ impl PreparedOpenRunJobBuilder {
         if self.work.is_empty() || self.closed {
             return;
         }
-        let work = std::mem::take(&mut self.work);
+        let next = Vec::with_capacity(self.job_packets);
+        let work = std::mem::replace(&mut self.work, next);
         let cipher = self
             .cipher
             .take()
