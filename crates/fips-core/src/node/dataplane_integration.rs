@@ -9,10 +9,12 @@ use crate::dataplane::{
     DataplaneTunOutboundRoute, OutboundPacket, OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId,
     PacketClass, TransportPath,
 };
+use crate::node::session_wire::{FSP_PHASE_MSG2, FSP_PHASE_MSG3, FspCommonPrefix};
 use crate::protocol::SessionMessageType;
 use std::collections::HashMap;
 
-const DATAPLANE_PENDING_OUTBOUND_CONTINUATION_TURNS: usize = 8;
+const DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS: usize = 2;
+const DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS: usize = 8;
 const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
 struct DataplaneFmpOwnerSeed {
@@ -71,6 +73,23 @@ enum DataplanePendingOutboundFailure {
     Exhausted(DataplaneLiveNodeTurn),
 }
 
+#[derive(Clone, Copy)]
+struct DataplanePendingOutboundPolicy {
+    continuation_turns: usize,
+    await_admitted_output: bool,
+}
+
+const DATAPLANE_PENDING_OUTBOUND_FAST_POLICY: DataplanePendingOutboundPolicy =
+    DataplanePendingOutboundPolicy {
+        continuation_turns: DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS,
+        await_admitted_output: false,
+    };
+const DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY: DataplanePendingOutboundPolicy =
+    DataplanePendingOutboundPolicy {
+        continuation_turns: DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS,
+        await_admitted_output: true,
+    };
+
 impl Node {
     pub(in crate::node) async fn send_dataplane_fmp_link_plaintext(
         &mut self,
@@ -119,10 +138,19 @@ impl Node {
             collect_transport_sent_receipts: true,
             ..Default::default()
         };
+        let pending_policy = dataplane_fmp_link_pending_policy(plaintext);
         let mut turn = self
             .pump_dataplane_pending_outbound_firsts(firsts, 0, 0, 1)
             .await;
-        turn = match self.drive_dataplane_pending_outbound_turn(turn, true).await {
+        turn = match self
+            .drive_dataplane_pending_outbound_turn(
+                turn,
+                true,
+                pending_policy.continuation_turns,
+                pending_policy.await_admitted_output,
+            )
+            .await
+        {
             Ok(turn) => turn,
             Err(failure) => {
                 let failure_turn = match &failure {
@@ -473,7 +501,12 @@ impl Node {
         collect_transport_sent_receipts: bool,
     ) -> Result<DataplaneLiveNodeTurn, NodeError> {
         let result = self
-            .drive_dataplane_pending_outbound_turn(turn, collect_transport_sent_receipts)
+            .drive_dataplane_pending_outbound_turn(
+                turn,
+                collect_transport_sent_receipts,
+                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns,
+                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.await_admitted_output,
+            )
             .await;
         self.process_dataplane_pending_outbound_bookkeeping().await;
         match result {
@@ -489,9 +522,11 @@ impl Node {
         &mut self,
         mut turn: DataplaneLiveNodeTurn,
         collect_transport_sent_receipts: bool,
+        continuation_turns: usize,
+        await_admitted_output: bool,
     ) -> Result<DataplaneLiveNodeTurn, DataplanePendingOutboundFailure> {
         let mut awaiting_admitted_output = false;
-        for continuation in 0..=DATAPLANE_PENDING_OUTBOUND_CONTINUATION_TURNS {
+        for continuation in 0..=continuation_turns {
             let summary = turn.summary();
             let sent = Self::dataplane_pending_outbound_sent(&turn);
             let deferred =
@@ -505,7 +540,7 @@ impl Node {
             if sent {
                 return Ok(turn);
             }
-            if needs_continuation {
+            if await_admitted_output && needs_continuation {
                 awaiting_admitted_output = true;
             }
             if deferred || (!needs_continuation && !awaiting_admitted_output) {
@@ -516,7 +551,7 @@ impl Node {
                 };
                 return Err(DataplanePendingOutboundFailure::Stopped { turn, reason });
             }
-            if continuation == DATAPLANE_PENDING_OUTBOUND_CONTINUATION_TURNS {
+            if continuation == continuation_turns {
                 return Err(DataplanePendingOutboundFailure::Exhausted(turn));
             }
 
@@ -1327,6 +1362,28 @@ fn dataplane_fmp_link_class(plaintext: &[u8]) -> PacketClass {
     }
 }
 
+fn dataplane_fmp_link_pending_policy(plaintext: &[u8]) -> DataplanePendingOutboundPolicy {
+    if fmp_plaintext_is_fsp_handshake_response_datagram(plaintext) {
+        DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY
+    } else {
+        DATAPLANE_PENDING_OUTBOUND_FAST_POLICY
+    }
+}
+
+fn fmp_plaintext_is_fsp_handshake_response_datagram(plaintext: &[u8]) -> bool {
+    if plaintext
+        .first()
+        .is_none_or(|ty| *ty != LinkMessageType::SessionDatagram.to_byte())
+    {
+        return false;
+    }
+    let Some(fsp_payload) = plaintext.get(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE..) else {
+        return false;
+    };
+    FspCommonPrefix::parse(fsp_payload)
+        .is_some_and(|prefix| matches!(prefix.phase, FSP_PHASE_MSG2 | FSP_PHASE_MSG3))
+}
+
 fn dataplane_fsp_control_class(msg_type: u8) -> PacketClass {
     match SessionMessageType::from_byte(msg_type) {
         Some(
@@ -1378,6 +1435,50 @@ mod tests {
         frame.extend_from_slice(&counter.to_le_bytes());
         frame.extend_from_slice(&[0; crate::noise::TAG_SIZE]);
         frame
+    }
+
+    fn session_datagram_plaintext_with_fsp_prefix(prefix: [u8; 4]) -> Vec<u8> {
+        let mut plaintext = Vec::with_capacity(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE + 4);
+        plaintext.push(LinkMessageType::SessionDatagram.to_byte());
+        plaintext.push(64);
+        plaintext.extend_from_slice(&1280u16.to_le_bytes());
+        plaintext.extend_from_slice(&[0; 16]);
+        plaintext.extend_from_slice(&[1; 16]);
+        plaintext.extend_from_slice(&prefix);
+        plaintext
+    }
+
+    #[test]
+    fn fmp_pending_policy_is_patient_only_for_fsp_handshake_responses() {
+        let msg1 = session_datagram_plaintext_with_fsp_prefix(
+            crate::node::session_wire::build_fsp_handshake_prefix(
+                crate::node::session_wire::FSP_PHASE_MSG1,
+                0,
+            ),
+        );
+        let msg2 = session_datagram_plaintext_with_fsp_prefix(
+            crate::node::session_wire::build_fsp_handshake_prefix(
+                crate::node::session_wire::FSP_PHASE_MSG2,
+                0,
+            ),
+        );
+        let msg3 = session_datagram_plaintext_with_fsp_prefix(
+            crate::node::session_wire::build_fsp_handshake_prefix(
+                crate::node::session_wire::FSP_PHASE_MSG3,
+                0,
+            ),
+        );
+        let established = session_datagram_plaintext_with_fsp_prefix([
+            crate::node::session_wire::FSP_VERSION << 4,
+            0,
+            0,
+            0,
+        ]);
+
+        assert!(!dataplane_fmp_link_pending_policy(&msg1).await_admitted_output);
+        assert!(dataplane_fmp_link_pending_policy(&msg2).await_admitted_output);
+        assert!(dataplane_fmp_link_pending_policy(&msg3).await_admitted_output);
+        assert!(!dataplane_fmp_link_pending_policy(&established).await_admitted_output);
     }
 
     #[tokio::test]
