@@ -15,7 +15,7 @@ fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
 }
 
 fn endpoint_payload(payload: Vec<u8>) -> EndpointDataPayload {
-    EndpointDataPayload::from_packet_payload(payload)
+    EndpointDataPayload::from_endpoint_data(payload.into())
         .expect("test endpoint payload should fit FSP endpoint data")
 }
 

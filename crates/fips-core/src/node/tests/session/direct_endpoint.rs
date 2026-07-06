@@ -146,9 +146,9 @@ fn test_endpoint_data_batch_flushes_after_session_establishment() {
         let node0_addr = *nodes[0].node.node_addr();
         let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
         let payloads = vec![
-            crate::node::EndpointDataPayload::from_packet_payload(b"ping-1".to_vec())
+            crate::node::EndpointDataPayload::from_endpoint_data(b"ping-1".to_vec().into())
                 .expect("test endpoint payload"),
-            crate::node::EndpointDataPayload::from_packet_payload(b"ping-2".to_vec())
+            crate::node::EndpointDataPayload::from_endpoint_data(b"ping-2".to_vec().into())
                 .expect("test endpoint payload"),
         ];
 

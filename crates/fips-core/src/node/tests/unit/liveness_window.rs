@@ -1989,7 +1989,7 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
         .push_endpoint_data_batch_with_enqueued_at_ms(
             peer_addr,
             vec![
-                crate::node::EndpointDataPayload::from_packet_payload(vec![4, 5, 6])
+                crate::node::EndpointDataPayload::from_endpoint_data(vec![4, 5, 6].into())
                     .expect("test endpoint payload"),
             ],
             usize::MAX,

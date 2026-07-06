@@ -126,6 +126,42 @@ impl PacketBuffer {
         }
     }
 
+    pub fn from_slice_with_headroom(bytes: &[u8], headroom: usize) -> Self {
+        Self::from_slices_with_headroom_and_tailroom(&[bytes], headroom, 0)
+    }
+
+    pub fn from_slices_with_headroom(parts: &[&[u8]], headroom: usize) -> Self {
+        Self::from_slices_with_headroom_and_tailroom(parts, headroom, 0)
+    }
+
+    pub fn from_slice_with_headroom_and_tailroom(
+        bytes: &[u8],
+        headroom: usize,
+        tailroom: usize,
+    ) -> Self {
+        Self::from_slices_with_headroom_and_tailroom(&[bytes], headroom, tailroom)
+    }
+
+    pub fn from_slices_with_headroom_and_tailroom(
+        parts: &[&[u8]],
+        headroom: usize,
+        tailroom: usize,
+    ) -> Self {
+        let len = parts
+            .iter()
+            .fold(0usize, |total, part| total.saturating_add(part.len()));
+        let mut data = Vec::with_capacity(headroom.saturating_add(len).saturating_add(tailroom));
+        data.resize(headroom, 0);
+        for part in parts {
+            data.extend_from_slice(part);
+        }
+        Self {
+            data,
+            start: headroom,
+            pool: None,
+        }
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         &self.data[self.start..]
     }

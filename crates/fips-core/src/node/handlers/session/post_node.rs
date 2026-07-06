@@ -25,7 +25,7 @@ mod pending_queue_tests {
         payloads
             .into_iter()
             .map(|payload| {
-                EndpointDataPayload::from_packet_payload(payload)
+                EndpointDataPayload::from_endpoint_data(payload.into())
                     .expect("test endpoint payload should fit FSP endpoint data")
             })
             .collect()

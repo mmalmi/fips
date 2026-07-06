@@ -221,13 +221,17 @@ fn endpoint_ethernet_instance_name(interface: &str) -> String {
     }
 }
 
-fn endpoint_data_payloads_from_vecs(
-    payloads: Vec<Vec<u8>>,
-) -> Result<Vec<EndpointDataPayload>, FipsEndpointError> {
+fn endpoint_data_payloads_from_buffers<P>(
+    payloads: Vec<P>,
+) -> Result<Vec<EndpointDataPayload>, FipsEndpointError>
+where
+    P: Into<FipsEndpointData>,
+{
     let mut converted = Vec::with_capacity(payloads.len());
     for payload in payloads {
+        let payload: FipsEndpointData = payload.into();
         let len = payload.len();
-        let Some(payload) = EndpointDataPayload::from_packet_payload(payload) else {
+        let Some(payload) = EndpointDataPayload::from_endpoint_data(payload) else {
             let max = crate::node::session_wire::fsp_endpoint_data_max_body_len();
             return Err(FipsEndpointError::EndpointDataTooLarge { len, max });
         };
@@ -327,10 +331,9 @@ impl FipsEndpoint {
     pub async fn send(
         &self,
         remote_npub: impl Into<String>,
-        data: impl Into<Vec<u8>>,
+        data: impl Into<FipsEndpointData>,
     ) -> Result<(), FipsEndpointError> {
         let remote_npub = remote_npub.into();
-        let data = data.into();
         let remote = if remote_npub == self.npub {
             self.identity
         } else {
@@ -348,26 +351,32 @@ impl FipsEndpoint {
     pub async fn send_to_peer(
         &self,
         remote: PeerIdentity,
-        data: impl Into<Vec<u8>>,
+        data: impl Into<FipsEndpointData>,
     ) -> Result<(), FipsEndpointError> {
         self.send_payloads_to_peer(remote, vec![data.into()])
     }
 
     /// Send a burst of application-owned endpoint payloads to one resolved peer.
-    pub async fn send_batch_to_peer(
+    pub async fn send_batch_to_peer<P>(
         &self,
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
-    ) -> Result<(), FipsEndpointError> {
+        payloads: Vec<P>,
+    ) -> Result<(), FipsEndpointError>
+    where
+        P: Into<FipsEndpointData>,
+    {
         self.send_payloads_to_peer(remote, payloads)
     }
 
-    fn send_payloads_to_peer(
+    fn send_payloads_to_peer<P>(
         &self,
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
-    ) -> Result<(), FipsEndpointError> {
-        let payloads = endpoint_data_payloads_from_vecs(payloads)?;
+        payloads: Vec<P>,
+    ) -> Result<(), FipsEndpointError>
+    where
+        P: Into<FipsEndpointData>,
+    {
+        let payloads = endpoint_data_payloads_from_buffers(payloads)?;
         if *remote.node_addr() == self.node_addr {
             for payload in payloads {
                 self.send_loopback(payload)?;
@@ -529,10 +538,9 @@ impl FipsEndpoint {
     pub fn blocking_send(
         &self,
         remote_npub: impl Into<String>,
-        data: impl Into<Vec<u8>>,
+        data: impl Into<FipsEndpointData>,
     ) -> Result<(), FipsEndpointError> {
         let remote_npub = remote_npub.into();
-        let data = data.into();
         let remote = if remote_npub == self.npub {
             self.identity
         } else {
@@ -548,7 +556,7 @@ impl FipsEndpoint {
     pub fn blocking_send_to_peer(
         &self,
         remote: PeerIdentity,
-        data: impl Into<Vec<u8>>,
+        data: impl Into<FipsEndpointData>,
     ) -> Result<(), FipsEndpointError> {
         self.send_payloads_to_peer(remote, vec![data.into()])
     }
@@ -558,11 +566,14 @@ impl FipsEndpoint {
     /// This is the blocking-thread counterpart to [`Self::send_batch_to_peer`].
     /// The caller keeps routing authority: FIPS only receives already-owned
     /// endpoint payloads for the resolved peer.
-    pub fn blocking_send_batch_to_peer(
+    pub fn blocking_send_batch_to_peer<P>(
         &self,
         remote: PeerIdentity,
-        payloads: Vec<Vec<u8>>,
-    ) -> Result<(), FipsEndpointError> {
+        payloads: Vec<P>,
+    ) -> Result<(), FipsEndpointError>
+    where
+        P: Into<FipsEndpointData>,
+    {
         self.send_payloads_to_peer(remote, payloads)
     }
 

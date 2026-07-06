@@ -225,7 +225,7 @@ async fn send_endpoint_data_via_dataplane(
         crate::node::NodeEndpointDataBatch::from_payloads(
             remote,
             vec![
-                crate::node::EndpointDataPayload::from_packet_payload(payload)
+                crate::node::EndpointDataPayload::from_endpoint_data(payload.into())
                     .expect("test endpoint payload"),
             ],
             None,

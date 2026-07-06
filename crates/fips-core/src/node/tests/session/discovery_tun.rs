@@ -207,7 +207,7 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
         .push_endpoint_data_batch_with_enqueued_at_ms(
             dest_addr,
             vec![
-                crate::node::EndpointDataPayload::from_packet_payload(b"queued".to_vec())
+                crate::node::EndpointDataPayload::from_endpoint_data(b"queued".to_vec().into())
                     .expect("test endpoint payload"),
             ],
             usize::MAX,
