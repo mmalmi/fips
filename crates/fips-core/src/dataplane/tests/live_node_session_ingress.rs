@@ -407,12 +407,15 @@
             fmp_inner_timestamp,
             fmp_flags,
         );
-        let local_ingress = &turn.fsp_local_session_ingress()[0];
-        assert_eq!(local_ingress.source_addr(), source_addr);
-        assert_eq!(local_ingress.previous_hop_addr(), next_hop);
-        assert!(local_ingress.ce_flag());
-        assert_eq!(local_ingress.path_mtu(), path_mtu);
-        assert_eq!(local_ingress.payload(), fsp_handshake.as_slice());
+        let (local_source, local_previous_hop, local_ce, local_path_mtu, local_payload) = turn
+            .fsp_local_session_ingress()[0]
+            .clone()
+            .into_parts();
+        assert_eq!(local_source, source_addr);
+        assert_eq!(local_previous_hop, next_hop);
+        assert!(local_ce);
+        assert_eq!(local_path_mtu, path_mtu);
+        assert_eq!(local_payload.as_ref(), fsp_handshake.as_slice());
         assert!(turn.raw_ingress_drops().is_empty());
         assert!(turn.output_drops().is_empty());
     }

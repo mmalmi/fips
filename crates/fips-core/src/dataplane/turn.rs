@@ -354,26 +354,6 @@ impl DataplaneFspLocalSessionIngress {
         }
     }
 
-    pub(crate) fn source_addr(&self) -> NodeAddr {
-        self.source_addr
-    }
-
-    pub(crate) fn previous_hop_addr(&self) -> NodeAddr {
-        self.previous_hop_addr
-    }
-
-    pub(crate) fn ce_flag(&self) -> bool {
-        self.ce_flag
-    }
-
-    pub(crate) fn path_mtu(&self) -> u16 {
-        self.path_mtu
-    }
-
-    pub(crate) fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-
     pub(crate) fn into_parts(self) -> (NodeAddr, NodeAddr, bool, u16, PacketBuffer) {
         (
             self.source_addr,
