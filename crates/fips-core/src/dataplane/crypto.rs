@@ -1201,7 +1201,15 @@ impl AeadSealWork {
                         activity_tick: reservation.activity_tick,
                         fmp_timestamp_ms: reservation.fmp_timestamp_ms,
                         source_wire_len: None,
-                        fsp_send_receipt: work.work.packet.fsp_send_receipt,
+                        fsp_send_receipt: work.work.packet.fsp_send_receipt.or_else(|| {
+                            (reservation.owner.protocol() == PacketProtocol::Fsp).then(|| {
+                                DataplaneFspSendReceipt::new(
+                                    reservation.owner,
+                                    reservation.counter,
+                                    reservation.fsp_timestamp_ms,
+                                )
+                            })
+                        }),
                         payload: work.work.packet.payload,
                     }),
                     OutboundPostSeal::FmpWrap(route) => {
