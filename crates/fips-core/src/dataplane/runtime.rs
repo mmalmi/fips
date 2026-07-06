@@ -601,7 +601,6 @@ impl DataplaneTurnDriver {
         }
 
         let routed_outbound_limit = endpoint_limit.saturating_add(tun_limit);
-        let outbound_limit = routed_outbound_limit;
         let reserved_outbound_limit =
             reserved_live_outbound_progress_limit(endpoint_limit, tun_limit, routed_outbound_limit);
         let mut outbound_buffers = DataplaneRouteTableOutboundBuffers::default();
@@ -703,7 +702,7 @@ impl DataplaneTurnDriver {
         }
 
         let remaining_outbound_limit =
-            outbound_limit.saturating_sub(outbound_drained.min(outbound_limit));
+            routed_outbound_limit.saturating_sub(outbound_drained.min(routed_outbound_limit));
         if remaining_outbound_limit > 0 {
             let mut outbound_source = DataplaneRouteTableOutboundSource::new(
                 endpoint_data_rx,
