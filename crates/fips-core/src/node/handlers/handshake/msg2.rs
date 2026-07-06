@@ -189,8 +189,10 @@ impl Node {
             return;
         }
 
-        let (peer_identity, our_index) = {
+        let (peer_identity, our_index, dial_transport_id, dial_addr) = {
             let conn = self.peers.get_connection_mut(&link_id).unwrap();
+            let dial_transport_id = conn.transport_id();
+            let dial_addr = conn.source_addr().cloned();
 
             let noise_msg2 = &packet.data[header.noise_msg2_offset..];
             if let Err(e) = conn.complete_handshake(noise_msg2, packet.timestamp_ms) {
@@ -214,7 +216,12 @@ impl Node {
                 }
             };
 
-            (peer_identity, conn.our_index())
+            (
+                peer_identity,
+                conn.our_index(),
+                dial_transport_id,
+                dial_addr,
+            )
         };
 
         if self
@@ -243,6 +250,48 @@ impl Node {
         }
 
         let peer_node_addr = *peer_identity.node_addr();
+        let peer_npub = peer_identity.npub();
+        let preferred_send_addr =
+            dial_transport_id
+                .zip(dial_addr)
+                .and_then(|(transport_id, addr)| {
+                    if addr == packet.remote_addr {
+                        return None;
+                    }
+                    let indexed_static_match = self
+                        .configured_static_udp_path_for_peer(&peer_node_addr, transport_id)
+                        .as_ref()
+                        == Some(&addr);
+                    let transport_is_udp = self
+                        .transports
+                        .get(&transport_id)
+                        .is_some_and(|transport| transport.transport_type().name == "udp");
+                    let direct_static_match = transport_is_udp
+                        && self
+                            .config
+                            .peers
+                            .iter()
+                            .filter(|peer| peer.npub == peer_npub)
+                            .flat_map(|peer| peer.addresses.iter())
+                            .any(|candidate| {
+                                candidate.seen_at_ms.is_none()
+                                    && candidate.transport.eq_ignore_ascii_case("udp")
+                                    && crate::transport::TransportAddr::from_string(&candidate.addr)
+                                        == addr
+                            });
+                    (indexed_static_match || direct_static_match).then_some(addr)
+                });
+        if let Some(addr) = preferred_send_addr {
+            if let Some(conn) = self.peers.get_connection_mut(&link_id) {
+                conn.set_preferred_send_addr(addr.clone());
+            }
+            debug!(
+                peer = %self.peer_display_name(&peer_node_addr),
+                observed_addr = %packet.remote_addr,
+                preferred_send_addr = %addr,
+                "Preserved asymmetric UDP send address from completed static dial"
+            );
+        }
 
         debug!(
             peer = %self.peer_display_name(&peer_node_addr),
@@ -276,6 +325,7 @@ impl Node {
                     return;
                 }
             };
+            let preferred_send_addr = conn.preferred_send_addr().cloned();
 
             let outbound_transport_id = conn.transport_id().unwrap_or(packet.transport_id);
             let outbound_addr = conn
@@ -383,6 +433,11 @@ impl Node {
                     &replacement,
                     "outbound_alternate_path_refresh",
                 );
+                if let Some(addr) = preferred_send_addr.clone()
+                    && let Some(peer) = self.peers.get_mut(&peer_node_addr)
+                {
+                    peer.set_preferred_send_addr(addr);
+                }
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
 
                 if let Some(old_index) = replacement.old_session_index {
@@ -494,6 +549,11 @@ impl Node {
                     &replacement,
                     "outbound_cross_connection_swap",
                 );
+                if let Some(addr) = preferred_send_addr
+                    && let Some(peer) = self.peers.get_mut(&peer_node_addr)
+                {
+                    peer.set_preferred_send_addr(addr);
+                }
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
                 if let Some(old_index) = replacement.old_session_index {
                     self.deregister_session_index(old_index.key);

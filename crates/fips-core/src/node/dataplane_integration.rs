@@ -1020,7 +1020,7 @@ impl Node {
         let peer = self.peers.get(node_addr)?;
         let session = peer.noise_session()?;
         let transport_id = peer.transport_id()?;
-        let remote_addr = peer.current_addr()?.clone();
+        let remote_addr = peer.send_addr()?.clone();
         let receiver_idx = peer.our_index()?.as_u32();
         let mut receive_indices = vec![receiver_idx];
         for index in [peer.pending_our_index(), peer.previous_our_index()]
@@ -1245,7 +1245,7 @@ impl Node {
     fn dataplane_direct_fsp_path(&self, dest_addr: &NodeAddr) -> Option<(TransportPath, u16)> {
         let peer = self.peers.get(dest_addr)?;
         let transport_id = peer.transport_id()?;
-        let remote_addr = peer.current_addr()?.clone();
+        let remote_addr = peer.send_addr()?.clone();
         let path_mtu = self
             .transports
             .get(&transport_id)
@@ -1448,6 +1448,55 @@ mod tests {
     }
 
     #[test]
+    fn direct_fsp_send_path_uses_preferred_addr_but_source_map_stays_observed() {
+        let mut node = Node::new(Config::new()).unwrap();
+        let peer_identity_full = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+        let peer_addr = *peer_identity.node_addr();
+        let transport_id = TransportId::new(7);
+        let observed_addr = TransportAddr::from_string("127.0.0.1:7000");
+        let preferred_send_addr = TransportAddr::from_string("127.0.0.1:7001");
+        let session = test_fmp_session(
+            &node.identity,
+            &peer_identity_full,
+            node.startup_epoch,
+            [0x02; 8],
+        );
+        let mut peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(7),
+            1_000,
+            session,
+            SessionIndex::new(10),
+            SessionIndex::new(11),
+            transport_id,
+            observed_addr.clone(),
+            LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            Some([0x02; 8]),
+        );
+        peer.set_preferred_send_addr(preferred_send_addr.clone());
+        node.peers.insert(peer_addr, peer);
+
+        let (path, _) = node.dataplane_direct_fsp_path(&peer_addr).unwrap();
+        assert_eq!(
+            path,
+            TransportPath::live(transport_id, preferred_send_addr.clone())
+        );
+
+        let sources = node.dataplane_direct_fsp_sources();
+        assert!(
+            sources.contains_key(&(transport_id, observed_addr)),
+            "direct FSP ingress classification should stay keyed by the authenticated observed source"
+        );
+        assert!(
+            !sources.contains_key(&(transport_id, preferred_send_addr)),
+            "preferred outbound target must not replace the receive-source classifier"
+        );
+    }
+
+    #[test]
     fn fmp_pending_policy_is_patient_only_for_fsp_handshake_responses() {
         let msg1 = session_datagram_plaintext_with_fsp_prefix(
             crate::node::session_wire::build_fsp_handshake_prefix(
@@ -1488,6 +1537,7 @@ mod tests {
         let peer_addr = *peer_identity.node_addr();
         let transport_id = TransportId::new(77);
         let remote_addr = TransportAddr::from_string("127.0.0.1:7777");
+        let preferred_send_addr = TransportAddr::from_string("127.0.0.1:8888");
         let previous_index = SessionIndex::new(10);
         let current_index = SessionIndex::new(11);
         let pending_index = SessionIndex::new(12);
@@ -1515,12 +1565,22 @@ mod tests {
         let second_pending =
             test_fmp_session(&node.identity, &peer_identity_full, [0x05; 8], [0x06; 8]);
         peer.set_pending_session(second_pending, pending_index, SessionIndex::new(22), false);
+        peer.set_preferred_send_addr(preferred_send_addr.clone());
         assert_eq!(peer.our_index(), Some(current_index));
         assert_eq!(peer.previous_our_index(), Some(previous_index));
         assert_eq!(peer.pending_our_index(), Some(pending_index));
         node.peers.insert(peer_addr, peer);
 
         assert!(node.sync_dataplane_fmp_owner(&peer_addr));
+        assert_eq!(
+            node.dataplane
+                .owner_active_path(OwnerId::fmp_node(peer_addr)),
+            Ok(Some(TransportPath::live(
+                transport_id,
+                preferred_send_addr.clone()
+            ))),
+            "outbound FMP sends should use the preferred send address while receive routes still accept current_addr"
+        );
 
         let mut raw = VecDeque::from([
             DataplaneRawIngress::from_received(

@@ -52,6 +52,7 @@ impl Node {
             .clone();
         let link_stats = connection.link_stats().clone();
         let remote_epoch = connection.remote_epoch();
+        let preferred_send_addr = connection.preferred_send_addr().cloned();
 
         let peer_node_addr = *verified_identity.node_addr();
         let is_outbound = connection.is_outbound();
@@ -161,6 +162,9 @@ impl Node {
                     &self.config.node.mmp,
                     remote_epoch,
                 );
+                if let Some(addr) = preferred_send_addr.clone() {
+                    new_peer.set_preferred_send_addr(addr);
+                }
                 new_peer.set_tree_announce_min_interval_ms(
                     self.config.node.tree.announce_min_interval_ms,
                 );
@@ -277,6 +281,9 @@ impl Node {
                 &self.config.node.mmp,
                 remote_epoch,
             );
+            if let Some(addr) = preferred_send_addr {
+                new_peer.set_preferred_send_addr(addr);
+            }
             new_peer
                 .set_tree_announce_min_interval_ms(self.config.node.tree.announce_min_interval_ms);
             if let Some(ts) = old_announce_ts {

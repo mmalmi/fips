@@ -313,6 +313,7 @@ impl PeerLifecycleRegistry {
             );
             peer.set_link_id(new_link_id);
             peer.set_current_addr(new_transport_id, new_addr);
+            peer.clear_preferred_send_addr();
             peer.set_fmp_mmp_is_initiator(new_is_initiator);
             if new_remote_epoch.is_some() {
                 peer.set_remote_epoch(new_remote_epoch);
