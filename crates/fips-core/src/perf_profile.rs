@@ -1141,19 +1141,9 @@ pub(crate) fn test_stamp() -> TraceStamp {
     TraceStamp::now()
 }
 
-/// Record `elapsed_ns` for the given stage. No-op when disabled.
-pub fn record(stage: Stage, elapsed_ns: u64) {
-    record_count(stage, elapsed_ns, 1);
-}
-
-/// Record `elapsed_ns` for `count` equivalent stage samples. No-op when disabled.
-pub fn record_count(stage: Stage, elapsed_ns: u64, count: u64) {
-    if !enabled() {
-        return;
-    }
-    if count == 0 {
-        return;
-    }
+#[inline]
+fn record_count_enabled(stage: Stage, elapsed_ns: u64, count: u64) {
+    debug_assert!(count > 0);
     let elapsed_ns = elapsed_ns.max(1);
     let bucket = bucket_for_ns(elapsed_ns);
     record_count_sample(stage, elapsed_ns, count, bucket);
@@ -1170,24 +1160,27 @@ fn record_count_sample(stage: Stage, elapsed_ns: u64, count: u64, bucket: usize)
 
 #[inline]
 pub(crate) fn record_since(stage: Stage, start: Option<TraceStamp>) {
-    if !enabled() {
-        return;
-    }
     let Some(start) = start else {
         return;
     };
-    record_count(stage, start.elapsed_ns().max(1), 1);
+    if !enabled() {
+        return;
+    }
+    record_count_enabled(stage, start.elapsed_ns(), 1);
 }
 
 #[inline]
 pub(crate) fn record_since_count(stage: Stage, start: Option<TraceStamp>, count: u64) {
-    if !enabled() || count == 0 {
+    if count == 0 {
         return;
     }
     let Some(start) = start else {
         return;
     };
-    record_count(stage, start.elapsed_ns().max(1), count);
+    if !enabled() {
+        return;
+    }
+    record_count_enabled(stage, start.elapsed_ns(), count);
 }
 
 /// Record one queue wait into aggregate + priority/bulk split counters.
@@ -1210,12 +1203,15 @@ pub(crate) fn record_since_split_count(
         total_count,
         "queue wait split counts should add up to the aggregate count"
     );
-    if !enabled() || total_count == 0 {
+    if total_count == 0 {
         return;
     }
     let Some(start) = start else {
         return;
     };
+    if !enabled() {
+        return;
+    }
     let elapsed_ns = start.elapsed_ns().max(1);
     let bucket = bucket_for_ns(elapsed_ns);
     record_count_sample(total_stage, elapsed_ns, total_count, bucket);
@@ -1635,7 +1631,7 @@ impl Drop for Timer {
     fn drop(&mut self) {
         if let Some(t0) = self.start {
             let ns = t0.elapsed().as_nanos() as u64;
-            record(self.stage, ns);
+            record_count_enabled(self.stage, ns, 1);
         }
     }
 }
