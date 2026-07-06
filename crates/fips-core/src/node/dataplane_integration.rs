@@ -666,8 +666,7 @@ impl Node {
             processed += 1;
         }
         for batch in self.dataplane.take_deferred_endpoint_data_batches() {
-            self.handle_endpoint_data_batch_no_established_flush(batch)
-                .await;
+            self.requeue_deferred_endpoint_data_batch(batch);
             processed += 1;
         }
         processed
