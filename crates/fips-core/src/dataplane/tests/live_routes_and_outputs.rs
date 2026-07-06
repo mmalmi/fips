@@ -157,6 +157,140 @@
     }
 
     #[test]
+    fn packet_rx_source_classifies_flagged_direct_fsp_after_nat_port_rewrite() {
+        let source = NodeAddr::from_bytes([0x4e; 16]);
+        let transport_id = TransportId::new(44);
+        let learned_addr = TransportAddr::from_string("198.51.100.44:9000");
+        let rewritten_addr = TransportAddr::from_string("198.51.100.44:53000");
+        let (_tx, mut rx) = crate::transport::packet_channel(1);
+        let mut direct_sources = std::collections::HashMap::new();
+        direct_sources.insert(
+            (transport_id, learned_addr),
+            DataplaneDirectFspSource {
+                source_addr: source,
+                path_mtu: 1400,
+            },
+        );
+        let first = ReceivedPacket::with_timestamp(
+            transport_id,
+            rewritten_addr.clone(),
+            fsp_wire(
+                89,
+                crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+            ),
+            44_001,
+        );
+        let mut source_rx =
+            DataplaneFmpPacketRxSource::with_first_and_direct_fsp_sources(
+                &mut rx,
+                Some(first),
+                direct_sources,
+            );
+        let mut packets = Vec::new();
+        assert_eq!(
+            source_rx.drain_raw_ingress(1, |packet| packets.push(packet)),
+            1
+        );
+        assert!(source_rx.take_control_ingress().is_empty());
+        assert_eq!(packets.len(), 1);
+        let packet = &packets[0];
+        assert_eq!(packet.protocol(), PacketProtocol::Fsp);
+        assert_eq!(packet.fsp_source(), Some(source));
+        assert_eq!(packet.previous_hop(), Some(source));
+        assert_eq!(packet.path_mtu(), 1400);
+        assert_eq!(packet.path().transport_id(), Some(transport_id));
+        assert_eq!(packet.path().remote_addr(), Some(&rewritten_addr));
+        assert_eq!(packet.activity_tick(), Some(ActivityTick::new(44_001)));
+    }
+
+    #[test]
+    fn direct_fsp_nat_port_rewrite_requires_unambiguous_source_ip() {
+        let transport_id = TransportId::new(44);
+        let rewritten_addr = TransportAddr::from_string("198.51.100.44:53000");
+        let mut direct_sources = std::collections::HashMap::new();
+        direct_sources.insert(
+            (
+                transport_id,
+                TransportAddr::from_string("198.51.100.44:9000"),
+            ),
+            DataplaneDirectFspSource {
+                source_addr: NodeAddr::from_bytes([0x44; 16]),
+                path_mtu: 1400,
+            },
+        );
+        direct_sources.insert(
+            (
+                transport_id,
+                TransportAddr::from_string("198.51.100.44:9001"),
+            ),
+            DataplaneDirectFspSource {
+                source_addr: NodeAddr::from_bytes([0x45; 16]),
+                path_mtu: 1400,
+            },
+        );
+
+        assert_eq!(
+            lookup_direct_fsp_source(&direct_sources, transport_id, &rewritten_addr),
+            None
+        );
+    }
+
+    #[test]
+    fn fast_ingress_routes_direct_fsp_after_nat_port_rewrite() {
+        let source = NodeAddr::from_bytes([0x4f; 16]);
+        let owner = OwnerId::fsp_node(source);
+        let transport_id = TransportId::new(44);
+        let learned_addr = TransportAddr::from_string("198.51.100.44:9000");
+        let rewritten_addr = TransportAddr::from_string("198.51.100.44:53000");
+        let route = DataplaneIngressRoute::new(owner, 11, OutputTarget::Endpoint)
+            .with_class(PacketClass::Bulk);
+        let mut routes = DataplaneLiveRouteTable::default();
+        routes.register_fsp(source, route);
+        let mut direct_sources = std::collections::HashMap::new();
+        direct_sources.insert(
+            (transport_id, learned_addr),
+            DataplaneDirectFspSource {
+                source_addr: source,
+                path_mtu: 1400,
+            },
+        );
+        routes.set_established_fast_ingress_direct_fsp_sources(direct_sources);
+
+        let (sink, mut fast_rx) =
+            DataplaneEstablishedFastIngressSink::channel(
+                routes.established_fast_ingress_snapshot(),
+                4,
+            );
+        let mut packets = vec![ReceivedPacket::with_timestamp(
+            transport_id,
+            rewritten_addr.clone(),
+            fsp_wire(
+                90,
+                crate::node::session_wire::FSP_FLAG_DIRECT_TRANSPORT,
+            ),
+            44_002,
+        )];
+
+        assert_eq!(sink.try_ingest_batch(&mut packets), 1);
+        assert!(packets.is_empty());
+        let batch = fast_rx.try_recv().expect("direct FSP fast batch");
+        assert_eq!(batch.len(), 1);
+        let packet = batch
+            .into_packets()
+            .pop()
+            .expect("direct FSP socket packet");
+        assert_eq!(packet.owner, owner);
+        assert_eq!(packet.generation, 11);
+        assert_eq!(packet.counter, 90);
+        assert_eq!(
+            packet.source_path,
+            Some(TransportPath::live(transport_id, rewritten_addr))
+        );
+        assert_eq!(packet.previous_hop, Some(source));
+        assert_eq!(packet.path_mtu, 1400);
+    }
+
+    #[test]
     fn direct_fsp_transport_segments_reassemble_before_classification() {
         let source = NodeAddr::from_bytes([0x45; 16]);
         let owner = OwnerId::fsp_node(source);

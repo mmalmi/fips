@@ -1,6 +1,32 @@
 use super::*;
 
 impl Node {
+    fn preserve_completed_static_send_addr(
+        &mut self,
+        peer_node_addr: &crate::NodeAddr,
+        preferred_send_addr: Option<crate::transport::TransportAddr>,
+        reason: &'static str,
+    ) -> bool {
+        let Some(addr) = preferred_send_addr else {
+            return false;
+        };
+        let Some(peer) = self.peers.get_mut(peer_node_addr) else {
+            return false;
+        };
+        let changed = peer.set_preferred_send_addr(addr.clone());
+        if changed {
+            let _ = self.sync_dataplane_fmp_owner(peer_node_addr);
+        }
+        debug!(
+            peer = %self.peer_display_name(peer_node_addr),
+            preferred_send_addr = %addr,
+            changed,
+            reason,
+            "Preserved authenticated static UDP send address on active peer"
+        );
+        changed
+    }
+
     /// Handle handshake message 2 (phase 0x2).
     ///
     /// This completes an outbound handshake we initiated.
@@ -368,6 +394,11 @@ impl Node {
                     )
                 {
                     let outbound_our_index = conn.our_index();
+                    self.preserve_completed_static_send_addr(
+                        &peer_node_addr,
+                        preferred_send_addr,
+                        "discarded_outbound_alternate_path",
+                    );
                     self.pending_outbound.remove(&key);
                     if let Some(idx) = outbound_our_index {
                         let _ = self.index_allocator.free(idx);
@@ -608,6 +639,12 @@ impl Node {
                 if let Some(idx) = outbound_our_index {
                     let _ = self.index_allocator.free(idx);
                 }
+
+                self.preserve_completed_static_send_addr(
+                    &peer_node_addr,
+                    preferred_send_addr,
+                    "outbound_cross_connection_lost",
+                );
 
                 self.pending_outbound.remove(&key);
                 // Close the losing TCP connection (no-op for connectionless)

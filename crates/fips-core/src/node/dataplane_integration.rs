@@ -1020,7 +1020,7 @@ impl Node {
         let peer = self.peers.get(node_addr)?;
         let session = peer.noise_session()?;
         let transport_id = peer.transport_id()?;
-        let remote_addr = peer.send_addr()?.clone();
+        let remote_addr = peer.current_addr()?.clone();
         let receiver_idx = peer.our_index()?.as_u32();
         let mut receive_indices = vec![receiver_idx];
         for index in [peer.pending_our_index(), peer.previous_our_index()]
@@ -1575,11 +1575,8 @@ mod tests {
         assert_eq!(
             node.dataplane
                 .owner_active_path(OwnerId::fmp_node(peer_addr)),
-            Ok(Some(TransportPath::live(
-                transport_id,
-                preferred_send_addr.clone()
-            ))),
-            "outbound FMP sends should use the preferred send address while receive routes still accept current_addr"
+            Ok(Some(TransportPath::live(transport_id, remote_addr.clone()))),
+            "outbound FMP control stays on the authenticated observed path; preferred_send_addr is only for direct endpoint data"
         );
 
         let mut raw = VecDeque::from([

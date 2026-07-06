@@ -556,9 +556,8 @@ impl DataplaneEstablishedFastIngressSink {
         fsp_routes: &HashMap<NodeAddr, DataplaneIngressRoute>,
         packet: ReceivedPacket,
     ) -> DataplaneFastIngressDirectFspResult {
-        let Some(source) = direct_sources
-            .get(&(packet.transport_id, packet.remote_addr.clone()))
-            .copied()
+        let Some(source) =
+            lookup_direct_fsp_source(direct_sources, packet.transport_id, &packet.remote_addr)
         else {
             return DataplaneFastIngressDirectFspResult::Miss(packet);
         };
@@ -610,9 +609,8 @@ impl DataplaneEstablishedFastIngressSink {
         if !dataplane_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) {
             return Self::direct_fsp_socket_packet_from_received(direct_sources, fsp_routes, packet);
         }
-        let Some(source) = direct_sources
-            .get(&(packet.transport_id, packet.remote_addr.clone()))
-            .copied()
+        let Some(source) =
+            lookup_direct_fsp_source(direct_sources, packet.transport_id, &packet.remote_addr)
         else {
             return DataplaneFastIngressDirectFspResult::Miss(packet);
         };
@@ -650,9 +648,8 @@ impl DataplaneEstablishedFastIngressSink {
         if !dataplane_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) {
             return DataplaneFastIngressDirectFragmentResult::Miss(packet);
         }
-        let Some(source) = direct_sources
-            .get(&(packet.transport_id, packet.remote_addr.clone()))
-            .copied()
+        let Some(source) =
+            lookup_direct_fsp_source(direct_sources, packet.transport_id, &packet.remote_addr)
         else {
             return DataplaneFastIngressDirectFragmentResult::Miss(packet);
         };
@@ -990,7 +987,7 @@ impl DataplaneFspSourceClassifier
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> Option<DataplaneDirectFspSource> {
-        self.get(&(transport_id, remote_addr.clone())).copied()
+        lookup_direct_fsp_source(self, transport_id, remote_addr)
     }
 }
 
@@ -1002,8 +999,44 @@ impl DataplaneFspSourceClassifier
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> Option<DataplaneDirectFspSource> {
-        self.get(&(transport_id, remote_addr.clone())).copied()
+        lookup_direct_fsp_source(self.as_ref(), transport_id, remote_addr)
     }
+}
+
+fn lookup_direct_fsp_source(
+    direct_sources: &HashMap<(TransportId, TransportAddr), DataplaneDirectFspSource>,
+    transport_id: TransportId,
+    remote_addr: &TransportAddr,
+) -> Option<DataplaneDirectFspSource> {
+    if let Some(source) = direct_sources.get(&(transport_id, remote_addr.clone())).copied() {
+        return Some(source);
+    }
+
+    let remote_ip = direct_fsp_socket_ip(remote_addr)?;
+    let mut match_source = None;
+    for ((candidate_transport_id, candidate_addr), source) in direct_sources {
+        if *candidate_transport_id != transport_id
+            || direct_fsp_socket_ip(candidate_addr) != Some(remote_ip)
+        {
+            continue;
+        }
+        match match_source {
+            None => match_source = Some(*source),
+            Some(mut existing) if existing.source_addr == source.source_addr => {
+                existing.path_mtu = existing.path_mtu.min(source.path_mtu);
+                match_source = Some(existing);
+            }
+            Some(_) => return None,
+        }
+    }
+    match_source
+}
+
+fn direct_fsp_socket_ip(addr: &TransportAddr) -> Option<std::net::IpAddr> {
+    addr.as_str()?
+        .parse::<std::net::SocketAddr>()
+        .ok()
+        .map(|addr| addr.ip())
 }
 
 /// Drains live transport packets from `PacketRx` as dataplane ingress.
