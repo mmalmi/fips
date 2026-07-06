@@ -28,6 +28,27 @@ fn test_routing_direct_peer() {
 }
 
 #[test]
+fn test_session_degraded_direct_peer_remains_route_without_fallback() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let peer_addr = *identity.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+
+    node.mark_session_direct_path_degraded(peer_addr, Node::now_ms());
+
+    let result = node.find_next_hop(&peer_addr).expect("direct route");
+    assert_eq!(
+        result.node_addr(),
+        &peer_addr,
+        "a healthy direct peer must remain the payload route when no fallback can carry traffic"
+    );
+}
+
+#[test]
 fn test_stale_direct_peer_stays_probeable_but_is_not_payload_route() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
