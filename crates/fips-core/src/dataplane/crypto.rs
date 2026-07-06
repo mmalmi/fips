@@ -892,13 +892,12 @@ fn execute_open_run_job(work: Vec<CryptoWork>, cipher: AeadKey) -> Vec<CryptoCom
     }
     let _timer =
         crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneAeadOpen);
-    let mut completions = Vec::with_capacity(work.len());
+    let mut batches = Vec::with_capacity(1);
     for work in work {
-        completions.push(execute_open_crypto_work(work, &cipher));
+        CryptoCompletionBatch::push_grouped(execute_open_crypto_work(work, &cipher), &mut batches);
     }
-    CryptoCompletionBatch::from_completion_run(completions)
-        .into_iter()
-        .collect()
+    debug_assert!(batches.len() <= 1);
+    batches
 }
 
 fn dataplane_open_run_bulk_count(work: &[CryptoWork]) -> usize {

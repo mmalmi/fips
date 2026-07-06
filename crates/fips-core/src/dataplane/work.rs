@@ -66,31 +66,6 @@ impl CryptoCompletionBatch {
         }
     }
 
-    pub(crate) fn from_completion_run(completions: Vec<CryptoCompletion>) -> Option<Self> {
-        let first = completions.first()?;
-        let owner_shard = first.reservation.owner_shard();
-        let owner = first.reservation.owner;
-        let generation = first.reservation.generation;
-        let lane = first.reservation.lane;
-        let source = first.source();
-        debug_assert!(completion_run_is_contiguous(
-            &completions,
-            owner_shard,
-            owner,
-            generation,
-            lane,
-            source,
-        ));
-        Some(Self {
-            owner_shard,
-            owner,
-            generation,
-            lane,
-            source,
-            completions,
-        })
-    }
-
     pub(crate) fn push_grouped(
         completion: CryptoCompletion,
         batches: &mut Vec<CryptoCompletionBatch>,
@@ -182,30 +157,6 @@ impl CryptoCompletionBatch {
                 .last()
                 .map_or(true, |last| last.order().next() == completion.order())
     }
-}
-
-fn completion_run_is_contiguous(
-    completions: &[CryptoCompletion],
-    owner_shard: usize,
-    owner: OwnerId,
-    generation: u64,
-    lane: Lane,
-    source: CryptoCompletionSource,
-) -> bool {
-    let mut expected = completions.first().map(CryptoCompletion::order);
-    for completion in completions {
-        if completion.reservation.owner_shard() != owner_shard
-            || completion.reservation.owner != owner
-            || completion.reservation.generation != generation
-            || completion.reservation.lane != lane
-            || completion.source() != source
-            || Some(completion.order()) != expected
-        {
-            return false;
-        }
-        expected = Some(completion.order().next());
-    }
-    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
