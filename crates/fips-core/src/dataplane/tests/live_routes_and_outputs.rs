@@ -236,6 +236,27 @@
     }
 
     #[test]
+    fn direct_fsp_source_classifier_matches_configured_udp_port_wildcard() {
+        let transport_id = TransportId::new(44);
+        let source = NodeAddr::from_bytes([0x46; 16]);
+        let static_source = TransportAddr::from_string("0.0.0.0:52528");
+        let actual_source = TransportAddr::from_string("192.168.64.5:52528");
+        let mut direct_sources = std::collections::HashMap::new();
+        direct_sources.insert(
+            (transport_id, static_source),
+            DataplaneDirectFspSource {
+                source_addr: source,
+                path_mtu: 1400,
+            },
+        );
+
+        let matched = lookup_direct_fsp_source(&direct_sources, transport_id, &actual_source)
+            .expect("configured static UDP port wildcard should match actual source IP");
+        assert_eq!(matched.source_addr, source);
+        assert_eq!(matched.path_mtu, 1400);
+    }
+
+    #[test]
     fn fast_ingress_routes_direct_fsp_after_nat_port_rewrite() {
         let source = NodeAddr::from_bytes([0x4f; 16]);
         let owner = OwnerId::fsp_node(source);

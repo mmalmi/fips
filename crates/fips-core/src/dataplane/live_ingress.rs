@@ -1012,11 +1012,38 @@ fn lookup_direct_fsp_source(
         return Some(source);
     }
 
-    let remote_ip = direct_fsp_socket_ip(remote_addr)?;
+    let remote_socket_addr = direct_fsp_socket_addr(remote_addr)?;
+    let remote_ip = remote_socket_addr.ip();
     let mut match_source = None;
     for ((candidate_transport_id, candidate_addr), source) in direct_sources {
         if *candidate_transport_id != transport_id
-            || direct_fsp_socket_ip(candidate_addr) != Some(remote_ip)
+            || direct_fsp_socket_addr(candidate_addr).map(|addr| addr.ip()) != Some(remote_ip)
+        {
+            continue;
+        }
+        match match_source {
+            None => match_source = Some(*source),
+            Some(mut existing) if existing.source_addr == source.source_addr => {
+                existing.path_mtu = existing.path_mtu.min(source.path_mtu);
+                match_source = Some(existing);
+            }
+            Some(_) => return None,
+        }
+    }
+    if match_source.is_some() {
+        return match_source;
+    }
+
+    let remote_port = remote_socket_addr.port();
+    for ((candidate_transport_id, candidate_addr), source) in direct_sources {
+        if *candidate_transport_id != transport_id {
+            continue;
+        }
+        let Some(candidate_socket_addr) = direct_fsp_socket_addr(candidate_addr) else {
+            continue;
+        };
+        if !candidate_socket_addr.ip().is_unspecified()
+            || candidate_socket_addr.port() != remote_port
         {
             continue;
         }
@@ -1032,11 +1059,8 @@ fn lookup_direct_fsp_source(
     match_source
 }
 
-fn direct_fsp_socket_ip(addr: &TransportAddr) -> Option<std::net::IpAddr> {
-    addr.as_str()?
-        .parse::<std::net::SocketAddr>()
-        .ok()
-        .map(|addr| addr.ip())
+fn direct_fsp_socket_addr(addr: &TransportAddr) -> Option<std::net::SocketAddr> {
+    addr.as_str()?.parse::<std::net::SocketAddr>().ok()
 }
 
 /// Drains live transport packets from `PacketRx` as dataplane ingress.
