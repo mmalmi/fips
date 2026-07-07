@@ -39,7 +39,6 @@ impl OwnerId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketClass {
     Control,
-    Rekey,
     Mmp,
     Liveness,
     Bulk,
@@ -48,7 +47,7 @@ pub(crate) enum PacketClass {
 impl PacketClass {
     fn lane(self) -> Lane {
         match self {
-            Self::Control | Self::Rekey | Self::Mmp | Self::Liveness => Lane::Priority,
+            Self::Control | Self::Mmp | Self::Liveness => Lane::Priority,
             Self::Bulk => Lane::Bulk,
         }
     }

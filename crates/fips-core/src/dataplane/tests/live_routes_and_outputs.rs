@@ -25,7 +25,7 @@
         let route_a = DataplaneIngressRoute::new(owner_a, 7, OutputTarget::Endpoint)
             .with_class(PacketClass::Liveness);
         let route_b = DataplaneIngressRoute::new(owner_b, 8, OutputTarget::Endpoint)
-            .with_class(PacketClass::Rekey);
+            .with_class(PacketClass::Mmp);
         let mut routes = DataplaneLiveRouteTable::default();
         routes.register_fmp(transport_id, 404, route_a);
 
