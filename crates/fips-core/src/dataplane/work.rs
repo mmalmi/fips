@@ -453,8 +453,6 @@ pub(crate) enum PacketDropReason {
 pub(crate) struct PacketDrop {
     owner: OwnerId,
     counter: Option<u64>,
-    ingress_seq: Option<u64>,
-    lane: Lane,
     reason: PacketDropReason,
     crypto_failure: Option<CryptoFailureKind>,
     wire_flags: Option<u8>,
@@ -466,8 +464,6 @@ impl PacketDrop {
         Self {
             owner: queued.packet.owner,
             counter: Some(queued.packet.counter),
-            ingress_seq: Some(queued.ingress_seq),
-            lane: queued.packet.lane(),
             reason,
             crypto_failure: None,
             wire_flags: Some(queued.packet.wire_flags),
@@ -479,8 +475,6 @@ impl PacketDrop {
         Self {
             owner: queued.packet.owner,
             counter: None,
-            ingress_seq: Some(queued.ingress_seq),
-            lane: queued.packet.lane(),
             reason,
             crypto_failure: None,
             wire_flags: None,
@@ -496,8 +490,6 @@ impl PacketDrop {
         Self {
             owner: completion.reservation.owner,
             counter: Some(completion.reservation.counter),
-            ingress_seq: Some(completion.reservation.ingress_seq),
-            lane: completion.reservation.lane,
             reason,
             crypto_failure,
             wire_flags: Some(completion.reservation.wire_flags),
@@ -546,8 +538,6 @@ impl From<AdmissionDrop> for PacketDrop {
         Self {
             owner: drop.owner,
             counter: drop.counter,
-            ingress_seq: None,
-            lane: drop.lane,
             reason: PacketDropReason::Admission(drop.reason),
             crypto_failure: None,
             wire_flags: None,

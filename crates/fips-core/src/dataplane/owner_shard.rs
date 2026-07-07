@@ -438,7 +438,6 @@ impl DataplaneOwnerShard {
             let mut remaining = Vec::new();
             let mut items = std::mem::take(&mut run.items).into_iter();
             while let Some(queued) = items.next() {
-                let lane = queued.packet.lane();
                 let class = queued.packet.class;
                 let ingress_seq = queued.ingress_seq;
                 if !owner.can_reserve_class(class) {
@@ -469,8 +468,6 @@ impl DataplaneOwnerShard {
                         drops.push(PacketDrop {
                             owner: owner_id,
                             counter: None,
-                            ingress_seq: Some(ingress_seq),
-                            lane,
                             reason: error.into(),
                             crypto_failure: None,
                             wire_flags: None,

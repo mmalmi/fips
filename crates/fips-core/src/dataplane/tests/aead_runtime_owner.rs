@@ -821,7 +821,6 @@
             RetiredPacket::Drop(drop) => {
                 assert_eq!(drop.reason, PacketDropReason::CryptoFailed);
                 assert_eq!(drop.counter, Some(0));
-                assert_eq!(drop.lane, Lane::Bulk);
             }
             RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
             RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
@@ -3022,8 +3021,6 @@
             .expect("admission drop");
         assert_eq!(admission_drop.owner(), owner);
         assert_eq!(admission_drop.counter(), Some(11));
-        assert_eq!(admission_drop.ingress_seq, None);
-        assert_eq!(admission_drop.lane, Lane::Bulk);
 
         let crypto_drop = turn
             .drops()
@@ -3032,8 +3029,6 @@
             .expect("crypto drop");
         assert_eq!(crypto_drop.owner(), owner);
         assert_eq!(crypto_drop.counter(), Some(10));
-        assert_eq!(crypto_drop.ingress_seq, Some(0));
-        assert_eq!(crypto_drop.lane, Lane::Bulk);
     }
 
     struct FixedIngressRouter {
