@@ -19,6 +19,7 @@
     #[test]
     fn live_ingress_routes_fmp_by_transport_and_receiver_idx() {
         let transport_id = TransportId::new(40);
+        let other_transport_id = TransportId::new(41);
         let remote_addr = TransportAddr::from_string("198.51.100.40:9000");
         let source_a = NodeAddr::from_bytes([0x40; 16]);
         let source_b = NodeAddr::from_bytes([0x41; 16]);
@@ -49,7 +50,7 @@
         let wrong_transport = DataplaneRawIngress::from_live_received(
             PacketProtocol::Fmp,
             ReceivedPacket::with_timestamp(
-                TransportId::new(41),
+                other_transport_id,
                 remote_addr.clone(),
                 PacketBuffer::new(fmp_wire(404, 10, 0)),
                 9_001,
@@ -61,11 +62,23 @@
             );
         assert_eq!(routes.route(&wrong_transport, header), None);
 
+        routes.register_fmp(other_transport_id, 404, route_b);
+        let header =
+            DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
+        assert_eq!(routes.route(&raw, header), Some(route_a));
+        let header =
+            DataplaneIngressHeader::Fmp(
+                FmpWireHeader::parse(wrong_transport.payload.as_slice()).unwrap(),
+            );
+        assert_eq!(routes.route(&wrong_transport, header), Some(route_b));
+
         routes.register_fmp(transport_id, 404, route_b);
-        let header = DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
+        let header =
+            DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
         assert_eq!(routes.route(&raw, header), Some(route_b));
         assert_eq!(routes.unregister_owner(owner_b), 1);
-        let header = DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
+        let header =
+            DataplaneIngressHeader::Fmp(FmpWireHeader::parse(raw.payload.as_slice()).unwrap());
         assert_eq!(routes.route(&raw, header), None);
     }
 

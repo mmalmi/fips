@@ -80,7 +80,7 @@ use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::dataplane::{
     AdmissionConfig, DATAPLANE_TRANSPORT_SEND_BATCH_PACKETS, DataplaneFastIngressRx,
-    DataplaneLiveNode,
+    DataplaneLiveNode, DataplaneLiveNodeTurn,
 };
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
@@ -220,6 +220,8 @@ pub struct Node {
     // === Dataplane ===
     /// Canonical dataplane state owned by the node.
     dataplane: DataplaneNode,
+    /// Control ingress surfaced while a synchronous dataplane send is waiting.
+    deferred_dataplane_control_turns: VecDeque<DataplaneLiveNodeTurn>,
     /// Pre-routed established FMP packets accepted directly from UDP receive.
     dataplane_fast_ingress_rx: Option<DataplaneFastIngressRx>,
     /// Maximum same-destination UDP payloads sent in one dataplane batch.

@@ -65,6 +65,49 @@ impl DataplaneTransportPayloadBatch {
             });
         }
     }
+
+    fn finish_send(
+        &self,
+        sent_items: usize,
+        drops: &mut Vec<DataplaneOutputDrop>,
+        sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
+        sent: &mut usize,
+    ) {
+        let mut item_cursor = 0usize;
+        for record in &self.records {
+            let item_count = record.item_count();
+            let record_sent = item_cursor.saturating_add(item_count) <= sent_items;
+            let output = record.output();
+            if record_sent {
+                *sent += 1;
+                if let Some(sent_receipts) = sent_receipts.as_deref_mut() {
+                    sent_receipts.push(DataplaneTransportSentReceipt::from_output(output));
+                }
+            } else {
+                drops.push(DataplaneOutputDrop::from_output(
+                    output,
+                    DataplaneOutputError::TransportFailed,
+                ));
+            }
+            item_cursor = item_cursor.saturating_add(item_count);
+        }
+    }
+}
+
+impl DataplaneTransportPayloadRecord {
+    fn output(&self) -> &PacketOutput {
+        match self {
+            Self::Whole(output) => output,
+            Self::DirectFspSegments(segments) => &segments.output,
+        }
+    }
+
+    fn item_count(&self) -> usize {
+        match self {
+            Self::Whole(_) => 1,
+            Self::DirectFspSegments(segments) => segments.len(),
+        }
+    }
 }
 
 impl crate::transport::udp::UdpPayloadBatch for DataplaneTransportPayloadBatch {
@@ -328,7 +371,7 @@ async fn send_udp_transport_plan_group(
             .push_record(output, drops, sent_receipts, sent)
             .await;
     }
-    packets.flush().await;
+    packets.flush(drops, sent_receipts, sent).await;
 }
 
 struct DataplaneUdpTransportSendBatch<'a> {
@@ -360,7 +403,7 @@ impl<'a> DataplaneUdpTransportSendBatch<'a> {
         sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
         sent: &mut usize,
     ) {
-        let receipt = match dataplane_direct_fsp_transport_output(output) {
+        match dataplane_direct_fsp_transport_output(output) {
             DataplaneDirectFspTransportOutput::Whole(output) => {
                 if let Err(reason) =
                     validate_dataplane_udp_payload(self.snapshot, self.socket_addr, output.payload_len())
@@ -368,11 +411,7 @@ impl<'a> DataplaneUdpTransportSendBatch<'a> {
                     drops.push(DataplaneOutputDrop::from_output(&output, reason));
                     return;
                 }
-                let receipt = sent_receipts
-                    .as_ref()
-                    .map(|_| DataplaneTransportSentReceipt::from_output(&output));
                 self.packets.push_whole(output);
-                receipt
             }
             DataplaneDirectFspTransportOutput::Segments(segments) => {
                 for index in 0..segments.len() {
@@ -385,11 +424,7 @@ impl<'a> DataplaneUdpTransportSendBatch<'a> {
                         return;
                     }
                 }
-                let receipt = sent_receipts
-                    .as_ref()
-                    .map(|_| DataplaneTransportSentReceipt::from_output(&segments.output));
                 self.packets.push_direct_fsp_segments(segments);
-                receipt
             }
             DataplaneDirectFspTransportOutput::MtuExceeded(output) => {
                 let mtu = output.path_mtu();
@@ -401,16 +436,17 @@ impl<'a> DataplaneUdpTransportSendBatch<'a> {
             }
         };
 
-        *sent += 1;
-        if let (Some(sent_receipts), Some(receipt)) = (sent_receipts.as_deref_mut(), receipt) {
-            sent_receipts.push(receipt);
-        }
         if self.packets.len() >= self.max_batch_packets {
-            self.flush().await;
+            self.flush(drops, sent_receipts, sent).await;
         }
     }
 
-    async fn flush(&mut self) {
+    async fn flush(
+        &mut self,
+        drops: &mut Vec<DataplaneOutputDrop>,
+        sent_receipts: &mut Option<&mut Vec<DataplaneTransportSentReceipt>>,
+        sent: &mut usize,
+    ) {
         if self.packets.is_empty() {
             return;
         }
@@ -422,6 +458,9 @@ impl<'a> DataplaneUdpTransportSendBatch<'a> {
             .send_payload_batch_to(&self.packets, self.socket_addr)
             .await;
         record_dataplane_udp_send_failed(failed);
+        let sent_items = self.packets.len().saturating_sub(failed);
+        self.packets
+            .finish_send(sent_items, drops, sent_receipts, sent);
         self.packets.clear();
     }
 }

@@ -77,11 +77,19 @@ impl DataplaneIngressHeader {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DataplaneReceiveEpoch {
+    Current,
+    Pending,
+    Previous,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DataplaneIngressRoute {
     owner: OwnerId,
     generation: u64,
     class: PacketClass,
     output: OutputTarget,
+    receive_epoch: DataplaneReceiveEpoch,
 }
 
 impl DataplaneIngressRoute {
@@ -91,11 +99,17 @@ impl DataplaneIngressRoute {
             generation,
             class: PacketClass::Bulk,
             output,
+            receive_epoch: DataplaneReceiveEpoch::Current,
         }
     }
 
     pub(crate) fn with_class(mut self, class: PacketClass) -> Self {
         self.class = class;
+        self
+    }
+
+    pub(crate) fn with_receive_epoch(mut self, receive_epoch: DataplaneReceiveEpoch) -> Self {
+        self.receive_epoch = receive_epoch;
         self
     }
 }
@@ -279,7 +293,7 @@ impl DataplaneFastIngressRun {
 pub(crate) struct DataplaneFastIngressBatch {
     runs: Vec<DataplaneFastIngressRun>,
     packet_count: usize,
-    reservation: Option<DataplaneFastIngressReservation>,
+    reservations: Vec<DataplaneFastIngressReservation>,
 }
 
 impl DataplaneFastIngressBatch {
@@ -291,7 +305,7 @@ impl DataplaneFastIngressBatch {
         Self {
             runs,
             packet_count,
-            reservation: Some(reservation),
+            reservations: vec![reservation],
         }
     }
 
@@ -299,10 +313,12 @@ impl DataplaneFastIngressBatch {
         self.packet_count
     }
 
-    pub(crate) fn absorb(&mut self, other: Self) {
-        for run in other.into_runs() {
+    pub(crate) fn absorb(&mut self, mut other: Self) {
+        self.reservations.append(&mut other.reservations);
+        for run in std::mem::take(&mut other.runs) {
             self.push_run(run);
         }
+        other.packet_count = 0;
     }
 
     fn push_run(&mut self, run: DataplaneFastIngressRun) {
@@ -320,7 +336,7 @@ impl DataplaneFastIngressBatch {
     }
 
     fn into_runs(mut self) -> Vec<DataplaneFastIngressRun> {
-        if let Some(reservation) = self.reservation.take() {
+        for reservation in std::mem::take(&mut self.reservations) {
             reservation.release();
         }
         self.packet_count = 0;
@@ -481,6 +497,7 @@ impl DataplaneEstablishedFastIngressSink {
         )
         .with_source_path(source_path)
         .with_activity_tick(activity_tick)
+        .with_receive_epoch(route.receive_epoch)
         .with_wire_flags(header.flags());
         socket_packet = socket_packet.with_path_mtu(u16::MAX);
         Ok(socket_packet)
@@ -532,6 +549,7 @@ impl DataplaneEstablishedFastIngressSink {
         .with_previous_hop(source.source_addr)
         .with_path_mtu(source.path_mtu)
         .with_activity_tick(activity_tick)
+        .with_receive_epoch(route.receive_epoch)
         .with_wire_flags(header.flags());
         DataplaneFastIngressDirectFspResult::Fast(socket_packet)
     }

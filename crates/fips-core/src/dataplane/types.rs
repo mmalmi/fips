@@ -193,6 +193,7 @@ pub(crate) struct SocketPacket {
     ce_flag: bool,
     path_mtu: u16,
     wire_flags: u8,
+    receive_epoch: DataplaneReceiveEpoch,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -226,6 +227,7 @@ pub(crate) struct OutboundPacket {
     fsp_cleartext_prefix: Vec<u8>,
     fsp_auto_coords_warmup: bool,
     fsp_send_receipt: Option<DataplaneFspSendReceipt>,
+    send_token: Option<u64>,
     activity_tick: Option<ActivityTick>,
     payload: PacketBuffer,
 }
@@ -252,6 +254,7 @@ impl OutboundPacket {
             fsp_cleartext_prefix: Vec::new(),
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
+            send_token: None,
             activity_tick: None,
             payload,
         }
@@ -274,6 +277,7 @@ impl OutboundPacket {
             fsp_cleartext_prefix: Vec::new(),
             fsp_auto_coords_warmup: true,
             fsp_send_receipt: None,
+            send_token: None,
             activity_tick: None,
             payload,
         }
@@ -321,6 +325,11 @@ impl OutboundPacket {
 
     pub(crate) fn has_fsp_send_receipt(&self) -> bool {
         self.fsp_send_receipt.is_some()
+    }
+
+    pub(crate) fn with_send_token(mut self, send_token: u64) -> Self {
+        self.send_token = Some(send_token);
+        self
     }
 
     pub(crate) fn refresh_fmp_send_context(
@@ -421,6 +430,7 @@ impl SocketPacket {
             ce_flag: false,
             path_mtu: u16::MAX,
             wire_flags: 0,
+            receive_epoch: DataplaneReceiveEpoch::Current,
             activity_tick: None,
             payload,
         }
@@ -448,6 +458,11 @@ impl SocketPacket {
 
     pub(crate) fn with_wire_flags(mut self, wire_flags: u8) -> Self {
         self.wire_flags = wire_flags;
+        self
+    }
+
+    pub(crate) fn with_receive_epoch(mut self, receive_epoch: DataplaneReceiveEpoch) -> Self {
+        self.receive_epoch = receive_epoch;
         self
     }
 

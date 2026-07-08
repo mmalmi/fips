@@ -129,6 +129,10 @@ impl DataplaneTurnDriver {
         self.mover.unregister_owner(owner);
     }
 
+    pub(crate) fn has_runnable_work(&self) -> bool {
+        self.mover.has_runnable_work()
+    }
+
     pub(crate) fn has_owner(&self, owner: OwnerId) -> bool {
         self.mover.has_owner(owner)
     }
@@ -835,6 +839,7 @@ impl DataplaneTurnDriver {
             },
         };
 
+        let counter = header.counter();
         let Some(route) = router.route(&packet, header) else {
             if packet.protocol == PacketProtocol::Fsp
                 && packet.fsp_source.is_some()
@@ -864,13 +869,14 @@ impl DataplaneTurnDriver {
         let mut socket_packet = SocketPacket::new(
             route.owner,
             route.generation,
-            header.counter(),
+            counter,
             route.class,
             route.output,
             payload,
         )
         .with_source_path(source_path);
         socket_packet = socket_packet.with_path_mtu(path_mtu);
+        socket_packet = socket_packet.with_receive_epoch(route.receive_epoch);
         if let Some(tick) = activity_tick {
             socket_packet = socket_packet.with_activity_tick(tick);
         }

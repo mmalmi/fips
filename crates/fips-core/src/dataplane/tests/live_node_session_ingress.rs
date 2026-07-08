@@ -191,7 +191,13 @@
         );
 
         let mut routes = DataplaneLiveRouteTable::default();
-        register_fmp_session_ingress_route(&mut routes, transport_id, 0xa7, fmp_owner, local_addr);
+        register_fmp_session_ingress_route(
+            &mut routes,
+            transport_id,
+            0xa7,
+            fmp_owner,
+            local_addr,
+        );
         register_fsp_session_payload_route(&mut routes, source_addr, fsp_owner, local_addr);
 
         let turn = pump_one_fmp_session_ingress_turn(
@@ -325,7 +331,13 @@
         );
         assert_eq!(driver.record_fsp_decrypt_failure(fsp_owner), Some(1));
         let mut routes = DataplaneLiveRouteTable::default();
-        register_fmp_session_ingress_route(&mut routes, transport_id, 0xc7, fmp_owner, local_addr);
+        register_fmp_session_ingress_route(
+            &mut routes,
+            transport_id,
+            0xc7,
+            fmp_owner,
+            local_addr,
+        );
         register_fsp_session_payload_route(&mut routes, source_addr, fsp_owner, local_addr);
 
         let turn = pump_one_fmp_session_ingress_turn(
@@ -401,7 +413,13 @@
             fmp_key,
         );
         let mut routes = DataplaneLiveRouteTable::default();
-        register_fmp_session_ingress_route(&mut routes, transport_id, 0xb1, fmp_owner, local_addr);
+        register_fmp_session_ingress_route(
+            &mut routes,
+            transport_id,
+            0xb1,
+            fmp_owner,
+            local_addr,
+        );
 
         let turn = pump_one_fmp_session_ingress_turn(
             &mut driver,
@@ -475,7 +493,13 @@
             fmp_key,
         );
         let mut routes = DataplaneLiveRouteTable::default();
-        register_fmp_session_ingress_route(&mut routes, transport_id, 0xb5, fmp_owner, local_addr);
+        register_fmp_session_ingress_route(
+            &mut routes,
+            transport_id,
+            0xb5,
+            fmp_owner,
+            local_addr,
+        );
 
         let turn = pump_one_fmp_session_ingress_turn(
             &mut driver,

@@ -448,6 +448,7 @@ pub(crate) struct OwnerReservation {
     activity_tick: Option<ActivityTick>,
     fmp_timestamp_ms: Option<u32>,
     fsp_timestamp_ms: Option<u32>,
+    send_token: Option<u64>,
 }
 
 impl OwnerReservation {
@@ -507,6 +508,18 @@ impl DataplaneFspOwnerActivity {
 
     pub(crate) fn last_rx_data_age_ms(self, now_ms: u64) -> Option<u64> {
         self.last_rx_data_activity.map(|tick| tick.age_ms(now_ms))
+    }
+
+    pub(crate) fn has_recent_data_return_from(
+        self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        self.last_rx_data_previous_hop == Some(*next_hop)
+            && self
+                .last_rx_data_age_ms(now_ms)
+                .is_some_and(|age_ms| age_ms <= timeout_ms)
     }
 
     pub(crate) fn fsp_session_start_ms(self) -> Option<u64> {
@@ -587,13 +600,23 @@ impl DataplaneFspOwnerActivity {
             && inbound_data_stale
     }
 
+    pub(crate) fn has_recent_outbound_without_data_return_from(
+        self,
+        next_hop: &NodeAddr,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        self.data_packets_sent > 0
+            && self.has_recent_outbound_activity(now_ms, timeout_ms)
+            && !self.has_recent_data_return_from(next_hop, now_ms, timeout_ms)
+    }
+
     fn tracks_next_hop(self, next_hop: &NodeAddr) -> bool {
         self.last_rx_previous_hop == Some(*next_hop) || self.tracks_outbound_next_hop(next_hop)
     }
 
     fn tracks_data_next_hop(self, next_hop: &NodeAddr) -> bool {
         self.last_rx_data_previous_hop == Some(*next_hop)
-            || self.tracks_outbound_next_hop(next_hop)
     }
 
     fn tracks_outbound_next_hop(self, next_hop: &NodeAddr) -> bool {
@@ -1044,6 +1067,9 @@ impl OwnerState {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return false;
         }
+        if packet.receive_epoch == DataplaneReceiveEpoch::Previous {
+            return self.previous_fmp_open.is_some() && self.previous_fmp_replay_window.is_some();
+        }
         let received_k_bit = packet.wire_flags & crate::node::wire::FLAG_KEY_EPOCH != 0;
         self.fmp_previous_draining_k_bit == Some(received_k_bit)
             && received_k_bit != self.fmp_current_k_bit
@@ -1054,6 +1080,9 @@ impl OwnerState {
     fn uses_pending_fmp_receive_epoch(&self, packet: &SocketPacket) -> bool {
         if self.owner.protocol() != PacketProtocol::Fmp {
             return false;
+        }
+        if packet.receive_epoch == DataplaneReceiveEpoch::Pending {
+            return self.pending_fmp_open.is_some() && self.pending_fmp_replay_window.is_some();
         }
         let received_k_bit = packet.wire_flags & crate::node::wire::FLAG_KEY_EPOCH != 0;
         self.pending_fmp_k_bit == Some(received_k_bit)
@@ -1369,6 +1398,7 @@ impl OwnerState {
                 activity_tick: packet.activity_tick,
                 fmp_timestamp_ms: None,
                 fsp_timestamp_ms: None,
+                send_token: None,
             },
             open_key,
         ))
@@ -1451,6 +1481,7 @@ impl OwnerState {
             activity_tick: packet.activity_tick,
             fmp_timestamp_ms,
             fsp_timestamp_ms,
+            send_token: packet.send_token,
         };
         Ok((reservation, packet))
     }

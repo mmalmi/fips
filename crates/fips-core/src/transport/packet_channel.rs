@@ -640,6 +640,10 @@ impl PacketBatch {
     pub(crate) fn is_empty(&self) -> bool {
         self.packets.is_empty()
     }
+
+    pub(crate) fn as_slice(&self) -> &[ReceivedPacket] {
+        &self.packets
+    }
 }
 
 impl Drop for PacketBatch {

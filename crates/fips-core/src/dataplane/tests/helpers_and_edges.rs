@@ -691,6 +691,7 @@
             source_wire_len: None,
             fmp_timestamp_ms: None,
             fsp_send_receipt: None,
+            send_token: None,
             payload: PacketBuffer::new(payload),
         }
     }

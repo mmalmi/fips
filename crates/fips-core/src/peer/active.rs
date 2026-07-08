@@ -183,6 +183,8 @@ pub struct ActivePeer {
     previous_session: Option<NoiseSession>,
     /// Previous session's our_index (for registry cleanup on drain expiry).
     previous_our_index: Option<SessionIndex>,
+    /// Previous session's transport id (for registry cleanup on drain expiry).
+    previous_transport_id: Option<TransportId>,
     /// When the drain window started (None = no drain in progress).
     drain_started: Option<Instant>,
     /// Pending new session from completed rekey (before K-bit cutover).
@@ -252,6 +254,7 @@ impl ActivePeer {
             current_k_bit: false,
             previous_session: None,
             previous_our_index: None,
+            previous_transport_id: None,
             drain_started: None,
             pending_new_session: None,
             pending_our_index: None,
@@ -328,6 +331,7 @@ impl ActivePeer {
             current_k_bit: false,
             previous_session: None,
             previous_our_index: None,
+            previous_transport_id: None,
             drain_started: None,
             pending_new_session: None,
             pending_our_index: None,
@@ -449,9 +453,20 @@ impl ActivePeer {
     ) -> Option<SessionIndex> {
         self.reset_replay_suppressed();
         let old_our_index = self.our_index;
+        self.previous_session = self.noise_session.take();
+        self.previous_our_index = old_our_index.filter(|old| *old != new_our_index);
+        self.previous_transport_id = self.transport_id;
+        self.drain_started = self.previous_our_index.map(|_| Instant::now());
         self.noise_session = Some(new_session);
         self.our_index = Some(new_our_index);
         self.their_index = Some(new_their_index);
+        self.session_established_at = Instant::now();
+        self.session_start = Instant::now();
+        self.session_generation = self.session_generation.wrapping_add(1).max(1);
+        self.rekey_in_progress = false;
+        self.rekey_msg1_resend_count = 0;
+        self.rekey_jitter_secs = draw_rekey_jitter();
+        self.last_heartbeat_sent = None;
         old_our_index
     }
 

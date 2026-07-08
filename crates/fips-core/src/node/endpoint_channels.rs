@@ -1,7 +1,10 @@
 use super::*;
 use tokio::sync::mpsc::error::TryRecvError;
 
-pub(crate) const ENDPOINT_STALE_DATA_DROP_MS: u64 = 150;
+// Endpoint data admitted by the app-facing queue should survive normal
+// routed-transit control cadence and dataplane turn jitter. Capacity still
+// bounds backlog; this is only a last-ditch stale-burst guard.
+pub(crate) const ENDPOINT_STALE_DATA_DROP_MS: u64 = 2_000;
 
 const ENDPOINT_DATA_BATCH_DRAIN_QUANTUM: usize = 8;
 

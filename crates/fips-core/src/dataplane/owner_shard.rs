@@ -353,6 +353,9 @@ impl DataplaneOwnerShard {
 
                 match owner.reserve(&queued.packet, queued.ingress_seq) {
                     Ok((reservation, open_key)) => {
+                        let packet_owner = queued.packet.owner;
+                        let packet_counter = queued.packet.counter;
+                        let packet_lane = queued.packet.lane();
                         let reservation = reservation.with_owner_shard(self.index);
                         count_fsp_path_open_dispatch(
                             &reservation,
@@ -371,11 +374,29 @@ impl DataplaneOwnerShard {
                                 PreparedCryptoWork::failed(reservation, CryptoFailureKind::Open)
                             }
                         };
+                        tracing::debug!(
+                            owner = ?packet_owner,
+                            counter = packet_counter,
+                            lane = ?packet_lane,
+                            "dataplane inbound dispatched"
+                        );
                         prepared.push(prepared_work);
                         dispatched = dispatched.saturating_add(1);
                         attempts_remaining = self.admission.len();
                     }
                     Err(error) => {
+                        tracing::debug!(
+                            owner = ?queued.packet.owner,
+                            counter = queued.packet.counter,
+                            generation = queued.packet.generation,
+                            class = ?queued.packet.class,
+                            lane = ?queued.packet.lane(),
+                            wire_flags = queued.packet.wire_flags,
+                            receive_epoch = ?queued.packet.receive_epoch,
+                            ingress_seq = queued.ingress_seq,
+                            reason = ?error,
+                            "dataplane inbound reservation failed"
+                        );
                         drops.push(PacketDrop::from_queued(&queued, error.into()));
                     }
                 }

@@ -298,7 +298,7 @@ impl crate::node::PeerLifecycleRegistry {
         if !peer.is_draining() || !peer.drain_expired(drain_secs) {
             return None;
         }
-        let transport_id = peer.transport_id();
+        let transport_id = peer.previous_transport_id().or_else(|| peer.transport_id());
         let old_our_index = peer.complete_drain()?;
         Some(FmpRekeyDrainCompletion {
             transport_id,
@@ -573,6 +573,7 @@ impl Node {
                     self.deregister_session_index((transport_id, drained.old_our_index.as_u32()));
                     let _ = self.index_allocator.free(drained.old_our_index);
                 }
+                self.sync_dataplane_fmp_owner(&node_addr);
             }
         }
 

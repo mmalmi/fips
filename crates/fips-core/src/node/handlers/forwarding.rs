@@ -119,6 +119,17 @@ impl Node {
         // ECN CE relay: propagate incoming CE and detect local congestion
         let local_congestion = self.detect_congestion(&next_hop_addr);
         let outgoing_ce = incoming_ce || local_congestion;
+        debug!(
+            previous_hop = %previous_hop,
+            src = %datagram_ref.src_addr,
+            dest = %datagram_ref.dest_addr,
+            next_hop = %next_hop_addr,
+            bytes = payload.len(),
+            incoming_ce,
+            local_congestion,
+            outgoing_ce,
+            "Forwarding SessionDatagram"
+        );
         if local_congestion {
             self.stats_mut().congestion.record_congestion_detected();
             let now = Instant::now();

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.81] - 2026-07-08
+
+### Fixed
+
+- Preserved control-side effects from dataplane pending-send turns, preventing
+  routed endpoint payload packets from being stranded when a control send drains
+  unrelated ready ingress completions.
+- Bumped `fips-endpoint` to 0.3.56 so app-facing consumers pick up the
+  `fips-core` 0.3.81 routed endpoint payload fix.
+
 ## [0.3.79] - 2026-07-08
 
 ### Changed

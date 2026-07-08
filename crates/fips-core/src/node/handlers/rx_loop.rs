@@ -351,18 +351,11 @@ impl Node {
                     ).await;
                 }
                 _ = dataplane_completion_notify.notified() => {
-                    let mut turn = {
-                        let mut dataplane_io = dataplane_runtime.io();
-                        self.drain_dataplane_completion_turn(
-                            &mut dataplane_io,
-                            LATENCY_PACKET_DRAIN_BUDGET,
-                        ).await
-                    };
-                    self.finish_dataplane_turn(
-                        &mut turn,
+                    let mut dataplane_io = dataplane_runtime.io();
+                    self.service_dataplane_completion_turns(
+                        &mut dataplane_io,
                         &mut maintenance_state,
                         &mut control_query_rx,
-                        0,
                     ).await;
                 }
                 Some(ipv6_packet) = dataplane_runtime.tun_outbound_rx.recv() => {
@@ -574,8 +567,45 @@ impl Node {
                 )
                 .await;
             turns += 1;
+            let runnable_work = self.dataplane.has_runnable_work();
 
-            if !keep_servicing || control_activity > 0 || control_drained > 0 {
+            if control_drained > 0
+                || (!keep_servicing && !runnable_work)
+                || (control_activity > 0 && !runnable_work)
+            {
+                break;
+            }
+        }
+    }
+
+    async fn service_dataplane_completion_turns(
+        &mut self,
+        io: &mut RxLoopDataplaneIo<'_>,
+        maintenance_state: &mut RxLoopMaintenanceState,
+        control_query_rx: &mut Receiver<ControlMessage>,
+    ) {
+        let started = Instant::now();
+        let mut turns = 0usize;
+
+        loop {
+            if turns > 0
+                && (turns >= RX_LOOP_BULK_SERVICE_MAX_TURNS
+                    || started.elapsed() >= RX_LOOP_BULK_SERVICE_MAX_ELAPSED
+                    || io.packet_rx.priority_ready_packets() > 0)
+            {
+                break;
+            }
+
+            let mut turn = self
+                .drain_dataplane_completion_turn(io, LATENCY_PACKET_DRAIN_BUDGET)
+                .await;
+            let control_drained = self
+                .finish_dataplane_turn(&mut turn, maintenance_state, control_query_rx, 0)
+                .await;
+            turns += 1;
+
+            let runnable_work = self.dataplane.has_runnable_work();
+            if control_drained > 0 || !runnable_work {
                 break;
             }
         }
@@ -589,7 +619,10 @@ impl Node {
         control_query_budget: usize,
     ) -> usize {
         let had_activity = turn.has_activity();
-        let control_drained = self.process_dataplane_control_ingress(turn).await;
+        let control_drained = self
+            .process_dataplane_control_ingress(turn)
+            .await
+            .saturating_add(self.drain_deferred_dataplane_control_turns().await);
         if control_drained > 0 && self.dataplane.has_deferred_raw_ingress() {
             self.dataplane.completion_notify().notify_one();
         }

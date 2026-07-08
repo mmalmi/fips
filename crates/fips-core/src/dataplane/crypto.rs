@@ -405,6 +405,14 @@ impl DataplaneAeadWorkerPool {
         Arc::clone(&self.completion_notify)
     }
 
+    pub(crate) fn has_ready_completions(&self) -> bool {
+        !self.pending_completion_batches.is_empty()
+            || self
+                .completion_rx
+                .as_ref()
+                .is_some_and(|completion_rx| !completion_rx.is_empty())
+    }
+
     pub(crate) fn record_perf_depths(&self) {
         if !crate::perf_profile::enabled() {
             return;
@@ -1029,6 +1037,7 @@ impl AeadOpenWork {
                     fmp_timestamp_ms: reservation.fmp_timestamp_ms,
                     source_wire_len: Some(source_wire_len),
                     fsp_send_receipt: None,
+                    send_token: reservation.send_token,
                     payload: work.work.packet.payload,
                 })
             }
@@ -1173,6 +1182,7 @@ impl AeadSealWork {
                         fmp_timestamp_ms: reservation.fmp_timestamp_ms,
                         source_wire_len: None,
                         fsp_send_receipt: work.work.packet.fsp_send_receipt,
+                        send_token: reservation.send_token,
                         payload: work.work.packet.payload,
                     }),
                     OutboundPostSeal::FmpWrap(route) => {
@@ -1182,6 +1192,9 @@ impl AeadSealWork {
                                 owner: reservation.owner,
                                 counter: reservation.counter,
                             });
+                        if let Some(send_token) = work.work.packet.send_token {
+                            packet = packet.with_send_token(send_token);
+                        }
                         if let Some(tick) = reservation.activity_tick {
                             packet = packet.with_activity_tick(tick);
                         }

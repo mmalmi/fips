@@ -37,6 +37,35 @@ pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 #[cfg(target_os = "linux")]
 const UDP_GRO_RECV_BUFFER_SIZE: usize = u16::MAX as usize;
 
+fn debug_udp_fmp_batch(
+    stage: &'static str,
+    transport_id: TransportId,
+    packets: &[ReceivedPacket],
+    accepted_fast_ingress: Option<usize>,
+) {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
+
+    for packet in packets {
+        let Ok(header) = crate::dataplane::FmpWireHeader::parse(packet.data.as_slice()) else {
+            continue;
+        };
+        debug!(
+            stage,
+            transport_id = %transport_id,
+            remote_addr = %packet.remote_addr,
+            receiver_idx = header.receiver_idx(),
+            counter = header.counter(),
+            flags = header.flags(),
+            bytes = packet.data.len(),
+            accepted_fast_ingress,
+            batch_packets = packets.len(),
+            "UDP FMP receive handoff"
+        );
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct UdpSendSnapshot {
     socket: AsyncUdpSocket,
@@ -902,7 +931,15 @@ async fn udp_receive_loop(
                         packets.push(packet);
                     }
 
-                    packet_tx.try_fast_ingress_packet_batch(&mut packets);
+                    debug_udp_fmp_batch("pre-fast-ingress", transport_id, packets.as_slice(), None);
+                    let accepted_fast_ingress =
+                        packet_tx.try_fast_ingress_packet_batch(&mut packets);
+                    debug_udp_fmp_batch(
+                        "post-fast-ingress",
+                        transport_id,
+                        packets.as_slice(),
+                        Some(accepted_fast_ingress),
+                    );
                     if !packets.is_empty() && packet_tx.send_packet_batch(packets).is_err() {
                         debug!(
                             transport_id = %transport_id,
@@ -987,7 +1024,15 @@ async fn udp_receive_loop(
                     if packets.is_empty() {
                         continue;
                     }
-                    packet_tx.try_fast_ingress_packet_batch(&mut packets);
+                    debug_udp_fmp_batch("pre-fast-ingress", transport_id, packets.as_slice(), None);
+                    let accepted_fast_ingress =
+                        packet_tx.try_fast_ingress_packet_batch(&mut packets);
+                    debug_udp_fmp_batch(
+                        "post-fast-ingress",
+                        transport_id,
+                        packets.as_slice(),
+                        Some(accepted_fast_ingress),
+                    );
                     if packets.is_empty() {
                         continue;
                     }

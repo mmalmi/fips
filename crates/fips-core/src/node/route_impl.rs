@@ -75,11 +75,6 @@ impl Node {
                     })
             });
 
-        let healthy_direct_peer = self
-            .peers
-            .get(dest_node_addr)
-            .filter(|peer| peer.is_healthy() && peer.can_send())
-            .map(|_| *dest_node_addr);
         let healthy_direct_route = self
             .peers
             .get(dest_node_addr)
@@ -143,10 +138,6 @@ impl Node {
                 |addr| sendable.contains(addr),
             )
         });
-        if explore_fallback && let Some(direct_addr) = healthy_direct_peer {
-            return self.peers.get(&direct_addr);
-        }
-
         if let Some(next_hop_addr) = sendable_learned_peers.as_ref().and_then(|sendable| {
             let activity = self.dataplane.fsp_owner_activity(dest_node_addr)?;
             let next_hop_addr = activity.last_outbound_next_hop()?;
@@ -427,7 +418,8 @@ impl Node {
         let Some(activity) = self.dataplane.fsp_owner_activity(dest) else {
             return false;
         };
-        activity.has_recent_outbound_without_inbound(
+        activity.has_recent_outbound_without_data_return_from(
+            dest,
             now_ms,
             self.session_direct_path_exclusive_trust_timeout_ms(),
         )
@@ -440,8 +432,13 @@ impl Node {
     ) -> bool {
         self.dataplane
             .fsp_owner_activity(dest)
-            .and_then(|activity| activity.last_rx_data_age_ms(now_ms))
-            .is_some_and(|age_ms| age_ms <= self.session_direct_path_exclusive_trust_timeout_ms())
+            .is_some_and(|activity| {
+                activity.has_recent_data_return_from(
+                    dest,
+                    now_ms,
+                    self.session_direct_path_exclusive_trust_timeout_ms(),
+                )
+            })
     }
 
     fn session_direct_discovered_endpoint_trust_expired(

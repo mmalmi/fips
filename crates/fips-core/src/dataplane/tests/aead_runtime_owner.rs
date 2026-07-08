@@ -2259,6 +2259,7 @@
             fmp_timestamp_ms: Some(919_001),
             source_wire_len: Some(payload.len()),
             fsp_send_receipt: None,
+            send_token: None,
             payload: PacketBuffer::new(payload),
         });
 

@@ -30,6 +30,34 @@ fn test_dataplane_fmp_owner_update_refreshes_fsp_owner_wrap_route() {
     );
 }
 
+#[test]
+fn test_incomplete_fsp_route_refresh_preserves_existing_wrap_route() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+
+    assert!(node.sync_dataplane_fmp_owner(&next_hop));
+    node.learn_reverse_route(remote_addr, next_hop);
+    install_established_session_with_mmp(&mut node, &remote);
+    assert!(node.sync_dataplane_fsp_owner_from_current_session(&remote_addr, 0));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(next_hop)
+    );
+
+    node.peers
+        .get_mut(&next_hop)
+        .expect("fallback peer")
+        .mark_reconnecting();
+
+    assert!(!node.refresh_dataplane_fsp_owner_routes(&remote_addr));
+    assert_eq!(
+        node.dataplane.fsp_owner_next_hop(&remote_addr),
+        Some(next_hop)
+    );
+}
+
 #[tokio::test]
 async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
@@ -357,7 +385,7 @@ fn test_active_session_keeps_learned_fallback_next_hop_affinity() {
 }
 
 #[test]
-fn test_active_fallback_affinity_periodically_retries_direct_payload() {
+fn test_active_fallback_affinity_keeps_user_payload_on_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     node.config.node.routing.learned_fallback_explore_interval = 2;
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
@@ -377,6 +405,7 @@ fn test_active_fallback_affinity_periodically_retries_direct_payload() {
     {
         let now_ms = Node::now_ms();
         seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, fallback_next_hop, now_ms);
+        seed_dataplane_fsp_data_rx_for_test(&mut node, remote_addr, fallback_next_hop, now_ms);
     }
 
     let selected = (0..4)
@@ -392,15 +421,63 @@ fn test_active_fallback_affinity_periodically_retries_direct_payload() {
         vec![
             fallback_next_hop,
             fallback_next_hop,
-            remote_addr,
+            fallback_next_hop,
             fallback_next_hop,
         ],
-        "fallback affinity must not starve periodic direct payload probes"
+        "fallback affinity should not spend user payloads on direct probes"
     );
 }
 
 #[test]
-fn test_stale_cost_fallback_periodically_retries_healthy_direct_payload() {
+fn test_active_fallback_exploration_skips_direct_while_refresh_pending() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    node.config.node.routing.learned_fallback_explore_interval = 2;
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let peer_config = crate::config::PeerConfig {
+        npub: crate::encode_npub(&remote.pubkey()),
+        alias: Some("direct-refresh-pending-fallback".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers.push(peer_config.clone());
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    {
+        let now_ms = Node::now_ms();
+        seed_dataplane_fsp_data_sent_for_test(&mut node, remote_addr, fallback_next_hop, now_ms);
+    }
+    let mut retry = super::super::retry::RetryState::new(peer_config);
+    retry.reconnect = true;
+    retry.retry_after_ms = Node::now_ms() + 500;
+    node.retry_pending.insert(remote_addr, retry);
+
+    let selected = (0..4)
+        .map(|_| {
+            node.find_next_hop(&remote_addr)
+                .map(|peer| *peer.node_addr())
+                .expect("route")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        selected,
+        vec![
+            fallback_next_hop,
+            fallback_next_hop,
+            fallback_next_hop,
+            fallback_next_hop,
+        ],
+        "direct refresh retry should not spend user payloads on direct probes"
+    );
+}
+
+#[test]
+fn test_stale_cost_fallback_keeps_user_payload_on_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     node.config.node.routing.learned_fallback_explore_interval = 2;
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
@@ -455,10 +532,10 @@ fn test_stale_cost_fallback_periodically_retries_healthy_direct_payload() {
         vec![
             fallback_next_hop,
             fallback_next_hop,
-            remote_addr,
+            fallback_next_hop,
             fallback_next_hop,
         ],
-        "cost-based fallback must not starve periodic direct payload probes"
+        "cost-based fallback should not spend user payloads on direct probes"
     );
 }
 

@@ -4,17 +4,21 @@ use crate::dataplane::{
     ActivityTick, DataplaneDirectFspSource, DataplaneEndpointDataRoute, DataplaneFspSendReceipt,
     DataplaneFspWrapRoute, DataplaneIngressRoute, DataplaneLiveNodeTurn,
     DataplaneLiveOutboundFirsts, DataplaneLiveOwnerRoutes, DataplaneLiveTurnIo,
-    DataplaneOutputDrop, DataplaneOutputError, DataplaneTunOutboundRoute, OutboundPacket,
-    OutputTarget, OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass, TransportPath,
+    DataplaneOutputDrop, DataplaneOutputError, DataplaneReceiveEpoch,
+    DataplaneTransportSentReceipt, DataplaneTunOutboundRoute, OutboundPacket, OutputTarget,
+    OwnerConfig, OwnerCryptoKeys, OwnerId, PacketClass, TransportPath,
 };
 use crate::node::session_wire::{FSP_PHASE_MSG2, FSP_PHASE_MSG3, FspCommonPrefix};
 use crate::protocol::SessionMessageType;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS: usize = 2;
 const DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS: usize = 8;
 const DATAPLANE_PENDING_OUTBOUND_COMPLETION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
+const DATAPLANE_DEFERRED_CONTROL_TURN_DRAIN_LIMIT: usize = 64;
+static DATAPLANE_FMP_LINK_SEND_TOKEN: AtomicU64 = AtomicU64::new(1);
 struct DataplaneFmpOwnerSeed {
     owner: OwnerId,
     config: OwnerConfig,
@@ -64,18 +68,15 @@ enum DataplanePendingOutboundFailure {
 #[derive(Clone, Copy)]
 struct DataplanePendingOutboundPolicy {
     continuation_turns: usize,
-    await_admitted_output: bool,
 }
 
 const DATAPLANE_PENDING_OUTBOUND_FAST_POLICY: DataplanePendingOutboundPolicy =
     DataplanePendingOutboundPolicy {
         continuation_turns: DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS,
-        await_admitted_output: false,
     };
 const DATAPLANE_PENDING_OUTBOUND_PATIENT_CONTROL_POLICY: DataplanePendingOutboundPolicy =
     DataplanePendingOutboundPolicy {
         continuation_turns: DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS,
-        await_admitted_output: true,
     };
 
 impl Node {
@@ -111,6 +112,7 @@ impl Node {
         if ce_flag {
             flags |= FLAG_CE;
         }
+        let send_token = DATAPLANE_FMP_LINK_SEND_TOKEN.fetch_add(1, Ordering::Relaxed);
 
         let outbound = OutboundPacket::fmp(
             OwnerId::fmp_node(*node_addr),
@@ -120,22 +122,23 @@ impl Node {
             flags,
             crate::transport::PacketBuffer::new(plaintext.to_vec()),
         )
-        .with_activity_tick(ActivityTick::new(Self::now_ms()));
+        .with_activity_tick(ActivityTick::new(Self::now_ms()))
+        .with_send_token(send_token);
         let firsts = DataplaneLiveOutboundFirsts {
             initial_outbound: Some(outbound),
             collect_transport_sent_receipts: true,
             ..Default::default()
         };
         let pending_policy = dataplane_fmp_link_pending_policy(plaintext);
-        let mut turn = self
+        let turn = self
             .pump_dataplane_pending_outbound_firsts(firsts, 0, 0, 1)
             .await;
-        turn = match self
-            .drive_dataplane_pending_outbound_turn(
+        let (receipt, pending_turn) = match self
+            .drive_dataplane_pending_outbound_owner_receipt(
                 turn,
-                true,
+                OwnerId::fmp_node(*node_addr),
+                send_token,
                 pending_policy.continuation_turns,
-                pending_policy.await_admitted_output,
             )
             .await
         {
@@ -158,35 +161,7 @@ impl Node {
                 });
             }
         };
-        if turn.transport_sent() != 1
-            || turn.transport_dropped() != 0
-            || turn.summary().outputs_sent() != 1
-        {
-            return Err(NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: format!(
-                    "dataplane FMP send unexpected output shape: {:?}",
-                    turn.summary()
-                ),
-            });
-        }
-        let mut sent_receipts = turn.take_transport_sent_receipts();
-        if sent_receipts.len() != 1 {
-            return Err(NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: format!(
-                    "dataplane FMP send transport receipt mismatch: {:?}",
-                    turn.summary()
-                ),
-            });
-        }
-        let receipt = sent_receipts.pop().expect("checked one sent receipt");
-        if receipt.owner != OwnerId::fmp_node(*node_addr) {
-            return Err(NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "dataplane FMP send receipt owner mismatch".into(),
-            });
-        }
+        self.defer_dataplane_control_turn(pending_turn);
         let timestamp_ms = receipt
             .fmp_timestamp_ms
             .ok_or_else(|| NodeError::SendFailed {
@@ -383,6 +358,43 @@ impl Node {
         turn
     }
 
+    fn defer_dataplane_control_turn(&mut self, turn: DataplaneLiveNodeTurn) {
+        if Self::dataplane_turn_has_control_side_effects(&turn) {
+            self.deferred_dataplane_control_turns.push_back(turn);
+        }
+    }
+
+    pub(in crate::node) async fn drain_deferred_dataplane_control_turns(&mut self) -> usize {
+        let mut processed = 0usize;
+        let mut turns = 0usize;
+        while turns < DATAPLANE_DEFERRED_CONTROL_TURN_DRAIN_LIMIT {
+            let Some(mut turn) = self.deferred_dataplane_control_turns.pop_front() else {
+                break;
+            };
+            processed =
+                processed.saturating_add(self.process_dataplane_control_ingress(&mut turn).await);
+            turns = turns.saturating_add(1);
+        }
+        if !self.deferred_dataplane_control_turns.is_empty() {
+            self.dataplane.completion_notify().notify_one();
+        }
+        processed
+    }
+
+    fn dataplane_turn_has_control_side_effects(turn: &DataplaneLiveNodeTurn) -> bool {
+        !turn.fmp_control_ingress().is_empty()
+            || !turn.fmp_link_ingress().is_empty()
+            || !turn.fsp_coord_warmups().is_empty()
+            || !turn.fsp_local_session_ingress().is_empty()
+            || turn.endpoint_data_packet_count() > 0
+            || turn.fsp_session_ingress_count() > 0
+            || !turn.raw_ingress_drops().is_empty()
+            || !turn.tun_outbound_drops().is_empty()
+            || !turn.endpoint_data_drops().is_empty()
+            || !turn.output_drops().is_empty()
+            || !turn.drops().is_empty()
+    }
+
     async fn send_dataplane_fsp_control_outbound(
         &mut self,
         dest_addr: &NodeAddr,
@@ -480,7 +492,6 @@ impl Node {
                 turn,
                 collect_transport_sent_receipts,
                 DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.continuation_turns,
-                DATAPLANE_PENDING_OUTBOUND_FAST_POLICY.await_admitted_output,
             )
             .await;
         self.process_dataplane_pending_outbound_bookkeeping().await;
@@ -498,9 +509,8 @@ impl Node {
         mut turn: DataplaneLiveNodeTurn,
         collect_transport_sent_receipts: bool,
         continuation_turns: usize,
-        await_admitted_output: bool,
     ) -> Result<DataplaneLiveNodeTurn, DataplanePendingOutboundFailure> {
-        let mut awaiting_admitted_output = false;
+        let mut awaiting_output = false;
         for continuation in 0..=continuation_turns {
             let summary = turn.summary();
             let sent = Self::dataplane_pending_outbound_sent(&turn);
@@ -515,10 +525,10 @@ impl Node {
             if sent {
                 return Ok(turn);
             }
-            if await_admitted_output && needs_continuation {
-                awaiting_admitted_output = true;
+            if needs_continuation {
+                awaiting_output = true;
             }
-            if deferred || (!needs_continuation && !awaiting_admitted_output) {
+            if deferred || (!needs_continuation && !awaiting_output) {
                 let reason = if deferred {
                     "deferred without transport output"
                 } else {
@@ -530,9 +540,10 @@ impl Node {
                 return Err(DataplanePendingOutboundFailure::Exhausted(turn));
             }
 
-            if (needs_continuation || awaiting_admitted_output) && summary.outputs() == 0 {
+            if summary.outputs() == 0 {
                 self.wait_for_dataplane_completion().await;
             }
+            self.defer_dataplane_control_turn(turn);
             turn = self
                 .pump_dataplane_pending_outbound_firsts(
                     DataplaneLiveOutboundFirsts {
@@ -547,6 +558,77 @@ impl Node {
         }
 
         unreachable!("bounded pending outbound continuation loop must return")
+    }
+
+    async fn drive_dataplane_pending_outbound_owner_receipt(
+        &mut self,
+        mut turn: DataplaneLiveNodeTurn,
+        owner: OwnerId,
+        send_token: u64,
+        continuation_turns: usize,
+    ) -> Result<
+        (DataplaneTransportSentReceipt, DataplaneLiveNodeTurn),
+        DataplanePendingOutboundFailure,
+    > {
+        let mut awaiting_output = false;
+        let mut idle_turns = 0usize;
+        loop {
+            if let Some(receipt) = Self::dataplane_sent_owner_receipt(&mut turn, owner, send_token)
+            {
+                return Ok((receipt, turn));
+            }
+
+            let summary = turn.summary();
+            let deferred =
+                turn.deferred_endpoint_data_batches_count() > 0 || turn.tun_deferred_packets() > 0;
+            let failed = turn.has_failures();
+            let needs_continuation = Self::dataplane_pending_outbound_needs_continuation(&turn);
+            let made_progress =
+                summary.has_activity() || turn.transport_sent() > 0 || turn.transport_dropped() > 0;
+
+            if failed {
+                return Err(DataplanePendingOutboundFailure::TurnFailed(turn));
+            }
+            if needs_continuation {
+                awaiting_output = true;
+            }
+            if deferred {
+                return Err(DataplanePendingOutboundFailure::Stopped {
+                    turn,
+                    reason: "deferred without transport output",
+                });
+            }
+            if !needs_continuation && !awaiting_output && !made_progress {
+                return Err(DataplanePendingOutboundFailure::Stopped {
+                    turn,
+                    reason: "made no transport output progress",
+                });
+            }
+            if !made_progress {
+                if idle_turns == continuation_turns {
+                    return Err(DataplanePendingOutboundFailure::Exhausted(turn));
+                }
+                idle_turns = idle_turns.saturating_add(1);
+            } else {
+                idle_turns = 0;
+            }
+
+            if summary.outputs() == 0 {
+                self.wait_for_dataplane_completion().await;
+            }
+            self.defer_dataplane_control_turn(turn);
+            turn = self
+                .pump_dataplane_pending_outbound_firsts(
+                    DataplaneLiveOutboundFirsts {
+                        collect_transport_sent_receipts: true,
+                        ..Default::default()
+                    },
+                    0,
+                    0,
+                    1,
+                )
+                .await;
+        }
     }
 
     async fn wait_for_dataplane_completion(&self) {
@@ -572,6 +654,16 @@ impl Node {
             }
         }
         sent_receipt
+    }
+
+    fn dataplane_sent_owner_receipt(
+        turn: &mut DataplaneLiveNodeTurn,
+        owner: OwnerId,
+        send_token: u64,
+    ) -> Option<DataplaneTransportSentReceipt> {
+        turn.take_transport_sent_receipts()
+            .into_iter()
+            .find(|receipt| receipt.owner == owner && receipt.send_token == Some(send_token))
     }
 
     fn dataplane_pending_outbound_sent(turn: &DataplaneLiveNodeTurn) -> bool {
@@ -701,6 +793,14 @@ impl Node {
             || update
                 .next_hop
                 .is_some_and(|next_hop| self.dataplane_has_fmp_owner(&next_hop));
+        if !(route_ready && next_hop_ready)
+            && self
+                .dataplane
+                .fsp_owner_next_hop(node_addr)
+                .is_some_and(|next_hop| self.dataplane_has_fmp_owner(&next_hop))
+        {
+            return false;
+        }
         let direct_path_mtu = update.direct_path_mtu;
         let refreshed = self
             .dataplane
@@ -998,14 +1098,31 @@ impl Node {
         let transport_id = peer.transport_id()?;
         let remote_addr = peer.current_addr()?.clone();
         let receiver_idx = peer.our_index()?.as_u32();
-        let mut receive_indices = vec![receiver_idx];
-        for index in [peer.pending_our_index(), peer.previous_our_index()]
-            .into_iter()
-            .flatten()
-            .map(|index| index.as_u32())
-        {
-            if !receive_indices.contains(&index) {
-                receive_indices.push(index);
+        let mut receive_indices =
+            vec![(transport_id, receiver_idx, DataplaneReceiveEpoch::Current)];
+        for (route_transport_id, index, epoch) in [
+            (
+                peer.pending_our_index().map(|index| (transport_id, index)),
+                DataplaneReceiveEpoch::Pending,
+            ),
+            (
+                peer.previous_our_index()
+                    .map(|index| (peer.previous_transport_id().unwrap_or(transport_id), index)),
+                DataplaneReceiveEpoch::Previous,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(indexed_transport, epoch)| {
+            indexed_transport
+                .map(|(route_transport_id, index)| (route_transport_id, index.as_u32(), epoch))
+        }) {
+            if !receive_indices
+                .iter()
+                .any(|(existing_transport, existing_index, _)| {
+                    *existing_transport == route_transport_id && *existing_index == index
+                })
+            {
+                receive_indices.push((route_transport_id, index, epoch));
             }
         }
         let fmp_send_headers = peer.their_index().map(|their_index| {
@@ -1025,9 +1142,9 @@ impl Node {
         let seal = Arc::new(session.send_cipher_clone()?);
         let counter_authority = session.send_counter_authority();
         let mut routes = DataplaneLiveOwnerRoutes::new();
-        for receiver_idx in receive_indices {
+        for (route_transport_id, receiver_idx, receive_epoch) in receive_indices.iter().copied() {
             routes.push_fmp_ingress(
-                transport_id,
+                route_transport_id,
                 receiver_idx,
                 DataplaneIngressRoute::new(
                     OwnerId::fmp_node(*node_addr),
@@ -1036,7 +1153,8 @@ impl Node {
                         local_addr: *self.node_addr(),
                     },
                 )
-                .with_class(PacketClass::Bulk),
+                .with_class(PacketClass::Bulk)
+                .with_receive_epoch(receive_epoch),
             );
         }
         let mut config = self
@@ -1424,10 +1542,22 @@ mod tests {
             0,
         ]);
 
-        assert!(!dataplane_fmp_link_pending_policy(&msg1).await_admitted_output);
-        assert!(dataplane_fmp_link_pending_policy(&msg2).await_admitted_output);
-        assert!(dataplane_fmp_link_pending_policy(&msg3).await_admitted_output);
-        assert!(!dataplane_fmp_link_pending_policy(&established).await_admitted_output);
+        assert_eq!(
+            dataplane_fmp_link_pending_policy(&msg1).continuation_turns,
+            DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS
+        );
+        assert_eq!(
+            dataplane_fmp_link_pending_policy(&msg2).continuation_turns,
+            DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS
+        );
+        assert_eq!(
+            dataplane_fmp_link_pending_policy(&msg3).continuation_turns,
+            DATAPLANE_PENDING_OUTBOUND_CONTROL_CONTINUATION_TURNS
+        );
+        assert_eq!(
+            dataplane_fmp_link_pending_policy(&established).continuation_turns,
+            DATAPLANE_PENDING_OUTBOUND_FAST_CONTINUATION_TURNS
+        );
     }
 
     #[tokio::test]

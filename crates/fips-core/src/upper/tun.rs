@@ -600,6 +600,7 @@ impl TunWriter {
             } else {
                 for packet in &batch {
                     crate::perf_profile::record_tun_write_packet(packet.len());
+                    debug_ipv4_icmp_packet("Linux vnet TUN packet written", packet.as_slice());
                     trace!(name = %self.name, len = packet.len(), "TUN packet written");
                 }
             }
@@ -673,10 +674,46 @@ impl TunWriter {
                 error!(name = %writer.name, error = %e, "TUN write error");
             } else {
                 crate::perf_profile::record_tun_write_packet(packet.len());
+                debug_ipv4_icmp_packet("TUN packet written", packet.as_slice());
                 trace!(name = %writer.name, len = packet.len(), "TUN packet written");
             }
         }
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn debug_ipv4_icmp_packet(message: &'static str, packet: &[u8]) {
+    let Some((src, dst, icmp_type, icmp_id, icmp_seq)) = ipv4_icmp_echo(packet) else {
+        return;
+    };
+    debug!(
+        src = %src,
+        dst = %dst,
+        icmp_type,
+        icmp_id,
+        icmp_seq,
+        message
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn ipv4_icmp_echo(packet: &[u8]) -> Option<(std::net::Ipv4Addr, std::net::Ipv4Addr, u8, u16, u16)> {
+    if packet.len() < 28 || packet[0] >> 4 != 4 || packet[9] != 1 {
+        return None;
+    }
+    let header_len = usize::from(packet[0] & 0x0f).checked_mul(4)?;
+    if header_len < 20 || packet.len() < header_len.saturating_add(8) {
+        return None;
+    }
+    let icmp_type = packet[header_len];
+    if !matches!(icmp_type, 0 | 8) {
+        return None;
+    }
+    let src = std::net::Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+    let dst = std::net::Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+    let icmp_id = u16::from_be_bytes([packet[header_len + 4], packet[header_len + 5]]);
+    let icmp_seq = u16::from_be_bytes([packet[header_len + 6], packet[header_len + 7]]);
+    Some((src, dst, icmp_type, icmp_id, icmp_seq))
 }
 
 /// TUN packet reader loop (Linux).

@@ -297,6 +297,16 @@ impl Node {
     ) -> bool {
         let receipt = ingress.receipt();
         let fmp = AuthenticatedFmpReceiveFacts::from_dataplane_receipt(receipt);
+        debug!(
+            source = %fmp.source_node_addr(),
+            counter = fmp.fmp_counter,
+            flags = fmp.fmp_flags,
+            inner_timestamp_ms = fmp.inner_timestamp_ms,
+            packet_len = fmp.packet_len,
+            msg_type = ?ingress.msg_type(),
+            payload_len = ingress.payload().len(),
+            "dataplane FMP link ingress"
+        );
         self.record_authenticated_fmp_receive_facts(fmp, Some(receipt.source_addr()));
         let Some(msg_type) = ingress.msg_type() else {
             return true;
@@ -400,6 +410,7 @@ impl Node {
                     transport_id = ?drop.transport_id(),
                     remote_addr = ?drop.remote_addr(),
                     payload_len = drop.payload_len(),
+                    fmp_receiver_idx = ?drop.fmp_receiver_idx(),
                     reason = ?drop.reason(),
                     "dataplane raw ingress dropped"
                 );
@@ -410,6 +421,17 @@ impl Node {
                     payload_len = drop.payload_len(),
                     reason = ?drop.reason(),
                     "dataplane endpoint data batch dropped"
+                );
+            }
+            for drop in turn.drops() {
+                debug!(
+                    owner = ?drop.owner(),
+                    counter = ?drop.counter(),
+                    reason = ?drop.reason(),
+                    crypto_failure = ?drop.crypto_failure(),
+                    wire_flags = ?drop.wire_flags(),
+                    authenticated_counter_highest = ?drop.authenticated_counter_highest(),
+                    "dataplane packet dropped"
                 );
             }
             return;

@@ -57,6 +57,163 @@ async fn test_reply_learned_forward_fallback_uses_non_tree_peer_without_origin_e
 }
 
 #[tokio::test]
+async fn test_reply_learned_initiate_lookup_uses_stale_sendable_fallback_peer() {
+    // A stale authenticated link is still sendable. Initiated discovery should
+    // use it as fallback transit so a quiet but usable relay can recover routes
+    // instead of disappearing from lookup fanout until a full reconnect.
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node1_addr = *nodes[1].node.node_addr();
+    nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[0]
+        .node
+        .get_peer_mut(&node1_addr)
+        .expect("fallback peer")
+        .mark_stale();
+    assert!(
+        nodes[0]
+            .node
+            .peers
+            .get(&node1_addr)
+            .is_some_and(|peer| peer.can_send() && !peer.is_healthy()),
+        "fixture requires a stale but sendable fallback peer"
+    );
+
+    let target = make_node_addr(0x88);
+    let sent = nodes[0].node.initiate_lookup(&target, 5).await;
+    assert_eq!(sent, 1, "stale sendable fallback peer should be used");
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        nodes[1]
+            .node
+            .recent_requests
+            .values()
+            .any(|recent| recent.from_peer == *nodes[0].node.node_addr()),
+        "fallback peer should receive the initiated lookup"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_lookup_forward_hands_to_stale_sendable_direct_target() {
+    // Discovery is what refreshes routed reachability, so a transit node should
+    // hand a lookup to an authenticated direct target that is stale but still
+    // sendable. Requiring fully healthy liveness here can blackhole startup or
+    // recovery when MMP cadence lags behind data/control traffic.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+    let target = node2_addr;
+    nodes[1]
+        .node
+        .get_peer_mut(&node2_addr)
+        .expect("target direct peer")
+        .mark_stale();
+    assert!(
+        nodes[1]
+            .node
+            .peers
+            .get(&node2_addr)
+            .is_some_and(|peer| peer.can_send() && !peer.is_healthy()),
+        "fixture requires a stale but sendable direct target"
+    );
+
+    let origin_coords = TreeCoordinate::from_addrs(vec![node0_addr, node1_addr]).unwrap();
+    let request = LookupRequest::new(4444, target, node0_addr, origin_coords, 5, 0);
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, &request.encode()[1..])
+        .await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        nodes[2].node.recent_requests.contains_key(&4444),
+        "sendable direct target should receive the forwarded lookup"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_reply_learned_no_peer_forward_does_not_rate_limit_later_target() {
+    // Startup can race the first lookup ahead of target promotion on a transit
+    // node. A no-carrier forward attempt must not spend the per-target forward
+    // limiter, or the origin's immediate retry can be suppressed even after the
+    // target path becomes usable.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.tree_state_mut().remove_peer(&node2_addr);
+    nodes[1].node.tree_state_mut().become_root();
+    nodes[1]
+        .node
+        .get_peer_mut(&node2_addr)
+        .expect("target direct peer")
+        .mark_reconnecting();
+
+    let origin_coords = TreeCoordinate::from_addrs(vec![node0_addr, node1_addr]).unwrap();
+    let first = LookupRequest::new(4848, node2_addr, node0_addr, origin_coords.clone(), 5, 0);
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, &first.encode()[1..])
+        .await;
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_no_tree_peer,
+        1,
+        "first lookup should find no usable forward peer"
+    );
+
+    nodes[1]
+        .node
+        .get_peer_mut(&node2_addr)
+        .expect("target direct peer")
+        .mark_connected(Node::now_ms());
+    let second = LookupRequest::new(4949, node2_addr, node0_addr, origin_coords, 5, 0);
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, &second.encode()[1..])
+        .await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert_eq!(
+        nodes[1].node.stats().discovery.req_forward_rate_limited,
+        0,
+        "no-peer lookup must not charge the forward limiter"
+    );
+    assert!(
+        nodes[2].node.recent_requests.contains_key(&4949),
+        "target should receive the immediate retry after becoming usable"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_reply_learned_forward_fanout_skips_bootstrap_transit_peer() {
     // Topology: node0 asks node1 for node4. Node1 has a tree/bloom route via
     // node2 and a live non-tree neighbor node3 on a bootstrap transport. The

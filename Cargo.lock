@@ -1477,7 +1477,7 @@ dependencies = [
 
 [[package]]
 name = "fips-core"
-version = "0.3.80"
+version = "0.3.81"
 dependencies = [
  "bluer",
  "bytes",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "fips-endpoint"
-version = "0.3.55"
+version = "0.3.56"
 dependencies = [
  "fips-core",
 ]

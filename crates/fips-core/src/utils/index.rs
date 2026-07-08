@@ -7,7 +7,7 @@
 //! ## Design
 //!
 //! - Indices are random (cryptographically secure) to prevent guessing
-//! - Unique per transport to avoid collision between transports
+//! - Unique per node to avoid collision between transports
 //! - 32-bit space supports ~65K concurrent sessions before birthday collision
 //! - Indices are rotated on rekey for anti-correlation
 //!

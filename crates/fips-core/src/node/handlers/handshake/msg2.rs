@@ -388,10 +388,6 @@ impl Node {
                 );
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
 
-                if let Some(old_index) = replacement.old_session_index {
-                    self.deregister_session_index(old_index.key);
-                    let _ = self.index_allocator.free(old_index.index);
-                }
                 self.seed_path_mtu_for_link_peer(
                     &peer_node_addr,
                     outbound_transport_id,
@@ -500,10 +496,6 @@ impl Node {
                     "outbound_cross_connection_swap",
                 );
                 self.sync_dataplane_fmp_owner(&peer_node_addr);
-                if let Some(old_index) = replacement.old_session_index {
-                    self.deregister_session_index(old_index.key);
-                    let _ = self.index_allocator.free(old_index.index);
-                }
                 self.links
                     .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
                 self.sync_dataplane_fmp_owner(&peer_node_addr);

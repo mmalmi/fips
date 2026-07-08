@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::ActivePeerCurrentSessionReplacement;
 
 impl Node {
     /// Promote a connection to active peer after successful authentication.
@@ -66,16 +67,17 @@ impl Node {
             let outbound_alternate_path = is_outbound
                 && (existing_peer.transport_id() != Some(transport_id)
                     || existing_peer.current_addr() != Some(&current_addr));
-            let late_inbound_refresh_for_active_outbound = !is_outbound
+            let inbound_alternate_path = !is_outbound
+                && (existing_peer.transport_id() != Some(transport_id)
+                    || existing_peer.current_addr() != Some(&current_addr));
+            let late_inbound_refresh_for_active_outbound = inbound_alternate_path
                 && existing_peer.fmp_mmp_is_initiator()
                 && existing_peer.handshake_msg2().is_none()
-                && ((existing_peer.transport_id() == Some(transport_id)
-                    && existing_peer.current_addr() == Some(&current_addr))
-                    || self.alternate_path_priority_allows_replace(
-                        &peer_node_addr,
-                        transport_id,
-                        &current_addr,
-                    ));
+                && self.alternate_path_priority_allows_replace(
+                    &peer_node_addr,
+                    transport_id,
+                    &current_addr,
+                );
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
             let existing_path_unusable = existing_path_unusable
@@ -101,12 +103,11 @@ impl Node {
             // win instead of applying the simultaneous-handshake tie-breaker to
             // a path we already marked unusable.
             //
-            // A completed outbound handshake on a different transport tuple is
-            // also not a symmetric cross-connection. It is an explicit
-            // alternate-path refresh we initiated after learning a candidate;
-            // successful authentication is enough proof when the current path
-            // has stopped returning endpoint traffic, or when the candidate is
-            // at least as preferred as the current healthy path.
+            // A completed handshake on a different transport tuple is also not
+            // a symmetric cross-connection when it is an explicit alternate-path
+            // refresh. Same-tuple races must stay on the deterministic
+            // cross-connection tie-breaker; otherwise both peers can accept the
+            // responder half and keep sending to stale receiver indices.
             let this_wins = remote_epoch_changed
                 || existing_path_unusable
                 || late_inbound_refresh_for_active_outbound
@@ -117,19 +118,19 @@ impl Node {
                 };
 
             if this_wins {
-                // This connection wins, replace the existing peer
-                let old_peer = self.peers.remove(&peer_node_addr).unwrap();
-                let loser_link_id = old_peer.link_id();
-
-                // Clean up old peer's index from active peer registry session-index dispatch
-                if let (Some(old_tid), Some(old_idx)) =
-                    (old_peer.transport_id(), old_peer.our_index())
-                {
-                    self.deregister_session_index((old_tid, old_idx.as_u32()));
-                    let _ = self.index_allocator.free(old_idx);
-                }
-
                 if remote_epoch_changed {
+                    // A peer restart is not a session handoff; the previous FMP
+                    // owner is cryptographically stale and should not drain.
+                    let old_peer = self.peers.remove(&peer_node_addr).unwrap();
+                    let loser_link_id = old_peer.link_id();
+
+                    if let (Some(old_tid), Some(old_idx)) =
+                        (old_peer.transport_id(), old_peer.our_index())
+                    {
+                        self.deregister_session_index((old_tid, old_idx.as_u32()));
+                        let _ = self.index_allocator.free(old_idx);
+                    }
+
                     self.remove_dataplane_fsp_owner(&peer_node_addr);
                     if self.sessions.remove(&peer_node_addr).is_some() {
                         debug!(
@@ -143,65 +144,112 @@ impl Node {
                         loser_link = %loser_link_id,
                         "Peer restart detected during promotion, replacing stale active peer"
                     );
+
+                    self.seed_path_mtu_for_link_peer(&peer_node_addr, transport_id, &current_addr);
+
+                    let mut new_peer = ActivePeer::with_session(
+                        verified_identity,
+                        link_id,
+                        current_time_ms,
+                        ActivePeerSession {
+                            session: noise_session,
+                            our_index,
+                            their_index,
+                            transport_id,
+                            current_addr,
+                            link_stats,
+                            is_initiator: is_outbound,
+                            remote_epoch,
+                        },
+                    );
+                    new_peer.set_tree_announce_min_interval_ms(
+                        self.config.node.tree.announce_min_interval_ms,
+                    );
+
+                    let inserted = self
+                        .peers
+                        .insert_with_current_session_index(peer_node_addr, new_peer);
+                    self.log_active_peer_insert_result(
+                        &peer_node_addr,
+                        &inserted,
+                        "cross_connection_won_restart",
+                    );
+                    self.sync_dataplane_fmp_owner(&peer_node_addr);
+                    self.clear_session_direct_path_degraded_after_promotion(
+                        &peer_node_addr,
+                        current_time_ms,
+                    );
+                    self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
+                    self.set_discovery_fallback_transit_allowed(
+                        peer_node_addr,
+                        discovery_fallback_transit_allowed,
+                    );
+                    self.register_identity(peer_node_addr, verified_identity.pubkey_full());
+
+                    self.sync_dataplane_fmp_owner(&peer_node_addr);
+
+                    debug!(
+                        peer = %self.peer_display_name(&peer_node_addr),
+                        winner_link = %link_id,
+                        loser_link = %loser_link_id,
+                        "Cross-connection resolved: this connection won after peer restart"
+                    );
+
+                    Ok(PromotionResult::CrossConnectionWon {
+                        loser_link_id,
+                        node_addr: peer_node_addr,
+                    })
+                } else {
+                    let loser_link_id = existing_link_id;
+
+                    self.seed_path_mtu_for_link_peer(&peer_node_addr, transport_id, &current_addr);
+                    let replacement = self
+                        .peers
+                        .replace_current_session_and_path(
+                            &peer_node_addr,
+                            ActivePeerCurrentSessionReplacement {
+                                session: noise_session,
+                                our_index,
+                                their_index,
+                                link_id,
+                                transport_id,
+                                addr: &current_addr,
+                                is_initiator: is_outbound,
+                                remote_epoch_update: remote_epoch,
+                                connected_at_ms: current_time_ms,
+                            },
+                        )
+                        .ok_or(NodeError::PeerNotFound(peer_node_addr))?;
+                    self.log_active_peer_session_replacement_result(
+                        &peer_node_addr,
+                        &replacement,
+                        "cross_connection_won",
+                    );
+                    self.sync_dataplane_fmp_owner(&peer_node_addr);
+                    self.clear_session_direct_path_degraded_after_promotion(
+                        &peer_node_addr,
+                        current_time_ms,
+                    );
+                    self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
+                    self.set_discovery_fallback_transit_allowed(
+                        peer_node_addr,
+                        discovery_fallback_transit_allowed,
+                    );
+                    self.register_identity(peer_node_addr, verified_identity.pubkey_full());
+                    self.sync_dataplane_fmp_owner(&peer_node_addr);
+
+                    debug!(
+                        peer = %self.peer_display_name(&peer_node_addr),
+                        winner_link = %link_id,
+                        loser_link = %loser_link_id,
+                        "Cross-connection resolved: this connection won"
+                    );
+
+                    Ok(PromotionResult::CrossConnectionWon {
+                        loser_link_id,
+                        node_addr: peer_node_addr,
+                    })
                 }
-
-                self.seed_path_mtu_for_link_peer(&peer_node_addr, transport_id, &current_addr);
-
-                let mut new_peer = ActivePeer::with_session(
-                    verified_identity,
-                    link_id,
-                    current_time_ms,
-                    ActivePeerSession {
-                        session: noise_session,
-                        our_index,
-                        their_index,
-                        transport_id,
-                        current_addr,
-                        link_stats,
-                        is_initiator: is_outbound,
-                        remote_epoch,
-                    },
-                );
-                new_peer.set_tree_announce_min_interval_ms(
-                    self.config.node.tree.announce_min_interval_ms,
-                );
-
-                let inserted = self
-                    .peers
-                    .insert_with_current_session_index(peer_node_addr, new_peer);
-                self.log_active_peer_insert_result(
-                    &peer_node_addr,
-                    &inserted,
-                    "cross_connection_won",
-                );
-                self.sync_dataplane_fmp_owner(&peer_node_addr);
-                self.clear_session_direct_path_degraded_after_promotion(
-                    &peer_node_addr,
-                    current_time_ms,
-                );
-                self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
-                self.set_discovery_fallback_transit_allowed(
-                    peer_node_addr,
-                    discovery_fallback_transit_allowed,
-                );
-                self.register_identity(peer_node_addr, verified_identity.pubkey_full());
-
-                // Refresh the dataplane FMP owner after cross-connection
-                // replacement. The sibling "no existing peer" branch below
-                // already does this on initial promotion.
-                self.sync_dataplane_fmp_owner(&peer_node_addr);
-
-                debug!(
-                    peer = %self.peer_display_name(&peer_node_addr),
-                    winner_link = %link_id,
-                    loser_link = %loser_link_id,
-                    "Cross-connection resolved: this connection won"
-                );
-
-                Ok(PromotionResult::CrossConnectionWon {
-                    loser_link_id,
-                    node_addr: peer_node_addr,
-                })
             } else {
                 // This connection loses, keep existing
                 // Free the index we allocated

@@ -239,6 +239,7 @@ pub(crate) struct PacketOutput {
     fmp_timestamp_ms: Option<u32>,
     source_wire_len: Option<usize>,
     fsp_send_receipt: Option<DataplaneFspSendReceipt>,
+    send_token: Option<u64>,
     payload: PacketBuffer,
 }
 
@@ -299,6 +300,7 @@ pub(crate) struct DataplaneTransportSentReceipt {
     pub(crate) fmp_timestamp_ms: Option<u32>,
     pub(crate) payload_len: usize,
     pub(crate) fsp_send_receipt: Option<DataplaneFspSendReceipt>,
+    pub(crate) send_token: Option<u64>,
 }
 
 impl DataplaneTransportSentReceipt {
@@ -309,6 +311,7 @@ impl DataplaneTransportSentReceipt {
             fmp_timestamp_ms: output.fmp_timestamp_ms,
             payload_len: output.payload.len(),
             fsp_send_receipt: output.fsp_send_receipt,
+            send_token: output.send_token,
         }
     }
 }

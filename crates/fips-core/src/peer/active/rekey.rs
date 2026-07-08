@@ -61,6 +61,11 @@ impl ActivePeer {
         self.previous_our_index
     }
 
+    /// Get the previous session's transport id (during drain).
+    pub fn previous_transport_id(&self) -> Option<TransportId> {
+        self.previous_transport_id
+    }
+
     /// Get the previous session for decryption fallback.
     pub fn previous_session(&self) -> Option<&NoiseSession> {
         self.previous_session.as_ref()
@@ -129,6 +134,7 @@ impl ActivePeer {
         // Demote current to previous
         self.previous_session = self.noise_session.take();
         self.previous_our_index = self.our_index;
+        self.previous_transport_id = self.transport_id;
         self.drain_started = Some(Instant::now());
 
         // Promote pending to current
@@ -164,6 +170,7 @@ impl ActivePeer {
         // Demote current to previous
         self.previous_session = self.noise_session.take();
         self.previous_our_index = self.our_index;
+        self.previous_transport_id = self.transport_id;
         self.drain_started = Some(Instant::now());
 
         // Promote pending to current
@@ -207,6 +214,7 @@ impl ActivePeer {
     pub fn complete_drain(&mut self) -> Option<SessionIndex> {
         self.previous_session = None;
         self.drain_started = None;
+        self.previous_transport_id = None;
         self.previous_our_index.take()
     }
 

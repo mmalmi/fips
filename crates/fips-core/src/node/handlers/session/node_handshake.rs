@@ -436,6 +436,8 @@ impl Node {
         entry.establish(session, now_ms);
         entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
         self.sessions.insert(*src_addr, entry);
+        self.pending_lookups.remove(src_addr);
+        self.discovery_backoff.record_success(src_addr);
         self.sync_dataplane_fsp_owner_from_current_session(
             src_addr,
             self.config.node.session.coords_warmup_packets,
@@ -574,6 +576,8 @@ impl Node {
             false,
         );
         self.sessions.insert(*src_addr, entry);
+        self.pending_lookups.remove(src_addr);
+        self.discovery_backoff.record_success(src_addr);
         self.sync_dataplane_fsp_owner_from_current_session(
             src_addr,
             self.config.node.session.coords_warmup_packets,

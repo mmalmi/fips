@@ -81,6 +81,12 @@ impl Dataplane {
         self.owner_shard(owner).has_owner(owner)
     }
 
+    pub(crate) fn has_runnable_work(&self) -> bool {
+        self.ingress_ready_shards.has_ready()
+            || self.outbound_ready_shards.has_ready()
+            || self.completion_ready_shards.has_ready()
+    }
+
     pub(crate) fn fsp_owner_destinations(&self) -> Vec<NodeAddr> {
         let mut destinations = Vec::new();
         for shard in &self.shards {
@@ -990,6 +996,10 @@ impl ReadyShardQueue {
     fn len(&self) -> usize {
         self.queue.len()
     }
+
+    fn has_ready(&self) -> bool {
+        !self.queue.is_empty()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1035,6 +1045,10 @@ impl ReadyShardQueues {
         } else {
             self.priority.len().saturating_add(self.bulk.len())
         }
+    }
+
+    fn has_ready(&self) -> bool {
+        self.priority.has_ready() || self.bulk.has_ready()
     }
 
     fn pop_lane(&mut self, lane: Lane) -> Option<usize> {

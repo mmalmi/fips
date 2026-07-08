@@ -44,6 +44,36 @@ fn pending_discovery_lookup_queue_owns_dedup_and_capacity() {
 /// `req_initiated` counter is the strongest cleanly-observable signal
 /// that `initiate_lookup` ran fresh on each attempt.
 #[tokio::test]
+async fn reply_learned_zero_peer_lookup_does_not_backoff_destination() {
+    let mut node = make_node();
+    node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    let target = make_node_addr(0x45);
+
+    let baseline_initiated = node.stats().discovery.req_initiated;
+    node.maybe_initiate_lookup(&target).await;
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 1,
+        "the first attempt should still construct one lookup request"
+    );
+    assert!(
+        !node.pending_lookups.contains_key(&target),
+        "a zero-carrier lookup must not remain pending"
+    );
+    assert!(
+        !node.discovery_backoff.is_suppressed(&target),
+        "no lookup was put on the wire, so the destination must stay retryable"
+    );
+
+    node.maybe_initiate_lookup(&target).await;
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 2,
+        "a later retry should not be suppressed by zero-carrier startup"
+    );
+}
+
+#[tokio::test]
 async fn test_check_pending_lookups_default_sequence_unreachable() {
     use crate::bloom::BloomFilter;
     use crate::node::handlers::discovery::PendingLookup;

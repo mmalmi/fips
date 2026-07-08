@@ -15,6 +15,12 @@ use tracing::{debug, info, trace, warn};
 const MAX_RECENT_DISCOVERY_REQUESTS: usize = 4096;
 const MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS: usize = 16;
 
+enum LookupForwardOutcome {
+    Forwarded,
+    RateLimited,
+    NoPeer,
+}
+
 mod pending_lookup;
 
 pub(crate) use pending_lookup::PendingDiscoveryLookups;
@@ -92,22 +98,15 @@ impl Node {
 
         // Forward if TTL permits
         if request.can_forward() {
-            // Transit-side rate limit: collapse rapid-fire lookups for the
-            // same target from misbehaving nodes generating fresh request_ids.
-            if !self
-                .discovery_forward_limiter
-                .should_forward(&request.target)
-            {
-                self.stats_mut().discovery.req_forward_rate_limited += 1;
-                debug!(
-                    request_id = request.request_id,
-                    target = %self.peer_display_name(&request.target),
-                    "Forward rate limited, suppressing LookupRequest"
-                );
-                return;
+            match self.forward_lookup_request(from, request).await {
+                LookupForwardOutcome::Forwarded => {
+                    self.stats_mut().discovery.req_forwarded += 1;
+                }
+                LookupForwardOutcome::RateLimited => {
+                    self.stats_mut().discovery.req_forward_rate_limited += 1;
+                }
+                LookupForwardOutcome::NoPeer => {}
             }
-            self.stats_mut().discovery.req_forwarded += 1;
-            self.forward_lookup_request(from, request).await;
         } else {
             self.stats_mut().discovery.req_ttl_exhausted += 1;
             debug!(
@@ -155,7 +154,7 @@ impl Node {
                 // Apply path_mtu min() from the outgoing link's transport MTU
                 self.apply_outgoing_link_mtu_to_response(&mut response, &from_peer);
 
-                debug!(
+                info!(
                     request_id = response.request_id,
                     target = %self.peer_display_name(&response.target),
                     next_hop = %self.peer_display_name(&from_peer),
@@ -370,12 +369,12 @@ impl Node {
         // transits min-fold; the target's first reverse-path hop is missed.
         self.apply_outgoing_link_mtu_to_response(&mut response, &next_hop_addr);
 
-        debug!(
-            request_id = request.request_id,
-            origin = %self.peer_display_name(&request.origin),
-            next_hop = %self.peer_display_name(&next_hop_addr),
-            path_mtu = response.path_mtu,
-            "Sending LookupResponse"
+        info!(
+                request_id = request.request_id,
+                origin = %self.peer_display_name(&request.origin),
+                next_hop = %self.peer_display_name(&next_hop_addr),
+                path_mtu = response.path_mtu,
+                "Sending LookupResponse"
         );
 
         let encoded = response.encode();
@@ -403,10 +402,15 @@ impl Node {
     /// discovery at the cost of more traffic. Transit forwarding excludes the
     /// previous hop and the originator so request IDs keep their originator vs.
     /// relay meaning.
-    async fn forward_lookup_request(&mut self, from: &NodeAddr, mut request: LookupRequest) {
+    async fn forward_lookup_request(
+        &mut self,
+        from: &NodeAddr,
+        mut request: LookupRequest,
+    ) -> LookupForwardOutcome {
         if !request.forward() {
-            return;
+            return LookupForwardOutcome::NoPeer;
         }
+        let mut forward_limiter_checked = false;
 
         // If the target is a direct active peer, hand the lookup to it even
         // when it is not part of our current tree neighborhood. This preserves
@@ -417,20 +421,24 @@ impl Node {
             && self
                 .peers
                 .get(&request.target)
-                .is_some_and(|peer| peer.is_healthy())
+                .is_some_and(|peer| peer.can_send())
         {
+            if !self.should_forward_lookup_for_target(&request) {
+                return LookupForwardOutcome::RateLimited;
+            }
+            forward_limiter_checked = true;
             let encoded = request.encode();
             match self
                 .send_dataplane_fmp_link_plaintext(&request.target, &encoded, false)
                 .await
             {
                 Ok(()) => {
-                    debug!(
+                    info!(
                         request_id = request.request_id,
                         target = %self.peer_display_name(&request.target),
                         "Forwarded LookupRequest to direct target peer"
                     );
-                    return;
+                    return LookupForwardOutcome::Forwarded;
                 }
                 Err(error) => {
                     debug!(
@@ -450,7 +458,7 @@ impl Node {
             .filter(|(addr, peer)| {
                 **addr != *from
                     && self.is_tree_peer(addr)
-                    && peer.is_healthy()
+                    && peer.can_send()
                     && peer.may_reach(&request.target)
             })
             .map(|(addr, _)| *addr)
@@ -474,7 +482,7 @@ impl Node {
                 .filter(|(addr, peer)| {
                     **addr != *from
                         && **addr != request.origin
-                        && peer.is_healthy()
+                        && peer.can_send()
                         && self.should_use_reply_learned_lookup_fallback_peer(
                             addr,
                             peer,
@@ -493,7 +501,7 @@ impl Node {
                 .filter(|(addr, peer)| {
                     **addr != *from
                         && !self.is_tree_peer(addr)
-                        && peer.is_healthy()
+                        && peer.can_send()
                         && peer.may_reach(&request.target)
                 })
                 .map(|(addr, _)| *addr)
@@ -506,7 +514,11 @@ impl Node {
                 request_id = request.request_id,
                 "No eligible peers to forward LookupRequest"
             );
-            return;
+            return LookupForwardOutcome::NoPeer;
+        }
+
+        if !forward_limiter_checked && !self.should_forward_lookup_for_target(&request) {
+            return LookupForwardOutcome::RateLimited;
         }
 
         let used_fallback = (self.config.node.routing.mode == RoutingMode::ReplyLearned
@@ -547,6 +559,24 @@ impl Node {
                 );
             }
         }
+
+        LookupForwardOutcome::Forwarded
+    }
+
+    fn should_forward_lookup_for_target(&mut self, request: &LookupRequest) -> bool {
+        if self
+            .discovery_forward_limiter
+            .should_forward(&request.target)
+        {
+            return true;
+        }
+
+        debug!(
+            request_id = request.request_id,
+            target = %self.peer_display_name(&request.target),
+            "Forward rate limited, suppressing LookupRequest"
+        );
+        false
     }
 
     /// Initiate a discovery lookup for a target node.
@@ -570,7 +600,7 @@ impl Node {
             .peers
             .iter()
             .filter(|(addr, peer)| {
-                self.is_tree_peer(addr) && peer.is_healthy() && peer.may_reach(target)
+                self.is_tree_peer(addr) && peer.can_send() && peer.may_reach(target)
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -584,7 +614,7 @@ impl Node {
                 .peers
                 .iter()
                 .filter(|(addr, peer)| {
-                    peer.is_healthy()
+                    peer.can_send()
                         && self.should_use_reply_learned_lookup_fallback_peer(addr, peer, target)
                 })
                 .map(|(addr, _)| *addr)
@@ -598,12 +628,12 @@ impl Node {
 
         let peer_count = peer_addrs.len();
 
-        debug!(
-            request_id = request.request_id,
-            target = %self.peer_display_name(target),
-            ttl = ttl,
-            peer_count = peer_count,
-            total_peers = self.peers.len(),
+        info!(
+                request_id = request.request_id,
+                target = %self.peer_display_name(target),
+                ttl = ttl,
+                peer_count = peer_count,
+                total_peers = self.peers.len(),
             fallback = used_fallback,
             "Discovery lookup initiated"
         );
@@ -742,13 +772,14 @@ impl Node {
         let ttl = self.config.node.discovery.ttl;
         let sent = self.initiate_lookup(dest, ttl).await;
 
-        // If no tree peers had the target, fail immediately
+        // If no peer was eligible, no LookupRequest left this node. Treat it as
+        // topology not warm yet rather than a destination failure; startup can
+        // race the first endpoint-data/control ping ahead of transit handshakes.
         if sent == 0 {
             self.pending_lookups.remove(dest);
-            self.discovery_backoff.record_failure(dest);
             debug!(
                 target_node = %self.peer_display_name(dest),
-                "Discovery failed, no tree peers with bloom match"
+                "Discovery deferred, no eligible lookup peers"
             );
         }
     }
@@ -777,7 +808,7 @@ impl Node {
     pub(in crate::node) fn has_sendable_fallback_lookup_peer(&self, dest: &NodeAddr) -> bool {
         self.peers.iter().any(|(addr, peer)| {
             *addr != *dest
-                && peer.is_healthy()
+                && peer.can_send()
                 && (self.config.node.routing.mode != RoutingMode::ReplyLearned
                     || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
         })
@@ -864,10 +895,19 @@ impl Node {
         let max_attempts = timeouts.len() as u8;
 
         // Collect targets needing action
+        let mut to_complete: Vec<NodeAddr> = Vec::new();
         let mut to_retry: Vec<NodeAddr> = Vec::new();
         let mut to_timeout: Vec<NodeAddr> = Vec::new();
 
         for (&target, entry) in self.pending_lookups.iter() {
+            if self
+                .sessions
+                .get(&target)
+                .is_some_and(|entry| entry.is_established())
+            {
+                to_complete.push(target);
+                continue;
+            }
             let attempt_idx = (entry.attempt as usize).saturating_sub(1);
             let attempt_timeout_ms = timeouts.get(attempt_idx).copied().unwrap_or(0) * 1000;
             if now_ms.saturating_sub(entry.last_sent_ms) >= attempt_timeout_ms {
@@ -877,6 +917,15 @@ impl Node {
                     to_retry.push(target);
                 }
             }
+        }
+
+        for target in to_complete {
+            self.pending_lookups.remove(&target);
+            self.discovery_backoff.record_success(&target);
+            debug!(
+                target_node = %self.peer_display_name(&target),
+                "Discovery lookup completed by established session"
+            );
         }
 
         // Process retries
@@ -889,7 +938,7 @@ impl Node {
                 let ttl = self.config.node.discovery.ttl;
                 let sent = self.initiate_lookup(&target, ttl).await;
                 if sent > 0 {
-                    debug!(
+                    info!(
                         target_node = %self.peer_display_name(&target),
                         attempt = attempt,
                         "Discovery retry sent"

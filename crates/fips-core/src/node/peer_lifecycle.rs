@@ -140,23 +140,36 @@ impl PeerLifecycleRegistry {
         if let Some(current) = Self::active_peer_current_session_index(peer) {
             indices.push(current);
         }
-        let mut push_index = |kind: PeerSessionIndexKind, index: Option<SessionIndex>| {
-            let Some(index) = index else {
-                return;
+        let mut push_index =
+            |kind: PeerSessionIndexKind, transport_id: TransportId, index: Option<SessionIndex>| {
+                let Some(index) = index else {
+                    return;
+                };
+                let key = (transport_id, index.as_u32());
+                if indices
+                    .iter()
+                    .any(|existing: &PeerSessionIndex| existing.key == key)
+                {
+                    return;
+                }
+                indices.push(PeerSessionIndex { kind, key, index });
             };
-            let key = (transport_id, index.as_u32());
-            if indices
-                .iter()
-                .any(|existing: &PeerSessionIndex| existing.key == key)
-            {
-                return;
-            }
-            indices.push(PeerSessionIndex { kind, key, index });
-        };
 
-        push_index(PeerSessionIndexKind::Rekey, peer.rekey_our_index());
-        push_index(PeerSessionIndexKind::Pending, peer.pending_our_index());
-        push_index(PeerSessionIndexKind::Previous, peer.previous_our_index());
+        push_index(
+            PeerSessionIndexKind::Rekey,
+            transport_id,
+            peer.rekey_our_index(),
+        );
+        push_index(
+            PeerSessionIndexKind::Pending,
+            transport_id,
+            peer.pending_our_index(),
+        );
+        push_index(
+            PeerSessionIndexKind::Previous,
+            peer.previous_transport_id().unwrap_or(transport_id),
+            peer.previous_our_index(),
+        );
         indices
     }
 

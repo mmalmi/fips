@@ -128,6 +128,79 @@ async fn fresh_handshake_replaces_reconnecting_peer_even_if_tie_breaker_would_lo
 }
 
 #[tokio::test]
+async fn same_tuple_late_inbound_refresh_uses_cross_connection_tie_breaker() {
+    let mut node = make_node();
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    assert!(
+        !crate::peer::cross_connection_winner(node.node_addr(), &peer_node_addr, false),
+        "fixture should make our same-tuple inbound lose the normal cross-connection tie-breaker"
+    );
+
+    let transport_id = TransportId::new(1);
+    let addr = TransportAddr::from_string("127.0.0.1:8000");
+    let old_link_id = LinkId::new(10);
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        ActivePeerSession {
+            session: old_session,
+            our_index: old_our_index,
+            their_index: old_their_index,
+            transport_id,
+            current_addr: addr.clone(),
+            link_stats: crate::transport::LinkStats::new(),
+            is_initiator: true,
+            remote_epoch: Some([0x11; 8]),
+        },
+    );
+    assert!(old_peer.can_send());
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+
+    let new_link_id = LinkId::new(11);
+    let mut inbound = PeerConnection::inbound(new_link_id, 2_000);
+    let mut remote_outbound = PeerConnection::outbound(
+        LinkId::new(99),
+        PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
+        2_000,
+    );
+    let msg1 = remote_outbound
+        .start_handshake(peer_full.keypair(), [0x11; 8], 2_000)
+        .unwrap();
+    inbound
+        .receive_handshake_init(node.identity.keypair(), node.startup_epoch, &msg1, 2_000)
+        .unwrap();
+    let new_our_index = SessionIndex::new(77);
+    let new_their_index = SessionIndex::new(78);
+    inbound.set_our_index(new_our_index);
+    inbound.set_their_index(new_their_index);
+    inbound.set_transport_id(transport_id);
+    inbound.set_source_addr(addr.clone());
+    node.peers.insert_connection(new_link_id, inbound);
+
+    let result = node
+        .promote_connection(new_link_id, peer_identity, 2_100)
+        .unwrap();
+
+    assert!(
+        matches!(result, PromotionResult::CrossConnectionLost { .. }),
+        "same-path inbound refresh should not bypass cross-connection tie-breaker"
+    );
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.our_index(), Some(old_our_index));
+    assert_eq!(active.their_index(), Some(old_their_index));
+    assert_eq!(active.current_addr(), Some(&addr));
+}
+
+#[tokio::test]
 async fn equal_priority_outbound_alternate_path_does_not_replace_healthy_peer() {
     let mut node = make_node();
     let peer_full = loop {
