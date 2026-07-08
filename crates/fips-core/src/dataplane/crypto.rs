@@ -857,26 +857,32 @@ fn send_completion_batches_to_shards(
         return Ok(());
     }
 
-    let mut grouped: Vec<(usize, Vec<CryptoCompletionBatch>)> = Vec::new();
+    let mut send_count = 0usize;
+    let mut group_rx_idx = first_rx_idx;
+    let mut group_batches = Vec::new();
     for batch in batches {
         let rx_idx = batch.owner_shard() % completion_txs.len();
-        if let Some((last_rx_idx, last_batches)) = grouped.last_mut()
-            && *last_rx_idx == rx_idx
-        {
-            last_batches.push(batch);
-            continue;
+        if !group_batches.is_empty() && rx_idx != group_rx_idx {
+            completion_txs[group_rx_idx]
+                .send(std::mem::take(&mut group_batches))
+                .map_err(|_| ())?;
+            send_count = send_count.saturating_add(1);
         }
-        grouped.push((rx_idx, vec![batch]));
+        group_rx_idx = rx_idx;
+        group_batches.push(batch);
+    }
+    if !group_batches.is_empty() {
+        completion_txs[group_rx_idx]
+            .send(group_batches)
+            .map_err(|_| ())?;
+        send_count = send_count.saturating_add(1);
     }
 
     crate::perf_profile::record_dataplane_aead_completion_send(
-        grouped.len(),
+        send_count,
         completion_batch_count,
         completion_packet_count,
     );
-    for (rx_idx, batches) in grouped {
-        completion_txs[rx_idx].send(batches).map_err(|_| ())?;
-    }
     Ok(())
 }
 
