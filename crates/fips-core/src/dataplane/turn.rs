@@ -365,37 +365,25 @@ pub(crate) struct DataplaneFspSessionIngress {
     plaintext: PacketBuffer,
 }
 
-enum DataplaneFspSessionIngressOutput {
-    Ingress(DataplaneFspSessionIngress),
-    Rejected(PacketOutput),
-}
-
 impl DataplaneFspSessionIngress {
-    fn from_output(output: PacketOutput) -> DataplaneFspSessionIngressOutput {
+    fn take_from_output(output: &mut PacketOutput) -> Option<Self> {
         let source_addr = output.owner().node_addr();
-        let Some(source_peer) = output.source_peer() else {
-            return DataplaneFspSessionIngressOutput::Rejected(output);
-        };
+        let source_peer = output.source_peer()?;
         if source_peer.node_addr() != &source_addr {
-            return DataplaneFspSessionIngressOutput::Rejected(output);
+            return None;
         }
         let previous_hop_addr = output.previous_hop().unwrap_or(source_addr);
         let ce_flag = output.ce_flag();
         let header = match FspWireHeader::parse(output.payload()) {
             Ok(header) => header,
-            Err(_) => return DataplaneFspSessionIngressOutput::Rejected(output),
+            Err(_) => return None,
         };
         let path_mtu = output.path_mtu();
         let activity_tick = output.activity_tick;
         let (timestamp_ms, msg_type, inner_flags, plaintext_len) = {
-            let Some(plaintext) = output.opened_payload() else {
-                return DataplaneFspSessionIngressOutput::Rejected(output);
-            };
-            let Some((timestamp_ms, msg_type, inner_flags, _body)) =
-                crate::node::session_wire::fsp_strip_inner_header(plaintext)
-            else {
-                return DataplaneFspSessionIngressOutput::Rejected(output);
-            };
+            let plaintext = output.opened_payload()?;
+            let (timestamp_ms, msg_type, inner_flags, _body) =
+                crate::node::session_wire::fsp_strip_inner_header(plaintext)?;
             (timestamp_ms, msg_type, inner_flags, plaintext.len())
         };
         let receive_sync = FspReceiveSync {
@@ -407,11 +395,8 @@ impl DataplaneFspSessionIngress {
             path_mtu,
             spin_bit: inner_flags & 0x01 != 0,
         };
-        let mut output = output;
-        let Some(plaintext) = output.take_opened_payload() else {
-            return DataplaneFspSessionIngressOutput::Rejected(output);
-        };
-        DataplaneFspSessionIngressOutput::Ingress(Self {
+        let plaintext = output.take_opened_payload()?;
+        Some(Self {
             source_addr,
             source_peer,
             previous_hop_addr,

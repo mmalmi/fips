@@ -1072,17 +1072,17 @@ impl DataplaneTurnDriver {
                     }
                 }
                 OutputTarget::SessionPayload { .. } => {
-                    match DataplaneFspSessionIngress::from_output(output) {
-                        DataplaneFspSessionIngressOutput::Ingress(ingress) => {
-                            self.record_fsp_session_ingress_activity(&ingress);
-                            self.fsp_authenticated_ingress.push_session(ingress);
-                        }
-                        DataplaneFspSessionIngressOutput::Rejected(output) => {
-                            self.output_drops.push(DataplaneOutputDrop::from_output(
-                                &output,
-                                DataplaneOutputError::InvalidPacket,
-                            ));
-                        }
+                    let mut output = output;
+                    if let Some(ingress) =
+                        DataplaneFspSessionIngress::take_from_output(&mut output)
+                    {
+                        self.record_fsp_session_ingress_activity(&ingress);
+                        self.fsp_authenticated_ingress.push_session(ingress);
+                    } else {
+                        self.output_drops.push(DataplaneOutputDrop::from_output(
+                            &output,
+                            DataplaneOutputError::InvalidPacket,
+                        ));
                     }
                 }
                 _ => self.outputs.push(output),
