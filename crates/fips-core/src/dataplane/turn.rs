@@ -674,10 +674,42 @@ impl DataplaneFspAuthenticatedIngress {
     }
 
     pub(crate) fn append(&mut self, other: &mut Self) {
-        self.runs.append(&mut other.runs);
-        self.endpoint_data_batches
-            .append(&mut other.endpoint_data_batches);
-        self.sessions.append(&mut other.sessions);
+        match (self.runs.last_mut(), other.runs.first().copied()) {
+            (
+                Some(DataplaneFspAuthenticatedIngressRun::EndpointDataBatch),
+                Some(DataplaneFspAuthenticatedIngressRun::EndpointDataBatch),
+            ) => {
+                let mut batches = other.endpoint_data_batches.drain(..);
+                let first = batches.next().expect("endpoint-data run has a batch");
+                self.endpoint_data_batches
+                    .last_mut()
+                    .expect("endpoint-data run has a batch")
+                    .extend(first);
+                self.endpoint_data_batches.extend(batches);
+                let mut runs = other.runs.drain(..);
+                let _ = runs.next();
+                self.runs.extend(runs);
+                self.sessions.append(&mut other.sessions);
+            }
+            (
+                Some(DataplaneFspAuthenticatedIngressRun::Sessions { count }),
+                Some(DataplaneFspAuthenticatedIngressRun::Sessions { count: other_count }),
+            ) => {
+                *count = count.saturating_add(other_count);
+                let mut runs = other.runs.drain(..);
+                let _ = runs.next();
+                self.runs.extend(runs);
+                self.endpoint_data_batches
+                    .append(&mut other.endpoint_data_batches);
+                self.sessions.append(&mut other.sessions);
+            }
+            _ => {
+                self.runs.append(&mut other.runs);
+                self.endpoint_data_batches
+                    .append(&mut other.endpoint_data_batches);
+                self.sessions.append(&mut other.sessions);
+            }
+        }
     }
 
     pub(crate) fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {
