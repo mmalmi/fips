@@ -335,58 +335,6 @@ impl<I: BleIo> BleTransport<I> {
         }
     }
 
-    /// Promote a newly established stream into the connection pool.
-    ///
-    /// Spawns the receive loop and inserts into the pool with eviction.
-    async fn promote_connection(
-        &self,
-        addr: &TransportAddr,
-        ble_addr: &BleAddr,
-        stream: I::Stream,
-    ) -> Result<(), TransportError> {
-        let send_mtu = stream.send_mtu();
-        let recv_mtu = stream.recv_mtu();
-        let stream = Arc::new(stream);
-
-        let recv_task = tokio::spawn(receive_loop(
-            Arc::clone(&stream),
-            addr.clone(),
-            Arc::clone(&self.pool),
-            self.packet_tx.clone(),
-            self.transport_id,
-            Arc::clone(&self.stats),
-            recv_mtu,
-        ));
-
-        let conn = BleConnection {
-            stream,
-            recv_task: Some(recv_task),
-            send_mtu,
-            recv_mtu,
-            established_at: tokio::time::Instant::now(),
-            is_static: false,
-            addr: ble_addr.clone(),
-        };
-
-        let mut pool = self.pool.lock().await;
-        match pool.insert(addr.clone(), conn) {
-            Ok(Some(evicted)) => {
-                self.stats.record_pool_eviction();
-                debug!(addr = %addr, evicted = %evicted, "BLE connection established (evicted peer)");
-            }
-            Ok(None) => {
-                debug!(addr = %addr, "BLE connection established");
-            }
-            Err(e) => {
-                warn!(addr = %addr, error = %e, "BLE pool full, connection dropped");
-                self.stats.record_connection_rejected();
-                return Err(TransportError::SendFailed("pool full".into()));
-            }
-        }
-        self.stats.record_connection_established();
-        Ok(())
-    }
-
     /// Initiate a non-blocking connection to a remote BLE device.
     ///
     /// Spawns a background task that connects with timeout and promotes
