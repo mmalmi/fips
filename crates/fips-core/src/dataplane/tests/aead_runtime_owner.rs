@@ -301,6 +301,55 @@
     }
 
     #[test]
+    fn aead_worker_pool_completion_turn_retires_direct_owner_shard_batches() {
+        let owner = fmp_owner(716);
+        let open_key = 26;
+        let mut driver = DataplaneTurnDriver::new(AdmissionConfig::new(4, 32));
+        driver.register_owner(owner, OwnerConfig::new(1, 32));
+        driver
+            .mover
+            .owner_mut(owner)
+            .unwrap()
+            .set_crypto_keys(OwnerCryptoKeys::new(test_key(open_key), test_key(open_key)));
+        submit_fmp_inbound_range(&mut driver.mover, owner, 716, open_key, 100..116, b"direct");
+
+        let mut pool = DataplaneAeadWorkerPool::new(4, 32);
+        let dispatch_summary = driver.collect_aead_outputs_with_executor(
+            DataplaneRuntimeSummary::default(),
+            16,
+            &mut pool,
+            false,
+        );
+
+        assert_eq!(dispatch_summary.dispatched(), 16);
+        assert_eq!(dispatch_summary.outputs(), 0);
+        assert_eq!(driver.mover.owner_mut(owner).unwrap().in_flight, 16);
+
+        let mut completion_summary = DataplaneRuntimeSummary::default();
+        for _ in 0..100 {
+            completion_summary = driver.start_aead_completion_turn(&mut pool, 16, false);
+            if completion_summary.completions() >= 16 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        assert_eq!(completion_summary.completions(), 16);
+        assert_eq!(completion_summary.outputs(), 16);
+        assert!(driver.completion_batches.is_empty());
+        assert_eq!(
+            driver
+                .outputs
+                .iter()
+                .map(PacketOutput::counter)
+                .collect::<Vec<_>>(),
+            (100..116).collect::<Vec<_>>()
+        );
+        assert_eq!(driver.mover.owner_mut(owner).unwrap().in_flight, 0);
+        assert_eq!(pool.available_open_capacity(), 32);
+    }
+
+    #[test]
     fn aead_worker_pool_reserves_priority_capacity_from_bulk() {
         let owner = fmp_owner(709);
         let open_key = 22;

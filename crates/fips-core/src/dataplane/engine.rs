@@ -885,6 +885,12 @@ impl Dataplane {
 
 }
 
+impl DataplaneCompletionSink for Dataplane {
+    fn push_completion_batch(&mut self, batch: CryptoCompletionBatch) {
+        self.queue_completion_run(batch);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct LaneLens {
     priority: usize,

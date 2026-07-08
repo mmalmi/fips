@@ -199,18 +199,25 @@
     }
 
     impl DataplaneCompletionSource for VecDeque<CryptoCompletion> {
-        fn drain_completion_batches_into(
+        fn drain_completion_batches_into_sink<S>(
             &mut self,
             limit: usize,
-            completion_batches: &mut Vec<CryptoCompletionBatch>,
-        ) -> usize {
+            sink: &mut S,
+        ) -> usize
+        where
+            S: DataplaneCompletionSink,
+        {
             let mut drained = 0;
+            let mut completion_batches = Vec::new();
             while drained < limit {
                 let Some(completion) = self.pop_front() else {
                     break;
                 };
-                CryptoCompletionBatch::push_grouped(completion, completion_batches);
+                CryptoCompletionBatch::push_grouped(completion, &mut completion_batches);
                 drained += 1;
+            }
+            for batch in completion_batches {
+                sink.push_completion_batch(batch);
             }
             drained
         }

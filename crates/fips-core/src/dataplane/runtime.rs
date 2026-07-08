@@ -439,11 +439,11 @@ impl DataplaneTurnDriver {
             crate::perf_profile::Stage::DataplaneCompletionDrain,
         );
         let completion_limit = self.completion_drain_limit(completion_limit);
-        self.completion_batches.clear();
-        let queued =
-            completions.drain_completion_batches_into(completion_limit, &mut self.completion_batches);
+        let queued = completions.drain_completion_batches_into_sink(
+            completion_limit,
+            &mut self.mover,
+        );
         summary.completions = summary.completions.saturating_add(queued);
-        self.mover.queue_completion_batches(&mut self.completion_batches);
         self.retire_queued_completed_aead_outputs(completion_limit, compact_endpoint_data);
         self.collect_retired_outputs(summary)
     }

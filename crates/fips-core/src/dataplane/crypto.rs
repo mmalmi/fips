@@ -471,7 +471,7 @@ impl DataplaneAeadWorkerPool {
         &mut self,
         mut batch: CryptoCompletionBatch,
         limit: usize,
-        out: &mut Vec<CryptoCompletionBatch>,
+        push_batch: &mut impl FnMut(CryptoCompletionBatch),
     ) -> (usize, Option<CryptoCompletionBatch>) {
         crate::perf_profile::record_dataplane_aead_completion_batch(batch.len());
         let drained = batch.len().min(limit);
@@ -488,8 +488,79 @@ impl DataplaneAeadWorkerPool {
         let direction = dataplane_aead_direction_for_completion_source(batch.source());
         let bulk_count = if batch.lane() == Lane::Bulk { drained } else { 0 };
         self.finish_drained_completions(direction, drained, bulk_count);
-        out.push(batch);
+        push_batch(batch);
         (drained, pending)
+    }
+
+    fn drain_completion_batches_with(
+        &mut self,
+        limit: usize,
+        mut push_batch: impl FnMut(CryptoCompletionBatch),
+    ) -> usize {
+        let mut drained = 0usize;
+        let mut empty_polls = 0usize;
+        while drained < limit {
+            if let Some(batch) = self.pending_completion_batches.pop_front() {
+                let (got, pending) = self.drain_completion_batch(
+                    batch,
+                    limit.saturating_sub(drained),
+                    &mut push_batch,
+                );
+                drained = drained.saturating_add(got);
+                if let Some(pending) = pending {
+                    self.pending_completion_batches.push_front(pending);
+                    break;
+                }
+                continue;
+            }
+
+            if self.completion_rxs.is_empty() {
+                break;
+            }
+
+            let mut made_progress = false;
+            for _ in 0..self.completion_rxs.len() {
+                if drained >= limit {
+                    break;
+                }
+                let rx_idx = self.completion_rx_cursor % self.completion_rxs.len();
+                self.completion_rx_cursor = (rx_idx + 1) % self.completion_rxs.len();
+                let received = self.completion_rxs[rx_idx].try_recv();
+                match received {
+                    Ok(mut batches) => {
+                        made_progress = true;
+                        let mut batches = batches.drain(..);
+                        while let Some(batch) = batches.next() {
+                            if drained >= limit {
+                                self.pending_completion_batches.push_back(batch);
+                                self.pending_completion_batches.extend(batches);
+                                break;
+                            }
+                            let (got, pending) = self.drain_completion_batch(
+                                batch,
+                                limit.saturating_sub(drained),
+                                &mut push_batch,
+                            );
+                            drained = drained.saturating_add(got);
+                            if let Some(pending) = pending {
+                                self.pending_completion_batches.push_back(pending);
+                                self.pending_completion_batches.extend(batches);
+                                break;
+                            }
+                        }
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        empty_polls = empty_polls.saturating_add(1);
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {}
+                }
+            }
+            if !made_progress {
+                break;
+            }
+        }
+        crate::perf_profile::record_dataplane_aead_completion_empty_polls(empty_polls);
+        drained
     }
 
     fn direction_counters(
@@ -670,75 +741,17 @@ impl DataplaneCryptoExecutor for DataplaneAeadWorkerPool {
 }
 
 impl DataplaneCompletionSource for DataplaneAeadWorkerPool {
-    fn drain_completion_batches_into(
+    fn drain_completion_batches_into_sink<S>(
         &mut self,
         limit: usize,
-        completion_batches: &mut Vec<CryptoCompletionBatch>,
-    ) -> usize {
-        let mut drained = 0usize;
-        let mut empty_polls = 0usize;
-        while drained < limit {
-            if let Some(batch) = self.pending_completion_batches.pop_front() {
-                let (got, pending) = self.drain_completion_batch(
-                    batch,
-                    limit.saturating_sub(drained),
-                    completion_batches,
-                );
-                drained = drained.saturating_add(got);
-                if let Some(pending) = pending {
-                    self.pending_completion_batches.push_front(pending);
-                    break;
-                }
-                continue;
-            }
-
-            if self.completion_rxs.is_empty() {
-                break;
-            }
-
-            let mut made_progress = false;
-            for _ in 0..self.completion_rxs.len() {
-                if drained >= limit {
-                    break;
-                }
-                let rx_idx = self.completion_rx_cursor % self.completion_rxs.len();
-                self.completion_rx_cursor = (rx_idx + 1) % self.completion_rxs.len();
-                let received = self.completion_rxs[rx_idx].try_recv();
-                match received {
-                    Ok(mut batches) => {
-                        made_progress = true;
-                        let mut batches = batches.drain(..);
-                        while let Some(batch) = batches.next() {
-                            if drained >= limit {
-                                self.pending_completion_batches.push_back(batch);
-                                self.pending_completion_batches.extend(batches);
-                                break;
-                            }
-                            let (got, pending) = self.drain_completion_batch(
-                                batch,
-                                limit.saturating_sub(drained),
-                                completion_batches,
-                            );
-                            drained = drained.saturating_add(got);
-                            if let Some(pending) = pending {
-                                self.pending_completion_batches.push_back(pending);
-                                self.pending_completion_batches.extend(batches);
-                                break;
-                            }
-                        }
-                    }
-                    Err(crossbeam_channel::TryRecvError::Empty) => {
-                        empty_polls = empty_polls.saturating_add(1);
-                    }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {}
-                }
-            }
-            if !made_progress {
-                break;
-            }
-        }
-        crate::perf_profile::record_dataplane_aead_completion_empty_polls(empty_polls);
-        drained
+        sink: &mut S,
+    ) -> usize
+    where
+        S: DataplaneCompletionSink,
+    {
+        self.drain_completion_batches_with(limit, |batch| {
+            sink.push_completion_batch(batch);
+        })
     }
 }
 
