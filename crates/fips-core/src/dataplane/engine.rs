@@ -17,7 +17,9 @@ pub(crate) struct DataplaneAeadRunBuffers<'a> {
     prepared_work: &'a mut Vec<PreparedCryptoWork>,
     completion_work: &'a mut Vec<CryptoCompletion>,
     completion_batches: &'a mut Vec<CryptoCompletionBatch>,
-    retired: &'a mut Vec<RetiredOutputs>,
+    outputs: &'a mut Vec<PacketOutput>,
+    outbound_packets: &'a mut Vec<OutboundPacket>,
+    fsp_authenticated_ingress: &'a mut DataplaneFspAuthenticatedIngress,
     drops: &'a mut Vec<PacketDrop>,
 }
 
@@ -26,14 +28,18 @@ impl<'a> DataplaneAeadRunBuffers<'a> {
         prepared_work: &'a mut Vec<PreparedCryptoWork>,
         completion_work: &'a mut Vec<CryptoCompletion>,
         completion_batches: &'a mut Vec<CryptoCompletionBatch>,
-        retired: &'a mut Vec<RetiredOutputs>,
+        outputs: &'a mut Vec<PacketOutput>,
+        outbound_packets: &'a mut Vec<OutboundPacket>,
+        fsp_authenticated_ingress: &'a mut DataplaneFspAuthenticatedIngress,
         drops: &'a mut Vec<PacketDrop>,
     ) -> Self {
         Self {
             prepared_work,
             completion_work,
             completion_batches,
-            retired,
+            outputs,
+            outbound_packets,
+            fsp_authenticated_ingress,
             drops,
         }
     }
@@ -504,7 +510,7 @@ impl Dataplane {
     fn retire_queued_completions_into(
         &mut self,
         limit: usize,
-        retired: &mut Vec<RetiredOutputs>,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         compact_endpoint_data: bool,
     ) -> usize {
         if limit == 0 || self.shards.is_empty() {
@@ -581,10 +587,11 @@ impl Dataplane {
             prepared_work,
             completion_work,
             completion_batches,
-            retired,
+            outputs,
+            outbound_packets,
+            fsp_authenticated_ingress,
             drops,
         } = buffers;
-        retired.clear();
         prepared_work.clear();
         completion_work.clear();
         completion_batches.clear();
@@ -712,7 +719,12 @@ impl Dataplane {
                 completion_batches,
             );
             self.queue_completion_batches(completion_batches);
-            self.retire_queued_completions_into(limit, retired, compact_endpoint_data);
+            let mut retired = DataplaneRetiredOutputSink::new(
+                outputs,
+                outbound_packets,
+                fsp_authenticated_ingress,
+            );
+            self.retire_queued_completions_into(limit, &mut retired, compact_endpoint_data);
         }
 
         drops.append(&mut self.drops);

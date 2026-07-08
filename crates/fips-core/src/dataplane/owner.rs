@@ -1954,22 +1954,18 @@ impl OwnerState {
     pub(crate) fn retire_batch_outputs_into(
         &mut self,
         batch: CryptoCompletionBatch,
-        retired: &mut Vec<RetiredOutputs>,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
-        let mut retired_batch = RetiredOutputs::with_capacity(batch.len());
-        self.retire_completion_batch_into(batch, &mut retired_batch, drops, compact_endpoint_data);
-        self.drain_ready_retirements_into(&mut retired_batch, drops, compact_endpoint_data);
-        if !retired_batch.is_empty() {
-            retired.push(retired_batch);
-        }
+        self.retire_completion_batch_into(batch, retired, drops, compact_endpoint_data);
+        self.drain_ready_retirements_into(retired, drops, compact_endpoint_data);
     }
 
     fn retire_completion_batch_into(
         &mut self,
         batch: CryptoCompletionBatch,
-        retired: &mut RetiredOutputs,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
@@ -1989,7 +1985,7 @@ impl OwnerState {
 
     fn drain_ready_retirements_into(
         &mut self,
-        retired: &mut RetiredOutputs,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
@@ -2001,7 +1997,7 @@ impl OwnerState {
     fn retire_ready_completion_run_into(
         &mut self,
         batch: CryptoCompletionBatch,
-        retired: &mut RetiredOutputs,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
@@ -2024,7 +2020,7 @@ impl OwnerState {
     fn retire_ready_open_fsp_session_payload_run_into(
         &mut self,
         batch: CryptoCompletionBatch,
-        retired: &mut RetiredOutputs,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) -> Result<(), CryptoCompletionBatch> {
@@ -2094,7 +2090,7 @@ impl OwnerState {
     fn retire_ready_completion_into(
         &mut self,
         completion: CryptoCompletion,
-        retired: &mut RetiredOutputs,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
@@ -2136,7 +2132,7 @@ impl OwnerState {
     fn retire_opened_output_into(
         &mut self,
         output: PacketOutput,
-        retired: &mut RetiredOutputs,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         compact_endpoint_data: bool,
     ) {
         if compact_endpoint_data && matches!(output.target(), OutputTarget::SessionPayload { .. }) {
@@ -2193,7 +2189,7 @@ fn note_activity(slot: &mut Option<ActivityTick>, tick: ActivityTick) -> bool {
 }
 
 fn flush_retired_endpoint_data_batch(
-    retired: &mut RetiredOutputs,
+    retired: &mut DataplaneRetiredOutputSink<'_>,
     endpoint_data_batch: &mut Option<DataplaneEndpointDataBatch>,
 ) {
     if let Some(batch) = endpoint_data_batch.take() {

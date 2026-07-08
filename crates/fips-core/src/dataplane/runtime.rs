@@ -12,7 +12,6 @@ pub(crate) struct DataplaneTurnDriver {
     output_rewrite_buffer: Vec<PacketOutput>,
     raw_socket_packets: Vec<SocketPacket>,
     retired_outbound_packets: Vec<OutboundPacket>,
-    retired: Vec<RetiredOutputs>,
     transport_output: DataplaneTransportSendGroups,
     drops: Vec<PacketDrop>,
     fmp_ingress_receipts: Vec<DataplaneFmpIngressReceipt>,
@@ -112,7 +111,6 @@ impl DataplaneTurnDriver {
             output_rewrite_buffer: Vec::new(),
             raw_socket_packets: Vec::new(),
             retired_outbound_packets: Vec::new(),
-            retired: Vec::new(),
             transport_output: DataplaneTransportSendGroups::new(),
             drops: Vec::new(),
             fmp_ingress_receipts: Vec::new(),
@@ -445,7 +443,7 @@ impl DataplaneTurnDriver {
         );
         summary.completions = summary.completions.saturating_add(queued);
         self.retire_queued_completed_aead_outputs(completion_limit, compact_endpoint_data);
-        self.collect_retired_outputs(summary)
+        self.admit_retired_outbound_packets(summary)
     }
 
     fn completion_drain_limit(&self, limit: usize) -> usize {
@@ -790,7 +788,6 @@ impl DataplaneTurnDriver {
         self.output_rewrite_buffer.clear();
         self.raw_socket_packets.clear();
         self.retired_outbound_packets.clear();
-        self.retired.clear();
         self.transport_output.clear();
         self.drops.clear();
         self.raw_ingress_drops.clear();
@@ -1108,7 +1105,15 @@ impl DataplaneTurnDriver {
     ) {
         let retired_completions = self
             .mover
-            .retire_queued_completions_into(limit, &mut self.retired, compact_endpoint_data);
+            .retire_queued_completions_into(
+                limit,
+                &mut DataplaneRetiredOutputSink::new(
+                    &mut self.outputs,
+                    &mut self.retired_outbound_packets,
+                    &mut self.fsp_authenticated_ingress,
+                ),
+                compact_endpoint_data,
+            );
         crate::perf_profile::record_dataplane_live_completions_retired(retired_completions);
         let mut mover_drops = self.mover.drain_drops();
         self.drops.append(&mut mover_drops);
@@ -1179,7 +1184,9 @@ impl DataplaneTurnDriver {
                         &mut self.prepared_work,
                         &mut self.completion_work,
                         &mut self.completion_batches,
-                        &mut self.retired,
+                        &mut self.outputs,
+                        &mut self.retired_outbound_packets,
+                        &mut self.fsp_authenticated_ingress,
                         &mut self.drops,
                     ),
                     executor,
@@ -1190,7 +1197,7 @@ impl DataplaneTurnDriver {
             remaining = remaining.saturating_sub(dispatched);
 
             let outbound_admitted_before = summary.outbound_admitted;
-            summary = self.collect_retired_outputs(summary);
+            summary = self.admit_retired_outbound_packets(summary);
 
             if dispatched == 0 && summary.outbound_admitted == outbound_admitted_before {
                 break;
@@ -1202,53 +1209,16 @@ impl DataplaneTurnDriver {
         summary
     }
 
-    fn collect_retired_outputs(
+    fn admit_retired_outbound_packets(
         &mut self,
         mut summary: DataplaneRuntimeSummary,
     ) -> DataplaneRuntimeSummary {
-        let mut retired = std::mem::take(&mut self.retired);
         let mut outbound_packets = std::mem::take(&mut self.retired_outbound_packets);
-        outbound_packets.clear();
-        for batch in retired.drain(..) {
-            let (runs, packets, endpoint_data_batches) = batch.into_parts();
-            let mut packets = packets.into_iter();
-            let mut endpoint_data_batches = endpoint_data_batches.into_iter();
-            for run in runs {
-                match run {
-                    RetiredOutputRun::Packets { count } => {
-                        for _ in 0..count {
-                            match packets.next().expect("retired packet run has packet") {
-                                RetiredPacket::Output(output) => {
-                                    self.outputs.push(output);
-                                }
-                                RetiredPacket::Outbound(mut packet) => {
-                                    self.refresh_wrapped_fsp_outbound_context(&mut packet);
-                                    outbound_packets.push(packet);
-                                }
-                            }
-                        }
-                    }
-                    RetiredOutputRun::EndpointDataBatch => {
-                        self.push_endpoint_data_batch(
-                            endpoint_data_batches
-                                .next()
-                                .expect("retired endpoint-data run has batch"),
-                        );
-                    }
-                }
-            }
-            debug_assert!(
-                packets.next().is_none(),
-                "retired runs consumed all packet items"
-            );
-            debug_assert!(
-                endpoint_data_batches.next().is_none(),
-                "retired runs consumed all endpoint-data batches"
-            );
+        for packet in &mut outbound_packets {
+            self.refresh_wrapped_fsp_outbound_context(packet);
         }
         self.admit_outbound_packets(&mut outbound_packets, &mut summary);
         self.retired_outbound_packets = outbound_packets;
-        self.retired = retired;
         summary.outputs = self.outputs.len();
         summary.drops = self.drops.len();
         summary
@@ -1266,11 +1236,6 @@ impl DataplaneTurnDriver {
             context.receiver_idx(),
             context.flags(),
         );
-    }
-
-    fn push_endpoint_data_batch(&mut self, bulk: DataplaneEndpointDataBatch) {
-        self.fsp_authenticated_ingress
-            .push_endpoint_data_batch(bulk);
     }
 
     fn deliver_direct_endpoint_packet_batches(&mut self, direct_sink: Option<&EndpointDirectSink>) {

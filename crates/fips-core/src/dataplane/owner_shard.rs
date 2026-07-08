@@ -23,7 +23,7 @@ impl DataplaneOwnerShardRetireWorker {
         &mut self,
         owner_shard: &mut DataplaneOwnerShard,
         limit: usize,
-        retired: &mut Vec<RetiredOutputs>,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) -> usize {
@@ -491,7 +491,7 @@ impl DataplaneOwnerShard {
     pub(crate) fn retire_completion_batch_into(
         &mut self,
         batch: CryptoCompletionBatch,
-        retired: &mut Vec<RetiredOutputs>,
+        retired: &mut DataplaneRetiredOutputSink<'_>,
         drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {

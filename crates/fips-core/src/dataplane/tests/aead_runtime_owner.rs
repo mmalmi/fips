@@ -81,7 +81,7 @@
     fn run_with_executor<E>(
         mover: &mut Dataplane,
         executor: &mut E,
-    ) -> (usize, Vec<RetiredPacket>, Vec<PacketDrop>)
+    ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>)
     where
         E: DataplaneCryptoExecutor,
     {
@@ -92,7 +92,7 @@
         mover: &mut Dataplane,
         executor: &mut E,
         limit: usize,
-    ) -> (usize, Vec<RetiredPacket>, Vec<PacketDrop>)
+    ) -> (usize, Vec<PacketOutput>, Vec<PacketDrop>)
     where
         E: DataplaneCryptoExecutor,
     {
@@ -100,6 +100,8 @@
         let mut completion_work = Vec::new();
         let mut completion_batches = Vec::new();
         let mut retired = Vec::new();
+        let mut outbound_packets = Vec::new();
+        let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
         let mut drops = Vec::new();
         let dispatched = mover.run_aead_available_into_with_executor(
             limit,
@@ -108,12 +110,16 @@
                 &mut completion_work,
                 &mut completion_batches,
                 &mut retired,
+                &mut outbound_packets,
+                &mut fsp_authenticated_ingress,
                 &mut drops,
             ),
             executor,
             false,
         );
-        (dispatched, flatten_retired_outputs(retired), drops)
+        assert!(outbound_packets.is_empty());
+        assert!(fsp_authenticated_ingress.is_empty());
+        (dispatched, retired, drops)
     }
 
     fn driver_endpoint_batches(
@@ -200,7 +206,7 @@
         for completion in completions {
             retired.extend(retire_completion(&mut mover, completion));
         }
-        let outputs = outputs(retired);
+        let outputs = retired;
         assert_eq!(
             outputs
                 .iter()
@@ -286,10 +292,10 @@
         let mut retired = Vec::new();
         mover.queue_completion_batches(&mut batches);
         assert_eq!(
-            mover.retire_queued_completions_into(16, &mut retired, false),
+            retire_queued_completions_to_outputs(&mut mover, 16, &mut retired),
             16
         );
-        let outputs = outputs(flatten_retired_outputs(retired));
+        let outputs = retired;
         assert_eq!(
             outputs
                 .iter()
@@ -2583,10 +2589,10 @@
         let mut retired = Vec::new();
         mover.queue_completion_batches(&mut batches);
         assert_eq!(
-            mover.retire_queued_completions_into(4, &mut retired, false),
+            retire_queued_completions_to_outputs(&mut mover, 4, &mut retired),
             4
         );
-        let outputs = outputs(flatten_retired_outputs(retired));
+        let outputs = retired;
         assert_eq!(
             outputs.iter().map(PacketOutput::counter).collect::<Vec<_>>(),
             vec![100, 101, 102, 103]
@@ -2616,10 +2622,10 @@
         let mut retired = Vec::new();
         mover.queue_completion_batches(&mut batches);
         assert_eq!(
-            mover.retire_queued_completions_into(3, &mut retired, false),
+            retire_queued_completions_to_outputs(&mut mover, 3, &mut retired),
             1
         );
-        assert!(flatten_retired_outputs(retired).is_empty());
+        assert!(retired.is_empty());
         {
             let owner_state = mover.owner_mut(owner).unwrap();
             assert_eq!(owner_state.pending.len(), 1);
@@ -2639,10 +2645,10 @@
         let mut retired = Vec::new();
         mover.queue_completion_batches(&mut batches);
         assert_eq!(
-            mover.retire_queued_completions_into(3, &mut retired, false),
+            retire_queued_completions_to_outputs(&mut mover, 3, &mut retired),
             2
         );
-        let outputs = outputs(flatten_retired_outputs(retired));
+        let outputs = retired;
         assert_eq!(
             outputs.iter().map(PacketOutput::counter).collect::<Vec<_>>(),
             vec![100, 101, 102]
@@ -2682,10 +2688,10 @@
         let mut retired = Vec::new();
         mover.queue_completion_batches(&mut later_batches);
         assert_eq!(
-            mover.retire_queued_completions_into(6, &mut retired, false),
+            retire_queued_completions_to_outputs(&mut mover, 6, &mut retired),
             4
         );
-        assert!(flatten_retired_outputs(retired).is_empty());
+        assert!(retired.is_empty());
         {
             let owner_state = mover.owner_mut(owner).unwrap();
             assert_eq!(owner_state.pending.len(), 1);
@@ -2715,10 +2721,10 @@
         let mut retired = Vec::new();
         mover.queue_completion_batches(&mut earlier_batches);
         assert_eq!(
-            mover.retire_queued_completions_into(6, &mut retired, false),
+            retire_queued_completions_to_outputs(&mut mover, 6, &mut retired),
             2
         );
-        let outputs = outputs(flatten_retired_outputs(retired));
+        let outputs = retired;
         assert_eq!(
             outputs.iter().map(PacketOutput::counter).collect::<Vec<_>>(),
             vec![100, 101, 102, 103, 104, 105]

@@ -319,92 +319,44 @@ pub(crate) struct DataplaneFspSendReceipt {
     pub(crate) counter: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum RetiredPacket {
-    Output(PacketOutput),
-    Outbound(OutboundPacket),
+pub(crate) struct DataplaneRetiredOutputSink<'a> {
+    outputs: &'a mut Vec<PacketOutput>,
+    outbound_packets: &'a mut Vec<OutboundPacket>,
+    fsp_authenticated_ingress: &'a mut DataplaneFspAuthenticatedIngress,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct RetiredOutputs {
-    runs: Vec<RetiredOutputRun>,
-    packets: Vec<RetiredPacket>,
-    endpoint_data_batches: Vec<DataplaneEndpointDataBatch>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RetiredOutputRun {
-    Packets { count: usize },
-    EndpointDataBatch,
-}
-
-impl RetiredOutputs {
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+impl<'a> DataplaneRetiredOutputSink<'a> {
+    pub(crate) fn new(
+        outputs: &'a mut Vec<PacketOutput>,
+        outbound_packets: &'a mut Vec<OutboundPacket>,
+        fsp_authenticated_ingress: &'a mut DataplaneFspAuthenticatedIngress,
+    ) -> Self {
         Self {
-            runs: Vec::with_capacity(1),
-            packets: Vec::with_capacity(capacity),
-            endpoint_data_batches: Vec::new(),
+            outputs,
+            outbound_packets,
+            fsp_authenticated_ingress,
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.runs.is_empty()
-    }
-
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        Vec<RetiredOutputRun>,
-        Vec<RetiredPacket>,
-        Vec<DataplaneEndpointDataBatch>,
-    ) {
-        (self.runs, self.packets, self.endpoint_data_batches)
-    }
-
     pub(crate) fn push_output(&mut self, output: PacketOutput) {
-        self.push_packet(RetiredPacket::Output(output));
+        self.outputs.push(output);
     }
 
     pub(crate) fn push_outbound(&mut self, packet: OutboundPacket) {
-        self.push_packet(RetiredPacket::Outbound(packet));
+        self.outbound_packets.push(packet);
     }
 
     pub(crate) fn push_endpoint_data_batch(
         &mut self,
         ingress: DataplaneFspEndpointDataIngress,
     ) {
-        if matches!(self.runs.last(), Some(RetiredOutputRun::EndpointDataBatch)) {
-            self.endpoint_data_batches
-                .last_mut()
-                .expect("endpoint-data run has a batch")
-                .push(ingress);
-        } else {
-            self.endpoint_data_batches
-                .push(DataplaneEndpointDataBatch::from_ingress(ingress));
-            self.runs.push(RetiredOutputRun::EndpointDataBatch);
-        }
+        self.fsp_authenticated_ingress
+            .push_endpoint_data_batch(DataplaneEndpointDataBatch::from_ingress(ingress));
     }
 
     pub(crate) fn append_endpoint_data_batch(&mut self, batch: DataplaneEndpointDataBatch) {
-        if matches!(self.runs.last(), Some(RetiredOutputRun::EndpointDataBatch)) {
-            self.endpoint_data_batches
-                .last_mut()
-                .expect("endpoint-data run has a batch")
-                .extend(batch);
-        } else {
-            self.endpoint_data_batches.push(batch);
-            self.runs.push(RetiredOutputRun::EndpointDataBatch);
-        }
-    }
-
-    fn push_packet(&mut self, packet: RetiredPacket) {
-        self.packets.push(packet);
-        match self.runs.last_mut() {
-            Some(RetiredOutputRun::Packets { count }) => {
-                *count = count.saturating_add(1);
-            }
-            _ => self.runs.push(RetiredOutputRun::Packets { count: 1 }),
-        }
+        self.fsp_authenticated_ingress
+            .push_endpoint_data_batch(batch);
     }
 }
 

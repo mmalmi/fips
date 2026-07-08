@@ -30,7 +30,7 @@
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     struct DataplaneTurn {
         dispatched: usize,
-        retired: Vec<RetiredPacket>,
+        retired: Vec<PacketOutput>,
         drops: Vec<PacketDrop>,
     }
 
@@ -39,7 +39,7 @@
             self.dispatched
         }
 
-        fn retired(&self) -> &[RetiredPacket] {
+        fn retired(&self) -> &[PacketOutput] {
             &self.retired
         }
 
@@ -48,45 +48,8 @@
         }
 
         fn outputs(&self) -> Vec<&PacketOutput> {
-            self.retired
-                .iter()
-                .filter_map(|item| match item {
-                    RetiredPacket::Output(output) => Some(output),
-                    RetiredPacket::Outbound(_) => None,
-                })
-                .collect()
+            self.retired.iter().collect()
         }
-    }
-
-    fn flatten_retired_outputs(batches: Vec<RetiredOutputs>) -> Vec<RetiredPacket> {
-        let mut retired = Vec::new();
-        for batch in batches {
-            let (runs, packets, endpoint_data_batches) = batch.into_parts();
-            let mut packets = packets.into_iter();
-            let mut endpoint_data_batches = endpoint_data_batches.into_iter();
-            for run in runs {
-                match run {
-                    RetiredOutputRun::Packets { count } => {
-                        for _ in 0..count {
-                            retired.push(packets.next().expect("retired packet run has packet"));
-                        }
-                    }
-                    RetiredOutputRun::EndpointDataBatch => {
-                        let _ = endpoint_data_batches.next();
-                        panic!("test helper did not request endpoint-data batch");
-                    }
-                }
-            }
-            debug_assert!(
-                packets.next().is_none(),
-                "retired runs consumed all packet items"
-            );
-            debug_assert!(
-                endpoint_data_batches.next().is_none(),
-                "retired runs consumed all endpoint-data batches"
-            );
-        }
-        retired
     }
 
     #[derive(Debug, Default)]
@@ -164,6 +127,8 @@
         let mut completion_work = Vec::new();
         let mut completion_batches = Vec::new();
         let mut retired = Vec::new();
+        let mut outbound_packets = Vec::new();
+        let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
         let mut drops = Vec::new();
         let mut executor = CapturingPreparedCryptoExecutor::default();
         mover.run_aead_available_into_with_executor(
@@ -173,6 +138,8 @@
                 &mut completion_work,
                 &mut completion_batches,
                 &mut retired,
+                &mut outbound_packets,
+                &mut fsp_authenticated_ingress,
                 &mut drops,
             ),
             &mut executor,
@@ -181,6 +148,8 @@
         debug_assert!(prepared_work.is_empty());
         debug_assert!(completion_work.is_empty());
         debug_assert!(retired.is_empty());
+        assert!(outbound_packets.is_empty());
+        assert!(fsp_authenticated_ingress.is_empty());
         for drop in drops {
             mover.record_drop(drop);
         }
@@ -228,6 +197,8 @@
         let mut completion_work = Vec::new();
         let mut completion_batches = Vec::new();
         let mut retired = Vec::new();
+        let mut outbound_packets = Vec::new();
+        let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
         let mut drops = Vec::new();
         let mut executor = InlineDataplaneCryptoExecutor;
         let dispatched = mover.run_aead_available_into_with_executor(
@@ -237,15 +208,19 @@
                 &mut completion_work,
                 &mut completion_batches,
                 &mut retired,
+                &mut outbound_packets,
+                &mut fsp_authenticated_ingress,
                 &mut drops,
             ),
             &mut executor,
             false,
         );
+        assert!(outbound_packets.is_empty());
+        assert!(fsp_authenticated_ingress.is_empty());
 
         DataplaneTurn {
             dispatched,
-            retired: flatten_retired_outputs(retired),
+            retired,
             drops,
         }
     }
@@ -274,7 +249,7 @@
             .mover
             .queue_completion_batches(&mut driver.completion_batches);
         driver.retire_queued_completed_aead_outputs(queued, false);
-        let summary = driver.collect_retired_outputs(summary);
+        let summary = driver.admit_retired_outbound_packets(summary);
         let mut executor = InlineDataplaneCryptoExecutor;
         let summary =
             driver.collect_aead_outputs_with_executor(summary, limit, &mut executor, false);
@@ -434,7 +409,7 @@
             .mover
             .queue_completion_batches(&mut driver.completion_batches);
         driver.retire_queued_completed_aead_outputs(completion_limit, false);
-        summary = driver.collect_retired_outputs(summary);
+        summary = driver.admit_retired_outbound_packets(summary);
 
         raw_ingress.drain_raw_ingress(raw_ingress_limit, |packet| {
             admit_test_raw_ingress_packet(driver, packet, router, &mut summary);
@@ -825,12 +800,33 @@
     fn retire_completion(
         mover: &mut Dataplane,
         completion: CryptoCompletion,
-    ) -> Vec<RetiredPacket> {
+    ) -> Vec<PacketOutput> {
         let mut retired = Vec::new();
         let mut completions = vec![CryptoCompletionBatch::from_completion(completion)];
         mover.queue_completion_batches(&mut completions);
-        mover.retire_queued_completions_into(1, &mut retired, false);
-        flatten_retired_outputs(retired)
+        retire_queued_completions_to_outputs(mover, 1, &mut retired);
+        retired
+    }
+
+    fn retire_queued_completions_to_outputs(
+        mover: &mut Dataplane,
+        limit: usize,
+        retired: &mut Vec<PacketOutput>,
+    ) -> usize {
+        let mut outbound_packets = Vec::new();
+        let mut fsp_authenticated_ingress = DataplaneFspAuthenticatedIngress::default();
+        let retired_count = mover.retire_queued_completions_into(
+            limit,
+            &mut DataplaneRetiredOutputSink::new(
+                retired,
+                &mut outbound_packets,
+                &mut fsp_authenticated_ingress,
+            ),
+            false,
+        );
+        assert!(outbound_packets.is_empty());
+        assert!(fsp_authenticated_ingress.is_empty());
+        retired_count
     }
 
     fn empty_fsp_coords_prefix() -> Vec<u8> {
@@ -906,14 +902,4 @@
                 OutboundPacket::fsp(owner, generation, class, 0, PacketBuffer::new(payload.to_vec()))
             }
         }
-    }
-
-    fn outputs(items: Vec<RetiredPacket>) -> Vec<PacketOutput> {
-        items
-            .into_iter()
-            .map(|item| match item {
-                RetiredPacket::Output(output) => output,
-                RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
-            })
-            .collect()
     }
