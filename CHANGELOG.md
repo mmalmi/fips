@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.79] - 2026-07-08
+
+### Changed
+
+- Simplified dataplane ownership, output, and turn plumbing while preserving the
+  existing FIPS protocol and wire formats.
+- Streamed AEAD completion delivery through owner-owned completion paths and
+  removed redundant dataplane diagnostics and test-only bookkeeping.
+- Bumped `fips-endpoint` to 0.3.54 so app-facing consumers pick up the
+  `fips-core` 0.3.79 dataplane cleanup release.
+
 ## [0.3.78] - 2026-07-03
 
 ### Added
