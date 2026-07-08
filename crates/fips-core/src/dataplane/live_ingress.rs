@@ -504,13 +504,12 @@ impl DataplaneEstablishedFastIngressSink {
     }
 
     fn direct_fsp_socket_packet_from_received(
-        direct_sources: &HashMap<(TransportId, TransportAddr), DataplaneDirectFspSource>,
+        direct_sources: &DataplaneDirectFspSources,
         fsp_routes: &HashMap<NodeAddr, DataplaneIngressRoute>,
         packet: ReceivedPacket,
     ) -> DataplaneFastIngressDirectFspResult {
-        let Some(source) = direct_sources
-            .get(&(packet.transport_id, packet.remote_addr.clone()))
-            .copied()
+        let Some(source) =
+            lookup_direct_fsp_source(direct_sources, packet.transport_id, &packet.remote_addr)
         else {
             return DataplaneFastIngressDirectFspResult::Miss(packet);
         };
@@ -556,16 +555,15 @@ impl DataplaneEstablishedFastIngressSink {
 
     fn direct_fsp_socket_packet(
         &self,
-        direct_sources: &HashMap<(TransportId, TransportAddr), DataplaneDirectFspSource>,
+        direct_sources: &DataplaneDirectFspSources,
         fsp_routes: &HashMap<NodeAddr, DataplaneIngressRoute>,
         packet: ReceivedPacket,
     ) -> DataplaneFastIngressDirectFspResult {
         if !dataplane_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) {
             return Self::direct_fsp_socket_packet_from_received(direct_sources, fsp_routes, packet);
         }
-        let Some(source) = direct_sources
-            .get(&(packet.transport_id, packet.remote_addr.clone()))
-            .copied()
+        let Some(source) =
+            lookup_direct_fsp_source(direct_sources, packet.transport_id, &packet.remote_addr)
         else {
             return DataplaneFastIngressDirectFspResult::Miss(packet);
         };
@@ -593,16 +591,15 @@ impl DataplaneEstablishedFastIngressSink {
 
     fn direct_fsp_fragment_packet(
         &self,
-        direct_sources: &HashMap<(TransportId, TransportAddr), DataplaneDirectFspSource>,
+        direct_sources: &DataplaneDirectFspSources,
         fsp_routes: &HashMap<NodeAddr, DataplaneIngressRoute>,
         packet: ReceivedPacket,
     ) -> DataplaneFastIngressDirectFragmentResult {
         if !dataplane_direct_fsp_transport_fragment_is_fragment(packet.data.as_slice()) {
             return DataplaneFastIngressDirectFragmentResult::Miss(packet);
         }
-        let Some(source) = direct_sources
-            .get(&(packet.transport_id, packet.remote_addr.clone()))
-            .copied()
+        let Some(source) =
+            lookup_direct_fsp_source(direct_sources, packet.transport_id, &packet.remote_addr)
         else {
             return DataplaneFastIngressDirectFragmentResult::Miss(packet);
         };
@@ -896,7 +893,7 @@ pub(crate) struct DataplaneDirectFspSource {
 }
 
 pub(crate) type DataplaneDirectFspSources =
-    Arc<HashMap<(TransportId, TransportAddr), DataplaneDirectFspSource>>;
+    Arc<HashMap<TransportId, HashMap<TransportAddr, DataplaneDirectFspSource>>>;
 
 /// Drains live transport packets from `PacketRx` as dataplane ingress.
 ///
@@ -1076,7 +1073,8 @@ fn lookup_direct_fsp_source(
     remote_addr: &TransportAddr,
 ) -> Option<DataplaneDirectFspSource> {
     direct_fsp_sources
-        .get(&(transport_id, remote_addr.clone()))
+        .get(&transport_id)?
+        .get(remote_addr)
         .copied()
 }
 

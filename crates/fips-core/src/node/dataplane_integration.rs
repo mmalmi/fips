@@ -985,11 +985,8 @@ impl Node {
     pub(in crate::node) fn dataplane_direct_fsp_sources(
         &self,
     ) -> HashMap<
-        (
-            crate::transport::TransportId,
-            crate::transport::TransportAddr,
-        ),
-        DataplaneDirectFspSource,
+        crate::transport::TransportId,
+        HashMap<crate::transport::TransportAddr, DataplaneDirectFspSource>,
     > {
         let mut sources = HashMap::new();
         for (node_addr, peer) in &self.peers {
@@ -1003,13 +1000,16 @@ impl Node {
                 .get(&transport_id)
                 .map(|transport| transport.link_mtu(&remote_addr))
                 .unwrap_or_else(|| self.transport_mtu());
-            sources.insert(
-                (transport_id, remote_addr),
-                DataplaneDirectFspSource {
-                    source_addr: *node_addr,
-                    path_mtu,
-                },
-            );
+            sources
+                .entry(transport_id)
+                .or_insert_with(HashMap::new)
+                .insert(
+                    remote_addr,
+                    DataplaneDirectFspSource {
+                        source_addr: *node_addr,
+                        path_mtu,
+                    },
+                );
         }
         sources
     }

@@ -16,6 +16,25 @@
         outputs
     }
 
+    fn direct_fsp_sources(
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        source_addr: NodeAddr,
+        path_mtu: u16,
+    ) -> DataplaneDirectFspSources {
+        let mut by_transport = std::collections::HashMap::new();
+        let mut by_addr = std::collections::HashMap::new();
+        by_addr.insert(
+            remote_addr,
+            DataplaneDirectFspSource {
+                source_addr,
+                path_mtu,
+            },
+        );
+        by_transport.insert(transport_id, by_addr);
+        std::sync::Arc::new(by_transport)
+    }
+
     #[test]
     fn live_ingress_routes_fmp_by_transport_and_receiver_idx() {
         let transport_id = TransportId::new(40);
@@ -139,14 +158,7 @@
         let transport_id = TransportId::new(44);
         let remote_addr = TransportAddr::from_string("198.51.100.44:9000");
         let (_tx, mut rx) = crate::transport::packet_channel(1);
-        let mut direct_sources = std::collections::HashMap::new();
-        direct_sources.insert(
-            (transport_id, remote_addr.clone()),
-            DataplaneDirectFspSource {
-                source_addr: source,
-                path_mtu: 1400,
-            },
-        );
+        let direct_sources = direct_fsp_sources(transport_id, remote_addr.clone(), source, 1400);
         let first = ReceivedPacket::with_timestamp(
             transport_id,
             remote_addr.clone(),
@@ -160,7 +172,7 @@
             DataplaneFmpPacketRxSource::with_first_direct_fsp_sources_and_reassembler(
                 &mut rx,
                 Some(first),
-                std::sync::Arc::new(direct_sources),
+                direct_sources,
                 None,
             );
         let mut packets = Vec::new();
@@ -186,15 +198,7 @@
         let owner = OwnerId::fsp_node(source);
         let transport_id = TransportId::new(45);
         let remote_addr = TransportAddr::from_string("198.51.100.45:9000");
-        let mut direct_sources = std::collections::HashMap::new();
-        direct_sources.insert(
-            (transport_id, remote_addr.clone()),
-            DataplaneDirectFspSource {
-                source_addr: source,
-                path_mtu: 220,
-            },
-        );
-        let direct_sources = std::sync::Arc::new(direct_sources);
+        let direct_sources = direct_fsp_sources(transport_id, remote_addr.clone(), source, 220);
 
         let mut wire = fsp_wire(
             4242,
@@ -340,15 +344,9 @@
             .with_class(PacketClass::Bulk);
         let mut routes = DataplaneLiveRouteTable::default();
         routes.register_fsp(source, route);
-        let mut direct_sources = std::collections::HashMap::new();
-        direct_sources.insert(
-            (transport_id, remote_addr.clone()),
-            DataplaneDirectFspSource {
-                source_addr: source,
-                path_mtu: 240,
-            },
+        routes.set_established_fast_ingress_direct_fsp_sources(
+            direct_fsp_sources(transport_id, remote_addr.clone(), source, 240),
         );
-        routes.set_established_fast_ingress_direct_fsp_sources(std::sync::Arc::new(direct_sources));
 
         let mut wire = fsp_wire(
             4646,
@@ -444,15 +442,9 @@
             .with_class(PacketClass::Bulk);
         let mut routes = DataplaneLiveRouteTable::default();
         routes.register_fsp(source, route);
-        let mut direct_sources = std::collections::HashMap::new();
-        direct_sources.insert(
-            (transport_id, remote_addr.clone()),
-            DataplaneDirectFspSource {
-                source_addr: source,
-                path_mtu: 240,
-            },
+        routes.set_established_fast_ingress_direct_fsp_sources(
+            direct_fsp_sources(transport_id, remote_addr.clone(), source, 240),
         );
-        routes.set_established_fast_ingress_direct_fsp_sources(std::sync::Arc::new(direct_sources));
 
         let (sink, fast_rx) =
             DataplaneEstablishedFastIngressSink::channel(
@@ -540,15 +532,9 @@
         let transport_id = TransportId::new(47);
         let remote_addr = TransportAddr::from_string("198.51.100.47:9000");
         let routes = DataplaneLiveRouteTable::default();
-        let mut direct_sources = std::collections::HashMap::new();
-        direct_sources.insert(
-            (transport_id, remote_addr.clone()),
-            DataplaneDirectFspSource {
-                source_addr: source,
-                path_mtu: 240,
-            },
+        routes.set_established_fast_ingress_direct_fsp_sources(
+            direct_fsp_sources(transport_id, remote_addr.clone(), source, 240),
         );
-        routes.set_established_fast_ingress_direct_fsp_sources(std::sync::Arc::new(direct_sources));
 
         let mut wire = fsp_wire(
             4747,
