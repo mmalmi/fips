@@ -593,6 +593,10 @@ impl DataplaneEndpointDataBatch {
         self.len
     }
 
+    pub(crate) fn has_direct_packet_runs(&self) -> bool {
+        !self.packet_runs.is_empty()
+    }
+
     pub(crate) fn push(&mut self, ingress: DataplaneFspEndpointDataIngress) {
         let len = ingress.len();
         let commit = ingress.commit();
@@ -626,13 +630,6 @@ impl DataplaneEndpointDataBatch {
 
     pub(crate) fn commit_runs(&self) -> &[DataplaneFspEndpointDataCommitRun] {
         &self.commit_runs
-    }
-
-    pub(crate) fn packet_count(&self) -> usize {
-        self.packet_runs
-            .iter()
-            .map(FipsEndpointDirectPacketRun::len)
-            .sum()
     }
 
     pub(crate) fn take_direct_packet_batch(&mut self) -> FipsEndpointDirectPacketBatch {

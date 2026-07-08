@@ -1252,15 +1252,16 @@ impl DataplaneTurnDriver {
         let mut dropped = 0usize;
         let mut sink_failed = false;
         for bulk in self.fsp_authenticated_ingress.endpoint_data_batches_mut() {
-            let count = bulk.packet_count();
-            let packet_batch = bulk.take_direct_packet_batch();
-            if count == 0 {
+            if !bulk.has_direct_packet_runs() {
                 continue;
             }
+            let count = bulk.len();
             if sink_failed {
+                let _ = bulk.take_direct_packet_batch();
                 dropped = dropped.saturating_add(count);
                 continue;
             }
+            let packet_batch = bulk.take_direct_packet_batch();
             if direct_sink.deliver_direct_packet_batch(packet_batch).is_err() {
                 dropped = dropped.saturating_add(count);
                 sink_failed = true;

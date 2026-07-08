@@ -132,6 +132,16 @@
             .collect()
     }
 
+    fn endpoint_batch_direct_packet_count(batch: &DataplaneEndpointDataBatch) -> usize {
+        let mut batch = batch.clone();
+        batch
+            .take_direct_packet_batch()
+            .into_packet_runs()
+            .iter()
+            .map(FipsEndpointDirectPacketRun::len)
+            .sum()
+    }
+
     fn take_driver_endpoint_batches(
         driver: &mut DataplaneTurnDriver,
     ) -> Vec<DataplaneEndpointDataBatch> {
@@ -2340,7 +2350,7 @@
         let endpoint_batches = driver_endpoint_batches(&driver);
         assert_eq!(endpoint_batches.len(), 1);
         assert_eq!(endpoint_batches[0].len(), 2);
-        assert_eq!(endpoint_batches[0].packet_count(), 2);
+        assert_eq!(endpoint_batch_direct_packet_count(endpoint_batches[0]), 2);
 
         let delivered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = std::sync::Arc::clone(&delivered);
@@ -2365,7 +2375,7 @@
         assert_eq!(endpoint_batches[0].len(), 2);
         assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
         assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 2);
-        assert_eq!(endpoint_batches[0].packet_count(), 0);
+        assert_eq!(endpoint_batch_direct_packet_count(endpoint_batches[0]), 0);
         let mut batches = take_driver_endpoint_batches(&mut driver);
         let direct_runs = batches
             .last_mut()
@@ -2431,7 +2441,7 @@
         assert_eq!(endpoint_batches[0].len(), 5);
         assert_eq!(endpoint_batches[0].commit_runs().len(), 1);
         assert_eq!(endpoint_batches[0].commit_runs()[0].len(), 5);
-        assert_eq!(endpoint_batches[0].packet_count(), 5);
+        assert_eq!(endpoint_batch_direct_packet_count(endpoint_batches[0]), 5);
         assert!(driver.outputs.is_empty());
 
         let mut batches = take_driver_endpoint_batches(&mut driver);
