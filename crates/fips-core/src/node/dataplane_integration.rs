@@ -194,7 +194,7 @@ impl Node {
                 reason: "dataplane FMP timestamp missing".into(),
             })?;
         let bytes_sent = receipt.payload_len;
-        let _ = self.dataplane.record_fmp_mmp_send_result(
+        self.dataplane.record_fmp_mmp_send_result(
             node_addr,
             receipt.counter,
             timestamp_ms,

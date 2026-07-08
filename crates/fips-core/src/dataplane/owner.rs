@@ -1535,15 +1535,14 @@ impl OwnerState {
         counter: u64,
         timestamp_ms: u32,
         bytes_sent: usize,
-    ) -> Result<(), DataplaneFmpMmpSkip> {
+    ) {
         if self.owner.protocol() != PacketProtocol::Fmp {
-            return Err(DataplaneFmpMmpSkip::UnknownOwner);
+            return;
         }
         let Some(mmp) = &mut self.fmp_mmp else {
-            return Err(DataplaneFmpMmpSkip::MmpDisabled);
+            return;
         };
         mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);
-        Ok(())
     }
 
     pub(crate) fn process_fmp_mmp_receiver_report(

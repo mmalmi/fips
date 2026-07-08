@@ -452,10 +452,10 @@ impl DataplaneLiveNode {
         counter: u64,
         timestamp_ms: u32,
         bytes_sent: usize,
-    ) -> Result<(), DataplaneFmpMmpSkip> {
+    ) {
         let owner = OwnerId::fmp_node(*node_addr);
         let Some(owner_state) = self.driver.owner_mut(owner) else {
-            return Err(DataplaneFmpMmpSkip::UnknownOwner);
+            return;
         };
         owner_state.record_fmp_send_result(counter, timestamp_ms, bytes_sent)
     }
