@@ -337,46 +337,6 @@ enum DataplaneAeadDirection {
     Seal,
 }
 
-#[derive(Default)]
-struct DrainedCompletionCounts {
-    open: usize,
-    seal: usize,
-    open_bulk: usize,
-    seal_bulk: usize,
-}
-
-impl DrainedCompletionCounts {
-    fn add(&mut self, direction: DataplaneAeadDirection, count: usize, bulk_count: usize) {
-        match direction {
-            DataplaneAeadDirection::Open => {
-                self.open = self.open.saturating_add(count);
-                self.open_bulk = self.open_bulk.saturating_add(bulk_count);
-            }
-            DataplaneAeadDirection::Seal => {
-                self.seal = self.seal.saturating_add(count);
-                self.seal_bulk = self.seal_bulk.saturating_add(bulk_count);
-            }
-        }
-    }
-
-    fn finish(self, pool: &DataplaneAeadWorkerPool) {
-        if self.open > 0 {
-            pool.finish_drained_completions(
-                DataplaneAeadDirection::Open,
-                self.open,
-                self.open_bulk,
-            );
-        }
-        if self.seal > 0 {
-            pool.finish_drained_completions(
-                DataplaneAeadDirection::Seal,
-                self.seal,
-                self.seal_bulk,
-            );
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct DataplaneAeadWorkerPool {
     open_tx: Option<crossbeam_channel::Sender<PreparedCryptoJob>>,
@@ -500,10 +460,9 @@ impl DataplaneAeadWorkerPool {
     }
 
     fn drain_completion_batch(
-        &self,
+        &mut self,
         mut batch: CryptoCompletionBatch,
         limit: usize,
-        drained_counts: &mut DrainedCompletionCounts,
         push_batch: &mut impl FnMut(CryptoCompletionBatch),
     ) -> (usize, Option<CryptoCompletionBatch>) {
         crate::perf_profile::record_dataplane_aead_completion_batch(batch.len());
@@ -520,7 +479,7 @@ impl DataplaneAeadWorkerPool {
         };
         let direction = dataplane_aead_direction_for_completion_source(batch.source());
         let bulk_count = if batch.lane() == Lane::Bulk { drained } else { 0 };
-        drained_counts.add(direction, drained, bulk_count);
+        self.finish_drained_completions(direction, drained, bulk_count);
         push_batch(batch);
         (drained, pending)
     }
@@ -531,14 +490,12 @@ impl DataplaneAeadWorkerPool {
         mut push_batch: impl FnMut(CryptoCompletionBatch),
     ) -> usize {
         let mut drained = 0usize;
-        let mut drained_counts = DrainedCompletionCounts::default();
         let mut empty_polls = 0usize;
         while drained < limit {
             if let Some(batch) = self.pending_completion_batches.pop_front() {
                 let (got, pending) = self.drain_completion_batch(
                     batch,
                     limit.saturating_sub(drained),
-                    &mut drained_counts,
                     &mut push_batch,
                 );
                 drained = drained.saturating_add(got);
@@ -565,7 +522,6 @@ impl DataplaneAeadWorkerPool {
                         let (got, pending) = self.drain_completion_batch(
                             batch,
                             limit.saturating_sub(drained),
-                            &mut drained_counts,
                             &mut push_batch,
                         );
                         drained = drained.saturating_add(got);
@@ -583,7 +539,6 @@ impl DataplaneAeadWorkerPool {
                 Err(crossbeam_channel::TryRecvError::Disconnected) => break,
             }
         }
-        drained_counts.finish(self);
         crate::perf_profile::record_dataplane_aead_completion_empty_polls(empty_polls);
         drained
     }
