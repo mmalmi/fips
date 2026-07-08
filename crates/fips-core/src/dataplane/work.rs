@@ -323,7 +323,6 @@ pub(crate) struct DataplaneFspSendReceipt {
 pub(crate) enum RetiredPacket {
     Output(PacketOutput),
     Outbound(OutboundPacket),
-    Drop(PacketDrop),
 }
 
 #[derive(Clone, Debug)]
@@ -370,10 +369,6 @@ impl RetiredOutputs {
         self.push_packet(RetiredPacket::Outbound(packet));
     }
 
-    pub(crate) fn push_drop(&mut self, drop: PacketDrop) {
-        self.push_packet(RetiredPacket::Drop(drop));
-    }
-
     pub(crate) fn push_endpoint_data_batch(
         &mut self,
         ingress: DataplaneFspEndpointDataIngress,
@@ -399,28 +394,6 @@ impl RetiredOutputs {
         } else {
             self.endpoint_data_batches.push(batch);
             self.runs.push(RetiredOutputRun::EndpointDataBatch);
-        }
-    }
-
-    pub(crate) fn append_drops_to(&self, drops: &mut Vec<PacketDrop>) {
-        for packet in &self.packets {
-            if let RetiredPacket::Drop(drop) = packet {
-                drops.push(drop.clone());
-            }
-        }
-    }
-
-    pub(crate) fn append_missing_drops_to(
-        &self,
-        drops: &mut Vec<PacketDrop>,
-        emitted_start: usize,
-    ) {
-        for packet in &self.packets {
-            if let RetiredPacket::Drop(drop) = packet
-                && !drops[emitted_start..].iter().any(|emitted| emitted == drop)
-            {
-                drops.push(drop.clone());
-            }
         }
     }
 

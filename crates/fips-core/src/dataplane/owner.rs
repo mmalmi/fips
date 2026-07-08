@@ -1955,11 +1955,12 @@ impl OwnerState {
         &mut self,
         batch: CryptoCompletionBatch,
         retired: &mut Vec<RetiredOutputs>,
+        drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
         let mut retired_batch = RetiredOutputs::with_capacity(batch.len());
-        self.retire_completion_batch_into(batch, &mut retired_batch, compact_endpoint_data);
-        self.drain_ready_retirements_into(&mut retired_batch, compact_endpoint_data);
+        self.retire_completion_batch_into(batch, &mut retired_batch, drops, compact_endpoint_data);
+        self.drain_ready_retirements_into(&mut retired_batch, drops, compact_endpoint_data);
         if !retired_batch.is_empty() {
             retired.push(retired_batch);
         }
@@ -1969,10 +1970,11 @@ impl OwnerState {
         &mut self,
         batch: CryptoCompletionBatch,
         retired: &mut RetiredOutputs,
+        drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
         if batch.first_order() == Some(OrderToken(self.next_retire)) {
-            self.retire_ready_completion_run_into(batch, retired, compact_endpoint_data);
+            self.retire_ready_completion_run_into(batch, retired, drops, compact_endpoint_data);
         } else {
             self.stage_retire_completion_run(batch);
         }
@@ -1988,10 +1990,11 @@ impl OwnerState {
     fn drain_ready_retirements_into(
         &mut self,
         retired: &mut RetiredOutputs,
+        drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
         while let Some(batch) = self.pending.remove(&OrderToken(self.next_retire)) {
-            self.retire_ready_completion_run_into(batch, retired, compact_endpoint_data);
+            self.retire_ready_completion_run_into(batch, retired, drops, compact_endpoint_data);
         }
     }
 
@@ -1999,11 +2002,13 @@ impl OwnerState {
         &mut self,
         batch: CryptoCompletionBatch,
         retired: &mut RetiredOutputs,
+        drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
         let batch = match self.retire_ready_open_fsp_session_payload_run_into(
             batch,
             retired,
+            drops,
             compact_endpoint_data,
         ) {
             Ok(()) => return,
@@ -2012,7 +2017,7 @@ impl OwnerState {
 
         for completion in batch.into_completions() {
             debug_assert_eq!(completion.order(), OrderToken(self.next_retire));
-            self.retire_ready_completion_into(completion, retired, compact_endpoint_data);
+            self.retire_ready_completion_into(completion, retired, drops, compact_endpoint_data);
         }
     }
 
@@ -2020,6 +2025,7 @@ impl OwnerState {
         &mut self,
         batch: CryptoCompletionBatch,
         retired: &mut RetiredOutputs,
+        drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) -> Result<(), CryptoCompletionBatch> {
         if !batch.is_open_fsp_session_payload_run() {
@@ -2039,7 +2045,7 @@ impl OwnerState {
 
             if completion.reservation.generation != self.generation {
                 flush_retired_endpoint_data_batch(retired, &mut endpoint_data_batch);
-                retired.push_drop(PacketDrop::from_completion(
+                drops.push(PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::StaleCompletionGeneration,
                     None,
@@ -2089,6 +2095,7 @@ impl OwnerState {
         &mut self,
         completion: CryptoCompletion,
         retired: &mut RetiredOutputs,
+        drops: &mut Vec<PacketDrop>,
         compact_endpoint_data: bool,
     ) {
         self.next_retire = self.next_retire.wrapping_add(1);
@@ -2098,7 +2105,7 @@ impl OwnerState {
         }
 
         if completion.reservation.generation != self.generation {
-            retired.push_drop(PacketDrop::from_completion(
+            drops.push(PacketDrop::from_completion(
                 &completion,
                 PacketDropReason::StaleCompletionGeneration,
                 None,
@@ -2116,7 +2123,7 @@ impl OwnerState {
             CryptoResult::Sealed(output) => retired.push_output(output),
             CryptoResult::Outbound(packet) => retired.push_outbound(packet),
             CryptoResult::Failed(failure) => {
-                retired.push_drop(PacketDrop::from_completion_with_authenticated_highest(
+                drops.push(PacketDrop::from_completion_with_authenticated_highest(
                     &completion,
                     PacketDropReason::CryptoFailed,
                     failure,

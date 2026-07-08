@@ -499,30 +499,21 @@ impl DataplaneOwnerShard {
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DataplaneRetire);
         let owner_id = batch.owner();
         let Some(owner) = self.owners.get_mut(&owner_id) else {
-            let mut retired_batch = RetiredOutputs::with_capacity(batch.len());
             for completion in batch.into_completions() {
                 let drop = PacketDrop::from_completion(
                     &completion,
                     PacketDropReason::UnknownOwner,
                     None,
                 );
-                drops.push(drop.clone());
-                retired_batch.push_drop(drop);
-            }
-            if !retired_batch.is_empty() {
-                retired.push(retired_batch);
+                drops.push(drop);
             }
             return;
         };
-        let retired_start = retired.len();
         let before_in_flight = owner.in_flight;
-        owner.retire_batch_outputs_into(batch, retired, compact_endpoint_data);
+        owner.retire_batch_outputs_into(batch, retired, drops, compact_endpoint_data);
         if owner.in_flight < before_in_flight {
             self.admission.wake_owner(owner_id);
             self.outbound_admission.wake_owner(owner_id);
-        }
-        for batch in &retired[retired_start..] {
-            batch.append_drops_to(drops);
         }
     }
 

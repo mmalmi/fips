@@ -52,7 +52,7 @@
                 .iter()
                 .filter_map(|item| match item {
                     RetiredPacket::Output(output) => Some(output),
-                    RetiredPacket::Outbound(_) | RetiredPacket::Drop(_) => None,
+                    RetiredPacket::Outbound(_) => None,
                 })
                 .collect()
         }
@@ -914,7 +914,6 @@
             .map(|item| match item {
                 RetiredPacket::Output(output) => output,
                 RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
-                RetiredPacket::Drop(drop) => panic!("unexpected drop: {drop:?}"),
             })
             .collect()
     }

@@ -870,17 +870,10 @@
 
         let turn = run_aead_available(&mut mover, 8);
         assert_eq!(turn.dispatched(), 1);
-        assert_eq!(turn.retired().len(), 1);
-        match &turn.retired()[0] {
-            RetiredPacket::Drop(drop) => {
-                assert_eq!(drop.reason, PacketDropReason::CryptoFailed);
-                assert_eq!(drop.counter, Some(0));
-            }
-            RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
-            RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
-        }
+        assert!(turn.retired().is_empty());
         assert_eq!(turn.drops().len(), 1);
         assert_eq!(turn.drops()[0].reason, PacketDropReason::CryptoFailed);
+        assert_eq!(turn.drops()[0].counter, Some(0));
         assert_eq!(mover.owner_mut(owner).unwrap().in_flight, 0);
     }
 
@@ -907,14 +900,10 @@
 
         let turn = run_aead_available(&mut mover, 8);
         assert_eq!(turn.dispatched(), 1);
-        match &turn.retired()[0] {
-            RetiredPacket::Drop(drop) => {
-                assert_eq!(drop.reason, PacketDropReason::CryptoFailed);
-                assert_eq!(drop.counter, Some(0));
-            }
-            RetiredPacket::Output(output) => panic!("unexpected output: {output:?}"),
-            RetiredPacket::Outbound(packet) => panic!("unexpected outbound: {packet:?}"),
-        }
+        assert!(turn.retired().is_empty());
+        assert_eq!(turn.drops().len(), 1);
+        assert_eq!(turn.drops()[0].reason, PacketDropReason::CryptoFailed);
+        assert_eq!(turn.drops()[0].counter, Some(0));
         let owner = mover.owner_mut(owner).unwrap();
         assert_eq!(owner.next_send_counter, 1);
         assert_eq!(owner.in_flight, 0);

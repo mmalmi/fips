@@ -1106,17 +1106,12 @@ impl DataplaneTurnDriver {
         limit: usize,
         compact_endpoint_data: bool,
     ) {
-        let retired_start = self.retired.len();
         let retired_completions = self
             .mover
             .retire_queued_completions_into(limit, &mut self.retired, compact_endpoint_data);
         crate::perf_profile::record_dataplane_live_completions_retired(retired_completions);
         let mut mover_drops = self.mover.drain_drops();
-        let emitted_drop_start = self.drops.len();
         self.drops.append(&mut mover_drops);
-        for batch in &self.retired[retired_start..] {
-            batch.append_missing_drops_to(&mut self.drops, emitted_drop_start);
-        }
     }
 
     fn collect_live_session_outputs_with_executor<R, E>(
@@ -1230,7 +1225,6 @@ impl DataplaneTurnDriver {
                                     self.refresh_wrapped_fsp_outbound_context(&mut packet);
                                     outbound_packets.push(packet);
                                 }
-                                RetiredPacket::Drop(_) => {}
                             }
                         }
                     }
